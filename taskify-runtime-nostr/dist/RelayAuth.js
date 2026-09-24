@@ -31,13 +31,26 @@ export class RelayAuthManager {
     async respond(relay, challenge) {
         const key = this.connectionKey(relay);
         const previous = this.authPerConnection.get(key);
-        if (previous && previous.challenge === challenge && Date.now() - previous.authedAt < 15_000)
+        if (previous && previous.challenge === challenge)
             return undefined;
-        const event = await this.buildAuthEvent(relay.url, challenge);
-        if (!event)
-            return undefined;
-        this.authPerConnection.set(key, { challenge, authedAt: Date.now() });
-        return event;
+        // Reserve before signing: repeated challenges must not start parallel signatures.
+        const state = { challenge, authedAt: Date.now(), pending: true };
+        this.authPerConnection.set(key, state);
+        try {
+            const event = await this.buildAuthEvent(relay.url, challenge);
+            // A reset or newer challenge invalidates an in-flight signature.
+            if (this.authPerConnection.get(key) !== state)
+                return undefined;
+            state.pending = false;
+            if (!event)
+                this.authPerConnection.delete(key);
+            return event ?? undefined;
+        }
+        catch (error) {
+            if (this.authPerConnection.get(key) === state)
+                this.authPerConnection.delete(key);
+            throw error;
+        }
     }
     markAuthed(relay) {
         const key = this.connectionKey(relay);

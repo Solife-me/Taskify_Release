@@ -198,6 +198,7 @@ npx wrangler dev
 | `taskify-ios-native/Tests/TaskifyCoreTests/TaskifySharedContainerTests.swift` | Native storage | Signed Mac App Group authorization, private fallback, migration preservation and repeated saves/reloads |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SnapshotLookupCacheTests.swift` | Native board cache invalidation/reuse, compound scope, calendar boundaries, sorting, and flat timeline identities |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SharedInboxTests.swift` | NIP-17 private messages | Gift-wrap verification, independent sender/recipient copies, encrypted group task/event shares with persisted conversation routing, strict kind-10050 routing, and signed inbox preferences |
+| `taskify-ios-native/Tests/TaskifyCoreTests/RelayRetryBackoffTests.swift`, `taskify-ios-native/Tests/TaskifyCoreTests/RelayOutboxLatencyTests.swift` | Native relay pressure | Bounded ingress with ordered lossless recovery, cancellation, and shared subscription/publication cooldown after rate limiting |
 | `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
@@ -308,3 +309,9 @@ Quick summary:
 - [ ] Docs updated if behavior changed
 - [ ] No secrets committed
 - [ ] Wallet/Nostr changes flagged for extra review if applicable
+
+Relay access regression coverage: `taskify-runtime-nostr/tests/proof-of-work.test.ts`
+and `relay-auth.test.ts` cover cooperative/cancellable mining and duplicate AUTH
+challenges. Native `NostrProofOfWorkTests` and `NostrRelayAuthenticationTests` cover
+signed work across native/Watch and acknowledgement-gated replay. Prepare work
+before retaining event IDs; never re-sign an already-submitted outbox event.

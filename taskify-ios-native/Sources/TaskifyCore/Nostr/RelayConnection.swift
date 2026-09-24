@@ -89,35 +89,62 @@ private final class NostrRelayPingResolution: @unchecked Sendable {
     }
 }
 
+/// Single-producer relay ingress, shared with deterministic slow-consumer tests.
+struct NostrRelayMessageBuffer: Sendable {
+    let stream: AsyncStream<NostrRelayMessage>
+    private let continuation: AsyncStream<NostrRelayMessage>.Continuation
+
+    init() {
+        let pair = AsyncStream.makeStream(of: NostrRelayMessage.self, bufferingPolicy: .bufferingOldest(64))
+        stream = pair.stream
+        continuation = pair.continuation
+    }
+
+    func send(_ message: NostrRelayMessage) async {
+        // bufferingOldest rejects the new value when full. Retain that value here and
+        // stop reading the socket until the consumer catches up; never evict an EVENT.
+        while !Task.isCancelled {
+            switch continuation.yield(message) {
+            case .enqueued, .terminated:
+                return
+            case .dropped:
+                do { try await Task.sleep(for: .milliseconds(10)) }
+                catch { return }
+            @unknown default:
+                return
+            }
+        }
+    }
+
+    func finish() { continuation.finish() }
+}
+
 public actor NostrRelayConnection {
     public nonisolated let relayURL: String
 
-    private let messageStream: AsyncStream<NostrRelayMessage>
-    private let messageContinuation: AsyncStream<NostrRelayMessage>.Continuation
+    private let messageBuffer = NostrRelayMessageBuffer()
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var connectionGeneration: UUID?
 
-    public init(relayURL: String) {
+    private let automaticallyAuthenticate: Bool
+    private let authenticationIdentity: NostrIdentity?
+    private var authReplay = NostrRelayAuthReplay()
+
+    public init(relayURL: String, automaticallyAuthenticate: Bool = true, authenticationIdentity: NostrIdentity? = nil) {
         self.relayURL = relayURL
-        let pair = AsyncStream.makeStream(
-            of: NostrRelayMessage.self,
-            // The consumer may briefly await publication/backoff. Never evict received
-            // EVENT frames: doing so silently loses a live DM until another replay.
-            bufferingPolicy: .unbounded
-        )
-        messageStream = pair.stream
-        messageContinuation = pair.continuation
+        self.automaticallyAuthenticate = automaticallyAuthenticate
+        self.authenticationIdentity = authenticationIdentity
     }
 
     deinit {
         receiveTask?.cancel()
         socket?.cancel(with: .goingAway, reason: nil)
-        messageContinuation.finish()
+        messageBuffer.finish()
     }
 
     public nonisolated func messages() -> AsyncStream<NostrRelayMessage> {
-        messageStream
+        messageBuffer.stream
     }
 
     public func connect() throws {
@@ -130,6 +157,7 @@ public actor NostrRelayConnection {
         let generation = UUID()
         socket = webSocket
         connectionGeneration = generation
+        authReplay = NostrRelayAuthReplay()
         webSocket.resume()
         receiveTask = Task { [weak self] in
             await self?.receiveLoop(socket: webSocket, generation: generation)
@@ -389,7 +417,54 @@ public actor NostrRelayConnection {
 
     private func send(_ object: [Any]) async throws {
         guard let socket else { throw URLError(.notConnectedToInternet) }
-        try await socket.send(.string(NostrRelayWire.encode(object)))
+        let frame = try NostrRelayWire.encode(object)
+        if automaticallyAuthenticate, let type = object.first as? String {
+            if type == "REQ", let id = object.dropFirst().first as? String {
+                authReplay.record(key: "REQ:" + id, frame: frame)
+            } else if type == "EVENT", let event = object.dropFirst().first as? [String: Any], let id = event["id"] as? String {
+                authReplay.record(key: "EVENT:" + id, frame: frame)
+            } else if type == "CLOSE", let id = object.dropFirst().first as? String {
+                authReplay.remove(key: "REQ:" + id)
+            }
+        }
+        try await socket.send(.string(frame))
+    }
+
+    private func handleAuthentication(_ message: NostrRelayMessage, socket: URLSessionWebSocketTask) async throws -> Bool {
+        switch message {
+        case .auth(let challenge):
+            guard authReplay.challenge != challenge else { return true }
+            let identity: NostrIdentity?
+            if let authenticationIdentity { identity = authenticationIdentity }
+            else { identity = await NostrRelayAuthentication.shared.currentIdentity() }
+            guard let identity else { return false }
+            let event = try NostrEvent.signed(privateKey: identity.privateKey,
+                createdAt: Int(Date().timeIntervalSince1970), kind: NIP42AuthContract.eventKind,
+                tags: [["relay", relayURL], ["challenge", challenge]], content: "")
+            guard authReplay.begin(challenge: challenge, authEventID: event.id) else { return true }
+            try await authenticate(event)
+            return true
+        case .acknowledgement(let eventID, let accepted, let message):
+            if let replays = authReplay.acknowledge(eventID: eventID, accepted: accepted) {
+                for frame in replays { try await socket.send(.string(frame)) }
+                return true
+            }
+            let key = "EVENT:" + eventID
+            if !accepted, message.hasPrefix("auth-required:"), authReplay.block(key: key) {
+                for frame in authReplay.takeReplays() { try await socket.send(.string(frame)) }
+                return true
+            }
+            authReplay.remove(key: key)
+        case .closed(let subscriptionID, let message):
+            let key = "REQ:" + subscriptionID
+            if message.hasPrefix("auth-required:"), authReplay.block(key: key) {
+                for frame in authReplay.takeReplays() { try await socket.send(.string(frame)) }
+                return true
+            }
+            authReplay.remove(key: key)
+        default: break
+        }
+        return false
     }
 
     private func receiveLoop(
@@ -406,13 +481,14 @@ public actor NostrRelayConnection {
                 @unknown default: continue
                 }
                 if let decoded = try? NostrRelayMessage.decode(data) {
-                    messageContinuation.yield(decoded)
+                    if automaticallyAuthenticate, try await handleAuthentication(decoded, socket: socket) { continue }
+                    await messageBuffer.send(decoded)
                 }
             } catch {
                 guard connectionGeneration == generation else { return }
                 self.socket = nil
                 connectionGeneration = nil
-                messageContinuation.yield(.disconnected(error.localizedDescription))
+                await messageBuffer.send(.disconnected(error.localizedDescription))
                 return
             }
         }

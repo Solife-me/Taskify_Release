@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type NDK from "@nostr-dev-kit/ndk";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
-import { generateSecretKey, type EventTemplate } from "nostr-tools";
+import { generateSecretKey, type Event, type EventTemplate } from "nostr-tools";
 import { PublishCoordinator, type NostrOutboxMutation, type NostrOutboxStore } from "../dist/index.js";
 
 class MemoryOutboxStore implements NostrOutboxStore {
@@ -267,3 +267,82 @@ test("a failed durable save prevents sending and does not suppress the next retr
     coordinator.shutdown();
   }
 });
+
+
+test("PublishCoordinator mines the maximum NIP-13 difficulty required by target relays", async () => {
+  const store = new MemoryOutboxStore();
+  const ndk = {} as NDK;
+  const coordinator = new PublishCoordinator(
+    ndk,
+    async () => relaySet(["wss://relay.example"]) as never,
+    undefined,
+    {
+      outboxStore: store,
+      retryBaseMs: 60_000,
+      resolveProofOfWorkDifficulty: async () => 8,
+    },
+  );
+  const originalPublish = NDKEvent.prototype.publish;
+  let rawDuringPublish: any;
+  NDKEvent.prototype.publish = async function publishMock() {
+    rawDuringPublish = this.rawEvent();
+    return new Set([relay("wss://relay.example")]) as never;
+  };
+
+  try {
+    const result = await coordinator.publish(template, {
+      relayUrls: ["wss://relay.example"],
+      signer: generateSecretKey(),
+      returnEvent: true,
+    }) as { event: Event };
+
+    assert.ok(Array.isArray(rawDuringPublish.tags));
+    const nonce = rawDuringPublish.tags.find((tag: string[]) => tag[0] === "nonce");
+    assert.ok(nonce, "mined event must include a nonce tag");
+    assert.equal(nonce[2], "8");
+    assert.ok(countLeadingZeroBits(result.event.id) >= 8);
+  } finally {
+    NDKEvent.prototype.publish = originalPublish;
+    coordinator.shutdown();
+  }
+});
+
+test("PublishCoordinator rejects an already-signed event below the required difficulty when no signer is available", async () => {
+  const store = new MemoryOutboxStore();
+  const coordinator = new PublishCoordinator(
+    {} as NDK,
+    async () => relaySet(["wss://pow.example"]) as never,
+    undefined,
+    {
+      outboxStore: store,
+      retryBaseMs: 60_000,
+      resolveProofOfWorkDifficulty: async () => 8,
+    },
+  );
+  const signed = new NDKEvent({} as any, {
+    ...template,
+    id: "a".repeat(64),
+    pubkey: "a".repeat(64),
+    sig: "b".repeat(128),
+  });
+
+  await assert.rejects(
+    coordinator.publish(signed, { relayUrls: ["wss://pow.example"] }),
+    /cannot add proof of work to an already-signed event/i,
+  );
+  coordinator.shutdown();
+});
+
+function countLeadingZeroBits(hex: string): number {
+  let count = 0;
+  for (const character of hex) {
+    const value = Number.parseInt(character, 16);
+    if (value === 0) {
+      count += 4;
+      continue;
+    }
+    count += Math.clz32(value) - 28;
+    break;
+  }
+  return count;
+}

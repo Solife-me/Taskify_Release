@@ -1,3 +1,4 @@
+import { configureRelayAccess, prepareStandaloneEvent } from "taskify-runtime-nostr";
 /**
  * profileMeta.ts — kind:0 profile metadata publish/fetch for Taskify CLI.
  * Ported from taskify-pwa/src/nostr/ProfilePublisher.ts
@@ -64,6 +65,7 @@ export async function fetchLatestProfileEvent(
 ): Promise<{ event: NostrEvent | null; metadata: ProfileMetadata }> {
   const relayList = normalizeRelayUrls(relays);
   const ndk = new NDK({ explicitRelayUrls: relayList });
+  configureRelayAccess(ndk);
   await Promise.race([ndk.connect(), new Promise<void>((r) => setTimeout(r, 3_000))]);
 
   const events = await Promise.race<Set<NDKEvent>>([
@@ -116,6 +118,7 @@ export async function publishProfile(
     explicitRelayUrls: relayList,
     signer: new NDKPrivateKeySigner(skHex),
   });
+  configureRelayAccess(ndk, skHex);
   await Promise.race([ndk.connect(), new Promise<void>((r) => setTimeout(r, 3_000))]);
 
   // Fetch current kind:0 to merge with
@@ -132,7 +135,7 @@ export async function publishProfile(
   profileEvent.content = JSON.stringify(content);
   profileEvent.tags = [];
   profileEvent.created_at = Math.floor(Date.now() / 1000);
-  await profileEvent.sign();
+  await prepareStandaloneEvent(profileEvent, relayList);
   await profileEvent.publish();
 
   const raw = profileEvent.rawEvent?.() as NostrEvent ?? (profileEvent as unknown as NostrEvent);
@@ -147,7 +150,7 @@ export async function publishProfile(
       deleteEvent.content = opts?.reason ?? "superseded profile metadata";
       deleteEvent.tags = [["e", previous.id], ["k", "0"]];
       deleteEvent.created_at = Math.floor(Date.now() / 1000);
-      await deleteEvent.sign();
+      await prepareStandaloneEvent(deleteEvent, relayList);
       await deleteEvent.publish();
       deletedIds.push(previous.id);
     } catch {

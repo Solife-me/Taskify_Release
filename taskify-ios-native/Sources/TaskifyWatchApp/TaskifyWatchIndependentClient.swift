@@ -176,6 +176,7 @@ struct TaskifyWatchIndependentClient: Sendable {
             let events: [TaskifyWatchNostrEvent]
             let refreshed: Bool
             let cacheHit: Bool
+            let authorizations: [TaskifyWatchGatewayRelayResult]?
         }
         let endpoint = gatewayBaseURL.appendingPathComponent("v1/watch/tasks/query")
         let createdAt = Int(Date().timeIntervalSince1970)
@@ -199,10 +200,32 @@ struct TaskifyWatchIndependentClient: Sendable {
             body: Body(relays: relayURLs, sources: sources, limit: 1_000),
             privateKey: privateKey
         )
-        guard reply.refreshed || reply.cacheHit else {
+        var events = reply.events
+        var authenticatedRead = false
+        for challenge in (reply.authorizations ?? []).prefix(relayURLs.count) {
+            guard relayURLs.contains(challenge.relay), let token = challenge.session,
+                  let nonce = challenge.challenge, challenge.status == "auth-required" else { continue }
+            struct Authorization: Encodable { let event: TaskifyWatchNostrEvent }
+            let event = try TaskifyWatchNostrCrypto.nip42AuthorizationEvent(privateKey: privateKey,
+                relayURL: challenge.relay, challenge: nonce)
+            guard let authorized: TaskifyWatchGatewayAuthorizationResult = try? await nip98Post(
+                url: gatewayBaseURL.appendingPathComponent("v1/watch/outbox/\(token)/authorize"),
+                body: Authorization(event: event), privateKey: privateKey),
+                authorized.result.status == "accepted", let fetched = authorized.events,
+                fetched.count <= 1_000 else { continue }
+            let valid = fetched.filter { candidate in
+                boards.contains { $0.author == candidate.publicKey && $0.boardTag == candidate.firstTagValue(named: "b") }
+                    && [TaskifyWatchNostrCrypto.boardEventKind, TaskifyWatchNostrCrypto.taskEventKind].contains(candidate.kind)
+                    && TaskifyWatchNostrCrypto.verify(candidate)
+            }
+            guard valid.count == fetched.count else { continue }
+            events.append(contentsOf: valid)
+            authenticatedRead = true
+        }
+        guard reply.refreshed || reply.cacheHit || authenticatedRead else {
             throw TaskifyWatchIndependentError.relayUnavailable
         }
-        return reply.events
+        return Array(Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values.sorted { $0.createdAt > $1.createdAt }.prefix(1_000))
     }
 
     private func publishThroughGateway(

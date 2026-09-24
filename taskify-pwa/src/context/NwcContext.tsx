@@ -107,11 +107,14 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
   const [lastError, setLastError] = useState<string | null>(null);
   const clientRef = useRef<NwcClient | null>(null);
 
+  useEffect(() => () => clientRef.current?.close(), []);
+
   useEffect(() => {
     infoRef.current = info;
   }, [info]);
 
   const setClient = useCallback((parsed: ParsedNwcUri | null) => {
+    clientRef.current?.close();
     if (!parsed) {
       clientRef.current = null;
       return;
@@ -164,7 +167,8 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
       }
       const combined = extractInfo(infoRes, balanceRes);
       setConnection(parsed);
-      setClient(parsed);
+      clientRef.current?.close();
+      clientRef.current = client;
       setInfo(combined ?? null);
       infoRef.current = combined ?? null;
       setStatus("connected");
@@ -175,7 +179,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
       setStatus("error");
       throw new Error(message);
     }
-  }, [setClient]);
+  }, []);
 
   const disconnect = useCallback(() => {
     setConnection(null);

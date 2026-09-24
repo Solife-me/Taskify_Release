@@ -308,6 +308,37 @@ export function createTaskifyPushServer({
     throw new Error('Unsupported Watch event kind')
   }
 
+  function registerReadAuthorization(result, relayURL, accountPubkey, maximumEvents, accept, onEvents) {
+    if (watchAuthSessions.size >= 256) {
+      result.close?.()
+      throw new Error('Relay authorization capacity exceeded')
+    }
+    const token = randomBytes(32).toString('base64url')
+    const expiry = setTimeout(() => {
+      const session = watchAuthSessions.get(token)
+      session?.close?.()
+      watchAuthSessions.delete(token)
+    }, WATCH_SESSION_TTL_MS)
+    expiry.unref?.()
+    watchAuthSessions.set(token, {
+      accountPubkey, authorizationPubkey: accountPubkey, relayURL,
+      eventID: `query:${token}`, challenge: result.challenge,
+      expiresAt: Date.now() + WATCH_SESSION_TTL_MS,
+      authorize: async event => {
+        const authorized = await result.authorize(event)
+        if (!authorized.accepted || !Array.isArray(authorized.events) || authorized.events.length > maximumEvents) {
+          throw new Error('Invalid authorized query response')
+        }
+        const events = authorized.events.filter(accept)
+        if (events.length !== authorized.events.length) throw new Error("Invalid authorized query events")
+        await onEvents?.(events)
+        return { accepted: true, events }
+      },
+      close: () => { clearTimeout(expiry); result.close?.() },
+    })
+    return { relay: relayURL, status: 'auth-required', session: token, challenge: result.challenge }
+  }
+
   async function forwardWatchEvent(event, relayURLs, authenticatedPubkey, returnAfterFirstAccepted = false) {
     const localRelayURL = normalizeRelayTargets([config.publicRelayURL])[0]
     const completed = new Map()
@@ -408,8 +439,17 @@ export function createTaskifyPushServer({
                 : await relayForwarder.query(relay, {
                   kinds: [10_050], authors: [recipient], limit: WATCH_PREFERENCE_EVENT_LIMIT,
                 }, WATCH_PREFERENCE_EVENT_LIMIT, {
-                  signal: controller.signal, timeoutMs: 2_000, requireEOSE: true,
+                  signal: controller.signal, timeoutMs: 2_000, requireEOSE: true, allowAuth: true,
                 })
+              if (events?.outcome === 'auth-required') {
+                const authorization = registerReadAuthorization(events, relay, auth.pubkey,
+                  WATCH_PREFERENCE_EVENT_LIMIT, event => {
+                    try { return event?.kind === 10_050 && event.pubkey === recipient
+                      && Buffer.byteLength(JSON.stringify(event)) <= 8 * 1024 && verifyEvent(event) }
+                    catch { return false }
+                  })
+                return { relay, events: [], completed: false, authorization }
+              }
               if (!Array.isArray(events) || events.length > WATCH_PREFERENCE_EVENT_LIMIT) {
                 throw new Error('Invalid preference response')
               }
@@ -430,6 +470,8 @@ export function createTaskifyPushServer({
           }
           sendJSON(response, 200, {
             events: Array.from(events.values()),
+            ...(gathered.some(result => result.authorization)
+              ? { authorizations: gathered.flatMap(result => result.authorization ? [result.authorization] : []) } : {}),
             completedRelays: gathered.filter((result) => result.completed).map((result) => result.relay),
           })
         } finally {
@@ -474,7 +516,13 @@ export function createTaskifyPushServer({
                   authors,
                   '#b': boardTags,
                   limit,
-                }, limit)
+                }, limit, { allowAuth: true })
+                if (events?.outcome === 'auth-required') {
+                  const authorization = registerReadAuthorization(events, relayURL, auth.pubkey, limit,
+                    event => { try { assertCacheableTaskEvent(event, sources); return true } catch { return false } },
+                    events => store.putTaskEvents(events))
+                  return { completed: false, events: [], authorization }
+                }
                 return {
                   completed: true,
                   events: events.filter((event) => {
@@ -500,6 +548,8 @@ export function createTaskifyPushServer({
         const events = store.taskEventsFor(authors, limit, sources)
         sendJSON(response, 200, {
           events,
+          ...(gathered.some(result => result.authorization)
+              ? { authorizations: gathered.flatMap(result => result.authorization ? [result.authorization] : []) } : {}),
           refreshed: gathered.some((result) => result.completed),
           cacheHit: events.length > 0,
         })
@@ -530,6 +580,7 @@ export function createTaskifyPushServer({
           const result = await session.authorize(event)
           sendJSON(response, result.accepted ? 200 : 422, {
             eventID: session.eventID,
+            ...(result.events ? { events: result.events } : {}),
             result: {
               relay: session.relayURL,
               status: result.accepted ? 'accepted' : 'rejected',

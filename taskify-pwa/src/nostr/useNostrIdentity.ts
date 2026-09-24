@@ -1,6 +1,7 @@
+import { prepareRelayEvent } from "./prepareRelayEvent";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { finalizeEvent, generateSecretKey, getPublicKey, nip19, type EventTemplate } from "nostr-tools";
+import { generateSecretKey, getPublicKey, nip19, type EventTemplate } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import {
   acknowledgeBackupNotice as nostrSkAcknowledgeBackupNotice,
@@ -185,7 +186,7 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
         createdAt = lastForSigner + 1;
       }
       lastNostrCreated.current.set(signerKey, createdAt);
-      const ev = finalizeEvent({ ...template, created_at: createdAt }, signerBytes);
+      const ev = await prepareRelayEvent({ ...template, created_at: createdAt }, signerBytes, relays);
       await pool.publishEvent(relays, ev as unknown as NostrEvent);
       lastNostrSentMs.current = Date.now();
       return options?.returnEvent ? { createdAt, event: ev as unknown as NostrEvent } : createdAt;

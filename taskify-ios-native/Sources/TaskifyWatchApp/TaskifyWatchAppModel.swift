@@ -1034,8 +1034,12 @@ final class TaskifyWatchAppModel: NSObject {
               !mutations.isEmpty else { return }
 
         var published: [TaskifyWatchDirectMutation] = []
-        for mutation in mutations {
+        for original in mutations {
             do {
+                let event = try await TaskifyWatchNostrCrypto.prepareBoardEvent(original.event,
+                    boardID: original.boardNostrID, relayURLs: original.relayURLs)
+                let mutation = TaskifyWatchDirectMutation(event: event, task: original.task,
+                    relayURLs: original.relayURLs, boardNostrID: original.boardNostrID)
                 try await independentClient.publish(
                     mutation.event,
                     relayURLs: mutation.relayURLs,

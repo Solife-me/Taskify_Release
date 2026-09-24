@@ -1,3 +1,4 @@
+import { prepareRelayEvent } from "../nostr/prepareRelayEvent";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { finalizeEvent, getEventHash, getPublicKey, nip19, nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
@@ -302,7 +303,7 @@ export async function sendShareMessage(
       tags: [["p", wrapRecipient]],
       created_at: resolveNip17Timestamp(),
     };
-    const wrapEvent = finalizeEvent(wrapTemplate, wrapKey.bytes);
+    const wrapEvent = await prepareRelayEvent(wrapTemplate, wrapKey.bytes, publishRelays);
     await publish(wrapEvent);
   }
 }

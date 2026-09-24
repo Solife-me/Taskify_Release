@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import { useCallback } from "react";
 import { nip44, finalizeEvent, getEventHash } from "nostr-tools";
 import type { EventTemplate } from "nostr-tools";
@@ -86,6 +87,7 @@ export function useDmSend({
 
   const publishNip17Giftwraps = useCallback(
     async (options: {
+      relays: string[];
       content: string;
       senderHex: string;
       recipientHex: string;
@@ -153,7 +155,7 @@ export function useDmSend({
           tags: [["p", wrapRecipient]],
           created_at: resolveNip17Timestamp(),
         };
-        const wrapEvent = finalizeEvent(wrapTemplate, wrapKey.bytes);
+        const wrapEvent = await prepareRelayEvent(wrapTemplate, wrapKey.bytes, options.relays);
         await publish(wrapEvent);
         // Track the self-addressed wrap so callers can immediately process it locally
         if (wrapRecipient === normalizedSender) {
@@ -205,6 +207,7 @@ export function useDmSend({
         const publish = (ev: NostrEvent) => safePublish(pool, publishRelays, ev);
         const authorPubkey = msg.senderPubkey || (msg.isIncoming ? msg.peerPubkey : senderHex);
         const { selfWrapEvent } = await publishNip17Giftwraps({
+          relays: publishRelays,
           content: emoji,
           senderHex,
           recipientHex,
@@ -236,6 +239,7 @@ export function useDmSend({
         const pool = ensureNostrPool();
         const publish = (ev: NostrEvent) => safePublish(pool, relays, ev);
         const { selfWrapEvent } = await publishNip17Giftwraps({
+          relays,
           content: msg.content,
           senderHex,
           recipientHex,
@@ -272,6 +276,7 @@ export function useDmSend({
       const pool = ensureNostrPool();
       const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
       const { selfWrapEvent } = await publishNip17Giftwraps({
+        relays: publishRelays,
         content: "",
         senderHex,
         recipientHex: groupRecipients[0] || "",
@@ -436,6 +441,7 @@ export function useDmSend({
           }
 
           const { selfWrapEvent } = await publishNip17Giftwraps({
+            relays: publishRelays,
             content: upload.remoteUrl,
             senderHex,
             recipientHex,

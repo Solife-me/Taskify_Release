@@ -1,3 +1,4 @@
+import { configureRelayAccess, prepareStandaloneEvent } from "taskify-runtime-nostr";
 /**
  * botCommands.ts — NIP-51 bot commands list (kind 30078, d-tag
  * "taskify-bot-commands") publish/fetch for Taskify CLI.
@@ -111,6 +112,7 @@ export function validateBotCommandsDraft(commands: unknown): BotCommand[] {
 
 async function connectNdk(relayList: string[]): Promise<NDK> {
   const ndk = new NDK({ explicitRelayUrls: relayList });
+  configureRelayAccess(ndk);
   await Promise.race([ndk.connect(), new Promise<void>((r) => setTimeout(r, 3_000))]);
   return ndk;
 }
@@ -170,6 +172,7 @@ export async function publishBotCommands(
     explicitRelayUrls: relayList,
     signer: new NDKPrivateKeySigner(bytesToHex(sk)),
   });
+  configureRelayAccess(ndk, bytesToHex(sk));
   await Promise.race([ndk.connect(), new Promise<void>((r) => setTimeout(r, 3_000))]);
 
   const tags: string[][] = [
@@ -184,7 +187,7 @@ export async function publishBotCommands(
   event.content = "";
   event.tags = tags;
   event.created_at = Math.floor(Date.now() / 1000);
-  await event.sign();
+  await prepareStandaloneEvent(event, relayList);
   await event.publish();
 
   const raw = event.rawEvent?.() as NostrEvent ?? (event as unknown as NostrEvent);

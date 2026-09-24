@@ -1,6 +1,7 @@
 // @ts-nocheck
+import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import { useCallback } from "react";
-import { finalizeEvent, nip19, type EventTemplate } from "nostr-tools";
+import { nip19, type EventTemplate } from "nostr-tools";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import {
   PaymentRequest,
@@ -219,7 +220,7 @@ export function usePaymentRequestFlow({
           tags,
           created_at: Math.floor(Date.now() / 1000),
         };
-        const deletionEvent = finalizeEvent(deletionTemplate, hexToBytes(identity.secret));
+        const deletionEvent = await prepareRelayEvent(deletionTemplate, hexToBytes(identity.secret), relayList);
         const pool = ensureNostrPool();
         await safePublish(pool, relayList, deletionEvent);
       } catch (err) {

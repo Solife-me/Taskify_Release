@@ -25,6 +25,8 @@ export type PublishCoordinatorOptions = {
     outboxStore?: NostrOutboxStore;
     retryBaseMs?: number;
     retryMaxMs?: number;
+    signal?: AbortSignal;
+    resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
 };
 export declare class PublishCoordinator {
     private replaceableCache;
@@ -36,6 +38,8 @@ export declare class PublishCoordinator {
     private readonly outboxStore?;
     private readonly retryBaseMs;
     private readonly retryMaxMs;
+    private readonly signal?;
+    private readonly resolveProofOfWorkDifficulty?;
     private activeOutboxIds;
     private outboxLocks;
     private retryTimers;

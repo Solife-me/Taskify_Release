@@ -1,3 +1,4 @@
+import TaskifyWatchShared
 import CryptoKit
 import Foundation
 import P256K
@@ -66,6 +67,9 @@ public struct NostrEvent: Codable, Equatable, Hashable, Sendable {
     ) throws -> NostrEvent {
         let key = try P256K.Schnorr.PrivateKey(dataRepresentation: privateKey)
         let publicKey = Data(key.xonly.bytes).hexString
+        let tags = try kind == 13 || kind == NIP42AuthContract.eventKind ? tags : TaskifyRelayProofOfWork.mineTags(tags) {
+            try calculateID(publicKey: publicKey, createdAt: createdAt, kind: kind, tags: $0, content: content)
+        }
         let eventID = try calculateID(
             publicKey: publicKey,
             createdAt: createdAt,

@@ -953,13 +953,15 @@ actor TaskifyWatchChatCoordinator {
         let inboxRelays = TaskifyWatchRelayRouting.normalizedRelayURLs(
             current.relayURLs + [pushRelay]
         )
-        let preference = try TaskifyWatchNostrCrypto.inboxPreferenceEvent(
-            privateKey: privateKey,
-            relayURLs: inboxRelays
-        )
         let publishTargets = Array(TaskifyWatchRelayRouting.normalizedRelayURLs(
             [pushRelay] + context.discoveryRelayURLs + current.relayURLs
         ).prefix(TaskifyWatchRelayRouting.maximumRelayCount))
+        let preference = try await TaskifyRelayProofOfWork.prepare(relays: publishTargets) {
+            try TaskifyWatchNostrCrypto.inboxPreferenceEvent(
+            privateKey: privateKey,
+            relayURLs: inboxRelays
+        )
+        }
         let response = try await gateway.publishInboxPreference(
             event: preference,
             relayURLs: publishTargets,
@@ -1232,6 +1234,26 @@ actor TaskifyWatchChatCoordinator {
                     .map(\.relayURL)
                 guard !unfinished.isEmpty else { continue }
                 do {
+                    if wrap.proofOfWorkPrepared != true {
+                        let difficulty = await TaskifyRelayRequirements.shared.difficulty(for: wrap.routingDecision.relayURLs)
+                        if difficulty > TaskifyRelayProofOfWork.leadingZeroBits(wrap.event.id)
+                            || difficulty > (Int(wrap.event.tags.first(where: { $0.first == "nonce" })?.last ?? "0") ?? 0) {
+                            // Never replace a wrap whose earlier submission may have succeeded.
+                            guard wrap.proofOfWorkPrepared == false || wrap.attempts == 0,
+                                  !wrap.isDelivered,
+                                  let senderCopy = entry.wraps.first(where: { $0.recipientPublicKey == entry.senderPublicKey }) else {
+                                throw TaskifyProofOfWorkError.unsupportedDifficulty
+                            }
+                            let rumor = try TaskifyWatchNIP17.unwrap(senderCopy.event, recipientPrivateKey: privateKey).rumor
+                            let relays = wrap.routingDecision.relayURLs
+                            wrap.event = try await TaskifyWatchNIP17.prepareWrap(rumor: rumor, senderPrivateKey: privateKey,
+                                recipientPublicKeyHex: wrap.recipientPublicKey, relayURLs: relays)
+                        }
+                        wrap.proofOfWorkPrepared = true
+                        entry.wraps[wrapIndex] = wrap
+                        // The prepared ID becomes durable before any network submission.
+                        try await store.replaceOutboxEntries([entry])
+                    }
                     let response = try await gateway.submit(
                         event: wrap.event,
                         relayURLs: unfinished,

@@ -1,3 +1,4 @@
+import TaskifyWatchShared
 import Foundation
 
 public enum ShareDeliveryError: LocalizedError {
@@ -29,7 +30,10 @@ public enum ShareMessageDelivery {
             guard !relays.isEmpty else { throw ShareDeliveryError.noRelays }
             routes[target] = relays
         }
-        let job = try prepared(input, identity: identity, routes: routes)
+        let resolvedRoutes = routes
+        let job = try await TaskifyRelayProofOfWork.prepare(relays: routes.values.flatMap { $0 }) {
+            try prepared(input, identity: identity, routes: resolvedRoutes)
+        }
         try ShareTransferStore.save(job)
         return job
     }
@@ -124,7 +128,7 @@ public enum ShareMessageDelivery {
     }
 
     private static func publish(_ event: NostrEvent, relay: String, identity: NostrIdentity) async -> Bool {
-        let connection = NostrRelayConnection(relayURL: relay)
+        let connection = NostrRelayConnection(relayURL: relay, automaticallyAuthenticate: false)
         let result = await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 do {

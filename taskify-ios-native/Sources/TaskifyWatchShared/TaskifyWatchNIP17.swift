@@ -176,6 +176,16 @@ public enum TaskifyWatchNIP17 {
         return TaskifyWatchNIP17EnvelopeSet(rumor: rumor, wraps: wraps)
     }
 
+    public static func prepareWrap(rumor: TaskifyWatchNIP17Rumor, senderPrivateKey: Data,
+        recipientPublicKeyHex: String, relayURLs: [String]) async throws -> TaskifyWatchNostrEvent {
+        guard let recipient = Data(taskifyChatHex: recipientPublicKeyHex), recipient.count == 32 else {
+            throw TaskifyWatchNIP17Error.invalidWrap
+        }
+        return try await TaskifyRelayProofOfWork.prepare(relays: relayURLs) {
+            try wrap(rumor: rumor, senderPrivateKey: senderPrivateKey, recipientPublicKey: recipient)
+        }
+    }
+
     public static func wrap(
         rumor: TaskifyWatchNIP17Rumor,
         senderPrivateKey: Data,

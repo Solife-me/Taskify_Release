@@ -1,6 +1,6 @@
 import NDK, { NDKEvent, NDKKind, NDKPrivateKeySigner, type NDKRelay } from "@nostr-dev-kit/ndk";
 
-type AuthState = { challenge: string; authedAt: number };
+type AuthState = { challenge: string; authedAt: number; pending?: boolean };
 
 type RelayAuthOptions = {
   loadSecretKeyHex: () => string | null;
@@ -41,11 +41,21 @@ export class RelayAuthManager {
   async respond(relay: NDKRelay, challenge: string): Promise<NDKEvent | undefined> {
     const key = this.connectionKey(relay);
     const previous = this.authPerConnection.get(key);
-    if (previous && previous.challenge === challenge && Date.now() - previous.authedAt < 15_000) return undefined;
-    const event = await this.buildAuthEvent(relay.url, challenge);
-    if (!event) return undefined;
-    this.authPerConnection.set(key, { challenge, authedAt: Date.now() });
-    return event;
+    if (previous && previous.challenge === challenge) return undefined;
+    // Reserve before signing: repeated challenges must not start parallel signatures.
+    const state: AuthState = { challenge, authedAt: Date.now(), pending: true };
+    this.authPerConnection.set(key, state);
+    try {
+      const event = await this.buildAuthEvent(relay.url, challenge);
+      // A reset or newer challenge invalidates an in-flight signature.
+      if (this.authPerConnection.get(key) !== state) return undefined;
+      state.pending = false;
+      if (!event) this.authPerConnection.delete(key);
+      return event ?? undefined;
+    } catch (error) {
+      if (this.authPerConnection.get(key) === state) this.authPerConnection.delete(key);
+      throw error;
+    }
   }
 
   markAuthed(relay: NDKRelay): void {

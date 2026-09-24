@@ -464,7 +464,7 @@ public actor TaskSyncEngine {
     private var lastEmittedReport: TaskSyncReport?
 
     public init(outbox: NostrOutboxStore = NostrOutboxStore()) {
-        self.init(outbox: outbox, connectionFactory: { NostrRelayConnection(relayURL: $0) })
+        self.init(outbox: outbox, connectionFactory: { NostrRelayConnection(relayURL: $0, automaticallyAuthenticate: false) })
     }
 
     init(
@@ -506,6 +506,7 @@ public actor TaskSyncEngine {
     /// need this; relays that do get an exemption from tighter rate limits once authenticated.
     public func setIdentity(_ identity: NostrIdentity?) async {
         self.identity = identity
+        await NostrRelayAuthentication.shared.setIdentity(identity)
     }
 
     public func configure(
@@ -1635,6 +1636,12 @@ public actor TaskSyncEngine {
         flushStartupBatches(relayURL: relayURL)
         let key = subscriptionRetryKey(relayURL: relayURL, subscriptionID: subscriptionID)
         guard subscriptionRetryTasks[key] == nil else { return }
+        if NostrRelayRejection.isRateLimited(message) {
+            await registerRateLimit(message: message, relayURL: relayURL)
+        }
+        let cooldown = publishPacers[relayURL]?.delayBeforePublish(
+            at: ProcessInfo.processInfo.systemUptime
+        ) ?? 0
         let consecutiveCloses = subscriptionConsecutiveCloses[key, default: 0] + 1
         subscriptionConsecutiveCloses[key] = consecutiveCloses
         let backoffDelay = subscriptionRetryBackoffs[key, default: RelayRetryBackoff()].nextDelay()
@@ -1643,7 +1650,7 @@ public actor TaskSyncEngine {
         // each acceptance reissued a full-window replay about once per second, indefinitely.
         let delay = max(
             backoffDelay,
-            escalatedSubscriptionCloseDelay(consecutiveCloses: consecutiveCloses)
+            max(Int(ceil(cooldown)), escalatedSubscriptionCloseDelay(consecutiveCloses: consecutiveCloses))
         )
         if relayPhases[relayURL] != .online {
             relayPhases[relayURL] = .syncing
@@ -1666,6 +1673,18 @@ public actor TaskSyncEngine {
             subscriptionRetryBackoffs[key] = nil
             subscriptionConsecutiveCloses[key] = nil
             subscriptionLastIssuedAt[key] = nil
+            return
+        }
+        // Another rejection may have extended the shared cooldown while this retry slept.
+        let cooldown = publishPacers[relayURL]?.delayBeforePublish(
+            at: ProcessInfo.processInfo.systemUptime
+        ) ?? 0
+        if cooldown > 0 {
+            subscriptionRetryTasks[key] = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(cooldown))
+                guard !Task.isCancelled else { return }
+                await self?.retrySubscriptionAfterDelay(subscriptionID: subscriptionID, relayURL: relayURL)
+            }
             return
         }
         do {

@@ -1,3 +1,4 @@
+import TaskifyWatchShared
 import Foundation
 
 public struct NWCWalletInfo: Equatable, Sendable {
@@ -77,7 +78,8 @@ public protocol NWCTransport: Sendable {
 }
 
 public struct RelayNWCTransport: NWCTransport {
-    public init() {}
+    private let authenticationIdentity: NostrIdentity?
+    public init(authenticationIdentity: NostrIdentity? = nil) { self.authenticationIdentity = authenticationIdentity }
 
     public func exchange(
         request: NostrEvent,
@@ -87,7 +89,7 @@ public struct RelayNWCTransport: NWCTransport {
         timeout: Duration,
         accept: @escaping @Sendable (NostrEvent) async -> Bool
     ) async throws -> NostrEvent {
-        let connection = NostrRelayConnection(relayURL: relay)
+        let connection = NostrRelayConnection(relayURL: relay, authenticationIdentity: authenticationIdentity)
         do {
             try await connection.connect()
         } catch {
@@ -137,9 +139,9 @@ public actor NWCClient {
     public nonisolated let connection: NWCConnection
     private let transport: NWCTransport
 
-    public init(connection: NWCConnection, transport: NWCTransport = RelayNWCTransport()) {
+    public init(connection: NWCConnection, transport: NWCTransport? = nil) {
         self.connection = connection
-        self.transport = transport
+        self.transport = transport ?? RelayNWCTransport(authenticationIdentity: try? NostrIdentity(privateKey: connection.clientSecretKey))
     }
 
     public func getInfo() async throws -> NWCWalletInfo {
@@ -223,13 +225,16 @@ public actor NWCClient {
             privateKey: connection.clientSecretKey,
             publicKey: connection.walletPublicKey
         )
-        let request = try NostrEvent.signed(
-            privateKey: connection.clientSecretKey,
+        let signingConnection = connection
+        let request = try await TaskifyRelayProofOfWork.prepare(relays: connection.relays) {
+            try NostrEvent.signed(
+            privateKey: signingConnection.clientSecretKey,
             createdAt: Int(Date().timeIntervalSince1970),
             kind: 23_194,
-            tags: [["p", connection.walletPublicKey]],
+            tags: [["p", signingConnection.walletPublicKey]],
             content: content
         )
+        }
         let walletKey = connection.walletPublicKey
         let clientSecret = connection.clientSecretKey
         let requestID = request.id

@@ -1,6 +1,6 @@
 // @ts-nocheck
+import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { finalizeEvent } from "nostr-tools";
 import { Modal } from "../Modal";
 import { useToast } from "../../context/ToastContext";
 import {
@@ -183,14 +183,13 @@ export function ManageBoardModal({
       for (let i = 0; i < staleIds.length; i += chunkSize) {
         const chunk = staleIds.slice(i, i + chunkSize);
         const tags = chunk.map((id) => ["e", id] as string[]);
-        const ev = finalizeEvent({
+        const ev = await prepareRelayEvent({
           kind: 5,
           tags,
           content: "Clean up stale Taskify board events",
           created_at: Math.floor(Date.now() / 1000),
-          pubkey: boardKeys.pk,
-        }, boardKeys.sk);
-        pool.publishEvent(relayList, ev as unknown as NostrEvent);
+        }, boardKeys.sk, relayList);
+        await pool.publishEvent(relayList, ev as unknown as NostrEvent);
       }
       const skipped = uniqueEvents.size - authored.length;
       const base = `Requested deletion for ${staleIds.length} stale event${staleIds.length === 1 ? "" : "s"}.`;

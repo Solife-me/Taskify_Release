@@ -7,6 +7,7 @@ export type RelayLimitation = {
   auth_required?: boolean;
   payment_required?: boolean;
   restricted_writes?: boolean;
+  min_pow_difficulty?: number;
 };
 
 export type RelayInfo = {
@@ -31,6 +32,7 @@ export type RelayLimits = {
   maxMessageLength: number;
   maxSubscriptions: number;
   authRequired: boolean;
+  minPowDifficulty: number;
 };
 
 export type RelayInfoStorage = {
@@ -87,6 +89,12 @@ function sanitizeMessageLength(value: unknown): number {
   return Math.max(1024, Math.min(num, 4 * DEFAULT_MAX_MESSAGE_LENGTH));
 }
 
+function sanitizeProofOfWorkDifficulty(value: unknown): number {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return Math.ceil(num);
+}
+
 function sanitizeSubscriptionCount(value: unknown): number {
   const num = Number(value);
   if (!Number.isFinite(num) || num <= 0) return DEFAULT_MAX_SUBSCRIPTIONS;
@@ -141,6 +149,7 @@ export class RelayInfoCache {
     let authRequired = false;
     let maxMessageLength = DEFAULT_MAX_MESSAGE_LENGTH;
     let maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS;
+    let minPowDifficulty = 0;
 
     for (const url of relayUrls) {
       const cached = this.get(url);
@@ -151,9 +160,18 @@ export class RelayInfoCache {
       if (lim.auth_required) authRequired = true;
       if (lim.max_message_length) maxMessageLength = Math.min(maxMessageLength, sanitizeMessageLength(lim.max_message_length));
       if (lim.max_subscriptions) maxSubscriptions = Math.min(maxSubscriptions, sanitizeSubscriptionCount(lim.max_subscriptions));
+      if (lim.min_pow_difficulty) {
+        minPowDifficulty = Math.max(minPowDifficulty, sanitizeProofOfWorkDifficulty(lim.min_pow_difficulty));
+      }
     }
 
-    return { maxLimit: maxLimit ?? DEFAULT_MAX_LIMIT, maxMessageLength, maxSubscriptions, authRequired };
+    return {
+      maxLimit: maxLimit ?? DEFAULT_MAX_LIMIT,
+      maxMessageLength,
+      maxSubscriptions,
+      authRequired,
+      minPowDifficulty,
+    };
   }
 
   async prime(relayUrl: string, fetcher: (nip11Url: string) => Promise<RelayInfo | null>): Promise<CachedRelayInfo | null> {
@@ -211,6 +229,7 @@ export class RelayInfoCache {
       auth_required: !!limitation.auth_required,
       payment_required: !!limitation.payment_required,
       restricted_writes: !!limitation.restricted_writes,
+      min_pow_difficulty: sanitizeProofOfWorkDifficulty(limitation.min_pow_difficulty),
     };
 
     return { fetchedAt: Date.now(), info: { ...info, limitation: normalizedLimit }, limitation: normalizedLimit };

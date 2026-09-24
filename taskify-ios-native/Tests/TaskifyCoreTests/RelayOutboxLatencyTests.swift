@@ -32,6 +32,28 @@ final class RelayOutboxLatencyTests: XCTestCase {
         return engine
     }
 
+    func testRateLimitedSubscriptionPausesPublishingAndDoesNotRetryAfterOneSecond() async throws {
+        let relay = SuspensibleRelayTransport()
+        let engine = engine(transports: [healthyURL: relay])
+        await engine.configure(boards: [], inboxPublicKey: String(repeating: "a", count: 64),
+            inboxRelayURLs: [healthyURL])
+        let filters = await relay.inboxFilters
+        let subscription = try XCTUnwrap(filters.first).id
+        await engine.handle(.closed(subscriptionID: subscription, message: "rate-limited: slow down"),
+            from: healthyURL)
+        try await engine.enqueueForPublish([request(100, relayURL: healthyURL)])
+        try await Task.sleep(for: .milliseconds(1_200))
+        let count = await relay.inboxSubscriptionCount
+        let published = await relay.publishedEventIDs
+        XCTAssertEqual(count, 1, "CLOSED rate limits must honor the relay cooldown")
+        XCTAssertTrue(published.isEmpty, "A relay-wide rate limit must pause queued publishing too")
+        try await Task.sleep(for: .milliseconds(1_200))
+        let resumedSubscriptions = await relay.inboxSubscriptionCount
+        let resumedPublishes = await relay.publishedEventIDs
+        XCTAssertEqual(resumedSubscriptions, 2, "History recovery resumes after the cooldown")
+        XCTAssertEqual(resumedPublishes, [event(100).id], "The queued change is preserved and sent once")
+    }
+
     func testNewMessageReachesHealthyRelayWhileAnotherRelaySendRemainsSuspended() async throws {
         let slowStarted = expectation(description: "slow relay starts its send")
         let healthySent = expectation(description: "new chat reaches healthy relay")

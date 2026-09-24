@@ -1,5 +1,6 @@
-import { finalizeEvent, getPublicKey, nip04, nip19 } from "nostr-tools";
-import { NostrSession } from "../nostr/NostrSession";
+import { RuntimeNostrSession, RelayInfoCache, RelayHealthTracker, RelayAuthManager } from "taskify-runtime-nostr";
+import { getPublicKey, nip04, nip19 } from "nostr-tools";
+
 
 export type ParsedNwcUri = {
   uri: string;
@@ -172,11 +173,57 @@ export function parseNwcUri(input: string): ParsedNwcUri {
   };
 }
 
+const nwcRelayInfoCache = new RelayInfoCache();
+type NwcRelaySession = {
+  session: RuntimeNostrSession<null>;
+  ready: Promise<void>;
+  users: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
+};
+
 export class NwcClient {
   private readonly connection: ParsedNwcUri;
+  private readonly sessions = new Map<string, NwcRelaySession>();
 
   constructor(connection: ParsedNwcUri) {
     this.connection = connection;
+  }
+
+  private acquireSession(relay: string): NwcRelaySession {
+    let entry = this.sessions.get(relay);
+    if (!entry) {
+      const session = new RuntimeNostrSession([relay], {
+        relayInfoCache: nwcRelayInfoCache,
+        relayHealth: new RelayHealthTracker(),
+        createAuthManager: ndk => new RelayAuthManager(ndk, {
+          loadSecretKeyHex: () => this.connection.clientSecretHex,
+        }),
+        createWalletClient: () => null,
+      });
+      entry = { session, ready: session.init([relay]).then(() => undefined), users: 0 };
+      this.sessions.set(relay, entry);
+    }
+    clearTimeout(entry.idleTimer);
+    entry.users += 1;
+    return entry;
+  }
+
+  private releaseSession(relay: string, entry: NwcRelaySession): void {
+    entry.users -= 1;
+    if (entry.users > 0 || this.sessions.get(relay) !== entry) return;
+    entry.idleTimer = setTimeout(() => {
+      if (this.sessions.get(relay) !== entry || entry.users > 0) return;
+      this.sessions.delete(relay);
+      void entry.session.shutdown();
+    }, 60_000);
+  }
+
+  close(): void {
+    for (const entry of this.sessions.values()) {
+      clearTimeout(entry.idleTimer);
+      void entry.session.shutdown();
+    }
+    this.sessions.clear();
   }
 
   async request<T = unknown>(method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }): Promise<T> {
@@ -201,6 +248,7 @@ export class NwcClient {
       let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
       let release: (() => void) | null = null;
       let settled = false;
+      let lease: NwcRelaySession | null = null;
 
       const finish = (fn: () => void) => {
         if (settled) return;
@@ -209,18 +257,21 @@ export class NwcClient {
         timeoutHandle = null;
         try { release?.(); } catch {}
         release = null;
+        if (lease) this.releaseSession(relayUrl, lease);
         fn();
       };
 
       (async () => {
         try {
           const relayList = [relayUrl];
-          const session = await NostrSession.init(relayList);
+          lease = this.acquireSession(relayUrl);
+          await lease.ready;
+          const session = lease.session;
           const payload = JSON.stringify({ method, params });
           const encrypted = await nip04.encrypt(this.connection.clientSecretHex, this.connection.walletPubkey, payload);
           // Sign first so the request id is known before any response can arrive; only a
           // response from the wallet that references this exact request is accepted.
-          const request = finalizeEvent(
+          const request = await session.prepareEvent(
             {
               kind: NWC_EVENT_KIND_REQUEST,
               created_at: Math.floor(Date.now() / 1000),
@@ -228,6 +279,7 @@ export class NwcClient {
               tags: [["p", this.connection.walletPubkey]],
             },
             this.connection.clientSecretBytes,
+            relayList,
           );
           const subscription = await session.subscribe(
             [{

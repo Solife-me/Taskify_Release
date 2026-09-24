@@ -1,3 +1,4 @@
+import { prepareRelayEvent } from "./nostr/prepareRelayEvent";
 import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
 import { syncRemindersToWorker, PUSH_OPERATION_TIMEOUT_MS } from "./domains/push/reminderClient";
 import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
@@ -12,7 +13,7 @@ import {
   buildUpcomingDateKeyIndex,
   type UpcomingFlatRow,
 } from "./lib/upcomingRows";
-import { finalizeEvent, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+import { type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
 import {
   DEFAULT_DATE_REMINDER_TIME,
   MS_PER_DAY,
@@ -1765,7 +1766,7 @@ export default function App() {
           tags: [["e", eventId]],
           created_at: Math.floor(Date.now() / 1000),
         };
-        const signed = finalizeEvent(deletion, hexToBytes(nostrSkHex));
+        const signed = await prepareRelayEvent(deletion, hexToBytes(nostrSkHex), inboxRelays);
         await Promise.resolve(pool.publish(inboxRelays, signed));
       } catch (err) {
         console.warn("Failed to delete shared inbox DM", err);

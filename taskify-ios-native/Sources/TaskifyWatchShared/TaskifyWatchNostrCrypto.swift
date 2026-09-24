@@ -104,6 +104,18 @@ public enum TaskifyWatchNostrCrypto {
         return Data(key.xonly.bytes).taskifyHexString
     }
 
+    public static func prepareBoardEvent(_ event: TaskifyWatchNostrEvent, boardID: String,
+        relayURLs: [String]) async throws -> TaskifyWatchNostrEvent {
+        guard event.publicKey == (try boardPublicKeyHex(for: boardID)), verify(event) else {
+            throw TaskifyWatchNostrCryptoError.invalidEvent
+        }
+        return try await TaskifyRelayProofOfWork.prepare(relays: relayURLs) {
+            guard TaskifyRelayProofOfWork.difficulty > 0 else { return event }
+            return try signedEvent(privateKey: boardPrivateKey(for: boardID), createdAt: event.createdAt,
+                kind: event.kind, tags: event.tags, content: event.content)
+        }
+    }
+
     public static func taskEvent(
         taskID: String,
         boardID: String,
@@ -362,6 +374,9 @@ public enum TaskifyWatchNostrCrypto {
     ) throws -> TaskifyWatchNostrEvent {
         let key = try schnorrPrivateKey(privateKey)
         let publicKey = Data(key.xonly.bytes).taskifyHexString
+        let tags = try kind == 13 || kind == 22_242 ? tags : TaskifyRelayProofOfWork.mineTags(tags) {
+            try eventID(publicKey: publicKey, createdAt: createdAt, kind: kind, tags: $0, content: content)
+        }
         let id = try eventID(
             publicKey: publicKey,
             createdAt: createdAt,

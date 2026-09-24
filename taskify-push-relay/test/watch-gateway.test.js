@@ -540,3 +540,37 @@ test('Watch task publishing caches ciphertext and authenticates relays with the 
   assert.equal(authorizeResponse.status, 200)
   assert.equal(authorizedEvent.pubkey, boardPubkey)
 })
+
+test('Watch authenticated preference query binds challenge to account and returns validated events', async t => {
+  const account = generateSecretKey()
+  const recipientKey = generateSecretKey()
+  const expected = preference(recipientKey)
+  let authorizations = 0
+  const { address } = await fixture(t, {
+    async query(_relay, _filter, _limit, options) {
+      assert.equal(options.allowAuth, true)
+      return {
+        outcome: 'auth-required', challenge: 'private-read', close() {},
+        async authorize() { authorizations++; return { accepted: true, events: [expected] } },
+      }
+    },
+  })
+  const initial = await post(address, '/v1/watch/inbox-preference/query', {
+    recipientPublicKey: getPublicKey(recipientKey), relays: ['wss://private.example'],
+  }, account)
+  const pending = (await initial.json()).authorizations[0]
+  assert.equal(authorizations, 0)
+  const makeAuth = key => finalizeEvent({ kind: 22242, created_at: Math.floor(Date.now() / 1000),
+    tags: [['relay', pending.relay], ['challenge', pending.challenge]], content: '' }, key)
+  const endpoint = `/v1/watch/outbox/${pending.session}/authorize`
+  const wrong = await post(address, endpoint, { event: makeAuth(generateSecretKey()) }, account)
+  assert.notEqual(wrong.status, 200)
+  assert.equal(authorizations, 0)
+  const accepted = await post(address, endpoint, { event: makeAuth(account) }, account)
+  assert.equal(accepted.status, 200)
+  assert.deepEqual((await accepted.json()).events, wire([expected]))
+  assert.equal(authorizations, 1)
+  const replay = await post(address, endpoint, { event: makeAuth(account) }, account)
+  assert.notEqual(replay.status, 200)
+  assert.equal(authorizations, 1)
+})

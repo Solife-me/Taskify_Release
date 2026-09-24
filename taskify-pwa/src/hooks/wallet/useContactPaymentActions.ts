@@ -555,6 +555,7 @@ export function useContactPaymentActions({
         const pool = ensureNostrPool();
         const publish = (event: any) => safePublish(pool, publishRelays, event);
         await publishNip17Giftwraps({
+          relays: publishRelays,
           content: dmPlain,
           senderHex,
           recipientHex,

@@ -1,3 +1,4 @@
+import TaskifyWatchShared
 import Foundation
 
 public enum TaskEventCodecError: LocalizedError {
@@ -334,6 +335,19 @@ public struct BoardSyncPayload: Codable, Equatable, Sendable {
 }
 
 public enum TaskEventCodec {
+    public static func prepareBoardEvent(board: Board, createdAt: Int) async throws -> NostrEvent {
+        try await TaskifyRelayProofOfWork.prepare(relays: board.effectiveRelayURLs) { try boardEvent(board: board, createdAt: createdAt) }
+    }
+    public static func prepareTaskEvent(task: TaskItem, board: Board, createdAt: Int) async throws -> NostrEvent {
+        try await TaskifyRelayProofOfWork.prepare(relays: board.effectiveRelayURLs) { try taskEvent(task: task, board: board, createdAt: createdAt) }
+    }
+    public static func prepareDeletionEvent(taskID: String, board: Board, createdAt: Int) async throws -> NostrEvent {
+        try await TaskifyRelayProofOfWork.prepare(relays: board.effectiveRelayURLs) { try deletionEvent(taskID: taskID, board: board, createdAt: createdAt) }
+    }
+    public static func prepareEventDeletionRequest(eventIDs: [String], board: Board, createdAt: Int) async throws -> NostrEvent {
+        try await TaskifyRelayProofOfWork.prepare(relays: board.effectiveRelayURLs) { try eventDeletionRequest(eventIDs: eventIDs, board: board, createdAt: createdAt) }
+    }
+
     public static let boardEventKind = 30_300
     public static let taskEventKind = 30_301
 
@@ -607,6 +621,12 @@ public enum TaskifyCalendarEventCodec {
         var generator = SystemRandomNumberGenerator()
         return Data((0..<16).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
             .base64EncodedString()
+    }
+
+    public static func prepareEventPair(event: TaskifyEvent, board: Board, createdAt: Int) async throws -> TaskifyCalendarEventPair {
+        try await TaskifyRelayProofOfWork.prepare(relays: board.effectiveRelayURLs) {
+            try eventPair(event: event, board: board, createdAt: createdAt)
+        }
     }
 
     public static func eventPair(

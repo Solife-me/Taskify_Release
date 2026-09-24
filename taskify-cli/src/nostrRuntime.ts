@@ -592,7 +592,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       ["col", colId],
       ["status", status],
     ];
-    await event.sign(signer);
+    await session.prepareNDKEvent(event, signer, boardRelays(boardId));
     await session.publishRaw(event.rawEvent(), { relayUrls: boardRelays(boardId) });
     return event;
   }
@@ -625,7 +625,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       ["status", status],
       ["entity", "event"],
     ];
-    await event.sign(boardKeys.signer);
+    await session.prepareNDKEvent(event, boardKeys.signer, boardRelays(boardId));
     try {
       await session.publishRaw(event.rawEvent(), { relayUrls: boardRelays(boardId) });
       const viewEvent = session.createEvent();
@@ -636,7 +636,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ["d", calEventId],
         ["a", calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, calEventId)],
       ];
-      await viewEvent.sign(boardKeys.signer);
+      await session.prepareNDKEvent(viewEvent, boardKeys.signer, boardRelays(boardId));
       await session.publishRaw(viewEvent.rawEvent(), { relayUrls: boardRelays(boardId) });
     } catch (err) {
       throw err;
@@ -675,7 +675,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       ...(board.children ?? []).map((child): string[] => ["ch", child]),
       ...(board.sortMode ? [["sort", board.sortMode, board.sortDirection ?? "asc"]] : []),
     ];
-    await event.sign(signer);
+    await session.prepareNDKEvent(event, signer, board.relays?.length ? board.relays : config.relays);
     await session.publishRaw(event.rawEvent(), { relayUrls: board.relays?.length ? board.relays : config.relays });
   }
 
@@ -1427,7 +1427,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         nip09Event.content = "Task deleted";
         nip09Event.tags = [["a", aTag]];
         nip09Event.created_at = Math.floor(Date.now() / 1000);
-        await nip09Event.sign(boardKeys.signer);
+        await session.prepareNDKEvent(nip09Event, boardKeys.signer, boardRelays(entry.id));
         await session.publishRaw(nip09Event.rawEvent(), { relayUrls: boardRelays(entry.id) });
       } catch {
         // Non-fatal: NIP-09 relay support varies; soft delete already published

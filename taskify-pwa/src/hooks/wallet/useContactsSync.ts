@@ -1,6 +1,7 @@
 // @ts-nocheck
+import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import { useCallback } from "react";
-import { nip44, finalizeEvent } from "nostr-tools";
+import { nip44 } from "nostr-tools";
 import type { EventTemplate } from "nostr-tools";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { normalizeNostrPubkey } from "../../lib/nostr";
@@ -507,7 +508,7 @@ export function useContactsSync({
           if (template.content !== "") {
             throw new Error("Kind:3 content must be empty.");
           }
-          const signed = finalizeEvent(template, hexToBytes(identity.secret));
+          const signed = await prepareRelayEvent(template, hexToBytes(identity.secret), relays);
           await safePublish(pool, relays, signed);
           if (walletDebugEnabled) {
             console.debug("[wallet] Published kind:3 follows", signed.id.slice(0, 8));

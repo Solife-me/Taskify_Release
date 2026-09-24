@@ -1,3 +1,4 @@
+import { configureRelayAccess, prepareStandaloneEvent } from "taskify-runtime-nostr";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { nip19, getPublicKey } from "nostr-tools";
@@ -138,6 +139,7 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
         process.stderr.write("Fetching kind 0 profile from relays...\n");
         const NDKMod = await import("@nostr-dev-kit/ndk");
         const ndk = new NDKMod.default({ explicitRelayUrls: config.relays });
+        configureRelayAccess(ndk);
         await ndk.connect();
         const events = await ndk.fetchEvents(
           { kinds: [0], authors: [pubkeyHex], limit: 1 } as Parameters<typeof ndk.fetchEvents>[0],
@@ -193,6 +195,7 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
       const NDKMod = await import("@nostr-dev-kit/ndk");
       const NDKPrivateKeySigner = (await import("@nostr-dev-kit/ndk")).NDKPrivateKeySigner;
       const ndk = new NDKMod.default({ explicitRelayUrls: config.relays, signer: new NDKPrivateKeySigner(bytesToHex(userSk)) });
+      configureRelayAccess(ndk, bytesToHex(userSk));
       await ndk.connect();
       const keys = { privateKeyHex: bytesToHex(userSk), publicKeyHex: userPk };
       let contacts = [...(config.contacts ?? [])];
@@ -248,7 +251,7 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
           syncEvent.kind = NIP51_CONTACTS_KIND;
           syncEvent.content = await encryptNip51PrivateItems(buildNip51PrivateItems(contacts), keys);
           syncEvent.tags = [["d", NIP51_PRIVATE_CONTACTS_D_TAG]];
-          await syncEvent.sign();
+          await prepareStandaloneEvent(syncEvent, config.relays);
           await syncEvent.publish();
           console.log(chalk.green(`✓ Published ${contacts.length} encrypted private contacts to relay`));
         }

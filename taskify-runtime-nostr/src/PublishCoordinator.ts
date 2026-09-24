@@ -11,6 +11,7 @@ import {
   type NostrOutboxMutation,
   type NostrOutboxStore,
 } from "./NostrOutbox.js";
+import { applyProofOfWork } from "./ProofOfWork.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 
 export type RelayResolver = (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
@@ -50,6 +51,8 @@ export type PublishCoordinatorOptions = {
   outboxStore?: NostrOutboxStore;
   retryBaseMs?: number;
   retryMaxMs?: number;
+  signal?: AbortSignal;
+  resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
 };
 
 function signerFromInput(value?: NDKSigner | Uint8Array | string): NDKSigner | undefined {
@@ -68,7 +71,7 @@ function hashEventShape(event: NostrEvent): string {
   return JSON.stringify({
     kind: event.kind,
     content: event.content,
-    tags: event.tags,
+    tags: event.tags.filter(tag => tag[0] !== "nonce"),
   });
 }
 
@@ -82,6 +85,8 @@ export class PublishCoordinator {
   private readonly outboxStore?: NostrOutboxStore;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
+  private readonly signal?: AbortSignal;
+  private readonly resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
   private activeOutboxIds = new Set<string>();
   private outboxLocks = new Map<string, Promise<unknown>>();
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -94,6 +99,8 @@ export class PublishCoordinator {
     this.outboxStore = options?.outboxStore;
     this.retryBaseMs = options?.retryBaseMs ?? 2_000;
     this.retryMaxMs = options?.retryMaxMs ?? 5 * 60_000;
+    this.resolveProofOfWorkDifficulty = options?.resolveProofOfWorkDifficulty;
+    this.signal = options?.signal;
   }
 
   private buildReplaceableKey(event: NDKEvent): string | null {
@@ -339,6 +346,10 @@ export class PublishCoordinator {
   async publish(templateOrEvent: EventTemplate | NDKEvent, options?: PublishOptions): Promise<PublishResult> {
     const relaySet = await this.resolveRelaySetWithEnsure(options?.relayUrls);
     const signer = signerFromInput(options?.signer);
+    const relayUrls = this.relayUrlsForPublish(relaySet, options?.relayUrls);
+    const proofOfWorkDifficulty = this.resolveProofOfWorkDifficulty
+      ? await this.resolveProofOfWorkDifficulty(relayUrls)
+      : 0;
 
     const event =
       templateOrEvent instanceof NDKEvent
@@ -351,7 +362,11 @@ export class PublishCoordinator {
           });
 
     if (!event.created_at) event.created_at = Math.floor(Date.now() / 1000);
-    if (!event.sig || signer) await event.sign(signer);
+    if (proofOfWorkDifficulty > 0) {
+      await applyProofOfWork(event, signer, proofOfWorkDifficulty, { signal: this.signal });
+    } else if (!event.sig) {
+      await event.sign(signer);
+    }
 
     const raw = event.rawEvent() as NostrEvent;
     const replaceableKey =
@@ -362,8 +377,6 @@ export class PublishCoordinator {
     if (!hasPendingOutbox && replaceableKey && this.shouldSkipReplaceable(replaceableKey, raw, options?.skipIfIdentical !== false)) {
       return options?.returnEvent ? { createdAt: raw.created_at, event: raw } : raw.created_at;
     }
-
-    const relayUrls = this.relayUrlsForPublish(relaySet, options?.relayUrls);
 
     if (replaceableKey) {
       const existing = this.pending.get(replaceableKey);

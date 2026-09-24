@@ -1,5 +1,6 @@
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
 import { createNostrOutboxMutation, cloneNostrEvent, markOutboxPublishFailure, mergeOutboxRelayAcks, pendingRelayUrlsForMutation, } from "./NostrOutbox.js";
+import { applyProofOfWork } from "./ProofOfWork.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 export class NostrWriteQueuedError extends Error {
     code = "WRITE_QUEUED";
@@ -26,7 +27,7 @@ function hashEventShape(event) {
     return JSON.stringify({
         kind: event.kind,
         content: event.content,
-        tags: event.tags,
+        tags: event.tags.filter(tag => tag[0] !== "nonce"),
     });
 }
 export class PublishCoordinator {
@@ -39,6 +40,8 @@ export class PublishCoordinator {
     outboxStore;
     retryBaseMs;
     retryMaxMs;
+    signal;
+    resolveProofOfWorkDifficulty;
     activeOutboxIds = new Set();
     outboxLocks = new Map();
     retryTimers = new Map();
@@ -50,6 +53,8 @@ export class PublishCoordinator {
         this.outboxStore = options?.outboxStore;
         this.retryBaseMs = options?.retryBaseMs ?? 2_000;
         this.retryMaxMs = options?.retryMaxMs ?? 5 * 60_000;
+        this.resolveProofOfWorkDifficulty = options?.resolveProofOfWorkDifficulty;
+        this.signal = options?.signal;
     }
     buildReplaceableKey(event) {
         if (!event.isReplaceable())
@@ -297,6 +302,10 @@ export class PublishCoordinator {
     async publish(templateOrEvent, options) {
         const relaySet = await this.resolveRelaySetWithEnsure(options?.relayUrls);
         const signer = signerFromInput(options?.signer);
+        const relayUrls = this.relayUrlsForPublish(relaySet, options?.relayUrls);
+        const proofOfWorkDifficulty = this.resolveProofOfWorkDifficulty
+            ? await this.resolveProofOfWorkDifficulty(relayUrls)
+            : 0;
         const event = templateOrEvent instanceof NDKEvent
             ? templateOrEvent
             : new NDKEvent(this.ndk, {
@@ -307,8 +316,12 @@ export class PublishCoordinator {
             });
         if (!event.created_at)
             event.created_at = Math.floor(Date.now() / 1000);
-        if (!event.sig || signer)
+        if (proofOfWorkDifficulty > 0) {
+            await applyProofOfWork(event, signer, proofOfWorkDifficulty, { signal: this.signal });
+        }
+        else if (!event.sig) {
             await event.sign(signer);
+        }
         const raw = event.rawEvent();
         const replaceableKey = options?.replaceableKey || this.buildReplaceableKey(event) || (event.isReplaceable() ? event.deduplicationKey() : null);
         const outboxId = this.outboxMutationId(raw, replaceableKey);
@@ -316,7 +329,6 @@ export class PublishCoordinator {
         if (!hasPendingOutbox && replaceableKey && this.shouldSkipReplaceable(replaceableKey, raw, options?.skipIfIdentical !== false)) {
             return options?.returnEvent ? { createdAt: raw.created_at, event: raw } : raw.created_at;
         }
-        const relayUrls = this.relayUrlsForPublish(relaySet, options?.relayUrls);
         if (replaceableKey) {
             const existing = this.pending.get(replaceableKey);
             const delay = options?.debounceMs ?? this.debounceDefault;

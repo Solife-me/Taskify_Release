@@ -4265,6 +4265,7 @@ export default function CashuWalletModal({
             }
             const publish = (event: NostrEvent) => publishWithTimeout(event, publishRelays);
             await publishNip17Giftwraps({
+              relays: publishRelays,
               content: JSON.stringify(payload),
               senderHex,
               recipientHex,
@@ -7397,6 +7398,7 @@ export default function CashuWalletModal({
                                 extraTags.push(["e", capturedReply.rumorEventId || capturedReply.eventId]);
                               }
                               const { selfWrapEvent } = await publishNip17Giftwraps({
+                                relays: publishRelays,
                                 content: text,
                                 senderHex,
                                 recipientHex,
@@ -7465,6 +7467,7 @@ export default function CashuWalletModal({
                               extraTags.push(["e", capturedReply.rumorEventId || capturedReply.eventId]);
                             }
                             const { selfWrapEvent } = await publishNip17Giftwraps({
+                              relays: publishRelays,
                               content: text,
                               senderHex,
                               recipientHex,

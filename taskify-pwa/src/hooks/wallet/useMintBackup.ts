@@ -1,7 +1,7 @@
+import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import { useCallback, useEffect, useState } from "react";
 import type { Proof } from "@cashu/cashu-ts";
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { finalizeEvent } from "nostr-tools";
 import { LS_MINT_BACKUP_ENABLED } from "../../localStorageKeys";
 import { kvStorage } from "../../storage/kvStorage";
 import {
@@ -173,9 +173,10 @@ export function useMintBackup({
           clientTag: MINT_BACKUP_CLIENT_TAG,
         });
         const created_at = Math.max(template.created_at || 0, Math.floor(Date.now() / 1000));
-        const signedEvent = finalizeEvent(
+        const signedEvent = await prepareRelayEvent(
           { ...template, created_at },
           hexToBytes(keys.privateKeyHex),
+          relays,
         );
         const pool = ensureNostrPool();
         await safePublish(pool, relays, signedEvent as any);

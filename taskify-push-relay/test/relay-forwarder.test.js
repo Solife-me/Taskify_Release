@@ -120,3 +120,26 @@ test('a false OK remains rejected even when its message says duplicate', async (
     message: 'duplicate: event already exists',
   })
 })
+
+test('authenticated query waits for AUTH OK before replaying REQ on the same socket', async () => {
+  const socket = new EventEmitter()
+  const sent = []
+  socket.close = () => {}
+  socket.send = text => {
+    const frame = JSON.parse(text)
+    sent.push(frame)
+    if (frame[0] === 'REQ' && sent.filter(f => f[0] === 'REQ').length === 1) {
+      queueMicrotask(() => socket.emit('message', JSON.stringify(['AUTH', 'challenge'])))
+    } else if (frame[0] === 'REQ') {
+      queueMicrotask(() => socket.emit('message', JSON.stringify(['EOSE', frame[1]])))
+    }
+  }
+  const session = await queryEventsAndWait(socket, {}, 10, 200, true, true)
+  assert.equal(session.outcome, 'auth-required')
+  const authorized = session.authorize({ id: 'auth', kind: 22242 })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(sent.filter(f => f[0] === 'REQ').length, 1)
+  socket.emit('message', JSON.stringify(['OK', 'auth', true, '']))
+  assert.deepEqual(await authorized, { accepted: true, events: [] })
+  assert.equal(sent.filter(f => f[0] === 'REQ').length, 2)
+})
