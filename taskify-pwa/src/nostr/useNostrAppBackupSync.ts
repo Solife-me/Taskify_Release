@@ -680,25 +680,8 @@ export function useNostrAppBackupSync({
     const prev = nostrBackupStateRef.current;
     const prevEventId = prev.pubkey === nostrPK ? prev.lastEventId : null;
     const publishedTs = (result as any)?.createdAt ?? timestamp;
-    if (prevEventId && eventId && prevEventId !== eventId) {
-      try {
-        await nostrPublishRef.current(
-          relays,
-          {
-            kind: 5,
-            tags: [
-              ["e", prevEventId],
-              ["a", `${NOSTR_APP_BACKUP_KIND}:${nostrPK}:${NOSTR_APP_BACKUP_D_TAG}`],
-            ],
-            content: "Delete previous Taskify backup",
-            created_at: publishedTs + 1,
-          },
-          { sk: nostrSK },
-        );
-      } catch (error) {
-        console.warn("Failed to publish Nostr backup deletion", error);
-      }
-    }
+    // The backup is a replaceable event: relays already discard the previous version, so no
+    // kind-5 deletion is needed (it only doubled every backup write).
     const nextState = {
       lastEventId: eventId || prevEventId,
       lastTimestamp: publishedTs,

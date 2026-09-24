@@ -127,3 +127,17 @@ export function persistMintBackupCache(payload: MintBackupPayload | null): MintB
     return payload ?? null;
   }
 }
+
+/** How often an unchanged mint list is re-published, so relays that dropped it get it back. */
+export const MINT_BACKUP_REFRESH_SECONDS = 30 * 24 * 60 * 60;
+
+/** Whether the last backup already holds this mint list and is recent enough to skip. */
+export function mintBackupIsCurrent(
+  cache: MintBackupPayload | null,
+  mints: string[],
+  nowSeconds: number,
+): boolean {
+  if (!cache || nowSeconds - (cache.timestamp || 0) > MINT_BACKUP_REFRESH_SECONDS) return false;
+  const key = (list: string[]) => JSON.stringify([...list].sort());
+  return key(cache.mints ?? []) === key(mints);
+}

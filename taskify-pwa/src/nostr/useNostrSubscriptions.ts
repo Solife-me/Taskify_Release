@@ -1,4 +1,4 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import type { CalendarEvent } from "taskify-core";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import {
@@ -143,14 +143,35 @@ function useSharedInboxSubscription(config?: SharedInboxSubscriptionConfig) {
 function useCalendarViewSubscription(config?: CalendarViewSubscriptionConfig) {
   const enabled = config?.enabled ?? true;
   const clockRef = config?.clockRef;
-  const defaultRelays = config?.defaultRelays ?? EMPTY_RELAYS;
-  const events = config?.events ?? EMPTY_CALENDAR_EVENTS;
-  const handleEvent = config?.handleEvent;
-  const inboxRelays = config?.inboxRelays ?? EMPTY_RELAYS;
   const pool = config?.pool;
+  // Every restart reopens a REQ on every relay, so restart only when the invited events or relay
+  // lists change, not on every calendar edit or new callback/array identity.
+  const latestRef = useRef({
+    events: config?.events ?? EMPTY_CALENDAR_EVENTS,
+    defaultRelays: config?.defaultRelays ?? EMPTY_RELAYS,
+    inboxRelays: config?.inboxRelays ?? EMPTY_RELAYS,
+    handleEvent: config?.handleEvent,
+  });
+  latestRef.current = {
+    events: config?.events ?? EMPTY_CALENDAR_EVENTS,
+    defaultRelays: config?.defaultRelays ?? EMPTY_RELAYS,
+    inboxRelays: config?.inboxRelays ?? EMPTY_RELAYS,
+    handleEvent: config?.handleEvent,
+  };
+  const hasHandler = !!config?.handleEvent;
+  const subscriptionKey = useMemo(() => {
+    const targets = (config?.events ?? EMPTY_CALENDAR_EVENTS)
+      .filter((event) => !!event.readOnly && !!event.viewAddress && !!event.eventKey)
+      .map((event) => [event.id, event.viewAddress, event.eventKey, [...(event.inviteRelays ?? [])].sort()])
+      .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
+    return JSON.stringify([targets, config?.defaultRelays ?? [], config?.inboxRelays ?? []]);
+  }, [config?.events, config?.defaultRelays, config?.inboxRelays]);
 
   useEffect(() => {
-    if (!enabled || !clockRef || !handleEvent || !pool) return;
+    const { events, defaultRelays, inboxRelays } = latestRef.current;
+    const handleEvent = (event: NostrEvent, target: CalendarViewSubscriptionTarget) =>
+      latestRef.current.handleEvent?.(event, target);
+    if (!enabled || !clockRef || !hasHandler || !pool) return;
 
     const targets = events.filter(
       (event) => !!event.readOnly && !!event.viewAddress && !!event.eventKey,
@@ -231,7 +252,7 @@ function useCalendarViewSubscription(config?: CalendarViewSubscriptionConfig) {
         // ignore subscription close errors
       }
     };
-  }, [clockRef, defaultRelays, enabled, events, handleEvent, inboxRelays, pool]);
+  }, [clockRef, enabled, hasHandler, pool, subscriptionKey]);
 }
 
 function useReplaceableSubscription(config?: ReplaceableSubscriptionConfig) {

@@ -23,6 +23,7 @@ import {
   decryptMintBackupPayload,
   deriveMintBackupKeys,
   loadMintBackupCache,
+  mintBackupIsCurrent,
   MINT_BACKUP_CLIENT_TAG,
   MINT_BACKUP_D_TAG,
   MINT_BACKUP_KIND,
@@ -672,6 +673,9 @@ export function WalletSection({
       setMintBackupMessage("");
       return;
     }
+    // Automatic backups only publish when the mint list changed (or the last one is old);
+    // this section mounting, or the relay list's identity changing, isn't a reason to.
+    if (mintBackupIsCurrent(loadMintBackupCache(), getMintList(), Math.floor(Date.now() / 1000))) return;
     void syncMintBackup();
   }, [settings.walletMintBackupEnabled, syncMintBackup]);
 
