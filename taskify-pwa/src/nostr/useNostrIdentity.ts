@@ -15,6 +15,7 @@ import {
   type NostrEvent,
 } from "../domains/nostr/nostrPool";
 import { NostrSession } from "./NostrSession";
+import { EventTimestampClock } from "../domains/nostr/eventTimestamps";
 
 export type NostrPublishFn = {
   (relays: string[], template: EventTemplate, options?: { sk?: Uint8Array | string }): Promise<number>;
@@ -146,7 +147,7 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
     applyCustomNostrKey(key);
   }, [applyCustomNostrKey]);
 
-  const lastNostrCreated = useRef<Map<string, number>>(new Map());
+  const eventTimestampClock = useRef(new EventTimestampClock());
   const nostrPublishQueue = useRef<Promise<unknown>>(Promise.resolve());
   const lastNostrSentMs = useRef(0);
   const nostrPublish = useCallback(async (
@@ -181,11 +182,7 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
             })()
           : signer;
       const signerKey = bytesToHex(signerBytes);
-      const lastForSigner = lastNostrCreated.current.get(signerKey) || 0;
-      if (createdAt <= lastForSigner) {
-        createdAt = lastForSigner + 1;
-      }
-      lastNostrCreated.current.set(signerKey, createdAt);
+      createdAt = eventTimestampClock.current.next(signerKey, template as { kind: number; tags: string[][] }, createdAt, now);
       const ev = await prepareRelayEvent({ ...template, created_at: createdAt }, signerBytes, relays);
       await pool.publishEvent(relays, ev as unknown as NostrEvent);
       lastNostrSentMs.current = Date.now();

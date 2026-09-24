@@ -1505,7 +1505,7 @@ public actor TaskSyncEngine {
                 case .refused:
                     // Keep the change (it may be the only copy) but stop offering it to this
                     // relay on every reconnect; see `RelayRejectionBackoff`.
-                    try? await outbox.recordRejection(eventID: eventID, relayURL: relayURL)
+                    _ = try? await outbox.recordRejection(eventID: eventID, relayURL: relayURL)
                 case .transient:
                     deferredRejectedEventIDs[relayURL, default: []].insert(eventID)
                 }

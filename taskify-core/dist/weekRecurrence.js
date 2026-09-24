@@ -56,13 +56,15 @@ export function tasksInSameSeries(a, b) {
         recurrenceSeriesFingerprint(a.recurrence) === recurrenceSeriesFingerprint(b.recurrence));
 }
 export function ensureWeekRecurrencesForCurrentWeek(options) {
-    const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, maybePublishTask, now = () => Date.now(), } = options;
+    const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, maybePublishTask, now = () => Date.now(), canGenerateForBoard = () => true, } = options;
     const sow = startOfWeek(new Date(), weekStart).getTime();
     const out = dedupeRecurringInstances(tasks);
     let changed = out !== tasks;
     const src = sources ?? out;
     for (const task of src) {
         if (!task.recurrence || !isFrequentRecurrence(task.recurrence))
+            continue;
+        if (!canGenerateForBoard(task.boardId))
             continue;
         const seriesId = recurringSeriesId(task);
         if (!task.seriesId) {

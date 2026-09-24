@@ -156,3 +156,37 @@ test("ensureWeekRecurrencesForCurrentWeek stops when recurrence does not advance
   assert.equal(out.length, 1);
   assert.equal(calls, 1);
 });
+
+test("ensureWeekRecurrencesForCurrentWeek waits for a board that hasn't synced yet", () => {
+  // Generating before the relays deliver the week's instances would republish a clone another
+  // device already completed, with the same id and a newer timestamp, reopening it.
+  const task = {
+    id: "t1",
+    boardId: "b1",
+    title: "Recurring",
+    dueISO: "2026-03-05T00:00:00.000Z",
+    recurrence: { type: "weekly" },
+  } as SeriesTaskLike;
+  const published: string[] = [];
+  const options = {
+    tasks: [task],
+    weekStart: 0,
+    newTaskPosition: "bottom" as const,
+    dedupeRecurringInstances: (tasks: SeriesTaskLike[]) => tasks,
+    isFrequentRecurrence: () => true,
+    nextOccurrence: (dueISO: string) => (dueISO.startsWith("2026-03-05") ? "2026-03-12T00:00:00.000Z" : null),
+    startOfWeek: () => new Date("2026-03-08T00:00:00.000Z"),
+    recurringInstanceId: (seriesId: string, dueISO: string) => `${seriesId}:${dueISO}`,
+    isoDatePart: (iso: string) => iso.slice(0, 10),
+    taskDateKey: (t: SeriesTaskLike) => t.dueISO.slice(0, 10),
+    nextOrderForBoard: () => 10,
+    maybePublishTask: (t: SeriesTaskLike) => { published.push(t.id); },
+    now: () => 123,
+  };
+  const waiting = ensureWeekRecurrencesForCurrentWeek({ ...options, canGenerateForBoard: () => false });
+  assert.equal(waiting.length, 1);
+  assert.deepEqual(published, []);
+  const ready = ensureWeekRecurrencesForCurrentWeek({ ...options, canGenerateForBoard: (id: string) => id === "b1" });
+  assert.equal(ready.length, 2);
+  assert.equal(published.length, 1);
+});

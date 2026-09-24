@@ -1067,6 +1067,22 @@ export default function App() {
     scriptureMemoryFrequencyOption?.days,
     settings.scriptureMemorySort,
   ]);
+  const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
+  const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
+  // Generated tasks (recurring instances, fasting reminders, the first scripture review) use ids
+  // every device derives the same way. On a shared board, generating one before the relays have
+  // delivered the board would republish an instance another device already completed, with the
+  // same id and a newer timestamp, and reopen it. So generation waits for the board's initial
+  // sync (which also completes on its timeout, so offline use still gets them).
+  const boardsForGenerationRef = useRef(boards);
+  boardsForGenerationRef.current = boards;
+  const isBoardReadyForGeneratedTasks = useCallback((boardId: string) => {
+    const board = findBoardByCompoundChildId(boardsForGenerationRef.current, boardId)
+      ?? boardsForGenerationRef.current.find((candidate) => candidate.id === boardId);
+    const nostrBoardId = board?.nostr?.boardId;
+    if (!nostrBoardId) return true;
+    return completedNostrInitialSyncRef.current.has(boardTag(nostrBoardId));
+  }, []);
   const maybePublishTaskRef = useRef<PublishTaskFn | null>(null);
   const maybePublishCalendarEventRef = useRef<PublishCalendarEventFn | null>(null);
   const publishBoardMetadataRef = useRef<((board: Board) => Promise<void>) | null>(null);
@@ -1159,6 +1175,7 @@ export default function App() {
       ? scriptureMemoryBoard
       : null;
     if (!targetBoard) return;
+    if (!isBoardReadyForGeneratedTasks(targetBoard.id)) return;
     if (targetBoard.kind === "lists" && (!targetBoard.columns || targetBoard.columns.length === 0)) return;
     const baseDays = scriptureMemoryFrequencyOption?.days ?? 1;
     const recurrence = scriptureFrequencyToRecurrence(baseDays);
@@ -1276,6 +1293,8 @@ export default function App() {
     maybePublishTaskRef,
     sanitizeRecurringTasks,
     setScriptureMemory,
+    isBoardReadyForGeneratedTasks,
+    pendingNostrInitialSyncByBoardTag,
   ]);
 
   useEffect(() => {
@@ -1293,6 +1312,7 @@ export default function App() {
       return;
     }
     if (!targetBoard) return;
+    if (!isBoardReadyForGeneratedTasks(targetBoard.id)) return;
 
     const now = new Date();
     const months = Array.from({ length: 2 }, (_, i) => {
@@ -1427,12 +1447,15 @@ export default function App() {
     settings.weekStart,
     setTasks,
     maybePublishTaskRef,
+    isBoardReadyForGeneratedTasks,
+    pendingNostrInitialSyncByBoardTag,
   ]);
 
   useEffect(() => {
     if (!settings.showFullWeekRecurring) return;
     setTasks(prev => ensureWeekRecurrences(prev));
-  }, [settings.showFullWeekRecurring, settings.weekStart]);
+    // Re-run as each shared board finishes its initial sync.
+  }, [settings.showFullWeekRecurring, settings.weekStart, pendingNostrInitialSyncByBoardTag]);
 
   useAppAppearance(settings);
 
@@ -1570,8 +1593,6 @@ export default function App() {
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
   const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
   // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
-  const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
-  const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
   const [boardHistoryResyncNonce, setBoardHistoryResyncNonce] = useState(0);
   // In-memory cursor: tracks the highest created_at seen per board tag this session.
   // Persisted to IDB after EOSE so subsequent opens only fetch new events.
@@ -7527,6 +7548,7 @@ export default function App() {
       taskDateKey,
       nextOrderForBoard,
       maybePublishTask,
+      canGenerateForBoard: isBoardReadyForGeneratedTasks,
     });
     return sanitizeRecurringTasks(ensured);
   }

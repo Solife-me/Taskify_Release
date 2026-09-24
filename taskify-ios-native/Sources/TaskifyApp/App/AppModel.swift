@@ -336,6 +336,16 @@ final class AppModel {
     @ObservationIgnored private var appStatePublishTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var lastAppStateFetchAt: Date?
     @ObservationIgnored private var isApplyingSyncedScriptureMemory = false
+    /// Whether this session's relays have delivered their stored history. Generated tasks
+    /// (fasting reminders, full-week recurring instances, the first scripture review) use ids
+    /// every device derives the same way; generating one before the relays deliver it would
+    /// republish an instance another device completed, with a newer timestamp, and reopen it.
+    @ObservationIgnored private var relayHistorySettled = false
+    @ObservationIgnored private var relayHistorySettleTask: Task<Void, Never>?
+    /// Local-only boards can't conflict with another device's copy, so they never wait.
+    private var canGenerateSharedTasks: Bool {
+        relayHistorySettled || snapshot.boardsForSync.isEmpty
+    }
 
     init(
         store: JSONTaskStore = JSONTaskStore(),
@@ -3587,6 +3597,8 @@ final class AppModel {
     /// repeatedly (e.g. on every app launch) — it only creates/prunes tasks that drifted from
     /// the desired schedule.
     func reconcileFastingReminders(removeExistingWhenDisabled: Bool = false) {
+        // Turning the feature off acts at once; generation waits for relay history.
+        guard canGenerateSharedTasks || removeExistingWhenDisabled else { return }
         // Calling a `mutating` method directly on `snapshot` fires its `didSet` even when the
         // method changes nothing — invalidating every observing view and discarding the lookup
         // cache. Reconcile a copy and write back only when it actually differs.
@@ -3942,6 +3954,7 @@ final class AppModel {
             isScriptureMemoryTask($0) && !$0.completed && !$0.isDeleted
         }
         if !hasActive,
+           canGenerateSharedTasks,
            let selection = ScriptureMemoryAlgorithm.chooseNext(
                entries: scriptureMemoryState.entries,
                baseDays: Double(scriptureMemoryFrequency.days),
@@ -5125,6 +5138,7 @@ final class AppModel {
     }
 
     private func ensureFullWeekTaskRecurrences(now: Date = Date()) {
+        guard canGenerateSharedTasks else { return }
         var updated = snapshot
         let result = updated.ensureCurrentWeekTaskRecurrences(
             weekStartsOn: weekStart,
@@ -5477,6 +5491,28 @@ final class AppModel {
             }
         }
         reconfigureSync()
+        // Unreachable relays never send a backlog; generate anyway after this long.
+        scheduleRelayHistorySettle(after: .seconds(25))
+    }
+
+    private func scheduleRelayHistorySettle(after delay: Duration) {
+        guard !relayHistorySettled else { return }
+        relayHistorySettleTask?.cancel()
+        relayHistorySettleTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.settleRelayHistory()
+        }
+    }
+
+    /// Runs the task generation that waited for relay history.
+    private func settleRelayHistory() {
+        guard !relayHistorySettled else { return }
+        relayHistorySettled = true
+        relayHistorySettleTask = nil
+        reconcileFastingReminders()
+        if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
+        _ = reconcileScriptureMemory()
     }
 
     private func reconfigureSync() {
@@ -5546,6 +5582,8 @@ final class AppModel {
             }
         case .batch(let taskRecords, let calendarRecords):
             await applySyncBatch(tasks: taskRecords, calendarEvents: calendarRecords)
+            // A relay's stored backlog; settle once they stop arriving.
+            scheduleRelayHistorySettle(after: .seconds(3))
         case .sharedInbox(let event):
             enqueueSharedInboxEvents([event], isHistory: false)
         case .sharedInboxBatch(let events):

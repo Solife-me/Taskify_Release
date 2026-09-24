@@ -107,6 +107,12 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
   nextOrderForBoard: (boardId: string, tasks: TTask[], position: "top" | "bottom") => number;
   maybePublishTask: (task: TTask) => Promise<unknown> | void;
   now?: () => number;
+  /**
+   * False while a shared board's initial relay sync is still running. Instances are only
+   * generated for boards that have synced: generating earlier would republish an instance another
+   * device already completed (same id, newer timestamp) and reopen it.
+   */
+  canGenerateForBoard?: (boardId: string) => boolean;
 };
 
 export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike>(
@@ -127,6 +133,7 @@ export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike
     nextOrderForBoard,
     maybePublishTask,
     now = () => Date.now(),
+    canGenerateForBoard = () => true,
   } = options;
 
   const sow = startOfWeek(new Date(), weekStart).getTime();
@@ -136,6 +143,7 @@ export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike
 
   for (const task of src) {
     if (!task.recurrence || !isFrequentRecurrence(task.recurrence)) continue;
+    if (!canGenerateForBoard(task.boardId)) continue;
 
     const seriesId = recurringSeriesId(task);
     if (!task.seriesId) {
