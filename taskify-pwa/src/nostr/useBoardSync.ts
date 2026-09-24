@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import type { NDKKind } from "@nostr-dev-kit/ndk";
 import { recoverRelayHistory } from "taskify-runtime-nostr";
 import { NostrSession } from "./NostrSession";
 import { useSyncResume } from "./useSyncResume";
@@ -189,7 +190,9 @@ export function useBoardSync({
   );
 
   const verifyUnseenTasks = useCallback(
-    (bTag: string, boardRelays: string[]) => {
+    // `isDisposed` reports whether the subscription effect that started this check has since been
+    // torn down; late verify events are dropped then.
+    (bTag: string, boardRelays: string[], isDisposed: () => boolean) => {
       const seenIds = seenBoardTasksRef.current.get(bTag) ?? new Set<string>();
       const board = boardsRef.current.find(
         (candidate) => candidate.nostr?.boardId && boardTag(candidate.nostr.boardId) === bTag,
@@ -219,7 +222,7 @@ export function useBoardSync({
         boardRelays,
         [{ kinds: [30301], "#b": [bTag], "#d": unseenIds }],
         (ev, evRelay) => {
-          if (disposed) return;
+          if (isDisposed()) return;
           ev.__relay = evRelay;
           enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
         },
@@ -284,7 +287,7 @@ export function useBoardSync({
       completedNostrInitialSyncRef.current.add(bTag);
       markNostrBoardInitialSyncComplete(bTag);
       persistCursors();
-      window.setTimeout(() => { if (!disposed) verifyUnseenTasks(bTag, relayList); }, 500);
+      window.setTimeout(() => { if (!disposed) verifyUnseenTasks(bTag, relayList, () => disposed); }, 500);
     };
 
     setPendingNostrInitialSyncByBoardTag((prev) => {
@@ -374,7 +377,9 @@ export function useBoardSync({
         for (const relay of relayList) {
           if (recovery.signal.aborted) return;
           try {
-            await recoverRelayHistory(session, { kinds: [30300, 30301, TASKIFY_CALENDAR_EVENT_KIND], "#b": [item.id] }, relay, async (event) => {
+            // Taskify's board, task and calendar kinds are not members of NDK's kind enum.
+            const historyKinds = [30300, 30301, TASKIFY_CALENDAR_EVENT_KIND] as number[] as NDKKind[];
+            await recoverRelayHistory(session, { kinds: historyKinds, "#b": [item.id] }, relay, async (event) => {
               if (recovery.signal.aborted) return;
               await enqueueForBoard(item.id, async () => {
                 if (recovery.signal.aborted) return;
