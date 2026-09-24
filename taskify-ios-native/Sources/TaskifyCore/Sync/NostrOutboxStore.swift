@@ -21,6 +21,10 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
     public var expiresAt: Date?
     /// Cleared only after the parent is accepted. Optional for older outboxes.
     public var dependsOnEventID: String?
+    /// Relays that refused this event outright (`blocked:`, `restricted:`, `invalid:`): when each
+    /// may be tried again. The change stays queued, since it may be the only copy, but a refusing
+    /// relay isn't sent it again on every reconnect. Optional for older outboxes.
+    public var relayRejections: [String: RelayRejectionBackoff]?
 
     public init(
         event: NostrEvent,
@@ -44,6 +48,12 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
         self.dependsOnEventID = dependsOnEventID
     }
 
+    /// Whether `relayURL` refused this event and its retry time hasn't come yet.
+    public func isHeldBack(for relayURL: String, now: Date) -> Bool {
+        guard let rejection = relayRejections?[relayURL] else { return false }
+        return rejection.retryAfter > now
+    }
+
     public var pendingRelayURLs: [String] {
         let accepted = Set(acceptedRelayURLs ?? [])
         return relayURLs.filter { !accepted.contains($0) }
@@ -51,6 +61,18 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
 
     public var effectiveAcknowledgementPolicy: NostrOutboxAcknowledgementPolicy {
         acknowledgementPolicy ?? .everyRelay
+    }
+}
+
+public struct RelayRejectionBackoff: Codable, Equatable, Sendable {
+    public var count: Int
+    public var retryAfter: Date
+
+    /// One hour after the first refusal, doubling each time, capped at a week.
+    static func next(after previous: RelayRejectionBackoff?, now: Date) -> RelayRejectionBackoff {
+        let count = (previous?.count ?? 0) + 1
+        let delay = min(3600 * pow(2, Double(count - 1)), 7 * 24 * 3600)
+        return RelayRejectionBackoff(count: count, retryAfter: now.addingTimeInterval(delay))
     }
 }
 
@@ -96,13 +118,15 @@ public actor NostrOutboxStore {
     /// permanently starving durable older changes.
     public func pendingEntries(
         for relayURL: String,
-        excludingEventIDs: Set<String> = []
+        excludingEventIDs: Set<String> = [],
+        now: Date = Date()
     ) -> [NostrOutboxEntry] {
         entries
             .filter {
                 !excludingEventIDs.contains($0.event.id) &&
                     $0.dependsOnEventID == nil &&
-                    $0.pendingRelayURLs.contains(relayURL)
+                    $0.pendingRelayURLs.contains(relayURL) &&
+                    !$0.isHeldBack(for: relayURL, now: now)
             }
             .sorted {
                 if $0.queuedAt != $1.queuedAt { return $0.queuedAt > $1.queuedAt }
@@ -111,6 +135,20 @@ public actor NostrOutboxStore {
                 }
                 return $0.event.id > $1.event.id
             }
+    }
+
+    /// Records that `relayURL` refused this event outright and returns when it may be tried
+    /// again. The entry stays queued for that relay and every other one.
+    @discardableResult
+    public func recordRejection(eventID: String, relayURL: String, now: Date = Date()) throws -> Date? {
+        guard let index = entries.firstIndex(where: { $0.event.id == eventID }) else { return nil }
+        let previous = entries
+        var rejections = entries[index].relayRejections ?? [:]
+        let backoff = RelayRejectionBackoff.next(after: rejections[relayURL], now: now)
+        rejections[relayURL] = backoff
+        entries[index].relayRejections = rejections
+        do { try persist() } catch { entries = previous; throw error }
+        return backoff.retryAfter
     }
 
     public func isPending(eventID: String, relayURL: String) -> Bool {

@@ -279,11 +279,28 @@ struct RelayOutboxScheduler: Equatable, Sendable {
 }
 
 enum NostrRelayRejection {
+    enum Kind: Equatable {
+        /// Refused outright (`blocked:`, `restricted:`, `invalid:`): don't resend it there soon.
+        case refused
+        /// The relay already has it (`duplicate:`).
+        case delivered
+        /// Anything else (`error:`, `pow:`, unknown): retry as usual.
+        case transient
+    }
+
     static func isRateLimited(_ message: String) -> Bool {
-        message
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .hasPrefix("rate-limited:")
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // noteguard documents "rate-limit: …" rather than NIP-01's "rate-limited:".
+        return text.hasPrefix("rate-limited:") || text.hasPrefix("rate-limit:")
+    }
+
+    static func kind(of message: String) -> Kind {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if text.hasPrefix("duplicate:") { return .delivered }
+        if text.hasPrefix("blocked:") || text.hasPrefix("restricted:") || text.hasPrefix("invalid:") {
+            return .refused
+        }
+        return .transient
     }
 
     /// NIP-42: relay is refusing an action until the client authenticates via `AUTH`.
@@ -1378,7 +1395,17 @@ public actor TaskSyncEngine {
             } else if NostrRelayRejection.isAuthRequired(message) {
                 await handleAuthRequired(relayURL: relayURL)
             } else {
-                deferredRejectedEventIDs[relayURL, default: []].insert(eventID)
+                switch NostrRelayRejection.kind(of: message) {
+                case .delivered:
+                    await handle(.acknowledgement(eventID: eventID, accepted: true, message: message), from: relayURL)
+                    return
+                case .refused:
+                    // Keep the change (it may be the only copy) but stop offering it to this
+                    // relay on every reconnect; see `RelayRejectionBackoff`.
+                    try? await outbox.recordRejection(eventID: eventID, relayURL: relayURL)
+                case .transient:
+                    deferredRejectedEventIDs[relayURL, default: []].insert(eventID)
+                }
                 relayPhases[relayURL] = .online
                 relayMessages[relayURL] = "Rejected one queued change • \(message)"
                 await emitStatus()

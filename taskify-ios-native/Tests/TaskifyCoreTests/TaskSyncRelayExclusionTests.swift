@@ -149,6 +149,40 @@ final class TaskSyncRelayExclusionTests: XCTestCase {
         let otherKindPending = await engine.pendingPublishCount()
         XCTAssertEqual(otherKindPending, 5, "All unacknowledged changes stay durable")
     }
+
+    func testRefusedEventIsHeldBackFromThatRelayButStaysQueued() async throws {
+        let relay = CountingRelayTransport()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let outbox = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let engine = TaskSyncEngine(outbox: outbox, connectionFactory: { _ in relay })
+        addTeardownBlock { await engine.stop() }
+        await engine.configure(boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [])
+        try await engine.enqueueForPublish([request(1, kind: stateKind, relayURLs: [relayURL])])
+
+        await engine.handle(
+            .acknowledgement(eventID: event(1, kind: stateKind).id, accepted: false, message: "blocked: not on the allow list"),
+            from: relayURL
+        )
+        let pending = await engine.pendingPublishCount()
+        XCTAssertEqual(pending, 1, "The change stays queued")
+        let eligible = await outbox.pendingEntries(for: relayURL)
+        XCTAssertEqual(eligible, [], "…but is not offered to the refusing relay again right away")
+    }
+
+    func testDuplicateRejectionCountsAsDelivered() async throws {
+        let relay = CountingRelayTransport()
+        let engine = engine(transports: [relayURL: relay])
+        await engine.configure(boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [])
+        try await engine.enqueueForPublish([request(1, kind: stateKind, relayURLs: [relayURL])])
+        await engine.handle(
+            .acknowledgement(eventID: event(1, kind: stateKind).id, accepted: false, message: "duplicate: already have this event"),
+            from: relayURL
+        )
+        let pending = await engine.pendingPublishCount()
+        XCTAssertEqual(pending, 0)
+    }
 }
 
 private actor CountingRelayTransport: TaskSyncRelayTransport {
