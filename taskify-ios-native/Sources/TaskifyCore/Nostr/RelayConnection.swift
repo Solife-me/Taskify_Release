@@ -233,42 +233,10 @@ public actor NostrRelayConnection {
         ])
     }
 
-    public func subscribeToAccountBackup(
-        id: String,
-        authorPublicKey: String,
-        limit: Int = 5
-    ) async throws {
-        try await send([
-            "REQ",
-            id,
-            [
-                "kinds": [NostrAppBackupContract.eventKind],
-                "authors": [authorPublicKey],
-                "#d": [NostrAppBackupContract.eventDTag],
-                "limit": limit,
-            ] as [String: Any],
-        ])
+    /// A one-shot REQ with an arbitrary filter (see `NostrOneShotFetching`).
+    public func request(id: String, filter: NostrRelayFilter) async throws {
+        try await send(["REQ", id, filter.jsonObject()])
     }
-
-    /// One REQ for every per-account app-state event (Bible tracker, scripture memory, chat
-    /// state); each is a replaceable event, so a relay returns at most one per d-tag.
-    public func subscribeToAppState(
-        id: String,
-        authorPublicKey: String,
-        dTags: [String]
-    ) async throws {
-        try await send([
-            "REQ",
-            id,
-            [
-                "kinds": [AppStateSyncContract.eventKind],
-                "authors": [authorPublicKey],
-                "#d": dTags,
-                "limit": dTags.count * 2,
-            ] as [String: Any],
-        ])
-    }
-
     public func subscribeToSharedInbox(
         id: String,
         recipientPublicKey: String,
@@ -303,23 +271,6 @@ public actor NostrRelayConnection {
         ])
     }
 
-    public func subscribeToPrivateContacts(
-        id: String,
-        authorPublicKey: String,
-        limit: Int = 5
-    ) async throws {
-        try await send([
-            "REQ",
-            id,
-            [
-                "kinds": [NIP51ContactListContract.eventKind],
-                "authors": [authorPublicKey],
-                "#d": [NIP51ContactListContract.eventDTag],
-                "limit": min(max(1, limit), 20),
-            ] as [String: Any],
-        ])
-    }
-
     public func subscribeToBotCommands(
         id: String,
         authorPublicKey: String,
@@ -333,24 +284,6 @@ public actor NostrRelayConnection {
                 "authors": [authorPublicKey],
                 "#d": [BotCommandsContract.eventDTag],
                 "limit": min(max(1, limit), 20),
-            ] as [String: Any],
-        ])
-    }
-
-    public func subscribeToProfiles(
-        id: String,
-        authorPublicKeys: [String],
-        limit: Int = 500
-    ) async throws {
-        let authors = Array(Set(authorPublicKeys.map { $0.lowercased() })).prefix(500)
-        guard !authors.isEmpty else { return }
-        try await send([
-            "REQ",
-            id,
-            [
-                "kinds": [0],
-                "authors": Array(authors),
-                "limit": min(max(1, limit), 500),
             ] as [String: Any],
         ])
     }

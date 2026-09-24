@@ -417,98 +417,34 @@ public enum NostrAppBackupContract {
 public enum NostrAccountBackupFinder {
     /// Searches each relay independently and returns verified candidate events,
     /// newest first. A silent/offline relay is bounded by `timeout` and cannot
-    /// prevent healthy relays from completing the lookup.
+    /// prevent healthy relays from completing the lookup. Pass the sync engine as `fetcher` to
+    /// reuse its open relay connections.
     public static func findCandidates(
         publicKey: String,
         relayURLs: [String],
-        timeout: TimeInterval = 4
+        timeout: TimeInterval = 4,
+        fetcher: any NostrOneShotFetching = NostrFreshConnectionFetcher()
     ) async -> [NostrEvent] {
         let relays = TaskifyRelayURL.normalizedList(relayURLs)
         guard !publicKey.isEmpty, !relays.isEmpty else { return [] }
-
-        return await withTaskGroup(of: [NostrEvent].self) { group in
-            for relayURL in relays {
-                group.addTask {
-                    await fetch(
-                        publicKey: publicKey,
-                        relayURL: relayURL,
-                        timeout: timeout
-                    )
-                }
-            }
-
-            var candidatesByID: [String: NostrEvent] = [:]
-            for await events in group {
-                for event in events {
-                    candidatesByID[event.id] = event
-                }
-            }
-            return candidatesByID.values.sorted {
-                if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
-                return $0.id < $1.id
-            }
+        let filter = NostrRelayFilter(
+            kinds: [NostrAppBackupContract.eventKind],
+            authors: [publicKey],
+            dTags: [NostrAppBackupContract.eventDTag],
+            limit: 5
+        )
+        var candidatesByID: [String: NostrEvent] = [:]
+        for event in await fetcher.fetchOnce(filter: filter, relayURLs: relays, timeout: timeout)
+        where event.kind == NostrAppBackupContract.eventKind &&
+            event.publicKey.lowercased() == publicKey.lowercased() &&
+            event.firstTagValue(named: "d") == NostrAppBackupContract.eventDTag &&
+            event.verify() {
+            candidatesByID[event.id] = event
         }
-    }
-
-    private static func fetch(
-        publicKey: String,
-        relayURL: String,
-        timeout: TimeInterval
-    ) async -> [NostrEvent] {
-        let connection = NostrRelayConnection(relayURL: relayURL)
-        let stream = connection.messages()
-        let subscriptionID = "account-backup-\(UUID().uuidString)"
-        do {
-            try await connection.connect()
-            try await connection.subscribeToAccountBackup(
-                id: subscriptionID,
-                authorPublicKey: publicKey
-            )
-        } catch {
-            await connection.disconnect()
-            return []
+        return candidatesByID.values.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.id < $1.id
         }
-
-        let events = await withTaskGroup(of: [NostrEvent]?.self) { group in
-            group.addTask {
-                var matches: [NostrEvent] = []
-                for await message in stream {
-                    guard !Task.isCancelled else { return matches }
-                    switch message {
-                    case .event(let receivedSubscriptionID, let event)
-                        where receivedSubscriptionID == subscriptionID:
-                        guard event.kind == NostrAppBackupContract.eventKind,
-                              event.publicKey.lowercased() == publicKey.lowercased(),
-                              event.firstTagValue(named: "d") == NostrAppBackupContract.eventDTag,
-                              event.verify() else { continue }
-                        matches.append(event)
-                    case .endOfStoredEvents(let receivedSubscriptionID)
-                        where receivedSubscriptionID == subscriptionID:
-                        return matches
-                    case .closed(let receivedSubscriptionID, _)
-                        where receivedSubscriptionID == subscriptionID:
-                        return matches
-                    case .disconnected:
-                        return matches
-                    default:
-                        continue
-                    }
-                }
-                return matches
-            }
-            group.addTask {
-                let nanoseconds = UInt64(max(0.25, timeout) * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: nanoseconds)
-                return nil
-            }
-
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? []
-        }
-        try? await connection.closeSubscription(id: subscriptionID)
-        await connection.disconnect()
-        return events
     }
 }
 

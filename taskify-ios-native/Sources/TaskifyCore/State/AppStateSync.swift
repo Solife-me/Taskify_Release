@@ -523,86 +523,37 @@ public struct ChatStateSyncPayload: Codable, Equatable, Sendable {
 // MARK: - Relay lookup
 
 public enum AppStateSyncFinder {
-    /// Fetches this identity's app-state events from every relay in one round trip per relay,
-    /// newest first per d-tag. A silent relay is bounded by `timeout`.
+    /// Fetches this identity's app-state events in one REQ per relay, newest per d-tag. Pass the
+    /// sync engine as `fetcher` to reuse its open relay connections.
     public static func findLatest(
         publicKey: String,
         relayURLs: [String],
-        timeout: TimeInterval = 4
+        timeout: TimeInterval = 4,
+        fetcher: any NostrOneShotFetching = NostrFreshConnectionFetcher()
     ) async -> [String: NostrEvent] {
         let relays = TaskifyRelayURL.normalizedList(relayURLs)
         guard !publicKey.isEmpty, !relays.isEmpty else { return [:] }
-        return await withTaskGroup(of: [NostrEvent].self) { group in
-            for relayURL in relays {
-                group.addTask { await fetch(publicKey: publicKey, relayURL: relayURL, timeout: timeout) }
+        let filter = NostrRelayFilter(
+            kinds: [AppStateSyncContract.eventKind],
+            authors: [publicKey],
+            dTags: AppStateSyncContract.dTags,
+            limit: AppStateSyncContract.dTags.count * 2
+        )
+        var latest: [String: NostrEvent] = [:]
+        for event in await fetcher.fetchOnce(filter: filter, relayURLs: relays, timeout: timeout) {
+            guard event.kind == AppStateSyncContract.eventKind,
+                  event.publicKey.lowercased() == publicKey.lowercased(),
+                  let dTag = event.firstTagValue(named: "d"),
+                  AppStateSyncContract.dTags.contains(dTag),
+                  event.verify() else { continue }
+            if let existing = latest[dTag],
+               existing.createdAt > event.createdAt
+                || (existing.createdAt == event.createdAt && existing.id <= event.id) {
+                continue
             }
-            var latest: [String: NostrEvent] = [:]
-            for await events in group {
-                for event in events {
-                    guard let dTag = event.firstTagValue(named: "d") else { continue }
-                    if let existing = latest[dTag],
-                       existing.createdAt > event.createdAt
-                        || (existing.createdAt == event.createdAt && existing.id <= event.id) {
-                        continue
-                    }
-                    latest[dTag] = event
-                }
-            }
-            return latest
+            latest[dTag] = event
         }
-    }
-
-    private static func fetch(publicKey: String, relayURL: String, timeout: TimeInterval) async -> [NostrEvent] {
-        let connection = NostrRelayConnection(relayURL: relayURL)
-        let stream = connection.messages()
-        let subscriptionID = "app-state-\(UUID().uuidString)"
-        do {
-            try await connection.connect()
-            try await connection.subscribeToAppState(
-                id: subscriptionID,
-                authorPublicKey: publicKey,
-                dTags: AppStateSyncContract.dTags
-            )
-        } catch {
-            await connection.disconnect()
-            return []
-        }
-        let events = await withTaskGroup(of: [NostrEvent]?.self) { group in
-            group.addTask {
-                var matches: [NostrEvent] = []
-                for await message in stream {
-                    guard !Task.isCancelled else { return matches }
-                    switch message {
-                    case .event(let receivedID, let event) where receivedID == subscriptionID:
-                        guard event.kind == AppStateSyncContract.eventKind,
-                              event.publicKey.lowercased() == publicKey.lowercased(),
-                              let dTag = event.firstTagValue(named: "d"),
-                              AppStateSyncContract.dTags.contains(dTag),
-                              event.verify() else { continue }
-                        matches.append(event)
-                    case .endOfStoredEvents(let receivedID) where receivedID == subscriptionID:
-                        return matches
-                    case .closed(let receivedID, _) where receivedID == subscriptionID:
-                        return matches
-                    case .disconnected:
-                        return matches
-                    default:
-                        continue
-                    }
-                }
-                return matches
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(max(0.25, timeout) * 1_000_000_000))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? []
-        }
-        try? await connection.closeSubscription(id: subscriptionID)
-        await connection.disconnect()
-        return events
+        return latest
     }
 }
 

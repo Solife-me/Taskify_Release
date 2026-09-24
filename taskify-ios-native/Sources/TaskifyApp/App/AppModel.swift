@@ -3272,7 +3272,8 @@ final class AppModel {
 
         let profiles = await NostrContactFinder.profiles(
             publicKeys: [contact.publicKey],
-            relayURLs: discovered
+            relayURLs: discovered,
+            fetcher: syncEngine
         )
         if snapshot.applyContactProfiles(profiles) { scheduleSave() }
         contactSyncStatus = "Contacts synced privately"
@@ -3334,7 +3335,8 @@ final class AppModel {
             }
             guard let event = await NostrContactFinder.latestProfileEvent(
                 publicKey: account,
-                relayURLs: relays
+                relayURLs: relays,
+                fetcher: syncEngine
             ), !Task.isCancelled, identityPublicKey == account,
                ownProfileEventID == previousEventID,
                let profile = NostrContactProfile.decode(event: event) else { return }
@@ -4980,7 +4982,8 @@ final class AppModel {
         accountBackupSearchTask = Task { [weak self] in
             let candidates = await NostrAccountBackupFinder.findCandidates(
                 publicKey: identity.publicKeyHex,
-                relayURLs: relays
+                relayURLs: relays,
+                fetcher: syncEngine
             )
             guard !Task.isCancelled, let self else { return }
             let decodedPayload: NostrAppBackupPayload? = await Task.detached(priority: .utility) {
@@ -7051,7 +7054,8 @@ final class AppModel {
 
         let candidates = await NostrContactFinder.findPrivateListCandidates(
             publicKey: identity.publicKeyHex,
-            relayURLs: relays
+            relayURLs: relays,
+            fetcher: syncEngine
         )
         guard !Task.isCancelled else { return }
         let decodedList: NIP51ContactList? = await Task.detached(priority: .utility) {
@@ -7076,7 +7080,8 @@ final class AppModel {
         )
         let profiles = await NostrContactFinder.profiles(
             publicKeys: (snapshot.contacts ?? []).map(\.publicKey),
-            relayURLs: profileRelays
+            relayURLs: profileRelays,
+            fetcher: syncEngine
         )
         guard !Task.isCancelled else { return }
         if snapshot.applyContactProfiles(profiles) { scheduleSave() }
@@ -7163,7 +7168,8 @@ final class AppModel {
         )
         let candidates = await NostrAccountBackupFinder.findCandidates(
             publicKey: identity.publicKeyHex,
-            relayURLs: lookupRelays
+            relayURLs: lookupRelays,
+            fetcher: syncEngine
         )
         guard !Task.isCancelled else { return }
 
@@ -7522,7 +7528,11 @@ extension AppModel {
     private func fetchAppState() async {
         guard let identity = appStateLedgerIdentity() else { return }
         let lookupRelays = TaskifyRelayURL.normalizedList(appStateRelayURLs + snapshot.boards.flatMap(\.effectiveRelayURLs))
-        let latest = await AppStateSyncFinder.findLatest(publicKey: identity.publicKeyHex, relayURLs: lookupRelays)
+        let latest = await AppStateSyncFinder.findLatest(
+            publicKey: identity.publicKeyHex,
+            relayURLs: lookupRelays,
+            fetcher: syncEngine
+        )
         guard !Task.isCancelled, appStateLedger.publicKey == identity.publicKeyHex else { return }
         lastAppStateFetchAt = Date()
         let decoded: [(dTag: String, event: NostrEvent, plaintext: Data)] = await Task.detached(priority: .utility) {
