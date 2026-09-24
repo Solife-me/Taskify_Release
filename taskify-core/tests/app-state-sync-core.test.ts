@@ -162,3 +162,31 @@ test("bibleTrackerSyncContent drops device-only UI state", async () => {
   assert.equal("expandedBooks" in content, false);
   assert.deepEqual(content.progress, { gen: [1] });
 });
+
+test("pruneChatSyncState keeps the published payload under the relay size budget", async () => {
+  const { pruneChatSyncState, CHAT_SYNC_MAX_PLAINTEXT_BYTES } = await import("../dist/appStateSync.js");
+  const key = (i: number) => i.toString(16).padStart(64, "0");
+  const readThrough: Record<string, number> = {};
+  const inboxResponses: Record<string, any> = {};
+  for (let i = 1; i <= 1000; i += 1) {
+    readThrough[key(i)] = 1_790_000_000 + i;
+    inboxResponses[key(i + 5000)] = { status: "accepted", at: 1_790_000_000 + i };
+  }
+  const pruned = pruneChatSyncState({ readThrough, inboxResponses }, { nowSeconds: 1_790_001_000 });
+  const bytes = new TextEncoder().encode(JSON.stringify({ version: 1, timestamp: 1_790_001_000, ...pruned })).length;
+  assert.ok(bytes <= CHAT_SYNC_MAX_PLAINTEXT_BYTES, `payload was ${bytes} bytes`);
+  // The newest entries survive.
+  assert.equal(pruned.readThrough[key(1000)], 1_790_001_000);
+  assert.equal(pruned.readThrough[key(1)], undefined);
+});
+
+test("chatSyncStateToPublish ignores local entries that pruning would drop anyway", async () => {
+  const { chatSyncStateToPublish } = await import("../dist/appStateSync.js");
+  const now = 1_790_000_000;
+  const known = { readThrough: { recent: now - 10 }, inboxResponses: {} };
+  // An ancient marker the published state has already pruned must not cause a republish loop.
+  const local = { readThrough: { recent: now - 10, ancient: 1_000 }, inboxResponses: {} };
+  assert.equal(chatSyncStateToPublish(known, local, now), null);
+  const next = chatSyncStateToPublish(known, { ...local, readThrough: { ...local.readThrough, fresh: now } }, now);
+  assert.deepEqual(next?.readThrough, { recent: now - 10, fresh: now });
+});

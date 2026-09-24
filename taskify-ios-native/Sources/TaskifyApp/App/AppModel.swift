@@ -7430,7 +7430,10 @@ extension AppModel {
             // Cheap check first: most snapshot writes (new messages, pending shares) leave
             // nothing new to publish. A pending timer is not restarted, bounding the delay.
             let known = appStateLedger.chat.synced ?? ChatSyncState()
-            guard !known.covers(snapshot.chatSyncState), appStatePublishTasks[dTag] == nil else { return }
+            guard appStatePublishTasks[dTag] == nil,
+                  known.toPublish(merging: snapshot.chatSyncState, nowSeconds: Int(Date().timeIntervalSince1970)) != nil else {
+                return
+            }
         } else {
             appStatePublishTasks[dTag]?.cancel()
         }
@@ -7614,10 +7617,8 @@ extension AppModel {
             }
         case AppStateSyncContract.chatStateDTag:
             let known = appStateLedger.chat.synced ?? ChatSyncState()
-            let local = snapshot.chatSyncState
-            guard !known.covers(local) else { return }
             createdAt = appStateLedger.chat.nextTimestamp()
-            let next = known.merged(with: local).pruned(nowSeconds: createdAt)
+            guard let next = known.toPublish(merging: snapshot.chatSyncState, nowSeconds: createdAt) else { return }
             let payload = ChatStateSyncPayload(timestamp: createdAt, state: next)
             eventBuilder = { try AppStateSyncContract.event(dTag: dTag, payload: payload, identity: identity, createdAt: createdAt) }
             commit = { [weak self] event in

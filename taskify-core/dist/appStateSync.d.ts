@@ -85,14 +85,29 @@ export declare function mergeChatSyncStates(a: ChatSyncState, b: ChatSyncState):
  * this device to publish. Checks only `local`'s entries, so it stays cheap on every keystroke.
  */
 export declare function chatSyncStateCovers(remote: ChatSyncState, local: ChatSyncState): boolean;
+/**
+ * The chat state to publish when merging `local` into what the relays hold (`known`) would
+ * change the published, pruned state; `null` when there is nothing to publish. Entries pruning
+ * would drop (too old, or over the size budget) never count as unpublished, so they cannot
+ * cause a republish loop.
+ */
+export declare function chatSyncStateToPublish(known: ChatSyncState, local: ChatSyncState, nowSeconds: number): ChatSyncState | null;
 export declare function chatSyncStatesEqual(a: ChatSyncState, b: ChatSyncState): boolean;
 /**
- * Keeps the synced chat state small: drops shared-item responses older than `maxAgeSeconds`
- * and keeps only the newest `maxEntries` of each map. A dropped read marker costs at most a
- * stale unread badge on a device that never opened that conversation.
+ * The chat state payload's plaintext ceiling. NIP-44 refuses plaintext over 65,535 bytes, and
+ * common relays reject events over 64 KB (strfry's default); encryption plus base64 grows the
+ * content by about a third, so this leaves room for both.
+ */
+export declare const CHAT_SYNC_MAX_PLAINTEXT_BYTES: number;
+/**
+ * Keeps the synced chat state small enough to publish: drops entries older than
+ * `maxAgeSeconds`, keeps the newest `maxEntries` of each map, then drops the oldest remaining
+ * entries until the payload fits `maxBytes`. A dropped read marker costs at most a stale unread
+ * badge on a device that never opened that conversation.
  */
 export declare function pruneChatSyncState(state: ChatSyncState, options: {
     nowSeconds: number;
     maxAgeSeconds?: number;
     maxEntries?: number;
+    maxBytes?: number;
 }): ChatSyncState;

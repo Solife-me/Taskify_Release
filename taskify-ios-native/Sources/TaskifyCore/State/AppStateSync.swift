@@ -430,20 +430,64 @@ public struct ChatSyncState: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Drops entries older than `maxAge` and keeps the newest `maxEntries` of each map, matching
-    /// the PWA's `pruneChatSyncState` defaults.
-    public func pruned(nowSeconds: Int, maxAgeSeconds: Int = 180 * 24 * 60 * 60, maxEntries: Int = 1000) -> ChatSyncState {
+    /// The payload's plaintext ceiling, matching the PWA's `CHAT_SYNC_MAX_PLAINTEXT_BYTES`.
+    /// NIP-44 refuses plaintext over 65,535 bytes and common relays reject events over 64 KB;
+    /// encryption plus base64 grows the content by about a third.
+    public static let maxPlaintextBytes = 32 * 1024
+
+    /// Drops entries older than `maxAge`, keeps the newest `maxEntries` of each map, then drops
+    /// the oldest remaining entries until the payload fits `maxBytes`, matching the PWA's
+    /// `pruneChatSyncState`.
+    public func pruned(
+        nowSeconds: Int,
+        maxAgeSeconds: Int = 180 * 24 * 60 * 60,
+        maxEntries: Int = 1000,
+        maxBytes: Int = ChatSyncState.maxPlaintextBytes
+    ) -> ChatSyncState {
         let cutoff = nowSeconds - maxAgeSeconds
-        func newest<V>(_ record: [String: V], time: (V) -> Int) -> [String: V] {
-            let kept = record.filter { time($0.value) >= cutoff }
-                .sorted { time($0.value) != time($1.value) ? time($0.value) > time($1.value) : $0.key < $1.key }
-                .prefix(maxEntries)
-            return Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
+        enum Value { case read(Int), response(ChatInboxResponse) }
+        struct Entry { let key: String; let time: Int; let value: Value }
+        func newest(_ entries: [Entry]) -> [Entry] {
+            Array(entries.filter { $0.time >= cutoff }
+                .sorted { $0.time != $1.time ? $0.time > $1.time : $0.key < $1.key }
+                .prefix(maxEntries))
         }
-        return ChatSyncState(
-            readThrough: newest(readThrough) { $0 },
-            inboxResponses: newest(inboxResponses) { $0.at }
-        )
+        let entries = (
+            newest(readThrough.map { Entry(key: $0.key, time: $0.value, value: .read($0.value)) })
+                + newest(inboxResponses.map { Entry(key: $0.key, time: $0.value.at, value: .response($0.value)) })
+        ).sorted { $0.time != $1.time ? $0.time > $1.time : $0.key < $1.key }
+        func build(_ count: Int) -> ChatSyncState {
+            var result = ChatSyncState()
+            for entry in entries.prefix(count) {
+                switch entry.value {
+                case .read(let seconds): result.readThrough[entry.key] = seconds
+                case .response(let response): result.inboxResponses[entry.key] = response
+                }
+            }
+            return result
+        }
+        // Room for the payload's version and timestamp fields.
+        let envelopeBytes = 64
+        func fits(_ count: Int) -> Bool {
+            ((try? JSONEncoder().encode(build(count)))?.count ?? .max) + envelopeBytes <= maxBytes
+        }
+        if fits(entries.count) { return build(entries.count) }
+        var low = 0
+        var high = entries.count
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if fits(mid) { low = mid } else { high = mid - 1 }
+        }
+        return build(low)
+    }
+
+    /// The state to publish when merging `local` into what the relays hold (`self`) would change
+    /// the published, pruned state; nil when there is nothing to publish. Entries pruning would
+    /// drop never count as unpublished, so they cannot cause a republish loop.
+    public func toPublish(merging local: ChatSyncState, nowSeconds: Int) -> ChatSyncState? {
+        guard !covers(local) else { return nil }
+        let next = merged(with: local).pruned(nowSeconds: nowSeconds)
+        return next == self ? nil : next
     }
 }
 

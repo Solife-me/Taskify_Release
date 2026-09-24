@@ -4,10 +4,9 @@ import {
   APP_STATE_SYNC_CLIENT_TAG,
   APP_STATE_SYNC_KIND,
   CHAT_STATE_SYNC_D_TAG,
-  chatSyncStateCovers,
+  chatSyncStateToPublish,
   emptyChatSyncState,
   mergeChatSyncStates,
-  pruneChatSyncState,
   sanitizeChatSyncState,
   type ChatInboxResponse,
   type ChatSyncState,
@@ -125,13 +124,11 @@ export function useNostrChatStateSync({
   const publish = useCallback(async () => {
     const { enabled: isEnabled, defaultRelays: relaysSetting, nostrPK: pk, nostrSK: sk } = settingsRef.current;
     if (!isEnabled || !pk) return;
-    const known = knownRemoteRef.current;
-    const local = localState();
-    if (chatSyncStateCovers(known, local)) return;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const next = chatSyncStateToPublish(knownRemoteRef.current, localState(), nowSeconds);
+    if (!next) return;
     const relays = normalizeNostrRelayList(relaysSetting.length ? relaysSetting : Array.from(DEFAULT_NOSTR_RELAYS));
     if (!relays.length) return;
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const next = pruneChatSyncState(mergeChatSyncStates(known, local), { nowSeconds });
     const timestamp = Math.max(nowSeconds, (syncStateRef.current.lastTimestamp || 0) + 1);
     const content = await encryptNostrSyncPayload({ version: 1, timestamp, ...next }, bytesToHex(sk), pk);
     const result = await nostrPublishRef.current(
@@ -169,8 +166,8 @@ export function useNostrChatStateSync({
 
   const schedulePublish = useCallback(() => {
     if (!settingsRef.current.enabled || !settingsRef.current.nostrPK) return;
-    if (chatSyncStateCovers(knownRemoteRef.current, localState())) return;
     if (publishTimerRef.current != null) return;
+    if (!chatSyncStateToPublish(knownRemoteRef.current, localState(), Math.floor(Date.now() / 1000))) return;
     publishTimerRef.current = window.setTimeout(() => {
       publishTimerRef.current = null;
       flush();

@@ -148,4 +148,28 @@ final class AppStateSyncTests: XCTestCase {
         XCTAssertTrue(snapshot.applySyncedReadThrough(["peerb": 5]))
         XCTAssertFalse(snapshot.applySyncedReadThrough(["peerb": 4]))
     }
+
+    func testPrunedChatStateFitsRelaySizeBudget() throws {
+        var state = ChatSyncState()
+        for index in 1...1000 {
+            state.readThrough[String(format: "%064x", index)] = 1_790_000_000 + index
+            state.inboxResponses[String(format: "%064x", index + 5000)] = .init(status: .accepted, at: 1_790_000_000 + index)
+        }
+        let pruned = state.pruned(nowSeconds: 1_790_001_000)
+        let payload = ChatStateSyncPayload(timestamp: 1_790_001_000, state: pruned)
+        let bytes = try JSONEncoder().encode(payload).count
+        XCTAssertLessThanOrEqual(bytes, ChatSyncState.maxPlaintextBytes)
+        XCTAssertEqual(pruned.readThrough[String(format: "%064x", 1000)], 1_790_001_000)
+        XCTAssertNil(pruned.readThrough[String(format: "%064x", 1)])
+    }
+
+    func testEntriesPruningWouldDropNeverTriggerAPublish() {
+        let now = 1_790_000_000
+        let known = ChatSyncState(readThrough: ["recent": now - 10])
+        let local = ChatSyncState(readThrough: ["recent": now - 10, "ancient": 1_000])
+        XCTAssertNil(known.toPublish(merging: local, nowSeconds: now))
+        var fresh = local
+        fresh.readThrough["fresh"] = now
+        XCTAssertEqual(known.toPublish(merging: fresh, nowSeconds: now)?.readThrough, ["recent": now - 10, "fresh": now])
+    }
 }

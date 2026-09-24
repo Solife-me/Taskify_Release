@@ -38,4 +38,5 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 - [Native board view performance — 2026-09-12](audits/native-board-performance-2026-09-12.md)
 - [Nostr sync pipeline audit — September 3, 2026](audits/nostr-sync-audit-2026-09-03.md)
 - [PWA / iOS task and DM history recovery](audits/pwa-client-history-sync-2026-09-11.md)
+- [Relay traffic audit — September 24, 2026](audits/relay-traffic-audit-2026-09-24.md)
 - [Solife physical-device performance audit — September 3, 2026](audits/solife-performance-audit-2026-09-03.md)

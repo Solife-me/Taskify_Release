@@ -5,6 +5,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { finalizeEvent, getPublicKey } from "nostr-tools";
 import { decryptNostrSyncPayload, encryptNostrSyncPayload } from "../nostrAppState";
+import { LS_DM_THREAD_READ_STATE } from "../localStorageKeys";
+import { idbKeyValue } from "../storage/idbKeyValue";
+import { TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
 import { chatStateSyncBus } from "./chatStateSyncBus";
 import { useNostrChatStateSync } from "./useNostrChatStateSync";
 
@@ -70,6 +73,7 @@ async function remoteEvent(payload: Record<string, unknown>, createdAt: number) 
 
 beforeEach(() => {
   localStorage.clear();
+  try { idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_THREAD_READ_STATE, "{}"); } catch {}
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
   vi.setSystemTime(new Date("2026-09-24T12:00:00Z"));
 });
@@ -153,6 +157,21 @@ test("a shared item that arrives after another device answered it is answered on
     device.applyRemoteInboxResponses.mockClear();
     await device.render({ pendingInboxEventIds: ["wrap-late"] });
     expect(device.applyRemoteInboxResponses).toHaveBeenCalledWith({ "wrap-late": { status: "accepted", at: 1_790_000_050 } });
+  } finally {
+    await device.unmount();
+  }
+});
+
+test("a read marker too old to publish never triggers a publish", async () => {
+  const device = setup();
+  await device.render();
+  try {
+    // 2025: older than the 180-day window the published state keeps.
+    chatStateSyncBus.reportLocalReadThrough({ ancient: 1_735_000_000 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    chatStateSyncBus.reportLocalReadThrough({ ancient: 1_735_000_001 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(device.published).toHaveLength(0);
   } finally {
     await device.unmount();
   }

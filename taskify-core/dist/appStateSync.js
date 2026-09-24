@@ -329,24 +329,68 @@ export function chatSyncStateCovers(remote, local) {
     }
     return true;
 }
+/**
+ * The chat state to publish when merging `local` into what the relays hold (`known`) would
+ * change the published, pruned state; `null` when there is nothing to publish. Entries pruning
+ * would drop (too old, or over the size budget) never count as unpublished, so they cannot
+ * cause a republish loop.
+ */
+export function chatSyncStateToPublish(known, local, nowSeconds) {
+    if (chatSyncStateCovers(known, local))
+        return null;
+    const next = pruneChatSyncState(mergeChatSyncStates(known, local), { nowSeconds });
+    return chatSyncStatesEqual(next, known) ? null : next;
+}
 export function chatSyncStatesEqual(a, b) {
     return stableStringify(a) === stableStringify(b);
 }
 /**
- * Keeps the synced chat state small: drops shared-item responses older than `maxAgeSeconds`
- * and keeps only the newest `maxEntries` of each map. A dropped read marker costs at most a
- * stale unread badge on a device that never opened that conversation.
+ * The chat state payload's plaintext ceiling. NIP-44 refuses plaintext over 65,535 bytes, and
+ * common relays reject events over 64 KB (strfry's default); encryption plus base64 grows the
+ * content by about a third, so this leaves room for both.
+ */
+export const CHAT_SYNC_MAX_PLAINTEXT_BYTES = 32 * 1024;
+/**
+ * Keeps the synced chat state small enough to publish: drops entries older than
+ * `maxAgeSeconds`, keeps the newest `maxEntries` of each map, then drops the oldest remaining
+ * entries until the payload fits `maxBytes`. A dropped read marker costs at most a stale unread
+ * badge on a device that never opened that conversation.
  */
 export function pruneChatSyncState(state, options) {
     const maxAge = options.maxAgeSeconds ?? 180 * 24 * 60 * 60;
     const maxEntries = options.maxEntries ?? 1000;
+    const maxBytes = options.maxBytes ?? CHAT_SYNC_MAX_PLAINTEXT_BYTES;
     const cutoff = options.nowSeconds - maxAge;
-    const newest = (record, time) => Object.fromEntries(Object.entries(record)
-        .filter(([, value]) => time(value) >= cutoff)
-        .sort(([ka, a], [kb, b]) => time(b) - time(a) || compareStrings(ka, kb))
-        .slice(0, maxEntries));
-    return {
-        readThrough: newest(state.readThrough, (seconds) => seconds),
-        inboxResponses: newest(state.inboxResponses, (response) => response.at),
+    const newest = (map, record, time) => Object.entries(record)
+        .map(([key, value]) => ({ map, key, time: time(value), value }))
+        .filter((entry) => entry.time >= cutoff)
+        .sort((a, b) => b.time - a.time || compareStrings(a.key, b.key))
+        .slice(0, maxEntries);
+    // Newest first across both maps, so trimming for size drops the oldest of either kind.
+    const entries = [
+        ...newest("readThrough", state.readThrough, (seconds) => seconds),
+        ...newest("inboxResponses", state.inboxResponses, (response) => response.at),
+    ].sort((a, b) => b.time - a.time || compareStrings(a.key, b.key));
+    const build = (count) => {
+        const result = emptyChatSyncState();
+        for (const entry of entries.slice(0, count)) {
+            result[entry.map][entry.key] = entry.value;
+        }
+        return result;
     };
+    // Room for the payload's version and timestamp fields.
+    const envelopeBytes = 64;
+    const fits = (count) => new TextEncoder().encode(JSON.stringify(build(count))).length + envelopeBytes <= maxBytes;
+    if (fits(entries.length))
+        return build(entries.length);
+    let low = 0;
+    let high = entries.length;
+    while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        if (fits(mid))
+            low = mid;
+        else
+            high = mid - 1;
+    }
+    return build(low);
 }
