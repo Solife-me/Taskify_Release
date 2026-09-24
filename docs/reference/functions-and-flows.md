@@ -314,7 +314,8 @@ dispatchAgentCommand('{"v":1,"id":"x","op":"task.create","params":{...}}')
 
 4. (If scripture memory task — board kind "bible")
    → Update scripture memory progress in IDB
-   → Publish scripture sync event (kind 30078) to Nostr
+   → Publish scripture sync event (kind 30078) to Nostr; other devices merge it three ways
+     (see `app-state-sync.md`)
         Content: NIP-44 encrypted NostrScriptureMemorySyncPayload
         src/nostrAppState.ts: encryptNostrSyncPayload()
 

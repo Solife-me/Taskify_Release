@@ -261,6 +261,16 @@ import { useShareBoardState } from "./ui/board/useShareBoardState";
 import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
 import { WalletAddressView } from "./ui/wallet/WalletAddressView";
 import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
+import { useNostrChatStateSync } from "./nostr/useNostrChatStateSync";
+import {
+  applyInboxResponsesToCalendarInvites,
+  applyInboxResponsesToTasks,
+  collectCalendarInviteResponses,
+  collectInboxResponses,
+  pendingCalendarInviteEventIds,
+  pendingInboxEventIds,
+} from "./domains/inbox/inboxResponseSync";
+import type { ChatInboxResponse } from "taskify-core";
 import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
 import { useWalletShellState } from "./ui/wallet/useWalletShellState";
 import { UpcomingControls } from "./ui/upcoming/UpcomingControls";
@@ -894,11 +904,18 @@ export default function App() {
     toggleItemSelection,
   } = useSelectionMode({ calendarEvents, tasks });
   const {
+    calendarInvites,
+    calendarInvitesRef,
     formatCalendarInviteWhen,
     pendingCalendarInvites,
     setCalendarInvites,
     unreadCalendarInviteCount,
   } = useCalendarInvites();
+  // Set once `addAcceptedInviteToCalendar` is defined further down; the chat state sync above it
+  // uses this to show an invite another device accepted.
+  const acceptedInviteMaterializerRef = useRef<
+    ((invite: CalendarInvite, status: CalendarRsvpStatus) => Promise<unknown>) | null
+  >(null);
   const [editing, setEditing] = useState<EditingState | null>(null);
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
   const {
@@ -1204,8 +1221,15 @@ export default function App() {
       if (targetBoard.kind === "lists" && (!targetBoard.columns || targetBoard.columns.length === 0)) {
         return changed ? boundedTasks : prev;
       }
+      // A date-derived id, like every later occurrence in the series: two devices that each
+      // find no active review task (say, one whose passages synced before its tasks did)
+      // create the same task instead of duplicates.
+      const newTaskId = recurringInstanceId(SCRIPTURE_MEMORY_SERIES_ID, dueISO, recurrence);
+      if (boundedTasks.some((task) => task.id === newTaskId)) {
+        return changed ? boundedTasks : prev;
+      }
       const newTask: Task = {
-        id: crypto.randomUUID(),
+        id: newTaskId,
         boardId: targetBoard.id,
         title: `Review ${formatScriptureReference(selection.entry)}`,
         createdAt: Date.now(),
@@ -1910,6 +1934,8 @@ export default function App() {
         ...invite,
         id: existing.id || invite.id,
         status: existing.status,
+        respondedAt: existing.respondedAt,
+        dmEventIds: Array.from(new Set([...(existing.dmEventIds ?? []), ...(invite.dmEventIds ?? [])])),
         sender: existing.sender ?? invite.sender,
         relays: existing.relays?.length ? existing.relays : invite.relays,
         receivedAt: existing.receivedAt || invite.receivedAt,
@@ -1921,11 +1947,12 @@ export default function App() {
     });
   }, [setCalendarInvites]);
 
-  const addInboxCalendarInvite = useCallback((item: SharedCalendarEventInvitePayload, sender: InboxSender) => {
+  const addInboxCalendarInvite = useCallback((item: SharedCalendarEventInvitePayload, sender: InboxSender, dmEventId: string) => {
     const nowISO = new Date().toISOString();
     upsertCalendarInvite({
       id: item.canonical,
       source: "dm",
+      dmEventIds: dmEventId ? [dmEventId.trim().toLowerCase()] : undefined,
       eventId: item.eventId,
       canonical: item.canonical,
       view: item.view,
@@ -2050,7 +2077,7 @@ export default function App() {
         npub: envelope.sender?.npub,
       };
       if (envelope.item.type === "event") {
-        addInboxCalendarInvite(envelope.item as SharedCalendarEventInvitePayload, sender);
+        addInboxCalendarInvite(envelope.item as SharedCalendarEventInvitePayload, sender, event.id);
         void sendInboxDeletion(event.id);
         return;
       }
@@ -2233,6 +2260,43 @@ export default function App() {
     showSettings,
     showToast,
     tagValue,
+  });
+
+  const localInboxResponses = useMemo(
+    () => ({ ...collectInboxResponses(tasks), ...collectCalendarInviteResponses(calendarInvites) }),
+    [calendarInvites, tasks],
+  );
+  const pendingInboxIds = useMemo(
+    () => [...pendingInboxEventIds(tasks), ...pendingCalendarInviteEventIds(calendarInvites)].sort(),
+    [calendarInvites, tasks],
+  );
+  const applyRemoteInboxResponses = useCallback(
+    (responses: Record<string, ChatInboxResponse>) => {
+      setTasks((prev) => applyInboxResponsesToTasks(prev, responses));
+      const { invites, accepted } = applyInboxResponsesToCalendarInvites(calendarInvitesRef.current, responses);
+      if (invites === calendarInvitesRef.current) return;
+      calendarInvitesRef.current = invites;
+      setCalendarInvites(invites);
+      // Another device accepted: show the event here too. Adding it is local; the RSVP was
+      // already sent by the device that answered.
+      for (const invite of accepted) {
+        const status = invite.status === "tentative" ? "tentative" : "accepted";
+        void acceptedInviteMaterializerRef.current?.(invite, status);
+      }
+    },
+    [calendarInvitesRef, setCalendarInvites, setTasks],
+  );
+  useNostrChatStateSync({
+    enabled: settings.nostrBackupEnabled,
+    defaultRelays,
+    nostrPK,
+    nostrPublishRef,
+    nostrSK,
+    pool,
+    tagValue,
+    localInboxResponses,
+    pendingInboxEventIds: pendingInboxIds,
+    applyRemoteInboxResponses,
   });
 
   useNostrSubscriptions({
@@ -9738,8 +9802,14 @@ export default function App() {
   function setCalendarInviteStatus(coord: string, status: CalendarInviteStatus) {
     const normalized = (coord || "").trim();
     if (!normalized) return;
+    // A response is stamped so it syncs to the user's other devices; "read" is not a response.
+    const respondedAt = status === "read" || status === "pending" ? undefined : new Date().toISOString();
     setCalendarInvites((prev) =>
-      prev.map((invite) => (invite.canonical === normalized ? { ...invite, status } : invite)),
+      prev.map((invite) =>
+        invite.canonical === normalized
+          ? { ...invite, status, ...(respondedAt ? { respondedAt } : {}) }
+          : invite,
+      ),
     );
   }
 
@@ -10045,6 +10115,7 @@ export default function App() {
     },
     [boards, defaultRelays, inboxRelays, pool, setCalendarEvents, settings.newTaskPosition, settings.weekStart, showToast],
   );
+  acceptedInviteMaterializerRef.current = addAcceptedInviteToCalendar;
 
   async function publishCalendarRsvp(
     canonical: string,

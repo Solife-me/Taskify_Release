@@ -1,7 +1,12 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import {
+  bibleTrackerSyncContent,
+  bibleTrackerSyncKey,
+  mergeBibleTrackerStates,
+  mergeScriptureMemoryStates,
   normalizeRelayListSorted,
+  scriptureMemorySyncKey,
   type Board,
 } from "taskify-core";
 import {
@@ -29,7 +34,9 @@ import {
 import { kvStorage } from "../storage/kvStorage";
 import {
   LS_NOSTR_BACKUP_STATE,
+  LS_NOSTR_BIBLE_TRACKER_SYNC_BASE,
   LS_NOSTR_BIBLE_TRACKER_SYNC_STATE,
+  LS_NOSTR_SCRIPTURE_MEMORY_SYNC_BASE,
   LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE,
 } from "../nostrKeys";
 import {
@@ -53,6 +60,43 @@ import { useNostrSubscriptions } from "./useNostrSubscriptions";
 import type { NostrPublishFn } from "./useNostrIdentity";
 
 const NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS = 1500;
+
+function loadSyncBase<T>(storageKey: string, sanitize: (raw: unknown) => T): T | null {
+  try {
+    const raw = kvStorage.getItem(storageKey);
+    return raw ? sanitize(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSyncBase(storageKey: string, value: unknown) {
+  try {
+    if (value == null) kvStorage.removeItem(storageKey);
+    else kvStorage.setItem(storageKey, JSON.stringify(value));
+  } catch {}
+}
+
+/**
+ * Published alongside Bible tracker / scripture memory payloads: the timestamp of the synced
+ * state the sender last merged with, or 0 when the sender has never synced (a fresh install, or
+ * relays unreachable on its first pull). A fresh sender's copy is missing everything it never
+ * saw, so receivers must not read those gaps as deletions.
+ */
+function syncBaseTimestamp(base: unknown, state: NostrBackupState): number {
+  return base ? state.lastTimestamp || 0 : 0;
+}
+
+/** The base to merge an incoming payload against. Older clients omit `baseTimestamp`. */
+function sharedSyncBase<T>(parsed: { baseTimestamp?: unknown }, base: T | null): T | null {
+  return parsed.baseTimestamp === 0 ? null : base;
+}
+
+/** Skip our own echo and anything older than what this device already has. */
+function isStaleSyncEvent(ev: NostrEvent, payloadTs: number, state: NostrBackupState): boolean {
+  if (ev.id && ev.id === state.lastEventId) return true;
+  return payloadTs < (state.lastTimestamp || 0);
+}
 
 type NostrBackupSnapshot = {
   boards: NostrAppBackupBoard[];
@@ -146,6 +190,13 @@ export function useNostrAppBackupSync({
   const nostrBibleTrackerQueuedPublishRef = useRef(false);
   const nostrBibleTrackerDebounceTimerRef = useRef<number | null>(null);
   const nostrBibleTrackerErrorToastAtRef = useRef(0);
+  const nostrBibleTrackerBaseRef = useRef<BibleTrackerState | null>(
+    loadSyncBase(LS_NOSTR_BIBLE_TRACKER_SYNC_BASE, sanitizeBibleTrackerState),
+  );
+  const setNostrBibleTrackerBase = useCallback((next: BibleTrackerState | null) => {
+    nostrBibleTrackerBaseRef.current = next;
+    saveSyncBase(LS_NOSTR_BIBLE_TRACKER_SYNC_BASE, next);
+  }, []);
   useEffect(() => {
     setNostrBibleTrackerState((prev) => {
       if (prev.pubkey === nostrPK) return prev;
@@ -153,9 +204,10 @@ export function useNostrAppBackupSync({
       nostrBibleTrackerPullFinishedRef.current = false;
       nostrBibleTrackerPublishedSnapshotRef.current = null;
       nostrBibleTrackerQueuedPublishRef.current = false;
+      if (prev.pubkey) setNostrBibleTrackerBase(null);
       return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
     });
-  }, [nostrPK]);
+  }, [nostrPK, setNostrBibleTrackerBase]);
 
   const [nostrScriptureMemoryState, setNostrScriptureMemoryState] = useState<NostrBackupState>(() =>
     loadNostrSyncState(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_STATE),
@@ -171,15 +223,27 @@ export function useNostrAppBackupSync({
   const nostrScriptureMemoryPublishRef = useRef<Promise<void> | null>(null);
   const nostrScriptureMemoryDebounceTimerRef = useRef<number | null>(null);
   const nostrScriptureMemoryErrorToastAtRef = useRef(0);
+  const nostrScriptureMemoryQueuedPublishRef = useRef(false);
+  const scriptureMemoryRef = useRef(scriptureMemory);
+  scriptureMemoryRef.current = scriptureMemory;
+  const nostrScriptureMemoryBaseRef = useRef<ScriptureMemoryState | null>(
+    loadSyncBase(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_BASE, sanitizeScriptureMemoryState),
+  );
+  const setNostrScriptureMemoryBase = useCallback((next: ScriptureMemoryState | null) => {
+    nostrScriptureMemoryBaseRef.current = next;
+    saveSyncBase(LS_NOSTR_SCRIPTURE_MEMORY_SYNC_BASE, next);
+  }, []);
   useEffect(() => {
     setNostrScriptureMemoryState((prev) => {
       if (prev.pubkey === nostrPK) return prev;
       nostrScriptureMemoryInitialPublishRef.current = false;
       nostrScriptureMemoryPullFinishedRef.current = false;
       nostrScriptureMemoryPublishedSnapshotRef.current = null;
+      nostrScriptureMemoryQueuedPublishRef.current = false;
+      if (prev.pubkey) setNostrScriptureMemoryBase(null);
       return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
     });
-  }, [nostrPK]);
+  }, [nostrPK, setNostrScriptureMemoryBase]);
 
   const nostrApplyQueue = useRef<Promise<void>>(Promise.resolve());
   const enqueueNostrApply = useCallback((fn: () => Promise<void>) => {
@@ -233,21 +297,20 @@ export function useNostrAppBackupSync({
     if (!parsed || typeof parsed !== "object") return;
     if (parsed.version !== 1) return;
     const payloadTs = Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0);
-    const lastTs = nostrBibleTrackerStateRef.current.lastTimestamp || 0;
-    if (payloadTs <= lastTs) {
-      if (!nostrBibleTrackerStateRef.current.lastEventId && ev.id) {
-        setNostrBibleTrackerState((prev) => ({ ...prev, lastEventId: ev.id }));
-      }
-      return;
-    }
+    if (isStaleSyncEvent(ev, payloadTs, nostrBibleTrackerStateRef.current)) return;
     const incoming = sanitizeBibleTrackerState(parsed.bibleTracker);
-    setBibleTracker(incoming);
-    nostrBibleTrackerPublishedSnapshotRef.current = JSON.stringify(incoming);
-    nostrBibleTrackerQueuedPublishRef.current = false;
+    const base = sharedSyncBase(parsed, nostrBibleTrackerBaseRef.current);
+    // Merge rather than overwrite, so progress recorded here since the last sync survives. If
+    // the merge differs from `incoming`, the publish effect sends it back out.
+    const merged = mergeBibleTrackerStates(base, bibleTrackerRef.current, incoming);
+    bibleTrackerRef.current = merged;
+    setBibleTracker((prev) => mergeBibleTrackerStates(base, prev, incoming));
+    setNostrBibleTrackerBase(incoming);
+    nostrBibleTrackerPublishedSnapshotRef.current = bibleTrackerSyncKey(incoming);
     const nextState = { lastEventId: ev.id || null, lastTimestamp: payloadTs, pubkey: nostrPK || null };
     nostrBibleTrackerStateRef.current = nextState;
     setNostrBibleTrackerState(nextState);
-  }, [nostrPK, nostrSK, setBibleTracker, settings.nostrBackupEnabled, tagValue]);
+  }, [bibleTrackerRef, nostrPK, nostrSK, setBibleTracker, setNostrBibleTrackerBase, settings.nostrBackupEnabled, tagValue]);
 
   const applyNostrScriptureMemorySyncEvent = useCallback(async (ev: NostrEvent) => {
     if (!settings.nostrBackupEnabled) return;
@@ -266,20 +329,18 @@ export function useNostrAppBackupSync({
     if (!parsed || typeof parsed !== "object") return;
     if (parsed.version !== 1) return;
     const payloadTs = Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0);
-    const lastTs = nostrScriptureMemoryStateRef.current.lastTimestamp || 0;
-    if (payloadTs <= lastTs) {
-      if (!nostrScriptureMemoryStateRef.current.lastEventId && ev.id) {
-        setNostrScriptureMemoryState((prev) => ({ ...prev, lastEventId: ev.id }));
-      }
-      return;
-    }
+    if (isStaleSyncEvent(ev, payloadTs, nostrScriptureMemoryStateRef.current)) return;
     const incoming = sanitizeScriptureMemoryState(parsed.scriptureMemory);
-    setScriptureMemory(incoming);
-    nostrScriptureMemoryPublishedSnapshotRef.current = JSON.stringify(incoming);
+    const base = sharedSyncBase(parsed, nostrScriptureMemoryBaseRef.current);
+    const merged = mergeScriptureMemoryStates(base, scriptureMemoryRef.current, incoming);
+    scriptureMemoryRef.current = merged;
+    setScriptureMemory((prev) => mergeScriptureMemoryStates(base, prev, incoming));
+    setNostrScriptureMemoryBase(incoming);
+    nostrScriptureMemoryPublishedSnapshotRef.current = scriptureMemorySyncKey(incoming);
     const nextState = { lastEventId: ev.id || null, lastTimestamp: payloadTs, pubkey: nostrPK || null };
     nostrScriptureMemoryStateRef.current = nextState;
     setNostrScriptureMemoryState(nextState);
-  }, [nostrPK, nostrSK, setScriptureMemory, settings.nostrBackupEnabled, tagValue]);
+  }, [nostrPK, nostrSK, setNostrScriptureMemoryBase, setScriptureMemory, settings.nostrBackupEnabled, tagValue]);
 
   const nostrList = useCallback(
     async (relays: string[], filters: any[]): Promise<NostrEvent[]> => {
@@ -451,10 +512,15 @@ export function useNostrAppBackupSync({
     const relays = normalizeNostrRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
     if (!relays.length) return;
     const tracker = bibleTrackerRef.current;
-    const snapshotString = JSON.stringify(tracker);
+    const snapshotString = bibleTrackerSyncKey(tracker);
     const nowSeconds = Math.floor(Date.now() / 1000);
     const timestamp = Math.max(nowSeconds, (nostrBibleTrackerStateRef.current.lastTimestamp || 0) + 1);
-    const payload = { version: 1, timestamp, bibleTracker: tracker } as const;
+    const payload = {
+      version: 1,
+      timestamp,
+      baseTimestamp: syncBaseTimestamp(nostrBibleTrackerBaseRef.current, nostrBibleTrackerStateRef.current),
+      bibleTracker: bibleTrackerSyncContent(tracker),
+    } as const;
     const skHex = bytesToHex(nostrSK);
     const content = await encryptNostrSyncPayload(payload, skHex, nostrPK);
     const result = await nostrPublishRef.current(
@@ -480,17 +546,24 @@ export function useNostrAppBackupSync({
     nostrBibleTrackerStateRef.current = nextState;
     setNostrBibleTrackerState(nextState);
     nostrBibleTrackerPublishedSnapshotRef.current = snapshotString;
-  }, [defaultRelays, nostrPK, nostrPublishRef, nostrSK, settings.nostrBackupEnabled, bibleTrackerRef]);
+    setNostrBibleTrackerBase(tracker);
+  }, [defaultRelays, nostrPK, nostrPublishRef, nostrSK, settings.nostrBackupEnabled, bibleTrackerRef, setNostrBibleTrackerBase]);
 
   const publishNostrScriptureMemory = useCallback(async () => {
     if (!settings.nostrBackupEnabled) return;
     if (!nostrPK) return;
     const relays = normalizeNostrRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
     if (!relays.length) return;
-    const snapshotString = JSON.stringify(scriptureMemory);
+    const scriptureMemory = scriptureMemoryRef.current;
+    const snapshotString = scriptureMemorySyncKey(scriptureMemory);
     const nowSeconds = Math.floor(Date.now() / 1000);
     const timestamp = Math.max(nowSeconds, (nostrScriptureMemoryStateRef.current.lastTimestamp || 0) + 1);
-    const payload = { version: 1, timestamp, scriptureMemory } as const;
+    const payload = {
+      version: 1,
+      timestamp,
+      baseTimestamp: syncBaseTimestamp(nostrScriptureMemoryBaseRef.current, nostrScriptureMemoryStateRef.current),
+      scriptureMemory,
+    } as const;
     const skHex = bytesToHex(nostrSK);
     const content = await encryptNostrSyncPayload(payload, skHex, nostrPK);
     const result = await nostrPublishRef.current(
@@ -516,7 +589,8 @@ export function useNostrAppBackupSync({
     nostrScriptureMemoryStateRef.current = nextState;
     setNostrScriptureMemoryState(nextState);
     nostrScriptureMemoryPublishedSnapshotRef.current = snapshotString;
-  }, [defaultRelays, nostrPK, nostrPublishRef, nostrSK, scriptureMemory, settings.nostrBackupEnabled]);
+    setNostrScriptureMemoryBase(scriptureMemory);
+  }, [defaultRelays, nostrPK, nostrPublishRef, nostrSK, setNostrScriptureMemoryBase, settings.nostrBackupEnabled]);
 
   const enqueueNostrBibleTrackerPublish = useCallback(() => {
     if (nostrBibleTrackerPublishRef.current) {
@@ -536,7 +610,7 @@ export function useNostrAppBackupSync({
         nostrBibleTrackerPublishRef.current = null;
         if (!nostrBibleTrackerQueuedPublishRef.current) return;
         nostrBibleTrackerQueuedPublishRef.current = false;
-        const currentSnapshot = JSON.stringify(bibleTrackerRef.current);
+        const currentSnapshot = bibleTrackerSyncKey(bibleTrackerRef.current);
         if (nostrBibleTrackerPublishedSnapshotRef.current === currentSnapshot) return;
         enqueueNostrBibleTrackerPublish().catch(() => {});
       });
@@ -545,7 +619,10 @@ export function useNostrAppBackupSync({
   }, [bibleTrackerRef, publishNostrBibleTracker, showToast]);
 
   const enqueueNostrScriptureMemoryPublish = useCallback(() => {
-    if (nostrScriptureMemoryPublishRef.current) return nostrScriptureMemoryPublishRef.current;
+    if (nostrScriptureMemoryPublishRef.current) {
+      nostrScriptureMemoryQueuedPublishRef.current = true;
+      return nostrScriptureMemoryPublishRef.current;
+    }
     const task = publishNostrScriptureMemory()
       .catch((error) => {
         console.warn("Failed to publish scripture memory sync", error);
@@ -557,6 +634,11 @@ export function useNostrAppBackupSync({
       })
       .finally(() => {
         nostrScriptureMemoryPublishRef.current = null;
+        if (!nostrScriptureMemoryQueuedPublishRef.current) return;
+        nostrScriptureMemoryQueuedPublishRef.current = false;
+        const currentSnapshot = scriptureMemorySyncKey(scriptureMemoryRef.current);
+        if (nostrScriptureMemoryPublishedSnapshotRef.current === currentSnapshot) return;
+        enqueueNostrScriptureMemoryPublish().catch(() => {});
       });
     nostrScriptureMemoryPublishRef.current = task;
     return task;
@@ -848,7 +930,7 @@ export function useNostrAppBackupSync({
   useEffect(() => {
     if (!settings.nostrBackupEnabled) return;
     if (showSettings || !nostrPK || !nostrBibleTrackerPullFinishedRef.current) return;
-    const currentSnapshot = JSON.stringify(bibleTracker);
+    const currentSnapshot = bibleTrackerSyncKey(bibleTracker);
     if (nostrBibleTrackerPublishedSnapshotRef.current === null) {
       nostrBibleTrackerPublishedSnapshotRef.current = currentSnapshot;
       return;
@@ -878,7 +960,7 @@ export function useNostrAppBackupSync({
   useEffect(() => {
     if (!settings.nostrBackupEnabled) return;
     if (showSettings || !nostrPK || !nostrScriptureMemoryPullFinishedRef.current) return;
-    const currentSnapshot = JSON.stringify(scriptureMemory);
+    const currentSnapshot = scriptureMemorySyncKey(scriptureMemory);
     if (nostrScriptureMemoryPublishedSnapshotRef.current === null) {
       nostrScriptureMemoryPublishedSnapshotRef.current = currentSnapshot;
       return;

@@ -4,6 +4,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
+import { chatStateSyncBus } from "../../nostr/chatStateSyncBus";
 import {
   LS_CONTACT_PROFILE_CACHE,
   LS_DM_ARCHIVED_THREADS,
@@ -516,6 +517,18 @@ export function useDmState({
   const [dmLeftGroupsVersion, setDmLeftGroupsVersion] = useState(0);
   const dmThreadReadAtRef = useRef<Map<string, number>>(readStoredTimestampMap(LS_DM_THREAD_READ_STATE));
   const [dmThreadReadAtVersion, setDmThreadReadAtVersion] = useState(0);
+  // Read markers advanced on another device. Storage was already updated by the sync hook.
+  useEffect(() => chatStateSyncBus.onRemoteReadThrough((readThrough) => {
+    let next: Map<string, number> | null = null;
+    for (const [key, seconds] of Object.entries(readThrough)) {
+      if (seconds <= (dmThreadReadAtRef.current.get(key) ?? 0)) continue;
+      next ??= new Map(dmThreadReadAtRef.current);
+      next.set(key, seconds);
+    }
+    if (!next) return;
+    dmThreadReadAtRef.current = next;
+    setDmThreadReadAtVersion((value) => value + 1);
+  }), []);
   const [attachTrayOpen, setAttachTrayOpen] = useState(false);
   const [chatKeyboardHeight, setChatKeyboardHeight] = useState(0);
   const [chatKeyboardHeightCache, setChatKeyboardHeightCache] = useState(() => measureDefaultChatAttachTrayHeight());

@@ -202,6 +202,14 @@ final class AppModel {
                 || snapshot.contacts != oldValue.contacts {
                 directMessageRevision &+= 1
             }
+            // Read markers and shared-item responses sync to the user's other devices.
+            if snapshot.directMessageReadAt != oldValue.directMessageReadAt
+                || snapshot.sharedInboxItems != oldValue.sharedInboxItems
+                || snapshot.sharedContactInboxItems != oldValue.sharedContactInboxItems
+                || snapshot.sharedBoardInboxItems != oldValue.sharedBoardInboxItems
+                || snapshot.sharedCalendarInviteItems != oldValue.sharedCalendarInviteItems {
+                scheduleAppStatePublish(AppStateSyncContract.chatStateDTag)
+            }
 #if os(iOS)
             TaskifyPerfMonitor.shared.recordSnapshotWrite()
 #endif
@@ -320,6 +328,14 @@ final class AppModel {
     @ObservationIgnored private var ownProfileEventID: String?
     @ObservationIgnored private var ownProfileEventContent: String?
     @ObservationIgnored private var ownProfileLoadTask: Task<Void, Never>?
+    /// The one Bible tracker store for the app, so a change synced from another device reaches
+    /// every view showing it.
+    @ObservationIgnored let bibleTrackerStore = BibleTrackerStore()
+    @ObservationIgnored private var appStateLedger = AppModel.loadAppStateLedger()
+    @ObservationIgnored private var appStateFetchTask: Task<Void, Never>?
+    @ObservationIgnored private var appStatePublishTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var lastAppStateFetchAt: Date?
+    @ObservationIgnored private var isApplyingSyncedScriptureMemory = false
 
     init(
         store: JSONTaskStore = JSONTaskStore(),
@@ -331,6 +347,9 @@ final class AppModel {
         self.identityStore = identityStore
         self.syncEngine = syncEngine
         self.notificationCoordinator = notificationCoordinator
+        bibleTrackerStore.onLocalChange = { [weak self] _ in
+            self?.scheduleAppStatePublish(AppStateSyncContract.bibleTrackerDTag)
+        }
         Task { await load() }
     }
 
@@ -344,6 +363,8 @@ final class AppModel {
         sharedInboxProcessingTask?.cancel()
         ownProfileLoadTask?.cancel()
         deferredStartupTask?.cancel()
+        appStateFetchTask?.cancel()
+        appStatePublishTasks.values.forEach { $0.cancel() }
     }
 
     var visibleBoards: [Board] {
@@ -493,6 +514,7 @@ final class AppModel {
     func pendingPublishScopeLabel(_ scope: String) -> String {
         switch scope {
         case Self.accountBackupOutboxScope: return "Account backup"
+        case "__taskify-app-state__": return "Bible, scripture and chat sync"
         case Self.contactsOutboxScope: return "Contacts"
         case Self.nip17PreferencesOutboxScope: return "Inbox preference"
         case Self.sharedInboxOutboxScope: return "Shared inbox"
@@ -3575,6 +3597,9 @@ final class AppModel {
     private func persistScriptureMemoryState() {
         guard let data = try? JSONEncoder().encode(scriptureMemoryState) else { return }
         UserDefaults.standard.set(data, forKey: Self.scriptureMemoryStorageKey)
+        if !isApplyingSyncedScriptureMemory {
+            scheduleAppStatePublish(AppStateSyncContract.scriptureMemoryDTag)
+        }
     }
 
     /// Boards a scripture-memory review task can be created on. Compound boards are excluded:
@@ -3611,7 +3636,12 @@ final class AppModel {
         reconcileScriptureMemory()
     }
 
-    func updateScriptureMemorySettings(enabled: Bool, boardID: String?, frequency: ScriptureMemoryFrequency) {
+    func updateScriptureMemorySettings(
+        enabled: Bool,
+        boardID: String?,
+        frequency: ScriptureMemoryFrequency,
+        publish: Bool = true
+    ) {
         ScriptureMemorySettings.setEnabled(enabled)
         ScriptureMemorySettings.setBoardID(boardID)
         ScriptureMemorySettings.setFrequency(frequency)
@@ -3619,6 +3649,7 @@ final class AppModel {
         scriptureMemoryBoardID = ScriptureMemorySettings.boardID
         scriptureMemoryFrequency = ScriptureMemorySettings.frequency
         reconcileScriptureMemory()
+        if publish { scheduleAccountBackupPublish() }
     }
 
     func setScriptureMemorySort(_ sort: ScriptureMemorySort) {
@@ -3767,8 +3798,10 @@ final class AppModel {
                   let completedAt = task.completedAt,
                   let entryIndex = entryIndexByID[entryID] else { continue }
             let entry = scriptureMemoryState.entries[entryIndex]
-            if let entryLastReview = entry.lastReviewISO.flatMap({ isoFormatter.date(from: $0) }),
-               entryLastReview >= completedAt {
+            if ScriptureMemoryAlgorithm.reviewAlreadyApplied(
+                completedAt: completedAt,
+                entryLastReviewISO: entry.lastReviewISO
+            ) {
                 continue
             }
             let stageBefore = task.scriptureMemoryStage ?? entry.stage
@@ -3914,7 +3947,18 @@ final class AppModel {
             let nextOrder = newTaskPosition == .top
                 ? (siblingOrders.min() ?? 1) - 1
                 : (siblingOrders.max() ?? -1) + 1
+            // A date-derived id, like every later occurrence in the series: two devices that each
+            // find no active review task (say, one whose passages synced before its tasks did)
+            // create the same task instead of duplicates. An existing task with that id — even a
+            // completed or deleted one — is never recreated.
+            let bootstrapID = ScriptureMemoryAlgorithm.bootstrapTaskID(dueDate: dueDate, calendar: calendar)
+            guard !snapshot.tasks.contains(where: { $0.id == bootstrapID }) else {
+                if stateChanged { persistScriptureMemoryState() }
+                if !updatedTaskIDs.isEmpty { synchronizeTasks(updatedTaskIDs.sorted()) }
+                return updatedTaskIDs
+            }
             let task = TaskItem(
+                id: bootstrapID,
                 boardID: targetBoard.id,
                 title: "Review \(ScriptureMemoryAlgorithm.reference(for: selection.entry))",
                 dueDate: dueDate,
@@ -5044,6 +5088,7 @@ final class AppModel {
             if let identity = self.cachedIdentity {
                 self.refreshAccountSync(identity: identity)
             }
+            self.refreshAppStateSyncIfNeeded()
         }
     }
 
@@ -5656,8 +5701,14 @@ final class AppModel {
                 )
             }
             if effects.snapshotChanged {
+                // A shared item can arrive here after another device already answered it.
+                let previousInvites = updatedSnapshot.sharedCalendarInviteItems ?? []
+                if let known = appStateLedger.chat.synced?.inboxResponses, !known.isEmpty {
+                    updatedSnapshot.applySyncedInboxResponses(known)
+                }
                 snapshot = updatedSnapshot
                 scheduleSave()
+                materializeSyncedCalendarInvites(previous: previousInvites)
             }
             if effects.shouldReconfigureSync {
                 reconfigureSync()
@@ -7133,6 +7184,13 @@ final class AppModel {
         updatedPayload.settings[WalletCurrencySettings.denominationDisplayPWAKey] = .string(
             walletDenominationDisplay.rawValue
         )
+        updatedPayload.settings[ScriptureMemorySettings.enabledPWAKey] = .boolean(scriptureMemoryEnabled)
+        updatedPayload.settings[ScriptureMemorySettings.frequencyPWAKey] = .string(scriptureMemoryFrequency.rawValue)
+        if let nostrBoardID = scriptureMemoryBoardID
+            .flatMap({ id in snapshot.boards.first(where: { $0.id == id }) })?.effectiveNostrBoardID,
+           let pwaBoardID = updatedPayload.boards.first(where: { $0.nostrID == nostrBoardID })?.id {
+            updatedPayload.settings[ScriptureMemorySettings.boardIDPWAKey] = .string(pwaBoardID)
+        }
         let relayURLs = updatedPayload.defaultRelayURLs.isEmpty
             ? appRelays
             : updatedPayload.defaultRelayURLs
@@ -7210,6 +7268,33 @@ final class AppModel {
             WalletCurrencySettings.setDenominationDisplay(display)
             walletDenominationDisplay = display
         }
+        applySyncedScriptureMemorySettings(from: payload)
+    }
+
+    /// Scripture Memory settings shared with the PWA. Every client re-homes review tasks onto its
+    /// own configured board and frequency, so two devices set differently would keep moving the
+    /// same tasks back and forth. The PWA names boards by local id; `payload.boards` maps that to
+    /// the shared Nostr board id this device knows the board by.
+    private func applySyncedScriptureMemorySettings(from payload: NostrAppBackupPayload) {
+        var enabled = scriptureMemoryEnabled
+        var boardID = scriptureMemoryBoardID
+        var frequency = scriptureMemoryFrequency
+        if case .boolean(let value)? = payload.settings[ScriptureMemorySettings.enabledPWAKey] {
+            enabled = value
+        }
+        if case .string(let value)? = payload.settings[ScriptureMemorySettings.frequencyPWAKey],
+           let parsed = ScriptureMemoryFrequency(rawValue: value) {
+            frequency = parsed
+        }
+        if case .string(let pwaBoardID)? = payload.settings[ScriptureMemorySettings.boardIDPWAKey],
+           let nostrBoardID = payload.boards.first(where: { $0.id == pwaBoardID })?.nostrID,
+           let board = snapshot.boards.first(where: { $0.effectiveNostrBoardID == nostrBoardID }) {
+            boardID = board.id
+        }
+        guard enabled != scriptureMemoryEnabled
+            || boardID != scriptureMemoryBoardID
+            || frequency != scriptureMemoryFrequency else { return }
+        updateScriptureMemorySettings(enabled: enabled, boardID: boardID, frequency: frequency, publish: false)
     }
 
     private func refreshNotifications(requestPermission: Bool) {
@@ -7270,6 +7355,302 @@ final class AppModel {
         let hour = parts.first.flatMap { Int($0) }.map { min(max($0, 0), 23) } ?? 9
         let minute = parts.dropFirst().first.flatMap { Int($0) }.map { min(max($0, 0), 59) } ?? 0
         return String(format: "%02d:%02d", hour, minute)
+    }
+}
+
+// MARK: - App state sync (Bible tracker, scripture memory, chat state)
+
+extension AppModel {
+    private static let appStateOutboxScope = "__taskify-app-state__"
+    private static let appStateLedgerKey = "taskify.appStateSync.ledger.v1"
+    /// Foreground returns re-check at most this often: one REQ per relay covers all three records.
+    private static let appStateFetchInterval: TimeInterval = 30
+    /// Read markers move whenever a conversation is viewed, so they are coalesced into one
+    /// replaceable event per quiet period instead of one per message.
+    private static let chatStatePublishDelay: Duration = .seconds(15)
+    private static let appStatePublishDelay: Duration = .seconds(2)
+
+    static func loadAppStateLedger() -> AppStateSyncLedger {
+        guard let data = UserDefaults.standard.data(forKey: appStateLedgerKey),
+              let ledger = try? JSONDecoder().decode(AppStateSyncLedger.self, from: data) else {
+            return AppStateSyncLedger()
+        }
+        return ledger
+    }
+
+    private func saveAppStateLedger() {
+        guard let data = try? JSONEncoder().encode(appStateLedger) else { return }
+        UserDefaults.standard.set(data, forKey: Self.appStateLedgerKey)
+    }
+
+    /// A ledger belongs to one account; switching identities starts it over.
+    private func appStateLedgerIdentity() -> NostrIdentity? {
+        guard let identity = cachedIdentity else { return nil }
+        if appStateLedger.publicKey != identity.publicKeyHex {
+            appStateLedger = AppStateSyncLedger(publicKey: identity.publicKeyHex)
+            saveAppStateLedger()
+        }
+        return identity
+    }
+
+    private var appStateRelayURLs: [String] {
+        TaskifyRelayURL.normalizedList(appRelays + (accountBackupBaseline?.defaultRelayURLs ?? []))
+    }
+
+    /// Throttled entry point for app launch and foreground returns.
+    func refreshAppStateSyncIfNeeded() {
+        guard !isLoading,
+              appStateFetchTask == nil,
+              lastAppStateFetchAt.map({ Date().timeIntervalSince($0) > Self.appStateFetchInterval }) ?? true else {
+            return
+        }
+        appStateFetchTask = Task { [weak self] in
+            await self?.fetchAppState()
+            self?.appStateFetchTask = nil
+        }
+    }
+
+    /// Publishes anything still waiting on its debounce, e.g. as the app leaves the foreground,
+    /// so the next device picked up already sees it. Queued publishes survive in the outbox.
+    func flushAppStateSync() {
+        let pending = appStatePublishTasks.keys
+        for dTag in pending {
+            appStatePublishTasks[dTag]?.cancel()
+            appStatePublishTasks[dTag] = Task { [weak self] in
+                await self?.publishAppState(dTag)
+                // A cancelled task was replaced; leave the replacement's slot alone.
+                if !Task.isCancelled { self?.appStatePublishTasks[dTag] = nil }
+            }
+        }
+    }
+
+    func scheduleAppStatePublish(_ dTag: String) {
+        guard !isLoading, cachedIdentity != nil else { return }
+        if dTag == AppStateSyncContract.chatStateDTag {
+            // Cheap check first: most snapshot writes (new messages, pending shares) leave
+            // nothing new to publish. A pending timer is not restarted, bounding the delay.
+            let known = appStateLedger.chat.synced ?? ChatSyncState()
+            guard !known.covers(snapshot.chatSyncState), appStatePublishTasks[dTag] == nil else { return }
+        } else {
+            appStatePublishTasks[dTag]?.cancel()
+        }
+        let delay = dTag == AppStateSyncContract.chatStateDTag ? Self.chatStatePublishDelay : Self.appStatePublishDelay
+        appStatePublishTasks[dTag] = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            await self.publishAppState(dTag)
+            // A cancelled task was replaced; leave the replacement's slot alone.
+            if !Task.isCancelled { self.appStatePublishTasks[dTag] = nil }
+        }
+    }
+
+    private func fetchAppState() async {
+        guard let identity = appStateLedgerIdentity() else { return }
+        let lookupRelays = TaskifyRelayURL.normalizedList(appStateRelayURLs + snapshot.boards.flatMap(\.effectiveRelayURLs))
+        let latest = await AppStateSyncFinder.findLatest(publicKey: identity.publicKeyHex, relayURLs: lookupRelays)
+        guard !Task.isCancelled, appStateLedger.publicKey == identity.publicKeyHex else { return }
+        lastAppStateFetchAt = Date()
+        let decoded: [(dTag: String, event: NostrEvent, plaintext: Data)] = await Task.detached(priority: .utility) {
+            latest.values.compactMap { event in
+                (try? AppStateSyncContract.decrypt(event: event, identity: identity)).map { ($0.dTag, event, $0.plaintext) }
+            }
+        }.value
+        for item in decoded {
+            applyAppStateEvent(dTag: item.dTag, event: item.event, plaintext: item.plaintext)
+        }
+        // Nothing synced yet anywhere: seed the relays with what this device has.
+        if latest[AppStateSyncContract.bibleTrackerDTag] == nil,
+           appStateLedger.bibleTracker.synced == nil,
+           bibleTrackerStore.state.hasSyncableContent {
+            scheduleAppStatePublish(AppStateSyncContract.bibleTrackerDTag)
+        }
+        if latest[AppStateSyncContract.scriptureMemoryDTag] == nil,
+           appStateLedger.scriptureMemory.synced == nil,
+           !scriptureMemoryState.entries.isEmpty {
+            scheduleAppStatePublish(AppStateSyncContract.scriptureMemoryDTag)
+        }
+        scheduleAppStatePublish(AppStateSyncContract.chatStateDTag)
+    }
+
+    private func applyAppStateEvent(dTag: String, event: NostrEvent, plaintext: Data) {
+        let decoder = JSONDecoder()
+        switch dTag {
+        case AppStateSyncContract.bibleTrackerDTag:
+            guard !appStateLedger.bibleTracker.isStale(eventID: event.id, createdAt: event.createdAt),
+                  let payload = try? decoder.decode(BibleTrackerSyncPayload.self, from: plaintext),
+                  payload.version == 1 else { return }
+            let incoming = payload.bibleTracker
+            let base = AppStateSyncContract.sharedBase(
+                baseTimestamp: payload.baseTimestamp,
+                localBase: appStateLedger.bibleTracker.synced
+            )
+            let merged = bibleTrackerStore.state.merged(with: incoming, base: base)
+            bibleTrackerStore.applySyncedState(merged)
+            appStateLedger.bibleTracker.record(
+                eventID: event.id,
+                timestamp: max(payload.timestamp, event.createdAt),
+                synced: incoming
+            )
+            saveAppStateLedger()
+            // This device had changes the other one had not seen: send the merge back.
+            if !merged.syncEquivalent(to: incoming) {
+                scheduleAppStatePublish(dTag)
+            }
+        case AppStateSyncContract.scriptureMemoryDTag:
+            guard !appStateLedger.scriptureMemory.isStale(eventID: event.id, createdAt: event.createdAt),
+                  let payload = try? decoder.decode(ScriptureMemorySyncPayload.self, from: plaintext),
+                  payload.version == 1 else { return }
+            let incoming = payload.scriptureMemory
+            let base = AppStateSyncContract.sharedBase(
+                baseTimestamp: payload.baseTimestamp,
+                localBase: appStateLedger.scriptureMemory.synced
+            )
+            let merged = scriptureMemoryState.merged(with: incoming, base: base)
+            appStateLedger.scriptureMemory.record(
+                eventID: event.id,
+                timestamp: max(payload.timestamp, event.createdAt),
+                synced: incoming
+            )
+            saveAppStateLedger()
+            if merged != scriptureMemoryState {
+                isApplyingSyncedScriptureMemory = true
+                scriptureMemoryState = merged
+                persistScriptureMemoryState()
+                isApplyingSyncedScriptureMemory = false
+                // New or reviewed passages can change which review task should exist.
+                _ = reconcileScriptureMemory()
+            }
+            if !scriptureMemoryState.syncEquivalent(to: incoming) {
+                scheduleAppStatePublish(dTag)
+            }
+        case AppStateSyncContract.chatStateDTag:
+            guard !appStateLedger.chat.isStale(eventID: event.id, createdAt: event.createdAt),
+                  let payload = try? decoder.decode(ChatStateSyncPayload.self, from: plaintext),
+                  payload.version == 1 else { return }
+            let incoming = payload.state
+            appStateLedger.chat.record(
+                eventID: event.id,
+                timestamp: max(payload.timestamp, event.createdAt),
+                synced: (appStateLedger.chat.synced ?? ChatSyncState()).merged(with: incoming)
+            )
+            saveAppStateLedger()
+            var updated = snapshot
+            let previousInvites = updated.sharedCalendarInviteItems ?? []
+            let readChanged = updated.applySyncedReadThrough(incoming.readThrough)
+            let responsesChanged = updated.applySyncedInboxResponses(incoming.inboxResponses)
+            if readChanged || responsesChanged {
+                snapshot = updated
+                scheduleSave()
+            }
+            if responsesChanged {
+                materializeSyncedCalendarInvites(previous: previousInvites)
+            }
+        default:
+            return
+        }
+    }
+
+    /// Adds invites another device accepted (or marked maybe) to this device's calendar, as
+    /// accepting here would. Local only: the RSVP already went out from the device that answered.
+    private func materializeSyncedCalendarInvites(previous: [SharedCalendarInviteInboxItem]) {
+        let wasPending = Set(previous.filter { $0.status == .pending }.map(\.id))
+        let accepted = snapshot.sharedCalendarInvites.filter {
+            wasPending.contains($0.id) && ($0.status == .accepted || $0.status == .tentative)
+        }
+        guard !accepted.isEmpty else { return }
+        Task { [weak self] in
+            for item in accepted {
+                guard let self else { return }
+                let relays = TaskifyRelayURL.normalizedList((item.event.relayURLs ?? []) + self.sharedInboxRelayURLs)
+                guard !relays.isEmpty,
+                      let event = try? await TaskifyEventInvitationResolver.resolve(
+                          invite: item.event,
+                          status: item.status,
+                          relayURLs: relays
+                      ) else { continue }
+                var updated = self.snapshot
+                if updated.upsertTaskifyEvent(event) {
+                    self.snapshot = updated
+                    self.scheduleSave()
+                }
+            }
+        }
+    }
+
+    private func publishAppState(_ dTag: String) async {
+        guard let identity = appStateLedgerIdentity() else { return }
+        let relays = appStateRelayURLs
+        guard !relays.isEmpty else { return }
+        // Bible tracker and scripture memory pick up the newest remote copy first when it has not
+        // been checked recently, so this publish carries the other devices' changes too.
+        if dTag != AppStateSyncContract.chatStateDTag,
+           lastAppStateFetchAt.map({ Date().timeIntervalSince($0) > Self.appStateFetchInterval }) ?? true {
+            await fetchAppState()
+            guard !Task.isCancelled else { return }
+        }
+        let createdAt: Int
+        let eventBuilder: @Sendable () throws -> NostrEvent
+        let commit: (NostrEvent) -> Void
+        switch dTag {
+        case AppStateSyncContract.bibleTrackerDTag:
+            let state = bibleTrackerStore.state
+            let entry = appStateLedger.bibleTracker
+            if let synced = entry.synced, synced.syncEquivalent(to: state) { return }
+            createdAt = entry.nextTimestamp()
+            let payload = BibleTrackerSyncPayload(timestamp: createdAt, baseTimestamp: entry.baseTimestamp, bibleTracker: state)
+            eventBuilder = { try AppStateSyncContract.event(dTag: dTag, payload: payload, identity: identity, createdAt: createdAt) }
+            commit = { [weak self] event in
+                self?.appStateLedger.bibleTracker.record(eventID: event.id, timestamp: createdAt, synced: state)
+            }
+        case AppStateSyncContract.scriptureMemoryDTag:
+            let state = scriptureMemoryState
+            let entry = appStateLedger.scriptureMemory
+            if let synced = entry.synced, synced.syncEquivalent(to: state) { return }
+            createdAt = entry.nextTimestamp()
+            let payload = ScriptureMemorySyncPayload(timestamp: createdAt, baseTimestamp: entry.baseTimestamp, scriptureMemory: state)
+            eventBuilder = { try AppStateSyncContract.event(dTag: dTag, payload: payload, identity: identity, createdAt: createdAt) }
+            commit = { [weak self] event in
+                self?.appStateLedger.scriptureMemory.record(eventID: event.id, timestamp: createdAt, synced: state)
+            }
+        case AppStateSyncContract.chatStateDTag:
+            let known = appStateLedger.chat.synced ?? ChatSyncState()
+            let local = snapshot.chatSyncState
+            guard !known.covers(local) else { return }
+            createdAt = appStateLedger.chat.nextTimestamp()
+            let next = known.merged(with: local).pruned(nowSeconds: createdAt)
+            let payload = ChatStateSyncPayload(timestamp: createdAt, state: next)
+            eventBuilder = { try AppStateSyncContract.event(dTag: dTag, payload: payload, identity: identity, createdAt: createdAt) }
+            commit = { [weak self] event in
+                self?.appStateLedger.chat.record(eventID: event.id, timestamp: createdAt, synced: next)
+            }
+        default:
+            return
+        }
+        do {
+            let event = try await TaskifyRelayProofOfWork.prepare(relays: relays, operation: eventBuilder)
+            await syncEngine.configure(
+                boards: snapshot.boardsForSync,
+                auxiliaryRelayURLs: TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + relays),
+                inboxPublicKey: identity.publicKeyHex,
+                inboxRelayURLs: effectiveNIP17InboxRelayURLs
+            )
+            try await syncEngine.publish(
+                event,
+                relayURLs: relays,
+                outboxScope: Self.appStateOutboxScope,
+                recordID: dTag
+            )
+            commit(event)
+            saveAppStateLedger()
+        } catch {
+            // Left unrecorded, so the next change or foreground check tries again.
+        }
+    }
+}
+
+private extension BibleTrackerState {
+    var hasSyncableContent: Bool {
+        !progress.isEmpty || !archive.isEmpty || !verses.isEmpty || !completedBooks.isEmpty
     }
 }
 

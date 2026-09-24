@@ -250,6 +250,25 @@ public actor NostrRelayConnection {
         ])
     }
 
+    /// One REQ for every per-account app-state event (Bible tracker, scripture memory, chat
+    /// state); each is a replaceable event, so a relay returns at most one per d-tag.
+    public func subscribeToAppState(
+        id: String,
+        authorPublicKey: String,
+        dTags: [String]
+    ) async throws {
+        try await send([
+            "REQ",
+            id,
+            [
+                "kinds": [AppStateSyncContract.eventKind],
+                "authors": [authorPublicKey],
+                "#d": dTags,
+                "limit": dTags.count * 2,
+            ] as [String: Any],
+        ])
+    }
+
     public func subscribeToSharedInbox(
         id: String,
         recipientPublicKey: String,

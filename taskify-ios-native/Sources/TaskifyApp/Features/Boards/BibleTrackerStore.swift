@@ -1,47 +1,21 @@
 import Foundation
 import TaskifyCore
 
-/// A single completed-book marker, ported from the PWA's `BibleTrackerCompletedBooks`.
-struct BibleTrackerCompletedBook: Codable, Equatable {
-    var completedAtISO: String
-}
-
-/// A progress snapshot captured on reset, ported from the PWA's `BibleTrackerArchiveEntry`.
-struct BibleTrackerArchiveEntry: Codable, Equatable, Identifiable {
-    var id: String
-    var savedAtISO: String
-    var lastResetISO: String
-    /// bookID -> chapters read
-    var progress: [String: [Int]]
-    /// bookID -> chapter (as string, matching JSON's stringified numeric keys) -> verses read
-    var verses: [String: [String: [Int]]]
-    /// bookID -> chapter -> verse count recorded at selection time
-    var verseCounts: [String: [String: Int]]
-    var completedBooks: [String: BibleTrackerCompletedBook]
-}
-
-/// Local-only Bible reading progress state, ported from the PWA's `BibleTrackerState`
-/// (`components/BibleTracker.tsx`). Unlike boards/tasks, this never syncs via Nostr.
-struct BibleTrackerState: Codable, Equatable {
-    var lastResetISO: String
-    var progress: [String: [Int]] = [:]
-    var archive: [BibleTrackerArchiveEntry] = []
-    var verses: [String: [String: [Int]]] = [:]
-    var verseCounts: [String: [String: Int]] = [:]
-    var completedBooks: [String: BibleTrackerCompletedBook] = [:]
-
-    static func initial(now: Date = Date()) -> BibleTrackerState {
-        BibleTrackerState(lastResetISO: ISO8601DateFormatter().string(from: now))
-    }
-}
-
 /// Persists and mutates `BibleTrackerState` locally (UserDefaults), matching the PWA's
 /// `useBibleTracker()` hook which stores the same shape under a single local kvStorage key.
 @MainActor
 final class BibleTrackerStore: ObservableObject {
     @Published private(set) var state: BibleTrackerState {
-        didSet { persist() }
+        didSet {
+            persist()
+            if !isApplyingSyncedState, state != oldValue { onLocalChange?(state) }
+        }
     }
+
+    /// Called after a change made on this device, so it can be synced to the user's other
+    /// devices. Not called for `applySyncedState`.
+    var onLocalChange: ((BibleTrackerState) -> Void)?
+    private var isApplyingSyncedState = false
 
     private let defaults: UserDefaults
     private static let storageKey = "taskify.bible.tracker.state.v1"
@@ -203,6 +177,14 @@ final class BibleTrackerStore: ObservableObject {
         state.verses = entry.verses
         state.verseCounts = entry.verseCounts
         state.completedBooks = entry.completedBooks
+    }
+
+    /// Replaces the state with one merged from another device's copy.
+    func applySyncedState(_ next: BibleTrackerState) {
+        guard next != state else { return }
+        isApplyingSyncedState = true
+        state = next
+        isApplyingSyncedState = false
     }
 
     private func persist() {

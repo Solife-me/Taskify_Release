@@ -74,6 +74,7 @@ type ReplaceableSubscriptionConfig = {
 type UseNostrSubscriptionsParams = {
   appBackup?: ReplaceableSubscriptionConfig;
   bibleTracker?: ReplaceableSubscriptionConfig;
+  chatState?: ReplaceableSubscriptionConfig;
   calendarViews?: CalendarViewSubscriptionConfig;
   scriptureMemory?: ReplaceableSubscriptionConfig;
   sharedInbox?: SharedInboxSubscriptionConfig;
@@ -298,6 +299,7 @@ export function useNostrSubscriptions({
   appBackup,
   bibleTracker,
   calendarViews,
+  chatState,
   scriptureMemory,
   sharedInbox,
 }: UseNostrSubscriptionsParams) {
@@ -306,4 +308,5 @@ export function useNostrSubscriptions({
   useReplaceableSubscription(appBackup);
   useReplaceableSubscription(bibleTracker);
   useReplaceableSubscription(scriptureMemory);
+  useReplaceableSubscription(chatState);
 }

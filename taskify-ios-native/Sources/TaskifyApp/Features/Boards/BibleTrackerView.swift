@@ -12,7 +12,9 @@ private enum BibleTrackerDateFormatting {
 /// and reset-to-archive, including the PWA-compatible physical print/scan round trip.
 struct BibleTrackerView: View {
     @Environment(AppModel.self) private var model
-    @StateObject private var store = BibleTrackerStore()
+    /// The app's shared store (`AppModel.bibleTrackerStore`), so progress synced from another
+    /// device shows up here.
+    @ObservedObject var store: BibleTrackerStore
     let showCompletedBooks: Bool
 
     @State private var selectedTestament: BibleTestament = .old

@@ -37,6 +37,47 @@ public struct ScriptureMemoryEntry: Codable, Identifiable, Equatable, Sendable {
         self.stage = stage
         self.totalReviews = totalReviews
     }
+
+    /// The PWA and the synced payload spell the book key `bookId`; storage written by older
+    /// native builds used `bookID`. Both decode, and entries encode with the PWA's spelling so the
+    /// same JSON works locally and on the wire.
+    private enum CodingKeys: String, CodingKey {
+        case id, bookId, bookID, chapter, startVerse, endVerse, addedAtISO, lastReviewISO
+        case scheduledAtISO, stage, totalReviews
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id).flatMap { $0.isEmpty ? nil : $0 }
+            ?? UUID().uuidString
+        bookID = try container.decodeIfPresent(String.self, forKey: .bookId)
+            ?? container.decode(String.self, forKey: .bookID)
+        chapter = try container.decode(Int.self, forKey: .chapter)
+        startVerse = try container.decodeIfPresent(Int.self, forKey: .startVerse)
+        endVerse = try container.decodeIfPresent(Int.self, forKey: .endVerse)
+        addedAtISO = try container.decodeIfPresent(String.self, forKey: .addedAtISO)
+            ?? ISO8601DateFormatter().string(from: Date())
+        lastReviewISO = try container.decodeIfPresent(String.self, forKey: .lastReviewISO)
+        scheduledAtISO = try container.decodeIfPresent(String.self, forKey: .scheduledAtISO)
+        stage = try container.decodeIfPresent(Int.self, forKey: .stage) ?? 0
+        totalReviews = try container.decodeIfPresent(Int.self, forKey: .totalReviews) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(bookID, forKey: .bookId)
+        try container.encode(chapter, forKey: .chapter)
+        // Explicit nulls: a whole-chapter passage has no verses, and the PWA reads a missing
+        // key and a null the same way.
+        try container.encode(startVerse, forKey: .startVerse)
+        try container.encode(endVerse, forKey: .endVerse)
+        try container.encode(addedAtISO, forKey: .addedAtISO)
+        try container.encodeIfPresent(lastReviewISO, forKey: .lastReviewISO)
+        try container.encodeIfPresent(scheduledAtISO, forKey: .scheduledAtISO)
+        try container.encode(stage, forKey: .stage)
+        try container.encode(totalReviews, forKey: .totalReviews)
+    }
 }
 
 public struct ScriptureMemoryState: Codable, Equatable, Sendable {
@@ -128,6 +169,12 @@ public enum ScriptureMemoryAlgorithm {
     /// exists so a long session can't grow this without limit.
     private static let isoParserLock = NSLock()
     nonisolated(unsafe) private static let isoParser = ISO8601DateFormatter()
+    /// The PWA writes millisecond timestamps, which the default formatter rejects.
+    nonisolated(unsafe) private static let fractionalISOParser: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
     nonisolated(unsafe) private static var isoCache: [String: Date] = [:]
     private static let isoCacheCapacity = 1_024
 
@@ -136,7 +183,9 @@ public enum ScriptureMemoryAlgorithm {
         isoParserLock.lock()
         defer { isoParserLock.unlock() }
         if let cached = isoCache[value] { return cached }
-        guard let parsed = isoParser.date(from: value) else { return nil }
+        guard let parsed = isoParser.date(from: value) ?? fractionalISOParser.date(from: value) else {
+            return nil
+        }
         if isoCache.count >= isoCacheCapacity { isoCache.removeAll(keepingCapacity: true) }
         isoCache[value] = parsed
         return parsed
@@ -150,6 +199,28 @@ public enum ScriptureMemoryAlgorithm {
         for (index, book) in BibleCatalog.books.enumerated() { order[book.id] = index }
         return order
     }()
+
+    /// Whether the entry already reflects a review completed at `completedAt`. Compared at
+    /// whole-second precision: `lastReviewISO` is written without the sub-second part that
+    /// `completedAt` carries, and an exact comparison would re-apply the same review forever.
+    public static func reviewAlreadyApplied(completedAt: Date, entryLastReviewISO: String?) -> Bool {
+        guard let lastReview = parseISODate(entryLastReviewISO) else { return false }
+        return lastReview.timeIntervalSince1970 >= completedAt.timeIntervalSince1970.rounded(.down)
+    }
+
+    /// Id for the first review task of the series, matching the PWA's
+    /// `recurringInstanceId(SCRIPTURE_MEMORY_SERIES_ID, dueISO)` and the ids every later
+    /// occurrence gets, so devices creating it independently produce one task.
+    public static func bootstrapTaskID(dueDate: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: dueDate)
+        return String(
+            format: "recurrence:%@:%04d-%02d-%02d",
+            seriesID,
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+    }
 
     public static func recurrence(for frequency: ScriptureMemoryFrequency) -> TaskRecurrence {
         frequency.days == 1

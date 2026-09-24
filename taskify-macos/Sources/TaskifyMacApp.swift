@@ -5,7 +5,7 @@ import TaskifyCore
 @MainActor
 final class MacRuntime: ObservableObject {
     let model: AppModel
-    let bible = BibleTrackerStore()
+    var bible: BibleTrackerStore { model.bibleTrackerStore }
     let calendar = DeviceCalendarStore()
     let wallet = WalletViewModel()
     private var started = false
@@ -72,6 +72,7 @@ final class MacRuntime: ObservableObject {
         model.refreshFullWeekRecurrencesIfNeeded()
         model.refreshContactsIfNeeded()
         model.refreshAccountSyncIfNeeded()
+        model.refreshAppStateSyncIfNeeded()
         wallet.appDidBecomeActive()
     }
 }
@@ -118,6 +119,7 @@ struct TaskifyMacApp: App {
         .commands { MacCommands() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { runtime.resume() }
+            if phase == .background { runtime.model.flushAppStateSync() }
         }
         Settings {
             MacSettingsView()

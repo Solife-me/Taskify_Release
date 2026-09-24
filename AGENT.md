@@ -192,6 +192,10 @@ npx wrangler dev
 | `src/ui/board/DroppableColumn.test.tsx` | PWA board columns | Drop ordering, multi-selection payloads, empty drops, and keyboard/selection controls |
 | `taskify-cli/tests/command-registration.test.ts` | CLI command composition | Bundled help/arguments plus isolated contact persistence, profile selection, lookup, trust/relay mutations, cache status/clearing, and error exits |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
+| `taskify-core/tests/app-state-sync-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/AppStateSyncTests.swift` | Cross-device app state sync | Three-way Bible tracker/scripture merges with PWA↔native parity, chat-state merge/prune, event round trip; see `docs/reference/app-state-sync.md` |
+| `src/nostr/useNostrChatStateSync.test.tsx`, `src/domains/inbox/inboxResponseSync.test.ts` | PWA chat state sync | Coalesced publishing, echo suppression, remote read markers and shared-item and calendar-invite responses |
+| `src/nostr/boardVerifyUnseen.test.tsx` | PWA board sync | Re-verification of tasks missing from a board's initial sync is applied, and ignored after teardown |
+| `taskify-ios-native/Tests/TaskifyCoreTests/ScriptureMemorySyncTests.swift`, `src/domains/scripture/scriptureUtils.test.ts` | Scripture memory | Review applied exactly once across timestamp precisions, PWA key spelling, whole-chapter passages, shared review-task ids |
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 | `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
