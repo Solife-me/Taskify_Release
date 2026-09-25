@@ -45,9 +45,15 @@ public struct KeychainNWCConnectionStore: NWCConnectionStore {
     }
 
     public func save(_ uri: String) throws {
-        delete()
+        let data = Data(uri.utf8)
+        let update: [String: Any] = [kSecValueData as String: data]
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(updateStatus))
+        }
         var attributes = query
-        attributes[kSecValueData as String] = Data(uri.utf8)
+        attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(attributes as CFDictionary, nil)
         guard status == errSecSuccess else {
@@ -89,6 +95,47 @@ public struct NWCWalletSettings {
     }
 }
 
+/// Non-secret information Taskify can show for a saved NWC wallet. Connection strings stay in
+/// the Keychain-backed store and are only exposed deliberately when the user opts in to sharing
+/// the active connection with a Lightning-address provider.
+public struct NWCWalletSummary: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let receiveAddress: String?
+    public let walletLightningAddress: String?
+
+    public init(id: String, name: String, receiveAddress: String?, walletLightningAddress: String?) {
+        self.id = id
+        self.name = name
+        self.receiveAddress = receiveAddress
+        self.walletLightningAddress = walletLightningAddress
+    }
+
+    public var displayedReceiveAddress: String? { receiveAddress ?? walletLightningAddress }
+}
+
+private struct StoredNWCWallet: Codable, Equatable {
+    var id: String
+    var name: String
+    var uri: String
+    var receiveAddress: String?
+
+    var summary: NWCWalletSummary {
+        let connection = try? NWCConnection(uri: uri)
+        return NWCWalletSummary(
+            id: id,
+            name: name,
+            receiveAddress: receiveAddress,
+            walletLightningAddress: connection?.walletLightningAddress
+        )
+    }
+}
+
+private struct StoredNWCWalletCatalog: Codable {
+    var activeWalletID: String?
+    var wallets: [StoredNWCWallet]
+}
+
 public struct NWCWalletStatus: Equatable, Sendable {
     public let connection: NWCConnection
     public let info: NWCWalletInfo?
@@ -108,6 +155,7 @@ public actor NWCWalletService {
     private let journalURL: URL
     private let transport: any NWCTransport
     private var client: NWCClient?
+    private var catalog: StoredNWCWalletCatalog
     private var sweeping = false
 
     public init(
@@ -118,28 +166,95 @@ public actor NWCWalletService {
         self.store = store
         self.journalURL = journalURL
         self.transport = transport
-        if let uri = store.load(), let connection = try? NWCConnection(uri: uri) {
+        let loaded = Self.loadCatalog(from: store)
+        catalog = loaded
+        if let record = loaded.wallets.first(where: { $0.id == loaded.activeWalletID }),
+           let connection = try? NWCConnection(uri: record.uri) {
             client = NWCClient(connection: connection, transport: transport)
         }
     }
 
     public var connection: NWCConnection? { client?.connection }
+    public var wallets: [NWCWalletSummary] { catalog.wallets.map(\.summary) }
+    public var activeWalletID: String? { catalog.activeWalletID }
+
+    /// Returns the active secret only for an explicit user-authorized hand-off, such as enabling
+    /// solife.me invoice forwarding. UI should otherwise use `wallets`, which is safely redacted.
+    public var activeConnectionURI: String? {
+        catalog.wallets.first(where: { $0.id == catalog.activeWalletID })?.uri
+    }
 
     /// Parses, checks and saves a connection. Only saved if the wallet answers.
     @discardableResult
-    public func connect(uri: String) async throws -> NWCWalletStatus {
+    public func connect(uri: String, name requestedName: String? = nil) async throws -> NWCWalletStatus {
         let connection = try NWCConnection(uri: uri)
         let candidate = NWCClient(connection: connection, transport: transport)
         let info = try await candidate.getInfo()
         let balance = try? await candidate.getBalanceMsat()
-        try store.save(connection.uri)
+        let requested = requestedName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = requested?.isEmpty == false
+            ? requested!
+            : (info.alias ?? connection.walletName ?? "NWC wallet")
+        let record: StoredNWCWallet
+        if let index = catalog.wallets.firstIndex(where: { $0.uri == connection.uri }) {
+            catalog.wallets[index].name = name
+            record = catalog.wallets[index]
+        } else {
+            record = StoredNWCWallet(id: UUID().uuidString, name: name, uri: connection.uri, receiveAddress: nil)
+            catalog.wallets.append(record)
+        }
+        catalog.activeWalletID = record.id
+        try saveCatalog()
         client = candidate
         return NWCWalletStatus(connection: connection, info: info, balanceSat: balance.map { $0 / 1_000 })
     }
 
+    @discardableResult
+    public func selectWallet(id: String) throws -> NWCWalletSummary {
+        guard let record = catalog.wallets.first(where: { $0.id == id }),
+              let connection = try? NWCConnection(uri: record.uri) else {
+            throw NWCError.invalidConnection("That wallet is no longer available.")
+        }
+        catalog.activeWalletID = id
+        try saveCatalog()
+        client = NWCClient(connection: connection, transport: transport)
+        return record.summary
+    }
+
+    public func renameWallet(id: String, name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let index = catalog.wallets.firstIndex(where: { $0.id == id }) else {
+            throw NWCError.invalidConnection("Enter a wallet name.")
+        }
+        catalog.wallets[index].name = trimmed
+        try saveCatalog()
+    }
+
+    public func setReceiveAddress(_ address: String?, for id: String) throws {
+        guard let index = catalog.wallets.firstIndex(where: { $0.id == id }) else {
+            throw NWCError.invalidConnection("That wallet is no longer available.")
+        }
+        catalog.wallets[index].receiveAddress = address
+        try saveCatalog()
+    }
+
     public func disconnect() {
-        store.delete()
-        client = nil
+        guard let active = catalog.activeWalletID else { return }
+        removeWallet(id: active)
+    }
+
+    public func removeWallet(id: String) {
+        catalog.wallets.removeAll { $0.id == id }
+        if catalog.activeWalletID == id {
+            catalog.activeWalletID = catalog.wallets.first?.id
+        }
+        if catalog.wallets.isEmpty {
+            store.delete()
+            client = nil
+        } else {
+            try? saveCatalog()
+            reloadActiveClient()
+        }
     }
 
     public func status() async -> NWCWalletStatus? {
@@ -147,6 +262,42 @@ public actor NWCWalletService {
         let info = try? await client.getInfo()
         let balance = try? await client.getBalanceMsat()
         return NWCWalletStatus(connection: client.connection, info: info, balanceSat: balance.map { $0 / 1_000 })
+    }
+
+    private static func loadCatalog(from store: any NWCConnectionStore) -> StoredNWCWalletCatalog {
+        guard let raw = store.load(), !raw.isEmpty else {
+            return StoredNWCWalletCatalog(activeWalletID: nil, wallets: [])
+        }
+        if let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(StoredNWCWalletCatalog.self, from: data) {
+            return decoded
+        }
+        // Seamlessly adopt the one-wallet format used before multi-wallet support.
+        if let connection = try? NWCConnection(uri: raw) {
+            let record = StoredNWCWallet(
+                id: UUID().uuidString,
+                name: connection.walletName ?? "NWC wallet",
+                uri: connection.uri,
+                receiveAddress: NWCWalletSettings().receiveAddress
+            )
+            return StoredNWCWalletCatalog(activeWalletID: record.id, wallets: [record])
+        }
+        return StoredNWCWalletCatalog(activeWalletID: nil, wallets: [])
+    }
+
+    private func saveCatalog() throws {
+        let data = try JSONEncoder().encode(catalog)
+        guard let raw = String(data: data, encoding: .utf8) else { throw NWCError.invalidResponse }
+        try store.save(raw)
+    }
+
+    private func reloadActiveClient() {
+        guard let record = catalog.wallets.first(where: { $0.id == catalog.activeWalletID }),
+              let connection = try? NWCConnection(uri: record.uri) else {
+            client = nil
+            return
+        }
+        client = NWCClient(connection: connection, transport: transport)
     }
 
     private func requireClient() throws -> NWCClient {

@@ -105,11 +105,6 @@ struct SettingsView: View {
                             appearanceCard
                         }
 
-                        settingsGroup("Wallet", systemImage: "bitcoinsign.circle.fill") {
-                            walletCurrencyCard
-                            p2pkRecipientKeysCard
-                        }
-
                         settingsGroup("Chat", systemImage: "bubble.left.and.text.bubble.right.fill") {
                             chatHistoryCard
                         }

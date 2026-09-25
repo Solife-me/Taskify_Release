@@ -648,3 +648,85 @@ final class NWCClientTests: XCTestCase {
         XCTAssertEqual(readLog.relays, ["wss://a", "wss://b"])
     }
 }
+
+private final class MemoryNWCConnectionStore: NWCConnectionStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+
+    init(_ value: String? = nil) { self.value = value }
+
+    func load() -> String? { lock.withLock { value } }
+    func save(_ uri: String) throws { lock.withLock { value = uri } }
+    func delete() { lock.withLock { value = nil } }
+}
+
+final class NWCWalletCatalogTests: XCTestCase {
+    private let walletSecret = Data(repeating: 0x22, count: 32)
+    private let walletPub = "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+
+    private func uri(secretByte: UInt8, address: String) -> String {
+        let secret = Data(repeating: secretByte, count: 32).hexString
+        return "nostr+walletconnect://\(walletPub)?relay=wss%3A%2F%2Frelay.example&secret=\(secret)&lud16=\(address.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!)"
+    }
+
+    private func transport() -> ScriptedTransport {
+        let secret = walletSecret
+        return ScriptedTransport(walletSecret: secret, reply: { request, body in
+            let method = body["method"] as? String
+            let result: [String: Any] = method == "get_balance"
+                ? ["balance": 42_000]
+                : ["alias": "Test Node", "methods": ["pay_invoice", "make_invoice", "get_balance"]]
+            return [try walletResponse(secret: secret, to: request, ["result": result])]
+        }, calls: .init())
+    }
+
+    func testStoresSelectsAndEditsMultipleWallets() async throws {
+        let store = MemoryNWCConnectionStore()
+        let service = NWCWalletService(
+            store: store,
+            journalURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            transport: transport()
+        )
+
+        _ = try await service.connect(uri: uri(secretByte: 0x11, address: "one@wallet.example"), name: "Personal")
+        let firstActiveID = await service.activeWalletID
+        let firstID = try XCTUnwrap(firstActiveID)
+        _ = try await service.connect(uri: uri(secretByte: 0x12, address: "two@wallet.example"), name: "Work")
+        let secondActiveID = await service.activeWalletID
+        let secondID = try XCTUnwrap(secondActiveID)
+
+        XCTAssertNotEqual(firstID, secondID)
+        var wallets = await service.wallets
+        XCTAssertEqual(wallets.map(\.name), ["Personal", "Work"])
+        _ = try await service.selectWallet(id: firstID)
+        try await service.setReceiveAddress("tips@example.com", for: firstID)
+        try await service.renameWallet(id: firstID, name: "Everyday")
+
+        var activeID = await service.activeWalletID
+        wallets = await service.wallets
+        let activeURI = await service.activeConnectionURI
+        XCTAssertEqual(activeID, firstID)
+        XCTAssertEqual(wallets.first?.name, "Everyday")
+        XCTAssertEqual(wallets.first?.displayedReceiveAddress, "tips@example.com")
+        XCTAssertTrue(activeURI?.contains("secret=") == true)
+
+        await service.removeWallet(id: firstID)
+        activeID = await service.activeWalletID
+        wallets = await service.wallets
+        XCTAssertEqual(activeID, secondID)
+        XCTAssertEqual(wallets.map(\.name), ["Work"])
+    }
+
+    func testMigratesLegacySingleConnectionWithoutExposingItsSecretInSummary() async throws {
+        let legacy = uri(secretByte: 0x11, address: "legacy@wallet.example")
+        let service = NWCWalletService(
+            store: MemoryNWCConnectionStore(legacy),
+            journalURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            transport: transport()
+        )
+        let wallets = await service.wallets
+        let saved = try XCTUnwrap(wallets.first)
+        XCTAssertEqual(saved.displayedReceiveAddress, "legacy@wallet.example")
+        XCTAssertFalse(String(describing: saved).contains(Data(repeating: 0x11, count: 32).hexString))
+    }
+}

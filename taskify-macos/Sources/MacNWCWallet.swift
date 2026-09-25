@@ -61,10 +61,13 @@ struct MacNWCWalletPanel: View {
                         HStack {
                             TextField("you@example.com", text: $addressDraft)
                             Button("Save") {
-                                do { try wallet.setNWCReceiveAddress(addressDraft); editingAddress = false } catch { self.error = error.localizedDescription }
+                                Task {
+                                    do { try await wallet.setNWCReceiveAddress(addressDraft); editingAddress = false }
+                                    catch { self.error = error.localizedDescription }
+                                }
                             }.disabled(addressDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                             if wallet.nwcReceiveAddressOverride != nil {
-                                Button("Use Wallet's Address") { try? wallet.setNWCReceiveAddress(nil); editingAddress = false }
+                                Button("Use Wallet's Address") { Task { try? await wallet.setNWCReceiveAddress(nil); editingAddress = false } }
                             }
                             if editingAddress { Button("Cancel") { editingAddress = false } }
                         }

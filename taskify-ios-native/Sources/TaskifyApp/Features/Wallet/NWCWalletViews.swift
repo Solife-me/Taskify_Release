@@ -36,7 +36,7 @@ struct SolifeNWCForwardControl: View {
                 .font(.caption.weight(.semibold))
                 .disabled(busy)
             } else if editing {
-                Text("Paste an NWC connection from your wallet. solife.me only ever uses it to create invoices, never to pay. For the most safety, create a new connection that can only receive rather than reusing the one Taskify pays with.")
+                Text("For tighter permissions, paste a separate receive-only NWC connection. solife.me only uses it to create invoices and never to pay.")
                     .font(.caption2).foregroundStyle(TaskifyTheme.secondaryText)
                 TextField("nostr+walletconnect://…", text: $connection, axis: .vertical)
                     .font(.caption.monospaced())
@@ -57,8 +57,23 @@ struct SolifeNWCForwardControl: View {
                 }
                 .font(.caption)
             } else {
-                Button("Forward to your own wallet…") { editing = true }
+                if wallet.isNWCWalletActive {
+                    Button {
+                        Task { await run { try await wallet.shareActiveNWCWithSolife(handle: address.handle) } }
+                    } label: {
+                        Label("Use (wallet.nwcWalletLabel)", systemImage: "bolt.horizontal.circle.fill")
+                    }
                     .font(.caption.weight(.semibold))
+                    .disabled(busy)
+                    Text("Opt in to let solife.me use this wallet connection for invoice creation. It cannot initiate payments through Taskify.")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                Button(wallet.isNWCWalletActive ? "Use a separate receive-only connection…" : "Add a receive-only wallet connection…") {
+                    editing = true
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(TaskifyTheme.secondaryText)
             }
             if let error {
                 Text(error).font(.caption2).foregroundStyle(.red)
@@ -323,6 +338,259 @@ struct NWCWalletModeSheet: View {
     }
 }
 
+// MARK: - Multi-wallet management
+
+/// Taskify's wallet switcher. The built-in ecash wallet is permanent; every NWC connection is a
+/// separately named wallet with its own receive-address choice.
+struct WalletManagerSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var showingAddWallet = false
+    @State private var editingWallet: NWCWalletSummary?
+    @State private var localError: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 12) {
+                    walletRow(
+                        title: "Taskify eCash",
+                        subtitle: "Built-in Cashu wallet",
+                        systemImage: "bitcoinsign.circle.fill",
+                        selected: !wallet.isNWCWalletActive
+                    ) {
+                        wallet.setWalletMode(.ecash)
+                    }
+
+                    ForEach(wallet.nwcWallets) { saved in
+                        HStack(spacing: 10) {
+                            Button {
+                                Task {
+                                    do { try await wallet.selectNWCWallet(id: saved.id) }
+                                    catch { localError = WalletViewModel.message(for: error) }
+                                }
+                            } label: {
+                                walletRowLabel(
+                                    title: saved.name,
+                                    subtitle: saved.displayedReceiveAddress ?? "Lightning via NWC",
+                                    systemImage: "bolt.horizontal.circle.fill",
+                                    selected: wallet.isNWCWalletActive && wallet.activeNWCWalletID == saved.id
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button { editingWallet = saved } label: {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.headline)
+                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                    .frame(width: 44, height: 44)
+                                    .taskifyGlassControl(in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Edit \(saved.name)")
+                        }
+                    }
+
+                    Button { showingAddWallet = true } label: {
+                        Label("Connect a Wallet", systemImage: "link.badge.plus")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 18, style: .continuous), tint: TaskifyTheme.accent.opacity(0.38))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
+                }
+                .padding(20)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Wallets")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .task { await wallet.refreshNWC() }
+            .sheet(isPresented: $showingAddWallet) { NWCConnectWalletSheet(wallet: wallet) }
+            .sheet(item: $editingWallet) { saved in NWCWalletEditorSheet(wallet: wallet, saved: saved) }
+            .alert("Wallets", isPresented: Binding(get: { localError != nil }, set: { if !$0 { localError = nil } })) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: { Text(localError ?? "") }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+    }
+
+    private func walletRow(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            walletRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, selected: selected)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func walletRowLabel(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        selected: Bool
+    ) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .foregroundStyle(selected ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                .frame(width: 34)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline).foregroundStyle(TaskifyTheme.primaryText)
+                Text(subtitle).font(.caption).foregroundStyle(TaskifyTheme.secondaryText).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(selected ? TaskifyTheme.accent : TaskifyTheme.tertiaryText)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(selected ? TaskifyTheme.accent : TaskifyTheme.border, lineWidth: selected ? 2 : 1)
+        }
+    }
+}
+
+private struct NWCConnectWalletSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var connection = ""
+    @State private var localError: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Create an NWC connection with send and receive permissions in your lightning wallet, then paste it below.")
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                    walletFieldLabel("WALLET NAME")
+                    TextField("Optional — e.g. Personal", text: $name)
+                        .padding(14)
+                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    walletFieldLabel("NWC CONNECTION")
+                    TextField("nostr+walletconnect://…", text: $connection, axis: .vertical)
+                        .font(.caption.monospaced())
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .padding(14)
+                        .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    Button {
+                        if let pasted = UIPasteboard.general.string { connection = pasted }
+                    } label: {
+                        Label("Paste", systemImage: "doc.on.clipboard").frame(maxWidth: .infinity).frame(height: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    WalletPrimaryActionButton(title: "Connect Wallet", busyTitle: "Connecting…", isBusy: wallet.isWorking) {
+                        Task {
+                            do {
+                                try await wallet.connectNWC(uri: connection, name: name)
+                                dismiss()
+                            } catch { localError = WalletViewModel.message(for: error) }
+                        }
+                    }
+                    .disabled(connection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || wallet.isWorking)
+                }
+                .padding(20)
+            }
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Connect Wallet")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .alert("Connect Wallet", isPresented: Binding(get: { localError != nil }, set: { if !$0 { localError = nil } })) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: { Text(localError ?? "") }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+    }
+}
+
+private struct NWCWalletEditorSheet: View {
+    @ObservedObject var wallet: WalletViewModel
+    let saved: NWCWalletSummary
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var address: String
+    @State private var localError: String?
+    @State private var confirmingDelete = false
+
+    init(wallet: WalletViewModel, saved: NWCWalletSummary) {
+        self.wallet = wallet
+        self.saved = saved
+        _name = State(initialValue: saved.name)
+        _address = State(initialValue: saved.receiveAddress ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Wallet") {
+                    TextField("Wallet name", text: $name)
+                    LabeledContent("Connection", value: "Nostr Wallet Connect")
+                }
+                Section("Lightning Address") {
+                    TextField("Use wallet address", text: $address)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                    Text(address.isEmpty
+                         ? "Taskify will show the address supplied by this wallet, if available."
+                         : "This address is shown whenever this wallet is selected.")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                Section {
+                    Button("Disconnect Wallet", role: .destructive) { confirmingDelete = true }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Wallet Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        Task {
+                            do {
+                                try await wallet.renameNWCWallet(id: saved.id, name: name)
+                                try await wallet.setNWCReceiveAddress(address, for: saved.id)
+                                dismiss()
+                            } catch { localError = WalletViewModel.message(for: error) }
+                        }
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .confirmationDialog("Disconnect \(saved.name)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("Disconnect Wallet", role: .destructive) {
+                    Task { await wallet.disconnectNWC(id: saved.id); dismiss() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the NWC connection from this device. Funds remain in the lightning wallet.")
+            }
+            .alert("Wallet Settings", isPresented: Binding(get: { localError != nil }, set: { if !$0 { localError = nil } })) {
+                Button("OK", role: .cancel) { localError = nil }
+            } message: { Text(localError ?? "") }
+        }
+        .preferredColorScheme(.dark)
+        .tint(TaskifyTheme.accent)
+    }
+}
+
 // MARK: - Receive
 
 struct NWCReceiveSheet: View {
@@ -402,19 +670,23 @@ struct NWCReceiveSheet: View {
                         .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     HStack {
                         Button("Save address") {
-                            do {
-                                try wallet.setNWCReceiveAddress(addressDraft)
-                                editingAddress = false
-                            } catch {
-                                localError = WalletViewModel.message(for: error)
+                            Task {
+                                do {
+                                    try await wallet.setNWCReceiveAddress(addressDraft)
+                                    editingAddress = false
+                                } catch {
+                                    localError = WalletViewModel.message(for: error)
+                                }
                             }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(addressDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                         if wallet.nwcReceiveAddressOverride != nil {
                             Button("Use wallet's address") {
-                                try? wallet.setNWCReceiveAddress(nil)
-                                editingAddress = false
+                                Task {
+                                    try? await wallet.setNWCReceiveAddress(nil)
+                                    editingAddress = false
+                                }
                             }
                         }
                         if editingAddress { Button("Cancel") { editingAddress = false } }

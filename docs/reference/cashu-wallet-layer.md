@@ -461,6 +461,13 @@ Tests: `wallet/nwcSweep.test.ts` (fakes, randomized conservation, mutation cases
 
 A custom solife.me address can forward its Lightning payments to the owner's wallet over NWC (`setSolifeAddressNwcForward` in `wallet/solife.ts`, `WalletAddressView`, and iOS `SolifeNWCForwardControl`). New custom addresses cost 1000 sats; owners of existing custom addresses can switch forwarding on for free. The server accepts connections with any permissions but only ever sends `get_info` and `make_invoice`. `nwcForward.canSpend` is true when the connection could spend; the apps then recommend a receive-only connection. Server-side details are in the Solife repo's README (Security section).
 
+Native Taskify stores a Keychain-backed catalog of named NWC wallets alongside the permanent
+built-in eCash wallet. Selecting a wallet changes the active NIP-47 client; each saved connection
+has an independent receive-address override. Existing single-connection Keychain values migrate
+automatically. For solife.me forwarding, the owner can explicitly opt in to share the selected
+Taskify connection, or use the quieter advanced path to paste a separate receive-only connection.
+The application never includes connection secrets in wallet-list summaries.
+
 Solife calls from the apps authenticate with the session's **bearer token only** (`credentials: "omit"`). Solife refuses its session cookie on requests from other sites, so don't rely on it here.
 
 ## Seed derivation + counter persistence contract (agent verification chunk)
