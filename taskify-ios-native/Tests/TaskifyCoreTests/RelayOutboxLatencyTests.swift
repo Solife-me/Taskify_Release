@@ -20,13 +20,15 @@ final class RelayOutboxLatencyTests: XCTestCase {
     }
 
     private func engine(
-        transports: [String: SuspensibleRelayTransport]
+        transports: [String: SuspensibleRelayTransport],
+        publishAcknowledgementTimeout: Duration = .seconds(45)
     ) -> TaskSyncEngine {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let engine = TaskSyncEngine(
             outbox: NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json")),
-            connectionFactory: { transports[$0]! }
+            connectionFactory: { transports[$0]! },
+            publishAcknowledgementTimeout: publishAcknowledgementTimeout
         )
         addTeardownBlock { await engine.stop() }
         return engine
@@ -53,6 +55,79 @@ final class RelayOutboxLatencyTests: XCTestCase {
         let retainedCount = await outbox.entryCount()
         XCTAssertEqual(retainedCount, 1, "Inspecting a partially delivered change must not clear it")
         await engine.stop()
+    }
+
+    /// An acknowledgement is read only after every message the relay sent before it, so after a
+    /// reconnect it can wait behind a long history replay. That relay is alive: timing it out
+    /// dropped the connection, which replayed the history again, and the queue never drained.
+    func testAcknowledgementQueuedBehindIncomingMessagesDoesNotTimeOut() async throws {
+        let relay = SuspensibleRelayTransport()
+        let engine = engine(transports: [healthyURL: relay], publishAcknowledgementTimeout: .milliseconds(300))
+        let timedOut = TimeoutWitness()
+        let watcher = Task {
+            for await update in engine.updates() {
+                guard case .status(let report) = update else { continue }
+                if report.relays.contains(where: { $0.message?.contains("acknowledgement timed out") == true }) {
+                    await timedOut.record()
+                }
+            }
+        }
+        defer { watcher.cancel() }
+        await engine.configure(boards: [], auxiliaryRelayURLs: [healthyURL], inboxRelayURLs: [])
+        try await engine.enqueueForPublish([request(1, relayURL: healthyURL)])
+        for _ in 0..<50 where await relay.publishedEventIDs.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let sent = await relay.publishedEventIDs
+        XCTAssertEqual(sent, [event(1).id])
+
+        // The relay keeps talking for three timeout periods before its acknowledgement arrives.
+        for _ in 0..<9 {
+            await engine.handle(.notice("history replay in progress"), from: healthyURL)
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        await engine.handle(.acknowledgement(eventID: event(1).id, accepted: true, message: ""), from: healthyURL)
+        let pending = await engine.pendingOutboxRecords()
+        XCTAssertTrue(pending.isEmpty)
+        try await Task.sleep(for: .milliseconds(100))
+        let didTimeOut = await timedOut.fired
+        XCTAssertFalse(didTimeOut, "A relay still delivering messages must not be timed out and dropped")
+    }
+
+    func testBusyRelayThatNeverAcknowledgesStillTimesOutEventually() async throws {
+        let relay = SuspensibleRelayTransport()
+        let engine = engine(transports: [healthyURL: relay], publishAcknowledgementTimeout: .milliseconds(200))
+        let timedOut = TimeoutWitness()
+        let watcher = Task {
+            for await update in engine.updates() {
+                guard case .status(let report) = update else { continue }
+                if report.relays.contains(where: { $0.message?.contains("acknowledgement timed out") == true }) {
+                    await timedOut.record()
+                }
+            }
+        }
+        defer { watcher.cancel() }
+        await engine.configure(boards: [], auxiliaryRelayURLs: [healthyURL], inboxRelayURLs: [])
+        try await engine.enqueueForPublish([request(1, relayURL: healthyURL)])
+        // Live traffic for twice the 4x cap, with no acknowledgement for the queued event.
+        for _ in 0..<32 {
+            await engine.handle(.notice("live traffic"), from: healthyURL)
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let didTimeOut = await timedOut.fired
+        XCTAssertTrue(didTimeOut, "Traffic extends the wait for an acknowledgement, but not indefinitely")
+    }
+
+    func testSilentRelayStillTimesOutAndRetries() async throws {
+        let relay = SuspensibleRelayTransport()
+        let engine = engine(transports: [healthyURL: relay], publishAcknowledgementTimeout: .milliseconds(300))
+        await engine.configure(boards: [], auxiliaryRelayURLs: [healthyURL], inboxRelayURLs: [])
+        try await engine.enqueueForPublish([request(1, relayURL: healthyURL)])
+        for _ in 0..<150 where await relay.publishedEventIDs.count < 2 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let sent = await relay.publishedEventIDs
+        XCTAssertGreaterThanOrEqual(sent.count, 2, "With no traffic at all, the send is presumed lost and retried")
     }
 
     func testRateLimitedSubscriptionPausesPublishingAndDoesNotRetryAfterOneSecond() async throws {
@@ -336,4 +411,9 @@ private actor SuspensibleRelayTransport: TaskSyncRelayTransport {
         suspendedSends.removeAll()
         continuations.forEach { $0.resume() }
     }
+}
+
+private actor TimeoutWitness {
+    private(set) var fired = false
+    func record() { fired = true }
 }

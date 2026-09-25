@@ -451,7 +451,9 @@ public actor TaskSyncEngine {
     /// Four unacknowledged events keep a healthy relay busy without allowing a slow or silent
     /// relay to absorb the whole durable queue at once.
     private static let maximumInFlightPublishesPerRelay = 4
-    private static let publishAcknowledgementTimeout: Duration = .seconds(15)
+    /// How long a relay may go silent after a publish before the connection is presumed dead.
+    /// Measured: relay.solife.me occasionally takes ~30 s to acknowledge under load.
+    private let publishAcknowledgementTimeout: Duration
     /// Once another relay has stored an event, keep trying lagging replicas for a week. This is
     /// long enough for ordinary outages without allowing a dead configured relay to retain every
     /// historical mutation forever.
@@ -508,6 +510,10 @@ public actor TaskSyncEngine {
     private var publishPacers: [String: RelayPublishPacer] = [:]
     private var outboxSchedulers: [String: RelayOutboxScheduler] = [:]
     private var publishAcknowledgementTimeoutTasks: [String: [String: Task<Void, Never>]] = [:]
+    /// When each relay last delivered a message. Messages are handled one at a time, so an
+    /// acknowledgement waits behind everything the relay sent before it (a full history replay
+    /// after reconnecting can take longer than the timeout); a relay still talking is not dead.
+    private var lastInboundActivity: [String: ContinuousClock.Instant] = [:]
     /// A relay rejection applies to one EVENT, not its whole WebSocket. Skip that event until the
     /// next reconnect while allowing newer valid work to continue through the same relay.
     private var deferredRejectedEventIDs: [String: Set<String>] = [:]
@@ -560,9 +566,11 @@ public actor TaskSyncEngine {
         outbox: NostrOutboxStore,
         connectionFactory: @escaping @Sendable (String) -> any TaskSyncRelayTransport,
         oneShotFallback: any NostrOneShotFetching = NostrFreshConnectionFetcher(),
-        auxiliaryRelayLinger: TimeInterval = 300
+        auxiliaryRelayLinger: TimeInterval = 300,
+        publishAcknowledgementTimeout: Duration = .seconds(45)
     ) {
         self.outbox = outbox
+        self.publishAcknowledgementTimeout = publishAcknowledgementTimeout
         self.connectionFactory = connectionFactory
         self.oneShotFallback = oneShotFallback
         self.auxiliaryRelayLinger = auxiliaryRelayLinger
@@ -1358,6 +1366,11 @@ public actor TaskSyncEngine {
 
     // Internal ingress also allows deterministic delayed-EOSE and slow-consumer tests.
     func handle(_ message: NostrRelayMessage, from relayURL: String) async {
+        if case .disconnected = message {
+            lastInboundActivity[relayURL] = nil
+        } else {
+            lastInboundActivity[relayURL] = .now
+        }
         if routeOneShotMessage(message, from: relayURL) { return }
         switch message {
         case .event(let subscriptionID, let event):
@@ -1694,13 +1707,29 @@ public actor TaskSyncEngine {
     private func schedulePublishAcknowledgementTimeout(eventID: String, relayURL: String) {
         guard inFlightEventIDs[relayURL]?.contains(eventID) == true else { return }
         cancelPublishAcknowledgementTimeout(eventID: eventID, relayURL: relayURL)
-        let timeout = Self.publishAcknowledgementTimeout
+        schedulePublishAcknowledgementTimeout(
+            eventID: eventID,
+            relayURL: relayURL,
+            after: publishAcknowledgementTimeout,
+            // Traffic extends the wait, but not forever: a relay streaming live events can
+            // still have lost this one acknowledgement.
+            giveUpAt: ContinuousClock.now.advanced(by: publishAcknowledgementTimeout * 4)
+        )
+    }
+
+    private func schedulePublishAcknowledgementTimeout(
+        eventID: String,
+        relayURL: String,
+        after timeout: Duration,
+        giveUpAt: ContinuousClock.Instant
+    ) {
         let task = Task { [weak self] in
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled else { return }
             await self?.handlePublishAcknowledgementTimeout(
                 eventID: eventID,
-                relayURL: relayURL
+                relayURL: relayURL,
+                giveUpAt: giveUpAt
             )
         }
         publishAcknowledgementTimeoutTasks[relayURL, default: [:]][eventID] = task
@@ -1722,12 +1751,31 @@ public actor TaskSyncEngine {
             .forEach { $0.cancel() }
     }
 
-    private func handlePublishAcknowledgementTimeout(eventID: String, relayURL: String) async {
+    private func handlePublishAcknowledgementTimeout(
+        eventID: String,
+        relayURL: String,
+        giveUpAt: ContinuousClock.Instant
+    ) async {
         publishAcknowledgementTimeoutTasks[relayURL]?.removeValue(forKey: eventID)
         if publishAcknowledgementTimeoutTasks[relayURL]?.isEmpty == true {
             publishAcknowledgementTimeoutTasks.removeValue(forKey: relayURL)
         }
-        guard inFlightEventIDs[relayURL]?.remove(eventID) != nil else { return }
+        guard inFlightEventIDs[relayURL]?.contains(eventID) == true else { return }
+        if let lastActivity = lastInboundActivity[relayURL] {
+            let quietDeadline = min(lastActivity.advanced(by: publishAcknowledgementTimeout), giveUpAt)
+            let now = ContinuousClock.now
+            if quietDeadline > now {
+                // Still receiving: the acknowledgement is likely queued behind earlier messages.
+                schedulePublishAcknowledgementTimeout(
+                    eventID: eventID,
+                    relayURL: relayURL,
+                    after: now.duration(to: quietDeadline),
+                    giveUpAt: giveUpAt
+                )
+                return
+            }
+        }
+        inFlightEventIDs[relayURL]?.remove(eventID)
         guard await outbox.isPending(eventID: eventID, relayURL: relayURL) else {
             await flushOutbox(to: relayURL)
             return
@@ -2056,6 +2104,7 @@ public actor TaskSyncEngine {
         pendingSubscriptions.removeValue(forKey: relayURL)
         relayBatches.removeValue(forKey: relayURL)
         cancelPublishAcknowledgementTimeouts(relayURL: relayURL)
+        lastInboundActivity.removeValue(forKey: relayURL)
         inFlightEventIDs.removeValue(forKey: relayURL)
         outboxSchedulers.removeValue(forKey: relayURL)
         deferredRejectedEventIDs.removeValue(forKey: relayURL)
