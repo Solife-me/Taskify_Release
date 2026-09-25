@@ -314,6 +314,7 @@ final class AppModel {
     /// Whether this launch has finished looking for the account's synced settings (found or not).
     /// Until then a setting that names a board may simply not have arrived yet.
     @ObservationIgnored private var accountSyncSettled = false
+    @ObservationIgnored private var outboxRelayAuditTask: Task<Void, Never>?
     @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
     @ObservationIgnored private var lastAccountBackupCreatedAt = 0
     @ObservationIgnored private var lastAccountBackupCheckAt: Date?
@@ -5562,6 +5563,22 @@ final class AppModel {
         reconcileFastingReminders()
         if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
         _ = reconcileScriptureMemory()
+        scheduleOutboxRelayAudit()
+    }
+
+    /// Settles queued changes the relays already hold (see `reconcileOutboxWithRelays`), so a
+    /// backlog an older build left behind drains on its own. Repeats a few times while a large
+    /// backlog remains, for relays that connect late.
+    private func scheduleOutboxRelayAudit(remainingRuns: Int = 4) {
+        outboxRelayAuditTask?.cancel()
+        outboxRelayAuditTask = Task { [weak self, syncEngine] in
+            _ = await syncEngine.reconcileOutboxWithRelays()
+            guard remainingRuns > 1, !Task.isCancelled,
+                  await syncEngine.pendingPublishCount() > 50 else { return }
+            try? await Task.sleep(for: .seconds(600))
+            guard !Task.isCancelled else { return }
+            self?.scheduleOutboxRelayAudit(remainingRuns: remainingRuns - 1)
+        }
     }
 
     private func reconfigureSync() {
@@ -6231,13 +6248,19 @@ final class AppModel {
         // A deleted task publishes only its tombstone. The tombstone replaces the task at its
         // address on every relay, and every client reads it; a NIP-09 deletion on top doubled
         // each delete, and made strfry refuse the tombstone ("deleted:") when it arrived first.
+        // A task whose publishable state matches what relays last saw is skipped: whatever asked
+        // for it (a reconcile, a re-home, a repeated deletion) changed nothing another client
+        // can see. This is what keeps a settings change from republishing years of tombstones.
         func stamp(_ taskID: String) {
             guard let index = taskIndexByID[taskID],
                   let board = boardByID[updated.tasks[index].boardID] else {
                 return
             }
+            let fingerprint = TaskEventCodec.publishFingerprint(task: updated.tasks[index], board: board)
+            if let fingerprint, fingerprint == updated.tasks[index].publishedFingerprint { return }
             let timestamp = NostrEvent.nextTimestamp(after: updated.tasks[index].nostrUpdatedAt)
             updated.tasks[index].nostrUpdatedAt = timestamp
+            updated.tasks[index].publishedFingerprint = fingerprint
             stamps.append((board, updated.tasks[index], timestamp))
         }
 
@@ -6289,8 +6312,19 @@ final class AppModel {
                 try await syncEngine.enqueueForPublish(requests)
             } catch {
                 self?.errorMessage = "Taskify could not queue these tasks for Nostr sync."
+                // Nothing was queued: forget the fingerprints so the next sync publishes again.
+                self?.forgetPublishedFingerprints(Set(stamps.map(\.task.id)))
             }
         }
+    }
+
+    private func forgetPublishedFingerprints(_ taskIDs: Set<String>) {
+        guard !taskIDs.isEmpty else { return }
+        var updated = snapshot
+        for index in updated.tasks.indices where taskIDs.contains(updated.tasks[index].id) {
+            updated.tasks[index].publishedFingerprint = nil
+        }
+        if updated != snapshot { snapshot = updated }
     }
 
     private func synchronizeTaskifyEvents(_ eventIDs: [String]) {

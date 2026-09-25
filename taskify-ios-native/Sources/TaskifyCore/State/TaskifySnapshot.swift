@@ -1741,10 +1741,22 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             indexByID[task.id] = index
         }
 
+        let boardByID = Dictionary(boards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func fingerprint(_ task: TaskItem) -> String? {
+            boardByID[task.boardID].flatMap { TaskEventCodec.publishFingerprint(task: task, board: $0) }
+        }
         for record in records {
             let remoteTask = taskApplyingRecurringSeriesCutoff(record.task)
             if let index = indexByID[remoteTask.id] {
                 let localClock = tasks[index].nostrUpdatedAt ?? 0
+                // Our own version echoed back by a relay: record what the relays hold.
+                if record.eventCreatedAt == localClock, tasks[index].publishedFingerprint == nil {
+                    let relayFingerprint = fingerprint(record.task)
+                    if relayFingerprint != nil {
+                        tasks[index].publishedFingerprint = relayFingerprint
+                        changed = true
+                    }
+                }
                 guard record.eventCreatedAt > localClock else { continue }
                 var merged = remoteTask
                 var preservedFields = tasks[index].preservedSyncFields ?? [:]
@@ -1753,11 +1765,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 }
                 merged.preservedSyncFields = preservedFields.isEmpty ? nil : preservedFields
                 merged.nostrUpdatedAt = record.eventCreatedAt
+                merged.publishedFingerprint = fingerprint(record.task)
                 tasks[index] = merged
                 changed = true
             } else {
                 var inserted = remoteTask
                 inserted.nostrUpdatedAt = record.eventCreatedAt
+                inserted.publishedFingerprint = fingerprint(record.task)
                 indexByID[inserted.id] = tasks.count
                 tasks.append(inserted)
                 changed = true
