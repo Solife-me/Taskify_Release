@@ -1416,23 +1416,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const colTag = event.tags.find((t) => t[0] === "col");
       const colId = colTag?.[1] ?? "";
 
-      // Step 1: publish kind 30301 status=deleted (app-level soft delete)
+      // Publish the status=deleted tombstone only. It replaces the task at its address on every
+      // relay and every client reads it; a NIP-09 deletion on top doubled each delete and made
+      // strfry refuse the tombstone ("deleted:") when it arrived first. Matches the PWA and native.
       await publishTaskEvent(entry.id, taskId, rawPayload, "deleted", colId, event.created_at);
-
-      // Step 2: publish NIP-09 kind 5 deletion request (matches PWA's publishTaskDeletionRequest)
-      const boardKeys = deriveBoardKeyPair(entry.id);
-      const aTag = `30301:${boardKeys.pk}:${taskId}`;
-      try {
-        const nip09Event = session.createEvent();
-        nip09Event.kind = 5;
-        nip09Event.content = "Task deleted";
-        nip09Event.tags = [["a", aTag]];
-        nip09Event.created_at = Math.floor(Date.now() / 1000);
-        await session.prepareNDKEvent(nip09Event, boardKeys.signer, boardRelays(entry.id));
-        await session.publishRaw(nip09Event.rawEvent(), { relayUrls: boardRelays(entry.id) });
-      } catch {
-        // Non-fatal: NIP-09 relay support varies; soft delete already published
-      }
 
       // Remove from cache
       const cache = readCache();

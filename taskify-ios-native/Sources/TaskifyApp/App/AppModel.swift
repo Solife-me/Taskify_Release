@@ -6200,27 +6200,23 @@ final class AppModel {
         )
         let boardByID = Dictionary(updated.boards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
-        var stamps: [(board: Board, task: TaskItem, timestamp: Int, deletionTimestamp: Int?)] = []
+        var stamps: [(board: Board, task: TaskItem, timestamp: Int)] = []
 
-        func stamp(_ taskID: String, includeDeletionEvent: Bool) {
+        // A deleted task publishes only its tombstone. The tombstone replaces the task at its
+        // address on every relay, and every client reads it; a NIP-09 deletion on top doubled
+        // each delete, and made strfry refuse the tombstone ("deleted:") when it arrived first.
+        func stamp(_ taskID: String) {
             guard let index = taskIndexByID[taskID],
                   let board = boardByID[updated.tasks[index].boardID] else {
                 return
             }
             let timestamp = NostrEvent.nextTimestamp(after: updated.tasks[index].nostrUpdatedAt)
             updated.tasks[index].nostrUpdatedAt = timestamp
-            stamps.append(
-                (
-                    board,
-                    updated.tasks[index],
-                    timestamp,
-                    includeDeletionEvent ? NostrEvent.nextTimestamp(after: timestamp) : nil
-                )
-            )
+            stamps.append((board, updated.tasks[index], timestamp))
         }
 
-        taskIDs.forEach { stamp($0, includeDeletionEvent: false) }
-        deletionTaskIDs.forEach { stamp($0, includeDeletionEvent: true) }
+        taskIDs.forEach { stamp($0) }
+        deletionTaskIDs.forEach { stamp($0) }
 
         guard !stamps.isEmpty else {
             // Matches synchronizeTask: even when nothing is publishable, persist what the caller
@@ -6246,7 +6242,7 @@ final class AppModel {
             do {
                 let requests = try await Task.detached(priority: .utility) {
                     var requests: [TaskSyncPublishRequest] = []
-                    requests.reserveCapacity(boardPublishes.count + stamps.count * 2)
+                    requests.reserveCapacity(boardPublishes.count + stamps.count)
                     for publish in boardPublishes {
                         let event = try await TaskEventCodec.prepareBoardEvent(
                             board: publish.board,
@@ -6261,18 +6257,6 @@ final class AppModel {
                             createdAt: stamp.timestamp
                         )
                         requests.append(TaskSyncPublishRequest(event: event, board: stamp.board, taskID: stamp.task.id))
-                        if let deletionTimestamp = stamp.deletionTimestamp {
-                            let deletion = try await TaskEventCodec.prepareDeletionEvent(
-                                taskID: stamp.task.id,
-                                board: stamp.board,
-                                createdAt: deletionTimestamp
-                            )
-                            requests.append(TaskSyncPublishRequest(
-                                event: deletion,
-                                board: stamp.board,
-                                taskID: "deletion:\(stamp.task.id)"
-                            ))
-                        }
                     }
                     return requests
                 }.value
@@ -6499,7 +6483,6 @@ final class AppModel {
         }
 
         let sourceTombstoneTimestamp = nextNostrTimestamp()
-        let sourceDeletionTimestamp = nextNostrTimestamp()
         let targetTimestamp = nextNostrTimestamp()
         snapshot.tasks[index].nostrUpdatedAt = targetTimestamp
         let targetTask = snapshot.tasks[index]
@@ -6528,16 +6511,6 @@ final class AppModel {
                     sourceTaskEvent,
                     board: sourceBoard,
                     taskID: sourceTombstone.id
-                )
-                let sourceDeletion = try await TaskEventCodec.prepareDeletionEvent(
-                    taskID: sourceTombstone.id,
-                    board: sourceBoard,
-                    createdAt: sourceDeletionTimestamp
-                )
-                try await syncEngine.publish(
-                    sourceDeletion,
-                    board: sourceBoard,
-                    taskID: "deletion:\(sourceTombstone.id)"
                 )
 
                 let targetBoardEvent = try await TaskEventCodec.prepareBoardEvent(

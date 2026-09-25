@@ -1647,7 +1647,11 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             proposedCutoff: proposedCutoff
         )
 
-        var updatedIDs = Set<String>()
+        // Only the deleted instances are published. Each tombstone carries the series' new end
+        // date, and every client caps the whole series from any one of them (native
+        // `recordRecurringTaskSeriesCutoff`, PWA `recordRecurringSeriesCutoff`), so earlier
+        // instances are capped here locally but not republished: that rewrote the entire
+        // history of a long-running series (200+ events for a daily task) to end it.
         var deletedIDs = Set<String>()
         for index in tasks.indices {
             guard tasks[index].boardID == selected.boardID,
@@ -1668,15 +1672,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             tasks[index].lastEditedBy = editorPublicKey ?? tasks[index].lastEditedBy
             if tasks[index].isDeleted {
                 deletedIDs.insert(tasks[index].id)
-            } else {
-                updatedIDs.insert(tasks[index].id)
             }
         }
 
-        return TaskSeriesChanges(
-            updatedTaskIDs: updatedIDs.sorted(),
-            deletedTaskIDs: deletedIDs.sorted()
-        )
+        return TaskSeriesChanges(deletedTaskIDs: deletedIDs.sorted())
     }
 
     /// Batched form of `mergeRemoteTask`. Building one id→index map up front makes a backlog

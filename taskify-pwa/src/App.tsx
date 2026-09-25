@@ -5860,19 +5860,6 @@ export default function App() {
     }, { sk: boardKeys.sk });
   }
   publishBoardMetadataSnapshotRef.current = publishBoardMetadataSnapshot;
-  async function publishTaskDeletionRequest(boardKeys: BoardNostrKeyPair, relays: string[], taskId: string) {
-    const aTag = `30301:${boardKeys.pk}:${taskId}`;
-    try {
-      await nostrPublish(relays, {
-        kind: 5,
-        tags: [["a", aTag], ["k", "30301"]],
-        content: "Task deleted",
-        created_at: Math.floor(Date.now() / 1000),
-      }, { sk: boardKeys.sk });
-    } catch (err) {
-      console.warn("Failed to publish nostr deletion", err);
-    }
-  }
   async function publishTaskDeleted(t: Task) {
     const b = findBoardByCompoundChildId(boards, t.boardId);
     if (!b || !isShared(b) || !b.nostr) return;
@@ -5922,7 +5909,9 @@ export default function App() {
         content,
         created_at: optimisticAt,
       }, { sk: boardKeys.sk });
-      await publishTaskDeletionRequest(boardKeys, relays, t.id);
+      // The tombstone replaces the task at its address on every relay and every client reads it.
+      // A NIP-09 deletion on top doubled each delete, and made strfry refuse the tombstone
+      // ("deleted:") when it arrived first. Matches native.
       if (!nostrIdxRef.current.taskClock.has(bTag)) {
         nostrIdxRef.current.taskClock.set(bTag, new Map());
       }
@@ -9241,10 +9230,12 @@ export default function App() {
           changed = true;
           continue;
         }
+        // Earlier instances are capped locally but not republished: every client caps the series
+        // from the deleted instances' end date (recordRecurringSeriesCutoff here, native
+        // recordRecurringTaskSeriesCutoff). Republishing them rewrote the series' whole history.
         const updated = capRecurringTaskAt(task, nextUntil);
         if (updated !== task) {
           nextTasks.push(updated);
-          toPublish.push(updated);
           changed = true;
           continue;
         }
