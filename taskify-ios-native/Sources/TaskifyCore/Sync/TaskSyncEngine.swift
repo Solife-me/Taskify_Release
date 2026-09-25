@@ -1062,7 +1062,7 @@ public actor TaskSyncEngine {
         await emitStatus()
     }
 
-    public func queueForPublish(_ requests: [TaskSyncPublishRequest]) async throws {
+    public func queueForPublish(_ requests: [TaskSyncPublishRequest], isRepublish: Bool = false) async throws {
         let entries = requests.compactMap { request -> NostrOutboxEntry? in
             let relayURLs = deliveryRelayURLs(request.board.effectiveRelayURLs, for: request.event)
             guard !relayURLs.isEmpty else { return nil }
@@ -1070,11 +1070,24 @@ public actor TaskSyncEngine {
                 event: request.event,
                 relayURLs: relayURLs,
                 boardLocalID: request.board.id,
-                taskID: request.taskID
+                taskID: request.taskID,
+                isRepublish: isRepublish
             )
         }
         try await outbox.enqueue(entries)
         await emitStatus()
+    }
+
+    /// Stops sending a board's queued republish to public relays; it still reaches Taskify's own
+    /// relays. Returns how many queued entries changed.
+    @discardableResult
+    public func limitQueuedRepublishToFirstPartyRelays(boardLocalID: String) async throws -> Int {
+        let changed = try await outbox.limitRepublishedEntries(
+            boardLocalID: boardLocalID,
+            toRelays: TaskifyFirstPartyRelays.urls
+        )
+        if changed > 0 { await emitStatus() }
+        return changed
     }
 
     /// Persist a complete task batch once, then let relay delivery proceed independently.

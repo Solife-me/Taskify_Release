@@ -25,6 +25,9 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
     /// may be tried again. The change stays queued, since it may be the only copy, but a refusing
     /// relay isn't sent it again on every reconnect. Optional for older outboxes.
     public var relayRejections: [String: RelayRejectionBackoff]?
+    /// Queued by "Republish current snapshot": current state resent, not a new change. Nil only in
+    /// outboxes written before the flag existed (see `limitRepublishedEntries`).
+    public var isRepublish: Bool?
 
     public init(
         event: NostrEvent,
@@ -35,8 +38,10 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
         acceptedRelayURLs: [String]? = nil,
         acknowledgementPolicy: NostrOutboxAcknowledgementPolicy = .everyRelay,
         expiresAt: Date? = nil,
-        dependsOnEventID: String? = nil
+        dependsOnEventID: String? = nil,
+        isRepublish: Bool = false
     ) {
+        self.isRepublish = isRepublish
         self.event = event
         self.relayURLs = relayURLs
         self.boardLocalID = boardLocalID
@@ -236,6 +241,69 @@ public actor NostrOutboxStore {
         releaseDependents(of: staleIDs)
         try persist()
         return stale.sorted { $0.queuedAt < $1.queuedAt }
+    }
+
+    /// Stops sending a board's republished entries anywhere but `keptRelayURLs` (Taskify's own
+    /// relays). A republish resends current state that other devices already have, but an entry
+    /// can still carry the only copy of an edit it replaced in the queue, so entries are narrowed
+    /// rather than dropped: they still reach a kept relay, which every client reads. An entry that
+    /// targets none of the kept relays is left untouched. Returns how many entries changed.
+    ///
+    /// Outboxes from before `isRepublish` existed can't say which entries a republish queued, so
+    /// there a burst of at least `legacyBurstMinimum` entries for the board, queued no more than
+    /// `legacyBurstGap` apart, counts: ordinary edits never queue that many at once.
+    @discardableResult
+    public func limitRepublishedEntries(
+        boardLocalID: String,
+        toRelays keptRelayURLs: Set<String>,
+        legacyBurstMinimum: Int = 50,
+        legacyBurstGap: TimeInterval = 0.5
+    ) throws -> Int {
+        let kept = Set(TaskifyRelayURL.normalizedList(Array(keptRelayURLs)))
+        let legacyBurstIDs = Self.legacyBurstEventIDs(
+            entries.filter { $0.boardLocalID == boardLocalID && $0.isRepublish == nil },
+            minimum: legacyBurstMinimum,
+            gap: legacyBurstGap
+        )
+        var changed = 0
+        var completedIDs = Set<String>()
+        for index in entries.indices where entries[index].boardLocalID == boardLocalID {
+            let entry = entries[index]
+            guard entry.isRepublish == true || legacyBurstIDs.contains(entry.event.id),
+                  entry.relayURLs.contains(where: kept.contains) else { continue }
+            let accepted = Set(entry.acceptedRelayURLs ?? [])
+            let narrowed = entry.relayURLs.filter { kept.contains($0) || accepted.contains($0) }
+            guard narrowed != entry.relayURLs else { continue }
+            entries[index].relayURLs = narrowed
+            entries[index].relayRejections = entry.relayRejections?.filter { narrowed.contains($0.key) }
+            if entries[index].pendingRelayURLs.isEmpty { completedIDs.insert(entry.event.id) }
+            changed += 1
+        }
+        guard changed > 0 else { return 0 }
+        entries.removeAll { completedIDs.contains($0.event.id) }
+        releaseDependents(of: completedIDs)
+        try persist()
+        return changed
+    }
+
+    private static func legacyBurstEventIDs(
+        _ candidates: [NostrOutboxEntry],
+        minimum: Int,
+        gap: TimeInterval
+    ) -> Set<String> {
+        let sorted = candidates.sorted { $0.queuedAt < $1.queuedAt }
+        var result = Set<String>()
+        var run: [NostrOutboxEntry] = []
+        func closeRun() {
+            if run.count >= minimum { result.formUnion(run.map(\.event.id)) }
+            run.removeAll()
+        }
+        for entry in sorted {
+            if let last = run.last, entry.queuedAt.timeIntervalSince(last.queuedAt) > gap { closeRun() }
+            run.append(entry)
+        }
+        closeRun()
+        return result
     }
 
     public func replaceRelayTargets(

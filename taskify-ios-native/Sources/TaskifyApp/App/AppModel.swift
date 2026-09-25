@@ -4288,7 +4288,7 @@ final class AppModel {
             ))
         }
 
-        try await syncEngine.queueForPublish(requests)
+        try await syncEngine.queueForPublish(requests, isRepublish: true)
         await syncEngine.flushQueuedPublishes()
 
         // Apply every refreshed record through one local copy and a single assignment. Each
@@ -4319,6 +4319,15 @@ final class AppModel {
             taskCount: refreshedTasks.count,
             eventCount: refreshedEvents.count
         )
+    }
+
+    /// Stops sending this board's queued republish to public relays. It still goes to Taskify's
+    /// relays, which every client reads, so other devices keep receiving it.
+    func limitQueuedRepublishToFirstPartyRelays(boardID: String) async throws -> Int {
+        guard snapshot.boards.contains(where: { $0.id == boardID }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return try await syncEngine.limitQueuedRepublishToFirstPartyRelays(boardLocalID: boardID)
     }
 
     @discardableResult

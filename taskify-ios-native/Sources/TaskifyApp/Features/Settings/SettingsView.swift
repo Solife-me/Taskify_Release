@@ -2864,6 +2864,21 @@ private struct BoardManagerSheet: View {
 
             Button {
                 runRecoveryAction {
+                    let changed = try await model.limitQueuedRepublishToFirstPartyRelays(boardID: boardID)
+                    if changed == 0 {
+                        return "No queued republish is waiting on public relays."
+                    }
+                    return "Stopped sending \(changed) republished record\(changed == 1 ? "" : "s") to public relays. They still go to Taskify's relay, so your other devices get them."
+                }
+            } label: {
+                Label("Clear queued republish", systemImage: "xmark.icloud")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(recoveryBusy)
+
+            Button {
+                runRecoveryAction {
                     let result = try await model.cleanStaleBoardEvents(boardID: boardID)
                     if result.staleEventCount == 0 {
                         return "No stale task versions found across \(result.respondingRelayCount) responding relay\(result.respondingRelayCount == 1 ? "" : "s")."
