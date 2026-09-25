@@ -69,7 +69,7 @@ private actor RespondingRelayTransport: TaskSyncRelayTransport {
     func connect() { connectCount += 1 }
     func disconnect() {}
     func isResponsive(timeout: Duration) -> Bool { true }
-    func subscribe(id: String, kinds: [Int], boardTag: String, limit: Int, since: Int?) {}
+    func subscribe(id: String, kinds: [Int], boards: [BoardSubscriptionFilter], limit: Int) {}
     func subscribeToSharedInbox(id: String, recipientPublicKey: String, since: Int, limit: Int) {}
     func closeSubscription(id: String) { closedSubscriptionIDs.append(id) }
     func authenticate(_ event: NostrEvent) {}

@@ -418,7 +418,7 @@ private actor SuspensibleRelayTransport: TaskSyncRelayTransport {
     func connect() { connectionCount += 1 }
     func disconnect() { resumePublishes() }
     func isResponsive(timeout: Duration) -> Bool { true }
-    func subscribe(id: String, kinds: [Int], boardTag: String, limit: Int, since: Int?) {}
+    func subscribe(id: String, kinds: [Int], boards: [BoardSubscriptionFilter], limit: Int) {}
     func subscribeToSharedInbox(id: String, recipientPublicKey: String, since: Int, limit: Int) {
         inboxSubscriptionCount += 1
         inboxFilters.append((id, since))

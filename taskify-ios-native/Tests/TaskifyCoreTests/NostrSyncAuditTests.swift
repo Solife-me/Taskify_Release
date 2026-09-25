@@ -142,7 +142,7 @@ private actor AuditRelayTransport: TaskSyncRelayTransport {
     func connect() {}
     func disconnect() {}
     func isResponsive(timeout: Duration) -> Bool { true }
-    func subscribe(id: String, kinds: [Int], boardTag: String, limit: Int, since: Int?) { boardFilters.append((id, since)) }
+    func subscribe(id: String, kinds: [Int], boards: [BoardSubscriptionFilter], limit: Int) { boardFilters.append((id, boards.first?.since)) }
     func subscribeToSharedInbox(id: String, recipientPublicKey: String, since: Int, limit: Int) { inboxFilters.append((id, since)) }
     func lastBoardFilter() -> (id: String, since: Int?)? { boardFilters.last }
     func lastInboxFilter() -> (id: String, since: Int)? { inboxFilters.last }

@@ -364,6 +364,56 @@ enum NostrRelayRejection {
     }
 }
 
+/// One board's filter within a grouped board subscription.
+public struct BoardSubscriptionFilter: Equatable, Sendable {
+    public let boardTag: String
+    public let since: Int?
+
+    public init(boardTag: String, since: Int?) {
+        self.boardTag = boardTag
+        self.since = since
+    }
+}
+
+/// Splits a relay's boards into a few REQs instead of one each. Relays cap concurrent REQs per
+/// connection (strfry refuses the excess with "too many concurrent REQs", leaving those boards
+/// unsynced there), and an account with compound boards easily has dozens. Groups are chunks of
+/// the sorted tags, so adding or removing a board only re-issues the groups whose membership
+/// changed, and each board keeps its own history cursor, so a re-issued group replays nothing old.
+struct BoardSubscriptionGrouping: Equatable, Sendable {
+    static let boardsPerSubscription = 10
+
+    struct Group: Equatable, Sendable {
+        let id: String
+        let boardTags: [String]
+    }
+
+    let groups: [Group]
+    private let groupIDByBoardTag: [String: String]
+
+    init(relayURL: String, boardTags: some Sequence<String>) {
+        let sorted = Array(Set(boardTags)).sorted()
+        let relayToken = UInt(bitPattern: relayURL.hashValue)
+        var groups: [Group] = []
+        var index = 0
+        while index < sorted.count {
+            let members = Array(sorted[index..<min(index + Self.boardsPerSubscription, sorted.count)])
+            let membershipToken = UInt(bitPattern: members.joined(separator: ",").hashValue)
+            groups.append(Group(id: "taskify-\(relayToken)-g\(membershipToken)", boardTags: members))
+            index += Self.boardsPerSubscription
+        }
+        self.groups = groups
+        var groupIDByBoardTag: [String: String] = [:]
+        for group in groups {
+            for tag in group.boardTags { groupIDByBoardTag[tag] = group.id }
+        }
+        self.groupIDByBoardTag = groupIDByBoardTag
+    }
+
+    func groupID(for boardTag: String) -> String? { groupIDByBoardTag[boardTag] }
+    func group(withID id: String) -> Group? { groups.first { $0.id == id } }
+}
+
 struct TaskSyncRelaySubscriptionPlan: Equatable, Sendable {
     let relayURL: String
     let boardTags: [String]
@@ -435,9 +485,8 @@ protocol TaskSyncRelayTransport: AnyObject, Sendable {
     func subscribe(
         id: String,
         kinds: [Int],
-        boardTag: String,
-        limit: Int,
-        since: Int?
+        boards: [BoardSubscriptionFilter],
+        limit: Int
     ) async throws
     func subscribeToSharedInbox(id: String, recipientPublicKey: String, since: Int, limit: Int) async throws
     func closeSubscription(id: String) async throws
@@ -502,7 +551,10 @@ public actor TaskSyncEngine {
     )?
     private let updateStream: AsyncStream<TaskSyncUpdate>
     private let updateContinuation: AsyncStream<TaskSyncUpdate>.Continuation
-    private var boards: [Board] = []
+    private var boards: [Board] = [] {
+        didSet { boardGroupingCache.removeAll() }
+    }
+    private var boardGroupingCache: [String: BoardSubscriptionGrouping] = [:]
     private var auxiliaryRelayURLs: [String] = []
     private var inboxPublicKey: String?
     private var inboxRelayURLs: Set<String> = []
@@ -802,35 +854,20 @@ public actor TaskSyncEngine {
         nextPlan: TaskSyncRelaySubscriptionPlan
     ) async throws {
         try await connection.connect()
-        let previousBoardTags = Set(previousPlan?.boardTags ?? [])
-        let nextBoardTags = Set(nextPlan.boardTags)
+        let previousGroups = BoardSubscriptionGrouping(relayURL: relayURL, boardTags: previousPlan?.boardTags ?? []).groups
+        let nextGroups = BoardSubscriptionGrouping(relayURL: relayURL, boardTags: nextPlan.boardTags).groups
+        let nextGroupIDs = Set(nextGroups.map(\.id))
+        let previousGroupIDs = Set(previousGroups.map(\.id))
 
-        for boardTag in previousBoardTags.subtracting(nextBoardTags) {
-            let id = subscriptionID(relayURL: relayURL, boardTag: boardTag)
-            try? await connection.closeSubscription(id: id)
-            clearSubscriptionRetry(subscriptionID: id, relayURL: relayURL)
-            pendingSubscriptions[relayURL]?.remove(id)
-            relayBatches[relayURL]?.removeValue(forKey: id)
+        for group in previousGroups where !nextGroupIDs.contains(group.id) {
+            flushStartupBatches(relayURL: relayURL)
+            try? await connection.closeSubscription(id: group.id)
+            clearSubscriptionRetry(subscriptionID: group.id, relayURL: relayURL)
+            pendingSubscriptions[relayURL]?.remove(group.id)
+            relayBatches[relayURL]?.removeValue(forKey: group.id)
         }
-        for boardTag in nextBoardTags.subtracting(previousBoardTags) {
-            let id = subscriptionID(relayURL: relayURL, boardTag: boardTag)
-            pendingSubscriptions[relayURL, default: []].insert(id)
-            relayBatches[relayURL, default: [:]][id] = TaskRelayStartupBatch()
-            try await connection.subscribe(
-                id: id,
-                kinds: [
-                    TaskEventCodec.boardEventKind,
-                    TaskEventCodec.taskEventKind,
-                    TaskifyCalendarEventCodec.canonicalEventKind,
-                ],
-                boardTag: boardTag,
-                limit: 2_000,
-                since: boardSubscriptionSince(
-                    relayURL: relayURL,
-                    subscriptionID: id
-                )
-            )
-            noteSubscriptionIssued(relayURL: relayURL, subscriptionID: id)
+        for group in nextGroups where !previousGroupIDs.contains(group.id) {
+            try await issueBoardSubscription(group, on: connection, relayURL: relayURL)
         }
 
         guard previousPlan?.inboxPublicKey != nextPlan.inboxPublicKey else { return }
@@ -1174,26 +1211,8 @@ public actor TaskSyncEngine {
     ) async throws {
         flushStartupBatches(relayURL: relayURL)
         try await connection.connect()
-        for board in boards where board.effectiveRelayURLs.contains(relayURL) {
-            let boardTag = BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
-            let id = subscriptionID(relayURL: relayURL, boardTag: boardTag)
-            pendingSubscriptions[relayURL, default: []].insert(id)
-            relayBatches[relayURL, default: [:]][id] = TaskRelayStartupBatch()
-            try await connection.subscribe(
-                id: id,
-                kinds: [
-                    TaskEventCodec.boardEventKind,
-                    TaskEventCodec.taskEventKind,
-                    TaskifyCalendarEventCodec.canonicalEventKind,
-                ],
-                boardTag: boardTag,
-                limit: 2_000,
-                since: boardSubscriptionSince(
-                    relayURL: relayURL,
-                    subscriptionID: id
-                )
-            )
-            noteSubscriptionIssued(relayURL: relayURL, subscriptionID: id)
+        for group in boardGrouping(relayURL: relayURL).groups {
+            try await issueBoardSubscription(group, on: connection, relayURL: relayURL)
         }
         if let inboxPublicKey,
            inboxPublicKey.count == 64,
@@ -1431,11 +1450,11 @@ public actor TaskSyncEngine {
                       $0.effectiveRelayURLs.contains(relayURL)
                   }) else { return }
             let board = boards[boardIndex]
-            guard subscriptionID == self.subscriptionID(relayURL: relayURL, boardTag: boardTag) else { return }
+            guard subscriptionID == boardGrouping(relayURL: relayURL).groupID(for: boardTag) else { return }
             if let timestamp = verifiedEventCreatedAt[event.id] {
                 if event.verifyID() {
                     clearSubscriptionRetry(subscriptionID: subscriptionID, relayURL: relayURL)
-                    noteObservedEventCreatedAt(timestamp, subscriptionID: subscriptionID, relayURL: relayURL)
+                    noteObservedBoardEventCreatedAt(timestamp, boardTag: boardTag, subscriptionID: subscriptionID, relayURL: relayURL)
                     await markRelayOnline(relayURL)
                 }
                 return
@@ -1445,7 +1464,7 @@ public actor TaskSyncEngine {
                 guard let record = try? TaskEventCodec.decodeBoardEvent(event, board: board),
                       event.createdAt > (board.nostrUpdatedAt ?? 0),
                       recordEventIfNew(event) else { return }
-                noteObservedEventCreatedAt(event.createdAt, subscriptionID: subscriptionID, relayURL: relayURL)
+                noteObservedBoardEventCreatedAt(event.createdAt, boardTag: boardTag, subscriptionID: subscriptionID, relayURL: relayURL)
                 await markRelayOnline(relayURL)
                 boards[boardIndex] = record.board
                 updateContinuation.yield(.board(record))
@@ -1458,7 +1477,7 @@ public actor TaskSyncEngine {
                     event,
                     board: board
                 ), recordEventIfNew(event) else { return }
-                noteObservedEventCreatedAt(event.createdAt, subscriptionID: subscriptionID, relayURL: relayURL)
+                noteObservedBoardEventCreatedAt(event.createdAt, boardTag: boardTag, subscriptionID: subscriptionID, relayURL: relayURL)
                 await markRelayOnline(relayURL)
                 if pendingSubscriptions[relayURL]?.contains(subscriptionID) == true {
                     var subscriptions = relayBatches[relayURL] ?? [:]
@@ -1475,7 +1494,7 @@ public actor TaskSyncEngine {
 
             guard let record = try? TaskEventCodec.decodeTaskEvent(event, board: board),
                   recordEventIfNew(event) else { return }
-            noteObservedEventCreatedAt(event.createdAt, subscriptionID: subscriptionID, relayURL: relayURL)
+            noteObservedBoardEventCreatedAt(event.createdAt, boardTag: boardTag, subscriptionID: subscriptionID, relayURL: relayURL)
             await markRelayOnline(relayURL)
             if pendingSubscriptions[relayURL]?.contains(subscriptionID) == true {
                 var subscriptions = relayBatches[relayURL] ?? [:]
@@ -1593,9 +1612,14 @@ public actor TaskSyncEngine {
         case .endOfStoredEvents(let subscriptionID):
             guard isConfiguredSubscription(subscriptionID, relayURL: relayURL)
                 || pendingSubscriptions[relayURL]?.contains(subscriptionID) == true else { return }
-            let cursorKey = subscriptionRetryKey(relayURL: relayURL, subscriptionID: subscriptionID)
-            if let newest = incompleteHistoryNewest.removeValue(forKey: cursorKey) {
-                newestEventCreatedAtBySubscription[cursorKey] = max(newestEventCreatedAtBySubscription[cursorKey] ?? 0, newest)
+            let boardTags = boardGrouping(relayURL: relayURL).group(withID: subscriptionID)?.boardTags ?? []
+            let cursorKeys = boardTags.isEmpty
+                ? [subscriptionRetryKey(relayURL: relayURL, subscriptionID: subscriptionID)]
+                : boardTags.map { boardCursorKey(relayURL: relayURL, boardTag: $0) }
+            for cursorKey in cursorKeys {
+                if let newest = incompleteHistoryNewest.removeValue(forKey: cursorKey) {
+                    newestEventCreatedAtBySubscription[cursorKey] = max(newestEventCreatedAtBySubscription[cursorKey] ?? 0, newest)
+                }
             }
             clearSubscriptionRetry(subscriptionID: subscriptionID, relayURL: relayURL)
             var batch = relayBatches[relayURL]?[subscriptionID] ?? TaskRelayStartupBatch()
@@ -1942,13 +1966,69 @@ public actor TaskSyncEngine {
         )
     }
 
+    /// Board cursors are per board, not per REQ: a group re-issued because its membership
+    /// changed resumes each board where that board left off.
+    private func boardCursorKey(relayURL: String, boardTag: String) -> String {
+        "\(relayURL)#board:\(boardTag)"
+    }
+
+    private func noteObservedBoardEventCreatedAt(
+        _ createdAt: Int,
+        boardTag: String,
+        subscriptionID: String,
+        relayURL: String
+    ) {
+        let key = boardCursorKey(relayURL: relayURL, boardTag: boardTag)
+        if pendingSubscriptions[relayURL]?.contains(subscriptionID) == true {
+            incompleteHistoryNewest[key] = max(incompleteHistoryNewest[key] ?? 0, createdAt)
+            return
+        }
+        if createdAt > (newestEventCreatedAtBySubscription[key] ?? 0) {
+            newestEventCreatedAtBySubscription[key] = createdAt
+        }
+    }
+
+    private func boardGrouping(relayURL: String) -> BoardSubscriptionGrouping {
+        if let cached = boardGroupingCache[relayURL] { return cached }
+        let grouping = BoardSubscriptionGrouping(
+            relayURL: relayURL,
+            boardTags: boards
+                .filter { $0.effectiveRelayURLs.contains(relayURL) }
+                .map { BoardCrypto.boardTag(for: $0.effectiveNostrBoardID) }
+        )
+        boardGroupingCache[relayURL] = grouping
+        return grouping
+    }
+
+    private func issueBoardSubscription(
+        _ group: BoardSubscriptionGrouping.Group,
+        on connection: any TaskSyncRelayTransport,
+        relayURL: String
+    ) async throws {
+        pendingSubscriptions[relayURL, default: []].insert(group.id)
+        relayBatches[relayURL, default: [:]][group.id] = TaskRelayStartupBatch()
+        try await connection.subscribe(
+            id: group.id,
+            kinds: [
+                TaskEventCodec.boardEventKind,
+                TaskEventCodec.taskEventKind,
+                TaskifyCalendarEventCodec.canonicalEventKind,
+            ],
+            boards: group.boardTags.map {
+                BoardSubscriptionFilter(boardTag: $0, since: boardSubscriptionSince(relayURL: relayURL, boardTag: $0))
+            },
+            limit: 2_000
+        )
+        noteSubscriptionIssued(relayURL: relayURL, subscriptionID: group.id)
+    }
+
     /// Board cold starts use a bounded initial query without `since`. Only a completed
     /// history response establishes a cursor for subsequent reconnects.
     private func boardSubscriptionSince(
         relayURL: String,
-        subscriptionID: String
+        boardTag: String
     ) -> Int? {
-        let key = subscriptionRetryKey(relayURL: relayURL, subscriptionID: subscriptionID)
+        let key = boardCursorKey(relayURL: relayURL, boardTag: boardTag)
         guard let newest = newestEventCreatedAtBySubscription[key] else { return nil }
         let now = Int(Date().timeIntervalSince1970)
         return max(0, min(newest, now) - Self.replaySinceSkewSeconds)
@@ -1981,13 +2061,7 @@ public actor TaskSyncEngine {
            id == inboxSubscriptionID(relayURL: relayURL, publicKey: inboxPublicKey) {
             return true
         }
-        return boards.contains { board in
-            board.effectiveRelayURLs.contains(relayURL) &&
-                id == subscriptionID(
-                    relayURL: relayURL,
-                    boardTag: BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
-                )
-        }
+        return boardGrouping(relayURL: relayURL).group(withID: id) != nil
     }
 
     private func clearSubscriptionRetry(subscriptionID: String, relayURL: String) {
@@ -2010,26 +2084,8 @@ public actor TaskSyncEngine {
     private func resubscribe(subscriptionID: String, relayURL: String) async throws {
         flushStartupBatches(relayURL: relayURL)
         guard let connection = connections[relayURL] else { throw URLError(.notConnectedToInternet) }
-        for board in boards where board.effectiveRelayURLs.contains(relayURL) {
-            let boardTag = BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
-            guard self.subscriptionID(relayURL: relayURL, boardTag: boardTag) == subscriptionID else { continue }
-            pendingSubscriptions[relayURL, default: []].insert(subscriptionID)
-            relayBatches[relayURL, default: [:]][subscriptionID] = TaskRelayStartupBatch()
-            try await connection.subscribe(
-                id: subscriptionID,
-                kinds: [
-                    TaskEventCodec.boardEventKind,
-                    TaskEventCodec.taskEventKind,
-                    TaskifyCalendarEventCodec.canonicalEventKind,
-                ],
-                boardTag: boardTag,
-                limit: 2_000,
-                since: boardSubscriptionSince(
-                    relayURL: relayURL,
-                    subscriptionID: subscriptionID
-                )
-            )
-            noteSubscriptionIssued(relayURL: relayURL, subscriptionID: subscriptionID)
+        if let group = boardGrouping(relayURL: relayURL).group(withID: subscriptionID) {
+            try await issueBoardSubscription(group, on: connection, relayURL: relayURL)
             return
         }
         if let inboxPublicKey,
@@ -2202,11 +2258,6 @@ public actor TaskSyncEngine {
         guard report != lastEmittedReport else { return }
         lastEmittedReport = report
         updateContinuation.yield(.status(report))
-    }
-
-    private func subscriptionID(relayURL: String, boardTag: String) -> String {
-        let relayToken = UInt(bitPattern: relayURL.hashValue)
-        return "taskify-\(relayToken)-\(boardTag.prefix(16))"
     }
 
     @discardableResult
