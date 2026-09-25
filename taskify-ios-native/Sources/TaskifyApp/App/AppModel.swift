@@ -1447,6 +1447,8 @@ final class AppModel {
             isAllDay: isAllDay
         )
         let normalizedRecurrence = recurrence?.isActive == true ? recurrence : nil
+        // Edited on its own, a generated occurrence becomes an exception and is published.
+        events[index].generated = nil
         events[index].title = trimmedTitle
         events[index].details = details.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         events[index].locations = location.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty.map { [$0] }
@@ -6270,8 +6272,10 @@ final class AppModel {
     private func synchronizeTaskifyEvents(_ eventIDs: [String]) {
         let requestedIDs = Set(eventIDs)
         guard !requestedIDs.isEmpty else { return }
+        // Generated occurrences are never published: every client generates them from the
+        // series seed (`TaskifyEvent.generated`).
         let eventsByBoard = Dictionary(grouping: (snapshot.taskifyEvents ?? []).filter {
-            requestedIDs.contains($0.id) && $0.boardID != nil
+            requestedIDs.contains($0.id) && $0.boardID != nil && !$0.isGenerated
         }) { $0.boardID! }
 
         // Upsert the normalized events through one local copy so a batch of events invalidates
@@ -6360,7 +6364,8 @@ final class AppModel {
         do {
             let sourceByBoard = Dictionary(grouping: sourceEvents.compactMap {
                 event -> TaskifyEvent? in
-                guard event.boardID != nil else { return nil }
+                // A generated occurrence was never published on the source board.
+                guard event.boardID != nil, !event.isGenerated else { return nil }
                 var tombstone = event
                 tombstone.deleted = true
                 tombstone.lastEditedBy = identityPublicKey.nilIfEmpty ?? tombstone.lastEditedBy
@@ -6380,7 +6385,7 @@ final class AppModel {
             }
 
             let targetByBoard = Dictionary(grouping: (snapshot.taskifyEvents ?? []).filter {
-                requestedTargetIDs.contains($0.id) && $0.boardID != nil
+                requestedTargetIDs.contains($0.id) && $0.boardID != nil && !$0.isGenerated
             }) { $0.boardID! }
             for (boardID, events) in targetByBoard {
                 guard let board = snapshot.boards.first(where: { $0.id == boardID }) else { continue }

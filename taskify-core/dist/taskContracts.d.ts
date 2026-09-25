@@ -211,6 +211,13 @@ export type CalendarEventBase = {
     rsvpStatus?: CalendarRsvpStatus;
     rsvpCreatedAt?: number;
     rsvpFb?: CalendarRsvpFb;
+    /**
+     * An occurrence this device generated from its series seed. Local only, never published: every
+     * client generates the same occurrence (same id) from the seed, so a series is one published
+     * record rather than one per occurrence. Cleared when the occurrence is edited or deleted on its
+     * own, which publishes it as an exception. Matches native `TaskifyEvent.generated`.
+     */
+    generated?: boolean;
 };
 export type DateCalendarEvent = CalendarEventBase & {
     kind: "date";

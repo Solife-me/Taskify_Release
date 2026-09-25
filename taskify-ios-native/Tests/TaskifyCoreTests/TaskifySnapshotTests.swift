@@ -1505,7 +1505,9 @@ final class TaskifySnapshotTests: XCTestCase {
             replacingSeriesID: seed.id
         )
 
-        XCTAssertEqual(changes.deletedEventIDs.count, 23)
+        // The occurrences were only generated locally, so nothing is tombstoned: they are dropped.
+        XCTAssertEqual(changes.deletedEventIDs.count, 0)
+        XCTAssertEqual(snapshot.taskifyEvents?.count, 1)
         XCTAssertEqual(snapshot.acceptedTaskifyEvents, [snapshot.taskifyEvents![0]])
     }
 
@@ -1535,7 +1537,10 @@ final class TaskifySnapshotTests: XCTestCase {
             editorPublicKey: "editor"
         )
 
-        XCTAssertEqual(changes.deletedEventIDs.count, 22)
+        // Only the seed is published, carrying the new end date; the generated occurrences past
+        // the cutoff are dropped rather than tombstoned.
+        XCTAssertEqual(changes.deletedEventIDs.count, 0)
+        XCTAssertEqual(changes.updatedEventIDs, [seed.id])
         let remaining = snapshot.acceptedTaskifyEvents
         XCTAssertEqual(remaining.map(\.startDateValue), ["2026-07-27", "2026-07-28"])
         XCTAssertEqual(remaining.map(\.seriesID), [seed.id, seed.id])
