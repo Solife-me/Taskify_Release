@@ -66,6 +66,8 @@ public struct TaskPendingOutboxRecord: Identifiable, Equatable, Sendable {
     public let outboxScope: String
     public let pendingRelayURLs: [String]
     public let acceptedRelayCount: Int
+    public let eventKind: Int
+    public let relayRejections: [String: RelayRejectionBackoff]
     public let queuedAt: Date
     public let dependsOnEventID: String?
 
@@ -76,13 +78,17 @@ public struct TaskPendingOutboxRecord: Identifiable, Equatable, Sendable {
         pendingRelayURLs: [String],
         acceptedRelayCount: Int,
         queuedAt: Date,
-        dependsOnEventID: String? = nil
+        dependsOnEventID: String? = nil,
+        eventKind: Int = 0,
+        relayRejections: [String: RelayRejectionBackoff] = [:]
     ) {
         self.id = id
         self.recordID = recordID
         self.outboxScope = outboxScope
         self.pendingRelayURLs = pendingRelayURLs
         self.acceptedRelayCount = acceptedRelayCount
+        self.eventKind = eventKind
+        self.relayRejections = relayRejections
         self.queuedAt = queuedAt
         self.dependsOnEventID = dependsOnEventID
     }
@@ -1114,7 +1120,9 @@ public actor TaskSyncEngine {
                 pendingRelayURLs: entry.pendingRelayURLs,
                 acceptedRelayCount: entry.acceptedRelayURLs?.count ?? 0,
                 queuedAt: entry.queuedAt,
-                dependsOnEventID: entry.dependsOnEventID
+                dependsOnEventID: entry.dependsOnEventID,
+                eventKind: entry.event.kind,
+                relayRejections: entry.relayRejections ?? [:]
             )
         }
     }

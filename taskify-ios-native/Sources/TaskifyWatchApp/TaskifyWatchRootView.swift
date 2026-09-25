@@ -497,6 +497,7 @@ private struct TaskifyWatchTaskCard: View {
     @Environment(TaskifyWatchAppModel.self) private var model
     let task: TaskifyWatchTask
     var onComplete: (() -> Void)? = nil
+    var showsCompletionIcon = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -504,7 +505,7 @@ private struct TaskifyWatchTaskCard: View {
                 Button(action: onComplete) { completionIcon }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Complete \(task.title)")
-            } else {
+            } else if showsCompletionIcon {
                 completionIcon.accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -594,9 +595,24 @@ private struct TaskifyWatchTaskList: View {
                 )
             } else {
                 ForEach(tasks) { task in
-                    TaskifyWatchTaskCard(task: task) {
-                        WKInterfaceDevice.current().play(.success)
-                        withAnimation(.snappy(duration: 0.2)) { model.completeTask(task.id) }
+                    HStack(spacing: 4) {
+                        Button {
+                            WKInterfaceDevice.current().play(.success)
+                            withAnimation(.snappy(duration: 0.2)) { model.completeTask(task.id) }
+                        } label: {
+                            Image(systemName: "circle")
+                                .font(.title3)
+                                .foregroundStyle(model.taskifyAccentColor)
+                                .frame(width: 40, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Complete \(task.title)")
+                        NavigationLink {
+                            TaskifyWatchTaskDetail(taskID: task.id)
+                        } label: {
+                            TaskifyWatchTaskCard(task: model.taskWithPendingEdits(task), showsCompletionIcon: false)
+                        }
                     }
                 }
             }
@@ -609,6 +625,149 @@ private struct TaskifyWatchTaskList: View {
         .onDisappear {
             if model.activeQuickAddBoardID == source.boardID {
                 model.setActiveQuickAddBoardID(nil)
+            }
+        }
+    }
+}
+
+private struct TaskifyWatchTaskDetail: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let taskID: String
+    @State private var showingEditor = false
+
+    private var task: TaskifyWatchTask? {
+        model.snapshot.tasks.first { $0.id == taskID }.map { model.taskWithPendingEdits($0) }
+    }
+
+    var body: some View {
+        ScrollView {
+            if let task {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(task.title)
+                        .font(.title3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 12)
+                    ForEach(task.subtasks) { subtask in
+                        Button {
+                            model.setSubtaskCompletion(
+                                taskID: taskID, subtaskID: subtask.id, completed: !subtask.completed
+                            )
+                            WKInterfaceDevice.current().play(subtask.completed ? .click : .success)
+                        } label: {
+                            Label(subtask.title, systemImage: subtask.completed ? "checkmark.circle.fill" : "circle")
+                                .strikethrough(subtask.completed)
+                                .foregroundStyle(subtask.completed ? .secondary : .primary)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(subtask.title)
+                        .accessibilityValue(subtask.completed ? "Completed" : "Incomplete")
+                        .accessibilityHint(subtask.completed ? "Mark as incomplete" : "Mark as completed")
+                    }
+                    Button("Edit") { showingEditor = true }
+                        .frame(maxWidth: .infinity)
+                    Button("Mark as Completed") {
+                        model.completeTask(taskID)
+                        WKInterfaceDevice.current().play(.success)
+                        dismiss()
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .padding(.horizontal, 4)
+                .sheet(isPresented: $showingEditor) {
+                    TaskifyWatchTaskEditor(task: task)
+                        .environment(model)
+                }
+            } else {
+                Text("This task is no longer available.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct TaskifyWatchTaskEditor: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let task: TaskifyWatchTask
+    @State private var draft: TaskifyWatchTaskEdit
+    @State private var saveFailed = false
+
+    init(task: TaskifyWatchTask) {
+        self.task = task
+        _draft = State(initialValue: TaskifyWatchTaskEdit(task: task))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Title", text: $draft.title)
+                    TextField("Add Notes", text: $draft.note, axis: .vertical)
+                }
+                Section {
+                    Toggle("Date", isOn: Binding(
+                        get: { draft.dueDate != nil },
+                        set: { enabled in
+                            draft.dueDate = enabled ? Calendar.current.startOfDay(for: Date()) : nil
+                            if !enabled { draft.dueTimeEnabled = false }
+                        }
+                    ))
+                    if draft.dueDate != nil {
+                        DatePicker("Date", selection: Binding(
+                            get: { draft.dueDate ?? Date() },
+                            set: { draft.dueDate = $0 }
+                        ), displayedComponents: .date)
+                        Toggle("Time", isOn: $draft.dueTimeEnabled)
+                        if draft.dueTimeEnabled {
+                            DatePicker("Time", selection: Binding(
+                                get: { draft.dueDate ?? Date() },
+                                set: { draft.dueDate = $0; draft.dueTimeZone = TimeZone.current.identifier }
+                            ), displayedComponents: .hourAndMinute)
+                        }
+                    }
+                }
+                Section {
+                    Picker("Priority", selection: $draft.priority) {
+                        Text("None").tag(Int?.none)
+                        Text("Low").tag(Int?(1))
+                        Text("Medium").tag(Int?(2))
+                        Text("High").tag(Int?(3))
+                    }
+                    LabeledContent("Board", value: task.boardName)
+                }
+                Text("Changes sync through your iPhone when connected.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .labelStyle(.iconOnly)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", systemImage: "checkmark") {
+                        draft.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if draft.dueTimeEnabled && draft.dueTimeZone == nil {
+                            draft.dueTimeZone = TimeZone.current.identifier
+                        }
+                        if model.editTask(task.id, edit: draft) {
+                            WKInterfaceDevice.current().play(.success)
+                            dismiss()
+                        } else { saveFailed = true }
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .alert("Unable to save", isPresented: $saveFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("This task may no longer be available. Close the editor and refresh your tasks.")
             }
         }
     }

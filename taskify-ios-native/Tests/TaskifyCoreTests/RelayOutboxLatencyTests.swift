@@ -32,6 +32,29 @@ final class RelayOutboxLatencyTests: XCTestCase {
         return engine
     }
 
+    func testQueueDiagnosticsPreservePartialAcceptanceAndRejectionDetails() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outbox = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let queued = NostrOutboxEntry(event: event(1), relayURLs: [healthyURL, slowURL],
+            boardLocalID: "board", taskID: "task", dependsOnEventID: "parent")
+        try await outbox.enqueue(queued)
+        _ = try await outbox.markAccepted(eventID: queued.id, relayURL: healthyURL)
+        let retryAfter = try await outbox.recordRejection(eventID: queued.id, relayURL: slowURL)
+        let engine = TaskSyncEngine(outbox: outbox)
+        let records = await engine.pendingOutboxRecords()
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(record.pendingRelayURLs, [slowURL])
+        XCTAssertEqual(record.acceptedRelayCount, 1)
+        XCTAssertEqual(record.eventKind, queued.event.kind)
+        XCTAssertEqual(record.dependsOnEventID, "parent")
+        XCTAssertEqual(record.relayRejections[slowURL]?.retryAfter, retryAfter)
+        let retainedCount = await outbox.entryCount()
+        XCTAssertEqual(retainedCount, 1, "Inspecting a partially delivered change must not clear it")
+        await engine.stop()
+    }
+
     func testRateLimitedSubscriptionPausesPublishingAndDoesNotRetryAfterOneSecond() async throws {
         let relay = SuspensibleRelayTransport()
         let engine = engine(transports: [healthyURL: relay])

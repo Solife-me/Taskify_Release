@@ -4,6 +4,71 @@ import XCTest
 import TaskifyWatchShared
 
 final class TaskifyWatchDataTests: XCTestCase {
+    func testWatchEditsRoundTripAndPreserveUneditedPayload() throws {
+        let payload = Data(#"{"title":"Original","note":"Notes","subtasks":[{"id":"s1","title":"Child","completed":true}],"images":["image"],"recurrence":{"freq":"daily"},"custom":"keep"}"#.utf8)
+        let task = TaskifyWatchTask(
+            id: "task", title: "Original", boardID: "board", boardName: "Board",
+            columnName: nil, dueDate: Date(), dueTimeEnabled: true, priority: 3,
+            order: 0, syncPayload: payload
+        )
+        var edit = TaskifyWatchTaskEdit(task: task)
+        XCTAssertEqual(edit.note, "Notes")
+        edit.title = "Edited"
+        edit.note = ""
+        edit.dueDate = nil
+        edit.dueTimeEnabled = false
+        edit.priority = nil
+        let command = TaskifyWatchCommand(kind: .editTask, taskID: task.id, edit: edit, createdAt: Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(command)), command)
+        let updated = task.applying(edit)
+        XCTAssertEqual(updated.title, "Edited")
+        XCTAssertNil(updated.dueDate)
+        XCTAssertNil(updated.priority)
+        XCTAssertNil(updated.payloadObject["dueISO"])
+        XCTAssertEqual(updated.subtasks.first?.title, "Child")
+        XCTAssertEqual(updated.subtasks.first?.completed, true)
+        XCTAssertEqual(updated.payloadObject["images"] as? [String], ["image"])
+        XCTAssertEqual(updated.payloadObject["custom"] as? String, "keep")
+        XCTAssertNotNil(updated.payloadObject["recurrence"])
+        edit.title = "  "
+        XCTAssertThrowsError(try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(
+            TaskifyWatchCommand(kind: .editTask, taskID: task.id, edit: edit)
+        )))
+    }
+
+    func testWatchSubtaskCompletionIsTargetedAndIdempotent() throws {
+        let payload = Data(#"{"title":"Parent","custom":"keep","subtasks":[{"id":"one","title":"First","completed":false,"custom":"child"},{"id":"two","title":"Second","completed":false}]}"#.utf8)
+        let task = TaskifyWatchTask(
+            id: "parent", title: "Parent", boardID: "board", boardName: "Board",
+            columnName: nil, dueDate: nil, dueTimeEnabled: false, priority: nil,
+            order: 0, syncPayload: payload
+        )
+        let completed = task.settingSubtaskCompletion("one", completed: true)
+        XCTAssertEqual(completed.subtasks.map(\.completed), [true, false])
+        XCTAssertEqual(completed.title, task.title)
+        XCTAssertEqual(completed.payloadObject["custom"] as? String, "keep")
+        let rows = completed.payloadObject["subtasks"] as? [[String: Any]]
+        XCTAssertEqual(rows?.first?["custom"] as? String, "child")
+        XCTAssertEqual(completed.settingSubtaskCompletion("one", completed: true).subtasks, completed.subtasks)
+        XCTAssertEqual(completed.settingSubtaskCompletion("one", completed: false).subtasks, task.subtasks)
+        XCTAssertEqual(task.settingSubtaskCompletion("missing", completed: true), task)
+        for state in [true, false] {
+            let command = TaskifyWatchCommand(
+                kind: .setSubtaskCompletion, taskID: task.id,
+                subtaskID: "one", subtaskCompleted: state,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+            XCTAssertEqual(try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(command)), command)
+        }
+        for command in [
+            TaskifyWatchCommand(kind: .setSubtaskCompletion, taskID: task.id, subtaskID: "one"),
+            TaskifyWatchCommand(kind: .setSubtaskCompletion, taskID: task.id, subtaskCompleted: true),
+            TaskifyWatchCommand(kind: .setSubtaskCompletion, subtaskID: "one", subtaskCompleted: true),
+        ] {
+            XCTAssertThrowsError(try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(command)))
+        }
+    }
+
     func testSetupNavigationRequestHasAnExplicitTypedMarker() {
         XCTAssertTrue(
             TaskifyWatchTransfer.isSetupNavigationRequest(

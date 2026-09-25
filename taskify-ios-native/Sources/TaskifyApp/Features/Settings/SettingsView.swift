@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var managingCompoundBoard: Board?
     @State private var sharedBoardID = ""
     @State private var sharedBoardName = ""
+    @State private var showingSyncQueue = false
     @State private var showingBoardScanner = false
     @State private var identityInput = ""
     @State private var revealedNsec: String?
@@ -163,6 +164,9 @@ struct SettingsView: View {
         .onChange(of: backgroundPhotoItem) { _, item in
             guard let item else { return }
             Task { await loadBackgroundPhoto(item) }
+        }
+        .sheet(isPresented: $showingSyncQueue) {
+            SyncQueueInspector().environment(model)
         }
         .sheet(isPresented: $showingBoardScanner) {
             BoardQRJoinFlow()
@@ -517,6 +521,13 @@ struct SettingsView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(TaskifyTheme.secondaryText)
             }
+
+            Button {
+                showingSyncQueue = true
+            } label: {
+                Label("Inspect sync queue", systemImage: "list.bullet.rectangle")
+            }
+            .buttonStyle(.bordered)
 
             Label(
                 "Background sync: \(model.backgroundSyncStatus)",
@@ -3525,5 +3536,115 @@ private struct StatusRow: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(complete ? Color.green : TaskifyTheme.secondaryText)
         }
+    }
+}
+
+
+/// Loads a snapshot on demand so thousands of queued events do not add work to Settings rendering.
+private struct SyncQueueInspector: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var records: [TaskPendingOutboxRecord] = []
+    @State private var loaded = false
+    @State private var relayCounts: [(name: String, count: Int)] = []
+    @State private var scopeCounts: [(name: String, count: Int)] = []
+
+    private var unacceptedCount: Int { records.filter { $0.acceptedRelayCount == 0 }.count }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Delivery snapshot") {
+                    if !loaded {
+                        ProgressView("Reading queue…")
+                    } else {
+                        LabeledContent("Queued", value: records.count.formatted())
+                        LabeledContent("No relay acceptance yet", value: unacceptedCount.formatted())
+                        LabeledContent("Accepted by at least one relay", value: (records.count - unacceptedCount).formatted())
+                        Text("Relay acceptance is a delivery receipt, not a verification that a backup can currently be restored. Changes may remain queued while other replicas are unavailable.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Section("Waiting on relays") {
+                    ForEach(relayCounts, id: \.name) { item in
+                        LabeledContent(item.name, value: item.count.formatted())
+                    }
+                    Text("A change can wait on multiple relays, so these counts can exceed the queue total.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Changes by feature or board") {
+                    ForEach(scopeCounts, id: \.name) { item in
+                        LabeledContent(item.name, value: item.count.formatted())
+                    }
+                }
+                Section("Queued changes · oldest first") {
+                    ForEach(records) { record in
+                        DisclosureGroup {
+                            Text("Event kind: \(record.eventKind)")
+                            Text("Event: \(record.id)")
+                            Text("Record: \(record.recordID)")
+                            Text("Scope: \(record.outboxScope)")
+                            Text("Accepted by \(record.acceptedRelayCount) relay(s)")
+                            if let parent = record.dependsOnEventID {
+                                Text("Waiting for parent: \(parent)")
+                            }
+                            ForEach(record.pendingRelayURLs, id: \.self) { relay in
+                                Text("Waiting: \(relay)")
+                                if let rejection = record.relayRejections[relay] {
+                                    Text("Refusals: \(rejection.count) · Retry after \(rejection.retryAfter.formatted())")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(model.pendingPublishScopeLabel(record.outboxScope))
+                                Text(record.queuedAt, format: .dateTime.year().month().day().hour().minute())
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text(record.acceptedRelayCount == 0 ? "No relay acceptance yet" : "Waiting for remaining replicas")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .textSelection(.enabled)
+                    }
+                }
+            }
+            .navigationTitle("Sync queue")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    ShareLink(item: report) { Label("Share diagnostics", systemImage: "square.and.arrow.up") }
+                        .disabled(!loaded)
+                }
+            }
+            .task { await refresh() }
+            .refreshable { await refresh() }
+        }
+    }
+
+    @MainActor private func refresh() async {
+        await model.refreshPendingPublishRecords()
+        records = model.pendingPublishRecords
+        relayCounts = counts(records.flatMap(\.pendingRelayURLs))
+        scopeCounts = counts(records.map { model.pendingPublishScopeLabel($0.outboxScope) })
+        loaded = true
+    }
+
+    private func counts(_ values: [String]) -> [(name: String, count: Int)] {
+        Dictionary(values.map { ($0, 1) }, uniquingKeysWith: +)
+            .map { (name: $0.key, count: $0.value) }
+            .sorted { $0.count == $1.count ? $0.name < $1.name : $0.count > $1.count }
+    }
+
+    private var report: String {
+        (["Taskify sync queue", "Queued: \(records.count)", "No acceptance: \(unacceptedCount)",
+          "Routing metadata only; includes board names and record identifiers."] +
+         scopeCounts.map { "Feature/board \($0.name): \($0.count)" } +
+         relayCounts.map { "Waiting on \($0.name): \($0.count)" } +
+         records.flatMap { record -> [String] in
+             ["\(record.queuedAt.ISO8601Format()) | scope=\(record.outboxScope) | record=\(record.recordID) | event=\(record.id) | kind=\(record.eventKind) | accepted=\(record.acceptedRelayCount) | waiting=\(record.pendingRelayURLs.joined(separator: ",")) | parent=\(record.dependsOnEventID ?? "none")"] + record.relayRejections.keys.sorted().compactMap { relay in
+                 guard let rejection = record.relayRejections[relay] else { return nil }
+                 return "  refusal: \(relay) | count=\(rejection.count) | retryAfter=\(rejection.retryAfter.ISO8601Format())"
+             }
+         }).joined(separator: "\n")
     }
 }
