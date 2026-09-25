@@ -314,7 +314,6 @@ final class AppModel {
     /// Whether this launch has finished looking for the account's synced settings (found or not).
     /// Until then a setting that names a board may simply not have arrived yet.
     @ObservationIgnored private var accountSyncSettled = false
-    @ObservationIgnored private var outboxRelayAuditTask: Task<Void, Never>?
     @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
     @ObservationIgnored private var lastAccountBackupCreatedAt = 0
     @ObservationIgnored private var lastAccountBackupCheckAt: Date?
@@ -5563,22 +5562,6 @@ final class AppModel {
         reconcileFastingReminders()
         if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
         _ = reconcileScriptureMemory()
-        scheduleOutboxRelayAudit()
-    }
-
-    /// Settles queued changes the relays already hold (see `reconcileOutboxWithRelays`), so a
-    /// backlog an older build left behind drains on its own. Repeats a few times while a large
-    /// backlog remains, for relays that connect late.
-    private func scheduleOutboxRelayAudit(remainingRuns: Int = 4) {
-        outboxRelayAuditTask?.cancel()
-        outboxRelayAuditTask = Task { [weak self, syncEngine] in
-            _ = await syncEngine.reconcileOutboxWithRelays()
-            guard remainingRuns > 1, !Task.isCancelled,
-                  await syncEngine.pendingPublishCount() > 50 else { return }
-            try? await Task.sleep(for: .seconds(600))
-            guard !Task.isCancelled else { return }
-            self?.scheduleOutboxRelayAudit(remainingRuns: remainingRuns - 1)
-        }
     }
 
     private func reconfigureSync() {

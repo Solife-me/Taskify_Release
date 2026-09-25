@@ -201,6 +201,51 @@ public actor NostrOutboxStore {
         return completed
     }
 
+    /// Queued events of `kind` still waiting on `relayURL` that nothing else waits on, oldest
+    /// first: what the outbox audit can check against that relay.
+    public func auditableEntries(for relayURL: String, kind: Int) -> [NostrOutboxEntry] {
+        entries
+            .filter { $0.event.kind == kind && $0.dependsOnEventID == nil && $0.pendingRelayURLs.contains(relayURL) }
+            .sorted { $0.queuedAt < $1.queuedAt }
+    }
+
+    /// `markAccepted` for a whole batch in one pass and one write: the outbox audit settles a
+    /// backlog thousands of entries long, where a scan per entry cost minutes on a phone. Returns
+    /// the events it settled and the entries no relay still needs, which leave the outbox.
+    public func settleDeliveries(
+        eventIDs: Set<String>,
+        relayURL: String
+    ) throws -> (settledEventIDs: Set<String>, completed: [NostrOutboxEntry]) {
+        guard !eventIDs.isEmpty else { return ([], []) }
+        let previous = entries
+        var settled = Set<String>()
+        var completedIDs = Set<String>()
+        for index in entries.indices where eventIDs.contains(entries[index].event.id) {
+            guard entries[index].dependsOnEventID == nil,
+                  entries[index].pendingRelayURLs.contains(relayURL) else { continue }
+            var accepted = Set(entries[index].acceptedRelayURLs ?? [])
+            accepted.insert(relayURL)
+            entries[index].acceptedRelayURLs = entries[index].relayURLs.filter { accepted.contains($0) }
+            settled.insert(entries[index].event.id)
+            if entries[index].effectiveAcknowledgementPolicy == .anyRelay || entries[index].pendingRelayURLs.isEmpty {
+                completedIDs.insert(entries[index].id)
+            }
+        }
+        guard !settled.isEmpty else { return ([], []) }
+        let completed = entries.filter { completedIDs.contains($0.id) }
+        let hasDependents = !completedIDs.isEmpty && entries.contains {
+            $0.dependsOnEventID.map(completedIDs.contains) == true
+        }
+        entries.removeAll { completedIDs.contains($0.id) }
+        releaseDependents(of: completedIDs)
+        if hasDependents {
+            // As in `markAccepted`: released replies are committed before they can be published.
+            do { try persist() }
+            catch { entries = previous; throw error }
+        } else { scheduleDeferredPersist() }
+        return (settled, completed)
+    }
+
     @discardableResult
     public func removeExpired(now: Date = Date()) throws -> [NostrOutboxEntry] {
         var expired = entries.filter { entry in
