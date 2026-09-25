@@ -40,6 +40,56 @@ final class FastingReminderReconcileTests: XCTestCase {
         )
     }
 
+    private func reminder(_ id: String, board: String, day: Int, completed: Bool = false) -> TaskItem {
+        var task = TaskItem(
+            id: id, boardID: board, title: "Fasting",
+            dueDate: now.addingTimeInterval(TimeInterval(day * 86_400)), dueDateEnabled: true,
+            seriesID: "fasting-reminder"
+        )
+        task.completed = completed
+        return task
+    }
+
+    /// "week-default" is a different board on every device; reminders follow the shared board
+    /// that already holds them, so a fresh device doesn't put them on its own startup board.
+    func testRemindersFollowTheBoardThatAlreadyHoldsThem() {
+        var snapshot = TaskifySnapshot.empty
+        var shared = Board.week(id: "account-week", name: "Personal schedule")
+        shared.nostrBoardID = "shared-nostr-id"
+        snapshot.boards.append(shared)
+        snapshot.tasks = [
+            reminder("fasting-reminder:old-1", board: "account-week", day: -30, completed: true),
+            reminder("fasting-reminder:old-2", board: "account-week", day: -20, completed: true),
+        ]
+        XCTAssertEqual(snapshot.fastingReminderTargetBoard()?.id, "account-week")
+        let created = reconcile(&snapshot).created
+        XCTAssertFalse(created.isEmpty)
+        XCTAssertTrue(created.allSatisfy { $0.boardID == "account-week" })
+    }
+
+    func testDevicesAgreeWhenRemindersAreSplitAcrossBoards() {
+        var snapshot = TaskifySnapshot.empty
+        var first = Board.week(id: "board-a", name: "A")
+        first.nostrBoardID = "zzz"
+        var second = Board.week(id: "board-b", name: "B")
+        second.nostrBoardID = "aaa"
+        snapshot.boards.append(contentsOf: [first, second])
+        snapshot.tasks = [
+            reminder("fasting-reminder:x", board: "board-a", day: -5, completed: true),
+            reminder("fasting-reminder:y", board: "board-b", day: -6, completed: true),
+        ]
+        // Equal counts: the lower shared board id wins, whatever the local order.
+        XCTAssertEqual(snapshot.fastingReminderTargetBoard()?.id, "board-b")
+        snapshot.tasks.append(reminder("fasting-reminder:z", board: "board-a", day: -7, completed: true))
+        XCTAssertEqual(snapshot.fastingReminderTargetBoard()?.id, "board-a", "The board holding the most wins")
+    }
+
+    func testWithNoRemindersAnywhereTheDefaultWeekBoardIsUsed() {
+        var snapshot = TaskifySnapshot.empty
+        snapshot.boards.append(Board.week(id: "other-week", name: "Other"))
+        XCTAssertEqual(snapshot.fastingReminderTargetBoard()?.id, "week-default")
+    }
+
     func testCreatedRemindersUseThePWASeriesAndDateDerivedIDs() {
         var snapshot = TaskifySnapshot.empty
         let created = reconcile(&snapshot).created

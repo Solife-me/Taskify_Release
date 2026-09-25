@@ -3615,8 +3615,10 @@ final class AppModel {
     /// repeatedly (e.g. on every app launch) — it only creates/prunes tasks that drifted from
     /// the desired schedule.
     func reconcileFastingReminders(removeExistingWhenDisabled: Bool = false) {
-        // Turning the feature off acts at once; generation waits for relay history.
-        guard canGenerateSharedTasks || removeExistingWhenDisabled else { return }
+        // Turning the feature off acts at once. Generation waits for relay history and for this
+        // launch's account-sync lookup: until the account's boards and their reminders are here,
+        // the only week board may be this device's own startup board.
+        guard (canGenerateSharedTasks && accountSyncSettled) || removeExistingWhenDisabled else { return }
         // Calling a `mutating` method directly on `snapshot` fires its `didSet` even when the
         // method changes nothing — invalidating every observing view and discarding the lookup
         // cache. Reconcile a copy and write back only when it actually differs.
@@ -3635,13 +3637,13 @@ final class AppModel {
         }
         guard !result.created.isEmpty || !result.updatedIDs.isEmpty else { return }
         scheduleSave()
-        for task in result.created {
-            synchronizeTask(task.id)
-        }
-        for taskID in result.updatedIDs {
-            let isDeletion = snapshot.tasks.first(where: { $0.id == taskID })?.isDeleted == true
-            synchronizeTask(taskID, includeDeletionEvent: isDeletion)
-        }
+        let deletedIDs = Set(result.updatedIDs.filter { taskID in
+            snapshot.tasks.first(where: { $0.id == taskID })?.isDeleted == true
+        })
+        synchronizeTasks(
+            result.created.map(\.id) + result.updatedIDs.filter { !deletedIDs.contains($0) },
+            deletionTaskIDs: deletedIDs.sorted()
+        )
     }
 
     private static let scriptureMemorySeriesID = ScriptureMemoryAlgorithm.seriesID
@@ -5053,8 +5055,12 @@ final class AppModel {
             let wasSettled = accountSyncSettled
             accountSyncSettled = true
             defer {
-                // Work deferred while settings were unknown (Scripture Memory's board) can run now.
-                if !wasSettled { reconcileScriptureMemory() }
+                // Work deferred while settings were unknown (Scripture Memory's board, where
+                // fasting reminders live) can run now.
+                if !wasSettled {
+                    reconcileScriptureMemory()
+                    reconcileFastingReminders()
+                }
             }
             if let decodedPayload {
                 applyAccountSyncPayload(decodedPayload)

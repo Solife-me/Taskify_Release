@@ -274,3 +274,39 @@ export function fastingReminderTaskId(seriesId: string, dueTime: number): string
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${seriesId}:${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
+
+type FastingReminderBoard = { id: string; kind: string; archived?: boolean; hidden?: boolean; nostr?: { boardId?: string } };
+
+/**
+ * The board fasting reminders live on. Their ids are date-derived and shared by every device,
+ * but "week-default" names a different board on each device, so choosing by local id moved the
+ * same reminders between boards. Follow the week board that already holds reminders (the most,
+ * ties by shared board id, so every device agrees); only when none holds any, fall back to the
+ * default week board. Matches native `TaskifySnapshot.fastingReminderTargetBoard`.
+ */
+export function fastingReminderTargetBoard<TBoard extends FastingReminderBoard>(
+  boards: TBoard[],
+  tasks: Array<{ boardId: string; seriesId?: string }>,
+  seriesId: string,
+): TBoard | null {
+  const reminderCounts = new Map<string, number>();
+  for (const task of tasks) {
+    if (task.seriesId !== seriesId) continue;
+    reminderCounts.set(task.boardId, (reminderCounts.get(task.boardId) ?? 0) + 1);
+  }
+  const sharedBoardId = (board: TBoard) => board.nostr?.boardId || board.id;
+  const holding = boards
+    .filter((board) => board.kind === "week" && !board.archived && (reminderCounts.get(board.id) ?? 0) > 0)
+    .sort((a, b) => {
+      const countDelta = (reminderCounts.get(b.id) ?? 0) - (reminderCounts.get(a.id) ?? 0);
+      if (countDelta !== 0) return countDelta;
+      const left = sharedBoardId(a);
+      const right = sharedBoardId(b);
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  return holding[0]
+    ?? boards.find((board) => board.id === "week-default" && board.kind === "week")
+    ?? boards.find((board) => board.kind === "week" && !board.archived && !board.hidden)
+    ?? boards.find((board) => board.kind === "week")
+    ?? null;
+}

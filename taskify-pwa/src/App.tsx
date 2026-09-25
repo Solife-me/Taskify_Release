@@ -105,6 +105,7 @@ import {
   isUsHolidayCalendarEvent,
   fastingReminderDueTimesForMonth,
   fastingReminderTaskId,
+  fastingReminderTargetBoard,
 } from "./domains/calendar/holidayUtils";
 import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
 import {
@@ -1303,11 +1304,8 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    const targetBoard =
-      boards.find((b) => b.id === "week-default" && b.kind === "week")
-      || boards.find((b) => b.kind === "week" && !b.archived && !b.hidden)
-      || boards.find((b) => b.kind === "week")
-      || null;
+    // Follows the board that already holds reminders, so every device uses the same one.
+    const targetBoard = fastingReminderTargetBoard(boards, tasksRef.current, FASTING_REMINDER_SERIES_ID);
 
     if (!settings.fastingRemindersEnabled) {
       setTasks((prev) => {
@@ -1317,7 +1315,9 @@ export default function App() {
       return;
     }
     if (!targetBoard) return;
-    if (!isBoardReadyForGeneratedTasks(targetBoard.id)) return;
+    // Every shared board's history must be in first: reminders another device made may be on any
+    // of them, and they decide where reminders live.
+    if (boards.some((b) => b.nostr?.boardId && !isBoardReadyForGeneratedTasks(b.id))) return;
 
     const now = new Date();
     const months = Array.from({ length: 2 }, (_, i) => {

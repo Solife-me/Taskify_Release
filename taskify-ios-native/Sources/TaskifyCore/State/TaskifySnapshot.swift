@@ -350,6 +350,32 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     /// desired days and create the ones that are missing. Past and completed occurrences are
     /// left untouched. Returns newly created tasks and the ids of existing tasks that were
     /// deleted or reassigned, so the caller can push the right sync events.
+    /// The board fasting reminders live on. Their ids are date-derived and shared by every
+    /// device, but "week-default" names a different board on each device, so choosing by local
+    /// id moved the same reminders between boards. Follow the week board that already holds
+    /// reminders (the most, ties by shared board id, so every device agrees); only when none
+    /// holds any, fall back to the default week board. Matches the PWA's
+    /// `fastingReminderTargetBoard`.
+    public func fastingReminderTargetBoard() -> Board? {
+        let weekBoards = boards.filter { $0.kind == .week && !$0.archived }
+        var reminderCounts: [String: Int] = [:]
+        for task in tasks where Self.isFastingReminderSeriesID(task.seriesID) && !task.isDeleted {
+            reminderCounts[task.boardID, default: 0] += 1
+        }
+        let holding = weekBoards.filter { (reminderCounts[$0.id] ?? 0) > 0 }
+        if let chosen = holding.min(by: { lhs, rhs in
+            let lhsCount = reminderCounts[lhs.id] ?? 0
+            let rhsCount = reminderCounts[rhs.id] ?? 0
+            if lhsCount != rhsCount { return lhsCount > rhsCount }
+            return lhs.effectiveNostrBoardID < rhs.effectiveNostrBoardID
+        }) {
+            return chosen
+        }
+        return boards.first(where: { $0.id == "week-default" && $0.kind == .week })
+            ?? boards.first(where: { $0.kind == .week && $0.isVisible })
+            ?? boards.first(where: { $0.kind == .week })
+    }
+
     public mutating func reconcileFastingReminders(
         enabled: Bool,
         mode: FastingRemindersMode,
@@ -374,9 +400,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             return ([], updatedIDs)
         }
 
-        guard let targetBoard = boards.first(where: { $0.id == "week-default" && $0.kind == .week })
-            ?? boards.first(where: { $0.kind == .week && $0.isVisible })
-            ?? boards.first(where: { $0.kind == .week }) else {
+        guard let targetBoard = fastingReminderTargetBoard() else {
             return ([], [])
         }
 
