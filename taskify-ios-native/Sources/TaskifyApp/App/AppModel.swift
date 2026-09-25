@@ -4388,9 +4388,10 @@ final class AppModel {
         guard respondingRelayCount > 0 else { throw URLError(.cannotConnectToHost) }
 
         let allEvents = relayResults.flatMap { $0.1 }
-        let uniqueEvents = Array(Dictionary(uniqueKeysWithValues: allEvents.map {
+        // The same event normally comes back from several relays.
+        let uniqueEvents = Array(Dictionary(allEvents.map {
             ($0.id, $0)
-        }).values)
+        }, uniquingKeysWith: { first, _ in first }).values)
         let staleIDs = TaskEventCodec.staleReplaceableEventIDs(
             uniqueEvents,
             expectedAuthor: author
@@ -6197,7 +6198,7 @@ final class AppModel {
             updated.tasks.indices.map { (updated.tasks[$0].id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        let boardByID = Dictionary(uniqueKeysWithValues: updated.boards.map { ($0.id, $0) })
+        let boardByID = Dictionary(updated.boards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         var stamps: [(board: Board, task: TaskItem, timestamp: Int, deletionTimestamp: Int?)] = []
 

@@ -31,9 +31,10 @@ public extension TaskifySnapshot {
             return false
         }
         let cachedProfiles = Dictionary(
-            uniqueKeysWithValues: (contacts ?? []).compactMap { contact in
+            (contacts ?? []).compactMap { contact in
                 contact.profile.map { (contact.publicKey, $0) }
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         contacts = list.contacts.map { contact in
             var merged = contact

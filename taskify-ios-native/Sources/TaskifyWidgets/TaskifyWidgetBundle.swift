@@ -598,9 +598,9 @@ struct BoardWidgetBoardEntity: AppEntity, Hashable {
 struct BoardWidgetBoardQuery: EntityQuery {
     func entities(for identifiers: [String]) async throws -> [BoardWidgetBoardEntity] {
         guard let snapshot = await TaskifyWidgetStore.loadSnapshot() else { return [] }
-        let entities = Dictionary(uniqueKeysWithValues: widgetBoards(in: snapshot).map {
+        let entities = Dictionary(widgetBoards(in: snapshot).map {
             ($0.id, BoardWidgetBoardEntity(board: $0))
-        })
+        }, uniquingKeysWith: { first, _ in first })
         return identifiers.compactMap { entities[$0] }
     }
 
@@ -682,7 +682,7 @@ struct BoardWidgetScopeQuery: EntityQuery {
     func entities(for identifiers: [String]) async throws -> [BoardWidgetScopeEntity] {
         guard let snapshot = await TaskifyWidgetStore.loadSnapshot() else { return [] }
         let choices = widgetBoards(in: snapshot).flatMap(BoardWidgetScopeEntity.choices)
-        let entities = Dictionary(uniqueKeysWithValues: choices.map { ($0.id, $0) })
+        let entities = Dictionary(choices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return identifiers.compactMap { entities[$0] }
     }
 

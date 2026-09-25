@@ -576,14 +576,16 @@ public enum TaskifyEventInvitationPlanner {
         let previousRecipients = Set(previousParticipants.compactMap {
             normalizedPublicKey($0.publicKey)
         })
+        // Two spellings of one key (npub and hex, or mixed case) normalize to the same key.
         let existingTokens = [String: String](
-            uniqueKeysWithValues: (event.inviteTokens ?? [:]).compactMap { key, token in
+            (event.inviteTokens ?? [:]).compactMap { key, token in
                 guard let publicKey = normalizedPublicKey(key),
                       let token = token.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
                     return nil
                 }
                 return (publicKey, token)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
 
         var invitationTokens: [String: String] = [:]

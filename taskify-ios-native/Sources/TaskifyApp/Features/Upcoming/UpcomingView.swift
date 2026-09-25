@@ -2912,13 +2912,14 @@ private struct TaskifyEventEditorSheet: View {
     }
 
     private var selectedEventParticipants: [TaskifyEventParticipant] {
-        let existing = Dictionary(uniqueKeysWithValues: (event.participants ?? []).compactMap {
+        // Participants come from another person's event: one key can appear twice (npub and hex).
+        let existing = Dictionary((event.participants ?? []).compactMap {
             participant -> (String, TaskifyEventParticipant)? in
             guard let publicKey = NostrPublicKey.parse(participant.publicKey)?.hexString else {
                 return nil
             }
             return (publicKey, participant)
-        })
+        }, uniquingKeysWith: { first, _ in first })
         return selectedAttendeePublicKeys.sorted().map { publicKey in
             let contact = model.nostrContact(publicKey: publicKey)
             return TaskifyEventParticipant(

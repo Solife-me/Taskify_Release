@@ -778,7 +778,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
               Set(orderedColumnIDs) == Set(currentColumns.map(\.id)) else {
             return false
         }
-        let columnsByID = Dictionary(uniqueKeysWithValues: currentColumns.map { ($0.id, $0) })
+        // Columns come from synced board events; a duplicate id must not trap.
+        let columnsByID = Dictionary(currentColumns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         boards[boardIndex].columns = orderedColumnIDs.enumerated().compactMap { order, columnID in
             guard var column = columnsByID[columnID] else { return nil }
             column.order = order
