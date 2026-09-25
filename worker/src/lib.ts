@@ -54,8 +54,11 @@ export interface Env {
   GEMINI_API_KEY?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
+  VOICE_DISABLED?: string;
+  VOICE_RATE_LIMITER?: RateLimitBinding;
   PREVIEW_RATE_LIMITER?: RateLimitBinding;
   NIP05_RATE_LIMITER?: RateLimitBinding;
+  WATCH_NOSTR_RATE_LIMITER?: RateLimitBinding;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Settings } from "../../domains/tasks/settingsTypes";
 import { useCashu } from "../../context/CashuContext";
+import { useNwc } from "../../context/NwcContext";
+import { useWalletMode } from "../../wallet/walletMode";
+import { setNwcReceiveAddress, useNwcReceiveAddressSetting } from "../../hooks/wallet/useNwcWalletMode";
 import { useToast } from "../../context/ToastContext";
 import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
 import { getMintList, normalizeMintUrl } from "../../wallet/storage";
 import {
   claimSolifeCustomAddress,
+  clearSolifeAddressNwcForward,
   fetchSolifeAccount,
   fetchSolifeConfig,
   SOLIFE_LIGHTNING_ADDRESS_DOMAIN,
+  setSolifeAddressNwcForward,
   updateSolifeLightningAddressMint,
   verifySolifeAddressPurchase,
   type SolifeAddress,
@@ -73,6 +78,14 @@ export function WalletAddressView({
 }: WalletAddressViewProps) {
   const { show: showToast } = useToast();
   const { mintUrl, payInvoice } = useCashu();
+  const nwc = useNwc();
+  const walletMode = useWalletMode();
+  const nwcWalletActive = walletMode === "nwc" && !!nwc.connection;
+  const nwcWalletLabel = nwc.info?.alias || nwc.connection?.walletName || "NWC wallet";
+  const nwcReceiveAddress = useNwcReceiveAddressSetting();
+  const [forwardInput, setForwardInput] = useState("");
+  const [forwardStatus, setForwardStatus] = useState<"idle" | "saving" | "error">("idle");
+  const [forwardMessage, setForwardMessage] = useState("");
   const { setHistory, buildHistoryEntry } = useWalletHistory({
     showToast,
     captureFiatValueUsd: () => undefined,
@@ -95,7 +108,8 @@ export function WalletAddressView({
   const [purchaseMessage, setPurchaseMessage] = useState("");
 
   const provider = settings.lightningAddressProvider;
-  const solifeSelected = provider === "solife.me";
+  // In NWC mode the Solife section manages forwarding, whatever the ecash address type.
+  const solifeSelected = provider === "solife.me" || nwcWalletActive;
   const npubCashSelected = provider === "npub.cash";
   const configuredDomain = config?.domain || SOLIFE_LIGHTNING_ADDRESS_DOMAIN;
   const defaultSolifeAddress = normalizeAddress(account?.lightningAddress);
@@ -264,7 +278,17 @@ export function WalletAddressView({
         }
         const priceSats = purchase.priceSats || feeSats;
         setPurchaseMessage(`Paying ${formatSats(priceSats)} Solife invoice...`);
-        const paymentResult = await payInvoice(purchase.bolt11);
+        let paymentResult: { feeReserveSat?: number | null; mintUrl?: string } | null = null;
+        if (nwcWalletActive) {
+          try {
+            await nwc.payInvoice(purchase.bolt11);
+          } catch (error: any) {
+            // A timed-out payment may still settle; Solife's verification below decides.
+            if (!/timed out/i.test(String(error?.message ?? error))) throw error;
+          }
+        } else {
+          paymentResult = await payInvoice(purchase.bolt11);
+        }
         setHistory((history) => [
           buildHistoryEntry({
             id: `solife-custom-fee-${Date.now()}`,
@@ -275,7 +299,7 @@ export function WalletAddressView({
             direction: "out",
             amountSat: priceSats || undefined,
             feeSat: paymentResult?.feeReserveSat ?? undefined,
-            mintUrl: paymentResult?.mintUrl ?? mintUrl ?? undefined,
+            mintUrl: nwcWalletActive ? undefined : paymentResult?.mintUrl ?? mintUrl ?? undefined,
           }),
           ...history,
         ]);
@@ -314,12 +338,69 @@ export function WalletAddressView({
     defaultRelays,
     formatSats,
     mintUrl,
+    nwc,
+    nwcWalletActive,
     payInvoice,
     refreshSolife,
     setHistory,
     setSettings,
     showToast,
   ]);
+
+  const replaceAddress = useCallback((updated: SolifeAddress) => {
+    setAccount((current) =>
+      current
+        ? {
+            ...current,
+            addresses: current.addresses.map((address) =>
+              address.handle === updated.handle ? { ...address, ...updated } : address,
+            ),
+          }
+        : current,
+    );
+  }, []);
+
+  const handleSetForward = useCallback(async () => {
+    if (!activeSolifeAddressRecord) return;
+    const storedSk = nostrSkSync();
+    if (!storedSk) {
+      setForwardStatus("error");
+      setForwardMessage("Add your Taskify Nostr key in Settings -> Nostr first.");
+      return;
+    }
+    setForwardStatus("saving");
+    setForwardMessage("Checking the connection with your wallet...");
+    try {
+      const updated = await setSolifeAddressNwcForward(storedSk, activeSolifeAddressRecord.handle, forwardInput);
+      replaceAddress(updated);
+      setForwardInput("");
+      setForwardStatus("idle");
+      setForwardMessage("");
+      showToast(`${activeSolifeAddressRecord.address} now forwards to your wallet`, 3000);
+    } catch (error: any) {
+      setForwardStatus("error");
+      setForwardMessage(error?.message || "Unable to set up forwarding.");
+    }
+  }, [activeSolifeAddressRecord, forwardInput, replaceAddress, showToast]);
+
+  const handleClearForward = useCallback(async () => {
+    if (!activeSolifeAddressRecord) return;
+    const storedSk = nostrSkSync();
+    if (!storedSk) return;
+    setForwardStatus("saving");
+    setForwardMessage("");
+    try {
+      const updated = await clearSolifeAddressNwcForward(storedSk, activeSolifeAddressRecord.handle);
+      replaceAddress(updated);
+      setForwardStatus("idle");
+      showToast("Forwarding stopped; payments arrive as ecash again", 3000);
+    } catch (error: any) {
+      setForwardStatus("error");
+      setForwardMessage(error?.message || "Unable to stop forwarding.");
+    }
+  }, [activeSolifeAddressRecord, replaceAddress, showToast]);
+
+  const activeForward = activeSolifeAddressRecord?.nwcForward ?? null;
 
   const currentSolifeMintValue = activeSolifeAddressRecord?.mintOverride
     ? normalizeMintUrl(activeSolifeAddressRecord.mintUrl)
@@ -510,6 +591,27 @@ export function WalletAddressView({
             )}
           </div>
 
+          <NwcForwardSection
+            address={activeSolifeAddressRecord}
+            forward={activeForward}
+            input={forwardInput}
+            onInput={setForwardInput}
+            status={forwardStatus}
+            message={forwardMessage}
+            onSave={() => void handleSetForward()}
+            onClear={() => void handleClearForward()}
+            nwcWalletActive={nwcWalletActive}
+            nwcWalletLabel={nwcWalletLabel}
+            shownOnReceive={
+              !!activeSolifeAddressRecord && normalizeAddress(nwcReceiveAddress) === normalizeAddress(activeSolifeAddressRecord.address)
+            }
+            onShowOnReceive={(address) => {
+              setNwcReceiveAddress(address);
+              showToast("Shown on Receive", 2000);
+            }}
+          />
+
+          {!activeForward && (
           <div className="space-y-2">
             <label className="text-xs text-secondary uppercase tracking-wide" htmlFor="solife-mint-choice">
               Payment Mint
@@ -539,6 +641,7 @@ export function WalletAddressView({
               <div className="text-xs text-secondary">Add mints in Wallet &gt; Mints to choose a wallet mint here.</div>
             )}
           </div>
+          )}
 
           <button
             type="button"
@@ -566,6 +669,115 @@ export function WalletAddressView({
             </div>
           )}
         </section>
+      )}
+    </div>
+  );
+}
+
+type NwcForwardSectionProps = {
+  address: SolifeAddress | null;
+  forward: SolifeAddress["nwcForward"];
+  input: string;
+  onInput: (value: string) => void;
+  status: "idle" | "saving" | "error";
+  message: string;
+  onSave: () => void;
+  onClear: () => void;
+  nwcWalletActive: boolean;
+  nwcWalletLabel: string;
+  shownOnReceive: boolean;
+  onShowOnReceive: (address: string) => void;
+};
+
+/** Forward a custom Solife address to the user's own lightning wallet over an NWC connection. */
+function NwcForwardSection({
+  address,
+  forward,
+  input,
+  onInput,
+  status,
+  message,
+  onSave,
+  onClear,
+  nwcWalletActive,
+  nwcWalletLabel,
+  shownOnReceive,
+  onShowOnReceive,
+}: NwcForwardSectionProps) {
+  if (!address) {
+    return (
+      <div className="space-y-1">
+        <div className="text-xs text-secondary uppercase tracking-wide">Forward to your wallet</div>
+        <div className="text-xs text-secondary">
+          Custom addresses can send payments straight to your own lightning wallet instead of arriving as ecash.
+          Choose or create a custom address to set this up.
+        </div>
+      </div>
+    );
+  }
+
+  if (forward) {
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-secondary uppercase tracking-wide">Forward to your wallet</div>
+        <div className="text-sm">
+          Payments to {address.address} go to{" "}
+          <span className="font-semibold">{forward.walletAlias || "your NWC wallet"}</span>.
+        </div>
+        {forward.canSpend && (
+          <div className="text-xs text-amber-400">
+            This connection can also spend from your wallet. Solife only uses it to create invoices, but a
+            receive-only connection means nothing can spend even if the server were compromised.
+          </div>
+        )}
+        {forward.lastError && (
+          <div className="text-xs text-amber-400">
+            The last payment attempt failed: {forward.lastError}. Check that the wallet is online.
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {nwcWalletActive && !shownOnReceive && (
+            <button className="ghost-button button-sm pressable" onClick={() => onShowOnReceive(address.address)}>
+              Show on Receive
+            </button>
+          )}
+          <button className="ghost-button button-sm pressable" onClick={onClear} disabled={status === "saving"}>
+            Stop forwarding
+          </button>
+        </div>
+        {status === "error" && message && <div className="text-xs text-rose-400">{message}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-secondary uppercase tracking-wide">Forward to your wallet</div>
+      <div className="text-xs text-secondary">
+        Send payments to {address.address} straight to your own lightning wallet
+        {nwcWalletActive ? ` (such as ${nwcWalletLabel})` : ""}. Paste an NWC connection from your wallet. Solife
+        only ever uses it to create invoices, never to pay. For the most safety, create a new connection that
+        can only receive (create invoices) rather than reusing the one this app pays with.
+      </div>
+      <input
+        className="pill-input w-full"
+        placeholder="nostr+walletconnect://..."
+        value={input}
+        onChange={(event) => onInput(event.target.value)}
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        disabled={status === "saving"}
+      />
+      <button
+        className="accent-button button-sm pressable"
+        onClick={onSave}
+        disabled={status === "saving" || !input.trim()}
+      >
+        {status === "saving" ? "Checking..." : "Forward payments"}
+      </button>
+      {message && (
+        <div className={`text-xs ${status === "error" ? "text-rose-400" : "text-secondary"}`}>{message}</div>
       )}
     </div>
   );

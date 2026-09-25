@@ -248,7 +248,8 @@ public enum NostrContactFinder {
     public static func findPrivateListCandidates(
         publicKey: String,
         relayURLs: [String],
-        timeout: Duration = .seconds(4)
+        timeout: Duration = .seconds(4),
+        fetcher: any NostrOneShotFetching = NostrFreshConnectionFetcher()
     ) async -> [NostrEvent] {
         let relays = TaskifyRelayURL.normalizedList(relayURLs)
         guard NostrPublicKey.parse(publicKey) != nil, !relays.isEmpty else { return [] }
@@ -258,7 +259,8 @@ public enum NostrContactFinder {
                     await fetchPrivateLists(
                         publicKey: publicKey,
                         relayURL: relayURL,
-                        timeout: timeout
+                        timeout: timeout,
+                        fetcher: fetcher
                     )
                 }
             }
@@ -276,7 +278,8 @@ public enum NostrContactFinder {
     public static func profiles(
         publicKeys: [String],
         relayURLs: [String],
-        timeout: Duration = .seconds(3)
+        timeout: Duration = .seconds(3),
+        fetcher: any NostrOneShotFetching = NostrFreshConnectionFetcher()
     ) async -> [String: NostrContactProfile] {
         let authors = Array(Set(publicKeys.compactMap { NostrPublicKey.parse($0)?.hexString }))
         let relays = TaskifyRelayURL.normalizedList(relayURLs)
@@ -287,7 +290,8 @@ public enum NostrContactFinder {
                     await fetchProfiles(
                         publicKeys: authors,
                         relayURL: relayURL,
-                        timeout: timeout
+                        timeout: timeout,
+                        fetcher: fetcher
                     )
                 }
             }
@@ -308,7 +312,8 @@ public enum NostrContactFinder {
     public static func latestProfileEvent(
         publicKey: String,
         relayURLs: [String],
-        timeout: Duration = .seconds(4)
+        timeout: Duration = .seconds(4),
+        fetcher: any NostrOneShotFetching = NostrFreshConnectionFetcher()
     ) async -> NostrEvent? {
         guard let key = NostrPublicKey.parse(publicKey)?.hexString else { return nil }
         let relays = TaskifyRelayURL.normalizedList(relayURLs)
@@ -319,7 +324,8 @@ public enum NostrContactFinder {
                     await fetchProfiles(
                         publicKeys: [key],
                         relayURL: relayURL,
-                        timeout: timeout
+                        timeout: timeout,
+                        fetcher: fetcher
                     )
                 }
             }
@@ -335,101 +341,36 @@ public enum NostrContactFinder {
     private static func fetchPrivateLists(
         publicKey: String,
         relayURL: String,
-        timeout: Duration
+        timeout: Duration,
+        fetcher: any NostrOneShotFetching
     ) async -> [NostrEvent] {
-        let connection = NostrRelayConnection(relayURL: relayURL)
-        let id = "taskify-contacts-\(UUID().uuidString)"
-        let stream = connection.messages()
-        do {
-            try await connection.connect()
-            try await connection.subscribeToPrivateContacts(
-                id: id,
-                authorPublicKey: publicKey
-            )
-        } catch {
-            await connection.disconnect()
-            return []
-        }
-        let events = await collect(
-            stream: stream,
-            subscriptionID: id,
-            timeout: timeout
-        ) { event in
-            event.kind == NIP51ContactListContract.eventKind &&
-                event.publicKey.lowercased() == publicKey.lowercased() &&
-                event.firstTagValue(named: "d") == NIP51ContactListContract.eventDTag &&
-                event.verify()
-        }
-        try? await connection.closeSubscription(id: id)
-        await connection.disconnect()
-        return events
+        let filter = NostrRelayFilter(
+            kinds: [NIP51ContactListContract.eventKind],
+            authors: [publicKey],
+            dTags: [NIP51ContactListContract.eventDTag],
+            limit: 5
+        )
+        return await fetcher.fetchOnce(filter: filter, relayURLs: [relayURL], timeout: timeout.seconds)
+            .filter { event in
+                event.kind == NIP51ContactListContract.eventKind &&
+                    event.publicKey.lowercased() == publicKey.lowercased() &&
+                    event.firstTagValue(named: "d") == NIP51ContactListContract.eventDTag &&
+                    event.verify()
+            }
     }
 
     private static func fetchProfiles(
         publicKeys: [String],
         relayURL: String,
-        timeout: Duration
-    ) async -> [NostrEvent] {
-        let connection = NostrRelayConnection(relayURL: relayURL)
-        let id = "taskify-profiles-\(UUID().uuidString)"
-        let stream = connection.messages()
-        do {
-            try await connection.connect()
-            try await connection.subscribeToProfiles(
-                id: id,
-                authorPublicKeys: publicKeys
-            )
-        } catch {
-            await connection.disconnect()
-            return []
-        }
-        let authors = Set(publicKeys)
-        let events = await collect(
-            stream: stream,
-            subscriptionID: id,
-            timeout: timeout
-        ) { event in
-            event.kind == 0 && authors.contains(event.publicKey.lowercased()) && event.verify()
-        }
-        try? await connection.closeSubscription(id: id)
-        await connection.disconnect()
-        return events
-    }
-
-    private static func collect(
-        stream: AsyncStream<NostrRelayMessage>,
-        subscriptionID: String,
         timeout: Duration,
-        accepts: @escaping @Sendable (NostrEvent) -> Bool
+        fetcher: any NostrOneShotFetching
     ) async -> [NostrEvent] {
-        await withTaskGroup(of: [NostrEvent].self) { group in
-            group.addTask {
-                var matches: [NostrEvent] = []
-                for await message in stream {
-                    guard !Task.isCancelled else { return matches }
-                    switch message {
-                    case .event(let id, let event) where id == subscriptionID:
-                        if accepts(event) { matches.append(event) }
-                    case .endOfStoredEvents(let id) where id == subscriptionID:
-                        return matches
-                    case .closed(let id, _) where id == subscriptionID:
-                        return matches
-                    case .disconnected:
-                        return matches
-                    default:
-                        continue
-                    }
-                }
-                return matches
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return []
-            }
-            let first = await group.next() ?? []
-            group.cancelAll()
-            return first
-        }
+        let authors = Array(Set(publicKeys.map { $0.lowercased() })).prefix(500)
+        guard !authors.isEmpty else { return [] }
+        let filter = NostrRelayFilter(kinds: [0], authors: Array(authors), limit: 500)
+        let wanted = Set(authors)
+        return await fetcher.fetchOnce(filter: filter, relayURLs: [relayURL], timeout: timeout.seconds)
+            .filter { $0.kind == 0 && wanted.contains($0.publicKey.lowercased()) && $0.verify() }
     }
 }
 

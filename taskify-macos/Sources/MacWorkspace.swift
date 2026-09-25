@@ -29,6 +29,8 @@ struct MacWorkspace: View {
     @State private var notificationRouter = TaskNotificationNavigationRouter.shared
     @State private var chatDrafts: [String: String] = [:]
     @State private var chatScrollPositions: [String: String] = [:]
+    @State private var chatSelection: String?
+    @State private var printingChecklist = false
 
     private var board: Board? { model.board(withID: destination) }
     private var title: String { board?.name ?? MacDestination(rawValue: destination)?.title ?? "Taskify" }
@@ -106,6 +108,11 @@ struct MacWorkspace: View {
                         }
                     }
                     if let board {
+                        if board.kind == .week || board.kind == .list {
+                            ToolbarItem {
+                                Button { printingChecklist = true } label: { Label("Print Checklist…", systemImage: "printer") }
+                            }
+                        }
                         ToolbarItem {
                             Button { boardToManage = board } label: { Label("Board Settings", systemImage: "ellipsis.circle") }
                         }
@@ -122,11 +129,34 @@ struct MacWorkspace: View {
         .sheet(isPresented: $creatingEvent) { MacEventEditor(event: nil, initialBoardID: board?.id ?? model.selectedBoardID) }
         .sheet(isPresented: $creatingBoard) { MacBoardEditor(board: nil) }
         .sheet(item: $boardToManage) { board in MacBoardEditor(board: board) }
+        .sheet(isPresented: $printingChecklist) {
+            if let board { MacPrintChecklistSheet(title: board.name, allItems: MacChecklistItems.forBoard(board, model: model)) }
+        }
         .sheet(isPresented: Binding(get: { model.showsFirstRunOnboarding }, set: { _ in })) { MacOnboarding() }
         .alert("Taskify", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
         .onChange(of: destination) { _, _ in selectedTaskID = nil; search = "" }
+        .onChange(of: model.identityPublicKey) { oldValue, newValue in
+            // Empty-to-real is ordinary startup (identity loads after the window already exists)
+            // and must not disturb the @SceneStorage-restored destination; only a real account
+            // switch — a nonempty identity changing to a different one — should reset. Each
+            // window holds its own copy of this state; switching accounts (from any window, since
+            // they share one AppModel) must not leave another window's editor open on a
+            // task/board/event that belonged to the account just switched away from.
+            guard !oldValue.isEmpty, oldValue != newValue else { return }
+            editingTask = nil
+            creatingTask = false
+            creatingEvent = false
+            creatingBoard = false
+            boardToManage = nil
+            printingChecklist = false
+            selectedTaskID = nil
+            chatSelection = nil
+            chatDrafts = [:]
+            chatScrollPositions = [:]
+            destination = "today"
+        }
         .onChange(of: notificationRouter.pendingDestination) { _, value in
             guard let value else { return }
             destination = value.rawValue
@@ -151,7 +181,7 @@ struct MacWorkspace: View {
             switch MacDestination(rawValue: destination) {
             case .today, .upcoming:
                 MacAgendaView(todayOnly: destination == "today", search: search, selectedTaskID: $selectedTaskID, edit: { editingTask = $0 })
-            case .chat: MacChatView(search: search, drafts: $chatDrafts, scrollPositions: $chatScrollPositions)
+            case .chat: MacChatView(search: search, drafts: $chatDrafts, scrollPositions: $chatScrollPositions, selection: $chatSelection)
             case .wallet: MacWalletView()
             case .inbox: MacInboxView()
             case nil: ContentUnavailableView("Board Unavailable", systemImage: "rectangle.slash", description: Text("Choose another board from the sidebar."))
@@ -165,6 +195,12 @@ struct MacTaskInspector: View {
     let task: TaskItem
     var edit: () -> Void
     @Environment(AppModel.self) private var model
+    @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
+    private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
+    private var visibleSubtasks: [TaskSubtask] {
+        let subtasks = task.subtasks ?? []
+        return hideCompletedSubtasks ? subtasks.filter { !$0.completed } : subtasks
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -176,7 +212,7 @@ struct MacTaskInspector: View {
                 if let date = task.dueDate, task.dueDateEnabled { Label(date.formatted(date: .abbreviated, time: task.dueTimeEnabled ? .shortened : .omitted), systemImage: "calendar") }
                 if let priority = task.priority { Label(String(describing: priority).capitalized, systemImage: "flag") }
                 if !task.note.isEmpty { Text(.init(task.note)).textSelection(.enabled) }
-                ForEach(task.subtasks ?? []) { subtask in
+                ForEach(visibleSubtasks) { subtask in
                     Button { model.toggleSubtaskCompletion(taskID: task.id, subtaskID: subtask.id) } label: {
                         Label(subtask.title, systemImage: subtask.completed ? "checkmark.circle.fill" : "circle")
                     }.buttonStyle(.plain)

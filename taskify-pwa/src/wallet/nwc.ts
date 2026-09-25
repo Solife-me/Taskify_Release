@@ -1,5 +1,6 @@
-import { getPublicKey, nip04, nip19, type EventTemplate } from "nostr-tools";
-import { NostrSession } from "../nostr/NostrSession";
+import { RuntimeNostrSession, RelayInfoCache, RelayHealthTracker, RelayAuthManager } from "taskify-runtime-nostr";
+import { getPublicKey, nip04, nip19 } from "nostr-tools";
+
 
 export type ParsedNwcUri = {
   uri: string;
@@ -21,6 +22,7 @@ export type NwcResponse<T> = {
 
 const NWC_EVENT_KIND_REQUEST = 23194;
 const NWC_EVENT_KIND_RESPONSE = 23195;
+const PAYMENT_METHODS = new Set(["pay_invoice", "multi_pay_invoice", "pay_keysend", "multi_pay_keysend"]);
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -171,11 +173,57 @@ export function parseNwcUri(input: string): ParsedNwcUri {
   };
 }
 
+const nwcRelayInfoCache = new RelayInfoCache();
+type NwcRelaySession = {
+  session: RuntimeNostrSession<null>;
+  ready: Promise<void>;
+  users: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
+};
+
 export class NwcClient {
   private readonly connection: ParsedNwcUri;
+  private readonly sessions = new Map<string, NwcRelaySession>();
 
   constructor(connection: ParsedNwcUri) {
     this.connection = connection;
+  }
+
+  private acquireSession(relay: string): NwcRelaySession {
+    let entry = this.sessions.get(relay);
+    if (!entry) {
+      const session = new RuntimeNostrSession([relay], {
+        relayInfoCache: nwcRelayInfoCache,
+        relayHealth: new RelayHealthTracker(),
+        createAuthManager: ndk => new RelayAuthManager(ndk, {
+          loadSecretKeyHex: () => this.connection.clientSecretHex,
+        }),
+        createWalletClient: () => null,
+      });
+      entry = { session, ready: session.init([relay]).then(() => undefined), users: 0 };
+      this.sessions.set(relay, entry);
+    }
+    clearTimeout(entry.idleTimer);
+    entry.users += 1;
+    return entry;
+  }
+
+  private releaseSession(relay: string, entry: NwcRelaySession): void {
+    entry.users -= 1;
+    if (entry.users > 0 || this.sessions.get(relay) !== entry) return;
+    entry.idleTimer = setTimeout(() => {
+      if (this.sessions.get(relay) !== entry || entry.users > 0) return;
+      this.sessions.delete(relay);
+      void entry.session.shutdown();
+    }, 60_000);
+  }
+
+  close(): void {
+    for (const entry of this.sessions.values()) {
+      clearTimeout(entry.idleTimer);
+      void entry.session.shutdown();
+    }
+    this.sessions.clear();
   }
 
   async request<T = unknown>(method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }): Promise<T> {
@@ -187,6 +235,9 @@ export class NwcClient {
         return await this.requestViaRelay<T>(relay, method, params, opts?.timeoutMs);
       } catch (err: any) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        // A payment that timed out may still be in flight; sending it again through
+        // another relay could pay twice. Let the caller check its status instead.
+        if (PAYMENT_METHODS.has(method) && /timed out/i.test(lastError.message)) throw lastError;
       }
     }
     throw lastError || new Error("Failed to contact NWC relay");
@@ -196,70 +247,80 @@ export class NwcClient {
     return new Promise<T>((resolve, reject) => {
       let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
       let release: (() => void) | null = null;
-      let requestEventId: string | null = null;
+      let settled = false;
+      let lease: NwcRelaySession | null = null;
 
-      const cleanup = () => {
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
         if (timeoutHandle) clearTimeout(timeoutHandle);
         timeoutHandle = null;
         try { release?.(); } catch {}
         release = null;
+        if (lease) this.releaseSession(relayUrl, lease);
+        fn();
       };
 
       (async () => {
         try {
           const relayList = [relayUrl];
-          const session = await NostrSession.init(relayList);
+          lease = this.acquireSession(relayUrl);
+          await lease.ready;
+          const session = lease.session;
           const payload = JSON.stringify({ method, params });
           const encrypted = await nip04.encrypt(this.connection.clientSecretHex, this.connection.walletPubkey, payload);
-          const template: EventTemplate = {
-            kind: NWC_EVENT_KIND_REQUEST,
-            created_at: Math.floor(Date.now() / 1000),
-            content: encrypted,
-            tags: [["p", this.connection.walletPubkey], ["t", "nwc"]],
-          };
+          // Sign first so the request id is known before any response can arrive; only a
+          // response from the wallet that references this exact request is accepted.
+          const request = await session.prepareEvent(
+            {
+              kind: NWC_EVENT_KIND_REQUEST,
+              created_at: Math.floor(Date.now() / 1000),
+              content: encrypted,
+              tags: [["p", this.connection.walletPubkey]],
+            },
+            this.connection.clientSecretBytes,
+            relayList,
+          );
           const subscription = await session.subscribe(
-            [{ kinds: [NWC_EVENT_KIND_RESPONSE], "#p": [this.connection.clientPubkey] }],
+            [{
+              kinds: [NWC_EVENT_KIND_RESPONSE],
+              authors: [this.connection.walletPubkey],
+              "#p": [this.connection.clientPubkey],
+              "#e": [request.id],
+            }],
             {
               relayUrls: relayList,
               onEvent: async (ev) => {
-                if (requestEventId) {
-                  const eTag = ev.tags.find((t) => t[0] === "e");
-                  if (eTag && eTag[1] && eTag[1] !== requestEventId) return;
-                }
+                if (settled) return;
+                if (ev.pubkey !== this.connection.walletPubkey) return;
+                if (!ev.tags.some((t) => t[0] === "e" && t[1] === request.id)) return;
+                let response: NwcResponse<T>;
                 try {
                   const decrypted = await nip04.decrypt(this.connection.clientSecretHex, this.connection.walletPubkey, ev.content);
-                  const response = JSON.parse(decrypted) as NwcResponse<T>;
-                  if (response.error) {
-                    const msg = response.error.message || response.error.code || "NWC request failed";
-                    cleanup();
-                    reject(new Error(msg));
-                    return;
-                  }
-                  cleanup();
-                  resolve(response.result as T);
-                } catch (err: any) {
-                  cleanup();
-                  reject(err instanceof Error ? err : new Error(String(err)));
+                  response = JSON.parse(decrypted) as NwcResponse<T>;
+                } catch {
+                  return; // not a readable response to us; keep waiting
                 }
+                if (response.error) {
+                  const msg = response.error.message || response.error.code || "NWC request failed";
+                  finish(() => reject(new Error(msg)));
+                  return;
+                }
+                finish(() => resolve(response.result as T));
               },
             },
           );
           release = subscription.release;
-          const publishResult = await session.publish(template, {
-            relayUrls: relayList,
-            signer: this.connection.clientSecretBytes,
-            returnEvent: true,
-          });
-          if (typeof publishResult === "object" && (publishResult as any).event?.id) {
-            requestEventId = (publishResult as any).event.id as string;
+          if (settled) {
+            try { release?.(); } catch {}
+            return;
           }
           timeoutHandle = setTimeout(() => {
-            cleanup();
-            reject(new Error("Timed out waiting for NWC response"));
+            finish(() => reject(new Error("Timed out waiting for NWC response")));
           }, timeoutMs);
+          await session.publishRaw(request as any, { relayUrls: relayList });
         } catch (error: any) {
-          cleanup();
-          reject(error instanceof Error ? error : new Error(String(error)));
+          finish(() => reject(error instanceof Error ? error : new Error(String(error))));
         }
       })();
     });

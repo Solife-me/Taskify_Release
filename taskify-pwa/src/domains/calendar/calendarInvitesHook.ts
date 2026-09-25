@@ -28,6 +28,10 @@ export type CalendarInvite = {
   sender?: InboxSender;
   receivedAt: string;
   status: CalendarInviteStatus;
+  /** Gift-wrap ids of every DM this invite arrived in; keys its response in the synced chat state. */
+  dmEventIds?: string[];
+  /** When this device (or another, via sync) accepted, declined or dismissed the invite. */
+  respondedAt?: string;
 };
 
 export function useCalendarInvites() {
@@ -134,6 +138,14 @@ function normalizeCalendarInvite(entry: unknown): CalendarInvite | null {
   const status = normalizeCalendarInviteStatus(raw.status);
   const receivedAt = typeof raw.receivedAt === "string" ? raw.receivedAt : "";
   const sender = normalizeCalendarInviteSender(raw.sender);
+  const dmEventIds = Array.isArray(raw.dmEventIds)
+    ? Array.from(new Set(
+        raw.dmEventIds
+          .map((value: unknown) => (typeof value === "string" ? value.trim().toLowerCase() : ""))
+          .filter(Boolean),
+      )) as string[]
+    : [];
+  const respondedAt = typeof raw.respondedAt === "string" && raw.respondedAt.trim() ? raw.respondedAt : undefined;
   const relays = Array.isArray(raw.relays)
     ? raw.relays
         .map((relay: unknown) => (typeof relay === "string" ? relay.trim() : ""))
@@ -154,6 +166,8 @@ function normalizeCalendarInvite(entry: unknown): CalendarInvite | null {
     sender,
     receivedAt: receivedAt.trim() ? receivedAt : new Date().toISOString(),
     status,
+    ...(dmEventIds.length ? { dmEventIds } : {}),
+    ...(respondedAt ? { respondedAt } : {}),
   };
 }
 

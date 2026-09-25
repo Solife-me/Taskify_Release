@@ -12,6 +12,17 @@ public struct SolifeAddress: Equatable, Sendable {
     public let address: String
     public let mintUrl: String
     public let mintOverride: Bool
+    /// Set when payments to this address go to the owner's wallet over NWC.
+    public var nwcForward: SolifeNWCForward? = nil
+}
+
+/// A custom address forwarding its payments to the owner's NWC wallet. The connection
+/// string itself never leaves solife.me, which only ever creates invoices with it.
+public struct SolifeNWCForward: Equatable, Sendable {
+    public let walletAlias: String?
+    public let lastError: String?
+    /// The connection would let its holder spend (solife.me never does).
+    public var canSpend: Bool = false
 }
 
 public struct SolifeAddressPurchase: Equatable, Sendable {
@@ -231,6 +242,51 @@ public enum SolifeClient {
         return try parseAddress(data, fallbackMintURL: config.mintUrl)
     }
 
+    /// Forwards a custom address's payments to the owner's wallet. Any connection that can
+    /// create invoices is accepted; solife.me only calls get_info and make_invoice with it.
+    public static func setNWCForward(
+        identity: NostrIdentity,
+        handle: String,
+        connection: String,
+        session: URLSession = .shared
+    ) async throws -> SolifeAddress {
+        let uri = connection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard uri.lowercased().hasPrefix("nostr+walletconnect://") else {
+            throw SolifeError.requestFailed(status: 400, message: "Paste a connection string that starts with nostr+walletconnect://")
+        }
+        return try await nwcForwardRequest(identity: identity, handle: handle, method: "PUT", body: ["connection": uri], session: session)
+    }
+
+    /// Stops forwarding; payments to the address arrive as ecash again.
+    public static func clearNWCForward(
+        identity: NostrIdentity,
+        handle: String,
+        session: URLSession = .shared
+    ) async throws -> SolifeAddress {
+        try await nwcForwardRequest(identity: identity, handle: handle, method: "DELETE", body: nil, session: session)
+    }
+
+    private static func nwcForwardRequest(
+        identity: NostrIdentity,
+        handle: String,
+        method: String,
+        body: [String: Any]?,
+        session: URLSession
+    ) async throws -> SolifeAddress {
+        let config = try await fetchConfig(session: session)
+        let solifeSession = try await createSession(identity: identity, config: config, session: session)
+        let normalized = handle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let encodedHandle = normalized.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? normalized
+        let data = try await request(
+            path: "/api/addresses/\(encodedHandle)/nwc-forward",
+            method: method,
+            body: body,
+            token: solifeSession.token,
+            session: session
+        )
+        return try parseAddress(data, fallbackMintURL: config.mintUrl)
+    }
+
     // MARK: - Auth
 
     static func createSession(
@@ -336,11 +392,19 @@ public enum SolifeClient {
 
     private static func parseAddress(_ json: [String: Any], fallbackMintURL: String) -> SolifeAddress {
         let mintURL = (json["mintUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let forward = (json["nwcForward"] as? [String: Any]).map {
+            SolifeNWCForward(
+                walletAlias: $0["walletAlias"] as? String,
+                lastError: $0["lastError"] as? String,
+                canSpend: $0["canSpend"] as? Bool ?? false
+            )
+        }
         return SolifeAddress(
             handle: (json["handle"] as? String) ?? "",
             address: (json["address"] as? String) ?? "",
             mintUrl: (mintURL?.isEmpty == false) ? mintURL! : fallbackMintURL,
-            mintOverride: (json["mintOverride"] as? Bool) ?? false
+            mintOverride: (json["mintOverride"] as? Bool) ?? false,
+            nwcForward: forward
         )
     }
 

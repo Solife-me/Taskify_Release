@@ -635,7 +635,8 @@ public struct TaskifyWatchRelayAcknowledgement: Codable, Equatable, Sendable {
 public struct TaskifyWatchOutboxWrap: Identifiable, Codable, Equatable, Sendable {
     public var id: String { event.id }
     public let recipientPublicKey: String
-    public let event: TaskifyWatchNostrEvent
+    public var event: TaskifyWatchNostrEvent
+    public var proofOfWorkPrepared: Bool? = false
     public var routingDecision: TaskifyWatchRelayDecision
     public var acknowledgements: [TaskifyWatchRelayAcknowledgement]
     public var attempts: Int

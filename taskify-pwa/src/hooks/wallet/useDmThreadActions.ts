@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { useCallback } from "react";
+import { chatStateSyncBus } from "../../nostr/chatStateSyncBus";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import { LS_GROUP_MUTED, LS_GROUP_LEFT } from "../../localStorageKeys";
@@ -125,6 +126,7 @@ export function useDmThreadActions({
       dmThreadReadAtRef.current = next;
       persistDmThreadReadState(next);
       setDmThreadReadAtVersion((value) => value + 1);
+      chatStateSyncBus.reportLocalReadThrough({ [normalizedThreadKey]: normalizedTimestamp });
     },
     [persistDmThreadReadState],
   );

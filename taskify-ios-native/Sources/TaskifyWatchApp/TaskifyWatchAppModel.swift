@@ -831,6 +831,46 @@ final class TaskifyWatchAppModel: NSObject {
         session.transferUserInfo(request)
     }
 
+    func taskWithPendingEdits(_ task: TaskifyWatchTask) -> TaskifyWatchTask {
+        pendingCommands.reduce(task) { result, command in
+            guard command.taskID == task.id else { return result }
+            if let edit = command.edit { return result.applying(edit) }
+            if let subtaskID = command.subtaskID, let completed = command.subtaskCompleted {
+                return result.settingSubtaskCompletion(subtaskID, completed: completed)
+            }
+            return result
+        }
+    }
+
+    @discardableResult
+    func editTask(_ taskID: String, edit: TaskifyWatchTaskEdit) -> Bool {
+        guard snapshot.tasks.contains(where: { $0.id == taskID }),
+              !edit.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let command = TaskifyWatchCommand(kind: .editTask, taskID: taskID, edit: edit)
+        pendingCommands.append(command)
+        // Reassign the observed snapshot so queued edits immediately refresh detail views.
+        replaceSnapshot(tasks: snapshot.tasks.map { $0.id == taskID ? $0.applying(edit) : $0 }, generatedAt: Date())
+        persistPendingCommands()
+        deliver(command)
+        return true
+    }
+
+    func setSubtaskCompletion(taskID: String, subtaskID: String, completed: Bool) {
+        guard let task = snapshot.tasks.first(where: { $0.id == taskID }),
+              task.subtasks.contains(where: { $0.id == subtaskID }),
+              !pendingCompletionIDs.contains(taskID) else { return }
+        let command = TaskifyWatchCommand(
+            kind: .setSubtaskCompletion, taskID: taskID,
+            subtaskID: subtaskID, subtaskCompleted: completed
+        )
+        pendingCommands.append(command)
+        persistPendingCommands()
+        replaceSnapshot(tasks: snapshot.tasks.map {
+            $0.id == taskID ? $0.settingSubtaskCompletion(subtaskID, completed: completed) : $0
+        }, generatedAt: Date())
+        deliver(command)
+    }
+
     func completeTask(_ taskID: String) {
         guard snapshot.tasks.contains(where: { $0.id == taskID }),
               !pendingCompletionIDs.contains(taskID) else { return }
@@ -1034,8 +1074,12 @@ final class TaskifyWatchAppModel: NSObject {
               !mutations.isEmpty else { return }
 
         var published: [TaskifyWatchDirectMutation] = []
-        for mutation in mutations {
+        for original in mutations {
             do {
+                let event = try await TaskifyWatchNostrCrypto.prepareBoardEvent(original.event,
+                    boardID: original.boardNostrID, relayURLs: original.relayURLs)
+                let mutation = TaskifyWatchDirectMutation(event: event, task: original.task,
+                    relayURLs: original.relayURLs, boardNostrID: original.boardNostrID)
                 try await independentClient.publish(
                     mutation.event,
                     relayURLs: mutation.relayURLs,
@@ -1066,6 +1110,9 @@ final class TaskifyWatchAppModel: NSObject {
     ) throws -> [TaskifyWatchDirectMutation] {
         guard let profile = independentProfile else { return [] }
         switch command.kind {
+        case .editTask, .setSubtaskCompletion:
+            // Editing is reconciled on iPhone to preserve scheduling and recurrence semantics.
+            return []
         case .completeTask:
             guard let taskID = command.taskID,
                   let task = snapshot.tasks.first(where: { $0.id == taskID }),
@@ -1614,6 +1661,8 @@ final class TaskifyWatchAppModel: NSObject {
         guard !alreadyQueued else { return }
         session.transferUserInfo([TaskifyWatchTransfer.commandDataKey: data])
         switch command.kind {
+        case .editTask, .setSubtaskCompletion:
+            statusMessage = "Edit saved — it will sync when the iPhone is available."
         case .completeTask:
             statusMessage = "Completion saved — it will sync when the iPhone is available."
         case .createTask:
@@ -1631,7 +1680,7 @@ final class TaskifyWatchAppModel: NSObject {
         refreshPendingCompletionIDs()
         persistPendingCommands()
         if pendingCommands.isEmpty {
-            statusMessage = completedKind == .completeTask ? "Tasks are up to date" : "Task added"
+            statusMessage = (completedKind == .editTask || completedKind == .setSubtaskCompletion) ? "Task updated" : (completedKind == .completeTask ? "Tasks are up to date" : "Task added")
         } else {
             statusMessage = "Waiting to sync Watch changes"
         }

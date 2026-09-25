@@ -32,6 +32,51 @@ final class RelayOutboxLatencyTests: XCTestCase {
         return engine
     }
 
+    func testQueueDiagnosticsPreservePartialAcceptanceAndRejectionDetails() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outbox = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let queued = NostrOutboxEntry(event: event(1), relayURLs: [healthyURL, slowURL],
+            boardLocalID: "board", taskID: "task", dependsOnEventID: "parent")
+        try await outbox.enqueue(queued)
+        _ = try await outbox.markAccepted(eventID: queued.id, relayURL: healthyURL)
+        let retryAfter = try await outbox.recordRejection(eventID: queued.id, relayURL: slowURL)
+        let engine = TaskSyncEngine(outbox: outbox)
+        let records = await engine.pendingOutboxRecords()
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(record.pendingRelayURLs, [slowURL])
+        XCTAssertEqual(record.acceptedRelayCount, 1)
+        XCTAssertEqual(record.eventKind, queued.event.kind)
+        XCTAssertEqual(record.dependsOnEventID, "parent")
+        XCTAssertEqual(record.relayRejections[slowURL]?.retryAfter, retryAfter)
+        let retainedCount = await outbox.entryCount()
+        XCTAssertEqual(retainedCount, 1, "Inspecting a partially delivered change must not clear it")
+        await engine.stop()
+    }
+
+    func testRateLimitedSubscriptionPausesPublishingAndDoesNotRetryAfterOneSecond() async throws {
+        let relay = SuspensibleRelayTransport()
+        let engine = engine(transports: [healthyURL: relay])
+        await engine.configure(boards: [], inboxPublicKey: String(repeating: "a", count: 64),
+            inboxRelayURLs: [healthyURL])
+        let filters = await relay.inboxFilters
+        let subscription = try XCTUnwrap(filters.first).id
+        await engine.handle(.closed(subscriptionID: subscription, message: "rate-limited: slow down"),
+            from: healthyURL)
+        try await engine.enqueueForPublish([request(100, relayURL: healthyURL)])
+        try await Task.sleep(for: .milliseconds(1_200))
+        let count = await relay.inboxSubscriptionCount
+        let published = await relay.publishedEventIDs
+        XCTAssertEqual(count, 1, "CLOSED rate limits must honor the relay cooldown")
+        XCTAssertTrue(published.isEmpty, "A relay-wide rate limit must pause queued publishing too")
+        try await Task.sleep(for: .milliseconds(1_200))
+        let resumedSubscriptions = await relay.inboxSubscriptionCount
+        let resumedPublishes = await relay.publishedEventIDs
+        XCTAssertEqual(resumedSubscriptions, 2, "History recovery resumes after the cooldown")
+        XCTAssertEqual(resumedPublishes, [event(100).id], "The queued change is preserved and sent once")
+    }
+
     func testNewMessageReachesHealthyRelayWhileAnotherRelaySendRemainsSuspended() async throws {
         let slowStarted = expectation(description: "slow relay starts its send")
         let healthySent = expectation(description: "new chat reaches healthy relay")

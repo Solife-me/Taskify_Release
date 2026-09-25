@@ -498,7 +498,9 @@ final class TaskifySnapshotTests: XCTestCase {
         ))
 
         XCTAssertFalse(result.crossedBoards)
-        XCTAssertEqual(Set(result.updatedTaskIDs), Set([moved.id, last.id]))
+        // `last` only shifted position. Order is device-local (not in the published payload),
+        // so it has nothing to publish.
+        XCTAssertEqual(result.updatedTaskIDs, [moved.id])
         XCTAssertEqual(
             snapshot.tasks(boardID: board.id, columnID: doing.id, includeCompleted: true).map(\.id),
             [first.id, moved.id, last.id]
@@ -573,7 +575,9 @@ final class TaskifySnapshotTests: XCTestCase {
         ))
 
         XCTAssertFalse(result.crossedBoards)
-        XCTAssertEqual(Set(result.updatedTaskIDs), Set([moved.id, last.id]))
+        // `last` only shifted position. Order is device-local (not in the published payload),
+        // so it has nothing to publish.
+        XCTAssertEqual(result.updatedTaskIDs, [moved.id])
         XCTAssertEqual(
             snapshot.tasks(
                 boardID: "week-default",
@@ -591,6 +595,34 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertTrue(updated.dueDateEnabled)
         XCTAssertFalse(updated.completed)
         XCTAssertEqual(updated.lastEditedBy, "editor")
+    }
+
+    func testReorderWithinAColumnPublishesNothing() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let monday = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 20)))
+        var snapshot = TaskifySnapshot.empty
+        let tasks = try (1...5).map { index in
+            try XCTUnwrap(snapshot.addTask(
+                title: "Task \(index)",
+                boardID: "week-default",
+                columnID: WeekdayColumn.monday.rawValue,
+                dueDate: monday,
+                newTaskPosition: .bottom
+            ))
+        }
+        let result = try XCTUnwrap(snapshot.moveTask(
+            taskID: tasks[4].id,
+            toBoardID: "week-default",
+            columnID: WeekdayColumn.monday.rawValue,
+            beforeTaskID: tasks[0].id,
+            calendar: calendar
+        ))
+        XCTAssertEqual(
+            snapshot.tasks(boardID: "week-default", columnID: WeekdayColumn.monday.rawValue, includeCompleted: true).first?.id,
+            tasks[4].id
+        )
+        XCTAssertEqual(result.updatedTaskIDs, [])
     }
 
     func testHorizontalDragAutoScrollStartsSoonerAndAcceleratesNearTheEdge() throws {

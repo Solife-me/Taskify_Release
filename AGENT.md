@@ -192,12 +192,17 @@ npx wrangler dev
 | `src/ui/board/DroppableColumn.test.tsx` | PWA board columns | Drop ordering, multi-selection payloads, empty drops, and keyboard/selection controls |
 | `taskify-cli/tests/command-registration.test.ts` | CLI command composition | Bundled help/arguments plus isolated contact persistence, profile selection, lookup, trust/relay mutations, cache status/clearing, and error exits |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
+| `taskify-core/tests/app-state-sync-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/AppStateSyncTests.swift` | Cross-device app state sync | Three-way Bible tracker/scripture merges with PWA↔native parity, chat-state merge/prune, event round trip; see `docs/reference/app-state-sync.md` |
+| `src/nostr/useNostrChatStateSync.test.tsx`, `src/domains/inbox/inboxResponseSync.test.ts` | PWA chat state sync | Coalesced publishing, echo suppression, remote read markers and shared-item and calendar-invite responses |
+| `src/nostr/boardVerifyUnseen.test.tsx` | PWA board sync | Re-verification of tasks missing from a board's initial sync is applied, and ignored after teardown |
+| `taskify-ios-native/Tests/TaskifyCoreTests/ScriptureMemorySyncTests.swift`, `src/domains/scripture/scriptureUtils.test.ts` | Scripture memory | Review applied exactly once across timestamp precisions, PWA key spelling, whole-chapter passages, shared review-task ids |
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 | `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
 | `taskify-ios-native/Tests/TaskifyCoreTests/TaskifySharedContainerTests.swift` | Native storage | Signed Mac App Group authorization, private fallback, migration preservation and repeated saves/reloads |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SnapshotLookupCacheTests.swift` | Native board cache invalidation/reuse, compound scope, calendar boundaries, sorting, and flat timeline identities |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SharedInboxTests.swift` | NIP-17 private messages | Gift-wrap verification, independent sender/recipient copies, encrypted group task/event shares with persisted conversation routing, strict kind-10050 routing, and signed inbox preferences |
+| `taskify-ios-native/Tests/TaskifyCoreTests/RelayRetryBackoffTests.swift`, `taskify-ios-native/Tests/TaskifyCoreTests/RelayOutboxLatencyTests.swift` | Native relay pressure | Bounded ingress with ordered lossless recovery, cancellation, and shared subscription/publication cooldown after rate limiting |
 | `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
@@ -308,3 +313,9 @@ Quick summary:
 - [ ] Docs updated if behavior changed
 - [ ] No secrets committed
 - [ ] Wallet/Nostr changes flagged for extra review if applicable
+
+Relay access regression coverage: `taskify-runtime-nostr/tests/proof-of-work.test.ts`
+and `relay-auth.test.ts` cover cooperative/cancellable mining and duplicate AUTH
+challenges. Native `NostrProofOfWorkTests` and `NostrRelayAuthenticationTests` cover
+signed work across native/Watch and acknowledgement-gated replay. Prepare work
+before retaining event IDs; never re-sign an already-submitted outbox event.

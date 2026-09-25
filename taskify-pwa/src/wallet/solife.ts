@@ -27,6 +27,19 @@ export type SolifeAddress = {
   relays: string[];
   mintUrl: string;
   mintOverride?: boolean;
+  lightningRedirect?: { externalAddress: string } | null;
+  nwcForward?: SolifeNwcForward | null;
+};
+
+/** A custom address forwarding payments to the owner's wallet over NWC. */
+export type SolifeNwcForward = {
+  walletAlias: string | null;
+  walletNpub: string;
+  /** The connection would let its holder spend. Solife only ever creates invoices with it. */
+  canSpend?: boolean;
+  lastError: string | null;
+  lastUsedAt: number | null;
+  updatedAt: number;
 };
 
 export type SolifeAccount = {
@@ -143,10 +156,12 @@ export async function fetchSolifeConfig(options: SolifeApiOptions = {}): Promise
   return solifeApi<SolifeConfig>("/api/config", options);
 }
 
+// Solife authenticates this app with the bearer token alone. Its session cookie is only
+// for its own web app and is refused on requests from other sites, so none is sent.
 function solifeAuthOptions(options: SolifeApiOptions, session: SolifeSession) {
   return {
     ...options,
-    credentials: "include" as RequestCredentials,
+    credentials: "omit" as RequestCredentials,
     token: session.token,
   };
 }
@@ -206,7 +221,7 @@ export async function createSolifeSession(secretKey: string, options: SolifeApiO
   }>("/api/auth/challenge", {
     ...options,
     method: "POST",
-    credentials: "include",
+    credentials: "omit",
     body: { pubkey: identity.pubkey },
   });
   const event = finalizeEvent(
@@ -224,7 +239,7 @@ export async function createSolifeSession(secretKey: string, options: SolifeApiO
   const session = await solifeApi<SolifeSession>("/api/auth/verify", {
     ...options,
     method: "POST",
-    credentials: "include",
+    credentials: "omit",
     body: { pubkey: identity.pubkey, challenge: challenge.challenge, event },
   });
   return { config, identity, session };
@@ -323,4 +338,44 @@ export async function updateSolifeLightningAddressMint(
     body: { mintUrl: requestOrMintUrl },
   });
   return { config, mintUrl: result.mintUrl, mintOverride: result.mintOverride };
+}
+
+/**
+ * Forwards a custom address's lightning payments to the owner's wallet over NWC.
+ * Any connection that can create invoices is accepted; the server only ever calls
+ * get_info and make_invoice with it. A receive-only connection is still safer.
+ */
+export async function setSolifeAddressNwcForward(
+  secretKey: string,
+  handle: string,
+  connection: string,
+  options: SolifeApiOptions = {},
+): Promise<SolifeAddress> {
+  const normalizedHandle = handle.trim().toLowerCase();
+  if (!normalizedHandle) throw new Error("Missing Solife address handle.");
+  const uri = connection.trim();
+  if (!/^nostr\+walletconnect:\/\//i.test(uri)) {
+    throw new Error("Paste a connection string that starts with nostr+walletconnect://");
+  }
+  const { session } = await createSolifeSession(secretKey, options);
+  return solifeApi<SolifeAddress>(`/api/addresses/${encodeURIComponent(normalizedHandle)}/nwc-forward`, {
+    ...solifeAuthOptions(options, session),
+    method: "PUT",
+    body: { connection: uri },
+  });
+}
+
+/** Stops forwarding; payments to the address are delivered as ecash again. */
+export async function clearSolifeAddressNwcForward(
+  secretKey: string,
+  handle: string,
+  options: SolifeApiOptions = {},
+): Promise<SolifeAddress> {
+  const normalizedHandle = handle.trim().toLowerCase();
+  if (!normalizedHandle) throw new Error("Missing Solife address handle.");
+  const { session } = await createSolifeSession(secretKey, options);
+  return solifeApi<SolifeAddress>(`/api/addresses/${encodeURIComponent(normalizedHandle)}/nwc-forward`, {
+    ...solifeAuthOptions(options, session),
+    method: "DELETE",
+  });
 }

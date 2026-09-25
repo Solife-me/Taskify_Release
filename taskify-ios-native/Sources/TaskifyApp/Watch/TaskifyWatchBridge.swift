@@ -250,11 +250,47 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
         defer { processingCommandIDs.remove(command.id) }
 
         switch command.kind {
+        case .setSubtaskCompletion:
+            guard let taskID = command.taskID, let subtaskID = command.subtaskID,
+                  let completed = command.subtaskCompleted else {
+                throw TaskifyWatchBridgeError.invalidCommand
+            }
+            // Explicit desired state makes retried deliveries idempotent. Keep the latest
+            // timestamp per subtask so a delayed completion cannot undo a newer uncheck.
+            let key = "taskify.watch.subtask-state." + model.identityPublicKey + "." + taskID + "." + subtaskID
+            let lastApplied = UserDefaults.standard.double(forKey: key)
+            if command.createdAt.timeIntervalSince1970 > lastApplied {
+                if let task = model.task(withID: taskID), !task.isDeleted, !task.completed,
+                   let subtask = task.subtasks?.first(where: { $0.id == subtaskID }),
+                   subtask.completed != completed {
+                    model.toggleSubtaskCompletion(taskID: taskID, subtaskID: subtaskID)
+                }
+                UserDefaults.standard.set(command.createdAt.timeIntervalSince1970, forKey: key)
+            }
+
+        case .editTask:
+            guard let taskID = command.taskID, let edit = command.edit else {
+                throw TaskifyWatchBridgeError.invalidCommand
+            }
+            // Deleted or completed tasks must never be resurrected by a delayed edit.
+            if let task = model.task(withID: taskID), !task.isDeleted, !task.completed {
+                guard model.updateTask(
+                    taskID: taskID, title: edit.title, note: edit.note,
+                    dueDate: edit.dueDate, dueDateEnabled: edit.dueDate != nil,
+                    dueTimeEnabled: edit.dueTimeEnabled, dueTimeZone: edit.dueTimeZone,
+                    priority: edit.priority.flatMap(TaskPriority.init(rawValue:)),
+                    columnID: task.columnID, subtasks: task.subtasks ?? [],
+                    recurrence: task.recurrence, reminders: task.reminders ?? [],
+                    reminderTime: task.reminderTime, images: task.images ?? [],
+                    documents: task.documents ?? []
+                ) else { throw TaskifyWatchBridgeError.invalidCommand }
+            }
+
         case .completeTask:
             // Completion commands are deliberately idempotent. Replayed background deliveries
             // acknowledge an already-completed/deleted task without toggling it back open.
             guard let taskID = command.taskID else { throw TaskifyWatchBridgeError.invalidCommand }
-            model.completeTasks([taskID])
+            model.completeTasksFromWatch([taskID])
 
         case .createTask:
             guard let title = command.title,

@@ -12,6 +12,7 @@ paths += [shared / p for p in [
     'App/TaskOrderingSettings.swift', 'App/StartupViewSettings.swift',
     'App/OnboardingSettings.swift', 'App/NpubCashSettings.swift',
     'Security/KeychainIdentityStore.swift', 'Features/Wallet/WalletView.swift',
+    'Features/Wallet/WalletViewModel+NWC.swift',
     'Features/Boards/BibleTrackerStore.swift',
     'Features/Upcoming/DeviceCalendarStore.swift',
     'Features/Tasks/TaskAttachmentUploadService.swift',

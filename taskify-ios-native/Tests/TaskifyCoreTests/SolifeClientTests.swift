@@ -169,4 +169,16 @@ final class SolifeClientTests: XCTestCase {
         XCTAssertTrue(event.tags.contains(["domain", "solife.me"]))
         XCTAssertTrue(event.verify())
     }
+
+    func testParseAddressReadsNWCForwardWithoutSecrets() throws {
+        let forwarded = try SolifeClient.parseAddress(Data(#"""
+        {"handle":"alice","address":"alice@solife.me","mintUrl":"https://mint.solife.me","nwcForward":{"walletAlias":"Alby","walletNpub":"npub1x","lastError":null,"lastUsedAt":null,"updatedAt":1}}
+        """#.utf8), fallbackMintURL: "")
+        XCTAssertEqual(forwarded.nwcForward, SolifeNWCForward(walletAlias: "Alby", lastError: nil))
+
+        let plain = try SolifeClient.parseAddress(Data(#"""
+        {"handle":"bob","address":"bob@solife.me","nwcForward":null}
+        """#.utf8), fallbackMintURL: "https://mint.solife.me")
+        XCTAssertNil(plain.nwcForward)
+    }
 }

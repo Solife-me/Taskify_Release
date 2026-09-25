@@ -51,6 +51,84 @@ public struct TaskifyWatchTask: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// Editable fields only; the phone preserves recurrence, attachments, and subtasks.
+public struct TaskifyWatchTaskEdit: Codable, Equatable, Sendable {
+    public var title: String
+    public var note: String
+    public var dueDate: Date?
+    public var dueTimeEnabled: Bool
+    public var dueTimeZone: String?
+    public var priority: Int?
+
+    public init(task: TaskifyWatchTask) {
+        title = task.title
+        note = task.note
+        dueDate = task.dueDate
+        dueTimeEnabled = task.dueTimeEnabled
+        dueTimeZone = task.payloadObject["dueTimeZone"] as? String
+        priority = task.priority
+    }
+}
+
+public struct TaskifyWatchSubtask: Identifiable, Codable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let completed: Bool
+}
+
+public extension TaskifyWatchTask {
+    var payloadObject: [String: Any] {
+        guard let syncPayload,
+              let object = try? JSONSerialization.jsonObject(with: syncPayload) as? [String: Any] else { return [:] }
+        return object
+    }
+
+    var note: String { payloadObject["note"] as? String ?? "" }
+
+    var subtasks: [TaskifyWatchSubtask] {
+        guard let rows = payloadObject["subtasks"],
+              let data = try? JSONSerialization.data(withJSONObject: rows),
+              let result = try? JSONDecoder().decode([TaskifyWatchSubtask].self, from: data) else { return [] }
+        return result
+    }
+
+    func settingSubtaskCompletion(_ subtaskID: String, completed: Bool) -> TaskifyWatchTask {
+        var object = payloadObject
+        guard var rows = object["subtasks"] as? [[String: Any]],
+              let index = rows.firstIndex(where: { $0["id"] as? String == subtaskID }) else { return self }
+        rows[index]["completed"] = completed
+        object["subtasks"] = rows
+        return TaskifyWatchTask(
+            id: id, title: title, boardID: boardID, boardName: boardName,
+            columnName: columnName, dueDate: dueDate, dueTimeEnabled: dueTimeEnabled,
+            priority: priority, order: order, columnID: columnID,
+            nostrBoardID: nostrBoardID, relayURLs: relayURLs,
+            syncPayload: try? JSONSerialization.data(withJSONObject: object),
+            nostrUpdatedAt: nostrUpdatedAt
+        )
+    }
+
+    func applying(_ edit: TaskifyWatchTaskEdit) -> TaskifyWatchTask {
+        var object = payloadObject
+        object["title"] = edit.title
+        object["note"] = edit.note
+        object["priority"] = edit.priority
+        object["dueISO"] = edit.dueDate.map { ISO8601DateFormatter().string(from: $0) }
+        object["dueDateEnabled"] = edit.dueDate != nil
+        object["dueTimeEnabled"] = edit.dueDate != nil && edit.dueTimeEnabled
+        object["dueTimeZone"] = edit.dueTimeEnabled ? edit.dueTimeZone : nil
+        return TaskifyWatchTask(
+            id: id, title: edit.title, boardID: boardID, boardName: boardName,
+            columnName: columnName, dueDate: edit.dueDate,
+            dueTimeEnabled: edit.dueDate != nil && edit.dueTimeEnabled,
+            priority: edit.priority, order: order, columnID: columnID,
+            nostrBoardID: nostrBoardID, relayURLs: relayURLs,
+            syncPayload: try? JSONSerialization.data(withJSONObject: object),
+            nostrUpdatedAt: nostrUpdatedAt
+        )
+    }
+}
+
 public struct TaskifyWatchBoardColumn: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let name: String
@@ -539,6 +617,8 @@ public struct TaskifyWatchVoicePreview: Codable, Equatable, Sendable {
 public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Hashable, Sendable {
         case completeTask
+        case editTask
+        case setSubtaskCompletion
         case createTask
         case createVoiceTasks
         case processVoiceTranscript
@@ -551,6 +631,9 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
     public let boardID: String?
     public let transcript: String?
     public let voiceTasks: [TaskifyWatchVoiceDraft]?
+    public let edit: TaskifyWatchTaskEdit?
+    public let subtaskID: String?
+    public let subtaskCompleted: Bool?
     public let createdAt: Date
 
     public init(
@@ -561,6 +644,9 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
         boardID: String? = nil,
         transcript: String? = nil,
         voiceTasks: [TaskifyWatchVoiceDraft]? = nil,
+        edit: TaskifyWatchTaskEdit? = nil,
+        subtaskID: String? = nil,
+        subtaskCompleted: Bool? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -570,6 +656,9 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
         self.boardID = boardID
         self.transcript = transcript
         self.voiceTasks = voiceTasks
+        self.edit = edit
+        self.subtaskID = subtaskID
+        self.subtaskCompleted = subtaskCompleted
         self.createdAt = createdAt
     }
 }
@@ -787,6 +876,13 @@ public enum TaskifyWatchTransfer {
         let command = try decoder.decode(TaskifyWatchCommand.self, from: data)
         let isValid: Bool
         switch command.kind {
+        case .setSubtaskCompletion:
+            isValid = !(command.taskID ?? "").isEmpty &&
+                !(command.subtaskID ?? "").isEmpty && command.subtaskCompleted != nil
+        case .editTask:
+            isValid = !(command.taskID ?? "").isEmpty &&
+                !(command.edit?.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                (command.edit?.priority == nil || (1...3).contains(command.edit!.priority!))
         case .completeTask:
             isValid = !(command.taskID ?? "").isEmpty
         case .createTask:

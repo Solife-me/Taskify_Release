@@ -44,6 +44,27 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
     nextOrderForBoard: (boardId: string, tasks: TTask[], position: "top" | "bottom") => number;
     maybePublishTask: (task: TTask) => Promise<unknown> | void;
     now?: () => number;
+    /**
+     * False while a shared board's initial relay sync is still running. Instances are only
+     * generated for boards that have synced: generating earlier would republish an instance another
+     * device already completed (same id, newer timestamp) and reopen it.
+     */
+    canGenerateForBoard?: (boardId: string) => boolean;
 };
 export declare function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike>(options: EnsureWeekRecurrencesOptions<TTask>): TTask[];
+type StreakTaskLike = {
+    id: string;
+    seriesId?: string;
+    dueISO: string;
+    completed?: boolean;
+    streak?: number;
+};
+/**
+ * Streaks are carried from one instance of a recurring series to the next. An open instance's
+ * running streak is the streak of the latest completed instance due before it (or its own,
+ * whichever is higher), so instances generated ahead of time (full-week mode) don't need to be
+ * rewritten, and republished, every time an earlier one is completed. Completing an instance
+ * sets its streak to its running streak + 1.
+ */
+export declare function buildRunningStreakLookup<TTask extends StreakTaskLike>(tasks: readonly TTask[]): (task: TTask) => number;
 export {};

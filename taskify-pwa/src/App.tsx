@@ -1,3 +1,4 @@
+import { prepareRelayEvent } from "./nostr/prepareRelayEvent";
 import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
 import { syncRemindersToWorker, PUSH_OPERATION_TIMEOUT_MS } from "./domains/push/reminderClient";
 import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
@@ -12,7 +13,7 @@ import {
   buildUpcomingDateKeyIndex,
   type UpcomingFlatRow,
 } from "./lib/upcomingRows";
-import { finalizeEvent, type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+import { type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
 import {
   DEFAULT_DATE_REMINDER_TIME,
   MS_PER_DAY,
@@ -103,6 +104,7 @@ import {
   buildUsHolidayCalendarEvents,
   isUsHolidayCalendarEvent,
   fastingReminderDueTimesForMonth,
+  fastingReminderTaskId,
 } from "./domains/calendar/holidayUtils";
 import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
 import {
@@ -203,6 +205,7 @@ import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/setti
 import { withBoardOrder } from "./domains/tasks/boardUtils";
 import {
   ensureWeekRecurrencesForCurrentWeek,
+  buildRunningStreakLookup,
   recurringSeriesId,
   tasksInSameSeries,
 } from "./lib/app/weekRecurrenceDomain";
@@ -226,7 +229,7 @@ import {
   type CalendarRsvpFb,
   type CalendarRsvpStatus,
 } from "./lib/privateCalendar";
-import { DEFAULT_NOSTR_RELAYS } from "./lib/relays";
+import { DEFAULT_NOSTR_RELAYS, relaysOrDefaults } from "./lib/relays";
 import type { FinalTask } from "./nostr/useVoiceSession";
 import type { Contact } from "./lib/contacts";
 import {
@@ -260,6 +263,18 @@ import { useShareBoardState } from "./ui/board/useShareBoardState";
 import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
 import { WalletAddressView } from "./ui/wallet/WalletAddressView";
 import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
+import { useNostrChatStateSync } from "./nostr/useNostrChatStateSync";
+import { PublishFingerprints } from "./domains/nostr/publishFingerprints";
+import { hasSyncedTaskChange } from "./domains/tasks/taskSyncChanges";
+import {
+  applyInboxResponsesToCalendarInvites,
+  applyInboxResponsesToTasks,
+  collectCalendarInviteResponses,
+  collectInboxResponses,
+  pendingCalendarInviteEventIds,
+  pendingInboxEventIds,
+} from "./domains/inbox/inboxResponseSync";
+import type { ChatInboxResponse } from "taskify-core";
 import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
 import { useWalletShellState } from "./ui/wallet/useWalletShellState";
 import { UpcomingControls } from "./ui/upcoming/UpcomingControls";
@@ -893,11 +908,18 @@ export default function App() {
     toggleItemSelection,
   } = useSelectionMode({ calendarEvents, tasks });
   const {
+    calendarInvites,
+    calendarInvitesRef,
     formatCalendarInviteWhen,
     pendingCalendarInvites,
     setCalendarInvites,
     unreadCalendarInviteCount,
   } = useCalendarInvites();
+  // Set once `addAcceptedInviteToCalendar` is defined further down; the chat state sync above it
+  // uses this to show an invite another device accepted.
+  const acceptedInviteMaterializerRef = useRef<
+    ((invite: CalendarInvite, status: CalendarRsvpStatus) => Promise<unknown>) | null
+  >(null);
   const [editing, setEditing] = useState<EditingState | null>(null);
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
   const {
@@ -1046,9 +1068,26 @@ export default function App() {
     scriptureMemoryFrequencyOption?.days,
     settings.scriptureMemorySort,
   ]);
+  const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
+  const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
+  // Generated tasks (recurring instances, fasting reminders, the first scripture review) use ids
+  // every device derives the same way. On a shared board, generating one before the relays have
+  // delivered the board would republish an instance another device already completed, with the
+  // same id and a newer timestamp, and reopen it. So generation waits for the board's initial
+  // sync (which also completes on its timeout, so offline use still gets them).
+  const boardsForGenerationRef = useRef(boards);
+  boardsForGenerationRef.current = boards;
+  const isBoardReadyForGeneratedTasks = useCallback((boardId: string) => {
+    const board = findBoardByCompoundChildId(boardsForGenerationRef.current, boardId)
+      ?? boardsForGenerationRef.current.find((candidate) => candidate.id === boardId);
+    const nostrBoardId = board?.nostr?.boardId;
+    if (!nostrBoardId) return true;
+    return completedNostrInitialSyncRef.current.has(boardTag(nostrBoardId));
+  }, []);
   const maybePublishTaskRef = useRef<PublishTaskFn | null>(null);
   const maybePublishCalendarEventRef = useRef<PublishCalendarEventFn | null>(null);
   const publishBoardMetadataRef = useRef<((board: Board) => Promise<void>) | null>(null);
+  const boardMetadataFingerprintsRef = useRef(new PublishFingerprints());
   const publishBoardMetadataSnapshotRef = useRef<((board: Board, boardId: string, relays: string[]) => Promise<void>) | null>(null);
   const publishCalendarEventDeletedRef = useRef<((event: CalendarEvent) => Promise<void>) | null>(null);
   const completeTaskRef = useRef<CompleteTaskFn | null>(null);
@@ -1137,6 +1176,7 @@ export default function App() {
       ? scriptureMemoryBoard
       : null;
     if (!targetBoard) return;
+    if (!isBoardReadyForGeneratedTasks(targetBoard.id)) return;
     if (targetBoard.kind === "lists" && (!targetBoard.columns || targetBoard.columns.length === 0)) return;
     const baseDays = scriptureMemoryFrequencyOption?.days ?? 1;
     const recurrence = scriptureFrequencyToRecurrence(baseDays);
@@ -1203,8 +1243,15 @@ export default function App() {
       if (targetBoard.kind === "lists" && (!targetBoard.columns || targetBoard.columns.length === 0)) {
         return changed ? boundedTasks : prev;
       }
+      // A date-derived id, like every later occurrence in the series: two devices that each
+      // find no active review task (say, one whose passages synced before its tasks did)
+      // create the same task instead of duplicates.
+      const newTaskId = recurringInstanceId(SCRIPTURE_MEMORY_SERIES_ID, dueISO, recurrence);
+      if (boundedTasks.some((task) => task.id === newTaskId)) {
+        return changed ? boundedTasks : prev;
+      }
       const newTask: Task = {
-        id: crypto.randomUUID(),
+        id: newTaskId,
         boardId: targetBoard.id,
         title: `Review ${formatScriptureReference(selection.entry)}`,
         createdAt: Date.now(),
@@ -1247,6 +1294,8 @@ export default function App() {
     maybePublishTaskRef,
     sanitizeRecurringTasks,
     setScriptureMemory,
+    isBoardReadyForGeneratedTasks,
+    pendingNostrInitialSyncByBoardTag,
   ]);
 
   useEffect(() => {
@@ -1264,6 +1313,7 @@ export default function App() {
       return;
     }
     if (!targetBoard) return;
+    if (!isBoardReadyForGeneratedTasks(targetBoard.id)) return;
 
     const now = new Date();
     const months = Array.from({ length: 2 }, (_, i) => {
@@ -1347,11 +1397,15 @@ export default function App() {
       const toCreate = Array.from(desiredDueTimes)
         .filter((time) => time >= todayMidnight && !existingDueTimes.has(time))
         .sort((a, b) => a - b);
+      const existingIds = new Set(prev.map((task) => task.id));
       for (const dueTime of toCreate) {
+        // Date-derived, like native: devices generating the same reminder make one task.
+        const reminderId = fastingReminderTaskId(FASTING_REMINDER_SERIES_ID, dueTime);
+        if (existingIds.has(reminderId)) continue;
         const dueISO = new Date(dueTime).toISOString();
         const order = nextOrderForBoard(targetBoard.id, nextTasks, settings.newTaskPosition);
         const newTask: Task = {
-          id: crypto.randomUUID(),
+          id: reminderId,
           boardId: targetBoard.id,
           title: "Fasting",
           note: "Fasting reminder",
@@ -1394,12 +1448,15 @@ export default function App() {
     settings.weekStart,
     setTasks,
     maybePublishTaskRef,
+    isBoardReadyForGeneratedTasks,
+    pendingNostrInitialSyncByBoardTag,
   ]);
 
   useEffect(() => {
     if (!settings.showFullWeekRecurring) return;
     setTasks(prev => ensureWeekRecurrences(prev));
-  }, [settings.showFullWeekRecurring, settings.weekStart]);
+    // Re-run as each shared board finishes its initial sync.
+  }, [settings.showFullWeekRecurring, settings.weekStart, pendingNostrInitialSyncByBoardTag]);
 
   useAppAppearance(settings);
 
@@ -1537,8 +1594,6 @@ export default function App() {
   const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
   const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
   // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
-  const completedNostrInitialSyncRef = useRef<Set<string>>(new Set());
-  const [pendingNostrInitialSyncByBoardTag, setPendingNostrInitialSyncByBoardTag] = useState<Record<string, true>>({});
   const [boardHistoryResyncNonce, setBoardHistoryResyncNonce] = useState(0);
   // In-memory cursor: tracks the highest created_at seen per board tag this session.
   // Persisted to IDB after EOSE so subsequent opens only fetch new events.
@@ -1765,7 +1820,7 @@ export default function App() {
           tags: [["e", eventId]],
           created_at: Math.floor(Date.now() / 1000),
         };
-        const signed = finalizeEvent(deletion, hexToBytes(nostrSkHex));
+        const signed = await prepareRelayEvent(deletion, hexToBytes(nostrSkHex), inboxRelays);
         await Promise.resolve(pool.publish(inboxRelays, signed));
       } catch (err) {
         console.warn("Failed to delete shared inbox DM", err);
@@ -1909,6 +1964,8 @@ export default function App() {
         ...invite,
         id: existing.id || invite.id,
         status: existing.status,
+        respondedAt: existing.respondedAt,
+        dmEventIds: Array.from(new Set([...(existing.dmEventIds ?? []), ...(invite.dmEventIds ?? [])])),
         sender: existing.sender ?? invite.sender,
         relays: existing.relays?.length ? existing.relays : invite.relays,
         receivedAt: existing.receivedAt || invite.receivedAt,
@@ -1920,11 +1977,12 @@ export default function App() {
     });
   }, [setCalendarInvites]);
 
-  const addInboxCalendarInvite = useCallback((item: SharedCalendarEventInvitePayload, sender: InboxSender) => {
+  const addInboxCalendarInvite = useCallback((item: SharedCalendarEventInvitePayload, sender: InboxSender, dmEventId: string) => {
     const nowISO = new Date().toISOString();
     upsertCalendarInvite({
       id: item.canonical,
       source: "dm",
+      dmEventIds: dmEventId ? [dmEventId.trim().toLowerCase()] : undefined,
       eventId: item.eventId,
       canonical: item.canonical,
       view: item.view,
@@ -2049,7 +2107,7 @@ export default function App() {
         npub: envelope.sender?.npub,
       };
       if (envelope.item.type === "event") {
-        addInboxCalendarInvite(envelope.item as SharedCalendarEventInvitePayload, sender);
+        addInboxCalendarInvite(envelope.item as SharedCalendarEventInvitePayload, sender, event.id);
         void sendInboxDeletion(event.id);
         return;
       }
@@ -2232,6 +2290,43 @@ export default function App() {
     showSettings,
     showToast,
     tagValue,
+  });
+
+  const localInboxResponses = useMemo(
+    () => ({ ...collectInboxResponses(tasks), ...collectCalendarInviteResponses(calendarInvites) }),
+    [calendarInvites, tasks],
+  );
+  const pendingInboxIds = useMemo(
+    () => [...pendingInboxEventIds(tasks), ...pendingCalendarInviteEventIds(calendarInvites)].sort(),
+    [calendarInvites, tasks],
+  );
+  const applyRemoteInboxResponses = useCallback(
+    (responses: Record<string, ChatInboxResponse>) => {
+      setTasks((prev) => applyInboxResponsesToTasks(prev, responses));
+      const { invites, accepted } = applyInboxResponsesToCalendarInvites(calendarInvitesRef.current, responses);
+      if (invites === calendarInvitesRef.current) return;
+      calendarInvitesRef.current = invites;
+      setCalendarInvites(invites);
+      // Another device accepted: show the event here too. Adding it is local; the RSVP was
+      // already sent by the device that answered.
+      for (const invite of accepted) {
+        const status = invite.status === "tentative" ? "tentative" : "accepted";
+        void acceptedInviteMaterializerRef.current?.(invite, status);
+      }
+    },
+    [calendarInvitesRef, setCalendarInvites, setTasks],
+  );
+  useNostrChatStateSync({
+    enabled: settings.nostrBackupEnabled,
+    defaultRelays,
+    nostrPK,
+    nostrPublishRef,
+    nostrSK,
+    pool,
+    tagValue,
+    localInboxResponses,
+    pendingInboxEventIds: pendingInboxIds,
+    applyRemoteInboxResponses,
   });
 
   useNostrSubscriptions({
@@ -3843,6 +3938,10 @@ export default function App() {
     return !!pendingNostrInitialSyncByBoardTag[boardTag(nostrBoardId)];
   }, [currentBoard, pendingNostrInitialSyncByBoardTag]);
 
+  // Open instances of a recurring series show the series' running streak (see
+  // buildRunningStreakLookup) rather than the copy stored when they were generated.
+  const runningStreakFor = useMemo(() => buildRunningStreakLookup(tasks), [tasks]);
+
   /* ---------- Derived: board-scoped lists ---------- */
   const tasksForBoard = useMemo(() => {
     if (!currentBoard) return [] as Task[];
@@ -5336,6 +5435,7 @@ export default function App() {
     return (
       <div key={t.id} className="space-y-2">
         <Card
+                            displayStreak={runningStreakFor(t)}
                             isSelectionMode={isSelectionMode}
                             isSelected={selectedItemIds.includes(t.id)}
                             onToggleSelect={toggleItemSelection}
@@ -5704,6 +5804,10 @@ export default function App() {
       payload.listIndex = !!board.indexCardEnabled;
       payload.hideBoardNames = !!board.hideChildBoardNames;
     }
+    // Task and calendar publishes call this too, to make sure the board exists on its relays.
+    // Unchanged metadata needn't go out again.
+    const fingerprint = { relays, tags, payload };
+    if (boardMetadataFingerprintsRef.current.isUnchanged(idTag, fingerprint)) return;
     const raw = JSON.stringify(payload);
     const content = await encryptToBoard(board.nostr.boardId, raw);
     const createdAt = await nostrPublish(relays, {
@@ -5713,6 +5817,7 @@ export default function App() {
       created_at: Math.floor(Date.now() / 1000),
     }, { sk: boardKeys.sk });
     nostrIdxRef.current.boardMeta.set(idTag, createdAt);
+    boardMetadataFingerprintsRef.current.record(idTag, fingerprint);
   }
   publishBoardMetadataRef.current = publishBoardMetadata;
   async function publishBoardMetadataSnapshot(board: Board, boardId: string, relays: string[]) {
@@ -7449,6 +7554,7 @@ export default function App() {
       taskDateKey,
       nextOrderForBoard,
       maybePublishTask,
+      canGenerateForBoard: isBoardReadyForGeneratedTasks,
     });
     return sanitizeRecurringTasks(ensured);
   }
@@ -8707,17 +8813,10 @@ export default function App() {
       if (!nostrSkHex) return;
       const recipientPubkey = normalizeAgentPubkey(inboxItem.sender.pubkey) ?? normalizeNostrPubkeyHex(inboxItem.sender.npub || "");
       if (!recipientPubkey) return;
-      const relayList = Array.from(
-        new Set(
-          [
-            ...(Array.isArray(inboxItem.task.relays) ? inboxItem.task.relays : []),
-            ...defaultRelays,
-            ...inboxRelays,
-            ...Array.from(DEFAULT_NOSTR_RELAYS),
-          ]
-            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
-        ),
+      const relayList = relaysOrDefaults(
+        Array.isArray(inboxItem.task.relays) ? inboxItem.task.relays : [],
+        defaultRelays,
+        inboxRelays,
       );
       if (!relayList.length) return;
       let senderNpub: string | null = null;
@@ -8835,7 +8934,9 @@ export default function App() {
         }
       }
       const now = new Date().toISOString();
-      let newStreak = typeof working.streak === "number" ? working.streak : 0;
+      // Count from the series' running streak, not this instance's stored copy: instances
+      // generated ahead of time (full-week mode) carry the streak from when they were made.
+      let newStreak = buildRunningStreakLookup(prev)(working);
       if (
         settings.streaksEnabled &&
         working.recurrence &&
@@ -8850,28 +8951,6 @@ export default function App() {
       }
       const nextLongest = mergeLongestStreak(working, newStreak);
       const toPublish: Task[] = [];
-      let nextId: string | null = null;
-      if (
-        settings.showFullWeekRecurring &&
-        settings.streaksEnabled &&
-        working.recurrence &&
-        isFrequentRecurrence(working.recurrence)
-      ) {
-        nextId =
-          prev
-            .filter(
-              t =>
-                t.id !== id &&
-                !t.completed &&
-                t.recurrence &&
-                sameSeries(t, working) &&
-                new Date(t.dueISO) > new Date(working.dueISO)
-            )
-            .sort(
-              (a, b) =>
-                new Date(a.dueISO).getTime() - new Date(b.dueISO).getTime()
-            )[0]?.id || null;
-      }
       const updated = prev.map(t => {
         if (t.id === id) {
           const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
@@ -8896,19 +8975,6 @@ export default function App() {
           }
           toPublish.push(done);
           return done;
-        }
-        if (t.id === nextId) {
-          const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
-          const upd = {
-            ...t,
-            seriesId: t.seriesId || t.id,
-            streak: newStreak,
-            longestStreak: mergeLongestStreak(t, newStreak),
-            lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            updatedAt: now,
-          };
-          toPublish.push(upd);
-          return upd;
         }
         return t;
       });
@@ -9737,8 +9803,14 @@ export default function App() {
   function setCalendarInviteStatus(coord: string, status: CalendarInviteStatus) {
     const normalized = (coord || "").trim();
     if (!normalized) return;
+    // A response is stamped so it syncs to the user's other devices; "read" is not a response.
+    const respondedAt = status === "read" || status === "pending" ? undefined : new Date().toISOString();
     setCalendarInvites((prev) =>
-      prev.map((invite) => (invite.canonical === normalized ? { ...invite, status } : invite)),
+      prev.map((invite) =>
+        invite.canonical === normalized
+          ? { ...invite, status, ...(respondedAt ? { respondedAt } : {}) }
+          : invite,
+      ),
     );
   }
 
@@ -9774,13 +9846,7 @@ export default function App() {
         ?? null;
       if (!defaultBoard) return null;
 
-      const relayCandidates = [
-        ...(invite.relays?.length ? invite.relays : []),
-        ...(defaultRelays.length ? defaultRelays : []),
-        ...(inboxRelays.length ? inboxRelays : []),
-        ...Array.from(DEFAULT_NOSTR_RELAYS),
-      ];
-      const relayList = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+      const relayList = relaysOrDefaults(invite.relays, defaultRelays, inboxRelays);
       if (!relayList.length) {
         showToast("No relays available to load this event.");
         return null;
@@ -10044,6 +10110,7 @@ export default function App() {
     },
     [boards, defaultRelays, inboxRelays, pool, setCalendarEvents, settings.newTaskPosition, settings.weekStart, showToast],
   );
+  acceptedInviteMaterializerRef.current = addAcceptedInviteToCalendar;
 
   async function publishCalendarRsvp(
     canonical: string,
@@ -10137,13 +10204,7 @@ export default function App() {
       const canonicalAddress = materialized?.canonicalAddress || invite.canonical;
       const eventId = materialized?.id || resolvedEventId;
       const inviteRelays = materialized?.inviteRelays ?? invite.relays;
-      const relayCandidates = [
-        ...(inviteRelays?.length ? inviteRelays : []),
-        ...defaultRelays,
-        ...inboxRelays,
-        ...Array.from(DEFAULT_NOSTR_RELAYS),
-      ];
-      const fallbackRelays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+      const fallbackRelays = relaysOrDefaults(inviteRelays, defaultRelays, inboxRelays);
       const inviteToken = boardNostrId ? "" : (materialized?.inviteToken || invite.inviteToken);
       const options = boardNostrId ? { boardId: boardNostrId } : undefined;
       await publishCalendarRsvp(canonicalAddress, eventId, inviteToken, fallbackRelays, status, options);
@@ -10957,12 +11018,8 @@ export default function App() {
           if ((t.order ?? 0) !== index) {
             const idx = arr.findIndex((x) => x.id === t.id);
             if (idx >= 0) {
-              arr[idx] = {
-                ...t,
-                order: index,
-                lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-              };
-              publishSet.add(arr[idx]);
+              // Order is device-local (not in the published payload): no publish.
+              arr[idx] = { ...t, order: index };
             }
           }
         });
@@ -10988,12 +11045,8 @@ export default function App() {
         if ((t.order ?? 0) !== nextOrder) {
           const idx = arr.findIndex((x) => x.id === t.id);
           if (idx >= 0) {
-            arr[idx] = {
-              ...t,
-              order: nextOrder,
-              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            };
-            publishSet.add(arr[idx]);
+            // Order is device-local (not in the published payload): no publish.
+            arr[idx] = { ...t, order: nextOrder };
           }
         }
       });
@@ -11006,7 +11059,10 @@ export default function App() {
         arr.push(updated);
       }
       const persistencePlan = taskMovePersistencePlan(task, updated);
-      publishSet.add(persistencePlan.targetToPublish);
+      // A reorder within the same list changes nothing other devices see.
+      if (persistencePlan.sourceToDelete || hasSyncedTaskChange(task, updated)) {
+        publishSet.add(persistencePlan.targetToPublish);
+      }
 
       try {
         if (persistencePlan.sourceToDelete) {
@@ -11060,12 +11116,8 @@ export default function App() {
         if ((t.order ?? 0) !== index) {
           const idx = arr.findIndex((x) => x.id === t.id);
           if (idx >= 0) {
-            arr[idx] = {
-              ...t,
-              order: index,
-              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            };
-            publishSet.add(arr[idx]);
+            // Order is device-local (not in the published payload): no publish.
+            arr[idx] = { ...t, order: index };
           }
         }
       });
@@ -11108,12 +11160,8 @@ export default function App() {
         if ((t.order ?? 0) !== nextOrder) {
           const idx = arr.findIndex((x) => x.id === t.id);
           if (idx >= 0) {
-            arr[idx] = {
-              ...t,
-              order: nextOrder,
-              lastEditedBy: editorPubkey || t.lastEditedBy || t.createdBy,
-            };
-            publishSet.add(arr[idx]);
+            // Order is device-local (not in the published payload): no publish.
+            arr[idx] = { ...t, order: nextOrder };
           }
         }
       });
@@ -11121,7 +11169,10 @@ export default function App() {
       const updatedIdx = arr.findIndex((t) => t.id === updated.id);
       if (updatedIdx >= 0) arr[updatedIdx] = updated;
       const persistencePlan = taskMovePersistencePlan(task, updated);
-      publishSet.add(persistencePlan.targetToPublish);
+      // A reorder within the same list changes nothing other devices see.
+      if (persistencePlan.sourceToDelete || hasSyncedTaskChange(task, updated)) {
+        publishSet.add(persistencePlan.targetToPublish);
+      }
 
       try {
         if (persistencePlan.sourceToDelete) {
@@ -11848,6 +11899,7 @@ export default function App() {
 	                        ))}
 	                        {(byDay.get(day) || []).map((t) => (
 	                        <Card
+                            displayStreak={runningStreakFor(t)}
                             isSelectionMode={isSelectionMode}
                             isSelected={selectedItemIds.includes(t.id)}
                             onToggleSelect={toggleItemSelection}
@@ -12101,6 +12153,7 @@ export default function App() {
 	                      ))}
 	                      {(itemsByColumn.get(col.id) || []).map((t) => (
 	                        <Card
+                            displayStreak={runningStreakFor(t)}
                             isSelectionMode={isSelectionMode}
                             isSelected={selectedItemIds.includes(t.id)}
                             onToggleSelect={toggleItemSelection}
@@ -12842,14 +12895,9 @@ export default function App() {
 	            activeEventRsvpCoord
 	              ? async (status, options) => {
 	                  try {
-                      const relayCandidates = activeEventRsvpRelays.length
-                        ? activeEventRsvpRelays
-                        : [
-                            ...defaultRelays,
-                            ...inboxRelays,
-                            ...Array.from(DEFAULT_NOSTR_RELAYS),
-                          ];
-                      const relays = Array.from(new Set(relayCandidates.map((relay) => relay.trim()).filter(Boolean)));
+                      const relays = activeEventRsvpRelays.length
+                        ? relaysOrDefaults(activeEventRsvpRelays)
+                        : relaysOrDefaults(defaultRelays, inboxRelays);
                       const isExternal = editing?.type === "event" ? !!editing.event.external : false;
                       const publishBoardId = editing?.type === "event" && !isExternal
                         ? (editing.event.originBoardId ?? editing.event.boardId)

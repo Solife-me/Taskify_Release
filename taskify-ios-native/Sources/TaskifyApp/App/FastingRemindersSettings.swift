@@ -11,6 +11,20 @@ enum FastingRemindersSettings {
     private static let weekdayKey = "taskify.fastingReminders.weekday"
     private static let seedKey = "taskify.fastingReminders.seed"
 
+    /// The PWA's field names, as carried in the encrypted account sync. The seed must match
+    /// across devices: random-mode days are derived from it.
+    static let enabledPWAKey = "fastingRemindersEnabled"
+    static let modePWAKey = "fastingRemindersMode"
+    static let perMonthPWAKey = "fastingRemindersPerMonth"
+    static let weekdayPWAKey = "fastingRemindersWeekday"
+    static let seedPWAKey = "fastingRemindersRandomSeed"
+
+    static func setSeed(_ seed: String) {
+        let trimmed = seed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        UserDefaults.standard.set(trimmed, forKey: seedKey)
+    }
+
     static var enabled: Bool {
         UserDefaults.standard.bool(forKey: enabledKey)
     }

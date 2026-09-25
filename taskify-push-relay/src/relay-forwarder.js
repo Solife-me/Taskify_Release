@@ -278,7 +278,23 @@ function authorizationSession(socket, event, challenge, timeoutMs) {
   }
 }
 
-export function queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, requireEOSE = false) {
+function queryAuthorizationSession(socket, filter, maximumEvents, challenge, timeoutMs, requireEOSE) {
+  return {
+    outcome: 'auth-required', challenge,
+    authorize: async authEvent => {
+      const acknowledgement = frameEvent(socket,
+        frame => frame[0] === 'OK' && frame[1] === authEvent.id, timeoutMs)
+      socket.send(JSON.stringify(['AUTH', authEvent]))
+      const frame = await acknowledgement
+      if (frame[2] !== true) throw new Error('Relay authentication rejected')
+      const events = await queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, requireEOSE)
+      return { accepted: true, events }
+    },
+    close: () => socket.close(),
+  }
+}
+
+export function queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, requireEOSE = false, allowAuth = false) {
   const subscriptionID = `taskify-cache-${randomBytes(12).toString('hex')}`
   return new Promise((resolve, reject) => {
     const events = new Map()
@@ -311,6 +327,14 @@ export function queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, req
         return
       }
       if (!Array.isArray(frame)) return
+      if (allowAuth && frame[0] === 'AUTH' && typeof frame[1] === 'string' && frame[1].length <= 512) {
+        if (finished) return
+        finished = true
+        cleanup()
+        try { socket.send(JSON.stringify(['CLOSE', subscriptionID])) } catch {}
+        resolve(queryAuthorizationSession(socket, filter, maximumEvents, frame[1], timeoutMs, requireEOSE))
+        return
+      }
       if (frame[0] === 'EVENT' && frame[1] === subscriptionID && frame[2]?.id) {
         events.set(frame[2].id, frame[2])
         if (requireEOSE && events.size > maximumEvents) {
@@ -325,6 +349,7 @@ export function queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, req
         return
       }
       if (frame[0] === 'CLOSED' && frame[1] === subscriptionID) {
+        if (allowAuth && String(frame[2]).startsWith('auth-required:')) return
         fail(typeof frame[2] === 'string' ? frame[2] : 'Relay query was closed')
       }
     }
@@ -423,23 +448,38 @@ export class NostrRelayForwarder {
       perMessageDeflate: false,
       lookup: pinnedLookup(pinned),
     })
+    let initialChallenge = null
+    const captureChallenge = data => {
+      try {
+        const frame = JSON.parse(data.toString())
+        if (frame[0] === 'AUTH' && typeof frame[1] === 'string' && frame[1].length <= 512) initialChallenge = frame[1]
+      } catch {}
+    }
+    if (options.allowAuth) socket.on('message', captureChallenge)
     const onAbort = () => socket.terminate()
     signal?.addEventListener('abort', onAbort, { once: true })
     try {
       await waitForOpen(socket, this.connectionTimeoutMs)
+      socket.off('message', captureChallenge)
+      if (options.allowAuth && initialChallenge) {
+        return queryAuthorizationSession(socket, filter, boundedMaximum, initialChallenge,
+          this.acknowledgementTimeoutMs, options.requireEOSE === true)
+      }
       const events = await queryEventsAndWait(
         socket,
         filter,
         boundedMaximum,
         this.acknowledgementTimeoutMs,
         options.requireEOSE === true,
+        options.allowAuth === true,
       )
-      socket.close()
+      if (events?.outcome !== 'auth-required') socket.close()
       return events
     } catch (error) {
       socket.close()
       throw error
     } finally {
+      socket.off('message', captureChallenge)
       signal?.removeEventListener('abort', onAbort)
     }
   }

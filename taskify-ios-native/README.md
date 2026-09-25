@@ -199,6 +199,25 @@ xcrun swift test --package-path taskify-ios-native --build-system native \
   --scratch-path /tmp/taskify-native-swiftpm-native --filter TaskifyWatchChatRuntimeTests
 ```
 
+## Relay pressure during sign-in and recovery
+
+Native relay ingress keeps at most 64 decoded messages per connection plus the current
+message waiting for capacity. When that queue fills, socket reads pause until the sync
+consumer catches up. Events remain ordered and are not evicted to enforce the bound.
+This reduces memory pressure during account history replay on older devices; it does not
+bound the size of the account snapshot or prove the cause of a particular device crash.
+
+A `rate-limited:` subscription closure now starts the same per-relay cooldown used for
+rejected publications. Queued publications pause, subscription retries wait for the cooldown,
+and retries recheck the deadline before sending. Other relays retain their independent pace.
+The existing exponential retry and repeated-closure escalation remain in effect.
+
+`RelayRetryBackoffTests` covers a stalled consumer, ordered recovery, cancellation, and
+termination. `RelayOutboxLatencyTests` covers the rate-limited subscription/publish pause
+and subsequent recovery without duplicate publication. For a crash after sign-in, capture
+the affected phone's crash or jetsam report and verify sign-in/relaunch with the same account
+on that device; simulated transport tests cannot establish its specific termination cause.
+
 ## Validate
 
 The Watch caches parsed Markdown by exact text and reuses chat/task indexes until their source
@@ -456,3 +475,30 @@ Long-press a shared task in chat and choose **Add Again** to create another copy
 using the same board/list picker. This preserves the original invitation response
 and does not send another assignment acceptance. PWA also offers this action in
 the right-click message menu.
+
+### Relay authentication and proof of work
+
+Native iOS/macOS metadata connections answer NIP-42 challenges using the current
+account. The sync engine retains its own paced authentication flow; NWC uses the
+wallet connection's client key. Blocked short-lived requests wait for a successful
+AUTH acknowledgement and replay at most once for each challenge.
+
+NIP-11 `limitation.min_pow_difficulty` is cached (12 hours; failed discovery five
+minutes). Signing prepares NIP-13 nonce commitments before event IDs enter message
+references, response filters, or outboxes. Native and Watch mining runs off the UI
+thread, honours cancellation, and stops after 30 seconds. Requirements above 32
+bits fail explicitly. NIP-17 seals and authentication events are not mined.
+
+Watch chat keeps its durable save-before-discovery flow. An unsent wrap can be
+rebuilt from its encrypted sender copy after routes are known; the mined ID is
+saved before submission. Previously submitted IDs remain immutable. Watch task
+writes prepare work before sending. Existing outboxes cannot retrofit work into
+an already-submitted signed event when a relay changes its requirements.
+
+Relay ingress is bounded and rate-limit notices extend the shared send cooldown.
+These address startup memory pressure and excessive retries; confirming the
+reported iPhone SE/iOS beta crash still requires the device's crash or jetsam log.
+
+Watch authenticated preference/task reads additionally require the corresponding
+`taskify-push-relay` update: query responses carry challenges for local signing;
+the gateway repeats the original read only after authentication succeeds.

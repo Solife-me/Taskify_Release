@@ -871,3 +871,55 @@ If modifying backup handlers, re-verify:
 - mixed-case `npub` lookups still hit existing backup keys,
 - load path continues to be resilient to unreadable/corrupt objects with explicit 4xx/5xx responses,
 - `lastReadAt` behavior remains intentional (kept in storage, excluded from response unless consciously changed with client coordination).
+
+### Voice abuse controls
+
+Both `/api/voice/extract` and `/api/voice/finalize` require existing signed
+Taskify requests and matching account identity. These signatures establish key
+ownership, **not official-client attestation**: anyone can generate a Nostr key.
+CORS, Origin checks, and a secret embedded in a shipped client would not fix that.
+
+The worker enforces these shared limits across both endpoints:
+
+- 20 requests per IP per minute through `VOICE_RATE_LIMITER` (namespace 1003).
+- 20 provider workflows per account per UTC day, including finalizations.
+- 100 provider workflows per Cloudflare-reported IP per UTC day.
+- 1,000 provider workflows across the service per UTC day.
+- Existing 300 reported extraction seconds per account per day; request counts,
+  not client-reported duration, are the authoritative spending safeguard.
+
+Daily slots use conditional D1 UPSERTs with RETURNING in the existing
+`voice_quota` table, reserved before provider work. Concurrent requests cannot
+exceed each counter. Failures and replays consume slots. Reservations across the
+three counters are deliberately conservative: a later rejection does not refund
+an earlier reservation. Each workflow can make at most four bounded provider
+attempts (three Gemini models and one GLM fallback). The global ceiling therefore
+bounds workflows, not exact dollars or tokens. UTC midnight resets the counters.
+IP keys are hashed with the date; account counters retain their existing keys.
+Missing IP headers share an `unknown` bucket; forwarded client IP headers are
+ignored. This assumes direct Cloudflare ingress supplying `CF-Connecting-IP`.
+
+Requests are capped at 32 KiB before body hashing/signature verification, require
+JSON, reject unknown top-level fields, and bound nested strings and lists. Models,
+provider URLs, token ceilings, and system instructions remain server-controlled.
+Both providers receive task-only system instructions. Extraction only projects
+known task fields; arbitrary model `operations` are no longer passed through.
+Finalization preserves input notes rather than accepting generated notes.
+
+Prompt injection cannot be eliminated by task instructions or JSON formatting:
+text fields could still contain off-purpose output. The IP/account/global limits
+bound that residual exposure, including attackers rotating keys or IP addresses.
+Provider-side spending limits are an additional operational backstop. If stronger
+access control becomes necessary, use server-managed account eligibility or
+platform attestation rather than a public client secret.
+
+Deploy the updated `wrangler.toml` with the worker; no new database migration is
+needed. Missing `VOICE_RATE_LIMITER` fails closed with 503. Set the Worker variable
+`VOICE_DISABLED=true` to disable both endpoints immediately. This change is not
+active until deployed. Clients must handle 429 as temporary quota exhaustion.
+
+Cloudflare's [rate limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+is local to a Cloudflare location and eventually consistent; it is a burst guard.
+D1 reservations provide the strict daily limits. Gemini's
+[system instruction API](https://ai.google.dev/api/generate-content) supplies the
+separate task-only system instruction.

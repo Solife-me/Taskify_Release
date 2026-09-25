@@ -38,6 +38,12 @@ function sanitizeMessageLength(value) {
         return DEFAULT_MAX_MESSAGE_LENGTH;
     return Math.max(1024, Math.min(num, 4 * DEFAULT_MAX_MESSAGE_LENGTH));
 }
+function sanitizeProofOfWorkDifficulty(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0)
+        return 0;
+    return Math.ceil(num);
+}
 function sanitizeSubscriptionCount(value) {
     const num = Number(value);
     if (!Number.isFinite(num) || num <= 0)
@@ -90,6 +96,7 @@ export class RelayInfoCache {
         let authRequired = false;
         let maxMessageLength = DEFAULT_MAX_MESSAGE_LENGTH;
         let maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS;
+        let minPowDifficulty = 0;
         for (const url of relayUrls) {
             const cached = this.get(url);
             if (!cached)
@@ -104,8 +111,17 @@ export class RelayInfoCache {
                 maxMessageLength = Math.min(maxMessageLength, sanitizeMessageLength(lim.max_message_length));
             if (lim.max_subscriptions)
                 maxSubscriptions = Math.min(maxSubscriptions, sanitizeSubscriptionCount(lim.max_subscriptions));
+            if (lim.min_pow_difficulty) {
+                minPowDifficulty = Math.max(minPowDifficulty, sanitizeProofOfWorkDifficulty(lim.min_pow_difficulty));
+            }
         }
-        return { maxLimit: maxLimit ?? DEFAULT_MAX_LIMIT, maxMessageLength, maxSubscriptions, authRequired };
+        return {
+            maxLimit: maxLimit ?? DEFAULT_MAX_LIMIT,
+            maxMessageLength,
+            maxSubscriptions,
+            authRequired,
+            minPowDifficulty,
+        };
     }
     async prime(relayUrl, fetcher) {
         const key = normalizeRelayCacheKey(relayUrl);
@@ -165,6 +181,7 @@ export class RelayInfoCache {
             auth_required: !!limitation.auth_required,
             payment_required: !!limitation.payment_required,
             restricted_writes: !!limitation.restricted_writes,
+            min_pow_difficulty: sanitizeProofOfWorkDifficulty(limitation.min_pow_difficulty),
         };
         return { fetchedAt: Date.now(), info: { ...info, limitation: normalizedLimit }, limitation: normalizedLimit };
     }

@@ -242,9 +242,15 @@ function normalizePendingTokens(entries: PendingTokenEntry[]): PendingTokenEntry
   return normalized;
 }
 
+/** Fired on window whenever the saved-token list changes. */
+export const PENDING_TOKENS_CHANGED_EVENT = "taskify:pending-tokens-changed";
+
 function savePendingTokenEntries(entries: PendingTokenEntry[]) {
   const normalized = normalizePendingTokens(entries);
   idbKeyValue.setItem(TASKIFY_STORE_WALLET, LS_PENDING_TOKENS, JSON.stringify(normalized));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(PENDING_TOKENS_CHANGED_EVENT));
+  }
 }
 
 function normalizePendingMelts(entries: PendingMeltRecord[]): PendingMeltRecord[] {

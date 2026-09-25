@@ -72,6 +72,18 @@ enum WalletPriceCache {
 
 @MainActor
 final class WalletViewModel: ObservableObject {
+    /// Desktop and tablet wallets must not race the phone to redeem shared DMs.
+    var automaticallyRedeemsIncomingPayments: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
+    }
+
+    @Published private(set) var incomingTokensAwaitingRedemption: [CashuIncomingTokenDelivery] = []
+    @Published private(set) var incomingRequestsAwaitingRedemption: [CashuNostrPaymentDelivery] = []
+
     static let suggestedMintURL = "https://mint.minibits.cash/Bitcoin"
     /// Outstanding-invoice check cadence. Each unchanged round trip doubles the wait (up to
     /// the maximum) so a wallet that is merely left open stays quiet; a paid invoice resets
@@ -81,7 +93,7 @@ final class WalletViewModel: ObservableObject {
 
     @Published private(set) var snapshot = CashuWalletSnapshot.empty
     @Published private(set) var isLoading = false
-    @Published private(set) var isWorking = false
+    @Published var isWorking = false
     @Published var errorMessage: String?
     @Published var statusMessage: String?
     @Published private(set) var activeMintURL: String
@@ -99,8 +111,16 @@ final class WalletViewModel: ObservableObject {
     @Published private(set) var npubCashClaimMessage: String?
     @Published private(set) var btcUSDPrice: Double? = WalletPriceCache.cachedPrice
     @Published private(set) var p2pkKeyRing: CashuP2PKKeyRing
+    // NWC wallet mode (see NWCWalletViews.swift).
+    @Published var walletMode: TaskifyWalletMode = NWCWalletSettings().mode
+    @Published var nwcConnected: Bool = KeychainNWCConnectionStore().load() != nil
+    @Published var nwcStatus: NWCWalletStatus?
+    @Published var nwcMigrationJournal: SweepJournal?
+    @Published var isMovingToNWC = false
+    @Published var nwcReceiveAddressOverride: String? = NWCWalletSettings().receiveAddress
+    let nwcService = NWCWalletService(journalURL: WalletViewModel.nwcJournalURL)
 
-    private var service: CashuWalletService?
+    private(set) var service: CashuWalletService?
     private var hasStarted = false
     private var isAppActive = true
     private var lightningMonitorTask: Task<Void, Never>?
@@ -202,6 +222,7 @@ final class WalletViewModel: ObservableObject {
     }
 
     func refresh() async {
+        refreshManualPaymentInbox()
         guard let service else { return }
         await service.refreshPendingLightningPayments()
         await service.refreshOutgoingTokenStates()
@@ -212,6 +233,7 @@ final class WalletViewModel: ObservableObject {
         pendingEcashReceives = await service.savedPendingReceives()
         createdPaymentRequests = await service.savedCreatedPaymentRequests()
         repairActiveMintSelection()
+        if isNWCWalletActive { await refreshNWC() }
     }
 
     func appDidBecomeActive() {
@@ -305,6 +327,75 @@ final class WalletViewModel: ObservableObject {
         return !requestReceipts.isEmpty || !incomingReceipts.isEmpty
     }
 
+    private func refreshManualPaymentInbox() {
+        guard !automaticallyRedeemsIncomingPayments else { return }
+        if let url = try? CashuIncomingTokenInboxStore.defaultURL() {
+            let deliveries = CashuIncomingTokenInboxStore.load(from: url)
+            if deliveries != incomingTokensAwaitingRedemption {
+                incomingTokensAwaitingRedemption = deliveries
+            }
+        }
+        if let url = try? CashuNostrPaymentInboxStore.defaultURL() {
+            let tokenEventIDs = Set(incomingTokensAwaitingRedemption.map(\.eventID))
+            let deliveries = CashuNostrPaymentInboxStore.load(from: url)
+                .filter { !tokenEventIDs.contains($0.eventID) }
+            if deliveries != incomingRequestsAwaitingRedemption {
+                incomingRequestsAwaitingRedemption = deliveries
+            }
+        }
+    }
+
+    /// Only called by an explicit Redeem action. Viewing or refreshing the inbox is local-only.
+    func redeemIncomingPayment(_ delivery: CashuIncomingTokenDelivery) async throws {
+        guard !isWorking else { return }
+        // A NUT-18 delivery can also appear in the generic token inbox. Preserve its
+        // request bookkeeping while presenting only one Redeem action.
+        if let requestURL = try? CashuNostrPaymentInboxStore.defaultURL(),
+           let request = CashuNostrPaymentInboxStore.load(from: requestURL)
+            .first(where: { $0.eventID == delivery.eventID }) {
+            try await redeemIncomingPayment(request)
+            return
+        }
+        let url = try CashuIncomingTokenInboxStore.defaultURL()
+        _ = try await submitReceive(delivery.token)
+        try CashuIncomingTokenInboxStore.markHandled(delivery, at: url)
+        refreshManualPaymentInbox()
+    }
+
+    func redeemIncomingPayment(_ delivery: CashuNostrPaymentDelivery) async throws {
+        guard !isWorking, !isNWCWalletActive else { return }
+        guard let service else { throw CashuWalletError.outgoingTokenMissing }
+        let url = try CashuNostrPaymentInboxStore.defaultURL()
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            do {
+                let receipt = try await service.receiveNostrPayment(delivery)
+                statusMessage = "Received \(formattedSats(receipt.amount))"
+            } catch CashuWalletError.paymentRequestNotFound {
+                // Requests created on another device still carry redeemable bearer ecash.
+                let token = try CashuPaymentRequestContract.tokenString(fromPaymentPayload: delivery.payloadJSON)
+                switch try await service.submitReceive(token) {
+                case .received(let amount): statusMessage = "Received \(formattedSats(amount))"
+                case .alreadyReceived: statusMessage = "This ecash was already received"
+                case .queued: statusMessage = "Ecash saved — choose Retry in the wallet to redeem it"
+                }
+            } catch CashuWalletError.paymentRequestAlreadyProcessed {
+                statusMessage = "This ecash was already received"
+            }
+            try CashuNostrPaymentInboxStore.remove(eventIDs: [delivery.eventID], at: url)
+            let tokenURL = try CashuIncomingTokenInboxStore.defaultURL()
+            if let tokenDelivery = CashuIncomingTokenInboxStore.load(from: tokenURL)
+                .first(where: { $0.eventID == delivery.eventID }) {
+                try CashuIncomingTokenInboxStore.markHandled(tokenDelivery, at: tokenURL)
+            }
+            await refresh()
+        } catch {
+            await refresh()
+            throw error
+        }
+    }
+
     func paymentDeliveryWasQueued() {
         guard hasStarted else { return }
         paymentInboxNeedsAnotherPass = true
@@ -349,6 +440,7 @@ final class WalletViewModel: ObservableObject {
     /// history handling as any other incoming ecash.
     @discardableResult
     func claimNpubCash(auto: Bool) async -> Int {
+        guard !auto || automaticallyRedeemsIncomingPayments else { return 0 }
         guard LightningAddressSettings.provider == .npubCash, !isClaimingNpubCash else { return 0 }
         guard let identity = try? KeychainIdentityStore().load() else {
             if !auto {
@@ -649,6 +741,12 @@ final class WalletViewModel: ObservableObject {
         guard let service else { throw CashuWalletError.outgoingTokenMissing }
         isWorking = true
         defer { isWorking = false }
+        if isNWCWalletActive {
+            let saved = try await service.saveReceiveWithoutRedeeming(token)
+            pendingEcashReceives = await service.savedPendingReceives()
+            statusMessage = "Saved \(formattedSats(saved.amount)) to Ecash tokens"
+            return .queued(saved)
+        }
         let result: CashuReceiveSubmissionResult
         do {
             result = try await service.submitReceive(token)
@@ -666,8 +764,12 @@ final class WalletViewModel: ObservableObject {
         case .alreadyReceived:
             statusMessage = "This ecash was already received"
         case .queued:
-            await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
-            statusMessage = "Ecash saved — Taskify will retry automatically"
+            if automaticallyRedeemsIncomingPayments {
+                await paymentNotificationCoordinator.requestAuthorizationIfNeeded()
+            }
+            statusMessage = automaticallyRedeemsIncomingPayments
+                ? "Ecash saved — Taskify will retry automatically"
+                : "Ecash saved — choose Retry in the wallet to redeem it"
             #if canImport(UIKit)
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
             #endif
@@ -967,6 +1069,12 @@ final class WalletViewModel: ObservableObject {
         presentInApp: Bool = true
     ) async -> [CashuRecoveredReceive] {
         guard let service else { return [] }
+        if isNWCWalletActive || !automaticallyRedeemsIncomingPayments {
+            // Manual devices and NWC mode keep saved tokens unredeemed.
+            let saved = await service.savedPendingReceives()
+            if saved != pendingEcashReceives { pendingEcashReceives = saved }
+            return []
+        }
         let recovered = await service.recoverPendingReceives(force: force)
         let savedPendingReceives = await service.savedPendingReceives()
         if savedPendingReceives != pendingEcashReceives {
@@ -990,6 +1098,13 @@ final class WalletViewModel: ObservableObject {
     private func recoverNostrPaymentRequests(
         presentInApp: Bool = true
     ) async -> [CashuPaymentRequestReceipt] {
+        guard automaticallyRedeemsIncomingPayments else {
+            refreshManualPaymentInbox()
+            return []
+        }
+        // Payments to requests made in ecash mode wait in their durable inbox until the
+        // ecash wallet is active again, rather than being claimed into it now.
+        guard !isNWCWalletActive else { return [] }
         guard !isRecoveringPaymentInbox else {
             paymentInboxNeedsAnotherPass = true
             return []
@@ -1063,6 +1178,10 @@ final class WalletViewModel: ObservableObject {
     private func recoverIncomingTokenInbox(
         presentInApp: Bool = true
     ) async -> [DMPushRedeemedPaymentReceipt] {
+        guard automaticallyRedeemsIncomingPayments else {
+            refreshManualPaymentInbox()
+            return []
+        }
         guard !isRecoveringIncomingTokenInbox else {
             paymentInboxNeedsAnotherPass = true
             return []
@@ -1076,9 +1195,20 @@ final class WalletViewModel: ObservableObject {
 
         var claimedTotal: UInt64 = 0
         var claimedCount = 0
+        var savedTotal: UInt64 = 0
+        var savedCount = 0
         var receipts: [DMPushRedeemedPaymentReceipt] = []
         for delivery in deliveries {
             guard !Task.isCancelled else { break }
+            if isNWCWalletActive {
+                // Keep the original token so it stays redeemable anywhere.
+                if let saved = try? await service.saveReceiveWithoutRedeeming(delivery.token) {
+                    savedTotal += saved.amount
+                    savedCount += 1
+                }
+                try? CashuIncomingTokenInboxStore.markHandled(delivery, at: inboxURL)
+                continue
+            }
             do {
                 switch try await service.submitReceive(delivery.token) {
                 case .received(let amount):
@@ -1102,6 +1232,14 @@ final class WalletViewModel: ObservableObject {
                 // Malformed, already-spent, or already owned by the pending-receive retry system:
                 // this NIP-17 delivery itself must never be replayed into another redemption.
                 try? CashuIncomingTokenInboxStore.markHandled(delivery, at: inboxURL)
+            }
+        }
+        if savedCount > 0 {
+            pendingEcashReceives = await service.savedPendingReceives()
+            if presentInApp {
+                statusMessage = savedCount == 1
+                    ? "Saved \(formattedSats(savedTotal)) of ecash to move to your wallet"
+                    : "Saved \(savedCount) ecash tokens (\(formattedSats(savedTotal)))"
             }
         }
         guard claimedCount > 0 else { return [] }
@@ -1579,6 +1717,69 @@ final class WalletViewModel: ObservableObject {
     }
 }
 
+/// Shared by the iPad and Mac wallets. Rendering only decodes local token metadata.
+struct ManualIncomingPaymentsView: View {
+    @ObservedObject var wallet: WalletViewModel
+    @State private var redemptionError: String?
+
+    var body: some View {
+        if !wallet.automaticallyRedeemsIncomingPayments {
+            GroupBox("Incoming Payments") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Payments are not automatically redeemed on this device. Choose Redeem to add one here, or leave it for your phone.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(wallet.incomingTokensAwaitingRedemption) { delivery in
+                        HStack {
+                            paymentLabel(token: delivery.token, date: delivery.receivedAt)
+                            Spacer()
+                            Button("Redeem") {
+                                Task {
+                                    redemptionError = nil
+                                    do { try await wallet.redeemIncomingPayment(delivery) }
+                                    catch { redemptionError = WalletViewModel.message(for: error) }
+                                }
+                            }
+                            .disabled(wallet.isWorking || wallet.isLoading || wallet.isNWCWalletActive)
+                        }
+                    }
+                    ForEach(wallet.incomingRequestsAwaitingRedemption) { delivery in
+                        HStack {
+                            paymentLabel(
+                                token: (try? CashuPaymentRequestContract.tokenString(fromPaymentPayload: delivery.payloadJSON)) ?? "",
+                                date: delivery.receivedAt
+                            )
+                            Spacer()
+                            Button("Redeem") {
+                                Task {
+                                    redemptionError = nil
+                                    do { try await wallet.redeemIncomingPayment(delivery) }
+                                    catch { redemptionError = WalletViewModel.message(for: error) }
+                                }
+                            }
+                            .disabled(wallet.isWorking || wallet.isLoading || wallet.isNWCWalletActive)
+                        }
+                    }
+                    if let redemptionError {
+                        Text(redemptionError).font(.caption).foregroundStyle(.red)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+            }
+        }
+    }
+
+    private func paymentLabel(token: String, date: Date) -> some View {
+        let summary = CashuWalletService.offlineTokenSummary(token)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(summary.map { wallet.formattedSats($0.amount) } ?? "Ecash payment")
+            if let summary { Text(summary.mintURL).font(.caption).foregroundStyle(.secondary) }
+            Text(date.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 #if os(iOS)
 struct WalletView: View {
     @Environment(AppModel.self) private var model
@@ -1598,6 +1799,11 @@ struct WalletView: View {
     @State private var showingRecovery = false
     @State private var scannedRedeemable: RedeemableCashuToken?
     @State private var isInspectingScan = false
+    @State private var showingWalletMode = false
+    @State private var showingNWCReceive = false
+    @State private var showingNWCSend = false
+    @State private var showingNWCTokens = false
+    @State private var showingNWCHistory = false
 
     var body: some View {
         ZStack {
@@ -1611,8 +1817,13 @@ struct WalletView: View {
                         utilityToolbar
                             .padding(.top, 14)
 
+                        if !wallet.automaticallyRedeemsIncomingPayments {
+                            ManualIncomingPaymentsView(wallet: wallet)
+                                .padding(.top, 14)
+                        }
+
                         Group {
-                            if wallet.snapshot.mints.isEmpty && !wallet.isLoading {
+                            if wallet.snapshot.mints.isEmpty && !wallet.isLoading && !wallet.isNWCWalletActive {
                                 setupCard
                             } else {
                                 VStack(spacing: 20) {
@@ -1727,6 +1938,21 @@ struct WalletView: View {
         .sheet(isPresented: $showingAddressManager) {
             WalletAddressManagerView(wallet: wallet)
         }
+        .sheet(isPresented: $showingWalletMode) {
+            NWCWalletModeSheet(wallet: wallet)
+        }
+        .sheet(isPresented: $showingNWCReceive) {
+            NWCReceiveSheet(wallet: wallet).environment(model)
+        }
+        .sheet(isPresented: $showingNWCSend) {
+            NWCSendSheet(wallet: wallet).environment(model)
+        }
+        .sheet(isPresented: $showingNWCTokens) {
+            NWCTokensSheet(wallet: wallet)
+        }
+        .sheet(isPresented: $showingNWCHistory) {
+            NWCHistorySheet(wallet: wallet)
+        }
         .alert(
             "Wallet",
             isPresented: Binding(
@@ -1755,7 +1981,9 @@ struct WalletView: View {
                 .taskifyGlassControl(in: Capsule())
                 .accessibilityLabel("Balance shown in sats")
 
-            Button { showingHistory = true } label: {
+            Button {
+                if wallet.isNWCWalletActive { showingNWCHistory = true } else { showingHistory = true }
+            } label: {
                 Text("History")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(TaskifyTheme.primaryText)
@@ -1775,15 +2003,25 @@ struct WalletView: View {
 
             TaskifyGlassControlGroup(spacing: 8) {
                 VStack(alignment: .trailing, spacing: 9) {
-                    WalletUtilityButton(title: "Mints", systemImage: "building.columns") {
-                        showingMints = true
+                    if !wallet.isNWCWalletActive {
+                        WalletUtilityButton(title: "Mints", systemImage: "building.columns") {
+                            showingMints = true
+                        }
+
+                        WalletUtilityButton(title: "Swap", systemImage: "arrow.left.arrow.right") {
+                            showingMintTransfer = true
+                        }
+                        .disabled(wallet.snapshot.mints.count < 2 || wallet.snapshot.available == 0)
+                        .opacity(wallet.snapshot.mints.count < 2 || wallet.snapshot.available == 0 ? 0.45 : 1)
                     }
 
-                    WalletUtilityButton(title: "Swap", systemImage: "arrow.left.arrow.right") {
-                        showingMintTransfer = true
+                    WalletUtilityButton(
+                        title: wallet.isNWCWalletActive ? wallet.nwcWalletLabel : "Wallet",
+                        systemImage: "bolt.horizontal.circle"
+                    ) {
+                        showingWalletMode = true
                     }
-                    .disabled(wallet.snapshot.mints.count < 2 || wallet.snapshot.available == 0)
-                    .opacity(wallet.snapshot.mints.count < 2 || wallet.snapshot.available == 0 ? 0.45 : 1)
+                    .accessibilityIdentifier("wallet-mode-button")
 
                     WalletUtilityButton(title: "Backup", systemImage: "key.viewfinder") {
                         showingRecovery = true
@@ -1817,12 +2055,15 @@ struct WalletView: View {
     }
 
     private var balanceCard: some View {
+        let nwcActive = wallet.isNWCWalletActive
+        let nwcBalance = wallet.nwcStatus?.balanceSat
+        let balanceUnknown = nwcActive && nwcBalance == nil
         let balance = wallet.displayAmount(
-            forSats: wallet.snapshot.available,
+            forSats: nwcActive ? (nwcBalance ?? 0) : wallet.snapshot.available,
             primary: model.walletPrimaryCurrency
         )
         return VStack(spacing: 10) {
-            Text(balance.primary)
+            Text(balanceUnknown ? WalletViewModel.unknownBalanceText : balance.primary)
                 .font(.system(size: 48, weight: .semibold, design: .rounded))
                 .minimumScaleFactor(0.62)
                 .lineLimit(1)
@@ -1830,13 +2071,19 @@ struct WalletView: View {
                 .monospacedDigit()
                 .foregroundStyle(TaskifyTheme.primaryText)
 
-            if let secondary = balance.secondary {
+            if balanceUnknown {
+                if let reason = wallet.nwcBalanceUnavailableReason {
+                    Text(reason)
+                        .font(.subheadline)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            } else if let secondary = balance.secondary {
                 Text(secondary)
                     .font(.subheadline)
                     .foregroundStyle(TaskifyTheme.secondaryText)
             }
 
-            if wallet.snapshot.pending > 0 || wallet.snapshot.reserved > 0 {
+            if !nwcActive && (wallet.snapshot.pending > 0 || wallet.snapshot.reserved > 0) {
                 VStack(spacing: 5) {
                     if wallet.snapshot.pending > 0 {
                         Text("\(wallet.formattedSats(wallet.snapshot.pending)) pending")
@@ -1860,7 +2107,11 @@ struct WalletView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Available balance, \(wallet.snapshot.available) sats")
+        .accessibilityLabel(nwcActive
+            ? (nwcBalance.map { "\(wallet.nwcWalletLabel) balance, \($0) sats" }
+                ?? "\(wallet.nwcWalletLabel) balance, \(wallet.nwcBalanceUnavailableReason ?? "loading")")
+            : "Available balance, \(wallet.snapshot.available) sats")
+        .accessibilityIdentifier("wallet-balance")
         .accessibilityHint(
             wallet.currencyToggleAction(using: model, {}) == nil
                 ? ""
@@ -1871,7 +2122,7 @@ struct WalletView: View {
     private var actionRow: some View {
         HStack(spacing: 12) {
             WalletActionButton(title: "Receive", icon: "arrow.down", accent: true) {
-                showingLightningReceive = true
+                if wallet.isNWCWalletActive { showingNWCReceive = true } else { showingLightningReceive = true }
             }
 
             Button { showingScanner = true } label: {
@@ -1885,10 +2136,10 @@ struct WalletView: View {
             .accessibilityLabel("Scan a Cashu token")
 
             WalletActionButton(title: "Send", icon: "arrow.up", accent: false) {
-                showingLightningSend = true
+                if wallet.isNWCWalletActive { showingNWCSend = true } else { showingLightningSend = true }
             }
-            .disabled(wallet.snapshot.available == 0)
-            .opacity(wallet.snapshot.available == 0 ? 0.45 : 1)
+            .disabled(!wallet.isNWCWalletActive && wallet.snapshot.available == 0)
+            .opacity(!wallet.isNWCWalletActive && wallet.snapshot.available == 0 ? 0.45 : 1)
         }
     }
 
@@ -1931,7 +2182,9 @@ struct WalletView: View {
     }
 
     private var pendingEcashCard: some View {
-        Button { showingPendingEcash = true } label: {
+        Button {
+            if wallet.isNWCWalletActive { showingNWCTokens = true } else { showingPendingEcash = true }
+        } label: {
             HStack(spacing: 14) {
                 Image(systemName: wallet.recoverablePendingEcashReceives.isEmpty
                     ? "exclamationmark.triangle.fill"
@@ -1946,7 +2199,7 @@ struct WalletView: View {
                     )
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Saved ecash")
+                    Text(wallet.isNWCWalletActive ? "Ecash tokens" : "Saved ecash")
                         .font(.headline)
                         .foregroundStyle(TaskifyTheme.primaryText)
                     Text(pendingEcashDescription)
@@ -1972,8 +2225,15 @@ struct WalletView: View {
     }
 
     private var pendingEcashDescription: String {
+        if wallet.isNWCWalletActive {
+            let total = wallet.pendingEcashReceives.reduce(UInt64(0)) { $0 + $1.amount }
+            return "\(wallet.formattedSats(total)) to move to \(wallet.nwcWalletLabel) or redeem elsewhere"
+        }
         if wallet.recoverablePendingEcashReceives.isEmpty {
             return "A token needs your attention"
+        }
+        if !wallet.automaticallyRedeemsIncomingPayments {
+            return "Choose when to redeem these saved tokens"
         }
         return wallet.recoverablePendingEcashReceives.count == 1
             ? "Waiting for its mint — retrying automatically"
@@ -2016,7 +2276,7 @@ private enum WalletActivityItem: Identifiable {
     }
 }
 
-private struct WalletActionButton: View {
+struct WalletActionButton: View {
     let title: String
     let icon: String
     let accent: Bool
@@ -2038,7 +2298,7 @@ private struct WalletActionButton: View {
     }
 }
 
-private struct WalletUtilityButton: View {
+struct WalletUtilityButton: View {
     let title: String
     let systemImage: String
     let action: () -> Void
@@ -2133,7 +2393,7 @@ private struct WalletSecondaryActionButton: View {
 /// The uppercase micro-label the PWA puts above every field group in the wallet sheets
 /// (`text-[11px] uppercase tracking-wide`).
 @ViewBuilder
-private func walletFieldLabel(_ text: String) -> some View {
+func walletFieldLabel(_ text: String) -> some View {
     Text(text)
         .font(.system(size: 11, weight: .semibold))
         .tracking(1.1)
@@ -2196,7 +2456,7 @@ private struct WalletMintSelectorCard: View {
     }
 }
 
-private struct WalletAmountDisplayCard: View {
+struct WalletAmountDisplayCard: View {
     /// The figure as the user is entering it, already denominated by the caller -- sats or
     /// dollars depending on which way the display is currently flipped.
     let primary: String
@@ -2249,7 +2509,7 @@ private struct WalletAmountDisplayCard: View {
 /// The single full-width primary action every wallet sheet ends with, matching the PWA's
 /// `accent-button accent-button--tall w-full` -- previously each sheet hand-rolled its own,
 /// so heights and label weights drifted between them.
-private struct WalletPrimaryActionButton: View {
+struct WalletPrimaryActionButton: View {
     let title: String
     var busyTitle: String?
     var isBusy: Bool = false
@@ -2279,7 +2539,7 @@ private struct WalletPrimaryActionButton: View {
 /// A label/value row for the review and result screens. The PWA lists these as
 /// `secondary label on the left, semibold value on the right` rows; keeping one implementation
 /// stops each sheet inventing its own spacing.
-private struct WalletDetailRow: View {
+struct WalletDetailRow: View {
     let title: String
     let value: String
     var emphasized: Bool = false
@@ -2302,7 +2562,7 @@ private struct WalletDetailRow: View {
 
 /// The amount hero used at the top of review/result screens: an uppercase micro-label, the figure,
 /// and its conversion -- the same block the PWA shows above a Lightning invoice's details.
-private struct WalletAmountHero: View {
+struct WalletAmountHero: View {
     let label: String
     let amount: String
     var secondary: String?
@@ -2330,7 +2590,7 @@ private struct WalletAmountHero: View {
     }
 }
 
-private struct WalletAmountKeypad: View {
+struct WalletAmountKeypad: View {
     @Binding var amountText: String
     var maxDigits: Int = 12
     /// Dollar entry needs a decimal point; sat entry has no fractional part and keeps Clear in
@@ -4265,15 +4525,16 @@ private struct WalletAddressManagerView: View {
                     }
                     .buttonStyle(.plain)
 
-                    Toggle("Auto-claim on open", isOn: $autoClaimEnabled)
-                        .onChange(of: autoClaimEnabled) { _, enabled in
-                            LightningAddressSettings.setAutoClaimEnabled(enabled)
-                        }
-                    Text("Automatically check for and redeem pending eCash each time the wallet opens.")
-                        .font(.caption2)
-                        .foregroundStyle(TaskifyTheme.tertiaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
+                    if wallet.automaticallyRedeemsIncomingPayments {
+                        Toggle("Auto-claim on open", isOn: $autoClaimEnabled)
+                            .onChange(of: autoClaimEnabled) { _, enabled in
+                                LightningAddressSettings.setAutoClaimEnabled(enabled)
+                            }
+                        Text("Automatically check for and redeem pending eCash each time the wallet opens.")
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     Button {
                         Task { await wallet.claimNpubCash(auto: false) }
                     } label: {
@@ -4351,21 +4612,25 @@ private struct WalletAddressManagerView: View {
                             .foregroundStyle(TaskifyTheme.secondaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         ForEach(account.addresses, id: \.handle) { customAddress in
-                            addressCard(
-                                title: customAddress.handle,
-                                address: customAddress.address,
-                                mintURL: customAddress.mintUrl,
-                                isSelected: selectedSolifeAddress == customAddress.address.lowercased(),
-                                onSelect: { selectAddress(customAddress.address) },
-                                onSelectMint: { mintURL in
-                                    await updateMint {
-                                        try await wallet.updateSolifeCustomAddressMint(
-                                            handle: customAddress.handle,
-                                            mintURL: mintURL
-                                        )
+                            VStack(spacing: 0) {
+                                addressCard(
+                                    title: customAddress.handle,
+                                    address: customAddress.address,
+                                    mintURL: customAddress.mintUrl,
+                                    isSelected: isShownOnReceive(customAddress.address),
+                                    showsMint: customAddress.nwcForward == nil,
+                                    onSelect: { selectAddress(customAddress.address) },
+                                    onSelectMint: { mintURL in
+                                        await updateMint {
+                                            try await wallet.updateSolifeCustomAddressMint(
+                                                handle: customAddress.handle,
+                                                mintURL: mintURL
+                                            )
+                                        }
                                     }
-                                }
-                            )
+                                )
+                                SolifeNWCForwardControl(wallet: wallet, address: customAddress)
+                            }
                         }
                     }
                 }
@@ -4404,6 +4669,7 @@ private struct WalletAddressManagerView: View {
         address: String,
         mintURL: String,
         isSelected: Bool,
+        showsMint: Bool = true,
         onSelect: @escaping () -> Void,
         onSelectMint: @escaping (String?) async -> Void
     ) -> some View {
@@ -4428,6 +4694,7 @@ private struct WalletAddressManagerView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
+            if showsMint {
             Menu {
                 Button("Server default") {
                     Task { await onSelectMint(nil) }
@@ -4443,13 +4710,27 @@ private struct WalletAddressManagerView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .taskifyGlass(cornerRadius: 18)
     }
 
+    private func isShownOnReceive(_ address: String) -> Bool {
+        if wallet.isNWCWalletActive {
+            return wallet.nwcReceiveAddressOverride == address.lowercased()
+        }
+        return selectedSolifeAddress == address.lowercased()
+    }
+
     private func selectAddress(_ address: String?) {
+        if wallet.isNWCWalletActive, let address {
+            // NWC mode: shown on Receive in place of the wallet's own address. The Nostr
+            // profile's lightning address is never changed here.
+            try? wallet.setNWCReceiveAddress(address)
+            return
+        }
         selectedSolifeAddress = address?.lowercased()
         LightningAddressSettings.setSelectedSolifeAddress(address)
         wallet.refreshLightningAddresses()
@@ -4477,6 +4758,7 @@ private struct SolifeCustomAddressPurchaseSheet: View {
     @State private var isPurchasing = false
     @State private var pendingPurchase: SolifeAddressPurchase?
     @State private var lightningQuote: CashuLightningPaymentQuote?
+    @State private var payWithNWC = false
     @State private var claimedAddress: String?
     @State private var errorMessage: String?
     @FocusState private var handleFocused: Bool
@@ -4532,6 +4814,8 @@ private struct SolifeCustomAddressPurchaseSheet: View {
                         if let pendingPurchase {
                             if let lightningQuote {
                                 payInvoiceView(pendingPurchase, quote: lightningQuote)
+                            } else if payWithNWC {
+                                payWithNWCView(pendingPurchase)
                             } else {
                                 Text("Paying \(wallet.formattedSats(pendingPurchase.priceSats)) to claim \(pendingPurchase.address)…")
                                     .font(.caption)
@@ -4644,6 +4928,11 @@ private struct SolifeCustomAddressPurchaseSheet: View {
                 onClaimed(address.address)
             case .purchase(let purchase):
                 pendingPurchase = purchase
+                if wallet.isNWCWalletActive {
+                    // The fee comes from the NWC wallet, not the hidden ecash wallet.
+                    payWithNWC = true
+                    break
+                }
                 guard let mintURL = wallet.activeMint?.url else {
                     throw CashuWalletError.lightningPaymentMissing
                 }
@@ -4665,7 +4954,50 @@ private struct SolifeCustomAddressPurchaseSheet: View {
         do {
             _ = try await wallet.confirmLightningPayment(quote)
             lightningQuote = nil
+            try await verifyClaim(purchase)
+        } catch {
+            errorMessage = WalletViewModel.message(for: error)
+        }
+        isPurchasing = false
+    }
 
+    private func payWithNWCAndVerify(_ purchase: SolifeAddressPurchase) async {
+        isPurchasing = true
+        errorMessage = nil
+        do {
+            do {
+                _ = try await wallet.payWithNWC(invoice: purchase.bolt11)
+            } catch NWCError.paymentUnconfirmed {
+                // May still settle; solife.me's own verification below decides.
+            }
+            payWithNWC = false
+            try await verifyClaim(purchase)
+        } catch {
+            errorMessage = WalletViewModel.message(for: error)
+        }
+        isPurchasing = false
+    }
+
+    private func payWithNWCView(_ purchase: SolifeAddressPurchase) -> some View {
+        VStack(spacing: 14) {
+            Text("\(wallet.formattedSats(purchase.priceSats))").font(.title2.bold())
+            Text("Paid from \(wallet.nwcWalletLabel)").font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
+            Button {
+                Task { await payWithNWCAndVerify(purchase) }
+            } label: {
+                if isPurchasing {
+                    ProgressView().frame(maxWidth: .infinity).frame(height: 46)
+                } else {
+                    Text("Pay & Claim").frame(maxWidth: .infinity).frame(height: 46)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isPurchasing)
+        }
+    }
+
+    private func verifyClaim(_ purchase: SolifeAddressPurchase) async throws {
+        do {
             var latest = purchase
             for _ in 0..<5 where !latest.isSettled {
                 try? await Task.sleep(for: .milliseconds(1_500))
@@ -5072,7 +5404,7 @@ struct RedeemCashuTokenSheet: View {
                 .font(.title2.bold())
                 .foregroundStyle(TaskifyTheme.primaryText)
 
-            Text("Taskify kept the token on this device and will retry its mint automatically. You can close this screen without losing it.")
+            Text(wallet.automaticallyRedeemsIncomingPayments ? "Taskify kept the token on this device and will retry its mint automatically. You can close this screen without losing it." : "Taskify kept the token on this device. Choose Retry when you want to redeem it.")
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(TaskifyTheme.secondaryText)
@@ -5147,7 +5479,7 @@ private struct PendingEcashSheet: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            Text("Tokens waiting on a mint stay encrypted by iOS file protection on this device. Cashu tokens do not have a normal expiration, so Taskify keeps retrying recoverable tokens until they succeed, the mint confirms they are spent, or you remove them.")
+                            Text(wallet.automaticallyRedeemsIncomingPayments ? "Tokens waiting on a mint stay encrypted by iOS file protection on this device. Cashu tokens do not have a normal expiration, so Taskify keeps retrying recoverable tokens until they succeed, the mint confirms they are spent, or you remove them." : "Tokens stay saved on this device until you choose to retry or remove them. They are not automatically redeemed on this device.")
                                 .font(.footnote)
                                 .foregroundStyle(TaskifyTheme.secondaryText)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -5297,7 +5629,7 @@ private struct PendingEcashSheet: View {
     }
 }
 
-private struct CashuTokenScannerSheet: View {
+struct CashuTokenScannerSheet: View {
     @Environment(\.dismiss) private var dismiss
     let title: String
     let guidanceTitle: String
@@ -5562,7 +5894,7 @@ private struct CashuTokenCodeScanner: UIViewControllerRepresentable {
 /// Picks a Nostr contact to pay. Shared by both send sheets so the two payment rails present the
 /// same contact list, which is the point of the PWA's Contacts button: who you're paying is one
 /// decision, and how the money travels is another.
-private struct WalletContactPickerSheet: View {
+struct WalletContactPickerSheet: View {
     let title: String
     /// Contacts that can't be paid on this rail are still listed but not selectable, so someone
     /// looking for a name finds it and learns why rather than wondering where it went.
@@ -8014,7 +8346,7 @@ private enum CashuQRCodeRenderer {
     }
 }
 
-private struct CashuQRCodeView: View {
+struct CashuQRCodeView: View {
     let value: String
     let accessibilityLabel: String
     private let frames: [String]

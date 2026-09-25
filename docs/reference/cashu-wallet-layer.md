@@ -399,45 +399,69 @@ Operational implication: malformed relays are dropped during parse; if all relay
 
 ### 2) Request flow is relay-sequential with per-relay timeout
 
-`NwcClient.request(...)` tries relays one-by-one in URI order and returns on first successful response; if one relay errors/times out, next relay is attempted.
+`NwcClient.request(...)` tries relays one-by-one in URI order and returns on the first successful response; if one relay errors or times out, the next is tried. **Payment methods are the exception:** a `pay_invoice` (or other pay method) that times out is never re-sent through another relay, because it may still be in flight and a second send could pay twice. The caller checks its status with `lookup_invoice` instead.
 
 Within each relay attempt (`requestViaRelay`):
-1. Subscribe for kind `23195` responses with `#p=[clientPubkey]` on that relay.
-2. Encrypt request payload with `nip04.encrypt(clientSecretHex, walletPubkey, payload)`.
-3. Publish kind `23194` request event (tagged `p=walletPubkey`, `t=nwc`) signed by client secret.
-4. If publish returns event id, response handler enforces `e`-tag correlation when present.
-5. Resolve `result` or reject on `error` payload; timeout rejects after default `20s`.
+1. Sign the kind `23194` request first (tagged `p=walletPubkey`), so its id is known.
+2. Subscribe for kind `23195` with `authors=[walletPubkey]`, `#p=[clientPubkey]`, `#e=[request.id]`.
+3. Publish the request; resolve `result` or reject on `error`. The default timeout is `20s`; `NwcContext.payInvoice` uses `90s`.
 
 Anchors:
-- `taskify-pwa/src/wallet/nwc.ts` (`NWC_EVENT_KIND_REQUEST`, `NWC_EVENT_KIND_RESPONSE`, `request`, `requestViaRelay`)
+- `taskify-pwa/src/wallet/nwc.ts` (`PAYMENT_METHODS`, `request`, `requestViaRelay`)
 
-### 3) Response correlation is permissive-by-default, strict when e-tag exists
+### 3) Response correlation is strict
 
-If response includes `e` tag and a request id is known, non-matching responses are ignored.
-If response omits `e`, handler still attempts decrypt/parse.
-
-Anchor:
-- `taskify-pwa/src/wallet/nwc.ts` (`requestViaRelay` event handler)
-
-Boundary to preserve: this supports wallets that omit `e` while still preferring strict correlation when wallet includes it.
+A response is accepted only if it is authored by the wallet pubkey **and** has an `e` tag naming this request. Anything else (stale responses to earlier requests, forged events, unreadable content) is ignored and the request keeps waiting. Wallets that omit the `e` tag are not supported: NIP-47 requires it, and accepting untagged responses let a stale reply settle the wrong request.
 
 ### 4) Context-level connect is "best effort metadata", not hard gate
 
-`NwcProvider.connect(...)` validates URI and marks status connected even if `get_info` or `get_balance` fails; those failures are logged and info can be refreshed later.
+`NwcProvider.connect(...)` validates the URI and marks status connected even if `get_info` or `get_balance` fails; those failures are logged and info can be refreshed later.
+
+A balance is only shown while the wallet has just confirmed it. When `refreshInfo`/`getBalanceMsat` fail, `forgetBalance()` drops `balanceMsat`, and the wallet UI shows **—** with "Can't reach <wallet>" or "Balance unavailable" (`useNwcWalletMode.balanceUnavailableReason`). Never render an unknown NWC balance as `0`; it reads as lost funds.
 
 Anchors:
-- `taskify-pwa/src/context/NwcContext.tsx` (`connect`, `refreshInfo`, `getBalanceMsat`)
-
-Implication: UI should treat `status=connected` as transport config success, not guaranteed capability discovery.
+- `taskify-pwa/src/context/NwcContext.tsx` (`connect`, `refreshInfo`, `getBalanceMsat`, `forgetBalance`)
 
 ### Safe-edit guardrails
 
 When changing NWC behavior, preserve:
 - strict URI parse/validation before storage,
 - per-relay timeout cleanup releasing subscriptions,
-- request-event signing with client secret,
-- fallback compatibility for responses missing `e` tag,
+- sign-before-subscribe and strict author + `e`-tag matching,
+- no relay fallback after a payment timeout (check `lookup_invoice` instead),
 - persisted connection key `cashu_nwc_connection_v1` restore path.
+
+## NWC wallet mode (agent verification chunk)
+
+An external lightning wallet connected over NWC can replace the ecash wallet. Implemented in all three apps: PWA, iOS (`taskify-ios-native/Sources/TaskifyCore/Wallet/NWC/`, `Features/Wallet/NWCWalletViews.swift`) and macOS (`taskify-macos/Sources/MacNWCWallet.swift`, reusing the iOS view model and Core service).
+
+### 1) Mode and storage
+
+- Mode flag: `taskify_wallet_mode_v1` (`"nwc"` or absent), `taskify-pwa/src/wallet/walletMode.ts`. Disconnecting the NWC wallet switches back to ecash. The ecash seed and proofs are never deleted.
+- Receive address: the connection's `lud16` by default, or a user-entered address in `taskify_nwc_receive_address_v1`. The Nostr profile `lud16` is never changed automatically; only the user edits it, in the profile editor.
+- In NWC mode only Lightning send and receive are shown. Sends go through `useNwcWalletMode.payLightningInvoice` (with a timeout, it looks up the invoice before reporting anything).
+
+### 2) Incoming ecash is kept, not redeemed
+
+In NWC mode, tokens arriving by Nostr DM, payment request, or scan are saved **unredeemed** (gates in `CashuContext.receiveToken`/`redeemPendingTokens`, `useEcashRedeem`). They stay portable to any other Cashu wallet and are listed in `StoredTokensSheet`, where the user can move them to the NWC wallet or copy them. Redeeming them into the dormant ecash wallet would trap them there.
+
+### 3) Moving ecash to the NWC wallet (sweep)
+
+`wallet/nwcSweep.ts` (`runSweep`) moves each mint's balance by asking the NWC wallet for an invoice and melting to it. Adapters live in `wallet/nwcSweepAdapters.ts`.
+
+Invariants (funds safety):
+- The journal (`taskify_nwc_sweep_journal_v1`, written with `durableSetItem`, which reads back to verify) is saved **before** each melt, so a crash can always resume.
+- Pending or unknown melt outcomes **park** the mint; they are never retried blind. A payment counts as settled only with a preimage whose sha256 matches the payment hash, or when `lookup_invoice` reports it settled.
+- The amount is chosen so the fee reserve plus NUT-02 input fees fit the balance (a tight-fit search). NUT-08 change is recovered, including from quotes that were already paid.
+- Saved tokens are moved with `tokenSweepSource` (melting the foreign proofs directly), recorded in `taskify_nwc_token_sweeps_v1`, and resolved by `resolveOutstandingTokenSweeps` on start. Change comes back as a new token.
+
+Tests: `wallet/nwcSweep.test.ts` (fakes, randomized conservation, mutation cases) and `wallet/nwcSweep.integration.test.ts` (real nutshell FakeWallet mints; set `CASHU_TEST_MINT_A`/`CASHU_TEST_MINT_B`, otherwise skipped). The Swift port has equivalents in `NWCSweepTests.swift` and `NWCSweepIntegrationTests.swift`. iOS redeems a saved token at move time and then pays out exactly that amount, because CDK can't melt foreign proofs.
+
+### 4) Solife custom-address forwarding
+
+A custom solife.me address can forward its Lightning payments to the owner's wallet over NWC (`setSolifeAddressNwcForward` in `wallet/solife.ts`, `WalletAddressView`, and iOS `SolifeNWCForwardControl`). New custom addresses cost 1000 sats; owners of existing custom addresses can switch forwarding on for free. The server accepts connections with any permissions but only ever sends `get_info` and `make_invoice`. `nwcForward.canSpend` is true when the connection could spend; the apps then recommend a receive-only connection. Server-side details are in the Solife repo's README (Security section).
+
+Solife calls from the apps authenticate with the session's **bearer token only** (`credentials: "omit"`). Solife refuses its session cookie on requests from other sites, so don't rely on it here.
 
 ## Seed derivation + counter persistence contract (agent verification chunk)
 

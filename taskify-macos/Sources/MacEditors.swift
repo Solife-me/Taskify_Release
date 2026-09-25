@@ -18,6 +18,8 @@ struct MacTaskEditor: View {
     @State private var untilEnabled = false
     @State private var until = Date()
     @State private var deleteConfirmation = false
+    @State private var isDropTargeted = false
+    @State private var saveTask: Task<Void, Never>?
     private var columns: [BoardColumn] { model.board(withID: draft.boardID)?.columns ?? [] }
 
     init(task: TaskItem?, boardID: String) {
@@ -31,7 +33,7 @@ struct MacTaskEditor: View {
                 Text(original == nil ? "New Task" : "Edit Task").font(.title2.bold())
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
-                Button("Save") { Task { await save() } }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                Button("Save") { saveTask = Task { await save() } }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
                     .disabled(saving || attachments.importing || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(22)
             Divider()
@@ -110,8 +112,19 @@ struct MacTaskEditor: View {
                     ForEach(draft.documents ?? []) { document in
                         HStack { Text(document.name); Spacer(); Button("Remove") { draft.documents?.removeAll { $0.id == document.id } } }
                     }
-                    MacAttachmentQueueView(queue: attachments, busy: saving)
-                    Button("Attach Files…") { attachments.chooseFiles() }.disabled(saving || attachments.importing)
+                    MacAttachmentQueueView(queue: attachments, busy: saving, onCancel: { saveTask?.cancel() })
+                    HStack {
+                        Button("Attach Files…") { attachments.chooseFiles() }.disabled(saving || attachments.importing)
+                        PasteButton(payloadType: URL.self) { urls in attachments.stage(urls) }
+                            .labelStyle(.iconOnly).disabled(saving || attachments.importing).help("Paste Files")
+                    }
+                    .padding(6)
+                    .background(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                    .dropDestination(for: URL.self) { urls, _ in
+                        guard !saving else { return false }
+                        attachments.stage(urls)
+                        return true
+                    } isTargeted: { isDropTargeted = $0 }
                 }
                 Section("Subtasks") {
                     ForEach(draft.subtasks ?? []) { item in
@@ -191,6 +204,9 @@ struct MacTaskEditor: View {
             let uploaded = try await attachments.uploadDocuments(boardID: model.board(withID: draft.boardID)?.effectiveNostrBoardID ?? draft.boardID)
             let existing = draft.documents ?? []
             draft.documents = existing + uploaded.filter { item in !existing.contains { $0.id == item.id } }
+        } catch is CancellationError {
+            attachments.progress = nil
+            return
         } catch { self.error = error.localizedDescription; return }
         if let original, model.task(withID: original.id) != original {
             error = "This task changed while attachments uploaded. Close and reopen it before saving."; return
@@ -293,6 +309,11 @@ struct MacBoardEditor: View {
                         ForEach(model.visibleBoards.filter { $0.id != current.id && $0.kind != .compound && $0.kind != .bible }) { child in
                             Toggle(child.name, isOn: Binding(get: { current.children.contains(child.id) }, set: { _ = model.setCompoundChild(boardID: current.id, childBoardID: child.id, included: $0) }))
                         }
+                    }
+                    Section("Display") {
+                        Toggle("Hide Board Names in Column Headers", isOn: Binding(get: { current.hideChildBoardNames }, set: { _ = model.setCompoundHideChildBoardNames(boardID: current.id, hidden: $0) }))
+                        Text("When off, each child board's columns are grouped under its name.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 if let current {

@@ -918,7 +918,7 @@ struct BoardsView: View {
                     )
                 }
             case .bible:
-                BibleTrackerView(showCompletedBooks: showCompleted)
+                BibleTrackerView(store: model.bibleTrackerStore, showCompletedBooks: showCompleted)
             case nil:
                 ContentUnavailableView("No board selected", systemImage: "square.grid.2x2")
                     .foregroundStyle(TaskifyTheme.secondaryText)
@@ -3726,7 +3726,8 @@ struct TaskCardView: View {
         default:
             return nil
         }
-        guard let streak = task.streak, streak > 0 else { return nil }
+        let streak = model.runningStreak(for: task)
+        guard streak > 0 else { return nil }
         return streak
     }
 

@@ -1,5 +1,6 @@
+import { prepareRelayEvent } from "../nostr/prepareRelayEvent";
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { finalizeEvent, nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
+import { nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
 
 import type { Contact } from "./contacts";
 import { normalizeNostrPubkey } from "./nostr";
@@ -163,7 +164,7 @@ export async function publishNip51PrivateContactsList(
   options?: { createdAt?: number; tags?: string[][] },
 ): Promise<NostrEvent> {
   const template = await buildNip51PrivateContactsEvent(contacts, keys, options);
-  const signed = finalizeEvent(template, hexToBytes(keys.privateKeyHex));
+  const signed = await prepareRelayEvent(template, hexToBytes(keys.privateKeyHex), relays);
   const result = pool.publish(relays, signed);
   try {
     await Promise.resolve(result);

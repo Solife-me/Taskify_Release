@@ -149,6 +149,55 @@ final class TaskSyncRelayExclusionTests: XCTestCase {
         let otherKindPending = await engine.pendingPublishCount()
         XCTAssertEqual(otherKindPending, 5, "All unacknowledged changes stay durable")
     }
+
+    func testRefusedEventIsHeldBackFromThatRelayButStaysQueued() async throws {
+        let relay = CountingRelayTransport()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let outbox = NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json"))
+        let engine = TaskSyncEngine(outbox: outbox, connectionFactory: { _ in relay })
+        addTeardownBlock { await engine.stop() }
+        await engine.configure(boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [])
+        try await engine.enqueueForPublish([request(1, kind: stateKind, relayURLs: [relayURL])])
+
+        await engine.handle(
+            .acknowledgement(eventID: event(1, kind: stateKind).id, accepted: false, message: "blocked: not on the allow list"),
+            from: relayURL
+        )
+        let pending = await engine.pendingPublishCount()
+        XCTAssertEqual(pending, 1, "The change stays queued")
+        let eligible = await outbox.pendingEntries(for: relayURL)
+        XCTAssertEqual(eligible, [], "…but is not offered to the refusing relay again right away")
+    }
+
+    /// Publishing to a feature's relays briefly adds them to the auxiliary list; the next routine
+    /// reconfigure drops them again. Keeping them for a while avoids a connect/disconnect cycle
+    /// per publish, and they are still released once unused.
+    func testAuxiliaryRelaysLingerBeforeDisconnecting() async throws {
+        let relay = CountingRelayTransport()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let engine = TaskSyncEngine(
+            outbox: NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json")),
+            connectionFactory: { _ in relay },
+            auxiliaryRelayLinger: 0.2
+        )
+        addTeardownBlock { await engine.stop() }
+        await engine.configure(boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [])
+        await engine.configure(boards: [], auxiliaryRelayURLs: [], inboxRelayURLs: [])
+        await engine.configure(boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [])
+        let connects = await relay.connectCount
+        let early = await relay.disconnectCount
+        XCTAssertEqual(connects, 1, "Re-adding within the linger reuses the connection")
+        XCTAssertEqual(early, 0)
+
+        await engine.configure(boards: [], auxiliaryRelayURLs: [], inboxRelayURLs: [])
+        try await Task.sleep(for: .milliseconds(600))
+        let late = await relay.disconnectCount
+        XCTAssertEqual(late, 1, "Released once it has gone unused for the linger period")
+    }
 }
 
 private actor CountingRelayTransport: TaskSyncRelayTransport {

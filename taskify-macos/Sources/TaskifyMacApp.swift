@@ -5,10 +5,11 @@ import TaskifyCore
 @MainActor
 final class MacRuntime: ObservableObject {
     let model: AppModel
-    let bible = BibleTrackerStore()
+    var bible: BibleTrackerStore { model.bibleTrackerStore }
     let calendar = DeviceCalendarStore()
     let wallet = WalletViewModel()
     private var started = false
+    private var dayChangeObservers: [NSObjectProtocol] = []
 
     init() {
 #if DEBUG
@@ -33,6 +34,21 @@ final class MacRuntime: ObservableObject {
 #endif
         model.registerWalletPaymentReceiver(wallet)
         TaskNotificationActionRouter.shared.register(model: model)
+
+        // Unlike a phone, a Mac routinely stays open and active straight through midnight
+        // instead of backgrounding and resuming with a fresh Date() of its own accord, so the
+        // "today" agenda would otherwise stay stuck on yesterday until something else happened
+        // to re-render it. `resume()` below covers waking from sleep; these two notifications
+        // cover staying awake and active the whole time.
+        for name: Notification.Name in [.NSCalendarDayChanged, .NSSystemTimeZoneDidChange] {
+            dayChangeObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak model] _ in
+                Task { @MainActor in model?.refreshCalendarDayIfNeeded() }
+            })
+        }
+    }
+
+    deinit {
+        for observer in dayChangeObservers { NotificationCenter.default.removeObserver(observer) }
     }
 
     func start() async {
@@ -50,11 +66,13 @@ final class MacRuntime: ObservableObject {
         guard ProcessInfo.processInfo.environment["TASKIFY_MAC_PREVIEW"] != "1" else { return }
 #endif
         model.reloadIfChangedExternally()
+        model.refreshCalendarDayIfNeeded()
         model.refreshNotificationStatus()
         model.refreshSyncIfNeeded()
         model.refreshFullWeekRecurrencesIfNeeded()
         model.refreshContactsIfNeeded()
         model.refreshAccountSyncIfNeeded()
+        model.refreshAppStateSyncIfNeeded()
         wallet.appDidBecomeActive()
     }
 }
@@ -101,6 +119,7 @@ struct TaskifyMacApp: App {
         .commands { MacCommands() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { runtime.resume() }
+            if phase == .background { runtime.model.flushAppStateSync() }
         }
         Settings {
             MacSettingsView()

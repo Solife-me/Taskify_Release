@@ -215,3 +215,25 @@ test("retired Google Calendar API routes return 404", async () => {
   assert.equal(response.status, 404);
   assert.deepEqual(await response.json(), { error: "Not found" });
 });
+
+test("Watch Nostr bridge rate-limits each account before opening relays", async () => {
+  const privateKey = schnorr.utils.randomSecretKey();
+  const publicKey = bytesToHex(schnorr.getPublicKey(privateKey));
+  const keys: string[] = [];
+  const env = {
+    ...routeTestEnv,
+    WATCH_NOSTR_RATE_LIMITER: { limit: async ({ key }: { key: string }) => { keys.push(key); return { success: false }; } },
+  } as any;
+  for (const path of ["publish", "query"]) {
+    const body = JSON.stringify({ relays: ["wss://relay.example"], filter: { kinds: [30_301], authors: [publicKey] } });
+    const response = await worker.fetch(new Request(`https://taskify.example/api/watch/nostr/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...signedHeaders(privateKey, publicKey, body) },
+      body,
+    }), env);
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("Retry-After"), "60");
+  }
+  // Keyed by the signed account, not the (shared) client address.
+  assert.ok(keys.every((key) => key.endsWith(publicKey)), keys.join(","));
+});

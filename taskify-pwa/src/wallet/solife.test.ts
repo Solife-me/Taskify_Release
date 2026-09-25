@@ -1,7 +1,9 @@
 import { expect, test, vi } from "vitest";
 
 import {
+  clearSolifeAddressNwcForward,
   claimSolifeCustomAddress,
+  setSolifeAddressNwcForward,
   fetchSolifeAccount,
   updateSolifeLightningAddressMint,
 } from "./solife.ts";
@@ -57,7 +59,7 @@ function withAuth(handler: (record: FetchRecord) => unknown) {
         kind: 27235,
       };
     }
-    if (path === "/api/auth/verify") return {};
+    if (path === "/api/auth/verify") return { token: "session-token" };
     return handler(record);
   };
 }
@@ -67,7 +69,9 @@ test("claimSolifeCustomAddress supports invoice purchase responses", async () =>
     withAuth((record) => {
       expect(pathOf(record)).toBe("/api/addresses");
       expect(record.init.method).toBe("POST");
-      expect(record.init.credentials).toBe("include");
+      // Authenticated by bearer token only; Solife refuses its cookie from other sites.
+      expect(record.init.credentials).toBe("omit");
+      expect((record.init.headers as Record<string, string>).Authorization).toBe("Bearer session-token");
       expect(requestBody(record.init)).toEqual({
         handle: "alice",
         relays: ["wss://relay.solife.me"],
@@ -107,15 +111,17 @@ test("claimSolifeCustomAddress supports invoice purchase responses", async () =>
   }
 
   expect(records.find((record) => pathOf(record) === "/api/config")?.init.credentials).toBeUndefined();
-  expect(records.find((record) => pathOf(record) === "/api/auth/challenge")?.init.credentials).toBe("include");
-  expect(records.find((record) => pathOf(record) === "/api/auth/verify")?.init.credentials).toBe("include");
+  expect(records.find((record) => pathOf(record) === "/api/auth/challenge")?.init.credentials).toBe("omit");
+  expect(records.find((record) => pathOf(record) === "/api/auth/verify")?.init.credentials).toBe("omit");
 });
 
 test("fetchSolifeAccount normalizes new account fields", async () => {
   const { fetcher } = makeSolifeFetcher(
     withAuth((record) => {
       expect(pathOf(record)).toBe("/api/me");
-      expect(record.init.credentials).toBe("include");
+      // Authenticated by bearer token only; Solife refuses its cookie from other sites.
+      expect(record.init.credentials).toBe("omit");
+      expect((record.init.headers as Record<string, string>).Authorization).toBe("Bearer session-token");
       return {
         pubkey: "pubkey",
         npub: "npub1...",
@@ -139,7 +145,9 @@ test("updateSolifeLightningAddressMint patches the selected custom address", asy
     withAuth((record) => {
       expect(pathOf(record)).toBe("/api/addresses/alice");
       expect(record.init.method).toBe("PATCH");
-      expect(record.init.credentials).toBe("include");
+      // Authenticated by bearer token only; Solife refuses its cookie from other sites.
+      expect(record.init.credentials).toBe("omit");
+      expect((record.init.headers as Record<string, string>).Authorization).toBe("Bearer session-token");
       expect(requestBody(record.init)).toEqual({ mintUrl: "" });
       return {
         handle: "alice",
@@ -169,4 +177,45 @@ test("updateSolifeLightningAddressMint patches the selected custom address", asy
     "/api/auth/verify",
     "/api/addresses/alice",
   ]);
+});
+
+test("sets and clears NWC forwarding for a custom address", async () => {
+  const forwarded = {
+    handle: "alice",
+    address: "alice@solife.me",
+    pubkey: "p",
+    relays: [],
+    mintUrl: CONFIG.mintUrl,
+    nwcForward: { walletAlias: "Alby", walletNpub: "npub1x", lastError: null, lastUsedAt: null, updatedAt: 1 },
+  };
+  const { fetcher, records } = makeSolifeFetcher(
+    withAuth((record) => {
+      if (pathOf(record) === "/api/addresses/alice/nwc-forward") {
+        return record.init.method === "PUT" ? forwarded : { ...forwarded, nwcForward: null };
+      }
+      return {};
+    }),
+  );
+  const uri = "nostr+walletconnect://abc?relay=wss%3A%2F%2Frelay.example&secret=def";
+
+  const set = await setSolifeAddressNwcForward(SECRET_KEY, " Alice ", uri, { baseUrl: BASE_URL, fetcher });
+  expect(set.nwcForward?.walletAlias).toBe("Alby");
+  const put = records.find((r) => pathOf(r) === "/api/addresses/alice/nwc-forward")!;
+  expect(put.init.method).toBe("PUT");
+  expect(requestBody(put.init)).toEqual({ connection: uri });
+
+  const cleared = await clearSolifeAddressNwcForward(SECRET_KEY, "alice", { baseUrl: BASE_URL, fetcher });
+  expect(cleared.nwcForward).toBeNull();
+  expect(records.filter((r) => pathOf(r) === "/api/addresses/alice/nwc-forward").map((r) => r.init.method)).toEqual([
+    "PUT",
+    "DELETE",
+  ]);
+});
+
+test("rejects forwarding input that isn't an NWC connection before contacting Solife", async () => {
+  const { fetcher, records } = makeSolifeFetcher(() => ({}));
+  await expect(
+    setSolifeAddressNwcForward(SECRET_KEY, "alice", "https://wallet.example", { baseUrl: BASE_URL, fetcher }),
+  ).rejects.toThrow(/nostr\+walletconnect/);
+  expect(records).toHaveLength(0);
 });

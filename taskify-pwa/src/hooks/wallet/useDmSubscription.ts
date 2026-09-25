@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { useCallback, useRef } from "react";
 import { inboxReadRelays, recoverRelayHistory } from "taskify-runtime-nostr";
+import { historyRecoverySince, setHistoryWatermark } from "../../nostr/historyWatermarks";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import { NostrSession } from "../../nostr/NostrSession";
 import { isImageMime, isVideoMime, isAudioMime } from "../../lib/messengerAttachmentCrypto";
@@ -23,6 +24,9 @@ import {
   type WalletDmMessage,
   type WalletDmAttachment,
 } from "../../hooks/wallet/useDmState";
+
+/** NIP-59 gift wraps backdate created_at by up to two days; read a day beyond that. */
+const DM_HISTORY_LOOKBACK_SECS = 3 * 24 * 60 * 60;
 
 export function useDmSubscription({
   compressedToRawHex,
@@ -538,11 +542,14 @@ export function useDmSubscription({
       if (!isCurrent()) return;
       const relays = inboxReadRelays(preferences, identity.pubkey, fallback);
       const filters = [
-        { kinds: [4, 1059], "#p": [identity.pubkey], since: 0 },
+        { kinds: [4, 1059], "#p": [identity.pubkey] },
         // Gift wraps use ephemeral authors; NIP-17 sent history is in self-addressed copies.
-        { kinds: [4], authors: [identity.pubkey], since: 0 },
+        { kinds: [4], authors: [identity.pubkey] },
       ];
-      const managed = await session.subscribe(filters, {
+      // The live subscription only needs recent traffic; history below is recovered separately.
+      // Gift wraps backdate created_at by up to two days (NIP-59), hence the lookback.
+      const liveSince = Math.floor(Date.now() / 1000) - DM_HISTORY_LOOKBACK_SECS;
+      const managed = await session.subscribe(filters.map(filter => ({ ...filter, since: liveSince })), {
         relayUrls: relays, skipSince: true,
         onEvent: event => { void apply(event).catch(error => console.warn("Failed to apply DM", error)); },
       });
@@ -550,10 +557,16 @@ export function useDmSubscription({
       releases.push(managed.release);
       let complete = true;
       for (const relay of relays) {
-        for (const filter of filters) {
+        for (const [index, filter] of filters.entries()) {
           if (!isCurrent()) return;
+          // Full history the first time; afterwards only what arrived since the last complete
+          // recovery of this relay and filter.
+          const watermarkKey = `dm:${identity.pubkey}:${relay}:${index}`;
+          const startedAt = Math.floor(Date.now() / 1000);
+          const since = historyRecoverySince(watermarkKey, DM_HISTORY_LOOKBACK_SECS);
           try {
-            await recoverRelayHistory(session, filter, relay, apply, { signal: controller.signal });
+            await recoverRelayHistory(session, since != null ? { ...filter, since } : filter, relay, apply, { signal: controller.signal });
+            if (isCurrent()) setHistoryWatermark(watermarkKey, startedAt);
           } catch (error) {
             complete = false;
             if (isCurrent()) console.warn("DM history recovery incomplete", error);

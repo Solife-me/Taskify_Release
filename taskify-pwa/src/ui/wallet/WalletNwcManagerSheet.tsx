@@ -21,6 +21,8 @@ export function WalletNwcManagerSheet(props) {
     handleNwcConnect,
     handleNwcTest,
     handleNwcDisconnect,
+    walletMode,
+    onOpenWalletMode,
   } = props;
 
   return (
@@ -71,6 +73,16 @@ export function WalletNwcManagerSheet(props) {
               disabled={nwcBusy || !hasNwcConnection}
             >Disconnect</button>
           </div>
+          {hasNwcConnection && walletMode !== "nwc" && onOpenWalletMode && (
+            <button className="accent-button button-sm pressable w-full" onClick={onOpenWalletMode} disabled={nwcBusy}>
+              Use as main wallet
+            </button>
+          )}
+          {hasNwcConnection && walletMode === "nwc" && (
+            <div className="text-xs text-secondary">
+              This is your main wallet. Disconnecting switches back to the ecash wallet.
+            </div>
+          )}
           {nwcBusy && <div className="text-xs text-secondary">Working…</div>}
           {nwcFeedback && <div className="text-xs text-secondary">{nwcFeedback}</div>}
           {nwcError && <div className="text-xs text-rose-400">{nwcError}</div>}

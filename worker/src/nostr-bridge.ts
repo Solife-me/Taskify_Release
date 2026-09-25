@@ -152,8 +152,28 @@ async function queryRelay(relay: string, filter: NostrFilter): Promise<NostrEven
   }
 }
 
-export async function handleWatchNostrPublish(request: Request): Promise<Response> {
-  if (!await verifyTaskifyAuth(request)) return jsonResponse({ error: "Unauthorized" }, 401);
+/**
+ * Every account's bridge traffic reaches public relays from the Worker's shared egress IPs, where
+ * relays apply per-IP limits. Bound each account's share so one busy account can't spend the
+ * budget every other Watch user depends on. Keyed by the signed account, not the client IP.
+ */
+async function accountRateLimited(env: BridgeEnv | undefined, npub: string): Promise<Response | null> {
+  const binding = env?.WATCH_NOSTR_RATE_LIMITER;
+  if (!binding) return null;
+  const { success } = await binding.limit({ key: `watch-nostr:${npub}` });
+  if (success) return null;
+  const response = jsonResponse({ error: "Too many requests" }, 429);
+  response.headers.set("Retry-After", "60");
+  return response;
+}
+
+type BridgeEnv = { WATCH_NOSTR_RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> } };
+
+export async function handleWatchNostrPublish(request: Request, env?: BridgeEnv): Promise<Response> {
+  const auth = await verifyTaskifyAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+  const limited = await accountRateLimited(env, auth.npub);
+  if (limited) return limited;
   const body = await parseJson(request.clone());
   const relays = normalizedRelayURLs(body?.relays);
   if (!relays.length || !validTaskEvent(body?.event)) {
@@ -164,8 +184,11 @@ export async function handleWatchNostrPublish(request: Request): Promise<Respons
   return jsonResponse({ accepted, attempted: results.length, results }, accepted > 0 ? 200 : 502);
 }
 
-export async function handleWatchNostrQuery(request: Request): Promise<Response> {
-  if (!await verifyTaskifyAuth(request)) return jsonResponse({ error: "Unauthorized" }, 401);
+export async function handleWatchNostrQuery(request: Request, env?: BridgeEnv): Promise<Response> {
+  const auth = await verifyTaskifyAuth(request);
+  if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
+  const limited = await accountRateLimited(env, auth.npub);
+  if (limited) return limited;
   const body = await parseJson(request.clone());
   const relays = normalizedRelayURLs(body?.relays);
   const filter = normalizedFilter(body?.filter);

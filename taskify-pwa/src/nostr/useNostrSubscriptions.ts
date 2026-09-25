@@ -1,6 +1,6 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import type { CalendarEvent } from "taskify-core";
-import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
+import { DEFAULT_NOSTR_RELAYS, relaysOrDefaults } from "../lib/relays";
 import {
   TASKIFY_CALENDAR_VIEW_KIND,
   calendarAddress,
@@ -74,6 +74,7 @@ type ReplaceableSubscriptionConfig = {
 type UseNostrSubscriptionsParams = {
   appBackup?: ReplaceableSubscriptionConfig;
   bibleTracker?: ReplaceableSubscriptionConfig;
+  chatState?: ReplaceableSubscriptionConfig;
   calendarViews?: CalendarViewSubscriptionConfig;
   scriptureMemory?: ReplaceableSubscriptionConfig;
   sharedInbox?: SharedInboxSubscriptionConfig;
@@ -82,10 +83,6 @@ type UseNostrSubscriptionsParams = {
 function eventTagValue(event: NostrEvent, name: string): string | undefined {
   const tag = event.tags.find((entry) => entry[0] === name);
   return tag?.[1];
-}
-
-function uniqueRelayList(relays: string[]): string[] {
-  return Array.from(new Set(relays.map((relay) => relay.trim()).filter(Boolean)));
 }
 
 function useSharedInboxSubscription(config?: SharedInboxSubscriptionConfig) {
@@ -142,14 +139,35 @@ function useSharedInboxSubscription(config?: SharedInboxSubscriptionConfig) {
 function useCalendarViewSubscription(config?: CalendarViewSubscriptionConfig) {
   const enabled = config?.enabled ?? true;
   const clockRef = config?.clockRef;
-  const defaultRelays = config?.defaultRelays ?? EMPTY_RELAYS;
-  const events = config?.events ?? EMPTY_CALENDAR_EVENTS;
-  const handleEvent = config?.handleEvent;
-  const inboxRelays = config?.inboxRelays ?? EMPTY_RELAYS;
   const pool = config?.pool;
+  // Every restart reopens a REQ on every relay, so restart only when the invited events or relay
+  // lists change, not on every calendar edit or new callback/array identity.
+  const latestRef = useRef({
+    events: config?.events ?? EMPTY_CALENDAR_EVENTS,
+    defaultRelays: config?.defaultRelays ?? EMPTY_RELAYS,
+    inboxRelays: config?.inboxRelays ?? EMPTY_RELAYS,
+    handleEvent: config?.handleEvent,
+  });
+  latestRef.current = {
+    events: config?.events ?? EMPTY_CALENDAR_EVENTS,
+    defaultRelays: config?.defaultRelays ?? EMPTY_RELAYS,
+    inboxRelays: config?.inboxRelays ?? EMPTY_RELAYS,
+    handleEvent: config?.handleEvent,
+  };
+  const hasHandler = !!config?.handleEvent;
+  const subscriptionKey = useMemo(() => {
+    const targets = (config?.events ?? EMPTY_CALENDAR_EVENTS)
+      .filter((event) => !!event.readOnly && !!event.viewAddress && !!event.eventKey)
+      .map((event) => [event.id, event.viewAddress, event.eventKey, [...(event.inviteRelays ?? [])].sort()])
+      .sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
+    return JSON.stringify([targets, config?.defaultRelays ?? [], config?.inboxRelays ?? []]);
+  }, [config?.events, config?.defaultRelays, config?.inboxRelays]);
 
   useEffect(() => {
-    if (!enabled || !clockRef || !handleEvent || !pool) return;
+    const { events, defaultRelays, inboxRelays } = latestRef.current;
+    const handleEvent = (event: NostrEvent, target: CalendarViewSubscriptionTarget) =>
+      latestRef.current.handleEvent?.(event, target);
+    if (!enabled || !clockRef || !hasHandler || !pool) return;
 
     const targets = events.filter(
       (event) => !!event.readOnly && !!event.viewAddress && !!event.eventKey,
@@ -171,12 +189,7 @@ function useCalendarViewSubscription(config?: CalendarViewSubscriptionConfig) {
     });
     if (!viewLookup.size || !authors.size || !dTags.size) return;
 
-    const relays = uniqueRelayList([
-      ...Array.from(relaySet),
-      ...defaultRelays,
-      ...inboxRelays,
-      ...Array.from(DEFAULT_NOSTR_RELAYS),
-    ]);
+    const relays = relaysOrDefaults(Array.from(relaySet), defaultRelays, inboxRelays);
     if (!relays.length) return;
 
     let cancelled = false;
@@ -230,7 +243,7 @@ function useCalendarViewSubscription(config?: CalendarViewSubscriptionConfig) {
         // ignore subscription close errors
       }
     };
-  }, [clockRef, defaultRelays, enabled, events, handleEvent, inboxRelays, pool]);
+  }, [clockRef, enabled, hasHandler, pool, subscriptionKey]);
 }
 
 function useReplaceableSubscription(config?: ReplaceableSubscriptionConfig) {
@@ -298,6 +311,7 @@ export function useNostrSubscriptions({
   appBackup,
   bibleTracker,
   calendarViews,
+  chatState,
   scriptureMemory,
   sharedInbox,
 }: UseNostrSubscriptionsParams) {
@@ -306,4 +320,5 @@ export function useNostrSubscriptions({
   useReplaceableSubscription(appBackup);
   useReplaceableSubscription(bibleTracker);
   useReplaceableSubscription(scriptureMemory);
+  useReplaceableSubscription(chatState);
 }

@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { NwcClient, parseNwcUri, type ParsedNwcUri } from "../wallet/nwc";
 import { kvStorage } from "../storage/kvStorage";
+import { setWalletMode } from "../wallet/walletMode";
 
 const LS_NWC_URI = "cashu_nwc_connection_v1";
 
@@ -18,11 +19,22 @@ type NwcInfo = {
 
 type NwcPayResponse = {
   preimage?: string;
+  fees_paid?: number;
   [key: string]: unknown;
 };
 
 type NwcMakeInvoiceResponse = {
   invoice: string;
+  payment_hash?: string;
+  [key: string]: unknown;
+};
+
+export type NwcLookupInvoiceResponse = {
+  invoice?: string;
+  payment_hash?: string;
+  preimage?: string | null;
+  settled_at?: number | null;
+  state?: string;
   [key: string]: unknown;
 };
 
@@ -52,6 +64,7 @@ type NwcContextValue = {
   getBalanceMsat: () => Promise<number | null>;
   payInvoice: (invoice: string) => Promise<NwcPayResponse>;
   makeInvoice: (amountMsat: number, memo?: string) => Promise<NwcMakeInvoiceResponse>;
+  lookupInvoice: (ref: { paymentHash?: string | null; invoice?: string }) => Promise<NwcLookupInvoiceResponse>;
 };
 
 const NwcContext = createContext<NwcContextValue | null>(null);
@@ -94,11 +107,14 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
   const [lastError, setLastError] = useState<string | null>(null);
   const clientRef = useRef<NwcClient | null>(null);
 
+  useEffect(() => () => clientRef.current?.close(), []);
+
   useEffect(() => {
     infoRef.current = info;
   }, [info]);
 
   const setClient = useCallback((parsed: ParsedNwcUri | null) => {
+    clientRef.current?.close();
     if (!parsed) {
       clientRef.current = null;
       return;
@@ -151,7 +167,8 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
       }
       const combined = extractInfo(infoRes, balanceRes);
       setConnection(parsed);
-      setClient(parsed);
+      clientRef.current?.close();
+      clientRef.current = client;
       setInfo(combined ?? null);
       infoRef.current = combined ?? null;
       setStatus("connected");
@@ -162,7 +179,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
       setStatus("error");
       throw new Error(message);
     }
-  }, [setClient]);
+  }, []);
 
   const disconnect = useCallback(() => {
     setConnection(null);
@@ -172,7 +189,19 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     setStatus("idle");
     setLastError(null);
     try { kvStorage.removeItem(LS_NWC_URI); } catch {}
+    // Without a connection there is no NWC wallet to use; fall back to ecash.
+    setWalletMode("ecash");
   }, [setClient]);
+
+  // A balance the wallet didn't just confirm is dropped rather than kept: showing an old
+  // (or zero) figure for a wallet we can't reach looks like funds were lost.
+  const forgetBalance = useCallback(() => {
+    const current = infoRef.current;
+    if (!current || current.balanceMsat === undefined) return;
+    const next = { ...current, balanceMsat: undefined, rawBalance: undefined };
+    setInfo(next);
+    infoRef.current = next;
+  }, []);
 
   const refreshInfo = useCallback(async () => {
     try {
@@ -185,16 +214,20 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
         console.warn("NWC get_balance failed", err);
       }
       const combined = extractInfo(infoRes, balanceRes);
-      const next = mergeInfo(infoRef.current, combined);
+      let next = mergeInfo(infoRef.current, combined);
+      if (next && combined?.balanceMsat === undefined) {
+        next = { ...next, balanceMsat: undefined, rawBalance: undefined };
+      }
       setInfo(next);
       infoRef.current = next;
       return next;
     } catch (err: any) {
+      forgetBalance();
       const message = err instanceof Error ? err.message : String(err);
       setLastError(message);
       throw new Error(message);
     }
-  }, [ensureClient]);
+  }, [ensureClient, forgetBalance]);
 
   const getBalanceMsat = useCallback(async () => {
     try {
@@ -207,19 +240,23 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
         infoRef.current = next;
         return combined.balanceMsat ?? null;
       }
+      forgetBalance();
       return null;
     } catch (err: any) {
+      forgetBalance();
       const message = err instanceof Error ? err.message : String(err);
       setLastError(message);
       throw new Error(message);
     }
-  }, [ensureClient]);
+  }, [ensureClient, forgetBalance]);
 
   const payInvoice = useCallback(async (invoice: string) => {
     if (!invoice?.trim()) throw new Error("Missing invoice");
     try {
       const client = ensureClient();
-      const res = await client.request<NwcPayResponse>("pay_invoice", { invoice: invoice.trim() });
+      // Lightning payments can take a while to settle; a short timeout would report a
+      // failure for a payment that may still succeed.
+      const res = await client.request<NwcPayResponse>("pay_invoice", { invoice: invoice.trim() }, { timeoutMs: 90_000 });
       return res;
     } catch (err: any) {
       const message = err instanceof Error ? err.message : String(err);
@@ -245,6 +282,15 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     }
   }, [ensureClient]);
 
+  const lookupInvoice = useCallback(async (ref: { paymentHash?: string | null; invoice?: string }) => {
+    const params: Record<string, unknown> = {};
+    if (ref.paymentHash) params.payment_hash = ref.paymentHash;
+    else if (ref.invoice) params.invoice = ref.invoice;
+    else throw new Error("Missing payment hash or invoice");
+    const client = ensureClient();
+    return client.request<NwcLookupInvoiceResponse>("lookup_invoice", params);
+  }, [ensureClient]);
+
   const value = useMemo<NwcContextValue>(() => ({
     ready,
     status,
@@ -257,7 +303,8 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     getBalanceMsat,
     payInvoice,
     makeInvoice,
-  }), [ready, status, connection, info, lastError, connect, disconnect, refreshInfo, getBalanceMsat, payInvoice, makeInvoice]);
+    lookupInvoice,
+  }), [ready, status, connection, info, lastError, connect, disconnect, refreshInfo, getBalanceMsat, payInvoice, makeInvoice, lookupInvoice]);
 
   return <NwcContext.Provider value={value}>{children}</NwcContext.Provider>;
 }

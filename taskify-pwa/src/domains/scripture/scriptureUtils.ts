@@ -123,12 +123,20 @@ export function sanitizeScriptureMemoryState(raw: any): ScriptureMemoryState {
           if (!chapterCount || chapter > chapterCount) return null;
           const verseCount = getBibleChapterVerseCount(bookId, chapter);
           if (!verseCount) return null;
-          let startVerse = Number(entry?.startVerse);
-          if (!Number.isFinite(startVerse) || startVerse <= 0) startVerse = 1;
-          let endVerse = Number(entry?.endVerse);
-          if (!Number.isFinite(endVerse) || endVerse <= 0) endVerse = startVerse;
-          startVerse = Math.max(1, Math.min(verseCount, Math.floor(startVerse)));
-          endVerse = Math.max(startVerse, Math.min(verseCount, Math.floor(endVerse)));
+          // A passage with no verses is a whole chapter (native clients create these); keep it
+          // that way rather than narrowing it to verse 1.
+          const isWholeChapter = entry?.startVerse == null && entry?.endVerse == null;
+          let startVerse: number | null = Number(entry?.startVerse);
+          let endVerse: number | null = Number(entry?.endVerse);
+          if (isWholeChapter) {
+            startVerse = null;
+            endVerse = null;
+          } else {
+            if (!Number.isFinite(startVerse) || startVerse <= 0) startVerse = 1;
+            if (!Number.isFinite(endVerse) || endVerse <= 0) endVerse = startVerse;
+            startVerse = Math.max(1, Math.min(verseCount, Math.floor(startVerse)));
+            endVerse = Math.max(startVerse, Math.min(verseCount, Math.floor(endVerse)));
+          }
           const addedAtISO = typeof entry?.addedAtISO === "string" && entry.addedAtISO ? entry.addedAtISO : now;
           const lastReviewISO = typeof entry?.lastReviewISO === "string" && entry.lastReviewISO ? entry.lastReviewISO : undefined;
           const scheduledAtISO = typeof entry?.scheduledAtISO === "string" && entry.scheduledAtISO

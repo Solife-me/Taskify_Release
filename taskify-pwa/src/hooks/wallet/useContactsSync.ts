@@ -1,6 +1,7 @@
 // @ts-nocheck
+import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import { useCallback } from "react";
-import { nip44, finalizeEvent } from "nostr-tools";
+import { nip44 } from "nostr-tools";
 import type { EventTemplate } from "nostr-tools";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { normalizeNostrPubkey } from "../../lib/nostr";
@@ -507,7 +508,7 @@ export function useContactsSync({
           if (template.content !== "") {
             throw new Error("Kind:3 content must be empty.");
           }
-          const signed = finalizeEvent(template, hexToBytes(identity.secret));
+          const signed = await prepareRelayEvent(template, hexToBytes(identity.secret), relays);
           await safePublish(pool, relays, signed);
           if (walletDebugEnabled) {
             console.debug("[wallet] Published kind:3 follows", signed.id.slice(0, 8));
@@ -890,7 +891,8 @@ export function useContactsSync({
           const nextProfile = {
             username: meta.username || profileFormRef.current.username || "",
             displayName: meta.displayName || meta.username || profileFormRef.current.displayName || "",
-            lud16: meta.lud16 || profileFormRef.current.lud16 || deriveDefaultLightningAddress(),
+            // The published profile is the source of truth; no address means none.
+            lud16: meta.lud16 || "",
             nip05: meta.nip05 || profileFormRef.current.nip05 || "",
             about: meta.about || profileFormRef.current.about || "",
             picture: meta.picture || profileFormRef.current.picture || "",

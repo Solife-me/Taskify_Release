@@ -1,7 +1,7 @@
 // @ts-nocheck
+import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Proof } from "@cashu/cashu-ts";
-import { finalizeEvent } from "nostr-tools";
 import { kvStorage } from "../../storage/kvStorage";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../../storage/taskifyDb";
@@ -23,6 +23,7 @@ import {
   decryptMintBackupPayload,
   deriveMintBackupKeys,
   loadMintBackupCache,
+  mintBackupIsCurrent,
   MINT_BACKUP_CLIENT_TAG,
   MINT_BACKUP_D_TAG,
   MINT_BACKUP_KIND,
@@ -608,9 +609,10 @@ export function WalletSection({
       });
       const pool = ensureMintBackupPool();
       const created_at = Math.max(template.created_at || 0, Math.floor(Date.now() / 1000));
-      const signed = finalizeEvent(
-        { ...template, pubkey: keys.publicKeyHex, created_at },
+      const signed = await prepareRelayEvent(
+        { ...template, created_at },
         hexToBytes(keys.privateKeyHex),
+        mintBackupRelays,
       );
       await safePublish(pool, mintBackupRelays, signed);
       persistMintBackupCacheState({
@@ -671,6 +673,9 @@ export function WalletSection({
       setMintBackupMessage("");
       return;
     }
+    // Automatic backups only publish when the mint list changed (or the last one is old);
+    // this section mounting, or the relay list's identity changing, isn't a reason to.
+    if (mintBackupIsCurrent(loadMintBackupCache(), getMintList(), Math.floor(Date.now() / 1000))) return;
     void syncMintBackup();
   }, [settings.walletMintBackupEnabled, syncMintBackup]);
 

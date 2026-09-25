@@ -7,6 +7,7 @@ export type RelayLimitation = {
     auth_required?: boolean;
     payment_required?: boolean;
     restricted_writes?: boolean;
+    min_pow_difficulty?: number;
 };
 export type RelayInfo = {
     name?: string;
@@ -28,6 +29,7 @@ export type RelayLimits = {
     maxMessageLength: number;
     maxSubscriptions: number;
     authRequired: boolean;
+    minPowDifficulty: number;
 };
 export type RelayInfoStorage = {
     getItem: (key: string) => string | null | undefined;

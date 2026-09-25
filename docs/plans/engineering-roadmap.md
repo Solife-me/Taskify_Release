@@ -250,3 +250,29 @@ Nine storage tests now cover unentitled macOS group URL resolution, private-stor
 save/reload, and migration that preserves existing stores. The App Group path is
 selected only after checking the Mac process entitlement. Signed sandbox and
 extension integration remain separate release checks.
+
+### Native startup relay pressure — September 23, 2026
+
+Regression coverage now verifies bounded ingress under a stalled consumer, lossless ordered
+recovery, cancellation/termination, and shared publication/subscription cooldowns after a
+rate-limited closure. The 90 targeted native sync tests pass. Device-specific crash/jetsam
+capture and sign-in/relaunch on the affected older iPhone remain necessary to establish the
+reported crash cause; these transport regressions do not replace that verification.
+
+### Relay access hardening (September 2026)
+
+- NIP-42: coalesce duplicate challenges in the shared runtime; configure standalone
+  CLI publishers; retry auth-blocked SimplePool operations; authenticate NWC using
+  its connection key. Native short-lived reads replay only after an AUTH OK.
+- NIP-13: cache NIP-11 requirements and mine before signing in PWA/CLI and native
+  board, calendar, account, NIP-17, NWC and Watch publishing paths. Keep persisted
+  IDs immutable, bound mining duration, and run native work off the UI thread.
+- Regressions: shared runtime proof-of-work/cancellation/auth concurrency tests;
+  native/Watch signature parity, auth replay gating, relay backpressure and cooldown
+  tests. Live strict-relay interoperability and the original device crash remain
+  follow-up validation rather than claims established by unit tests.
+- Watch gateway reads now use account-bound, expiring, single-use AUTH sessions;
+  regression tests cover acknowledgement ordering, account mismatch, and replay.
+  Deploy the matching gateway before relying on authenticated upstream reads.
+- PWA NWC sessions are isolated by client identity and reused across RPCs, with
+  idle shutdown and explicit cleanup on disconnect; relay metadata is shared.

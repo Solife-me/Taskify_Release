@@ -127,3 +127,13 @@ The iOS Notification Service Extension ships without Apple's managed Notificatio
 entitlement, so decrypted categories the user did not select and payment gift wraps keep the
 generic alert. Adding the entitlement later lets the extension hide them instead; suppression
 requires the `apns-push-type: alert` header this relay already sends.
+
+Watch authenticated reads use the same short-lived NIP-42 session exchange as
+outbox writes. Preference/task queries can return `authorizations`; the Watch
+signs each challenge locally and POSTs it to the existing authorize endpoint.
+The gateway retains the original socket, waits for AUTH acceptance, then repeats
+the bounded query. Returned events must pass the original query's validation.
+Sessions are account-bound, single-use, expire automatically, and read sessions
+are capped at 256. Deploy this gateway update with the matching Watch client to
+support upstream relays requiring authenticated reads. No private keys leave the
+Watch.

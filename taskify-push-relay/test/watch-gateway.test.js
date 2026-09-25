@@ -540,3 +540,58 @@ test('Watch task publishing caches ciphertext and authenticates relays with the 
   assert.equal(authorizeResponse.status, 200)
   assert.equal(authorizedEvent.pubkey, boardPubkey)
 })
+
+test('Watch authenticated preference query binds challenge to account and returns validated events', async t => {
+  const account = generateSecretKey()
+  const recipientKey = generateSecretKey()
+  const expected = preference(recipientKey)
+  let authorizations = 0
+  const { address } = await fixture(t, {
+    async query(_relay, _filter, _limit, options) {
+      assert.equal(options.allowAuth, true)
+      return {
+        outcome: 'auth-required', challenge: 'private-read', close() {},
+        async authorize() { authorizations++; return { accepted: true, events: [expected] } },
+      }
+    },
+  })
+  const initial = await post(address, '/v1/watch/inbox-preference/query', {
+    recipientPublicKey: getPublicKey(recipientKey), relays: ['wss://private.example'],
+  }, account)
+  const pending = (await initial.json()).authorizations[0]
+  assert.equal(authorizations, 0)
+  const makeAuth = key => finalizeEvent({ kind: 22242, created_at: Math.floor(Date.now() / 1000),
+    tags: [['relay', pending.relay], ['challenge', pending.challenge]], content: '' }, key)
+  const endpoint = `/v1/watch/outbox/${pending.session}/authorize`
+  const wrong = await post(address, endpoint, { event: makeAuth(generateSecretKey()) }, account)
+  assert.notEqual(wrong.status, 200)
+  assert.equal(authorizations, 0)
+  const accepted = await post(address, endpoint, { event: makeAuth(account) }, account)
+  assert.equal(accepted.status, 200)
+  assert.deepEqual((await accepted.json()).events, wire([expected]))
+  assert.equal(authorizations, 1)
+  const replay = await post(address, endpoint, { event: makeAuth(account) }, account)
+  assert.notEqual(replay.status, 200)
+  assert.equal(authorizations, 1)
+})
+
+test('Watch forwarding to public relays is limited per account', async (t) => {
+  const accountKey = generateSecretKey()
+  const boardKey = generateSecretKey()
+  const relayForwarder = {
+    async publish() { return { outcome: 'accepted', message: '', close() {} } },
+  }
+  const { address } = await fixture(t, relayForwarder, { watchForwardsPerMinute: 3 })
+  const statuses = []
+  for (let index = 0; index < 4; index += 1) {
+    const response = await post(address, '/v1/watch/task-events/publish', {
+      event: taskEvent(boardKey, `task-${index}`, Math.floor(Date.now() / 1000)),
+      relays: ['wss://tasks.example'],
+    }, accountKey)
+    statuses.push(response.status)
+  }
+  // Forwarded events reach public relays from this server's shared IP, so each account gets a
+  // bounded share; the Watch keeps a limited change queued and retries.
+  assert.deepEqual(statuses.slice(0, 3).every((status) => status === 200), true)
+  assert.equal(statuses[3], 429)
+})

@@ -1,4 +1,6 @@
 import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus } from "@nostr-dev-kit/ndk";
+import { finalizeEvent } from "nostr-tools";
+import { applyProofOfWork, mineEventTemplate } from "./ProofOfWork.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager } from "./SubscriptionManager.js";
 import { PublishCoordinator } from "./PublishCoordinator.js";
@@ -12,6 +14,7 @@ export class RuntimeNostrSession {
     relayRetryTimers = new Map();
     loggedDebugSummary = false;
     shuttingDown = false;
+    workAbort = new AbortController();
     relayInfoCache;
     relayHealth;
     authManager;
@@ -33,7 +36,11 @@ export class RuntimeNostrSession {
         this.cache = new EventCache();
         this.cursors = new CursorStore();
         const relayResolver = this.buildRelaySet.bind(this);
-        this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, { outboxStore: deps.outboxStore });
+        this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, {
+            outboxStore: deps.outboxStore,
+            resolveProofOfWorkDifficulty: this.resolveProofOfWorkDifficulty.bind(this),
+            signal: this.workAbort.signal,
+        });
         this.subscriptions = new SubscriptionManager(this.ndk, this.cursors, relayResolver, this.cache, this.resolveRelayLimit.bind(this));
         this.boardKeys = new BoardKeyManager();
         this.walletClient = deps.createWalletClient({ ndk: this.ndk, publisher: this.publisher, subscriptions: this.subscriptions, resolveRelaySet: relayResolver });
@@ -58,6 +65,7 @@ export class RuntimeNostrSession {
     }
     async shutdown() {
         this.shuttingDown = true;
+        this.workAbort.abort();
         this.publisher.shutdown();
         this.subscriptions.shutdown();
         for (const timer of this.relayRetryTimers.values()) {
@@ -125,7 +133,7 @@ export class RuntimeNostrSession {
     async fetchRelayInfo(relayUrl) {
         try {
             const cached = await this.relayInfoCache.prime(relayUrl, async (nip11Url) => {
-                const res = await fetch(nip11Url, { headers: { Accept: "application/nostr+json" } });
+                const res = await fetch(nip11Url, { headers: { Accept: "application/nostr+json" }, signal: AbortSignal.timeout(5_000) });
                 if (!res.ok) {
                     this.relayHealth.markFailure(relayUrl, { severity: "low", reason: `nip11:${res.status}` });
                     this.relayHealth.onBackoffExpiry(relayUrl, () => this.primeRelayInfo(relayUrl));
@@ -143,6 +151,11 @@ export class RuntimeNostrSession {
             return null;
         }
     }
+    async resolveProofOfWorkDifficulty(relayUrls) {
+        const relays = normalizeRelayUrls(relayUrls);
+        await Promise.all(relays.map((relay) => this.fetchRelayInfo(relay)));
+        return this.relayInfoCache.getLimits(relays).minPowDifficulty ?? 0;
+    }
     resolveRelayLimit(relayUrls) {
         const relays = normalizeRelayUrls(relayUrls);
         relays.forEach((relay) => this.primeRelayInfo(relay));
@@ -156,6 +169,17 @@ export class RuntimeNostrSession {
     }
     async publishRaw(event, options) {
         return this.publisher.publishRaw(event, options);
+    }
+    async prepareNDKEvent(event, signer, relayUrls) {
+        const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
+        if (difficulty > 0)
+            await applyProofOfWork(event, signer, difficulty, { signal: this.workAbort.signal });
+        else if (!event.sig)
+            await event.sign(signer);
+    }
+    async prepareEvent(template, secretKey, relayUrls, options) {
+        const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
+        return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, { ...options, signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal }), secretKey);
     }
     createEvent(event) {
         return new NDKEvent(this.ndk, event);

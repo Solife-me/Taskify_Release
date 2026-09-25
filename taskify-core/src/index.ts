@@ -19,3 +19,4 @@ export * from "./relayNormalize.js";
 export * from "./shareNormalize.js";
 export * from "./entityResolution.js";
 export * from "./locationContracts.js";
+export * from "./appStateSync.js";

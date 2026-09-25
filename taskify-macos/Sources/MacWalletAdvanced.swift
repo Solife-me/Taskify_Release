@@ -64,7 +64,7 @@ struct MacP2PKKeyManager: View {
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
-            Text("Taskify automatically redeems ecash locked to your Nostr identity. These are additional keys for advanced locking scenarios.")
+            Text("Taskify can redeem ecash locked to your Nostr identity when you choose Redeem. These are additional keys for advanced locking scenarios.")
                 .font(.caption).foregroundStyle(.secondary)
             if wallet.p2pkKeys.isEmpty {
                 ContentUnavailableView("No Additional Keys", systemImage: "key")

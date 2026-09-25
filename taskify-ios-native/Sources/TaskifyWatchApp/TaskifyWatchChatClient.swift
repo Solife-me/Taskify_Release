@@ -40,6 +40,7 @@ struct TaskifyWatchGatewayPublishResult: Decodable, Sendable {
 struct TaskifyWatchGatewayAuthorizationResult: Decodable, Sendable {
     let eventID: String
     let result: TaskifyWatchGatewayRelayResult
+    let events: [TaskifyWatchNostrEvent]?
 }
 
 struct TaskifyWatchChatGatewayClient: Sendable {
@@ -129,6 +130,7 @@ struct TaskifyWatchChatGatewayClient: Sendable {
         struct Reply: Decodable {
             let events: [TaskifyWatchNostrEvent]
             let completedRelays: [String]
+            let authorizations: [TaskifyWatchGatewayRelayResult]?
         }
         let recipient = recipientPublicKey.lowercased()
         let relays = Array(TaskifyWatchRelayRouting.normalizedRelayURLs(relayURLs)
@@ -148,12 +150,27 @@ struct TaskifyWatchChatGatewayClient: Sendable {
                   $0.kind == 10_050 && $0.publicKey.lowercased() == recipient
                       && TaskifyWatchNostrCrypto.verify($0)
               }) else { throw TaskifyWatchChatClientError.invalidResponse }
-        let completed = TaskifyWatchRelayRouting.normalizedRelayURLs(reply.completedRelays)
+        var events = reply.events
+        var completed = TaskifyWatchRelayRouting.normalizedRelayURLs(reply.completedRelays)
+        for challenge in (reply.authorizations ?? []).prefix(relays.count) {
+            guard relays.contains(challenge.relay), let session = challenge.session,
+                  let nonce = challenge.challenge, challenge.status == "auth-required" else { continue }
+            guard let authorized = try? await authorize(sessionID: session, relayURL: challenge.relay,
+                challenge: nonce, privateKey: privateKey), authorized.result.status == "accepted",
+                let fetched = authorized.events, fetched.count <= 32,
+                fetched.allSatisfy({ $0.kind == 10_050 && $0.publicKey.lowercased() == recipient
+                    && TaskifyWatchNostrCrypto.verify($0) }) else { continue }
+            events.append(contentsOf: fetched)
+            completed.append(challenge.relay)
+        }
+        events = Array(Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values)
+            .sorted { $0.createdAt > $1.createdAt }
+        events = Array(events.prefix(32))
         guard completed.allSatisfy({ relays.contains($0) }) else {
             throw TaskifyWatchChatClientError.invalidResponse
         }
         return TaskifyWatchRelayDiscoveryResult(
-            events: reply.events,
+            events: events,
             discoveryComplete: TaskifyWatchRelayDiscoveryPolicy.hasSufficientAbsenceEvidence(
                 completedRelayURLs: completed, queriedRelayURLs: relays
             )

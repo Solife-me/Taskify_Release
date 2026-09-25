@@ -1,5 +1,6 @@
-import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus, type NDKFilter, type NDKRelay } from "@nostr-dev-kit/ndk";
-import type { EventTemplate, NostrEvent } from "nostr-tools";
+import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus, type NDKFilter, type NDKRelay, type NDKSigner } from "@nostr-dev-kit/ndk";
+import { finalizeEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
+import { applyProofOfWork, mineEventTemplate, type ProofOfWorkOptions } from "./ProofOfWork.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
 import { PublishCoordinator, type PublishResult } from "./PublishCoordinator.js";
@@ -14,7 +15,7 @@ export type RelayInfoCacheLike = {
   needsRefresh: (relayUrl: string) => boolean;
   get: (relayUrl: string) => unknown;
   getAgeMs: (relayUrl: string) => number | null;
-  getLimits: (relayUrls: string[]) => { maxLimit: number; authRequired?: boolean };
+  getLimits: (relayUrls: string[]) => { maxLimit: number; authRequired?: boolean; minPowDifficulty?: number };
 };
 
 export type RelayHealthLike = {
@@ -53,6 +54,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   private relayRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private loggedDebugSummary = false;
   private shuttingDown = false;
+  private readonly workAbort = new AbortController();
 
   private readonly relayInfoCache: RelayInfoCacheLike;
   private readonly relayHealth: RelayHealthLike;
@@ -78,7 +80,11 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     this.cache = new EventCache();
     this.cursors = new CursorStore();
     const relayResolver = this.buildRelaySet.bind(this);
-    this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, { outboxStore: deps.outboxStore });
+    this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, {
+      outboxStore: deps.outboxStore,
+      resolveProofOfWorkDifficulty: this.resolveProofOfWorkDifficulty.bind(this),
+      signal: this.workAbort.signal,
+    });
     this.subscriptions = new SubscriptionManager(this.ndk, this.cursors, relayResolver, this.cache, this.resolveRelayLimit.bind(this));
     this.boardKeys = new BoardKeyManager();
     this.walletClient = deps.createWalletClient({ ndk: this.ndk, publisher: this.publisher, subscriptions: this.subscriptions, resolveRelaySet: relayResolver });
@@ -105,6 +111,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.workAbort.abort();
     this.publisher.shutdown();
     this.subscriptions.shutdown();
     for (const timer of this.relayRetryTimers.values()) {
@@ -166,7 +173,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   private async fetchRelayInfo(relayUrl: string): Promise<unknown> {
     try {
       const cached = await this.relayInfoCache.prime(relayUrl, async (nip11Url) => {
-        const res = await fetch(nip11Url, { headers: { Accept: "application/nostr+json" } });
+        const res = await fetch(nip11Url, { headers: { Accept: "application/nostr+json" }, signal: AbortSignal.timeout(5_000) });
         if (!res.ok) {
           this.relayHealth.markFailure(relayUrl, { severity: "low", reason: `nip11:${res.status}` });
           this.relayHealth.onBackoffExpiry(relayUrl, () => this.primeRelayInfo(relayUrl));
@@ -182,6 +189,12 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
       this.relayHealth.onBackoffExpiry(relayUrl, () => this.primeRelayInfo(relayUrl));
       return null;
     }
+  }
+
+  private async resolveProofOfWorkDifficulty(relayUrls: string[]): Promise<number> {
+    const relays = normalizeRelayUrls(relayUrls);
+    await Promise.all(relays.map((relay) => this.fetchRelayInfo(relay)));
+    return this.relayInfoCache.getLimits(relays).minPowDifficulty ?? 0;
   }
 
   private resolveRelayLimit(relayUrls: string[]): Promise<number> {
@@ -200,6 +213,17 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
 
   async publishRaw(event: NostrEvent, options?: Parameters<PublishCoordinator["publish"]>[1]): Promise<PublishResult> {
     return this.publisher.publishRaw(event, options);
+  }
+
+  async prepareNDKEvent(event: NDKEvent, signer: NDKSigner, relayUrls: string[]): Promise<void> {
+    const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
+    if (difficulty > 0) await applyProofOfWork(event, signer, difficulty, { signal: this.workAbort.signal });
+    else if (!event.sig) await event.sign(signer);
+  }
+
+  async prepareEvent(template: EventTemplate, secretKey: Uint8Array, relayUrls: string[], options?: ProofOfWorkOptions): Promise<NostrEvent> {
+    const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
+    return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, { ...options, signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal }), secretKey);
   }
 
   createEvent(event?: NostrEvent): NDKEvent {

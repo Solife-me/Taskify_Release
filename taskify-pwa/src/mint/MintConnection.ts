@@ -6,6 +6,7 @@ import type {
 } from "@cashu/cashu-ts";
 import { CashuManager, type CreateSendTokenOptions, type SendTokenLockInfo } from "../wallet/CashuManager";
 import type { MeltQuoteResponse, MintQuoteResponse } from "../wallet/cashuTypes";
+import type { SerializedMeltPreview } from "../wallet/storage";
 import { assertValidProofsDleq } from "../wallet/dleq";
 import { MintRequestCache } from "./MintRequestCache";
 import { MintRateLimiter } from "./MintRateLimiter";
@@ -162,6 +163,11 @@ export class MintConnection {
     return this.manager.decodeToken(encoded);
   }
 
+  async decodeTokenWithKeysets(encoded: string) {
+    await this.init();
+    return this.manager.decodeTokenWithKeysets(encoded);
+  }
+
   async createMintQuote(
     payload: { amount: number; description?: string; pubkey?: string; method?: "bolt11" | "bolt12" },
   ): Promise<MintQuoteResponse> {
@@ -260,6 +266,44 @@ export class MintConnection {
       (res as any).change = this.validateProofsDleq((res as any).change);
     }
     return res;
+  }
+
+  async planSweep() {
+    await this.init();
+    return this.manager.planSweep();
+  }
+
+  async meltProofsForSweep(quote: MeltQuoteResponse, proofs: Proof[]): Promise<MeltProofsResponse> {
+    await this.init();
+    const res = await this.manager.meltProofsForSweep(quote, proofs);
+    if (Array.isArray((res as any)?.change)) {
+      (res as any).change = this.validateProofsDleq((res as any).change);
+    }
+    return res;
+  }
+
+  async inputFeeForProofs(proofs: Proof[]): Promise<number> {
+    await this.init();
+    return this.manager.inputFeeForProofs(proofs);
+  }
+
+  async meltForeignProofs(
+    quote: MeltQuoteResponse,
+    proofs: Proof[],
+    persist: (preview: SerializedMeltPreview) => void,
+  ): Promise<{ quote: MeltQuoteResponse; change: Proof[] }> {
+    await this.init();
+    return this.manager.meltForeignProofs(quote, proofs, persist);
+  }
+
+  async rebuildMeltChange(quoteId: string, preview: SerializedMeltPreview): Promise<Proof[] | null> {
+    await this.init();
+    return this.manager.rebuildMeltChange(quoteId, preview);
+  }
+
+  async checkMeltQuoteState(quote: MeltQuoteResponse): Promise<MeltQuoteResponse | null> {
+    await this.init();
+    return this.manager.checkMeltQuoteState(quote);
   }
 
   async prepareMultiPathMeltQuote(invoice: string, targetAmount: number) {

@@ -56,13 +56,15 @@ export function tasksInSameSeries(a, b) {
         recurrenceSeriesFingerprint(a.recurrence) === recurrenceSeriesFingerprint(b.recurrence));
 }
 export function ensureWeekRecurrencesForCurrentWeek(options) {
-    const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, maybePublishTask, now = () => Date.now(), } = options;
+    const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, maybePublishTask, now = () => Date.now(), canGenerateForBoard = () => true, } = options;
     const sow = startOfWeek(new Date(), weekStart).getTime();
     const out = dedupeRecurringInstances(tasks);
     let changed = out !== tasks;
     const src = sources ?? out;
     for (const task of src) {
         if (!task.recurrence || !isFrequentRecurrence(task.recurrence))
+            continue;
+        if (!canGenerateForBoard(task.boardId))
             continue;
         const seriesId = recurringSeriesId(task);
         if (!task.seriesId) {
@@ -122,4 +124,43 @@ export function ensureWeekRecurrencesForCurrentWeek(options) {
         }
     }
     return changed ? out : tasks;
+}
+/**
+ * Streaks are carried from one instance of a recurring series to the next. An open instance's
+ * running streak is the streak of the latest completed instance due before it (or its own,
+ * whichever is higher), so instances generated ahead of time (full-week mode) don't need to be
+ * rewritten, and republished, every time an earlier one is completed. Completing an instance
+ * sets its streak to its running streak + 1.
+ */
+export function buildRunningStreakLookup(tasks) {
+    const completedBySeries = new Map();
+    for (const task of tasks) {
+        if (!task.completed || typeof task.streak !== "number")
+            continue;
+        const due = Date.parse(task.dueISO);
+        if (!Number.isFinite(due))
+            continue;
+        const key = task.seriesId || task.id;
+        const list = completedBySeries.get(key) ?? [];
+        list.push({ due, streak: task.streak });
+        completedBySeries.set(key, list);
+    }
+    for (const list of completedBySeries.values())
+        list.sort((a, b) => a.due - b.due);
+    return (task) => {
+        const own = typeof task.streak === "number" ? task.streak : 0;
+        if (task.completed)
+            return own;
+        const due = Date.parse(task.dueISO);
+        const list = completedBySeries.get(task.seriesId || task.id);
+        if (!list || !Number.isFinite(due))
+            return own;
+        let previous = null;
+        for (const entry of list) {
+            if (entry.due >= due)
+                break;
+            previous = entry.streak;
+        }
+        return previous == null ? own : Math.max(own, previous);
+    };
 }

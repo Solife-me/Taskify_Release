@@ -10,6 +10,11 @@ enum ScriptureMemorySettings {
     private static let frequencyKey = "taskify.scriptureMemory.frequency"
     private static let sortKey = "taskify.scriptureMemory.sort"
 
+    /// The PWA's field names, as carried in the encrypted account sync.
+    static let enabledPWAKey = "scriptureMemoryEnabled"
+    static let boardIDPWAKey = "scriptureMemoryBoardId"
+    static let frequencyPWAKey = "scriptureMemoryFrequency"
+
     static var enabled: Bool {
         UserDefaults.standard.bool(forKey: enabledKey)
     }
