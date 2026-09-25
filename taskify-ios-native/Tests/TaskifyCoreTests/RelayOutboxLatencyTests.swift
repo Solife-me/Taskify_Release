@@ -118,6 +118,38 @@ final class RelayOutboxLatencyTests: XCTestCase {
         XCTAssertTrue(didTimeOut, "Traffic extends the wait for an acknowledgement, but not indefinitely")
     }
 
+    /// strfry refuses an event forever once it holds a deletion covering it or a newer version of
+    /// its address. Retrying on every reconnect left it queued ("Rejected one queued change").
+    func testDeletedOrReplacedRejectionSettlesThatRelay() async throws {
+        for (number, message) in [(1, "deleted: user requested deletion"), (2, "replaced: have newer event")] {
+            let relay = SuspensibleRelayTransport()
+            let engine = engine(transports: [healthyURL: relay])
+            await engine.configure(boards: [], auxiliaryRelayURLs: [healthyURL], inboxRelayURLs: [])
+            try await engine.enqueueForPublish([request(number, relayURL: healthyURL)])
+            for _ in 0..<50 where await relay.publishedEventIDs.isEmpty {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            await engine.handle(.acknowledgement(eventID: event(number).id, accepted: false, message: message), from: healthyURL)
+            let pending = await engine.pendingOutboxRecords()
+            XCTAssertTrue(pending.isEmpty, "\(message) must not leave the change queued")
+        }
+    }
+
+    func testOtherRejectionsStayQueued() async throws {
+        for (number, message) in [(3, "duplicate: have this event"), (4, "error: database busy")] {
+            let relay = SuspensibleRelayTransport()
+            let engine = engine(transports: [healthyURL: relay])
+            await engine.configure(boards: [], auxiliaryRelayURLs: [healthyURL], inboxRelayURLs: [])
+            try await engine.enqueueForPublish([request(number, relayURL: healthyURL)])
+            for _ in 0..<50 where await relay.publishedEventIDs.isEmpty {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            await engine.handle(.acknowledgement(eventID: event(number).id, accepted: false, message: message), from: healthyURL)
+            let pending = await engine.pendingOutboxRecords()
+            XCTAssertEqual(pending.count, 1, "\(message) is retried")
+        }
+    }
+
     func testSilentRelayStillTimesOutAndRetries() async throws {
         let relay = SuspensibleRelayTransport()
         let engine = engine(transports: [healthyURL: relay], publishAcknowledgementTimeout: .milliseconds(300))

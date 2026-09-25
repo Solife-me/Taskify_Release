@@ -10,6 +10,8 @@ export function classifyRelayRejection(message) {
         return "rate-limited";
     if (text.startsWith("blocked:") || text.startsWith("restricted:") || text.startsWith("invalid:"))
         return "terminal";
+    if (text.startsWith("deleted:") || text.startsWith("replaced:"))
+        return "superseded";
     return "retry";
 }
 /**

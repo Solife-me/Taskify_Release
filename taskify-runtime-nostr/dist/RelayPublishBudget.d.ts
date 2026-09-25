@@ -4,6 +4,12 @@ export type RelayRejectionKind =
 /** Will never be accepted by this relay (blocked, restricted, invalid): stop sending it there. */
  | "terminal"
 /**
+ * The relay already holds something at least as new: a NIP-09 deletion covering the event
+ * (strfry: `deleted: user requested deletion`) or a newer version of its address (`replaced:`).
+ * It will never take the event and has no need to, so it counts as done with it.
+ */
+ | "superseded"
+/**
  * Transient (timeouts, `error:`, `pow:`, a false `duplicate:`): retry with the normal backoff.
  * Only a true acceptance confirms delivery (nostr-sync-audit-2026-09-03).
  */

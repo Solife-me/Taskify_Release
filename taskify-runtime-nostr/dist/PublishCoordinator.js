@@ -116,6 +116,11 @@ export class PublishCoordinator {
         }
         const now = Date.now();
         const accepted = relayUrlsFromPublishResult(publishedRelays);
+        for (const [url, relayError] of relayErrors) {
+            if (!accepted.includes(url) && classifyRelayRejection(errorToMessageText(relayError)) === "superseded") {
+                accepted.push(url);
+            }
+        }
         const refused = [];
         const rateLimited = [];
         let transientFailure = false;
@@ -129,6 +134,8 @@ export class PublishCoordinator {
                     break;
                 case "terminal":
                     refused.push(url);
+                    break;
+                case "superseded":
                     break;
                 default:
                     transientFailure = true;

@@ -332,6 +332,15 @@ enum NostrRelayRejection {
         case transient
     }
 
+    /// The relay already holds something at least as new as this event: a NIP-09 deletion that
+    /// covers it (strfry: `deleted: user requested deletion`) or a newer version of the same
+    /// address (`replaced: have newer event`). It will never accept the event, and has no need
+    /// to, so this relay counts as done with it. A false `duplicate:` still retries.
+    static func isSuperseded(_ message: String) -> Bool {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return text.hasPrefix("deleted:") || text.hasPrefix("replaced:")
+    }
+
     static func isRateLimited(_ message: String) -> Bool {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         // noteguard documents "rate-limit: …" rather than NIP-01's "rate-limited:".
@@ -1506,7 +1515,7 @@ public actor TaskSyncEngine {
                 if wasInFlight { scheduleOutboxFlush(to: relayURL) }
                 return
             }
-            if accepted {
+            if accepted || NostrRelayRejection.isSuperseded(message) {
                 let completed = try? await outbox.markAccepted(
                     eventID: eventID,
                     relayURL: relayURL

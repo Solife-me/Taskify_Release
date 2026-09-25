@@ -44,6 +44,9 @@ test("rejections are classified by their NIP-01 prefix", () => {
   assert.equal(classifyRelayRejection("blocked: pubkey not allowed"), "terminal");
   assert.equal(classifyRelayRejection("restricted: paid relay"), "terminal");
   assert.equal(classifyRelayRejection("invalid: event too large"), "terminal");
+  // strfry: a deletion covers the event, or a newer version of its address is stored.
+  assert.equal(classifyRelayRejection("deleted: user requested deletion"), "superseded");
+  assert.equal(classifyRelayRejection("replaced: have newer event"), "superseded");
   // Only a true acceptance confirms delivery; a false OK with duplicate text is retried.
   assert.equal(classifyRelayRejection("duplicate: already have this event"), "retry");
   assert.equal(classifyRelayRejection("pow: difficulty 28 required"), "retry");

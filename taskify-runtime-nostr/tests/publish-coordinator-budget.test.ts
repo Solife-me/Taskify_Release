@@ -189,3 +189,21 @@ test("a transient failure on the relays tried now doesn't fail a write still pac
     publisher.shutdown();
   }
 });
+
+test("a relay that already holds a deletion or newer version counts as done with the event", async () => {
+  const store = new MemoryOutboxStore();
+  const publisher = coordinator(store, new RelayPublishBudget());
+  const original = NDKEvent.prototype.publish;
+  NDKEvent.prototype.publish = async function () {
+    this.emit("relay:publish:failed", relay("wss://strfry"), new Error("deleted: user requested deletion"));
+    return new Set([relay("wss://ok")]) as never;
+  };
+  try {
+    await publisher.publish(note("tombstone"), { relayUrls: ["wss://ok", "wss://strfry"], signer: generateSecretKey() });
+    // It would never be accepted there, so it must not stay queued for that relay.
+    assert.equal(store.rows.size, 0);
+  } finally {
+    NDKEvent.prototype.publish = original;
+    publisher.shutdown();
+  }
+});
