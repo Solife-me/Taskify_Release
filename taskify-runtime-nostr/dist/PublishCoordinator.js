@@ -81,7 +81,7 @@ export class PublishCoordinator {
             const { ready, deferredUntil } = this.publishBudget.take(intendedRelays, Date.now());
             notBefore = deferredUntil;
             if (!ready.length) {
-                return { createdAt, event: event.rawEvent(), ackedRelays: [], refusedRelays: [], notBefore };
+                return { createdAt, event: event.rawEvent(), ackedRelays: [], refusedRelays: [], notBefore, transientFailure: false };
             }
             if (ready.length < intendedRelays.length)
                 targetSet = await this.resolveRelaySetWithEnsure(ready);
@@ -143,8 +143,10 @@ export class PublishCoordinator {
         }
         const ackedRelays = normalizeRelayUrls(accepted);
         const refusedRelays = normalizeRelayUrls(refused);
-        const onlyPacedOrLimited = !transientFailure && !refusedRelays.length && notBefore != null;
-        if (!ackedRelays.length && !onlyPacedOrLimited) {
+        // Relays still waiting on their budget or a rate-limit backoff will get the event from the
+        // outbox shortly, so the write is queued rather than failed, even if every relay tried now
+        // refused it or failed transiently. Fail only when no relay took it and none is pending.
+        if (!ackedRelays.length && notBefore == null) {
             const failure = thrown ?? new NostrWriteQueuedError();
             // Carried to the outbox so a refusing relay is held back rather than retried at once.
             if (failure && typeof failure === "object")
@@ -154,7 +156,7 @@ export class PublishCoordinator {
         const raw = event.rawEvent();
         if (accepted.length)
             this.eventCache?.add(raw);
-        return { createdAt, event: raw, ackedRelays, refusedRelays, notBefore };
+        return { createdAt, event: raw, ackedRelays, refusedRelays, notBefore, transientFailure };
     }
     async resolveRelaySetWithEnsure(relayUrls) {
         return this.resolveRelaySet(normalizeRelayUrls(relayUrls || []));
@@ -241,7 +243,7 @@ export class PublishCoordinator {
         try {
             const result = await this.publishNow(event, relaySet);
             if (outboxId) {
-                await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id, result.notBefore, result.refusedRelays);
+                await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id, result.notBefore, result.refusedRelays, result.transientFailure);
             }
             return result;
         }
@@ -255,10 +257,10 @@ export class PublishCoordinator {
                 this.activeOutboxIds.delete(outboxId);
         }
     }
-    async markOutboxSuccess(outboxId, ackedRelays, eventId, notBefore = null, refusedRelays = []) {
-        return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays));
+    async markOutboxSuccess(outboxId, ackedRelays, eventId, notBefore = null, refusedRelays = [], transientFailure = false) {
+        return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays, transientFailure));
     }
-    async markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays) {
+    async markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays, transientFailure) {
         if (!this.outboxStore)
             return;
         const mutation = await this.outboxStore.get(outboxId).catch(() => undefined);
@@ -278,7 +280,7 @@ export class PublishCoordinator {
         // Relays that were only paced or rate limited are due when their budget allows, and
         // waiting on the budget is not a failed attempt, so it doesn't grow the backoff.
         const now = Date.now();
-        const pacedOnly = notBefore != null && ackedRelays.length === 0 && refusedRelays.length === 0;
+        const pacedOnly = notBefore != null && ackedRelays.length === 0 && refusedRelays.length === 0 && !transientFailure;
         const base = pacedOnly ? { ...mutation, updatedAt: now } : recordOutboxRelayRejections(next, refusedRelays, now);
         let delay = pacedOnly
             ? Math.max(0, notBefore - now)
