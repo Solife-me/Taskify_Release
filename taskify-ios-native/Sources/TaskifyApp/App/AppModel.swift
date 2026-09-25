@@ -311,6 +311,9 @@ final class AppModel {
     @ObservationIgnored private var sharedInboxQueue = NIP17InboxProcessingQueue()
     @ObservationIgnored private var sharedInboxQueueIdentity: String?
     @ObservationIgnored private var accountBackupBaseline: NostrAppBackupPayload?
+    /// Whether this launch has finished looking for the account's synced settings (found or not).
+    /// Until then a setting that names a board may simply not have arrived yet.
+    @ObservationIgnored private var accountSyncSettled = false
     @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
     @ObservationIgnored private var lastAccountBackupCreatedAt = 0
     @ObservationIgnored private var lastAccountBackupCheckAt: Date?
@@ -3788,9 +3791,12 @@ final class AppModel {
         // Older native builds left these PWA fields in preservedSyncFields and used a different
         // series id. Promote them into the native model so review history survives local storage
         // and future Nostr publishes.
+        // Deleted tasks are left alone, and completed ones are updated locally but not
+        // republished: stamping settings onto every task of a long review history republished
+        // hundreds of them whenever a setting differed (a fresh sign-in did it twice).
         for index in snapshot.tasks.indices {
             var task = snapshot.tasks[index]
-            guard isScriptureMemoryTask(task) else { continue }
+            guard isScriptureMemoryTask(task), !task.isDeleted else { continue }
             var taskChanged = false
 
             if task.scriptureMemoryID == nil,
@@ -3842,7 +3848,7 @@ final class AppModel {
 
             if taskChanged {
                 pendingTaskEdits[index] = task
-                updatedTaskIDs.insert(task.id)
+                if !task.completed { updatedTaskIDs.insert(task.id) }
             }
         }
 
@@ -3882,7 +3888,11 @@ final class AppModel {
         let selectedBoard = scriptureMemoryBoardID.flatMap { boardID in
             eligibleBoards.first(where: { $0.id == boardID })
         }
-        guard let targetBoard = selectedBoard ?? eligibleBoards.first,
+        // Without a configured board, fall back to the first eligible one only once this device
+        // knows the synced settings and relay history: on a fresh sign-in that fallback is the
+        // empty startup board, and the real setting arrives seconds later.
+        let fallbackAllowed = accountSyncSettled && canGenerateSharedTasks
+        guard let targetBoard = selectedBoard ?? (fallbackAllowed ? eligibleBoards.first : nil),
               targetBoard.kind != .list || !targetBoard.columns.isEmpty else {
             if stateChanged { persistScriptureMemoryState() }
             if !updatedTaskIDs.isEmpty {
@@ -3900,9 +3910,10 @@ final class AppModel {
         }
 
         let calendar = weekCalendar
+        // Only open review tasks follow the configured board; history stays where it was.
         for index in snapshot.tasks.indices {
             var task = snapshot.tasks[index]
-            guard isScriptureMemoryTask(task) else { continue }
+            guard isScriptureMemoryTask(task), !task.isDeleted, !task.completed else { continue }
             var taskChanged = false
             if task.boardID != targetBoard.id {
                 task.boardID = targetBoard.id
@@ -4929,6 +4940,7 @@ final class AppModel {
             applyIdentity(imported)
             accountBackupPublishTask?.cancel()
             accountBackupBaseline = nil
+            accountSyncSettled = false
             managedAccountBackupBoardIDs = []
             lastAccountBackupCreatedAt = 0
             accountBackupPublishPending = false
@@ -5038,6 +5050,12 @@ final class AppModel {
             }.value
             guard !Task.isCancelled else { return }
             isCheckingAccountBackup = false
+            let wasSettled = accountSyncSettled
+            accountSyncSettled = true
+            defer {
+                // Work deferred while settings were unknown (Scripture Memory's board) can run now.
+                if !wasSettled { reconcileScriptureMemory() }
+            }
             if let decodedPayload {
                 applyAccountSyncPayload(decodedPayload)
             } else if candidates.isEmpty {
