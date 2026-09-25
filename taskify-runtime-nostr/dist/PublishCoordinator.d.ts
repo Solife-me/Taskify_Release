@@ -12,6 +12,8 @@ export type PublishOptions = {
     debounceMs?: number;
     returnEvent?: boolean;
     skipIfIdentical?: boolean;
+    /** Part of a board republish (see `limitQueuedRepublish`). */
+    republish?: boolean;
 };
 export type PublishResult = number | {
     createdAt: number;
@@ -79,6 +81,11 @@ export declare class PublishCoordinator {
     }): Promise<void>;
     private drainOutboxInternal;
     private retryOutboxMutation;
+    /**
+     * Stops sending a board's queued republish to public relays; it still reaches `keptRelayUrls`
+     * (Taskify's own relays by default). Returns how many queued rows changed.
+     */
+    limitQueuedRepublish(boardTag: string, keptRelayUrls?: readonly string[]): Promise<number>;
     shutdown(): void;
     publish(templateOrEvent: EventTemplate | NDKEvent, options?: PublishOptions): Promise<PublishResult>;
     publishRaw(event: NostrEvent, options?: PublishOptions): Promise<PublishResult>;

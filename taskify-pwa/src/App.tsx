@@ -245,6 +245,7 @@ import {
 import { parseFileServers, findServerEntry } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
 import { SessionPool } from "./nostr/SessionPool";
+import { NostrSession } from "./nostr/NostrSession";
 import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import {
   loadDefaultRelays,
@@ -3261,14 +3262,22 @@ export default function App() {
       tasks
         .filter((t) => t.boardId === boardId)
         .forEach((t) => {
-          maybePublishTaskRef.current?.(t, board, { skipBoardMetadata: true }).catch(() => {});
+          maybePublishTaskRef.current?.(t, board, { skipBoardMetadata: true, republish: true }).catch(() => {});
         });
       calendarEvents
         .filter((ev) => ev.boardId === boardId)
         .forEach((ev) => {
-          maybePublishCalendarEventRef.current?.(ev, board, { skipBoardMetadata: true }).catch(() => {});
+          maybePublishCalendarEventRef.current?.(ev, board, { skipBoardMetadata: true, republish: true }).catch(() => {});
         });
     }
+  }
+
+  /** Stops sending a board's queued republish to public relays; it still goes to Taskify's relays. */
+  async function clearQueuedRepublish(boardId: string): Promise<number> {
+    const board = boards.find((x) => x.id === boardId);
+    if (!board?.nostr) return 0;
+    const session = await NostrSession.init(getBoardRelays(board));
+    return session.publisher.limitQueuedRepublish(boardTag(board.nostr.boardId));
   }
 
   function addListColumn(boardId: string, name?: string): string | null {
@@ -6030,7 +6039,7 @@ export default function App() {
   async function maybePublishTask(
     t: Task,
     boardOverride?: Board,
-    options?: { skipBoardMetadata?: boolean }
+    options?: { skipBoardMetadata?: boolean; republish?: boolean }
   ) {
     const b = boardOverride || findBoardByCompoundChildId(boards, t.boardId);
     if (!b || !isShared(b) || !b.nostr) return;
@@ -6098,7 +6107,7 @@ export default function App() {
         tags,
         content,
         created_at: optimisticAt,
-      }, { sk: boardKeys.sk });
+      }, { sk: boardKeys.sk, republish: options?.republish });
       // Update local task clock so immediate refreshes don't revert state
       if (!nostrIdxRef.current.taskClock.has(bTag)) {
         nostrIdxRef.current.taskClock.set(bTag, new Map());
@@ -6428,7 +6437,7 @@ export default function App() {
   async function maybePublishCalendarEvent(
     event: CalendarEvent,
     boardOverride?: Board,
-    options?: { skipBoardMetadata?: boolean },
+    options?: { skipBoardMetadata?: boolean; republish?: boolean },
   ) {
     if (event.readOnly) return;
     const creator = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
@@ -6487,7 +6496,7 @@ export default function App() {
         tags: canonicalTags,
         content: canonicalContent,
         created_at: Math.floor(Date.now() / 1000),
-      }, { sk: boardKeys.sk });
+      }, { sk: boardKeys.sk, republish: options?.republish });
       const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, updatedEvent.id);
       const viewContent = await encryptCalendarPayloadWithEventKey(viewPayload, mergedSecrets.eventKey);
       await nostrPublish(relays, {
@@ -6495,7 +6504,7 @@ export default function App() {
         tags: [["d", updatedEvent.id], ["a", canonicalAddr]],
         content: viewContent,
         created_at: Math.floor(Date.now() / 1000),
-      }, { sk: boardKeys.sk });
+      }, { sk: boardKeys.sk, republish: options?.republish });
       if (!nostrIdxRef.current.calendarClock.has(bTag)) {
         nostrIdxRef.current.calendarClock.set(bTag, new Map());
       }
@@ -12487,6 +12496,7 @@ export default function App() {
             onJoinBoard={joinSharedBoard}
             onRegenerateBoardId={regenerateBoardId}
             onBoardChanged={handleBoardChanged}
+            onClearQueuedRepublish={clearQueuedRepublish}
             onResyncBoardHistory={handleResyncBoardHistory}
             onClose={closeSettings}
           />

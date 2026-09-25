@@ -127,15 +127,15 @@ export class SessionPool {
     }, events[0] as NostrEvent);
   }
 
-  publish(relays: string[], event: NostrEvent): Promise<unknown> {
+  publish(relays: string[], event: NostrEvent, options?: { republish?: boolean }): Promise<unknown> {
     const relayList = normalizeRelayUrls(relays);
     return NostrSession.init(relayList).then((session) =>
-      session.publishRaw(event, { relayUrls: relayList, returnEvent: false }),
+      session.publishRaw(event, { relayUrls: relayList, returnEvent: false, republish: options?.republish }),
     );
   }
 
-  publishEvent(relays: string[], event: NostrEvent): Promise<unknown> {
-    return this.publish(relays, event);
+  publishEvent(relays: string[], event: NostrEvent, options?: { republish?: boolean }): Promise<unknown> {
+    return this.publish(relays, event, options);
   }
 
   close() {

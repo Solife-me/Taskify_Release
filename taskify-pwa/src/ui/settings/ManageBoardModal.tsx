@@ -35,6 +35,8 @@ interface ManageBoardModalProps {
   onShareBoard: (boardId: string, relaysCsv?: string) => void;
   onBoardChanged: (boardId: string, options?: { republishTasks?: boolean; board?: Board }) => void;
   onRegenerateBoardId: (boardId: string) => void;
+  /** Stops sending the board's queued republish to public relays; resolves to how many changed. */
+  onClearQueuedRepublish?: (boardId: string) => Promise<number>;
   shouldReloadForNavigation: () => boolean;
   changeBoard: (id: string) => void;
   currentBoardId: string;
@@ -53,6 +55,7 @@ export function ManageBoardModal({
   onShareBoard,
   onBoardChanged,
   onRegenerateBoardId,
+  onClearQueuedRepublish,
   shouldReloadForNavigation,
   changeBoard,
   currentBoardId,
@@ -69,6 +72,7 @@ export function ManageBoardModal({
   const [boardKeyInfo, setBoardKeyInfo] = useState<{ npub: string; nsec: string; pk: string } | null>(null);
   const [staleCleanupBusy, setStaleCleanupBusy] = useState(false);
   const [staleCleanupMessage, setStaleCleanupMessage] = useState<string | null>(null);
+  const [republishClearMessage, setRepublishClearMessage] = useState<string | null>(null);
 
   // ─── Derived data ──────────────────────────────────────────────────────────
   const availableCompoundBoards = useMemo(() => {
@@ -896,6 +900,21 @@ export function ManageBoardModal({
                   className="ghost-button button-sm pressable"
                   onClick={()=>onBoardChanged(board.id, { republishTasks: true, board })}
                 >Republish metadata</button>
+                {onClearQueuedRepublish && (
+                  <button
+                    className="ghost-button button-sm pressable"
+                    onClick={async ()=>{
+                      try {
+                        const changed = await onClearQueuedRepublish(board.id);
+                        setRepublishClearMessage(changed
+                          ? `Stopped sending ${changed} republished record${changed === 1 ? "" : "s"} to public relays. They still go to Taskify's relay, so your other devices get them.`
+                          : "No queued republish is waiting on public relays.");
+                      } catch (error: any) {
+                        setRepublishClearMessage(error?.message || "Unable to clear the queued republish.");
+                      }
+                    }}
+                  >Clear queued republish</button>
+                )}
                 <button className="ghost-button button-sm pressable text-rose-400" onClick={()=>{
                 if (!board?.nostr) return;
                 const impactedCompoundIds = boards
@@ -919,6 +938,9 @@ export function ManageBoardModal({
                 }
                 }}>Stop sharing</button>
               </div>
+              {republishClearMessage && (
+                <div className="text-xs text-secondary mt-1">{republishClearMessage}</div>
+              )}
             </>
           ) : (
             <>

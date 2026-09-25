@@ -38,6 +38,7 @@ import {
   buildCalendarViewEnvelope,
 } from "./shared/calendarEnvelope.js";
 import { createCliNostrSession } from "./shared/nodeRuntimeSession.js";
+import { MAX_CONCURRENT_BOARD_FETCHES, mapWithConcurrency } from "./shared/concurrency.js";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -713,7 +714,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           await ensureConnected();
           const childIds = board.children ?? [];
           const seen = new Set<string>();
-          const childResults = await Promise.all(childIds.map(async (childId) => {
+          const childResults = await mapWithConcurrency(childIds, MAX_CONCURRENT_BOARD_FETCHES, async (childId) => {
             const childEntry = resolveBoardEntry(config, childId) ?? { id: childId, name: childId };
             const childEvents = await fetchBoardEvents(childId);
             const latest = await pickLatestParsedEventsByKey(
@@ -722,7 +723,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
               (event) => parseDecryptedEvent(event, childId, (childEntry as BoardEntry).name ?? childId),
             );
             return { childId, latest };
-          }));
+          });
           for (const { childId, latest } of childResults) {
             for (const { parsed: record } of latest.values()) {
               if (seen.has(record.id)) continue;

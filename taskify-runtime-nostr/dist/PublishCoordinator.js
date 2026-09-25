@@ -1,7 +1,7 @@
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import { createNostrOutboxMutation, cloneNostrEvent, earliestRejectionRelease, recordOutboxRelayRejections, markOutboxPublishFailure, mergeOutboxRelayAcks, pendingRelayUrlsForMutation, } from "./NostrOutbox.js";
+import { createNostrOutboxMutation, cloneNostrEvent, earliestRejectionRelease, recordOutboxRelayRejections, markOutboxPublishFailure, mergeOutboxRelayAcks, narrowRepublishedMutations, pendingRelayUrlsForMutation, } from "./NostrOutbox.js";
 import { applyProofOfWork } from "./ProofOfWork.js";
-import { RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
+import { FIRST_PARTY_RELAYS, RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 export class NostrWriteQueuedError extends Error {
     code = "WRITE_QUEUED";
@@ -229,6 +229,7 @@ export class PublishCoordinator {
                 replaceableKey: args.replaceableKey,
                 existing,
                 nextAttemptAt: args.nextAttemptAt ?? null,
+                isRepublish: args.isRepublish,
             });
             try {
                 await this.outboxStore.put(mutation);
@@ -402,6 +403,43 @@ export class PublishCoordinator {
         const event = new NDKEvent(this.ndk, cloneNostrEvent(row.payload.event));
         await this.publishNowWithOutbox(event, relaySet, row.id);
     }
+    /**
+     * Stops sending a board's queued republish to public relays; it still reaches `keptRelayUrls`
+     * (Taskify's own relays by default). Returns how many queued rows changed.
+     */
+    async limitQueuedRepublish(boardTag, keptRelayUrls = FIRST_PARTY_RELAYS) {
+        if (!this.outboxStore)
+            return 0;
+        const rows = await this.outboxStore.listPending();
+        const { updated, completedIds } = narrowRepublishedMutations(rows, { boardTag, keptRelayUrls });
+        let changed = 0;
+        const apply = async (id, eventId, write) => {
+            if (this.activeOutboxIds.has(id))
+                return;
+            await this.withOutboxLock(id, async () => {
+                const current = await this.outboxStore.get(id).catch(() => undefined);
+                // Skip a row replaced by a newer event since it was read.
+                if (!current || current.payload.event.id !== eventId)
+                    return;
+                await write();
+                changed += 1;
+            });
+        };
+        for (const row of updated) {
+            await apply(row.id, row.payload.event.id, () => this.outboxStore.put(row));
+        }
+        const completed = new Map(rows.map((row) => [row.id, row]));
+        for (const id of completedIds) {
+            const row = completed.get(id);
+            if (!row)
+                continue;
+            await apply(id, row.payload.event.id, async () => {
+                await this.outboxStore.delete(id);
+                this.clearOutboxRetry(id);
+            });
+        }
+        return changed;
+    }
     shutdown() {
         for (const timer of this.retryTimers.values()) {
             clearTimeout(timer);
@@ -451,6 +489,7 @@ export class PublishCoordinator {
                 relayUrls,
                 replaceableKey,
                 nextAttemptAt: Date.now() + delay,
+                isRepublish: options?.republish,
             });
             if (existing) {
                 existing.event = event;
@@ -470,7 +509,7 @@ export class PublishCoordinator {
                 pending.rejecters.push(reject);
             });
         }
-        const queuedOutboxId = await this.enqueueOutbox({ event: raw, relayUrls, replaceableKey });
+        const queuedOutboxId = await this.enqueueOutbox({ event: raw, relayUrls, replaceableKey, isRepublish: options?.republish });
         const result = await this.publishNowWithOutbox(event, relaySet, queuedOutboxId);
         return options?.returnEvent ? toPublicEventResult(result) : result.createdAt;
     }

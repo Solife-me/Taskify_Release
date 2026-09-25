@@ -55,6 +55,7 @@ export function SettingsModal({
   onShareBoard,
   onJoinBoard,
   onRegenerateBoardId,
+  onClearQueuedRepublish,
   onBoardChanged,
   onResyncBoardHistory,
   onClose,
@@ -83,6 +84,7 @@ export function SettingsModal({
   onShareBoard: (boardId: string, relaysCsv?: string) => void;
   onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
   onRegenerateBoardId: (boardId: string) => void;
+  onClearQueuedRepublish?: (boardId: string) => Promise<number>;
   onBoardChanged: (
     boardId: string,
     options?: { republishTasks?: boolean; board?: Board },
@@ -520,6 +522,7 @@ export function SettingsModal({
           onShareBoard={onShareBoard}
           onBoardChanged={onBoardChanged}
           onRegenerateBoardId={onRegenerateBoardId}
+          onClearQueuedRepublish={onClearQueuedRepublish}
           shouldReloadForNavigation={shouldReloadForNavigation}
           changeBoard={changeBoard}
           currentBoardId={currentBoardId}
