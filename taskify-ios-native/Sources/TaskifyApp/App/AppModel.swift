@@ -1646,7 +1646,8 @@ final class AppModel {
     }
 
     func toggleCompletion(_ taskID: String) {
-        let existingIDs = Set(snapshot.tasks.map(\.id))
+        // Live before, so a next occurrence that took over a deleted record's id still counts as new.
+        let existingIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
         guard snapshot.toggleCompletion(
             taskID: taskID,
             editorPublicKey: identityPublicKey.nilIfEmpty,
@@ -1663,7 +1664,7 @@ final class AppModel {
             syncIDs.append(taskID)
         }
         for task in snapshot.tasks
-        where !existingIDs.contains(task.id) && !reconciledTaskIDs.contains(task.id) {
+        where !task.isDeleted && !existingIDs.contains(task.id) && !reconciledTaskIDs.contains(task.id) {
             syncIDs.append(task.id)
         }
         synchronizeTasks(syncIDs)
@@ -1698,8 +1699,8 @@ final class AppModel {
     func completeTasks<S: Sequence>(_ taskIDs: S) where S.Element == String {
         // Bulk counterpart to `toggleCompletion`: toggle every task through one local copy, then
         // reconcile and publish once, instead of invalidating, reconciling and refreshing
-        // notifications once per task.
-        let existingIDs = Set(snapshot.tasks.map(\.id))
+        // notifications once per task. Live ids only, as in `toggleCompletion`.
+        let existingIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
         var toggledIDs: [String] = []
         var updated = snapshot
         for taskID in taskIDs
@@ -1721,7 +1722,7 @@ final class AppModel {
         let toggledIDSet = Set(toggledIDs)
         var syncIDs: [String] = []
         for task in snapshot.tasks
-        where (toggledIDSet.contains(task.id) || !existingIDs.contains(task.id))
+        where (toggledIDSet.contains(task.id) || (!task.isDeleted && !existingIDs.contains(task.id)))
             && !reconciledTaskIDs.contains(task.id) {
             syncIDs.append(task.id)
         }
@@ -4294,7 +4295,7 @@ final class AppModel {
         // direct write to `snapshot` fires its didSet — a lookup-cache invalidation, a revision
         // bump, and a UI invalidation — so republishing a large board must not write per task.
         var updated = snapshot
-        let tasksByID = Dictionary(uniqueKeysWithValues: refreshedTasks.map { ($0.id, $0) })
+        let tasksByID = Dictionary(refreshedTasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for index in updated.tasks.indices {
             if let refreshed = tasksByID[updated.tasks[index].id],
                updated.tasks[index].boardID == boardID {

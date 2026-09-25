@@ -1102,7 +1102,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
 
         if let beforeTaskID, beforeTaskID == taskID { return nil }
 
-        let originalTasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
+        // Ids are unique after load repair; don't trap on a drop if one ever slips through.
+        let originalTasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         let sourceBoardID = tasks[taskIndex].boardID
         let sourceColumnID = tasks[taskIndex].columnID
@@ -1429,6 +1430,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             timeZoneIdentifier: completedTask.dueTimeZone
         )
         guard !tasks.contains(where: { $0.id == nextID && !$0.isDeleted }) else { return }
+        // Ids are date-derived, so a deleted record of this occurrence (deleted here, or synced
+        // from another device) can already hold the id. The new occurrence replaces it in place:
+        // appending would leave two tasks with one id, which id-keyed lookups trap on.
+        let deletedIndex = tasks.firstIndex { $0.id == nextID }
 
         let nextColumnID: String?
         if let board = boards.first(where: { $0.id == completedTask.boardID }), board.kind == .week {
@@ -1451,7 +1456,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         let resetSubtasks = completedTask.subtasks?.map {
             TaskSubtask(id: $0.id, title: $0.title, completed: false)
         }
-        tasks.append(TaskItem(
+        let next = TaskItem(
             id: nextID,
             boardID: completedTask.boardID,
             title: completedTask.title,
@@ -1485,7 +1490,16 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             lastEditedBy: editorPublicKeyOrFallback(completedTask),
             streak: completedTask.streak,
             longestStreak: completedTask.longestStreak
-        ))
+        )
+        if let deletedIndex {
+            // Keep the deleted record's clock until the new occurrence is published, so a relay
+            // replaying that older deletion doesn't win the merge and delete it again.
+            var revived = next
+            revived.nostrUpdatedAt = tasks[deletedIndex].nostrUpdatedAt
+            tasks[deletedIndex] = revived
+        } else {
+            tasks.append(next)
+        }
     }
 
     private func editorPublicKeyOrFallback(_ task: TaskItem) -> String? {
@@ -1996,6 +2010,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             )
         }
         _ = applyRecurringTaskSeriesCutoffs()
+        deduplicateTaskIDs()
         _ = deduplicateRecurringTaskOccurrences()
         for index in boards.indices {
             if boards[index].nostrBoardID?.isEmpty != false {
@@ -2065,6 +2080,35 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             return candidate.isDeleted
         }
         return false
+    }
+
+    /// Keeps one task per id. Id-keyed lookups (moving a task, republishing a board) trap on a
+    /// duplicate, and older builds could leave one: completing a recurring task appended its next
+    /// occurrence beside a deleted record that already held the date-derived id.
+    private mutating func deduplicateTaskIDs() {
+        var indexByID = [String: Int](minimumCapacity: tasks.count)
+        var repaired: [TaskItem] = []
+        repaired.reserveCapacity(tasks.count)
+        for task in tasks {
+            guard let existingIndex = indexByID[task.id] else {
+                indexByID[task.id] = repaired.count
+                repaired.append(task)
+                continue
+            }
+            if Self.prefersTaskVersion(task, over: repaired[existingIndex]) {
+                repaired[existingIndex] = task
+            }
+        }
+        if repaired.count != tasks.count { tasks = repaired }
+    }
+
+    /// The newer version wins; one not yet published is a pending local change, so it is newest.
+    /// On a tie the live version beats a deleted one.
+    private static func prefersTaskVersion(_ candidate: TaskItem, over existing: TaskItem) -> Bool {
+        let candidateClock = candidate.nostrUpdatedAt ?? Int.max
+        let existingClock = existing.nostrUpdatedAt ?? Int.max
+        if candidateClock != existingClock { return candidateClock > existingClock }
+        return existing.isDeleted && !candidate.isDeleted
     }
 
     /// Collapses PWA/native representations of the same frequent recurring occurrence. Older
