@@ -602,6 +602,16 @@ public actor TaskSyncEngine {
     // NIP-42 authentication state, keyed by relayURL.
     private var identity: NostrIdentity?
     private var relayAuthChallenges: [String: String] = [:]
+    /// Relays that refused this client's NIP-42 AUTH (strfry without `serviceUrl` answers every
+    /// AUTH with "relay needs serviceUrl to be configured"), and until when to stop offering it.
+    /// Such a relay still serves everything that doesn't need auth; only the subscriptions that
+    /// do (a private inbox) go without it there.
+    private var relayAuthUnavailableUntil: [String: Date] = [:]
+    private static let relayAuthRetryInterval: TimeInterval = 6 * 60 * 60
+
+    private func isRelayAuthUnavailable(_ relayURL: String, now: Date = Date()) -> Bool {
+        (relayAuthUnavailableUntil[relayURL] ?? .distantPast) > now
+    }
     private var relayAuthTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var relayAuthEventIDs: [String: String] = [:]
     private var pendingAuthResubscriptions: [String: Set<String>] = [:]
@@ -1528,11 +1538,13 @@ public actor TaskSyncEngine {
                     await markRelayOnline(relayURL)
                     scheduleOutboxFlush()
                 } else {
+                    // The relay can't authenticate us (or won't). That costs only what needs
+                    // auth there; dropping the connection lost board sync and publishing too,
+                    // and reconnecting replayed history only to be refused again.
+                    relayAuthUnavailableUntil[relayURL] = Date().addingTimeInterval(Self.relayAuthRetryInterval)
                     pendingAuthResubscriptions.removeValue(forKey: relayURL)
-                    relayPhases[relayURL] = .offline
-                    relayMessages[relayURL] = message
+                    relayMessages[relayURL] = "Sign-in unavailable here • private inbox uses other relays"
                     await emitStatus()
-                    scheduleReconnect(relayURL: relayURL)
                 }
                 return
             }
@@ -1568,6 +1580,10 @@ public actor TaskSyncEngine {
                 }
             } else if NostrRelayRejection.isRateLimited(message) {
                 await registerRateLimit(message: message, relayURL: relayURL)
+            } else if NostrRelayRejection.isAuthRequired(message), isRelayAuthUnavailable(relayURL) {
+                // It only takes this event with auth it can't do: hold it back like a refusal.
+                _ = try? await outbox.recordRejection(eventID: eventID, relayURL: relayURL)
+                scheduleOutboxFlush()
             } else if NostrRelayRejection.isAuthRequired(message) {
                 await handleAuthRequired(relayURL: relayURL)
             } else {
@@ -1608,6 +1624,7 @@ public actor TaskSyncEngine {
                 relayAuthEventIDs[relayURL] = nil
             }
             relayAuthChallenges[relayURL] = challenge
+            guard !isRelayAuthUnavailable(relayURL) else { return }
             await authenticate(relayURL: relayURL, challenge: challenge)
         case .closed(let subscriptionID, let message) where NostrRelayRejection.isAuthRequired(message):
             await handleAuthRequiredClose(subscriptionID: subscriptionID, relayURL: relayURL)
@@ -2159,6 +2176,7 @@ public actor TaskSyncEngine {
     }
 
     private func handleAuthRequired(relayURL: String) async {
+        guard !isRelayAuthUnavailable(relayURL) else { return }
         if relayPhases[relayURL] != .online {
             relayPhases[relayURL] = .syncing
         }
@@ -2171,6 +2189,12 @@ public actor TaskSyncEngine {
 
     private func handleAuthRequiredClose(subscriptionID: String, relayURL: String) async {
         guard isConfiguredSubscription(subscriptionID, relayURL: relayURL) else { return }
+        // Without auth there the subscription can't be served; leave it closed.
+        guard !isRelayAuthUnavailable(relayURL) else {
+            flushStartupBatches(relayURL: relayURL)
+            pendingSubscriptions[relayURL]?.remove(subscriptionID)
+            return
+        }
         pendingAuthResubscriptions[relayURL, default: []].insert(subscriptionID)
         await handleAuthRequired(relayURL: relayURL)
     }
