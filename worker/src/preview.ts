@@ -2,7 +2,9 @@
 // Fetches a URL, extracts OG/Twitter/JSON-LD metadata, and returns a normalized
 // preview payload. Includes fallback heuristics for blocked / metadata-poor pages.
 
-import { getPreviewFromContent } from "link-preview-js";
+// The package's default entry is Node-only from 5.0 (it loads undici, whose `require`s of Node
+// built-ins a Worker can't run, so deploys fail validation). Only the HTML parser is used here.
+import { getPreviewFromContent } from "link-preview-js/mobile";
 import { jsonResponse, JSON_HEADERS } from "./lib.ts";
 import { assertPublicHttpUrl, fetchPublicHttpUrl, UnsafePublicUrlError } from "./public-fetch.ts";
 
