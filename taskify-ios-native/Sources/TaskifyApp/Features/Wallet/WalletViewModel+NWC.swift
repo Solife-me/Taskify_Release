@@ -22,7 +22,11 @@ extension WalletViewModel {
     /// An NWC wallet replaces the ecash wallet for sending and receiving.
     var isNWCWalletActive: Bool { walletMode == .nwc && nwcConnected }
 
-    var nwcWalletLabel: String { nwcStatus?.label ?? "NWC wallet" }
+    var activeNWCWallet: NWCWalletSummary? {
+        nwcWallets.first { $0.id == activeNWCWalletID }
+    }
+
+    var nwcWalletLabel: String { activeNWCWallet?.name ?? nwcStatus?.label ?? "NWC wallet" }
 
     /// Shown in place of the NWC balance when it isn't known. Never a 0: an unreachable wallet
     /// showing 0 looks like the funds are gone.
@@ -36,7 +40,7 @@ extension WalletViewModel {
 
     /// Address shown on Receive: the user's choice, else the wallet's own lud16.
     var nwcReceiveAddress: String? {
-        nwcReceiveAddressOverride ?? nwcStatus?.connection.walletLightningAddress
+        activeNWCWallet?.displayedReceiveAddress ?? nwcStatus?.connection.walletLightningAddress
     }
 
     var ecashMintBalances: [CashuMintSummary] {
@@ -44,28 +48,51 @@ extension WalletViewModel {
     }
 
     func refreshNWC() async {
-        nwcConnected = await nwcService.connection != nil
+        nwcWallets = await nwcService.wallets
+        activeNWCWalletID = await nwcService.activeWalletID
+        nwcConnected = !nwcWallets.isEmpty
         guard nwcConnected else {
             nwcStatus = nil
+            nwcReceiveAddressOverride = nil
             return
         }
         if let status = await nwcService.status() { nwcStatus = status }
+        nwcReceiveAddressOverride = activeNWCWallet?.receiveAddress
         nwcMigrationJournal = await nwcService.lastMigrationJournal
     }
 
-    func connectNWC(uri: String) async throws {
+    func connectNWC(uri: String, name: String? = nil) async throws {
         isWorking = true
         defer { isWorking = false }
-        nwcStatus = try await nwcService.connect(uri: uri)
-        nwcConnected = true
+        nwcStatus = try await nwcService.connect(uri: uri, name: name)
+        await refreshNWC()
+        setWalletMode(.nwc)
     }
 
-    func disconnectNWC() async {
-        await nwcService.disconnect()
-        nwcConnected = false
-        nwcStatus = nil
-        // Without a connection there's no NWC wallet to use.
-        setWalletMode(.ecash)
+    func disconnectNWC(id: String? = nil) async {
+        if let id {
+            await nwcService.removeWallet(id: id)
+        } else {
+            await nwcService.disconnect()
+        }
+        await refreshNWC()
+        if nwcWallets.isEmpty {
+            // Without a connection there's no NWC wallet to use.
+            setWalletMode(.ecash)
+        } else if walletMode == .nwc {
+            await refreshNWC()
+        }
+    }
+
+    func selectNWCWallet(id: String) async throws {
+        _ = try await nwcService.selectWallet(id: id)
+        await refreshNWC()
+        setWalletMode(.nwc)
+    }
+
+    func renameNWCWallet(id: String, name: String) async throws {
+        try await nwcService.renameWallet(id: id, name: name)
+        await refreshNWC()
     }
 
     func setWalletMode(_ mode: TaskifyWalletMode) {
@@ -75,14 +102,22 @@ extension WalletViewModel {
         Task { await refresh() }
     }
 
-    func setNWCReceiveAddress(_ address: String?) throws {
+    func setNWCReceiveAddress(_ address: String?) async throws {
+        guard let activeNWCWalletID else {
+            throw NWCError.invalidConnection("Select an NWC wallet first.")
+        }
+        try await setNWCReceiveAddress(address, for: activeNWCWalletID)
+    }
+
+    func setNWCReceiveAddress(_ address: String?, for walletID: String) async throws {
         let trimmed = address?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         if !trimmed.isEmpty, !LnurlPayClient.isLightningAddress(trimmed) {
             throw NWCError.invalidConnection("Enter a lightning address like name@example.com")
         }
         let value = trimmed.isEmpty ? nil : trimmed
-        NWCWalletSettings().setReceiveAddress(value)
-        nwcReceiveAddressOverride = value
+        try await nwcService.setReceiveAddress(value, for: walletID)
+        if walletID == activeNWCWalletID { nwcReceiveAddressOverride = value }
+        nwcWallets = await nwcService.wallets
     }
 
     /// Moves every mint's ecash balance to the NWC wallet.
@@ -156,10 +191,42 @@ extension WalletViewModel {
         try await nwcService.transactions()
     }
 
+    /// Pays an invoice created by the selected NWC wallet from one eCash mint.
+    func swapEcashToNWC(amount: UInt64, sourceMintURL: String) async throws {
+        let invoice = try await createNWCInvoice(amount: amount)
+        let quote = try await prepareLightningPayment(
+            mintURL: sourceMintURL,
+            invoice: invoice.invoice,
+            amount: nil
+        )
+        _ = try await confirmLightningPayment(quote)
+        await refreshNWC()
+        statusMessage = "Moved \(formattedSats(amount)) to \(nwcWalletLabel)"
+    }
+
+    /// Pays a mint invoice from the selected NWC wallet. The normal outstanding-invoice monitor
+    /// finishes minting if issuance is not immediate.
+    func swapNWCToEcash(amount: UInt64, destinationMintURL: String) async throws {
+        let quote = try await createLightningReceiveQuote(mintURL: destinationMintURL, amount: amount)
+        _ = try await payWithNWC(invoice: quote.invoice)
+        _ = try? await checkLightningReceiveQuote(id: quote.id)
+        await refresh()
+        statusMessage = "Moved \(formattedSats(amount)) to Taskify eCash"
+    }
+
     func setSolifeNWCForward(handle: String, connection: String) async throws {
         guard let identity = try? KeychainIdentityStore().load() else { throw SolifeError.authenticationFailed }
         _ = try await SolifeClient.setNWCForward(identity: identity, handle: handle, connection: connection)
         await refreshSolifeAccount()
+    }
+
+    /// Explicit opt-in path: share the active Taskify NWC connection with solife.me so it can
+    /// create invoices for this address. The server restricts itself to get_info/make_invoice.
+    func shareActiveNWCWithSolife(handle: String) async throws {
+        guard let connection = await nwcService.activeConnectionURI else {
+            throw NWCError.invalidConnection("Select an NWC wallet first.")
+        }
+        try await setSolifeNWCForward(handle: handle, connection: connection)
     }
 
     func clearSolifeNWCForward(handle: String) async throws {

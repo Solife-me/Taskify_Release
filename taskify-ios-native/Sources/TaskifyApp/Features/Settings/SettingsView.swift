@@ -105,11 +105,6 @@ struct SettingsView: View {
                             appearanceCard
                         }
 
-                        settingsGroup("Wallet", systemImage: "bitcoinsign.circle.fill") {
-                            walletCurrencyCard
-                            p2pkRecipientKeysCard
-                        }
-
                         settingsGroup("Chat", systemImage: "bubble.left.and.text.bubble.right.fill") {
                             chatHistoryCard
                         }
@@ -2857,6 +2852,21 @@ private struct BoardManagerSheet: View {
                 }
             } label: {
                 Label("Republish current snapshot", systemImage: "icloud.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(recoveryBusy)
+
+            Button {
+                runRecoveryAction {
+                    let changed = try await model.limitQueuedRepublishToFirstPartyRelays(boardID: boardID)
+                    if changed == 0 {
+                        return "No queued republish is waiting on public relays."
+                    }
+                    return "Stopped sending \(changed) republished record\(changed == 1 ? "" : "s") to public relays. They still go to Taskify's relay, so your other devices get them."
+                }
+            } label: {
+                Label("Clear queued republish", systemImage: "xmark.icloud")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)

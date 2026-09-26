@@ -125,6 +125,42 @@ test("ensureWeekRecurrencesForCurrentWeek creates clone for current week", () =>
   assert.equal(out[1].createdAt, 123);
 });
 
+test("ensureWeekRecurrencesForCurrentWeek never recreates an occurrence deleted on the board", () => {
+  const task = {
+    id: "t1",
+    boardId: "b1",
+    title: "Recurring",
+    dueISO: "2026-03-05T00:00:00.000Z",
+    recurrence: { type: "weekly" },
+  } as SeriesTaskLike;
+  const published: string[] = [];
+  const options = {
+    weekStart: 0,
+    newTaskPosition: "bottom" as const,
+    dedupeRecurringInstances: (tasks: SeriesTaskLike[]) => tasks,
+    isFrequentRecurrence: () => true,
+    nextOccurrence: (dueISO: string) => (dueISO.startsWith("2026-03-05") ? "2026-03-12T00:00:00.000Z" : null),
+    startOfWeek: () => new Date("2026-03-08T00:00:00.000Z"),
+    recurringInstanceId: (seriesId: string, dueISO: string) => `${seriesId}:${dueISO}`,
+    isoDatePart: (iso: string) => iso.slice(0, 10),
+    taskDateKey: (t: SeriesTaskLike) => t.dueISO.slice(0, 10),
+    nextOrderForBoard: () => 10,
+    maybePublishTask: (clone: SeriesTaskLike) => { published.push(clone.id); },
+  };
+
+  // The deleted occurrence is no longer in the list; only the board's deletion record knows it.
+  const deleted = ensureWeekRecurrencesForCurrentWeek({
+    ...options,
+    tasks: [task],
+    isDeletedOccurrence: (boardId, taskId) => boardId === "b1" && taskId === "t1:2026-03-12T00:00:00.000Z",
+  });
+  assert.equal(deleted.length, 1);
+  assert.deepEqual(published, []);
+
+  const kept = ensureWeekRecurrencesForCurrentWeek({ ...options, tasks: [task] });
+  assert.equal(kept.length, 2, "Without a deletion the occurrence is created as before");
+});
+
 test("ensureWeekRecurrencesForCurrentWeek stops when recurrence does not advance", () => {
   const task = {
     id: "t1",

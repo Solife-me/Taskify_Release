@@ -56,7 +56,7 @@ export function tasksInSameSeries(a, b) {
         recurrenceSeriesFingerprint(a.recurrence) === recurrenceSeriesFingerprint(b.recurrence));
 }
 export function ensureWeekRecurrencesForCurrentWeek(options) {
-    const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, maybePublishTask, now = () => Date.now(), canGenerateForBoard = () => true, } = options;
+    const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, maybePublishTask, now = () => Date.now(), canGenerateForBoard = () => true, isDeletedOccurrence = () => false, } = options;
     const sow = startOfWeek(new Date(), weekStart).getTime();
     const out = dedupeRecurringInstances(tasks);
     let changed = out !== tasks;
@@ -93,8 +93,9 @@ export function ensureWeekRecurrencesForCurrentWeek(options) {
             if (nextStartOfWeek === sow) {
                 const cloneId = recurringInstanceId(seriesId, nextISO, task.recurrence, task.dueTimeZone);
                 const nextDateKey = isoDatePart(nextISO, task.dueTimeZone);
-                const exists = out.some((candidate) => candidate.id === cloneId ||
-                    (tasksInSameSeries(candidate, seriesSeed) && taskDateKey(candidate) === nextDateKey));
+                const exists = isDeletedOccurrence(task.boardId, cloneId) ||
+                    out.some((candidate) => candidate.id === cloneId ||
+                        (tasksInSameSeries(candidate, seriesSeed) && taskDateKey(candidate) === nextDateKey));
                 if (!exists) {
                     const clone = {
                         ...task,

@@ -28,7 +28,6 @@ import { Modal } from "../Modal";
 import { contactInitials, hexToBytes } from "./settingsConstants";
 import { BoardsSection } from "./BoardsSection";
 import { ViewSection } from "./ViewSection";
-import { WalletSection } from "./WalletSection";
 import { BibleSection } from "./BibleSection";
 import { PushSection } from "./PushSection";
 import { NostrSection } from "./NostrSection";
@@ -55,6 +54,7 @@ export function SettingsModal({
   onShareBoard,
   onJoinBoard,
   onRegenerateBoardId,
+  onClearQueuedRepublish,
   onBoardChanged,
   onResyncBoardHistory,
   onClose,
@@ -83,6 +83,7 @@ export function SettingsModal({
   onShareBoard: (boardId: string, relaysCsv?: string) => void;
   onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
   onRegenerateBoardId: (boardId: string) => void;
+  onClearQueuedRepublish?: (boardId: string) => Promise<number>;
   onBoardChanged: (
     boardId: string,
     options?: { republishTasks?: boolean; board?: Board },
@@ -356,15 +357,6 @@ export function SettingsModal({
           boards={boards}
         />
 
-        {/* Wallet */}
-        <WalletSection
-          settings={settings}
-          setSettings={setSettings}
-          defaultRelays={defaultRelays}
-          onReloadNeeded={onReloadNeeded}
-          onResetWalletTokenTracking={onResetWalletTokenTracking}
-        />
-
         {/* Chat */}
         <ChatSection
           settings={settings}
@@ -520,6 +512,7 @@ export function SettingsModal({
           onShareBoard={onShareBoard}
           onBoardChanged={onBoardChanged}
           onRegenerateBoardId={onRegenerateBoardId}
+          onClearQueuedRepublish={onClearQueuedRepublish}
           shouldReloadForNavigation={shouldReloadForNavigation}
           changeBoard={changeBoard}
           currentBoardId={currentBoardId}

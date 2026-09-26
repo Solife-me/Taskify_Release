@@ -132,7 +132,7 @@ private actor InboxAuditTransport: TaskSyncRelayTransport {
     func connect() {}
     func disconnect() {}
     func isResponsive(timeout: Duration) -> Bool { true }
-    func subscribe(id: String, kinds: [Int], boardTag: String, limit: Int, since: Int?) {}
+    func subscribe(id: String, kinds: [Int], boards: [BoardSubscriptionFilter], limit: Int) {}
     func subscribeToSharedInbox(id: String, recipientPublicKey: String, since: Int, limit: Int) {}
     func closeSubscription(id: String) {}
     func publish(_ event: NostrEvent) {}

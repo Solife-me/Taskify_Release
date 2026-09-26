@@ -8,8 +8,12 @@ export function classifyRelayRejection(message) {
     // noteguard's documented message is "rate-limit: …" rather than NIP-01's "rate-limited:".
     if (text.startsWith("rate-limited:") || text.startsWith("rate-limit:"))
         return "rate-limited";
+    if (text.startsWith("banned:"))
+        return "banned";
     if (text.startsWith("blocked:") || text.startsWith("restricted:") || text.startsWith("invalid:"))
         return "terminal";
+    if (text.startsWith("deleted:") || text.startsWith("replaced:"))
+        return "superseded";
     return "retry";
 }
 /**
@@ -19,22 +23,27 @@ export function classifyRelayRejection(message) {
  */
 export const FIRST_PARTY_RELAYS = ["wss://relay.solife.me", "wss://push.solife.me"];
 export class RelayPublishBudget {
-    // Public-relay defaults match the strictest documented limit we know of (noteguard's example of
-    // 8 events/minute per IP): a burst of 8, then one event every 7.5 s. First-party relays get a
-    // burst of 100, then 10 events/s.
+    // Public-relay defaults fit relay.damus.io's noteguard: 8 posts a minute per IP, but its bucket
+    // holds 7 after a quiet spell, and it credits elapsed time in whole seconds, so a post earns its
+    // token back only after 8 s (at 7.5 s every post drained it until it refused one). So: a burst
+    // of 7, then one event every 10 s, and 20 s after a rate limit, which noteguard needs to accept
+    // again from empty. It bans an IP for an hour after 10 refusals in a row. First-party relays
+    // get a burst of 100, then 10 events/s.
     burst;
     refillIntervalMs;
     rateLimitBackoffMs;
     maxBackoffMs;
+    banBackoffMs;
     firstPartyBurst;
     firstPartyRefillIntervalMs;
     firstPartyRelays;
     relays = new Map();
     constructor(options = {}) {
-        this.burst = Math.max(1, options.burst ?? 8);
-        this.refillIntervalMs = Math.max(1, options.refillIntervalMs ?? 7_500);
-        this.rateLimitBackoffMs = Math.max(1, options.rateLimitBackoffMs ?? 15_000);
+        this.burst = Math.max(1, options.burst ?? 7);
+        this.refillIntervalMs = Math.max(1, options.refillIntervalMs ?? 10_000);
+        this.rateLimitBackoffMs = Math.max(1, options.rateLimitBackoffMs ?? 20_000);
         this.maxBackoffMs = Math.max(this.rateLimitBackoffMs, options.maxBackoffMs ?? 10 * 60_000);
+        this.banBackoffMs = Math.max(1, options.banBackoffMs ?? 30 * 60_000);
         this.firstPartyBurst = Math.max(1, options.firstPartyBurst ?? 100);
         this.firstPartyRefillIntervalMs = Math.max(1, options.firstPartyRefillIntervalMs ?? 100);
         this.firstPartyRelays = new Set((options.firstPartyRelays ?? FIRST_PARTY_RELAYS).map((relay) => relay.trim().toLowerCase().replace(/\/+$/, "")));
@@ -102,6 +111,14 @@ export class RelayPublishBudget {
         const backoff = Math.min(this.maxBackoffMs, this.rateLimitBackoffMs * 2 ** (state.consecutiveRateLimits - 1));
         state.blockedUntil = Math.max(state.blockedUntil, now + backoff);
         // After the backoff, allow one event and then the steady rate, not a fresh burst.
+        state.tokens = 1;
+        state.updatedAt = state.blockedUntil;
+    }
+    /** Nothing gets through a `banned:` relay until the ban lifts; then it resumes slowly. */
+    recordBanned(relay, now) {
+        const state = this.state(relay, now);
+        state.consecutiveRateLimits += 1;
+        state.blockedUntil = Math.max(state.blockedUntil, now + this.banBackoffMs);
         state.tokens = 1;
         state.updatedAt = state.blockedUntil;
     }

@@ -18,11 +18,11 @@ import { NostrSession } from "./NostrSession";
 import { EventTimestampClock } from "../domains/nostr/eventTimestamps";
 
 export type NostrPublishFn = {
-  (relays: string[], template: EventTemplate, options?: { sk?: Uint8Array | string }): Promise<number>;
+  (relays: string[], template: EventTemplate, options?: { sk?: Uint8Array | string; republish?: boolean }): Promise<number>;
   (
     relays: string[],
     template: EventTemplate,
-    options: { sk?: Uint8Array | string; returnEvent: true },
+    options: { sk?: Uint8Array | string; returnEvent: true; republish?: boolean },
   ): Promise<{ createdAt: number; event: NostrEvent }>;
 };
 
@@ -153,7 +153,7 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
   const nostrPublish = useCallback(async (
     relays: string[],
     template: EventTemplate,
-    options?: { sk?: Uint8Array | string; returnEvent?: boolean },
+    options?: { sk?: Uint8Array | string; returnEvent?: boolean; republish?: boolean },
   ) => {
     const run = async () => {
       const nowMs = Date.now();
@@ -184,7 +184,7 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
       const signerKey = bytesToHex(signerBytes);
       createdAt = eventTimestampClock.current.next(signerKey, template as { kind: number; tags: string[][] }, createdAt, now);
       const ev = await prepareRelayEvent({ ...template, created_at: createdAt }, signerBytes, relays);
-      await pool.publishEvent(relays, ev as unknown as NostrEvent);
+      await pool.publishEvent(relays, ev as unknown as NostrEvent, { republish: options?.republish });
       lastNostrSentMs.current = Date.now();
       return options?.returnEvent ? { createdAt, event: ev as unknown as NostrEvent } : createdAt;
     };

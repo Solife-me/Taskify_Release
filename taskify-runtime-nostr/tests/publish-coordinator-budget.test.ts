@@ -42,7 +42,8 @@ async function waitFor(fn: () => boolean, timeoutMs = 2000) {
 
 test("events beyond a relay's burst are queued, not sent, and go out as the budget refills", async () => {
   const store = new MemoryOutboxStore();
-  const publisher = coordinator(store, new RelayPublishBudget({ burst: 2, refillIntervalMs: 150 }));
+  // Long enough that signing three events under a loaded test run can't outlast it.
+  const publisher = coordinator(store, new RelayPublishBudget({ burst: 2, refillIntervalMs: 1_000 }));
   const original = NDKEvent.prototype.publish;
   const sent: string[] = [];
   NDKEvent.prototype.publish = async function (set?: { relayUrls?: string[] }) {
@@ -57,9 +58,9 @@ test("events beyond a relay's burst are queued, not sent, and go out as the budg
     }
     assert.deepEqual(sent, ["a", "b"]);
     assert.equal(store.rows.size, 1);
-    await waitFor(() => sent.length === 3);
+    await waitFor(() => sent.length === 3, 5000);
     assert.deepEqual(sent, ["a", "b", "c"]);
-    await waitFor(() => store.rows.size === 0);
+    await waitFor(() => store.rows.size === 0, 5000);
   } finally {
     NDKEvent.prototype.publish = original;
     publisher.shutdown();
@@ -155,6 +156,52 @@ test("a publish no relay accepts, with no rate limiting involved, still reports 
       publisher.publish(note("y"), { relayUrls: ["wss://down"], signer: generateSecretKey() }),
       /No relay acknowledged the write/,
     );
+  } finally {
+    NDKEvent.prototype.publish = original;
+    publisher.shutdown();
+  }
+});
+
+test("a transient failure on the relays tried now doesn't fail a write still paced for others", async () => {
+  const store = new MemoryOutboxStore();
+  const budget = new RelayPublishBudget({ burst: 1, refillIntervalMs: 60_000 });
+  budget.take(["wss://paced"], Date.now());
+  const publisher = coordinator(store, budget);
+  const original = NDKEvent.prototype.publish;
+  const targets: string[][] = [];
+  NDKEvent.prototype.publish = async function (set?: { relayUrls?: string[] }) {
+    targets.push(set?.relayUrls || []);
+    const errors = new Map([[relay("wss://flaky"), new Error("Publish timeout after 2500ms")]]);
+    throw Object.assign(new Error("Not enough relays received the event"), { errors, publishedToRelays: new Set() });
+  };
+  try {
+    // Before this, the paced relay was left out of the attempt and the timeout failed the whole
+    // write, even though it was queued and would reach the paced relay shortly.
+    await publisher.publish(note("w"), { relayUrls: ["wss://flaky", "wss://paced"], signer: generateSecretKey() });
+    assert.deepEqual(targets, [["wss://flaky"]]);
+    const [row] = Array.from(store.rows.values());
+    assert.deepEqual(row.pendingRelays, ["wss://flaky", "wss://paced"]);
+    // The flaky relay counts as a failed attempt; the row is due no later than the paced relay.
+    assert.equal(row.attempts, 1);
+    assert.ok((row.nextAttemptAt || 0) <= Date.now() + 61_000);
+  } finally {
+    NDKEvent.prototype.publish = original;
+    publisher.shutdown();
+  }
+});
+
+test("a relay that already holds a deletion or newer version counts as done with the event", async () => {
+  const store = new MemoryOutboxStore();
+  const publisher = coordinator(store, new RelayPublishBudget());
+  const original = NDKEvent.prototype.publish;
+  NDKEvent.prototype.publish = async function () {
+    this.emit("relay:publish:failed", relay("wss://strfry"), new Error("deleted: user requested deletion"));
+    return new Set([relay("wss://ok")]) as never;
+  };
+  try {
+    await publisher.publish(note("tombstone"), { relayUrls: ["wss://ok", "wss://strfry"], signer: generateSecretKey() });
+    // It would never be accepted there, so it must not stay queued for that relay.
+    assert.equal(store.rows.size, 0);
   } finally {
     NDKEvent.prototype.publish = original;
     publisher.shutdown();

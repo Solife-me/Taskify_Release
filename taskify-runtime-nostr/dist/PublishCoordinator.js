@@ -1,7 +1,7 @@
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import { createNostrOutboxMutation, cloneNostrEvent, earliestRejectionRelease, recordOutboxRelayRejections, markOutboxPublishFailure, mergeOutboxRelayAcks, pendingRelayUrlsForMutation, } from "./NostrOutbox.js";
+import { createNostrOutboxMutation, cloneNostrEvent, earliestRejectionRelease, recordOutboxRelayRejections, markOutboxPublishFailure, mergeOutboxRelayAcks, narrowRepublishedMutations, pendingRelayUrlsForMutation, } from "./NostrOutbox.js";
 import { applyProofOfWork } from "./ProofOfWork.js";
-import { RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
+import { FIRST_PARTY_RELAYS, RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 export class NostrWriteQueuedError extends Error {
     code = "WRITE_QUEUED";
@@ -81,7 +81,7 @@ export class PublishCoordinator {
             const { ready, deferredUntil } = this.publishBudget.take(intendedRelays, Date.now());
             notBefore = deferredUntil;
             if (!ready.length) {
-                return { createdAt, event: event.rawEvent(), ackedRelays: [], refusedRelays: [], notBefore };
+                return { createdAt, event: event.rawEvent(), ackedRelays: [], refusedRelays: [], notBefore, transientFailure: false };
             }
             if (ready.length < intendedRelays.length)
                 targetSet = await this.resolveRelaySetWithEnsure(ready);
@@ -116,6 +116,11 @@ export class PublishCoordinator {
         }
         const now = Date.now();
         const accepted = relayUrlsFromPublishResult(publishedRelays);
+        for (const [url, relayError] of relayErrors) {
+            if (!accepted.includes(url) && classifyRelayRejection(errorToMessageText(relayError)) === "superseded") {
+                accepted.push(url);
+            }
+        }
         const refused = [];
         const rateLimited = [];
         let transientFailure = false;
@@ -127,8 +132,14 @@ export class PublishCoordinator {
                     rateLimited.push(url);
                     this.publishBudget?.recordRateLimited(url, now);
                     break;
+                case "banned":
+                    rateLimited.push(url);
+                    this.publishBudget?.recordBanned(url, now);
+                    break;
                 case "terminal":
                     refused.push(url);
+                    break;
+                case "superseded":
                     break;
                 default:
                     transientFailure = true;
@@ -143,8 +154,10 @@ export class PublishCoordinator {
         }
         const ackedRelays = normalizeRelayUrls(accepted);
         const refusedRelays = normalizeRelayUrls(refused);
-        const onlyPacedOrLimited = !transientFailure && !refusedRelays.length && notBefore != null;
-        if (!ackedRelays.length && !onlyPacedOrLimited) {
+        // Relays still waiting on their budget or a rate-limit backoff will get the event from the
+        // outbox shortly, so the write is queued rather than failed, even if every relay tried now
+        // refused it or failed transiently. Fail only when no relay took it and none is pending.
+        if (!ackedRelays.length && notBefore == null) {
             const failure = thrown ?? new NostrWriteQueuedError();
             // Carried to the outbox so a refusing relay is held back rather than retried at once.
             if (failure && typeof failure === "object")
@@ -154,7 +167,7 @@ export class PublishCoordinator {
         const raw = event.rawEvent();
         if (accepted.length)
             this.eventCache?.add(raw);
-        return { createdAt, event: raw, ackedRelays, refusedRelays, notBefore };
+        return { createdAt, event: raw, ackedRelays, refusedRelays, notBefore, transientFailure };
     }
     async resolveRelaySetWithEnsure(relayUrls) {
         return this.resolveRelaySet(normalizeRelayUrls(relayUrls || []));
@@ -220,6 +233,7 @@ export class PublishCoordinator {
                 replaceableKey: args.replaceableKey,
                 existing,
                 nextAttemptAt: args.nextAttemptAt ?? null,
+                isRepublish: args.isRepublish,
             });
             try {
                 await this.outboxStore.put(mutation);
@@ -241,7 +255,7 @@ export class PublishCoordinator {
         try {
             const result = await this.publishNow(event, relaySet);
             if (outboxId) {
-                await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id, result.notBefore, result.refusedRelays);
+                await this.markOutboxSuccess(outboxId, result.ackedRelays, result.event.id, result.notBefore, result.refusedRelays, result.transientFailure);
             }
             return result;
         }
@@ -255,10 +269,10 @@ export class PublishCoordinator {
                 this.activeOutboxIds.delete(outboxId);
         }
     }
-    async markOutboxSuccess(outboxId, ackedRelays, eventId, notBefore = null, refusedRelays = []) {
-        return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays));
+    async markOutboxSuccess(outboxId, ackedRelays, eventId, notBefore = null, refusedRelays = [], transientFailure = false) {
+        return this.withOutboxLock(outboxId, () => this.markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays, transientFailure));
     }
-    async markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays) {
+    async markOutboxSuccessLocked(outboxId, ackedRelays, eventId, notBefore, refusedRelays, transientFailure) {
         if (!this.outboxStore)
             return;
         const mutation = await this.outboxStore.get(outboxId).catch(() => undefined);
@@ -278,7 +292,7 @@ export class PublishCoordinator {
         // Relays that were only paced or rate limited are due when their budget allows, and
         // waiting on the budget is not a failed attempt, so it doesn't grow the backoff.
         const now = Date.now();
-        const pacedOnly = notBefore != null && ackedRelays.length === 0 && refusedRelays.length === 0;
+        const pacedOnly = notBefore != null && ackedRelays.length === 0 && refusedRelays.length === 0 && !transientFailure;
         const base = pacedOnly ? { ...mutation, updatedAt: now } : recordOutboxRelayRejections(next, refusedRelays, now);
         let delay = pacedOnly
             ? Math.max(0, notBefore - now)
@@ -393,6 +407,43 @@ export class PublishCoordinator {
         const event = new NDKEvent(this.ndk, cloneNostrEvent(row.payload.event));
         await this.publishNowWithOutbox(event, relaySet, row.id);
     }
+    /**
+     * Stops sending a board's queued republish to public relays; it still reaches `keptRelayUrls`
+     * (Taskify's own relays by default). Returns how many queued rows changed.
+     */
+    async limitQueuedRepublish(boardTag, keptRelayUrls = FIRST_PARTY_RELAYS) {
+        if (!this.outboxStore)
+            return 0;
+        const rows = await this.outboxStore.listPending();
+        const { updated, completedIds } = narrowRepublishedMutations(rows, { boardTag, keptRelayUrls });
+        let changed = 0;
+        const apply = async (id, eventId, write) => {
+            if (this.activeOutboxIds.has(id))
+                return;
+            await this.withOutboxLock(id, async () => {
+                const current = await this.outboxStore.get(id).catch(() => undefined);
+                // Skip a row replaced by a newer event since it was read.
+                if (!current || current.payload.event.id !== eventId)
+                    return;
+                await write();
+                changed += 1;
+            });
+        };
+        for (const row of updated) {
+            await apply(row.id, row.payload.event.id, () => this.outboxStore.put(row));
+        }
+        const completed = new Map(rows.map((row) => [row.id, row]));
+        for (const id of completedIds) {
+            const row = completed.get(id);
+            if (!row)
+                continue;
+            await apply(id, row.payload.event.id, async () => {
+                await this.outboxStore.delete(id);
+                this.clearOutboxRetry(id);
+            });
+        }
+        return changed;
+    }
     shutdown() {
         for (const timer of this.retryTimers.values()) {
             clearTimeout(timer);
@@ -442,6 +493,7 @@ export class PublishCoordinator {
                 relayUrls,
                 replaceableKey,
                 nextAttemptAt: Date.now() + delay,
+                isRepublish: options?.republish,
             });
             if (existing) {
                 existing.event = event;
@@ -461,7 +513,7 @@ export class PublishCoordinator {
                 pending.rejecters.push(reject);
             });
         }
-        const queuedOutboxId = await this.enqueueOutbox({ event: raw, relayUrls, replaceableKey });
+        const queuedOutboxId = await this.enqueueOutbox({ event: raw, relayUrls, replaceableKey, isRepublish: options?.republish });
         const result = await this.publishNowWithOutbox(event, relaySet, queuedOutboxId);
         return options?.returnEvent ? toPublicEventResult(result) : result.createdAt;
     }

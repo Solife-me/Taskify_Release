@@ -28,4 +28,5 @@ export const LS_NWC_SWEEP_JOURNAL = "taskify_nwc_sweep_journal_v1";
 export const LS_WALLET_MODE = "taskify_wallet_mode_v1";
 export const LS_NWC_TOKEN_SWEEPS = "taskify_nwc_token_sweeps_v1";
 export const LS_NWC_RECEIVE_ADDRESS = "taskify_nwc_receive_address_v1";
+export const LS_NWC_WALLET_CATALOG = "taskify_nwc_wallet_catalog_v1";
 export const LS_NWC_TOKEN_SWEEP_JOURNAL = "taskify_nwc_token_sweep_journal_v1";

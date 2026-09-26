@@ -1334,7 +1334,7 @@ final class TaskifyWatchAppModel: NSObject {
             }
             return (author, board)
         }
-        var boardByAuthor = Dictionary(uniqueKeysWithValues: boardPairs)
+        var boardByAuthor = Dictionary(boardPairs, uniquingKeysWith: { first, _ in first })
 
         let latestBoardEvents = events
             .filter { $0.kind == TaskifyWatchNostrCrypto.boardEventKind }

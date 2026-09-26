@@ -345,7 +345,7 @@ extension TaskifySnapshot {
         let startOfToday = calendar.startOfDay(for: now)
         let endOfToday = calendar.date(byAdding: .day, value: 1, to: startOfToday) ?? startOfToday
 
-        let boardNames = Dictionary(uniqueKeysWithValues: boards.map { ($0.id, $0.name) })
+        let boardNames = Dictionary(boards.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
 
         func item(_ task: TaskItem) -> TaskifyWidgetTask {
             TaskifyWidgetTask(

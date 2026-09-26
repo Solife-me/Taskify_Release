@@ -197,6 +197,8 @@ export function useCalendarEvents() {
         ...(rsvpStatus ? { rsvpStatus } : {}),
         ...(rsvpCreatedAt ? { rsvpCreatedAt } : {}),
         ...(rsvpFb ? { rsvpFb } : {}),
+        // Local-only: an occurrence generated from its series seed (see CalendarEventBase.generated).
+        ...((entry as any).generated === true ? { generated: true } : {}),
       };
 
       const inferredKind =

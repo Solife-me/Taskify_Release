@@ -14,7 +14,7 @@ public extension TaskifySnapshot {
         // Watch rather than reconstructing a creation-date order that diverges after reordering.
         let visibleBoards = boards
             .filter { $0.isVisible && $0.kind != .bible }
-        let boardByID = Dictionary(uniqueKeysWithValues: visibleBoards.map { ($0.id, $0) })
+        let boardByID = Dictionary(visibleBoards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         var eligibleTasks: [TaskItem] = []
         eligibleTasks.reserveCapacity(min(tasks.count, taskLimit * 2))

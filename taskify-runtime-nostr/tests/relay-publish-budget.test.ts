@@ -41,9 +41,13 @@ test("a rate-limit rejection backs the relay off exponentially and clears after 
 test("rejections are classified by their NIP-01 prefix", () => {
   assert.equal(classifyRelayRejection("rate-limited: slow down"), "rate-limited");
   assert.equal(classifyRelayRejection("rate-limit: you note too much"), "rate-limited");
+  assert.equal(classifyRelayRejection("banned: too many rate-limit violations, try again later"), "banned");
   assert.equal(classifyRelayRejection("blocked: pubkey not allowed"), "terminal");
   assert.equal(classifyRelayRejection("restricted: paid relay"), "terminal");
   assert.equal(classifyRelayRejection("invalid: event too large"), "terminal");
+  // strfry: a deletion covers the event, or a newer version of its address is stored.
+  assert.equal(classifyRelayRejection("deleted: user requested deletion"), "superseded");
+  assert.equal(classifyRelayRejection("replaced: have newer event"), "superseded");
   // Only a true acceptance confirms delivery; a false OK with duplicate text is retried.
   assert.equal(classifyRelayRejection("duplicate: already have this event"), "retry");
   assert.equal(classifyRelayRejection("pow: difficulty 28 required"), "retry");
@@ -65,7 +69,7 @@ test("first-party relays get a generous budget; public relays stay conservative"
     if (ready.includes("wss://relay.damus.io")) publicRelay += 1;
   }
   assert.equal(firstParty, 61);
-  assert.equal(publicRelay, 8);
+  assert.equal(publicRelay, 7);
 });
 
 test("first-party relays can be configured", () => {
@@ -74,4 +78,50 @@ test("first-party relays can be configured", () => {
   for (let i = 0; i < 20; i += 1) assert.deepEqual(budget.take(["wss://mine.example"], now).ready, ["wss://mine.example"]);
   for (let i = 0; i < 8; i += 1) budget.take(["wss://relay.solife.me"], now);
   assert.deepEqual(budget.take(["wss://relay.solife.me"], now).ready, []);
+});
+
+test("a banned relay is left alone for half an hour, then resumes one event at a time", () => {
+  const budget = new RelayPublishBudget();
+  const now = 1_000_000;
+  budget.recordBanned("wss://relay.damus.io", now);
+  assert.equal(budget.take(["wss://relay.damus.io"], now + 29 * 60_000).deferredUntil, now + 30 * 60_000);
+  assert.deepEqual(budget.take(["wss://relay.damus.io"], now + 30 * 60_000).ready, ["wss://relay.damus.io"]);
+  assert.deepEqual(budget.take(["wss://relay.damus.io"], now + 30 * 60_000).ready, []);
+});
+
+// relay.damus.io's noteguard: a token bucket of 8 a minute per IP, credited in whole seconds
+// since the last accepted post; a post that would empty it is refused.
+function noteguard() {
+  let tokens: number | null = null;
+  let lastPost = 0;
+  let refused = 0;
+  return {
+    post(nowMs: number) {
+      if (tokens == null) { tokens = 8; lastPost = nowMs; return true; }
+      const seconds = Math.min(60, Math.floor((nowMs - lastPost) / 1000));
+      tokens = Math.min(Math.max(tokens + Math.floor((seconds / 60) * 8) - 1, 0), 7);
+      if (tokens === 0) { refused += 1; return false; }
+      lastPost = nowMs;
+      return true;
+    },
+    get refused() { return refused; },
+  };
+}
+
+test("the public budget never trips noteguard's rate limit; the old 7.5 s pace did", () => {
+  const relay = noteguard();
+  const budget = new RelayPublishBudget();
+  let now = 1_000_000;
+  let sent = 0;
+  while (sent < 61) {
+    const { ready, deferredUntil } = budget.take(["wss://relay.damus.io"], now);
+    if (!ready.length) { now = deferredUntil ?? now + 1; continue; }
+    if (relay.post(now)) sent += 1;
+    else budget.recordRateLimited("wss://relay.damus.io", now);
+  }
+  assert.equal(relay.refused, 0);
+
+  const old = noteguard();
+  for (let i = 0; i < 20; i += 1) old.post(i < 8 ? i * 50 : 350 + (i - 7) * 7_500);
+  assert.ok(old.refused > 0);
 });

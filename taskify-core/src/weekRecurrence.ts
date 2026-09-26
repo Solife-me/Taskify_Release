@@ -113,6 +113,11 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
    * device already completed (same id, newer timestamp) and reopen it.
    */
   canGenerateForBoard?: (boardId: string) => boolean;
+  /**
+   * Whether an occurrence id was deleted on this board. Clients that drop deleted tasks from their
+   * list (the PWA) must say so, or the occurrence is recreated, and republished open.
+   */
+  isDeletedOccurrence?: (boardId: string, taskId: string) => boolean;
 };
 
 export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike>(
@@ -134,6 +139,7 @@ export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike
     maybePublishTask,
     now = () => Date.now(),
     canGenerateForBoard = () => true,
+    isDeletedOccurrence = () => false,
   } = options;
 
   const sow = startOfWeek(new Date(), weekStart).getTime();
@@ -176,11 +182,13 @@ export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike
       if (nextStartOfWeek === sow) {
         const cloneId = recurringInstanceId(seriesId, nextISO, task.recurrence, task.dueTimeZone);
         const nextDateKey = isoDatePart(nextISO, task.dueTimeZone);
-        const exists = out.some(
-          (candidate) =>
-            candidate.id === cloneId ||
-            (tasksInSameSeries(candidate, seriesSeed) && taskDateKey(candidate) === nextDateKey),
-        );
+        const exists =
+          isDeletedOccurrence(task.boardId, cloneId) ||
+          out.some(
+            (candidate) =>
+              candidate.id === cloneId ||
+              (tasksInSameSeries(candidate, seriesSeed) && taskDateKey(candidate) === nextDateKey),
+          );
 
         if (!exists) {
           const clone = {

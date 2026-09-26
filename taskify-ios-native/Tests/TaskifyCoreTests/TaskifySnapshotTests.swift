@@ -1505,7 +1505,9 @@ final class TaskifySnapshotTests: XCTestCase {
             replacingSeriesID: seed.id
         )
 
-        XCTAssertEqual(changes.deletedEventIDs.count, 23)
+        // The occurrences were only generated locally, so nothing is tombstoned: they are dropped.
+        XCTAssertEqual(changes.deletedEventIDs.count, 0)
+        XCTAssertEqual(snapshot.taskifyEvents?.count, 1)
         XCTAssertEqual(snapshot.acceptedTaskifyEvents, [snapshot.taskifyEvents![0]])
     }
 
@@ -1535,7 +1537,10 @@ final class TaskifySnapshotTests: XCTestCase {
             editorPublicKey: "editor"
         )
 
-        XCTAssertEqual(changes.deletedEventIDs.count, 22)
+        // Only the seed is published, carrying the new end date; the generated occurrences past
+        // the cutoff are dropped rather than tombstoned.
+        XCTAssertEqual(changes.deletedEventIDs.count, 0)
+        XCTAssertEqual(changes.updatedEventIDs, [seed.id])
         let remaining = snapshot.acceptedTaskifyEvents
         XCTAssertEqual(remaining.map(\.startDateValue), ["2026-07-27", "2026-07-28"])
         XCTAssertEqual(remaining.map(\.seriesID), [seed.id, seed.id])
@@ -1595,10 +1600,9 @@ final class TaskifySnapshotTests: XCTestCase {
             selectedID,
             "recurrence:\(seriesID):2026-07-30",
         ])
-        XCTAssertEqual(Set(changes.updatedTaskIDs), [
-            seriesID,
-            "recurrence:\(seriesID):2026-07-28",
-        ])
+        // Earlier instances are capped locally but not republished: every client caps the series
+        // from the tombstones' end date.
+        XCTAssertEqual(changes.updatedTaskIDs, [])
         XCTAssertEqual(
             snapshot.tasks.filter { !$0.isDeleted }.compactMap(\.dueDate),
             Array(dates.prefix(2))
@@ -1608,6 +1612,36 @@ final class TaskifySnapshotTests: XCTestCase {
             XCTAssertEqual(
                 task.recurrence?.untilDate,
                 calendar.date(from: DateComponents(year: 2026, month: 7, day: 28))
+            )
+        }
+
+        // Another device holding the original series receives only the published tombstones.
+        var other = TaskifySnapshot.empty
+        other.tasks = dates.enumerated().map { index, date in
+            TaskItem(
+                id: index == 0 ? seriesID : "recurrence:\(seriesID):2026-07-\(27 + index)",
+                boardID: other.boards[0].id,
+                title: "Daily review",
+                dueDate: date,
+                dueDateEnabled: true,
+                dueTimeZone: "UTC",
+                recurrence: .daily(),
+                seriesID: seriesID,
+                columnID: WeekdayColumn.containing(date, calendar: calendar).rawValue
+            )
+        }
+        let published = snapshot.tasks.filter { changes.deletedTaskIDs.contains($0.id) }
+        XCTAssertTrue(other.mergeRemoteTasks(published.map { (task: $0, eventCreatedAt: 1_900_000_000) }))
+        XCTAssertEqual(
+            other.tasks.filter { !$0.isDeleted }.compactMap(\.dueDate),
+            Array(dates.prefix(2)),
+            "The receiving device ends the series from the tombstones alone"
+        )
+        for task in other.tasks where !task.isDeleted {
+            XCTAssertEqual(
+                task.recurrence?.untilDate,
+                calendar.date(from: DateComponents(year: 2026, month: 7, day: 28)),
+                "Earlier instances are capped locally, so they generate nothing past the end"
             )
         }
     }

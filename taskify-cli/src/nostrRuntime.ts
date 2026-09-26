@@ -38,6 +38,7 @@ import {
   buildCalendarViewEnvelope,
 } from "./shared/calendarEnvelope.js";
 import { createCliNostrSession } from "./shared/nodeRuntimeSession.js";
+import { MAX_CONCURRENT_BOARD_FETCHES, mapWithConcurrency } from "./shared/concurrency.js";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -713,7 +714,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           await ensureConnected();
           const childIds = board.children ?? [];
           const seen = new Set<string>();
-          const childResults = await Promise.all(childIds.map(async (childId) => {
+          const childResults = await mapWithConcurrency(childIds, MAX_CONCURRENT_BOARD_FETCHES, async (childId) => {
             const childEntry = resolveBoardEntry(config, childId) ?? { id: childId, name: childId };
             const childEvents = await fetchBoardEvents(childId);
             const latest = await pickLatestParsedEventsByKey(
@@ -722,7 +723,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
               (event) => parseDecryptedEvent(event, childId, (childEntry as BoardEntry).name ?? childId),
             );
             return { childId, latest };
-          }));
+          });
           for (const { childId, latest } of childResults) {
             for (const { parsed: record } of latest.values()) {
               if (seen.has(record.id)) continue;
@@ -1415,23 +1416,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const colTag = event.tags.find((t) => t[0] === "col");
       const colId = colTag?.[1] ?? "";
 
-      // Step 1: publish kind 30301 status=deleted (app-level soft delete)
+      // Publish the status=deleted tombstone only. It replaces the task at its address on every
+      // relay and every client reads it; a NIP-09 deletion on top doubled each delete and made
+      // strfry refuse the tombstone ("deleted:") when it arrived first. Matches the PWA and native.
       await publishTaskEvent(entry.id, taskId, rawPayload, "deleted", colId, event.created_at);
-
-      // Step 2: publish NIP-09 kind 5 deletion request (matches PWA's publishTaskDeletionRequest)
-      const boardKeys = deriveBoardKeyPair(entry.id);
-      const aTag = `30301:${boardKeys.pk}:${taskId}`;
-      try {
-        const nip09Event = session.createEvent();
-        nip09Event.kind = 5;
-        nip09Event.content = "Task deleted";
-        nip09Event.tags = [["a", aTag]];
-        nip09Event.created_at = Math.floor(Date.now() / 1000);
-        await session.prepareNDKEvent(nip09Event, boardKeys.signer, boardRelays(entry.id));
-        await session.publishRaw(nip09Event.rawEvent(), { relayUrls: boardRelays(entry.id) });
-      } catch {
-        // Non-fatal: NIP-09 relay support varies; soft delete already published
-      }
 
       // Remove from cache
       const cache = readCache();

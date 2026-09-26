@@ -1386,7 +1386,7 @@ public actor CashuWalletService {
         let mintURLs = await repository.getWallets()
             .filter { $0.unit() == .sat }
             .map { $0.mintUrl().url }
-        let counters = Dictionary(uniqueKeysWithValues: mintURLs.map { ($0, [String: Int]()) })
+        let counters = Dictionary(mintURLs.map { ($0, [String: Int]()) }, uniquingKeysWith: { first, _ in first })
         let payload: [String: Any] = [
             "type": "nut13-wallet-backup",
             "version": 1,

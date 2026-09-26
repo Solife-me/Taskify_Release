@@ -44,7 +44,8 @@ test.each(['relay', 'aggregate', 'timeout'])('%s completion waits for decrypted 
   const root = createRoot(document.createElement('div'));
   try {
     await act(async () => root.render(<Harness />));
-    onEvent({ id: 'event', kind: 30301, created_at: 100 }, relay);
+    // Boards share REQs now, so events reach their board by the b tag every task event carries.
+    onEvent({ id: 'event', kind: 30301, created_at: 100, tags: [['d', 'task'], ['b', tag]] }, relay);
     await Promise.resolve();
     if (mode === 'timeout') await vi.advanceTimersByTimeAsync(25000);
     else onEose(mode === 'relay' ? relay : undefined);

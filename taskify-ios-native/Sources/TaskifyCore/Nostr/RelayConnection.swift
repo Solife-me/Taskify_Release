@@ -199,19 +199,29 @@ public actor NostrRelayConnection {
         limit: Int = 2_000,
         since: Int? = nil
     ) async throws {
-        var filter: [String: Any] = [
-            "kinds": kinds,
-            "#b": [boardTag],
-            "limit": limit,
-        ]
-        if let since {
-            filter["since"] = max(0, since)
+        try await subscribe(id: id, kinds: kinds, boards: [BoardSubscriptionFilter(boardTag: boardTag, since: since)], limit: limit)
+    }
+
+    /// One REQ covering several boards, one filter each so every board keeps its own `limit` and
+    /// `since`. Relays cap concurrent REQs per connection (strfry: "too many concurrent REQs").
+    public func subscribe(
+        id: String,
+        kinds: [Int],
+        boards: [BoardSubscriptionFilter],
+        limit: Int = 2_000
+    ) async throws {
+        let filters: [Any] = boards.map { board in
+            var filter: [String: Any] = [
+                "kinds": kinds,
+                "#b": [board.boardTag],
+                "limit": limit,
+            ]
+            if let since = board.since {
+                filter["since"] = max(0, since)
+            }
+            return filter
         }
-        try await send([
-            "REQ",
-            id,
-            filter,
-        ])
+        try await send(["REQ", id] + filters)
     }
 
     public func subscribeToAuthoredBoardEvents(

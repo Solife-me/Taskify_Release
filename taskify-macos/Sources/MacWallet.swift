@@ -11,10 +11,20 @@ struct MacWalletView: View {
     @State private var mintURL = ""
     @State private var error: String?
     @State private var removingMint: CashuMintSummary?
-    @State private var showingWalletMode = false
+    @State private var showingWallets = false
+    @State private var showingWalletSettings = false
+    @State private var showingHistory = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text("Wallet").font(.largeTitle.bold())
+                    Spacer()
+                    Button("History", systemImage: "clock.arrow.circlepath") { showingHistory = true }
+                    Button("Wallets", systemImage: "wallet.bifold") { showingWallets = true }
+                    Button("Settings", systemImage: "gearshape") { showingWalletSettings = true }
+                }
+                .buttonStyle(.bordered)
                 if wallet.isNWCWalletActive {
                     MacNWCWalletPanel()
                 } else {
@@ -41,7 +51,7 @@ struct MacWalletView: View {
                         Button("Transfer Between Mints…") { advancedSheet = .mintTransfer }.disabled(wallet.snapshot.mints.count < 2)
                         Button("Manage P2PK Keys…") { advancedSheet = .p2pkKeys }
                         Divider()
-                        Button("Use an NWC Wallet…") { showingWalletMode = true }
+                        Button("Manage Wallets…") { showingWallets = true }
                     } label: { Label("More", systemImage: "ellipsis.circle") }
                 }.controlSize(.large)
                 if let message = wallet.statusMessage { Label(message, systemImage: "checkmark.circle").foregroundStyle(.green) }
@@ -149,7 +159,9 @@ struct MacWalletView: View {
                 contactPickerPurpose = nil
             }
         }
-        .sheet(isPresented: $showingWalletMode) { MacWalletModeView() }
+        .sheet(isPresented: $showingWallets) { MacWalletManagerView() }
+        .sheet(isPresented: $showingWalletSettings) { MacWalletSettingsView() }
+        .sheet(isPresented: $showingHistory) { MacWalletHistoryView() }
         .sheet(item: $advancedSheet) { sheet in
             switch sheet {
             case .paymentRequests: MacPaymentRequestsView()

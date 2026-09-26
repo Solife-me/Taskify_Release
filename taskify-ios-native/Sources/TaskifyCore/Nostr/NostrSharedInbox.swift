@@ -576,14 +576,16 @@ public enum TaskifyEventInvitationPlanner {
         let previousRecipients = Set(previousParticipants.compactMap {
             normalizedPublicKey($0.publicKey)
         })
+        // Two spellings of one key (npub and hex, or mixed case) normalize to the same key.
         let existingTokens = [String: String](
-            uniqueKeysWithValues: (event.inviteTokens ?? [:]).compactMap { key, token in
+            (event.inviteTokens ?? [:]).compactMap { key, token in
                 guard let publicKey = normalizedPublicKey(key),
                       let token = token.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
                     return nil
                 }
                 return (publicKey, token)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
 
         var invitationTokens: [String: String] = [:]
@@ -773,6 +775,12 @@ public struct TaskifyEvent: Identifiable, Codable, Equatable, Sendable {
     public var readOnly: Bool?
     public var deleted: Bool?
     public var nostrUpdatedAt: Int?
+    /// An occurrence this device generated from its series seed. Local only, never published:
+    /// every client generates the same occurrence (same id) from the seed, so a series is one
+    /// published record instead of one per occurrence. Cleared when the occurrence is edited or
+    /// deleted on its own, which publishes it as an exception.
+    public var generated: Bool? = nil
+    public var isGenerated: Bool { generated == true }
 
     public init(
         id: String,
@@ -2510,6 +2518,8 @@ public extension TaskifySnapshot {
         }
 
         for index in orderedMovedIndices {
+            // Moving one occurrence on its own makes it an exception, published at its new place.
+            if index == selectedIndex && !movesWholeSeries { events[index].generated = nil }
             events[index].boardID = targetBoardID
             events[index].columnID = targetColumnID
             events[index].order = nextOrder
@@ -2567,10 +2577,16 @@ public extension TaskifySnapshot {
     /// the PWA calendar contract, so native and web clients converge on the same replaceable
     /// Nostr events instead of publishing duplicate occurrences.
     @discardableResult
+    ///
+    /// Occurrences are generated locally and never published (`TaskifyEvent.generated`); only
+    /// the seed and occurrences changed on their own are. `preservePublishedOccurrences` is for
+    /// refreshing from a seed another device published: published occurrences (exceptions, or
+    /// ones an older client published) are left as they are, since their owner republishes them.
     mutating func rebuildTaskifyEventSeries(
         seedID: String,
         replacingSeriesID: String? = nil,
-        editorPublicKey: String? = nil
+        editorPublicKey: String? = nil,
+        preservePublishedOccurrences: Bool = false
     ) -> TaskifyEventSeriesChanges {
         var events = taskifyEvents ?? []
         guard let seedIndex = events.firstIndex(where: {
@@ -2604,8 +2620,19 @@ public extension TaskifySnapshot {
             let durationDays = Self.taskifyEventDurationDays(events[seedIndex])
             let limit = Self.taskifyEventRecurrenceLimit(recurrence)
 
+            // A refresh must cover every occurrence the rolling window has generated, not only the
+            // first `limit` from the seed: otherwise it drops them and the window regenerates them
+            // on every pass.
+            let latestGeneratedStart = preservePublishedOccurrences
+                ? events.filter { $0.isGenerated && $0.seriesID == seedID }
+                    .compactMap { Self.taskifyEventRecurrenceStart($0) }.max()
+                : nil
             if limit > 1 {
-                for _ in 1..<limit {
+                var generatedCount = 1
+                while generatedCount < limit
+                        || (latestGeneratedStart.map { cursor < $0 } ?? false) {
+                    generatedCount += 1
+                    guard generatedCount < 10_000 else { break }
                     guard let next = recurrence.nextOccurrence(
                         after: cursor,
                         dueTimeEnabled: !events[seedIndex].isAllDay,
@@ -2660,8 +2687,13 @@ public extension TaskifySnapshot {
                             : nil
                     }
 
+                    instance.generated = true
                     if let existingIndex = events.firstIndex(where: { $0.id == instanceID }) {
                         let existing = events[existingIndex]
+                        if !existing.isGenerated {
+                            if preservePublishedOccurrences { continue }
+                            instance.generated = nil
+                        }
                         instance.order = existing.order
                         instance.eventKey = existing.eventKey.isEmpty
                             ? instance.eventKey
@@ -2684,18 +2716,31 @@ public extension TaskifySnapshot {
         }
 
         let ownedSeriesIDs = Set([previousSeriesID, activeRecurrence == nil ? nil : seedID].compactMap { $0 })
+        var removedGeneratedIDs = Set<String>()
         for index in events.indices {
             guard events[index].id != seedID,
                   let seriesID = events[index].seriesID,
                   ownedSeriesIDs.contains(seriesID),
                   !desiredIDs.contains(events[index].id),
                   !events[index].isDeleted else { continue }
+            // A generated occurrence was never published: there is nothing to tombstone.
+            if events[index].isGenerated {
+                removedGeneratedIDs.insert(events[index].id)
+                updatedIDs.remove(events[index].id)
+                continue
+            }
+            if preservePublishedOccurrences { continue }
             events[index].deleted = true
             events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
             updatedIDs.remove(events[index].id)
             deletedIDs.insert(events[index].id)
         }
+        events.removeAll { $0.isGenerated && removedGeneratedIDs.contains($0.id) }
 
+        if preservePublishedOccurrences, updatedIDs.isEmpty, removedGeneratedIDs.isEmpty {
+            // Nothing to refresh: leave `taskifyEvents` untouched so the snapshot doesn't churn.
+            return TaskifyEventSeriesChanges()
+        }
         taskifyEvents = events
         return TaskifyEventSeriesChanges(
             updatedEventIDs: updatedIDs.sorted(),
@@ -2709,6 +2754,28 @@ public extension TaskifySnapshot {
     mutating func ensureTaskifyEventRecurrenceWindow(
         now: Date = Date()
     ) -> TaskifyEventSeriesChanges {
+        var updatedIDs = Set<String>()
+        var deletedIDs = Set<String>()
+
+        // Generated occurrences whose seed is gone (deleted, or no longer recurring) have nothing
+        // left to generate them; they were never published, so they are simply dropped.
+        let liveSeedIDs = Set((taskifyEvents ?? []).compactMap { event -> String? in
+            guard !event.isDeleted, event.recurrence?.isActive == true, event.seriesID == event.id else { return nil }
+            return event.id
+        })
+        if let current = taskifyEvents,
+           current.contains(where: { $0.isGenerated && !liveSeedIDs.contains($0.seriesID ?? "") }) {
+            taskifyEvents = current.filter { !$0.isGenerated || liveSeedIDs.contains($0.seriesID ?? "") }
+            updatedIDs.insert("")
+        }
+
+        // Bring generated occurrences in line with their seed, which may have been edited on
+        // another device. Published occurrences are left to their owner.
+        for seedID in liveSeedIDs.sorted() {
+            let refreshed = rebuildTaskifyEventSeries(seedID: seedID, preservePublishedOccurrences: true)
+            updatedIDs.formUnion(refreshed.updatedEventIDs)
+        }
+
         var events = taskifyEvents ?? []
         let seedIDs = events.compactMap { event -> String? in
             guard !event.isDeleted,
@@ -2717,9 +2784,6 @@ public extension TaskifySnapshot {
                   event.seriesID == event.id else { return nil }
             return event.id
         }
-        var updatedIDs = Set<String>()
-        var deletedIDs = Set<String>()
-
         for seedID in seedIDs {
             guard let seedIndex = events.firstIndex(where: { $0.id == seedID }),
                   let recurrence = events[seedIndex].recurrence,
@@ -2742,11 +2806,21 @@ public extension TaskifySnapshot {
             }
 
             if futureIndices.count > limit {
+                var trimmedGeneratedIDs = Set<String>()
                 for index in futureIndices.dropFirst(limit) {
+                    if events[index].isGenerated {
+                        trimmedGeneratedIDs.insert(events[index].id)
+                        continue
+                    }
                     events[index].deleted = true
                     deletedIDs.insert(events[index].id)
                 }
                 futureIndices = Array(futureIndices.prefix(limit))
+                if !trimmedGeneratedIDs.isEmpty {
+                    events.removeAll { $0.isGenerated && trimmedGeneratedIDs.contains($0.id) }
+                    updatedIDs.insert("")
+                    continue
+                }
             }
             guard futureIndices.count < limit else { continue }
 
@@ -2786,6 +2860,7 @@ public extension TaskifySnapshot {
                 guard !existingIDs.contains(instanceID) else { continue }
 
                 var instance = seed
+                instance.generated = true
                 instance.id = instanceID
                 instance.seriesID = seedID
                 instance.recurrence = recurrence
@@ -2840,6 +2915,7 @@ public extension TaskifySnapshot {
         if !updatedIDs.isEmpty || !deletedIDs.isEmpty {
             taskifyEvents = events
         }
+        updatedIDs.remove("")
         return TaskifyEventSeriesChanges(
             updatedEventIDs: updatedIDs.sorted(),
             deletedEventIDs: deletedIDs.sorted()
@@ -2857,21 +2933,35 @@ public extension TaskifySnapshot {
             $0.id == eventID && !$0.isReadOnly && !$0.isDeleted
         }) else { return TaskifyEventSeriesChanges() }
 
-        guard scope == .thisAndFuture,
-              events[selectedIndex].recurrence?.isActive == true,
-              let seriesID = events[selectedIndex].seriesID,
-              let cutoff = events[selectedIndex].startDate else {
+        let selected = events[selectedIndex]
+        let isRecurring = selected.recurrence?.isActive == true
+        let isSeed = isRecurring && selected.seriesID == selected.id
+
+        guard scope == .thisAndFuture, isRecurring,
+              let seriesID = selected.seriesID,
+              let cutoff = selected.startDate else {
+            if isSeed, scope == .single {
+                return advanceTaskifyEventSeed(seedID: eventID, editorPublicKey: editorPublicKey)
+            }
             events[selectedIndex].deleted = true
+            events[selectedIndex].generated = nil
             events[selectedIndex].lastEditedBy = editorPublicKey ?? events[selectedIndex].lastEditedBy
             taskifyEvents = events
             return TaskifyEventSeriesChanges(deletedEventIDs: [eventID])
         }
 
+        let recurrenceCalendar = Self.taskifyEventCalendar(for: selected)
+        let endDate = recurrenceCalendar.date(byAdding: .day, value: -1, to: cutoff)
+        let seedIndex = events.firstIndex(where: {
+            $0.id == seriesID && !$0.isDeleted && $0.recurrence?.isActive == true
+        })
+
+        // Only published records are tombstoned; generated occurrences are dropped. With the seed
+        // here, earlier occurrences are capped locally and not republished: every client caps
+        // the series from the seed's end date (and older ones from the tombstones' end date).
         var updatedIDs = Set<String>()
         var deletedIDs = Set<String>()
-        let recurrenceCalendar = Self.taskifyEventCalendar(for: events[selectedIndex])
-        let endDate = recurrenceCalendar.date(byAdding: .day, value: -1, to: cutoff)
-
+        var removedGeneratedIDs = Set<String>()
         for index in events.indices {
             guard events[index].seriesID == seriesID,
                   events[index].recurrence?.isActive == true,
@@ -2882,23 +2972,110 @@ public extension TaskifySnapshot {
             events[index].seriesID = seriesID
             events[index].lastEditedBy = editorPublicKey ?? events[index].lastEditedBy
             if start >= cutoff {
+                if events[index].isGenerated {
+                    removedGeneratedIDs.insert(events[index].id)
+                    continue
+                }
                 events[index].deleted = true
                 deletedIDs.insert(events[index].id)
                 continue
             }
-            if events[index] != original {
+            // The seed carries the new end date to other devices. Without one here (a series an
+            // older client published occurrence by occurrence), keep republishing each record.
+            let publishes = index == seedIndex || (seedIndex == nil && !events[index].isGenerated)
+            if publishes, events[index] != original {
                 updatedIDs.insert(events[index].id)
             }
         }
+        events.removeAll { $0.isGenerated && removedGeneratedIDs.contains($0.id) }
 
         taskifyEvents = events
         for event in events where deletedIDs.contains(event.id) {
             _ = recordRecurringTaskifyEventSeriesCutoff(from: event)
         }
+        if var marker = events.first(where: { $0.id == seriesID }) ?? Optional(selected) {
+            // Record the cutoff even when every occurrence past it was only generated.
+            marker.deleted = true
+            marker.seriesID = seriesID
+            marker.recurrence = selected.recurrence?.withUntilDate(endDate)
+            marker.startISO = selected.startISO
+            marker.startDateValue = selected.startDateValue
+            _ = recordRecurringTaskifyEventSeriesCutoff(from: marker)
+        }
         return TaskifyEventSeriesChanges(
             updatedEventIDs: updatedIDs.sorted(),
             deletedEventIDs: deletedIDs.sorted()
         )
+    }
+
+    /// Deleting only a series' first occurrence moves the seed to its next occurrence. The seed
+    /// is what every client generates the series from, so tombstoning it would end the series.
+    private mutating func advanceTaskifyEventSeed(
+        seedID: String,
+        editorPublicKey: String?
+    ) -> TaskifyEventSeriesChanges {
+        var events = taskifyEvents ?? []
+        guard let seedIndex = events.firstIndex(where: { $0.id == seedID }),
+              let recurrence = events[seedIndex].recurrence,
+              let start = Self.taskifyEventRecurrenceStart(events[seedIndex]) else {
+            return TaskifyEventSeriesChanges()
+        }
+        let seed = events[seedIndex]
+        let calendar = Self.taskifyEventCalendar(for: seed)
+        guard let next = recurrence.nextOccurrence(
+            after: start,
+            dueTimeEnabled: !seed.isAllDay,
+            timeZoneIdentifier: seed.isAllDay ? "UTC" : seed.startTimeZoneID,
+            calendar: calendar
+        ) else {
+            // No later occurrence: the series is only this one.
+            events[seedIndex].deleted = true
+            events[seedIndex].lastEditedBy = editorPublicKey ?? seed.lastEditedBy
+            let removed = Set(events.filter { $0.isGenerated && $0.seriesID == seedID }.map(\.id))
+            events.removeAll { removed.contains($0.id) }
+            taskifyEvents = events
+            return TaskifyEventSeriesChanges(deletedEventIDs: [seedID])
+        }
+
+        let nextID = Self.taskifyEventRecurrenceID(seriesID: seedID, start: next, recurrence: recurrence, event: seed)
+        events[seedIndex] = Self.taskifyEvent(seed, movedTo: next, calendar: calendar)
+        events[seedIndex].lastEditedBy = editorPublicKey ?? seed.lastEditedBy
+
+        // The occurrence the seed now stands for.
+        var deletedIDs: [String] = []
+        if let nextIndex = events.firstIndex(where: { $0.id == nextID && !$0.isDeleted }) {
+            if events[nextIndex].isGenerated {
+                events.remove(at: nextIndex)
+            } else {
+                events[nextIndex].deleted = true
+                events[nextIndex].lastEditedBy = editorPublicKey ?? events[nextIndex].lastEditedBy
+                deletedIDs.append(nextID)
+            }
+        }
+        taskifyEvents = events
+        return TaskifyEventSeriesChanges(updatedEventIDs: [seedID], deletedEventIDs: deletedIDs)
+    }
+
+    /// The same event moved to start at `next`, keeping its duration.
+    private static func taskifyEvent(_ event: TaskifyEvent, movedTo next: Date, calendar: Calendar) -> TaskifyEvent {
+        var moved = event
+        if event.isAllDay {
+            let durationDays = taskifyEventDurationDays(event)
+            moved.startDateValue = taskifyDateKey(next, timeZone: utcTimeZone)
+            moved.endDateValue = durationDays > 1
+                ? taskifyDateKey(calendar.date(byAdding: .day, value: durationDays - 1, to: next) ?? next, timeZone: utcTimeZone)
+                : nil
+            moved.startISO = nil
+            moved.endISO = nil
+        } else {
+            let start = taskifyEventRecurrenceStart(event) ?? next
+            let duration = max(0, (event.endDate ?? start).timeIntervalSince(start))
+            moved.startDateValue = nil
+            moved.endDateValue = nil
+            moved.startISO = taskifyISODate(next)
+            moved.endISO = duration > 0 ? taskifyISODate(next.addingTimeInterval(duration)) : nil
+        }
+        return moved
     }
 
     private static var utcTimeZone: TimeZone { TimeZone(secondsFromGMT: 0)! }

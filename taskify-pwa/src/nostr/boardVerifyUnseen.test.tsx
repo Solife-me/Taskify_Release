@@ -13,7 +13,7 @@ vi.mock('../storage/idbKeyValue', () => ({ idbKeyValue: { setItem: vi.fn() } }))
 // After a board's initial sync, tasks this device holds but the relays did not return are
 // re-requested by id. Those verify events must reach applyTaskEvent while the board is still
 // subscribed, and be ignored once it is torn down.
-async function renderAndStartVerify() {
+async function renderAndStartVerify(extraTasks: any[] = []) {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-09-24T12:00:00Z'));
   const relay = 'wss://relay.test';
@@ -23,7 +23,7 @@ async function renderAndStartVerify() {
   const applyTaskEvent = vi.fn(async () => {});
   const oldTask = { id: 'missing-task', boardId: 'local', title: 'Old', _nostrAt: Math.floor(Date.now() / 1000) - 3600 };
   const props: any = {
-    boards: [board], boardsRef: { current: [board] }, tasksRef: { current: [oldTask] },
+    boards: [board], boardsRef: { current: [board] }, tasksRef: { current: [oldTask, ...extraTasks] },
     setTasks: () => {},
     pool: { setRelays() {}, subscribe(_r: any, filters: any[], onEvent: any, onEose: any) { subscriptions.push({ filters, onEvent, onEose }); return () => {}; } },
     getBoardRelays: () => [relay],
@@ -40,7 +40,8 @@ async function renderAndStartVerify() {
   subscriptions[0].onEose(relay);
   await act(async () => { await vi.advanceTimersByTimeAsync(600); });
   const verify = subscriptions.find((sub) => sub.filters[0]?.['#d']?.includes('missing-task'));
-  return { root, verify, applyTaskEvent, tag, relay };
+  const verifies = subscriptions.filter((sub) => sub.filters[0]?.['#d']);
+  return { root, verify, verifies, applyTaskEvent, tag, relay };
 }
 
 test('a verify event for a task missing from the initial sync is applied', async () => {
@@ -64,6 +65,23 @@ test('a verify event arriving after the board unsubscribes is ignored', async ()
     await vi.advanceTimersByTimeAsync(0);
     expect(applyTaskEvent).not.toHaveBeenCalled();
   } finally {
+    vi.useRealTimers();
+  }
+});
+
+test('only open tasks are verified, a hundred ids per request', async () => {
+  const at = Math.floor(new Date('2026-09-24T12:00:00Z').getTime() / 1000) - 3600;
+  const open = Array.from({ length: 150 }, (_, i) => ({ id: `open-${i}`, boardId: 'local', title: 'Open', _nostrAt: at }));
+  const done = { id: 'done-task', boardId: 'local', title: 'Done', completed: true, _nostrAt: at };
+  const { root, verifies } = await renderAndStartVerify([...open, done]);
+  try {
+    const ids = verifies.flatMap((sub) => sub.filters[0]['#d'] as string[]);
+    expect(verifies.length).toBe(2);
+    expect(verifies.every((sub) => sub.filters[0]['#d'].length <= 100)).toBe(true);
+    expect(ids).toHaveLength(151);
+    expect(ids).not.toContain('done-task');
+  } finally {
+    await act(async () => root.unmount());
     vi.useRealTimers();
   }
 });

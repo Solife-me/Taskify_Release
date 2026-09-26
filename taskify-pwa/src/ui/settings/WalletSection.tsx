@@ -55,12 +55,14 @@ export function WalletSection({
   defaultRelays,
   onReloadNeeded,
   onResetWalletTokenTracking,
+  initiallyExpanded = false,
 }: {
   settings: Settings;
   setSettings: (s: Partial<Settings>) => void;
   defaultRelays: string[];
   onReloadNeeded: () => void;
   onResetWalletTokenTracking: () => void;
+  initiallyExpanded?: boolean;
 }) {
   const { show: showToast } = useToast();
   const { mintUrl, payInvoice, checkProofStates } = useCashu();
@@ -73,7 +75,7 @@ export function WalletSection({
     setPrimaryKey: setPrimaryP2pkKey,
   } = useP2PK();
 
-  const [walletExpanded, setWalletExpanded] = useState(false);
+  const [walletExpanded, setWalletExpanded] = useState(initiallyExpanded);
   const [walletSeedVisible, setWalletSeedVisible] = useState(false);
   const [walletSeedWords, setWalletSeedWords] = useState<string | null>(null);
   const [walletSeedError, setWalletSeedError] = useState<string | null>(null);

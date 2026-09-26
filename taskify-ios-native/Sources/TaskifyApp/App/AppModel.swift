@@ -311,6 +311,9 @@ final class AppModel {
     @ObservationIgnored private var sharedInboxQueue = NIP17InboxProcessingQueue()
     @ObservationIgnored private var sharedInboxQueueIdentity: String?
     @ObservationIgnored private var accountBackupBaseline: NostrAppBackupPayload?
+    /// Whether this launch has finished looking for the account's synced settings (found or not).
+    /// Until then a setting that names a board may simply not have arrived yet.
+    @ObservationIgnored private var accountSyncSettled = false
     @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
     @ObservationIgnored private var lastAccountBackupCreatedAt = 0
     @ObservationIgnored private var lastAccountBackupCheckAt: Date?
@@ -342,6 +345,9 @@ final class AppModel {
     /// republish an instance another device completed, with a newer timestamp, and reopen it.
     @ObservationIgnored private var relayHistorySettled = false
     @ObservationIgnored private var relayHistorySettleTask: Task<Void, Never>?
+    /// Checking this device's open tasks against the relays (see `verifyOpenTasksWithRelays`).
+    @ObservationIgnored private var openTaskVerificationTask: Task<Void, Never>?
+    @ObservationIgnored private var openTasksVerifiedAt: Date?
     @ObservationIgnored private var runningStreakCache: (revision: Int, lookup: (TaskItem) -> Int)?
 
     /// The series' running streak for a task (see `TaskifySnapshot.runningStreakLookup`); instances
@@ -1447,6 +1453,8 @@ final class AppModel {
             isAllDay: isAllDay
         )
         let normalizedRecurrence = recurrence?.isActive == true ? recurrence : nil
+        // Edited on its own, a generated occurrence becomes an exception and is published.
+        events[index].generated = nil
         events[index].title = trimmedTitle
         events[index].details = details.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         events[index].locations = location.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty.map { [$0] }
@@ -1646,7 +1654,8 @@ final class AppModel {
     }
 
     func toggleCompletion(_ taskID: String) {
-        let existingIDs = Set(snapshot.tasks.map(\.id))
+        // Live before, so a next occurrence that took over a deleted record's id still counts as new.
+        let existingIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
         guard snapshot.toggleCompletion(
             taskID: taskID,
             editorPublicKey: identityPublicKey.nilIfEmpty,
@@ -1663,7 +1672,7 @@ final class AppModel {
             syncIDs.append(taskID)
         }
         for task in snapshot.tasks
-        where !existingIDs.contains(task.id) && !reconciledTaskIDs.contains(task.id) {
+        where !task.isDeleted && !existingIDs.contains(task.id) && !reconciledTaskIDs.contains(task.id) {
             syncIDs.append(task.id)
         }
         synchronizeTasks(syncIDs)
@@ -1698,8 +1707,8 @@ final class AppModel {
     func completeTasks<S: Sequence>(_ taskIDs: S) where S.Element == String {
         // Bulk counterpart to `toggleCompletion`: toggle every task through one local copy, then
         // reconcile and publish once, instead of invalidating, reconciling and refreshing
-        // notifications once per task.
-        let existingIDs = Set(snapshot.tasks.map(\.id))
+        // notifications once per task. Live ids only, as in `toggleCompletion`.
+        let existingIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
         var toggledIDs: [String] = []
         var updated = snapshot
         for taskID in taskIDs
@@ -1721,7 +1730,7 @@ final class AppModel {
         let toggledIDSet = Set(toggledIDs)
         var syncIDs: [String] = []
         for task in snapshot.tasks
-        where (toggledIDSet.contains(task.id) || !existingIDs.contains(task.id))
+        where (toggledIDSet.contains(task.id) || (!task.isDeleted && !existingIDs.contains(task.id)))
             && !reconciledTaskIDs.contains(task.id) {
             syncIDs.append(task.id)
         }
@@ -1864,6 +1873,27 @@ final class AppModel {
             taskID: taskID,
             scope: scope,
             editorPublicKey: identityPublicKey.nilIfEmpty
+        )
+        guard !changes.allTaskIDs.isEmpty else { return }
+        synchronizeTasks(changes.updatedTaskIDs, deletionTaskIDs: changes.deletedTaskIDs)
+        refreshNotifications(requestPermission: false)
+        reconcileScriptureMemory()
+    }
+
+    /// How many missed occurrences "Catch Up to Today" would clear from `taskID`'s recurring
+    /// series; nil when it doesn't apply (not recurring, not overdue, or the series has ended).
+    func missedOccurrenceCount(for taskID: String) -> Int? {
+        let count = snapshot.missedOccurrences(ofSeriesContaining: taskID, calendar: weekCalendar).count
+        return count > 0 ? count : nil
+    }
+
+    /// Gets a recurring series that fell behind back to one task, due today (see
+    /// `TaskifySnapshot.catchUpRecurringSeries`).
+    func catchUpRecurringTask(_ taskID: String) {
+        let changes = snapshot.catchUpRecurringSeries(
+            taskID: taskID,
+            editorPublicKey: identityPublicKey.nilIfEmpty,
+            calendar: weekCalendar
         )
         guard !changes.allTaskIDs.isEmpty else { return }
         synchronizeTasks(changes.updatedTaskIDs, deletionTaskIDs: changes.deletedTaskIDs)
@@ -2213,6 +2243,38 @@ final class AppModel {
                 await syncEngine.refreshAfterForeground()
             }
         }
+        // Changes that reached the relays late aren't replayed on resume; check again after a
+        // while away.
+        if relayHistorySettled, openTaskVerificationTask == nil,
+           (openTasksVerifiedAt.map { Date().timeIntervalSince($0) > Self.openTaskVerificationInterval } ?? true) {
+            openTaskVerificationTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                await self?.verifyOpenTasksWithRelays()
+                self?.openTaskVerificationTask = nil
+            }
+        }
+    }
+
+    private static let openTaskVerificationInterval: TimeInterval = 30 * 60
+
+    /// Brings every task this device shows as open up to the relays' current version (see
+    /// `TaskSyncEngine.latestTaskRecords`): a completion or deletion that reached the relays late
+    /// is never replayed to a device that already synced past it.
+    func verifyOpenTasksWithRelays() async {
+        let syncedBoardIDs = Set(snapshot.boardsForSync.map(\.id))
+        var openTaskIDs: [String: [String]] = [:]
+        for task in snapshot.tasks where !task.completed && !task.isDeleted && syncedBoardIDs.contains(task.boardID) {
+            openTaskIDs[task.boardID, default: []].append(task.id)
+        }
+        guard !openTaskIDs.isEmpty else {
+            openTasksVerifiedAt = Date()
+            return
+        }
+        let latest = await syncEngine.latestTaskRecords(openTaskIDs)
+        if !latest.records.isEmpty {
+            await applySyncBatch(tasks: latest.records, calendarEvents: [])
+        }
+        if latest.answeredRelays > 0 { openTasksVerifiedAt = Date() }
     }
 
     @discardableResult
@@ -3609,8 +3671,10 @@ final class AppModel {
     /// repeatedly (e.g. on every app launch) — it only creates/prunes tasks that drifted from
     /// the desired schedule.
     func reconcileFastingReminders(removeExistingWhenDisabled: Bool = false) {
-        // Turning the feature off acts at once; generation waits for relay history.
-        guard canGenerateSharedTasks || removeExistingWhenDisabled else { return }
+        // Turning the feature off acts at once. Generation waits for relay history and for this
+        // launch's account-sync lookup: until the account's boards and their reminders are here,
+        // the only week board may be this device's own startup board.
+        guard (canGenerateSharedTasks && accountSyncSettled) || removeExistingWhenDisabled else { return }
         // Calling a `mutating` method directly on `snapshot` fires its `didSet` even when the
         // method changes nothing — invalidating every observing view and discarding the lookup
         // cache. Reconcile a copy and write back only when it actually differs.
@@ -3629,13 +3693,13 @@ final class AppModel {
         }
         guard !result.created.isEmpty || !result.updatedIDs.isEmpty else { return }
         scheduleSave()
-        for task in result.created {
-            synchronizeTask(task.id)
-        }
-        for taskID in result.updatedIDs {
-            let isDeletion = snapshot.tasks.first(where: { $0.id == taskID })?.isDeleted == true
-            synchronizeTask(taskID, includeDeletionEvent: isDeletion)
-        }
+        let deletedIDs = Set(result.updatedIDs.filter { taskID in
+            snapshot.tasks.first(where: { $0.id == taskID })?.isDeleted == true
+        })
+        synchronizeTasks(
+            result.created.map(\.id) + result.updatedIDs.filter { !deletedIDs.contains($0) },
+            deletionTaskIDs: deletedIDs.sorted()
+        )
     }
 
     private static let scriptureMemorySeriesID = ScriptureMemoryAlgorithm.seriesID
@@ -3785,9 +3849,12 @@ final class AppModel {
         // Older native builds left these PWA fields in preservedSyncFields and used a different
         // series id. Promote them into the native model so review history survives local storage
         // and future Nostr publishes.
+        // Deleted tasks are left alone, and completed ones are updated locally but not
+        // republished: stamping settings onto every task of a long review history republished
+        // hundreds of them whenever a setting differed (a fresh sign-in did it twice).
         for index in snapshot.tasks.indices {
             var task = snapshot.tasks[index]
-            guard isScriptureMemoryTask(task) else { continue }
+            guard isScriptureMemoryTask(task), !task.isDeleted else { continue }
             var taskChanged = false
 
             if task.scriptureMemoryID == nil,
@@ -3839,7 +3906,7 @@ final class AppModel {
 
             if taskChanged {
                 pendingTaskEdits[index] = task
-                updatedTaskIDs.insert(task.id)
+                if !task.completed { updatedTaskIDs.insert(task.id) }
             }
         }
 
@@ -3879,7 +3946,11 @@ final class AppModel {
         let selectedBoard = scriptureMemoryBoardID.flatMap { boardID in
             eligibleBoards.first(where: { $0.id == boardID })
         }
-        guard let targetBoard = selectedBoard ?? eligibleBoards.first,
+        // Without a configured board, fall back to the first eligible one only once this device
+        // knows the synced settings and relay history: on a fresh sign-in that fallback is the
+        // empty startup board, and the real setting arrives seconds later.
+        let fallbackAllowed = accountSyncSettled && canGenerateSharedTasks
+        guard let targetBoard = selectedBoard ?? (fallbackAllowed ? eligibleBoards.first : nil),
               targetBoard.kind != .list || !targetBoard.columns.isEmpty else {
             if stateChanged { persistScriptureMemoryState() }
             if !updatedTaskIDs.isEmpty {
@@ -3897,9 +3968,12 @@ final class AppModel {
         }
 
         let calendar = weekCalendar
-        for index in snapshot.tasks.indices {
+        // Only open review tasks follow the configured board; history stays where it was. Not
+        // before this device's open tasks are checked against the relays: moving a copy another
+        // device already completed or deleted republishes it, open, on the new board.
+        for index in snapshot.tasks.indices where canGenerateSharedTasks {
             var task = snapshot.tasks[index]
-            guard isScriptureMemoryTask(task) else { continue }
+            guard isScriptureMemoryTask(task), !task.isDeleted, !task.completed else { continue }
             var taskChanged = false
             if task.boardID != targetBoard.id {
                 task.boardID = targetBoard.id
@@ -3960,6 +4034,30 @@ final class AppModel {
             stateChanged = true
             updatedTaskIDs.insert(snapshot.tasks[nextIndex].id)
             retargetedTaskIDs.insert(snapshot.tasks[nextIndex].id)
+        }
+
+        // One review at a time. Devices that diverged (a completion one of them missed, a stale
+        // copy moved to the scripture board) can each leave an open review, and they'd pile up.
+        // Every device keeps the same one and deletes the rest.
+        if canGenerateSharedTasks {
+            let openReviews = snapshot.tasks.filter {
+                isScriptureMemoryTask($0) && !$0.completed && !$0.isDeleted
+            }
+            if let keep = ScriptureMemoryAlgorithm.reviewToKeep(openReviews) {
+                var updated = snapshot
+                for review in openReviews where review.id != keep.id {
+                    let deleted = updated.deleteTask(taskID: review.id, scope: .single, editorPublicKey: identityPublicKey.nilIfEmpty)
+                    updatedTaskIDs.formUnion(deleted.deletedTaskIDs)
+                    // Its passage is no longer waiting on a review.
+                    if let entryID = review.scriptureMemoryID, entryID != keep.scriptureMemoryID,
+                       let entryIndex = entryIndexByID[entryID],
+                       scriptureMemoryState.entries[entryIndex].scheduledAtISO != nil {
+                        scriptureMemoryState.entries[entryIndex].scheduledAtISO = nil
+                        stateChanged = true
+                    }
+                }
+                if updated != snapshot { snapshot = updated }
+            }
         }
 
         let hasActive = snapshot.tasks.contains {
@@ -4287,14 +4385,14 @@ final class AppModel {
             ))
         }
 
-        try await syncEngine.queueForPublish(requests)
+        try await syncEngine.queueForPublish(requests, isRepublish: true)
         await syncEngine.flushQueuedPublishes()
 
         // Apply every refreshed record through one local copy and a single assignment. Each
         // direct write to `snapshot` fires its didSet — a lookup-cache invalidation, a revision
         // bump, and a UI invalidation — so republishing a large board must not write per task.
         var updated = snapshot
-        let tasksByID = Dictionary(uniqueKeysWithValues: refreshedTasks.map { ($0.id, $0) })
+        let tasksByID = Dictionary(refreshedTasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for index in updated.tasks.indices {
             if let refreshed = tasksByID[updated.tasks[index].id],
                updated.tasks[index].boardID == boardID {
@@ -4318,6 +4416,15 @@ final class AppModel {
             taskCount: refreshedTasks.count,
             eventCount: refreshedEvents.count
         )
+    }
+
+    /// Stops sending this board's queued republish to public relays. It still goes to Taskify's
+    /// relays, which every client reads, so other devices keep receiving it.
+    func limitQueuedRepublishToFirstPartyRelays(boardID: String) async throws -> Int {
+        guard snapshot.boards.contains(where: { $0.id == boardID }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return try await syncEngine.limitQueuedRepublishToFirstPartyRelays(boardLocalID: boardID)
     }
 
     @discardableResult
@@ -4378,9 +4485,10 @@ final class AppModel {
         guard respondingRelayCount > 0 else { throw URLError(.cannotConnectToHost) }
 
         let allEvents = relayResults.flatMap { $0.1 }
-        let uniqueEvents = Array(Dictionary(uniqueKeysWithValues: allEvents.map {
+        // The same event normally comes back from several relays.
+        let uniqueEvents = Array(Dictionary(allEvents.map {
             ($0.id, $0)
-        }).values)
+        }, uniquingKeysWith: { first, _ in first }).values)
         let staleIDs = TaskEventCodec.staleReplaceableEventIDs(
             uniqueEvents,
             expectedAuthor: author
@@ -4916,6 +5024,7 @@ final class AppModel {
             applyIdentity(imported)
             accountBackupPublishTask?.cancel()
             accountBackupBaseline = nil
+            accountSyncSettled = false
             managedAccountBackupBoardIDs = []
             lastAccountBackupCreatedAt = 0
             accountBackupPublishPending = false
@@ -5025,6 +5134,16 @@ final class AppModel {
             }.value
             guard !Task.isCancelled else { return }
             isCheckingAccountBackup = false
+            let wasSettled = accountSyncSettled
+            accountSyncSettled = true
+            defer {
+                // Work deferred while settings were unknown (Scripture Memory's board, where
+                // fasting reminders live) can run now.
+                if !wasSettled {
+                    reconcileScriptureMemory()
+                    reconcileFastingReminders()
+                }
+            }
             if let decodedPayload {
                 applyAccountSyncPayload(decodedPayload)
             } else if candidates.isEmpty {
@@ -5517,11 +5636,22 @@ final class AppModel {
         }
     }
 
-    /// Runs the task generation that waited for relay history.
+    /// Runs the task generation that waited for relay history, once this device's open tasks have
+    /// been checked against the relays: generating from, or moving, a task another device already
+    /// completed or deleted would publish it back.
     private func settleRelayHistory() {
+        guard !relayHistorySettled, openTaskVerificationTask == nil else { return }
+        relayHistorySettleTask = nil
+        openTaskVerificationTask = Task { [weak self] in
+            await self?.verifyOpenTasksWithRelays()
+            self?.finishRelayHistorySettle()
+        }
+    }
+
+    private func finishRelayHistorySettle() {
+        openTaskVerificationTask = nil
         guard !relayHistorySettled else { return }
         relayHistorySettled = true
-        relayHistorySettleTask = nil
         reconcileFastingReminders()
         if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
         _ = reconcileScriptureMemory()
@@ -6187,29 +6317,31 @@ final class AppModel {
             updated.tasks.indices.map { (updated.tasks[$0].id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        let boardByID = Dictionary(uniqueKeysWithValues: updated.boards.map { ($0.id, $0) })
+        let boardByID = Dictionary(updated.boards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
-        var stamps: [(board: Board, task: TaskItem, timestamp: Int, deletionTimestamp: Int?)] = []
+        var stamps: [(board: Board, task: TaskItem, timestamp: Int)] = []
 
-        func stamp(_ taskID: String, includeDeletionEvent: Bool) {
+        // A deleted task publishes only its tombstone. The tombstone replaces the task at its
+        // address on every relay, and every client reads it; a NIP-09 deletion on top doubled
+        // each delete, and made strfry refuse the tombstone ("deleted:") when it arrived first.
+        // A task whose publishable state matches what relays last saw is skipped: whatever asked
+        // for it (a reconcile, a re-home, a repeated deletion) changed nothing another client
+        // can see. This is what keeps a settings change from republishing years of tombstones.
+        func stamp(_ taskID: String) {
             guard let index = taskIndexByID[taskID],
                   let board = boardByID[updated.tasks[index].boardID] else {
                 return
             }
+            let fingerprint = TaskEventCodec.publishFingerprint(task: updated.tasks[index], board: board)
+            if let fingerprint, fingerprint == updated.tasks[index].publishedFingerprint { return }
             let timestamp = NostrEvent.nextTimestamp(after: updated.tasks[index].nostrUpdatedAt)
             updated.tasks[index].nostrUpdatedAt = timestamp
-            stamps.append(
-                (
-                    board,
-                    updated.tasks[index],
-                    timestamp,
-                    includeDeletionEvent ? NostrEvent.nextTimestamp(after: timestamp) : nil
-                )
-            )
+            updated.tasks[index].publishedFingerprint = fingerprint
+            stamps.append((board, updated.tasks[index], timestamp))
         }
 
-        taskIDs.forEach { stamp($0, includeDeletionEvent: false) }
-        deletionTaskIDs.forEach { stamp($0, includeDeletionEvent: true) }
+        taskIDs.forEach { stamp($0) }
+        deletionTaskIDs.forEach { stamp($0) }
 
         guard !stamps.isEmpty else {
             // Matches synchronizeTask: even when nothing is publishable, persist what the caller
@@ -6235,7 +6367,7 @@ final class AppModel {
             do {
                 let requests = try await Task.detached(priority: .utility) {
                     var requests: [TaskSyncPublishRequest] = []
-                    requests.reserveCapacity(boardPublishes.count + stamps.count * 2)
+                    requests.reserveCapacity(boardPublishes.count + stamps.count)
                     for publish in boardPublishes {
                         let event = try await TaskEventCodec.prepareBoardEvent(
                             board: publish.board,
@@ -6250,33 +6382,34 @@ final class AppModel {
                             createdAt: stamp.timestamp
                         )
                         requests.append(TaskSyncPublishRequest(event: event, board: stamp.board, taskID: stamp.task.id))
-                        if let deletionTimestamp = stamp.deletionTimestamp {
-                            let deletion = try await TaskEventCodec.prepareDeletionEvent(
-                                taskID: stamp.task.id,
-                                board: stamp.board,
-                                createdAt: deletionTimestamp
-                            )
-                            requests.append(TaskSyncPublishRequest(
-                                event: deletion,
-                                board: stamp.board,
-                                taskID: "deletion:\(stamp.task.id)"
-                            ))
-                        }
                     }
                     return requests
                 }.value
                 try await syncEngine.enqueueForPublish(requests)
             } catch {
                 self?.errorMessage = "Taskify could not queue these tasks for Nostr sync."
+                // Nothing was queued: forget the fingerprints so the next sync publishes again.
+                self?.forgetPublishedFingerprints(Set(stamps.map(\.task.id)))
             }
         }
+    }
+
+    private func forgetPublishedFingerprints(_ taskIDs: Set<String>) {
+        guard !taskIDs.isEmpty else { return }
+        var updated = snapshot
+        for index in updated.tasks.indices where taskIDs.contains(updated.tasks[index].id) {
+            updated.tasks[index].publishedFingerprint = nil
+        }
+        if updated != snapshot { snapshot = updated }
     }
 
     private func synchronizeTaskifyEvents(_ eventIDs: [String]) {
         let requestedIDs = Set(eventIDs)
         guard !requestedIDs.isEmpty else { return }
+        // Generated occurrences are never published: every client generates them from the
+        // series seed (`TaskifyEvent.generated`).
         let eventsByBoard = Dictionary(grouping: (snapshot.taskifyEvents ?? []).filter {
-            requestedIDs.contains($0.id) && $0.boardID != nil
+            requestedIDs.contains($0.id) && $0.boardID != nil && !$0.isGenerated
         }) { $0.boardID! }
 
         // Upsert the normalized events through one local copy so a batch of events invalidates
@@ -6365,7 +6498,8 @@ final class AppModel {
         do {
             let sourceByBoard = Dictionary(grouping: sourceEvents.compactMap {
                 event -> TaskifyEvent? in
-                guard event.boardID != nil else { return nil }
+                // A generated occurrence was never published on the source board.
+                guard event.boardID != nil, !event.isGenerated else { return nil }
                 var tombstone = event
                 tombstone.deleted = true
                 tombstone.lastEditedBy = identityPublicKey.nilIfEmpty ?? tombstone.lastEditedBy
@@ -6385,7 +6519,7 @@ final class AppModel {
             }
 
             let targetByBoard = Dictionary(grouping: (snapshot.taskifyEvents ?? []).filter {
-                requestedTargetIDs.contains($0.id) && $0.boardID != nil
+                requestedTargetIDs.contains($0.id) && $0.boardID != nil && !$0.isGenerated
             }) { $0.boardID! }
             for (boardID, events) in targetByBoard {
                 guard let board = snapshot.boards.first(where: { $0.id == boardID }) else { continue }
@@ -6488,7 +6622,6 @@ final class AppModel {
         }
 
         let sourceTombstoneTimestamp = nextNostrTimestamp()
-        let sourceDeletionTimestamp = nextNostrTimestamp()
         let targetTimestamp = nextNostrTimestamp()
         snapshot.tasks[index].nostrUpdatedAt = targetTimestamp
         let targetTask = snapshot.tasks[index]
@@ -6517,16 +6650,6 @@ final class AppModel {
                     sourceTaskEvent,
                     board: sourceBoard,
                     taskID: sourceTombstone.id
-                )
-                let sourceDeletion = try await TaskEventCodec.prepareDeletionEvent(
-                    taskID: sourceTombstone.id,
-                    board: sourceBoard,
-                    createdAt: sourceDeletionTimestamp
-                )
-                try await syncEngine.publish(
-                    sourceDeletion,
-                    board: sourceBoard,
-                    taskID: "deletion:\(sourceTombstone.id)"
                 )
 
                 let targetBoardEvent = try await TaskEventCodec.prepareBoardEvent(

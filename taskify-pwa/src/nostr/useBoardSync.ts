@@ -17,6 +17,8 @@ const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 const NOSTR_BOARD_YIELD_INTERVAL = 50;
 /** Re-read this much before the last complete recovery, for clock skew between devices. */
 const BOARD_HISTORY_LOOKBACK_SECS = 300;
+/** Task ids per verify REQ, well inside relays' filter and message limits. */
+const VERIFY_UNSEEN_BATCH = 100;
 
 type MutableRef<T> = { current: T };
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
@@ -116,6 +118,62 @@ export function buildBoardSyncFilters({
   ];
 }
 
+/**
+ * Relays cap concurrent REQs per connection (strfry: "too many concurrent REQs"), and an account
+ * with compound boards easily has dozens of boards. Boards on the same relays share a REQ, up to
+ * this many, each keeping its own filters and cursors. Matches native `BoardSubscriptionGrouping`.
+ */
+export const BOARDS_PER_SUBSCRIPTION = 10;
+
+export function groupBoardsForSubscription<T extends { id: string; relays: string }>(items: T[]): T[][] {
+  const byRelays = new Map<string, T[]>();
+  for (const item of items) {
+    const group = byRelays.get(item.relays) ?? [];
+    group.push(item);
+    byRelays.set(item.relays, group);
+  }
+  const chunks: T[][] = [];
+  for (const group of byRelays.values()) {
+    const sorted = [...group].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (let index = 0; index < sorted.length; index += BOARDS_PER_SUBSCRIPTION) {
+      chunks.push(sorted.slice(index, index + BOARDS_PER_SUBSCRIPTION));
+    }
+  }
+  return chunks;
+}
+
+/** Which board an event from a grouped board REQ belongs to. */
+export function boardTagForSyncEvent(event: { kind: number; tags?: string[][] }): string | null {
+  const tag = (name: string) => (event.tags ?? []).find((entry) => entry[0] === name)?.[1] ?? null;
+  return tag("b") ?? (event.kind === 30300 ? tag("d") : null);
+}
+
+/**
+ * History catch-up runs one REQ per board per relay. Started for every board at once, that is
+ * dozens of concurrent REQs on each relay; this keeps a few in flight per relay.
+ */
+export const MAX_CONCURRENT_HISTORY_RECOVERIES_PER_RELAY = 3;
+const historyRecoverySlots = new Map<string, { active: number; waiting: Array<() => void> }>();
+
+export async function withHistoryRecoverySlot<T>(relay: string, work: () => Promise<T>): Promise<T> {
+  let slots = historyRecoverySlots.get(relay);
+  if (!slots) {
+    slots = { active: 0, waiting: [] };
+    historyRecoverySlots.set(relay, slots);
+  }
+  const state = slots;
+  if (state.active >= MAX_CONCURRENT_HISTORY_RECOVERIES_PER_RELAY) {
+    await new Promise<void>((resolve) => state.waiting.push(resolve));
+  }
+  state.active += 1;
+  try {
+    return await work();
+  } finally {
+    state.active -= 1;
+    state.waiting.shift()?.();
+  }
+}
+
 export function useBoardSync({
   boards,
   boardsRef,
@@ -207,9 +265,13 @@ export function useBoardSync({
       const boardId = board.id;
       const verifyRecentGraceSecs = 60;
       const nowSecs = Math.floor(Date.now() / 1000);
+      // Open tasks only: a completion or deletion that reached the relays after this device's
+      // cursor passed it is what leaves a stale task showing. Asking about every task this board
+      // ever held put thousands of ids in one REQ, more than relays accept, so nothing was checked.
       const unseenIds = tasksRef.current
         .filter((task) => {
           if (task.boardId !== boardId) return false;
+          if (task.completed) return false;
           if (typeof task._nostrAt !== "number" || task._nostrAt <= 0) return false;
           if (seenIds.has(task.id)) return false;
           if (pendingNostrTasksRef.current.has(`${bTag}::${task.id}`)) return false;
@@ -220,26 +282,29 @@ export function useBoardSync({
       seenBoardTasksRef.current.delete(bTag);
       if (!unseenIds.length) return;
 
-      let verifyUnsub: (() => void) | null = null;
-      verifyUnsub = pool.subscribe(
-        boardRelays,
-        [{ kinds: [30301], "#b": [bTag], "#d": unseenIds }],
-        (ev, evRelay) => {
-          if (isDisposed()) return;
-          ev.__relay = evRelay;
-          enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
-        },
-        () => {
-          verifyUnsub?.();
-        },
-      );
-      window.setTimeout(() => {
-        try {
-          verifyUnsub?.();
-        } catch {
-          // already closed
-        }
-      }, 15000);
+      for (let start = 0; start < unseenIds.length; start += VERIFY_UNSEEN_BATCH) {
+        const batch = unseenIds.slice(start, start + VERIFY_UNSEEN_BATCH);
+        let verifyUnsub: (() => void) | null = null;
+        verifyUnsub = pool.subscribe(
+          boardRelays,
+          [{ kinds: [30301], "#b": [bTag], "#d": batch }],
+          (ev, evRelay) => {
+            if (isDisposed()) return;
+            ev.__relay = evRelay;
+            enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
+          },
+          () => {
+            verifyUnsub?.();
+          },
+        );
+        window.setTimeout(() => {
+          try {
+            verifyUnsub?.();
+          } catch {
+            // already closed
+          }
+        }, 15000);
+      }
     },
     [
       applyTaskEvent,
@@ -304,6 +369,7 @@ export function useBoardSync({
       return changed ? next : prev;
     });
 
+    const boardHandlers = new Map<string, { onEvent: (ev: any, relay?: string) => void; onEose: (relay?: string) => void }>();
     for (const item of parsed) {
       const relayList = item.relays.split(",").filter(Boolean);
       if (!relayList.length) continue;
@@ -325,16 +391,8 @@ export function useBoardSync({
       syncTimeoutByBoard.set(item.id, timeoutId);
 
       pool.setRelays(relayList);
-      const filters = buildBoardSyncFilters({
-        bTag: item.id,
-        cursor: boardSyncCursorsRef.current[item.id],
-        fullHistory: forceFullHistorySync,
-      });
-
-      const unsub = pool.subscribe(
-        relayList,
-        filters,
-        (ev, evRelay) => {
+      boardHandlers.set(item.id, {
+        onEvent: (ev: any, evRelay?: string) => {
           if (disposed) return;
           ev.__relay = evRelay;
           if (ev.kind === 30300) enqueueForBoard(item.id, () => applyBoardEvent(ev)).catch(() => {});
@@ -351,7 +409,7 @@ export function useBoardSync({
             enqueueForBoard(item.id, () => applyCalendarEvent(ev)).catch(() => {});
           }
         },
-        (eoseRelay) => {
+        onEose: (eoseRelay?: string) => {
           // Decryption is asynchronous. Keep the relay pending until every
           // earlier event has entered its batch, then read and flush that batch.
           void enqueueForBoard(item.id, async () => {
@@ -371,8 +429,7 @@ export function useBoardSync({
             if (!pendingRelaysByBoard.get(item.id)?.size) completeBoardSync(item.id, relayList);
           });
         },
-      );
-      unsubs.push(unsub);
+      });
       // Live cursors can skip records (a capped, newest-first response advances them past
       // older events), so retained history is reconciled independently of them. The first
       // complete pass reads everything; after that each relay is read from its last complete
@@ -388,7 +445,7 @@ export function useBoardSync({
             // Taskify's board, task and calendar kinds are not members of NDK's kind enum.
             const historyKinds = [30300, 30301, TASKIFY_CALENDAR_EVENT_KIND] as number[] as NDKKind[];
             const filter = { kinds: historyKinds, "#b": [item.id], ...(since != null ? { since } : {}) };
-            await recoverRelayHistory(session, filter, relay, async (event) => {
+            await withHistoryRecoverySlot(relay, () => recoverRelayHistory(session, filter, relay, async (event) => {
               if (recovery.signal.aborted) return;
               await enqueueForBoard(item.id, async () => {
                 if (recovery.signal.aborted) return;
@@ -397,7 +454,8 @@ export function useBoardSync({
                 else if (event.kind === 30301) await applyTaskEvent(event);
                 else await applyCalendarEvent(event);
               });
-            }, { signal: recovery.signal });
+            }, { signal: recovery.signal }));
+            if (recovery.signal.aborted) return;
             if (!recovery.signal.aborted) setHistoryWatermark(watermarkKey, startedAt);
           } catch (error) {
             if (!recovery.signal.aborted) console.warn("[nostr] board history recovery incomplete", error);
@@ -406,6 +464,28 @@ export function useBoardSync({
       })().catch(error => {
         if (!recovery.signal.aborted) console.warn("[nostr] board history recovery failed", error);
       });
+    }
+
+    for (const chunk of groupBoardsForSubscription(parsed.filter((item) => boardHandlers.has(item.id)))) {
+      const relayList = chunk[0].relays.split(",").filter(Boolean);
+      const filters = chunk.flatMap((item) => buildBoardSyncFilters({
+        bTag: item.id,
+        cursor: boardSyncCursorsRef.current[item.id],
+        fullHistory: forceFullHistorySync,
+      }));
+      const members = chunk.map((item) => item.id);
+      const unsub = pool.subscribe(
+        relayList,
+        filters as any,
+        (ev, evRelay) => {
+          const bTag = boardTagForSyncEvent(ev as any);
+          if (!bTag || !members.includes(bTag)) return;
+          boardHandlers.get(bTag)?.onEvent(ev, evRelay);
+        },
+        // One EOSE per relay covers every board in the REQ.
+        (eoseRelay) => members.forEach((bTag) => boardHandlers.get(bTag)?.onEose(eoseRelay)),
+      );
+      unsubs.push(unsub);
     }
 
     return () => {

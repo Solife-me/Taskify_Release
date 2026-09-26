@@ -110,6 +110,10 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     public var preservedSyncFields: [String: TaskPayloadValue]?
     public var streak: Int?
     public var longestStreak: Int?
+    /// What relays last saw for this task: the fingerprint of the version this device last
+    /// published or received (`TaskEventCodec.publishFingerprint`). Local only. A publish whose
+    /// fingerprint matches carries nothing new and is skipped.
+    public var publishedFingerprint: String? = nil
 
     public init(
         id: String = UUID().uuidString,

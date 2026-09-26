@@ -1,3 +1,4 @@
+import { MAX_CONCURRENT_BOARD_FETCHES, mapWithConcurrency } from "../shared/concurrency.js";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import type { Command } from "commander";
 import { getPublicKey } from "nostr-tools";
@@ -148,7 +149,7 @@ export function registerDiscoveryCommands(program: Command, context: Pick<Comman
         if (!opts.catalogOnly && config.boards.length > 0) {
           const runtime = initRuntime(config);
           try {
-            await Promise.all(config.boards.map(async (board) => {
+            await mapWithConcurrency(config.boards, MAX_CONCURRENT_BOARD_FETCHES, async (board) => {
               try {
                 const metadata = await runtime.syncBoard(board.id);
                 boardResults.push({
@@ -166,7 +167,7 @@ export function registerDiscoveryCommands(program: Command, context: Pick<Comman
                   error: error instanceof Error ? error.message : String(error),
                 });
               }
-            }));
+            });
           } finally {
             await runtime.disconnect();
           }

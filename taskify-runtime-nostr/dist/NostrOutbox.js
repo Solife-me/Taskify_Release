@@ -56,7 +56,67 @@ export function createNostrOutboxMutation(args) {
         nextAttemptAt: args.nextAttemptAt ?? null,
         updatedAt: nowMs,
         ...(sameEvent && existing?.relayRejections ? { relayRejections: existing.relayRejections } : {}),
+        isRepublish: args.isRepublish ?? false,
     };
+}
+/**
+ * Stops sending a board's republished rows anywhere but `keptRelayUrls` (Taskify's own relays).
+ * A republish resends current state that other devices already have, but a row can still carry
+ * the only copy of an edit it replaced in the queue, so rows are narrowed rather than dropped:
+ * they still reach a kept relay, which every client reads. A row that targets none of the kept
+ * relays is left untouched. Matches native `NostrOutboxStore.limitRepublishedEntries`.
+ *
+ * Rows from before `isRepublish` existed can't say which a republish queued, so there a burst of
+ * at least `legacyBurstMinimum` rows for the board, queued no more than `legacyBurstGapMs` apart,
+ * counts: ordinary edits never queue that many at once.
+ */
+export function narrowRepublishedMutations(rows, options) {
+    const kept = new Set(normalizeRelayUrls([...options.keptRelayUrls]));
+    const minimum = options.legacyBurstMinimum ?? 50;
+    const gap = options.legacyBurstGapMs ?? 2_000;
+    const boardRows = rows.filter((row) => row.payload.event.tags.some((tag) => tag[0] === "b" && tag[1] === options.boardTag));
+    const legacy = boardRows.filter((row) => row.isRepublish === undefined).sort((a, b) => a.intentAt - b.intentAt);
+    const legacyBurstIds = new Set();
+    let run = [];
+    const closeRun = () => {
+        if (run.length >= minimum)
+            run.forEach((row) => legacyBurstIds.add(row.id));
+        run = [];
+    };
+    for (const row of legacy) {
+        if (run.length && row.intentAt - run[run.length - 1].intentAt > gap)
+            closeRun();
+        run.push(row);
+    }
+    closeRun();
+    const updated = [];
+    const completedIds = [];
+    for (const row of boardRows) {
+        if (!(row.isRepublish === true || legacyBurstIds.has(row.id)))
+            continue;
+        const relays = normalizeRelayUrls(row.payload.relayUrls);
+        if (!relays.some((relay) => kept.has(relay)))
+            continue;
+        const acked = new Set(normalizeRelayUrls(row.ackedRelays));
+        const narrowed = relays.filter((relay) => kept.has(relay) || acked.has(relay));
+        if (narrowed.length === relays.length)
+            continue;
+        const pendingRelays = narrowed.filter((relay) => !acked.has(relay));
+        if (!pendingRelays.length) {
+            completedIds.push(row.id);
+            continue;
+        }
+        const relayRejections = row.relayRejections
+            ? Object.fromEntries(Object.entries(row.relayRejections).filter(([relay]) => narrowed.includes(relay)))
+            : undefined;
+        updated.push({
+            ...row,
+            payload: { ...row.payload, relayUrls: narrowed },
+            pendingRelays,
+            ...(relayRejections ? { relayRejections } : {}),
+        });
+    }
+    return { updated, completedIds };
 }
 /** The relays to send to now: still pending, and not held back after refusing the event. */
 export function pendingRelayUrlsForMutation(mutation, nowMs = Date.now()) {

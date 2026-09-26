@@ -91,7 +91,8 @@ public enum UpcomingTaskOrganizer {
         boardOrder: [String]
     ) -> [TaskItem] {
         let boardRanks = Dictionary(
-            uniqueKeysWithValues: boardOrder.enumerated().map { ($0.element, $0.offset) }
+            boardOrder.enumerated().map { ($0.element, $0.offset) },
+            uniquingKeysWith: { first, _ in first }
         )
         let fallbackRank = boardOrder.count
 

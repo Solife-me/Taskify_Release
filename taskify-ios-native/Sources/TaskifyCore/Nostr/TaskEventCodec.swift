@@ -1,5 +1,6 @@
 import TaskifyWatchShared
 import Foundation
+import CryptoKit
 
 public enum TaskEventCodecError: LocalizedError {
     case wrongKind
@@ -374,6 +375,21 @@ public enum TaskEventCodec {
             ],
             content: encryptedContent
         )
+    }
+
+    /// Identifies what a published task event would tell other clients: its payload, status,
+    /// board and column. Every tombstone reads the same ("deleted"): other clients drop a deleted
+    /// task's content, so re-stamping or re-homing one tells them nothing new.
+    public static func publishFingerprint(task: TaskItem, board: Board) -> String? {
+        if task.isDeleted { return "deleted" }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let payload = try? encoder.encode(TaskSyncPayload(task: task)) else { return nil }
+        let status = task.completed ? "done" : "open"
+        let columnTag = board.kind == .week ? "day" : (task.columnID ?? "")
+        var data = payload
+        data.append(Data("|\(status)|\(board.effectiveNostrBoardID)|\(columnTag)".utf8))
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     public static func boardEvent(board: Board, createdAt: Int) throws -> NostrEvent {

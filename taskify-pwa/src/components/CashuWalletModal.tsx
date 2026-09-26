@@ -4,6 +4,7 @@
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
 import type { SharedTaskPayload, InboxSender } from "taskify-core";
+import type { Settings } from "../domains/tasks/settingsTypes";
 import { useSyncResume } from "../nostr/useSyncResume";
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -220,6 +221,9 @@ const WalletSwapSheet = lazy(() =>
 const WalletNwcManagerSheet = lazy(() =>
   import("../ui/wallet/WalletNwcManagerSheet").then((module) => ({ default: module.WalletNwcManagerSheet })),
 );
+const WalletSettingsSheet = lazy(() =>
+  import("../ui/wallet/WalletSettingsSheet").then((module) => ({ default: module.WalletSettingsSheet })),
+);
 const PaymentRequestFulfillSheet = lazy(() =>
   import("../ui/wallet/PaymentRequestFulfillSheet").then((module) => ({ default: module.PaymentRequestFulfillSheet })),
 );
@@ -233,6 +237,10 @@ export default function CashuWalletModal({
   showTabSwitcher = true,
   showBottomNav = false,
   walletConversionEnabled,
+  walletSettings,
+  setWalletSettings,
+  defaultRelays,
+  onResetWalletTokenTracking,
   walletPrimaryCurrency,
   walletDenominationDisplay,
   setWalletPrimaryCurrency,
@@ -272,6 +280,10 @@ export default function CashuWalletModal({
   showTabSwitcher?: boolean;
   showBottomNav?: boolean;
   walletConversionEnabled: boolean;
+  walletSettings: Settings;
+  setWalletSettings: (patch: Partial<Settings>) => void;
+  defaultRelays: string[];
+  onResetWalletTokenTracking: () => void;
   walletPrimaryCurrency: "sat" | "usd";
   walletDenominationDisplay: "bitcoin-symbol" | "sat";
   setWalletPrimaryCurrency: (currency: "sat" | "usd") => void;
@@ -803,6 +815,7 @@ export default function CashuWalletModal({
     active: open && nwcWalletActive,
   });
   const [showWalletModeSheet, setShowWalletModeSheet] = useState(false);
+  const [showWalletSettings, setShowWalletSettings] = useState(false);
   const [showStoredTokens, setShowStoredTokens] = useState(false);
   // An unknown NWC balance is shown blank, never as 0 (see nwcBalanceUnknown).
   const nwcBalanceUnknown = nwcWalletActive && nwcMode.balanceSat == null;
@@ -4904,9 +4917,10 @@ export default function CashuWalletModal({
       {!isContactsPage && !isChatPage && (
         <>
           <div className="wallet-modal__header">
-            <button className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
-            {walletTab !== "messages" && (
-              <>
+            <div className="wallet-modal__title-group">
+              <button className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
+              <span className="wallet-modal__title">Wallet</span>
+              {walletTab !== "messages" && (
                 <button
                   type="button"
                   className={unitButtonClass}
@@ -4916,33 +4930,16 @@ export default function CashuWalletModal({
                 >
                   {unitLabel}
                 </button>
-                <button className="ghost-button button-sm pressable" onClick={()=>setShowHistory(true)}>History</button>
-              </>
-            )}
-          </div>
-          {walletTab !== "messages" && (
-            <div className="wallet-modal__toolbar">
-              {!nwcWalletActive && (
-                <>
-                  <button className="ghost-button button-sm pressable" onClick={()=>setShowMintBalances(true)}>Mints</button>
-                  <button className="ghost-button button-sm pressable" onClick={()=>setShowNwcSheet(true)}>Swap</button>
-                </>
-              )}
-              <button className="ghost-button button-sm pressable" onClick={openWalletModeSheet}>
-                {nwcWalletActive ? nwcMode.walletLabel : "Wallet"}
-              </button>
-              {onOpenBounties && (
-                <button className="ghost-button button-sm pressable" onClick={onOpenBounties}>
-                  Bounties
-                </button>
-              )}
-              {onOpenAddress && (
-                <button className="ghost-button button-sm pressable" onClick={onOpenAddress}>
-                  Address
-                </button>
               )}
             </div>
-          )}
+            {walletTab !== "messages" && (
+              <div className="wallet-modal__utilities">
+                <button className="ghost-button button-sm pressable" onClick={()=>setShowHistory(true)}>History</button>
+                <button className="ghost-button button-sm pressable" onClick={openNwcManager}>Wallets</button>
+                <button className="ghost-button button-sm pressable" onClick={()=>setShowWalletSettings(true)}>Settings</button>
+              </div>
+            )}
+          </div>
           <div className={contentClass}>
             {walletTab === "wallet" && (
               <>
@@ -10036,27 +10033,26 @@ export default function CashuWalletModal({
         <Suspense fallback={null}>
           <WalletNwcManagerSheet
             walletMode={walletMode}
-            onOpenWalletMode={() => {
-              closeNwcManager();
-              openWalletModeSheet();
-            }}
         showNwcManager={showNwcManager}
         closeNwcManager={closeNwcManager}
-        hasNwcConnection={hasNwcConnection}
-        nwcAlias={nwcAlias}
-        nwcConnection={nwcConnection}
-        nwcInfo={nwcInfo}
-        nwcBalanceSats={nwcBalanceSats}
-        nwcStatusLabel={nwcStatusLabel}
-        nwcUrlInput={nwcUrlInput}
-        setNwcUrlInput={setNwcUrlInput}
-        nwcBusy={nwcBusy}
-        nwcFeedback={nwcFeedback}
-        nwcError={nwcError}
         formatSatAmount={formatSatAmount}
-        handleNwcConnect={handleNwcConnect}
-        handleNwcTest={handleNwcTest}
-        handleNwcDisconnect={handleNwcDisconnect}
+          />
+        </Suspense>
+      )}
+
+      {showWalletSettings && (
+        <Suspense fallback={null}>
+          <WalletSettingsSheet
+            open={showWalletSettings}
+            onClose={() => setShowWalletSettings(false)}
+            settings={walletSettings}
+            setSettings={setWalletSettings}
+            defaultRelays={defaultRelays}
+            onResetWalletTokenTracking={onResetWalletTokenTracking}
+            onOpenWallets={() => { setShowWalletSettings(false); openNwcManager(); }}
+            onOpenAddress={() => { setShowWalletSettings(false); onOpenAddress?.(); }}
+            onOpenSwap={() => { setShowWalletSettings(false); setShowNwcSheet(true); }}
+            onOpenMints={() => { setShowWalletSettings(false); setShowMintBalances(true); }}
           />
         </Suspense>
       )}

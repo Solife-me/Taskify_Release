@@ -43,16 +43,17 @@ export type {
 } from "taskify-core";
 
 // Legacy aliases retained for compatibility with existing imports
+/** `republish`: part of a board republish, which "Clear queued republish" can limit to Taskify's relays. */
 export type PublishTaskFn = (
   task: Task,
   boardOverride?: Board,
-  options?: { skipBoardMetadata?: boolean }
+  options?: { skipBoardMetadata?: boolean; republish?: boolean }
 ) => Promise<void>;
 
 export type PublishCalendarEventFn = (
   event: CalendarEvent,
   boardOverride?: Board,
-  options?: { skipBoardMetadata?: boolean }
+  options?: { skipBoardMetadata?: boolean; republish?: boolean }
 ) => Promise<void>;
 
 export type ScriptureMemoryUpdate = {

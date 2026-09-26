@@ -350,6 +350,32 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     /// desired days and create the ones that are missing. Past and completed occurrences are
     /// left untouched. Returns newly created tasks and the ids of existing tasks that were
     /// deleted or reassigned, so the caller can push the right sync events.
+    /// The board fasting reminders live on. Their ids are date-derived and shared by every
+    /// device, but "week-default" names a different board on each device, so choosing by local
+    /// id moved the same reminders between boards. Follow the week board that already holds
+    /// reminders (the most, ties by shared board id, so every device agrees); only when none
+    /// holds any, fall back to the default week board. Matches the PWA's
+    /// `fastingReminderTargetBoard`.
+    public func fastingReminderTargetBoard() -> Board? {
+        let weekBoards = boards.filter { $0.kind == .week && !$0.archived }
+        var reminderCounts: [String: Int] = [:]
+        for task in tasks where Self.isFastingReminderSeriesID(task.seriesID) && !task.isDeleted {
+            reminderCounts[task.boardID, default: 0] += 1
+        }
+        let holding = weekBoards.filter { (reminderCounts[$0.id] ?? 0) > 0 }
+        if let chosen = holding.min(by: { lhs, rhs in
+            let lhsCount = reminderCounts[lhs.id] ?? 0
+            let rhsCount = reminderCounts[rhs.id] ?? 0
+            if lhsCount != rhsCount { return lhsCount > rhsCount }
+            return lhs.effectiveNostrBoardID < rhs.effectiveNostrBoardID
+        }) {
+            return chosen
+        }
+        return boards.first(where: { $0.id == "week-default" && $0.kind == .week })
+            ?? boards.first(where: { $0.kind == .week && $0.isVisible })
+            ?? boards.first(where: { $0.kind == .week })
+    }
+
     public mutating func reconcileFastingReminders(
         enabled: Bool,
         mode: FastingRemindersMode,
@@ -374,9 +400,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             return ([], updatedIDs)
         }
 
-        guard let targetBoard = boards.first(where: { $0.id == "week-default" && $0.kind == .week })
-            ?? boards.first(where: { $0.kind == .week && $0.isVisible })
-            ?? boards.first(where: { $0.kind == .week }) else {
+        guard let targetBoard = fastingReminderTargetBoard() else {
             return ([], [])
         }
 
@@ -778,7 +802,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
               Set(orderedColumnIDs) == Set(currentColumns.map(\.id)) else {
             return false
         }
-        let columnsByID = Dictionary(uniqueKeysWithValues: currentColumns.map { ($0.id, $0) })
+        // Columns come from synced board events; a duplicate id must not trap.
+        let columnsByID = Dictionary(currentColumns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         boards[boardIndex].columns = orderedColumnIDs.enumerated().compactMap { order, columnID in
             guard var column = columnsByID[columnID] else { return nil }
             column.order = order
@@ -1102,7 +1127,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
 
         if let beforeTaskID, beforeTaskID == taskID { return nil }
 
-        let originalTasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
+        // Ids are unique after load repair; don't trap on a drop if one ever slips through.
+        let originalTasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         let sourceBoardID = tasks[taskIndex].boardID
         let sourceColumnID = tasks[taskIndex].columnID
@@ -1315,6 +1341,19 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             earliestSeedBySeries[seriesID] = task
         }
 
+        // A date the series already has an occurrence on is taken, whatever that occurrence's id:
+        // one moved to a new date keeps the id of its old one (the PWA checks the same way).
+        var occupiedDays = Set<String>()
+        for task in tasks where !task.isDeleted && task.recurrence != nil {
+            guard let dueDate = task.dueDate else { continue }
+            occupiedDays.insert(Self.seriesDayKey(
+                boardID: task.boardID,
+                seriesID: task.seriesID ?? task.id,
+                dueDate: dueDate,
+                calendar: calendar
+            ))
+        }
+
         var created: [TaskItem] = []
         var updatedIDs: [String] = []
         for (seriesID, seed) in earliestSeedBySeries {
@@ -1351,6 +1390,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                     timeZoneIdentifier: seed.dueTimeZone
                 )
                 guard !tasks.contains(where: { $0.id == occurrenceID }) else { continue }
+                let dayKey = Self.seriesDayKey(boardID: seed.boardID, seriesID: seriesID, dueDate: occurrence, calendar: recurrenceCalendar)
+                guard occupiedDays.insert(dayKey).inserted else { continue }
 
                 let board = boards.first(where: { $0.id == seed.boardID })
                 let columnID = board?.kind == .week
@@ -1413,9 +1454,15 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     ) {
         let completedTask = tasks[index]
         guard let recurrence = completedTask.recurrence,
-              let dueDate = completedTask.dueDate,
-              let nextDueDate = recurrence.nextOccurrence(
-                  after: dueDate,
+              let dueDate = completedTask.dueDate else { return }
+        // A Scripture Memory review is spaced from when it was done: completing one left overdue
+        // since July scheduled the next for the day after it, still in July, so catching up took
+        // a completion per missed day.
+        let scheduledFrom = ScriptureMemoryAlgorithm.isSeriesID(completedTask.seriesID)
+            ? max(dueDate, Calendar.current.startOfDay(for: now))
+            : dueDate
+        guard let nextDueDate = recurrence.nextOccurrence(
+                  after: scheduledFrom,
                   dueTimeEnabled: completedTask.dueTimeEnabled,
                   timeZoneIdentifier: completedTask.dueTimeZone
               ) else { return }
@@ -1429,6 +1476,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             timeZoneIdentifier: completedTask.dueTimeZone
         )
         guard !tasks.contains(where: { $0.id == nextID && !$0.isDeleted }) else { return }
+        // Ids are date-derived, so a deleted record of this occurrence (deleted here, or synced
+        // from another device) can already hold the id. The new occurrence replaces it in place:
+        // appending would leave two tasks with one id, which id-keyed lookups trap on.
+        let deletedIndex = tasks.firstIndex { $0.id == nextID }
 
         let nextColumnID: String?
         if let board = boards.first(where: { $0.id == completedTask.boardID }), board.kind == .week {
@@ -1451,7 +1502,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         let resetSubtasks = completedTask.subtasks?.map {
             TaskSubtask(id: $0.id, title: $0.title, completed: false)
         }
-        tasks.append(TaskItem(
+        let next = TaskItem(
             id: nextID,
             boardID: completedTask.boardID,
             title: completedTask.title,
@@ -1485,7 +1536,119 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             lastEditedBy: editorPublicKeyOrFallback(completedTask),
             streak: completedTask.streak,
             longestStreak: completedTask.longestStreak
-        ))
+        )
+        if let deletedIndex {
+            // Keep the deleted record's clock until the new occurrence is published, so a relay
+            // replaying that older deletion doesn't win the merge and delete it again.
+            var revived = next
+            revived.nostrUpdatedAt = tasks[deletedIndex].nostrUpdatedAt
+            tasks[deletedIndex] = revived
+        } else {
+            tasks.append(next)
+        }
+    }
+
+    private static func seriesDayKey(boardID: String, seriesID: String, dueDate: Date, calendar: Calendar) -> String {
+        let day = calendar.dateComponents([.year, .month, .day], from: dueDate)
+        return "\(boardID)\u{1}\(seriesID)\u{1}\(day.year ?? 0)-\(day.month ?? 0)-\(day.day ?? 0)"
+    }
+
+    /// The open occurrences of `taskID`'s recurring series due before today, when catching it up
+    /// (`catchUpRecurringSeries`) applies: the task is open, overdue, and its series still runs.
+    public func missedOccurrences(ofSeriesContaining taskID: String, now: Date = Date(), calendar: Calendar = .current) -> [TaskItem] {
+        guard let task = tasks.first(where: { $0.id == taskID && !$0.isDeleted }),
+              !task.completed,
+              let recurrence = task.recurrence, recurrence.isActive,
+              let dueDate = task.dueDate else { return [] }
+        let today = calendar.startOfDay(for: now)
+        guard dueDate < today else { return [] }
+        if let until = recurrence.untilDate, until < today { return [] }
+        let seriesID = Self.stableRecurringSeriesID(for: task)
+        if let cutoff = recurringTaskSeriesCutoffs?[task.boardID]?[seriesID], cutoff < today { return [] }
+        return tasks.filter {
+            $0.boardID == task.boardID && !$0.isDeleted && !$0.completed && $0.recurrence != nil &&
+                ($0.dueDate.map { $0 < today } ?? false) &&
+                Self.stableRecurringSeriesID(for: $0) == seriesID
+        }
+    }
+
+    /// Gets a recurring series that fell behind back to one task, due today: its missed open
+    /// occurrences are deleted and, unless the series already has today's occurrence, one is made
+    /// from `taskID` (keeping what it is, such as the passage a Scripture Memory review is for).
+    /// Today's occurrence takes the id every device derives for today, so devices catching up the
+    /// same series, or generating the week, produce one task.
+    @discardableResult
+    public mutating func catchUpRecurringSeries(
+        taskID: String,
+        editorPublicKey: String? = nil,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> TaskSeriesChanges {
+        let missed = missedOccurrences(ofSeriesContaining: taskID, now: now, calendar: calendar)
+        guard !missed.isEmpty,
+              let source = tasks.first(where: { $0.id == taskID && !$0.isDeleted }),
+              let recurrence = source.recurrence else { return TaskSeriesChanges() }
+        let seriesID = Self.stableRecurringSeriesID(for: source)
+        let today = calendar.startOfDay(for: now)
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) else { return TaskSeriesChanges() }
+
+        var changes = TaskSeriesChanges()
+        let missedIDs = Set(missed.map(\.id))
+        for index in tasks.indices where missedIDs.contains(tasks[index].id) {
+            tasks[index].deleted = true
+            tasks[index].lastEditedBy = editorPublicKey ?? tasks[index].lastEditedBy
+            changes.deletedTaskIDs.append(tasks[index].id)
+        }
+
+        let hasToday = tasks.contains {
+            $0.boardID == source.boardID && !$0.isDeleted &&
+                ($0.dueDate.map { $0 >= today && $0 < tomorrow } ?? false) &&
+                Self.stableRecurringSeriesID(for: $0) == seriesID
+        }
+        guard !hasToday else { return changes }
+
+        var dueCalendar = calendar
+        if source.dueTimeEnabled, let zone = source.dueTimeZone.flatMap(TimeZone.init(identifier:)) {
+            dueCalendar.timeZone = zone
+        }
+        var dueDate = dueCalendar.startOfDay(for: now)
+        if source.dueTimeEnabled, let sourceDue = source.dueDate {
+            let time = dueCalendar.dateComponents([.hour, .minute], from: sourceDue)
+            dueDate = dueCalendar.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0, of: dueDate) ?? dueDate
+        }
+        let id = Self.recurringInstanceID(
+            seriesID: seriesID,
+            dueDate: dueDate,
+            recurrence: recurrence,
+            timeZoneIdentifier: source.dueTimeZone
+        )
+        var caughtUp = source
+        caughtUp.id = id
+        caughtUp.seriesID = seriesID
+        caughtUp.dueDate = dueDate
+        caughtUp.dueDateEnabled = true
+        caughtUp.hiddenUntilDate = nil
+        caughtUp.completed = false
+        caughtUp.completedAt = nil
+        caughtUp.deleted = false
+        caughtUp.createdAt = now
+        caughtUp.nostrUpdatedAt = nil
+        caughtUp.publishedFingerprint = nil
+        caughtUp.lastEditedBy = editorPublicKey ?? source.lastEditedBy
+        caughtUp.subtasks = source.subtasks?.map { TaskSubtask(id: $0.id, title: $0.title, completed: false) }
+        if let board = boards.first(where: { $0.id == source.boardID }), board.kind == .week {
+            caughtUp.columnID = WeekdayColumn.containing(dueDate, calendar: dueCalendar).rawValue
+        }
+        if let existing = tasks.firstIndex(where: { $0.id == id }) {
+            // A deleted record of today's occurrence holds the id; replace it in place, keeping its
+            // clock so a relay replaying that deletion doesn't win (see `appendNextRecurrence`).
+            caughtUp.nostrUpdatedAt = tasks[existing].nostrUpdatedAt
+            tasks[existing] = caughtUp
+        } else {
+            tasks.append(caughtUp)
+        }
+        changes.updatedTaskIDs.append(id)
+        return changes
     }
 
     private func editorPublicKeyOrFallback(_ task: TaskItem) -> String? {
@@ -1632,7 +1795,11 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             proposedCutoff: proposedCutoff
         )
 
-        var updatedIDs = Set<String>()
+        // Only the deleted instances are published. Each tombstone carries the series' new end
+        // date, and every client caps the whole series from any one of them (native
+        // `recordRecurringTaskSeriesCutoff`, PWA `recordRecurringSeriesCutoff`), so earlier
+        // instances are capped here locally but not republished: that rewrote the entire
+        // history of a long-running series (200+ events for a daily task) to end it.
         var deletedIDs = Set<String>()
         for index in tasks.indices {
             guard tasks[index].boardID == selected.boardID,
@@ -1653,15 +1820,10 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             tasks[index].lastEditedBy = editorPublicKey ?? tasks[index].lastEditedBy
             if tasks[index].isDeleted {
                 deletedIDs.insert(tasks[index].id)
-            } else {
-                updatedIDs.insert(tasks[index].id)
             }
         }
 
-        return TaskSeriesChanges(
-            updatedTaskIDs: updatedIDs.sorted(),
-            deletedTaskIDs: deletedIDs.sorted()
-        )
+        return TaskSeriesChanges(deletedTaskIDs: deletedIDs.sorted())
     }
 
     /// Batched form of `mergeRemoteTask`. Building one id→index map up front makes a backlog
@@ -1703,10 +1865,22 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             indexByID[task.id] = index
         }
 
+        let boardByID = Dictionary(boards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func fingerprint(_ task: TaskItem) -> String? {
+            boardByID[task.boardID].flatMap { TaskEventCodec.publishFingerprint(task: task, board: $0) }
+        }
         for record in records {
             let remoteTask = taskApplyingRecurringSeriesCutoff(record.task)
             if let index = indexByID[remoteTask.id] {
                 let localClock = tasks[index].nostrUpdatedAt ?? 0
+                // Our own version echoed back by a relay: record what the relays hold.
+                if record.eventCreatedAt == localClock, tasks[index].publishedFingerprint == nil {
+                    let relayFingerprint = fingerprint(record.task)
+                    if relayFingerprint != nil {
+                        tasks[index].publishedFingerprint = relayFingerprint
+                        changed = true
+                    }
+                }
                 guard record.eventCreatedAt > localClock else { continue }
                 var merged = remoteTask
                 var preservedFields = tasks[index].preservedSyncFields ?? [:]
@@ -1715,11 +1889,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 }
                 merged.preservedSyncFields = preservedFields.isEmpty ? nil : preservedFields
                 merged.nostrUpdatedAt = record.eventCreatedAt
+                merged.publishedFingerprint = fingerprint(record.task)
                 tasks[index] = merged
                 changed = true
             } else {
                 var inserted = remoteTask
                 inserted.nostrUpdatedAt = record.eventCreatedAt
+                inserted.publishedFingerprint = fingerprint(record.task)
                 indexByID[inserted.id] = tasks.count
                 tasks.append(inserted)
                 changed = true
@@ -1996,6 +2172,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             )
         }
         _ = applyRecurringTaskSeriesCutoffs()
+        deduplicateTaskIDs()
         _ = deduplicateRecurringTaskOccurrences()
         for index in boards.indices {
             if boards[index].nostrBoardID?.isEmpty != false {
@@ -2065,6 +2242,35 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             return candidate.isDeleted
         }
         return false
+    }
+
+    /// Keeps one task per id. Id-keyed lookups (moving a task, republishing a board) trap on a
+    /// duplicate, and older builds could leave one: completing a recurring task appended its next
+    /// occurrence beside a deleted record that already held the date-derived id.
+    private mutating func deduplicateTaskIDs() {
+        var indexByID = [String: Int](minimumCapacity: tasks.count)
+        var repaired: [TaskItem] = []
+        repaired.reserveCapacity(tasks.count)
+        for task in tasks {
+            guard let existingIndex = indexByID[task.id] else {
+                indexByID[task.id] = repaired.count
+                repaired.append(task)
+                continue
+            }
+            if Self.prefersTaskVersion(task, over: repaired[existingIndex]) {
+                repaired[existingIndex] = task
+            }
+        }
+        if repaired.count != tasks.count { tasks = repaired }
+    }
+
+    /// The newer version wins; one not yet published is a pending local change, so it is newest.
+    /// On a tie the live version beats a deleted one.
+    private static func prefersTaskVersion(_ candidate: TaskItem, over existing: TaskItem) -> Bool {
+        let candidateClock = candidate.nostrUpdatedAt ?? Int.max
+        let existingClock = existing.nostrUpdatedAt ?? Int.max
+        if candidateClock != existingClock { return candidateClock > existingClock }
+        return existing.isDeleted && !candidate.isDeleted
     }
 
     /// Collapses PWA/native representations of the same frequent recurring occurrence. Older
