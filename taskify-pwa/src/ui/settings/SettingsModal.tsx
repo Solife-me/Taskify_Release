@@ -28,7 +28,6 @@ import { Modal } from "../Modal";
 import { contactInitials, hexToBytes } from "./settingsConstants";
 import { BoardsSection } from "./BoardsSection";
 import { ViewSection } from "./ViewSection";
-import { WalletSection } from "./WalletSection";
 import { BibleSection } from "./BibleSection";
 import { PushSection } from "./PushSection";
 import { NostrSection } from "./NostrSection";
@@ -356,15 +355,6 @@ export function SettingsModal({
           settings={settings}
           setSettings={setSettings}
           boards={boards}
-        />
-
-        {/* Wallet */}
-        <WalletSection
-          settings={settings}
-          setSettings={setSettings}
-          defaultRelays={defaultRelays}
-          onReloadNeeded={onReloadNeeded}
-          onResetWalletTokenTracking={onResetWalletTokenTracking}
         />
 
         {/* Chat */}

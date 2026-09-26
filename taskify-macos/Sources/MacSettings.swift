@@ -13,8 +13,6 @@ struct MacSettingsView: View {
     @State private var identity = ""
     @State private var message: String?
     @State private var importConfirmation = false
-    @State private var recoveryPhrase: String?
-    @State private var restoringWallet = false
     @State private var restoreCandidate: TaskifySnapshot?
     @State private var profile = NostrProfileDraft()
     @State private var profileLoaded = false
@@ -80,18 +78,6 @@ struct MacSettingsView: View {
                     Button("Enable Task Notifications") { model.requestNotificationPermission() }
                     Text("Messages sync while Taskify is running. Closed-app message notifications need a separately provisioned Mac push service.").font(.caption).foregroundStyle(.secondary)
                 }
-                Section("Wallet Display") {
-                    Toggle("Currency Conversion", isOn: Binding(get: { model.walletConversionEnabled }, set: { model.setWalletConversionEnabled($0) }))
-                    Text("Show USD equivalents by fetching the spot BTC price from Coinbase.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Picker("Bitcoin Denomination", selection: Binding(get: { model.walletDenominationDisplay }, set: { model.setWalletDenominationDisplay($0) })) {
-                        Text("\(WalletAmountFormat.bitcoinSymbol)42,778").tag(WalletDenominationDisplay.bitcoinSymbol)
-                        Text("42,778 sat").tag(WalletDenominationDisplay.sat)
-                    }
-                    // No primary-currency picker: iOS deliberately omits one too — tapping a
-                    // wallet amount switches it in place instead of a Settings control two
-                    // screens away. Mac's wallet views don't have that tap gesture yet.
-                }
             }.formStyle(.grouped).tabItem { Label("General", systemImage: "gearshape") }
             Form {
                 Section("Nostr Account") {
@@ -110,24 +96,6 @@ struct MacSettingsView: View {
                         Task {
                             do { try await authenticate("Copy your Taskify private key"); macCopy(try model.exportIdentityNsec()); message = "Private key copied." }
                             catch { message = error.localizedDescription }
-                        }
-                    }
-                }
-                Section("Wallet Recovery") {
-                    Button("Recover Wallet…") { restoringWallet = true }
-                    Button("Show Recovery Phrase…") {
-                        Task { do { try await authenticate("View your Taskify wallet recovery phrase"); recoveryPhrase = try await wallet.recoveryPhrase() } catch { message = error.localizedDescription } }
-                    }
-                    Button("Export Wallet Backup…") {
-                        Task {
-                            do {
-                                try await authenticate("Export your Taskify wallet recovery backup")
-                                let backup = try await wallet.recoveryBackupJSON()
-                                let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "Taskify-wallet-recovery.json"
-                                guard panel.runModal() == .OK, let url = panel.url else { return }
-                                try backup.write(to: url, atomically: true, encoding: .utf8)
-                                message = "Wallet recovery backup exported. Store it securely; it controls your funds."
-                            } catch { message = error.localizedDescription }
                         }
                     }
                 }
@@ -172,15 +140,6 @@ struct MacSettingsView: View {
                 }
             }.formStyle(.grouped).tabItem { Label("Sync", systemImage: "network") }
         }.padding(12)
-            .sheet(isPresented: Binding(get: { recoveryPhrase != nil }, set: { if !$0 { recoveryPhrase = nil } })) {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("Wallet Recovery Phrase").font(.title2.bold())
-                    Text("Store these words securely. Anyone with them can access your funds.").foregroundStyle(.secondary)
-                    Text(recoveryPhrase ?? "").font(.title3.monospaced()).textSelection(.enabled)
-                    Button("Done") { recoveryPhrase = nil }.keyboardShortcut(.defaultAction)
-                }.padding(28).frame(width: 480)
-            }
-            .sheet(isPresented: $restoringWallet) { MacWalletRecovery() }
             .confirmationDialog("Replace this Mac's task and chat data with the selected backup?", isPresented: Binding(get: { restoreCandidate != nil }, set: { if !$0 { restoreCandidate = nil } })) {
                 Button("Restore Backup", role: .destructive) {
                     guard let candidate = restoreCandidate else { return }

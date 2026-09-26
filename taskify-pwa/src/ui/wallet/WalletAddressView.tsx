@@ -3,7 +3,6 @@ import type { Settings } from "../../domains/tasks/settingsTypes";
 import { useCashu } from "../../context/CashuContext";
 import { useNwc } from "../../context/NwcContext";
 import { useWalletMode } from "../../wallet/walletMode";
-import { setNwcReceiveAddress, useNwcReceiveAddressSetting } from "../../hooks/wallet/useNwcWalletMode";
 import { useToast } from "../../context/ToastContext";
 import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
 import { getMintList, normalizeMintUrl } from "../../wallet/storage";
@@ -81,8 +80,8 @@ export function WalletAddressView({
   const nwc = useNwc();
   const walletMode = useWalletMode();
   const nwcWalletActive = walletMode === "nwc" && !!nwc.connection;
-  const nwcWalletLabel = nwc.info?.alias || nwc.connection?.walletName || "NWC wallet";
-  const nwcReceiveAddress = useNwcReceiveAddressSetting();
+  const nwcWalletLabel = nwc.activeWallet?.name || nwc.info?.alias || nwc.connection?.walletName || "NWC wallet";
+  const nwcReceiveAddress = nwc.activeWallet?.receiveAddress || nwc.connection?.walletLud16 || "";
   const [forwardInput, setForwardInput] = useState("");
   const [forwardStatus, setForwardStatus] = useState<"idle" | "saving" | "error">("idle");
   const [forwardMessage, setForwardMessage] = useState("");
@@ -360,7 +359,7 @@ export function WalletAddressView({
     );
   }, []);
 
-  const handleSetForward = useCallback(async () => {
+  const handleSetForward = useCallback(async (connectionOverride?: string) => {
     if (!activeSolifeAddressRecord) return;
     const storedSk = nostrSkSync();
     if (!storedSk) {
@@ -371,7 +370,9 @@ export function WalletAddressView({
     setForwardStatus("saving");
     setForwardMessage("Checking the connection with your wallet...");
     try {
-      const updated = await setSolifeAddressNwcForward(storedSk, activeSolifeAddressRecord.handle, forwardInput);
+      const connection = connectionOverride?.trim() || forwardInput.trim();
+      if (!connection) throw new Error("Paste or choose an NWC connection first.");
+      const updated = await setSolifeAddressNwcForward(storedSk, activeSolifeAddressRecord.handle, connection);
       replaceAddress(updated);
       setForwardInput("");
       setForwardStatus("idle");
@@ -599,6 +600,7 @@ export function WalletAddressView({
             status={forwardStatus}
             message={forwardMessage}
             onSave={() => void handleSetForward()}
+            onUseActive={() => void handleSetForward(nwc.connection?.uri)}
             onClear={() => void handleClearForward()}
             nwcWalletActive={nwcWalletActive}
             nwcWalletLabel={nwcWalletLabel}
@@ -606,7 +608,7 @@ export function WalletAddressView({
               !!activeSolifeAddressRecord && normalizeAddress(nwcReceiveAddress) === normalizeAddress(activeSolifeAddressRecord.address)
             }
             onShowOnReceive={(address) => {
-              setNwcReceiveAddress(address);
+              if (nwc.activeWalletId) nwc.updateReceiveAddress(nwc.activeWalletId, address);
               showToast("Shown on Receive", 2000);
             }}
           />
@@ -682,6 +684,7 @@ type NwcForwardSectionProps = {
   status: "idle" | "saving" | "error";
   message: string;
   onSave: () => void;
+  onUseActive: () => void;
   onClear: () => void;
   nwcWalletActive: boolean;
   nwcWalletLabel: string;
@@ -698,6 +701,7 @@ function NwcForwardSection({
   status,
   message,
   onSave,
+  onUseActive,
   onClear,
   nwcWalletActive,
   nwcWalletLabel,
@@ -754,28 +758,41 @@ function NwcForwardSection({
     <div className="space-y-2">
       <div className="text-xs text-secondary uppercase tracking-wide">Forward to your wallet</div>
       <div className="text-xs text-secondary">
-        Send payments to {address.address} straight to your own lightning wallet
-        {nwcWalletActive ? ` (such as ${nwcWalletLabel})` : ""}. Paste an NWC connection from your wallet. Solife
-        only ever uses it to create invoices, never to pay. For the most safety, create a new connection that
-        can only receive (create invoices) rather than reusing the one this app pays with.
+        Send payments to {address.address} straight to your own lightning wallet. Solife only uses the connection
+        to create invoices and never initiates payments through Taskify.
       </div>
-      <input
-        className="pill-input w-full"
-        placeholder="nostr+walletconnect://..."
-        value={input}
-        onChange={(event) => onInput(event.target.value)}
-        autoCapitalize="none"
-        autoCorrect="off"
-        spellCheck={false}
-        disabled={status === "saving"}
-      />
-      <button
-        className="accent-button button-sm pressable"
-        onClick={onSave}
-        disabled={status === "saving" || !input.trim()}
-      >
-        {status === "saving" ? "Checking..." : "Forward payments"}
-      </button>
+      {nwcWalletActive && (
+        <button className="accent-button button-sm pressable" onClick={onUseActive} disabled={status === "saving"}>
+          {status === "saving" ? "Checking..." : `Use ${nwcWalletLabel}`}
+        </button>
+      )}
+      <details>
+        <summary className="cursor-pointer text-xs text-secondary">
+          {nwcWalletActive ? "Use a separate receive-only connection" : "Add a receive-only connection"}
+        </summary>
+        <div className="mt-2 space-y-2">
+          <div className="text-xs text-secondary">
+            For tighter permissions, create a connection that can only receive (create invoices).
+          </div>
+          <input
+            className="pill-input w-full"
+            placeholder="nostr+walletconnect://..."
+            value={input}
+            onChange={(event) => onInput(event.target.value)}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            disabled={status === "saving"}
+          />
+          <button
+            className="ghost-button button-sm pressable"
+            onClick={onSave}
+            disabled={status === "saving" || !input.trim()}
+          >
+            Forward with this connection
+          </button>
+        </div>
+      </details>
       {message && (
         <div className={`text-xs ${status === "error" ? "text-rose-400" : "text-secondary"}`}>{message}</div>
       )}

@@ -1,11 +1,12 @@
+import AppKit
 import SwiftUI
 import TaskifyCore
+import UniformTypeIdentifiers
 
 /// The wallet page while an NWC wallet replaces the ecash wallet: lightning only.
 struct MacNWCWalletPanel: View {
     @EnvironmentObject private var wallet: WalletViewModel
     @State private var action: String?
-    @State private var showingMode = false
     @State private var editingAddress = false
     @State private var addressDraft = ""
     @State private var transactions: [NWCTransaction] = []
@@ -34,7 +35,6 @@ struct MacNWCWalletPanel: View {
             HStack {
                 Button("Receive", systemImage: "arrow.down.left") { action = "receive" }.buttonStyle(.borderedProminent)
                 Button("Pay Lightning", systemImage: "bolt") { action = "pay" }
-                Button("Wallet…", systemImage: "bolt.horizontal.circle") { showingMode = true }
             }.controlSize(.large)
             if let message = wallet.statusMessage { Label(message, systemImage: "checkmark.circle").foregroundStyle(.green) }
             if let error = error ?? wallet.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled) }
@@ -122,7 +122,6 @@ struct MacNWCWalletPanel: View {
         .sheet(isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } })) {
             MacNWCTransfer(mode: action ?? "receive")
         }
-        .sheet(isPresented: $showingMode) { MacWalletModeView() }
         .confirmationDialog(
             "Remove this token? If it hasn't been claimed, removing it loses those sats unless you've copied it.",
             isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })
@@ -400,5 +399,385 @@ struct MacWalletModeView: View {
     private func switchTo(_ mode: TaskifyWalletMode) {
         wallet.setWalletMode(mode)
         dismiss()
+    }
+}
+
+// MARK: - Multi-wallet and wallet-only settings
+
+struct MacWalletManagerView: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var adding = false
+    @State private var editing: NWCWalletSummary?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("Wallets").font(.title2.bold())
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            ScrollView {
+                VStack(spacing: 10) {
+                    walletRow(title: "Taskify eCash", subtitle: "Built-in Cashu wallet", icon: "bitcoinsign.circle.fill",
+                              selected: !wallet.isNWCWalletActive) {
+                        wallet.setWalletMode(.ecash)
+                    }
+                    ForEach(wallet.nwcWallets) { saved in
+                        HStack(spacing: 8) {
+                            walletRow(title: saved.name, subtitle: saved.displayedReceiveAddress ?? "Lightning via NWC",
+                                      icon: "bolt.horizontal.circle.fill",
+                                      selected: wallet.isNWCWalletActive && wallet.activeNWCWalletID == saved.id) {
+                                Task {
+                                    do { try await wallet.selectNWCWallet(id: saved.id) }
+                                    catch { self.error = error.localizedDescription }
+                                }
+                            }
+                            Button { editing = saved } label: { Image(systemName: "slider.horizontal.3") }
+                                .buttonStyle(.borderless).help("Edit \(saved.name)")
+                        }
+                    }
+                    Button("Connect a Wallet", systemImage: "link.badge.plus") { adding = true }
+                        .buttonStyle(.borderedProminent).controlSize(.large).padding(.top, 4)
+                }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+        }
+        .padding(26).frame(width: 540, height: 520)
+        .task { await wallet.refreshNWC() }
+        .sheet(isPresented: $adding) { MacNWCWalletEditor(saved: nil) }
+        .sheet(item: $editing) { MacNWCWalletEditor(saved: $0) }
+    }
+
+    private func walletRow(title: String, subtitle: String, icon: String, selected: Bool,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon).font(.title3).foregroundStyle(selected ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).fontWeight(.semibold)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor) }
+            }
+            .padding(13).contentShape(Rectangle())
+            .background(selected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(.plain).frame(maxWidth: .infinity)
+    }
+}
+
+private struct MacNWCWalletEditor: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    let saved: NWCWalletSummary?
+    @State private var name = ""
+    @State private var connection = ""
+    @State private var address = ""
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(saved == nil ? "Connect Wallet" : "Edit Wallet").font(.title2.bold())
+            TextField("Wallet name", text: $name)
+            if saved == nil {
+                SecureField("nostr+walletconnect://…", text: $connection)
+                Text("Create a connection that can send and receive invoices.").font(.caption).foregroundStyle(.secondary)
+            }
+            TextField("Lightning address shown for this wallet (optional)", text: $address)
+            Text("Leave blank to use the address supplied by the wallet.").font(.caption).foregroundStyle(.secondary)
+            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            Spacer()
+            HStack {
+                if let saved {
+                    Button("Remove Wallet", role: .destructive) {
+                        Task { await wallet.disconnectNWC(id: saved.id); dismiss() }
+                    }.disabled(busy)
+                }
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.disabled(busy)
+                Button(saved == nil ? "Connect" : "Save") { Task { await save() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(busy || name.trimmingCharacters(in: .whitespaces).isEmpty || (saved == nil && connection.isEmpty))
+            }
+        }
+        .padding(26).frame(width: 500, height: 330).interactiveDismissDisabled(busy)
+        .onAppear {
+            name = saved?.name ?? "NWC wallet"
+            address = saved?.receiveAddress ?? ""
+        }
+    }
+
+    private func save() async {
+        busy = true; error = nil
+        defer { busy = false }
+        do {
+            if let saved {
+                try await wallet.renameNWCWallet(id: saved.id, name: name)
+                try await wallet.setNWCReceiveAddress(address.isEmpty ? nil : address, for: saved.id)
+            } else {
+                try await wallet.connectNWC(uri: connection, name: name)
+                try await wallet.setNWCReceiveAddress(address.isEmpty ? nil : address)
+            }
+            dismiss()
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+struct MacWalletSettingsView: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var destination: Destination?
+
+    private enum Destination: String, Identifiable {
+        case wallets, address, swap, mints, recovery
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack { Text("Wallet Settings").font(.title2.bold()); Spacer(); Button("Done") { dismiss() } }
+            VStack(spacing: 9) {
+                row("Wallets", "Add and switch between eCash and NWC", "wallet.bifold", .wallets)
+                row("Lightning Address", "Choose what Receive shows for each wallet", "at", .address)
+                row("Swap", "Move funds between wallets", "arrow.left.arrow.right", .swap)
+                row("Mints", "Manage eCash balances", "building.columns", .mints)
+                row("Backup & Recovery", "Protect the built-in wallet", "key.viewfinder", .recovery)
+            }
+            GroupBox("Currency") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Currency Conversion", isOn: Binding(get: { model.walletConversionEnabled }, set: { model.setWalletConversionEnabled($0) }))
+                    Picker("Bitcoin Denomination", selection: Binding(get: { model.walletDenominationDisplay }, set: { model.setWalletDenominationDisplay($0) })) {
+                        Text("\(WalletAmountFormat.bitcoinSymbol)42,778").tag(WalletDenominationDisplay.bitcoinSymbol)
+                        Text("42,778 sat").tag(WalletDenominationDisplay.sat)
+                    }
+                }.padding(8)
+            }
+        }
+        .padding(26).frame(width: 560, height: 600)
+        .sheet(item: $destination) { destination in
+            switch destination {
+            case .wallets: MacWalletManagerView()
+            case .address: MacWalletAddressSettingsView()
+            case .swap: MacWalletSwapSettingsView()
+            case .mints: MacMintManagerView()
+            case .recovery: MacWalletRecoverySettingsView()
+            }
+        }
+    }
+
+    private func row(_ title: String, _ detail: String, _ icon: String, _ destination: Destination) -> some View {
+        Button { self.destination = destination } label: {
+            HStack(spacing: 12) {
+                Image(systemName: icon).font(.title3).foregroundStyle(Color.accentColor).frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) { Text(title).fontWeight(.semibold); Text(detail).font(.caption).foregroundStyle(.secondary) }
+                Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+            }.padding(12).background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(.plain)
+    }
+}
+
+private struct MacMintManagerView: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var mintURL = ""
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack { Text("Mints").font(.title2.bold()); Spacer(); Button("Done") { dismiss() } }
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(wallet.snapshot.mints) { mint in
+                        HStack {
+                            Image(systemName: mint.isReachable ? "building.columns" : "wifi.slash")
+                            VStack(alignment: .leading) { Text(mint.name); Text(mint.url).font(.caption).foregroundStyle(.secondary) }
+                            Spacer(); Text(wallet.formattedSats(mint.available)).monospacedDigit()
+                            Button(wallet.activeMintURL == mint.url ? "Selected" : "Select") { wallet.selectMint(mint.url) }.disabled(wallet.activeMintURL == mint.url)
+                            Button("Remove", role: .destructive) { Task { try? await wallet.removeMint(mint.url) } }
+                        }.padding(10).background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+            }
+            HStack {
+                TextField("https://your-mint.example", text: $mintURL)
+                Button("Add Mint") { Task { do { try await wallet.addMint(mintURL); mintURL = "" } catch { self.error = error.localizedDescription } } }
+                    .disabled(mintURL.isEmpty || wallet.isWorking)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        }.padding(26).frame(width: 650, height: 500)
+    }
+}
+
+private struct MacWalletSwapSettingsView: View {
+    enum Direction: String, CaseIterable, Identifiable { case toNWC = "eCash → NWC", toEcash = "NWC → eCash"; var id: String { rawValue } }
+    @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var direction = Direction.toNWC
+    @State private var amount = ""
+    @State private var mintURL = ""
+    @State private var mintTransfer = false
+    @State private var busy = false
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack { Text("Swap").font(.title2.bold()); Spacer(); Button("Done") { dismiss() } }
+            Button("Transfer Between eCash Mints…") { mintTransfer = true }.disabled(wallet.snapshot.mints.count < 2)
+            Divider()
+            if wallet.nwcConnected {
+                Picker("Direction", selection: $direction) { ForEach(Direction.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
+                Picker(direction == .toNWC ? "From Mint" : "To Mint", selection: $mintURL) { ForEach(wallet.snapshot.mints) { Text($0.name).tag($0.url) } }
+                TextField("Amount in sats", text: $amount)
+                Button(busy ? "Moving…" : "Move Funds") { Task { await swap() } }.buttonStyle(.borderedProminent).disabled(busy || mintURL.isEmpty)
+            } else {
+                ContentUnavailableView("Connect an NWC Wallet", systemImage: "bolt.slash", description: Text("Add one in Wallets, or transfer between eCash mints."))
+            }
+            if let message { Text(message).font(.caption).foregroundStyle(message.hasPrefix("Moved") ? Color.green : .red) }
+            Spacer()
+        }.padding(26).frame(width: 520, height: 380).onAppear { mintURL = wallet.activeMintURL }
+            .sheet(isPresented: $mintTransfer) { MacMintTransfer() }
+    }
+
+    private func swap() async {
+        guard let value = UInt64(amount), value > 0 else { message = "Enter a positive whole number of sats."; return }
+        busy = true; message = nil; defer { busy = false }
+        do {
+            if direction == .toNWC { try await wallet.swapEcashToNWC(amount: value, sourceMintURL: mintURL) }
+            else { try await wallet.swapNWCToEcash(amount: value, destinationMintURL: mintURL) }
+            message = "Moved \(wallet.formattedSats(value))"
+        } catch { message = error.localizedDescription }
+    }
+}
+
+private struct MacWalletAddressSettingsView: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var address = ""
+    @State private var separateConnection = ""
+    @State private var error: String?
+    @State private var busy = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack { Text("Lightning Address").font(.title2.bold()); Spacer(); Button("Done") { dismiss() } }
+            if wallet.isNWCWalletActive {
+                GroupBox("Shown for \(wallet.nwcWalletLabel)") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("you@example.com", text: $address)
+                        HStack {
+                            Button("Save") { Task { await run { try await wallet.setNWCReceiveAddress(address.isEmpty ? nil : address) } } }
+                            if wallet.nwcReceiveAddressOverride != nil { Button("Use Wallet's Address") { Task { await run { try await wallet.setNWCReceiveAddress(nil); address = "" } } } }
+                        }
+                    }.padding(8)
+                }
+            } else if let address = wallet.preferredLightningAddress {
+                LabeledContent("Shown on Receive", value: address).textSelection(.enabled)
+            }
+            GroupBox("solife.me Forwarding") {
+                VStack(alignment: .leading, spacing: 12) {
+                    if wallet.solifeAccountStatus == .loading { ProgressView("Loading addresses…") }
+                    ForEach(wallet.solifeAccount?.addresses ?? [], id: \.handle) { item in
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(item.address).fontWeight(.semibold).textSelection(.enabled)
+                            if let forward = item.nwcForward {
+                                Text("Payments go to \(forward.walletAlias ?? "your NWC wallet").").font(.caption)
+                                if forward.canSpend { Text("This connection can spend. A receive-only connection is safer.").font(.caption).foregroundStyle(.orange) }
+                                Button("Stop Forwarding") { Task { await run { try await wallet.clearSolifeNWCForward(handle: item.handle) } } }
+                            } else {
+                                if wallet.isNWCWalletActive {
+                                    Button("Use \(wallet.nwcWalletLabel)") { Task { await run { try await wallet.shareActiveNWCWithSolife(handle: item.handle) } } }
+                                        .buttonStyle(.borderedProminent)
+                                    Text("Opt in to share the active connection for invoice creation. Taskify does not let the server initiate payments.").font(.caption).foregroundStyle(.secondary)
+                                }
+                                DisclosureGroup("Use a separate receive-only connection") {
+                                    SecureField("nostr+walletconnect://…", text: $separateConnection)
+                                    Button("Forward with This Connection") { Task { await run { try await wallet.setSolifeNWCForward(handle: item.handle, connection: separateConnection); separateConnection = "" } } }
+                                        .disabled(separateConnection.isEmpty)
+                                }.font(.caption)
+                            }
+                        }.padding(.vertical, 7)
+                    }
+                    if wallet.solifeAccount?.addresses.isEmpty != false { Text(wallet.solifeAccountMessage ?? "No solife.me addresses are available yet.").font(.caption).foregroundStyle(.secondary) }
+                }.padding(8)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            Spacer()
+        }.padding(26).frame(width: 620, height: 560)
+            .task { await wallet.refreshSolifeAccount(); address = wallet.nwcReceiveAddressOverride ?? "" }
+    }
+
+    private func run(_ action: () async throws -> Void) async {
+        busy = true; error = nil; defer { busy = false }
+        do { try await action() } catch { self.error = error.localizedDescription }
+    }
+}
+
+private struct MacWalletRecoverySettingsView: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var showingRecovery = false
+    @State private var phrase: String?
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack { Text("Backup & Recovery").font(.title2.bold()); Spacer(); Button("Done") { dismiss() } }
+            Button("Recover Wallet…") { showingRecovery = true }
+            Button("Show Recovery Phrase…") {
+                Task { do { try await authenticate("View your Taskify wallet recovery phrase"); phrase = try await wallet.recoveryPhrase() } catch { message = error.localizedDescription } }
+            }
+            Button("Export Wallet Backup…") { exportBackup() }
+            if let phrase { Text(phrase).font(.body.monospaced()).textSelection(.enabled).padding().background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10)) }
+            if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            Spacer()
+        }.padding(26).frame(width: 540, height: 390).sheet(isPresented: $showingRecovery) { MacWalletRecovery() }
+    }
+
+    private func exportBackup() {
+        Task {
+            do {
+                try await authenticate("Export your Taskify wallet recovery backup")
+                let backup = try await wallet.recoveryBackupJSON()
+                let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "Taskify-wallet-recovery.json"
+                guard panel.runModal() == .OK, let url = panel.url else { return }
+                try backup.write(to: url, atomically: true, encoding: .utf8)
+                message = "Wallet recovery backup exported."
+            } catch { message = error.localizedDescription }
+        }
+    }
+}
+
+struct MacWalletHistoryView: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var nwcTransactions: [NWCTransaction] = []
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack { Text("History").font(.title2.bold()); Spacer(); Button("Done") { dismiss() } }
+            List {
+                if wallet.isNWCWalletActive {
+                    ForEach(nwcTransactions) { tx in
+                        LabeledContent(tx.description?.isEmpty == false ? tx.description! : (tx.direction == .incoming ? "Received" : "Sent"),
+                                       value: "\(tx.direction == .incoming ? "+" : "−")\(wallet.formattedSats(tx.amountSat))")
+                    }
+                } else {
+                    ForEach(wallet.snapshot.transactions) { tx in
+                        LabeledContent(tx.memo ?? String(describing: tx.kind).capitalized, value: wallet.formattedSats(tx.amount))
+                    }
+                }
+                if let message { Text(message).foregroundStyle(.secondary) }
+            }
+        }.padding(22).frame(width: 620, height: 520).task {
+            guard wallet.isNWCWalletActive else { return }
+            do { nwcTransactions = try await wallet.nwcTransactions(); if nwcTransactions.isEmpty { message = "No transactions yet." } }
+            catch { message = "This wallet didn't share its history." }
+        }
     }
 }

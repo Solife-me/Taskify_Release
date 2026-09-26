@@ -13130,6 +13130,7 @@ export default function App() {
         addSharedTaskAgain={(task, sender) => setSharedTaskCopy({ task, sender })}
         closeWallet={closeWallet}
         declineInboxMessage={declineInboxMessage}
+        defaultRelays={defaultRelays}
         dismissCalendarInvite={dismissCalendarInvite}
         dismissInboxMessage={dismissInboxMessage}
         formatCalendarInviteWhen={formatCalendarInviteWhen}
@@ -13139,6 +13140,7 @@ export default function App() {
         maybeInboxMessage={maybeInboxMessage}
         messagesUnreadCount={messagesUnreadCount}
         openWalletBounties={openWalletBounties}
+        onResetWalletTokenTracking={handleResetWalletTokenTracking}
         openWalletAddress={openWalletAddress}
         pendingCalendarInvites={pendingCalendarInvites}
         setDmUnreadCount={setDmUnreadCount}

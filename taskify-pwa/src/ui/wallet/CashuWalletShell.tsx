@@ -12,6 +12,7 @@ type CashuWalletShellProps = {
   addSharedTaskAgain: (task: SharedTaskPayload, sender?: InboxSender) => void;
   closeWallet: () => void;
   declineInboxMessage: (id: string) => void;
+  defaultRelays: string[];
   dismissCalendarInvite: (invite: CalendarInvite) => void;
   dismissInboxMessage: (id: string) => void;
   formatCalendarInviteWhen: (invite: CalendarInvite) => string;
@@ -22,6 +23,7 @@ type CashuWalletShellProps = {
   markInboxMessagesRead: (ids: string[]) => void;
   openWalletAddress: () => void;
   openWalletBounties: () => void;
+  onResetWalletTokenTracking: () => void;
   pendingCalendarInvites: CalendarInvite[];
   setDmUnreadCount: (count: number) => void;
   setSettings: (patch: Partial<Settings>) => void;
@@ -37,6 +39,7 @@ export function CashuWalletShell({
   addSharedTaskAgain,
   closeWallet,
   declineInboxMessage,
+  defaultRelays,
   dismissCalendarInvite,
   dismissInboxMessage,
   formatCalendarInviteWhen,
@@ -47,6 +50,7 @@ export function CashuWalletShell({
   markInboxMessagesRead,
   openWalletAddress,
   openWalletBounties,
+  onResetWalletTokenTracking,
   pendingCalendarInvites,
   setDmUnreadCount,
   setSettings,
@@ -67,6 +71,10 @@ export function CashuWalletShell({
         showTabSwitcher={false}
         showBottomNav
         walletConversionEnabled={settings.walletConversionEnabled}
+        walletSettings={settings}
+        setWalletSettings={setSettings}
+        defaultRelays={defaultRelays}
+        onResetWalletTokenTracking={onResetWalletTokenTracking}
         walletPrimaryCurrency={settings.walletPrimaryCurrency}
         walletDenominationDisplay={settings.walletDenominationDisplay}
         setWalletPrimaryCurrency={(currency) => setSettings({ walletPrimaryCurrency: currency })}

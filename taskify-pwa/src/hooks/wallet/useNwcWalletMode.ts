@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useNwc } from "../../context/NwcContext";
 import { useWalletMode } from "../../wallet/walletMode";
-import { kvStorage } from "../../storage/kvStorage";
-import { LS_NWC_RECEIVE_ADDRESS } from "../../localStorageKeys";
 import { decodeBolt11Amount } from "../../wallet/lightning";
 import type { HistoryEntryInput, HistoryItem } from "../../wallet/walletHistoryTypes";
 
@@ -27,36 +25,8 @@ type Options = {
 
 const LIGHTNING_ADDRESS = /^[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 
-const addressListeners = new Set<() => void>();
-function readReceiveAddress(): string {
-  try {
-    return (kvStorage.getItem(LS_NWC_RECEIVE_ADDRESS) ?? "").trim();
-  } catch {
-    return "";
-  }
-}
-function subscribeReceiveAddress(listener: () => void) {
-  addressListeners.add(listener);
-  return () => {
-    addressListeners.delete(listener);
-  };
-}
-
 export function isValidLightningAddress(value: string): boolean {
   return LIGHTNING_ADDRESS.test(value.trim());
-}
-
-/** Sets the address shown on Receive in NWC mode ("" falls back to the wallet's own lud16). */
-export function setNwcReceiveAddress(value: string) {
-  const trimmed = value.trim().toLowerCase();
-  if (trimmed && !isValidLightningAddress(trimmed)) throw new Error("Enter a lightning address like name@example.com");
-  if (trimmed) kvStorage.setItem(LS_NWC_RECEIVE_ADDRESS, trimmed);
-  else kvStorage.removeItem(LS_NWC_RECEIVE_ADDRESS);
-  addressListeners.forEach((listener) => listener());
-}
-
-export function useNwcReceiveAddressSetting(): string {
-  return useSyncExternalStore(subscribeReceiveAddress, readReceiveAddress, readReceiveAddress);
 }
 
 /** Everything the wallet modal does differently when an NWC wallet is the active wallet. */
@@ -71,13 +41,20 @@ export function useNwcWalletMode({
   const nwc = useNwc();
   const walletMode = useWalletMode();
   const nwcWalletActive = walletMode === "nwc" && !!nwc.connection;
-  const walletLabel = nwc.info?.alias || nwc.connection?.walletName || "NWC wallet";
+  const walletLabel = nwc.activeWallet?.name || nwc.info?.alias || nwc.connection?.walletName || "NWC wallet";
   const balanceSat = typeof nwc.info?.balanceMsat === "number" ? Math.floor(nwc.info.balanceMsat / 1000) : null;
 
   // --- Receive address -----------------------------------------------------
-  const customAddress = useNwcReceiveAddressSetting();
+  const customAddress = nwc.activeWallet?.receiveAddress ?? "";
   const receiveAddress = customAddress || nwc.connection?.walletLud16 || "";
-  const setCustomReceiveAddress = setNwcReceiveAddress;
+  const setCustomReceiveAddress = useCallback((value: string) => {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed && !isValidLightningAddress(trimmed)) {
+      throw new Error("Enter a lightning address like name@example.com");
+    }
+    if (!nwc.activeWalletId) throw new Error("Select an NWC wallet first");
+    nwc.updateReceiveAddress(nwc.activeWalletId, trimmed || undefined);
+  }, [nwc.activeWalletId, nwc.updateReceiveAddress]);
 
   // --- Balance ---------------------------------------------------------------
   const { getBalanceMsat, refreshInfo } = nwc;

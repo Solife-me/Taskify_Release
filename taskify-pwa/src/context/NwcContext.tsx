@@ -2,8 +2,15 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { NwcClient, parseNwcUri, type ParsedNwcUri } from "../wallet/nwc";
 import { kvStorage } from "../storage/kvStorage";
 import { setWalletMode } from "../wallet/walletMode";
-
-const LS_NWC_URI = "cashu_nwc_connection_v1";
+import {
+  emptyNwcWalletCatalog,
+  loadNwcWalletCatalog,
+  removeNwcWalletProfile,
+  saveNwcWalletCatalog,
+  upsertNwcWalletProfile,
+  type NwcWalletCatalog,
+  type NwcWalletProfile,
+} from "../wallet/nwcWalletCatalog";
 
 type NwcStatus = "idle" | "connecting" | "connected" | "error";
 
@@ -58,7 +65,13 @@ type NwcContextValue = {
   connection: ParsedNwcUri | null;
   info: NwcInfo | null;
   lastError: string | null;
-  connect: (uri: string) => Promise<void>;
+  wallets: NwcWalletProfile[];
+  activeWalletId: string | null;
+  activeWallet: NwcWalletProfile | null;
+  connect: (uri: string, name?: string, walletId?: string, receiveAddress?: string | null) => Promise<void>;
+  selectWallet: (id: string) => void;
+  updateReceiveAddress: (id: string, address?: string) => void;
+  removeWallet: (id: string) => void;
   disconnect: () => void;
   refreshInfo: () => Promise<NwcInfo | null>;
   getBalanceMsat: () => Promise<number | null>;
@@ -105,7 +118,9 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
   const [info, setInfo] = useState<NwcInfo | null>(null);
   const infoRef = useRef<NwcInfo | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<NwcWalletCatalog>(() => emptyNwcWalletCatalog());
   const clientRef = useRef<NwcClient | null>(null);
+  const activeWallet = catalog.wallets.find((wallet) => wallet.id === catalog.activeWalletId) ?? null;
 
   useEffect(() => () => clientRef.current?.close(), []);
 
@@ -125,11 +140,12 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let parsed: ParsedNwcUri | null = null;
     try {
-      const saved = kvStorage.getItem(LS_NWC_URI);
-      if (saved) parsed = parseNwcUri(saved);
+      const saved = loadNwcWalletCatalog(kvStorage);
+      setCatalog(saved);
+      const profile = saved.wallets.find((wallet) => wallet.id === saved.activeWalletId) ?? saved.wallets[0];
+      if (profile) parsed = parseNwcUri(profile.uri);
     } catch (err) {
       console.warn("Failed to restore NWC connection", err);
-      kvStorage.removeItem(LS_NWC_URI);
     }
     if (parsed) {
       setConnection(parsed);
@@ -147,7 +163,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     return fresh;
   }, [connection]);
 
-  const connect = useCallback(async (uri: string) => {
+  const connect = useCallback(async (uri: string, name?: string, walletId?: string, receiveAddress?: string | null) => {
     setStatus("connecting");
     setLastError(null);
     try {
@@ -172,7 +188,17 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
       setInfo(combined ?? null);
       infoRef.current = combined ?? null;
       setStatus("connected");
-      try { kvStorage.setItem(LS_NWC_URI, parsed.uri); } catch {}
+      setCatalog((current) => {
+        const existing = walletId ? current.wallets.find((wallet) => wallet.id === walletId) : null;
+        const saved = upsertNwcWalletProfile(current, {
+          id: walletId,
+          name: name?.trim() || combined?.alias || parsed.walletName || existing?.name || "NWC wallet",
+          uri: parsed.uri,
+          receiveAddress: receiveAddress === null ? undefined : (receiveAddress ?? existing?.receiveAddress),
+        }).catalog;
+        try { saveNwcWalletCatalog(kvStorage, saved); } catch {}
+        return saved;
+      });
     } catch (err: any) {
       const message = err instanceof Error ? err.message : String(err);
       setLastError(message);
@@ -181,17 +207,70 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const disconnect = useCallback(() => {
-    setConnection(null);
-    setClient(null);
-    setInfo(null);
-    infoRef.current = null;
-    setStatus("idle");
-    setLastError(null);
-    try { kvStorage.removeItem(LS_NWC_URI); } catch {}
-    // Without a connection there is no NWC wallet to use; fall back to ecash.
-    setWalletMode("ecash");
+  const selectWallet = useCallback((id: string) => {
+    setCatalog((current) => {
+      const wallet = current.wallets.find((entry) => entry.id === id);
+      if (!wallet) return current;
+      try {
+        const parsed = parseNwcUri(wallet.uri);
+        setConnection(parsed);
+        setClient(parsed);
+        setInfo(null);
+        infoRef.current = null;
+        setLastError(null);
+        setStatus("connected");
+        const next = { ...current, activeWalletId: id };
+        saveNwcWalletCatalog(kvStorage, next);
+        return next;
+      } catch (error) {
+        setLastError(error instanceof Error ? error.message : String(error));
+        setStatus("error");
+        return current;
+      }
+    });
   }, [setClient]);
+
+  const updateReceiveAddress = useCallback((id: string, address?: string) => {
+    setCatalog((current) => {
+      const wallets = current.wallets.map((wallet) => wallet.id === id
+        ? { ...wallet, receiveAddress: address?.trim().toLowerCase() || undefined }
+        : wallet);
+      const next = { ...current, wallets };
+      try { saveNwcWalletCatalog(kvStorage, next); } catch {}
+      return next;
+    });
+  }, []);
+
+  const removeWallet = useCallback((id: string) => {
+    setCatalog((current) => {
+      const next = removeNwcWalletProfile(current, id);
+      try { saveNwcWalletCatalog(kvStorage, next); } catch {}
+      if (current.activeWalletId === id) {
+        const replacement = next.wallets.find((wallet) => wallet.id === next.activeWalletId) ?? null;
+        if (replacement) {
+          const parsed = parseNwcUri(replacement.uri);
+          setConnection(parsed);
+          setClient(parsed);
+          setInfo(null);
+          infoRef.current = null;
+          setStatus("connected");
+        } else {
+          setConnection(null);
+          setClient(null);
+          setInfo(null);
+          infoRef.current = null;
+          setStatus("idle");
+          setWalletMode("ecash");
+        }
+      }
+      return next;
+    });
+    setLastError(null);
+  }, [setClient]);
+
+  const disconnect = useCallback(() => {
+    if (catalog.activeWalletId) removeWallet(catalog.activeWalletId);
+  }, [catalog.activeWalletId, removeWallet]);
 
   // A balance the wallet didn't just confirm is dropped rather than kept: showing an old
   // (or zero) figure for a wallet we can't reach looks like funds were lost.
@@ -297,14 +376,20 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
     connection,
     info,
     lastError,
+    wallets: catalog.wallets,
+    activeWalletId: catalog.activeWalletId,
+    activeWallet,
     connect,
+    selectWallet,
+    updateReceiveAddress,
+    removeWallet,
     disconnect,
     refreshInfo,
     getBalanceMsat,
     payInvoice,
     makeInvoice,
     lookupInvoice,
-  }), [ready, status, connection, info, lastError, connect, disconnect, refreshInfo, getBalanceMsat, payInvoice, makeInvoice, lookupInvoice]);
+  }), [ready, status, connection, info, lastError, catalog.wallets, catalog.activeWalletId, activeWallet, connect, selectWallet, updateReceiveAddress, removeWallet, disconnect, refreshInfo, getBalanceMsat, payInvoice, makeInvoice, lookupInvoice]);
 
   return <NwcContext.Provider value={value}>{children}</NwcContext.Provider>;
 }
