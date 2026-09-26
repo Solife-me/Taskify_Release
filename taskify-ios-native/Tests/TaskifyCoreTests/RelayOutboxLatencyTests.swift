@@ -28,7 +28,9 @@ final class RelayOutboxLatencyTests: XCTestCase {
         let engine = TaskSyncEngine(
             outbox: NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json")),
             connectionFactory: { transports[$0]! },
-            publishAcknowledgementTimeout: publishAcknowledgementTimeout
+            publishAcknowledgementTimeout: publishAcknowledgementTimeout,
+            // Public relays back off 20 s from a rate limit; these tests exercise the mechanics.
+            makePublishPacer: { _ in RelayPublishPacer(baseBackoff: 2, maximumBackoff: 30, burst: 8, refillInterval: 0.1) }
         )
         addTeardownBlock { await engine.stop() }
         return engine

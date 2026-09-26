@@ -401,6 +401,34 @@ public actor NostrOutboxStore {
         }
     }
 
+    /// Completes deliveries to relays outside `reachable` — ones the engine no longer connects to,
+    /// such as an inbox relay dropped from the account's list — for entries another relay has
+    /// already accepted. Nothing will ever send those, and the change is stored elsewhere. An
+    /// entry no relay has accepted keeps every target: it may be the only copy.
+    public func completeUnreachableTargets(reachable: Set<String>) throws -> [NostrOutboxEntry] {
+        try stripTargets { entry in
+            let accepted = Set(entry.acceptedRelayURLs ?? [])
+            guard !accepted.isEmpty else { return entry.relayURLs }
+            return entry.relayURLs.filter { reachable.contains($0) || accepted.contains($0) }
+        }
+    }
+
+    /// Swaps a queued event for an equivalent one — the same change re-mined to meet a relay's
+    /// proof-of-work floor — keeping which relays already hold it. Replies waiting on the old
+    /// event wait on the new one.
+    public func replaceEvent(_ eventID: String, with replacement: NostrEvent) throws -> Bool {
+        guard replacement.id != eventID,
+              let index = entries.firstIndex(where: { $0.event.id == eventID }) else { return false }
+        let previous = entries
+        entries[index].event = replacement
+        for dependent in entries.indices where entries[dependent].dependsOnEventID == eventID {
+            entries[dependent].dependsOnEventID = replacement.id
+        }
+        do { try persist() }
+        catch { entries = previous; throw error }
+        return true
+    }
+
     public func entry(eventID: String) -> NostrOutboxEntry? {
         entries.first { $0.event.id == eventID }
     }

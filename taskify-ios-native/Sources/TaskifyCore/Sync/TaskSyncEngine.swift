@@ -222,14 +222,25 @@ struct RelayPublishPacer: Equatable, Sendable {
     /// every relay, so it appears quickly while public relays receive it at their pace.
     static let firstPartyRelayURLs: Set<String> = TaskifyFirstPartyRelays.urls
 
-    /// Public relays: a burst of 8, then one event every 7.5 s — the strictest documented limit
-    /// we know of (noteguard's example of 8 events/minute per IP). First-party: 100, then 10/s.
+    /// Public relays: a burst of 7, then one event every 10 s. relay.damus.io's noteguard allows
+    /// 8 posts a minute per IP, but its bucket holds 7 after a quiet spell, and it credits
+    /// elapsed time in whole seconds, so a post earns its token back only after 8 s: at 7.5 s
+    /// every post drained the budget until it refused one. A rate limit backs off 20 s, the time
+    /// noteguard needs to accept again from empty; it bans an IP for an hour after 10 refusals
+    /// in a row. First-party: 100, then 10/s.
     static func forRelay(_ relayURL: String) -> RelayPublishPacer {
         let normalized = TaskifyRelayURL.normalize(relayURL) ?? relayURL
         return firstPartyRelayURLs.contains(normalized)
-            ? RelayPublishPacer(burst: 100, refillInterval: 0.1)
+            ? RelayPublishPacer(baseBackoff: 2, maximumBackoff: 30, burst: 100, refillInterval: 0.1)
             : RelayPublishPacer()
     }
+
+    /// How long a relay that answers `banned:` is left alone (noteguard bans for an hour).
+    static let banBackoff: TimeInterval = 30 * 60
+
+    /// Unacknowledged events allowed at once. While the relay is rate limiting, one: every event
+    /// it refuses is a strike toward noteguard's IP ban, so it is probed one event at a time.
+    var maximumInFlight: Int { consecutiveRateLimits > 0 ? 1 : 4 }
 
     let defaultInterval: TimeInterval
     let baseBackoff: TimeInterval
@@ -245,10 +256,10 @@ struct RelayPublishPacer: Equatable, Sendable {
 
     init(
         defaultInterval: TimeInterval = 0.05,
-        baseBackoff: TimeInterval = 2,
-        maximumBackoff: TimeInterval = 30,
-        burst: Int = 8,
-        refillInterval: TimeInterval = 7.5
+        baseBackoff: TimeInterval = 20,
+        maximumBackoff: TimeInterval = 300,
+        burst: Int = 7,
+        refillInterval: TimeInterval = 10
     ) {
         self.defaultInterval = defaultInterval
         self.baseBackoff = baseBackoff
@@ -285,10 +296,24 @@ struct RelayPublishPacer: Equatable, Sendable {
     mutating func recordRateLimit(at now: TimeInterval) -> TimeInterval {
         consecutiveRateLimits += 1
         acceptedSinceRateLimit = 0
-        currentInterval = min(max(currentInterval * 2, 0.1), 1)
+        // The relay's budget is empty, so ours is too: it refills from the end of the backoff,
+        // and events are spaced by a full refill until the relay accepts steadily again.
+        currentInterval = max(min(max(currentInterval * 2, 0.1), 1), refillInterval)
         let multiplier = pow(2, Double(max(0, consecutiveRateLimits - 1)))
         let backoff = min(baseBackoff * multiplier, maximumBackoff)
         nextPublishAt = max(nextPublishAt, now + backoff)
+        tokens = 0
+        tokensUpdatedAt = nextPublishAt - refillInterval
+        return delayBeforePublish(at: now)
+    }
+
+    /// The relay refuses everything from this network for a while (`banned:`).
+    @discardableResult
+    mutating func recordBan(at now: TimeInterval) -> TimeInterval {
+        consecutiveRateLimits += 1
+        acceptedSinceRateLimit = 0
+        currentInterval = max(currentInterval, refillInterval)
+        nextPublishAt = max(nextPublishAt, now + Self.banBackoff)
         return delayBeforePublish(at: now)
     }
 
@@ -339,6 +364,16 @@ enum NostrRelayRejection {
     static func isSuperseded(_ message: String) -> Bool {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return text.hasPrefix("deleted:") || text.hasPrefix("replaced:")
+    }
+
+    /// NIP-01 "pow:": the event carries less proof of work than the relay requires.
+    static func isProofOfWorkRequired(_ message: String) -> Bool {
+        message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("pow:")
+    }
+
+    /// noteguard: "banned: too many rate-limit violations, try again later".
+    static func isBanned(_ message: String) -> Bool {
+        message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("banned:")
     }
 
     static func isRateLimited(_ message: String) -> Bool {
@@ -506,9 +541,6 @@ extension TaskSyncRelayTransport {
 extension NostrRelayConnection: TaskSyncRelayTransport {}
 
 public actor TaskSyncEngine {
-    /// Four unacknowledged events keep a healthy relay busy without allowing a slow or silent
-    /// relay to absorb the whole durable queue at once.
-    private static let maximumInFlightPublishesPerRelay = 4
     /// How long a relay may go silent after a publish before the connection is presumed dead.
     /// Measured: relay.solife.me occasionally takes ~30 s to acknowledge under load.
     private let publishAcknowledgementTimeout: Duration
@@ -544,6 +576,17 @@ public actor TaskSyncEngine {
     }
     /// A relay connecting with at least this many queued task changes has them audited first.
     static let outboxAuditMinimumBacklog = 20
+    /// Relays the current configuration connects to; nil until configured.
+    private var wantedRelayURLs: Set<String>?
+    /// Queued deliveries wait on a relay that has left the configuration only this long, so a
+    /// relay set that settles over startup (the inbox list resolving, say) drops nothing.
+    private let unreachableRelayGrace: TimeInterval
+    private let makePublishPacer: @Sendable (String) -> RelayPublishPacer
+    /// A relay's minimum proof-of-work difficulty (NIP-11 `min_pow_difficulty`).
+    private let proofOfWorkRequirement: @Sendable (String) async -> Int
+    /// When each relay that queued changes still target was first seen outside the configuration.
+    private var relayUnwantedSince: [String: Date] = [:]
+    private var unreachableTargetCheckTask: Task<Void, Never>?
     /// Relays whose outbox audit is running (or starting).
     private var auditingRelays: Set<String> = []
     /// Relays that reconnected while an audit ran, and so get another once it ends.
@@ -654,9 +697,17 @@ public actor TaskSyncEngine {
         connectionFactory: @escaping @Sendable (String) -> any TaskSyncRelayTransport,
         oneShotFallback: any NostrOneShotFetching = NostrFreshConnectionFetcher(),
         auxiliaryRelayLinger: TimeInterval = 300,
-        publishAcknowledgementTimeout: Duration = .seconds(45)
+        publishAcknowledgementTimeout: Duration = .seconds(45),
+        unreachableRelayGrace: TimeInterval = 120,
+        makePublishPacer: @escaping @Sendable (String) -> RelayPublishPacer = RelayPublishPacer.forRelay,
+        proofOfWorkRequirement: @escaping @Sendable (String) async -> Int = {
+            await TaskifyRelayRequirements.shared.difficulty(for: [$0])
+        }
     ) {
         self.outbox = outbox
+        self.unreachableRelayGrace = unreachableRelayGrace
+        self.makePublishPacer = makePublishPacer
+        self.proofOfWorkRequirement = proofOfWorkRequirement
         self.publishAcknowledgementTimeout = publishAcknowledgementTimeout
         self.connectionFactory = connectionFactory
         self.oneShotFallback = oneShotFallback
@@ -786,6 +837,8 @@ public actor TaskSyncEngine {
                 + (normalizedInboxRelayURLs ?? [])
         ).subtracting(self.excludedRelayURLs)
         self.inboxRelayURLs = Set(normalizedInboxRelayURLs ?? Array(wantedRelays))
+        self.wantedRelayURLs = wantedRelays
+        await completeUnreachableRelayTargets()
 
         for relayURL in Set(connections.keys).subtracting(wantedRelays) {
             flushStartupBatches(relayURL: relayURL)
@@ -952,6 +1005,10 @@ public actor TaskSyncEngine {
         scheduledRelayOutboxFlushRequests.removeAll()
         outboxAuditTasks.values.forEach { $0.cancel() }
         outboxAuditTasks.removeAll()
+        unreachableTargetCheckTask?.cancel()
+        unreachableTargetCheckTask = nil
+        wantedRelayURLs = nil
+        relayUnwantedSince.removeAll()
         outboxAuditHolds.removeAll()
         outboxAuditReruns.removeAll()
         auditingRelays.removeAll()
@@ -1290,6 +1347,7 @@ public actor TaskSyncEngine {
             }
         }
         await pruneStaleReplicaBacklog()
+        await completeUnreachableRelayTargets()
         return await outbox.pendingRelayURLs().subtracting(excludedRelayURLs)
     }
 
@@ -1350,7 +1408,7 @@ public actor TaskSyncEngine {
         repeat {
             requestedRelayDrains.remove(relayURL)
             let inFlight = inFlightEventIDs[relayURL] ?? []
-            guard inFlight.count < Self.maximumInFlightPublishesPerRelay else { return }
+            guard inFlight.count < maximumInFlightPublishes(relayURL) else { return }
             let excludedEventIDs = inFlight
                 .union(deferredRejectedEventIDs[relayURL] ?? [])
                 .union(outboxAuditHolds[relayURL] ?? [])
@@ -1361,7 +1419,7 @@ public actor TaskSyncEngine {
             guard !entries.isEmpty else { return }
 
             var scheduler = outboxSchedulers[relayURL] ?? RelayOutboxScheduler()
-            while (inFlightEventIDs[relayURL]?.count ?? 0) < Self.maximumInFlightPublishesPerRelay,
+            while (inFlightEventIDs[relayURL]?.count ?? 0) < maximumInFlightPublishes(relayURL),
                   rateLimitRetryTasks[relayURL] == nil,
                   relayPhases[relayURL] != .offline,
                   let entry = scheduler.next(from: &entries) {
@@ -1372,9 +1430,16 @@ public actor TaskSyncEngine {
             }
             guard rateLimitRetryTasks[relayURL] == nil,
                   relayPhases[relayURL] != .offline,
-                  (inFlightEventIDs[relayURL]?.count ?? 0) < Self.maximumInFlightPublishesPerRelay
+                  (inFlightEventIDs[relayURL]?.count ?? 0) < maximumInFlightPublishes(relayURL)
             else { return }
         } while requestedRelayDrains.contains(relayURL)
+    }
+
+    /// Four unacknowledged events keep a healthy relay busy without letting a slow or silent one
+    /// absorb the whole durable queue at once; a rate-limiting relay gets one (see
+    /// `RelayPublishPacer.maximumInFlight`).
+    private func maximumInFlightPublishes(_ relayURL: String) -> Int {
+        (publishPacers[relayURL] ?? makePublishPacer(relayURL)).maximumInFlight
     }
 
     private func send(_ entry: NostrOutboxEntry) async {
@@ -1422,7 +1487,7 @@ public actor TaskSyncEngine {
     private func waitForPublishWindow(relayURL: String) async -> Bool {
         while !Task.isCancelled {
             let now = ProcessInfo.processInfo.systemUptime
-            var pacer = publishPacers[relayURL] ?? RelayPublishPacer.forRelay(relayURL)
+            var pacer = publishPacers[relayURL] ?? makePublishPacer(relayURL)
             let delay = pacer.delayBeforePublish(at: now)
             if delay <= 0 {
                 pacer.recordPublish(at: now)
@@ -1582,7 +1647,7 @@ public actor TaskSyncEngine {
                     ))
                 }
                 await pruneStaleReplicaBacklog()
-                var pacer = publishPacers[relayURL] ?? RelayPublishPacer.forRelay(relayURL)
+                var pacer = publishPacers[relayURL] ?? makePublishPacer(relayURL)
                 pacer.recordAccepted()
                 publishPacers[relayURL] = pacer
                 if rateLimitRetryTasks[relayURL] == nil {
@@ -1596,6 +1661,10 @@ public actor TaskSyncEngine {
                 }
             } else if NostrRelayRejection.isRateLimited(message) {
                 await registerRateLimit(message: message, relayURL: relayURL)
+            } else if NostrRelayRejection.isBanned(message) {
+                await registerRateLimit(message: message, relayURL: relayURL, banned: true)
+            } else if NostrRelayRejection.isProofOfWorkRequired(message) {
+                await remineForProofOfWork(eventID: eventID, relayURL: relayURL, message: message)
             } else if NostrRelayRejection.isAuthRequired(message), isRelayAuthUnavailable(relayURL) {
                 // It only takes this event with auth it can't do: hold it back like a refusal.
                 _ = try? await outbox.recordRejection(eventID: eventID, relayURL: relayURL)
@@ -1758,17 +1827,22 @@ public actor TaskSyncEngine {
         }
     }
 
-    private func registerRateLimit(message _: String, relayURL: String) async {
-        if rateLimitRetryTasks[relayURL] != nil {
+    private func registerRateLimit(message _: String, relayURL: String, banned: Bool = false) async {
+        if banned {
+            // Supersedes a shorter rate-limit retry: nothing gets through until the ban lifts.
+            rateLimitRetryTasks.removeValue(forKey: relayURL)?.cancel()
+        } else if rateLimitRetryTasks[relayURL] != nil {
             relayPhases[relayURL] = .syncing
             return
         }
         let now = ProcessInfo.processInfo.systemUptime
-        var pacer = publishPacers[relayURL] ?? RelayPublishPacer.forRelay(relayURL)
-        let delay = pacer.recordRateLimit(at: now)
+        var pacer = publishPacers[relayURL] ?? makePublishPacer(relayURL)
+        let delay = banned ? pacer.recordBan(at: now) : pacer.recordRateLimit(at: now)
         publishPacers[relayURL] = pacer
         relayPhases[relayURL] = .syncing
-        relayMessages[relayURL] = "Rate limited • queued retry in \(Int(ceil(delay)))s"
+        relayMessages[relayURL] = banned
+            ? "Relay paused posts from this network • retry in \(Int(ceil(delay / 60))) min"
+            : "Rate limited • queued retry in \(Int(ceil(delay)))s"
         await emitStatus()
         scheduleRateLimitRetry(relayURL: relayURL, delay: delay)
     }
@@ -1872,6 +1946,95 @@ public actor TaskSyncEngine {
         relayMessages[relayURL] = "Relay acknowledgement timed out • change remains queued"
         await emitStatus()
         scheduleReconnect(relayURL: relayURL)
+    }
+
+    /// Completes queued deliveries to relays that have been out of the configuration for
+    /// `unreachableRelayGrace`, once another relay holds the change (see
+    /// `NostrOutboxStore.completeUnreachableTargets`). Nothing connects to those relays, so the
+    /// deliveries would otherwise wait out the week-long replica retention for nothing.
+    private func completeUnreachableRelayTargets(now: Date = Date()) async {
+        guard let wantedRelayURLs else { return }
+        let targeted = await outbox.pendingRelayURLs()
+        var reachable = wantedRelayURLs
+        var nextCheck: Date?
+        relayUnwantedSince = relayUnwantedSince.filter { targeted.contains($0.key) && !wantedRelayURLs.contains($0.key) }
+        for relayURL in targeted where !wantedRelayURLs.contains(relayURL) && !excludedRelayURLs.contains(relayURL) {
+            let since = relayUnwantedSince[relayURL] ?? now
+            relayUnwantedSince[relayURL] = since
+            let expires = since.addingTimeInterval(unreachableRelayGrace)
+            if expires > now {
+                reachable.insert(relayURL)
+                nextCheck = min(nextCheck ?? expires, expires)
+            }
+        }
+        if let nextCheck { scheduleUnreachableTargetCheck(at: nextCheck) }
+        guard !targeted.isSubset(of: reachable.union(excludedRelayURLs)),
+              let completed = try? await outbox.completeUnreachableTargets(reachable: reachable.union(excludedRelayURLs))
+        else { return }
+        for entry in completed {
+            updateContinuation.yield(.publishState(recordID: entry.taskID, state: .sent))
+        }
+        await emitStatus()
+    }
+
+    private func scheduleUnreachableTargetCheck(at date: Date) {
+        guard unreachableTargetCheckTask == nil else { return }
+        unreachableTargetCheckTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(1, date.timeIntervalSinceNow + 1)))
+            guard !Task.isCancelled else { return }
+            await self?.runUnreachableTargetCheck()
+        }
+    }
+
+    private func runUnreachableTargetCheck() async {
+        unreachableTargetCheckTask = nil
+        await completeUnreachableRelayTargets()
+    }
+
+    /// A relay refused an event for too little proof of work, usually because the event was
+    /// signed while the relay's requirement couldn't be looked up. When this client holds the
+    /// signing key, the same change is re-mined to the relay's advertised floor and queued in its
+    /// place; otherwise the refusal is recorded, so it isn't resent on every reconnect.
+    private func remineForProofOfWork(eventID: String, relayURL: String, message: String) async {
+        guard let entry = await outbox.entry(eventID: eventID) else { return }
+        let required = await proofOfWorkRequirement(relayURL)
+        let event = entry.event
+        var replaced = false
+        if required > TaskifyRelayProofOfWork.leadingZeroBits(eventID), required <= 32,
+           let privateKey = signingKey(for: entry) {
+            let mining = Task.detached(priority: .utility) {
+                try TaskifyRelayProofOfWork.$difficulty.withValue(required) {
+                    try NostrEvent.signed(
+                        privateKey: privateKey,
+                        createdAt: event.createdAt,
+                        kind: event.kind,
+                        tags: event.tags.filter { $0.first != "nonce" },
+                        content: event.content
+                    )
+                }
+            }
+            if let mined = try? await mining.value {
+                replaced = (try? await outbox.replaceEvent(eventID, with: mined)) == true
+            }
+        }
+        if replaced {
+            relayMessages[relayURL] = nil
+        } else {
+            _ = try? await outbox.recordRejection(eventID: eventID, relayURL: relayURL)
+            relayMessages[relayURL] = "Rejected one queued change • \(message)"
+        }
+        await emitStatus()
+        scheduleOutboxFlush()
+    }
+
+    /// The key that signed a queued event, when this client holds it: the account's own, or the
+    /// board's derived signing key.
+    private func signingKey(for entry: NostrOutboxEntry) -> Data? {
+        if let identity, identity.publicKeyHex == entry.event.publicKey { return identity.privateKey }
+        guard let board = boards.first(where: { $0.id == entry.boardLocalID }),
+              (try? BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID).hexString) == entry.event.publicKey
+        else { return nil }
+        return BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID)
     }
 
     private func pruneStaleReplicaBacklog() async {

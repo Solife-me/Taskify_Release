@@ -1,6 +1,11 @@
 export type RelayRejectionKind = 
 /** Slow down: back this relay off and retry later. */
 "rate-limited"
+/**
+ * The relay refuses everything from this network for a while (noteguard: `banned: too many
+ * rate-limit violations, try again later`, an hour after 10 refusals in a row).
+ */
+ | "banned"
 /** Will never be accepted by this relay (blocked, restricted, invalid): stop sending it there. */
  | "terminal"
 /**
@@ -30,6 +35,8 @@ export type RelayPublishBudgetOptions = {
     /** First backoff after a rate-limit rejection; doubles on each consecutive one. */
     rateLimitBackoffMs?: number;
     maxBackoffMs?: number;
+    /** How long a relay that answers `banned:` is left alone. */
+    banBackoffMs?: number;
     /** Relays given the first-party budget instead (defaults to `FIRST_PARTY_RELAYS`). */
     firstPartyRelays?: readonly string[];
     firstPartyBurst?: number;
@@ -40,6 +47,7 @@ export declare class RelayPublishBudget {
     readonly refillIntervalMs: number;
     readonly rateLimitBackoffMs: number;
     readonly maxBackoffMs: number;
+    readonly banBackoffMs: number;
     readonly firstPartyBurst: number;
     readonly firstPartyRefillIntervalMs: number;
     private readonly firstPartyRelays;
@@ -61,5 +69,7 @@ export declare class RelayPublishBudget {
     /** When a relay could next receive an event, without taking a slot. */
     nextAvailableAt(relays: string[], now: number): number | null;
     recordRateLimited(relay: string, now: number): void;
+    /** Nothing gets through a `banned:` relay until the ban lifts; then it resumes slowly. */
+    recordBanned(relay: string, now: number): void;
     recordAccepted(relay: string, now: number): void;
 }

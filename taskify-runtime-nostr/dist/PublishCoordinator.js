@@ -132,6 +132,10 @@ export class PublishCoordinator {
                     rateLimited.push(url);
                     this.publishBudget?.recordRateLimited(url, now);
                     break;
+                case "banned":
+                    rateLimited.push(url);
+                    this.publishBudget?.recordBanned(url, now);
+                    break;
                 case "terminal":
                     refused.push(url);
                     break;
