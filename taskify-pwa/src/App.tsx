@@ -1566,8 +1566,9 @@ export default function App() {
     const existing = m.get(taskId);
     if (existing !== undefined && existing >= at) return; // already have a newer or equal tombstone
     m.set(taskId, at);
-    // Cap per-board entries by keeping the most recent N by timestamp.
-    if (m.size > TASK_TOMBSTONES_PER_BOARD_MAX) {
+    // Cap per-board entries by keeping the most recent N by timestamp. Trimmed in steps: deletions
+    // from other devices arrive by the thousand on a first sync, and a sort per entry adds up.
+    if (m.size > TASK_TOMBSTONES_PER_BOARD_MAX + 100) {
       const trimmed = new Map(
         Array.from(m.entries())
           .sort((a, b) => b[1] - a[1])
@@ -7039,6 +7040,10 @@ export default function App() {
     }
     // Key used for both the live setTasks path and the batch Map path.
     const taskKey = `${lb.id}::${taskId}`;
+    // Remembered like a local deletion: the task leaves the list, so without this full-week
+    // generation recreated an occurrence another device deleted and republished it, open, to
+    // every device.
+    if (status === "deleted") recordTaskTombstone(bTag, taskId, ev.created_at);
 
     // ── Per-relay batch path (relay hasn't fired EOSE yet) ───────────────────
     // Route event into the relay-specific batch Map. On EOSE, the relay's batch
@@ -7570,6 +7575,11 @@ export default function App() {
       nextOrderForBoard,
       maybePublishTask,
       canGenerateForBoard: isBoardReadyForGeneratedTasks,
+      isDeletedOccurrence: (boardId, taskId) => {
+        const board = findBoardByCompoundChildId(boards, boardId);
+        const nostrBoardId = board?.nostr?.boardId;
+        return !!nostrBoardId && !!tombstonesRef.current.get(boardTag(nostrBoardId))?.has(taskId);
+      },
     });
     return sanitizeRecurringTasks(ensured);
   }
@@ -9062,8 +9072,14 @@ export default function App() {
         (working.seriesId === SCRIPTURE_MEMORY_SERIES_ID || working.scriptureMemoryId)
           ? working.recurrence ?? scriptureFrequencyToRecurrence(scriptureBaseDays)
           : working.recurrence;
+      // A Scripture Memory review is spaced from when it was done, not from a due date it was left
+      // overdue on: one completed in September for July scheduled the next for July again.
+      const isScriptureReview = working.seriesId === SCRIPTURE_MEMORY_SERIES_ID || !!working.scriptureMemoryId;
+      const scheduledFromISO = isScriptureReview
+        ? new Date(Math.max(Date.parse(working.dueISO) || 0, startOfDay(new Date()).getTime())).toISOString()
+        : working.dueISO;
       const nextISO = scriptureRecurrence
-        ? nextOccurrence(working.dueISO, scriptureRecurrence, !!working.dueTimeEnabled, working.dueTimeZone)
+        ? nextOccurrence(scheduledFromISO, scriptureRecurrence, !!working.dueTimeEnabled, working.dueTimeZone)
         : null;
       if (nextISO && scriptureRecurrence) {
         let shouldClone = true;

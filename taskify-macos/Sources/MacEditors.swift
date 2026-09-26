@@ -171,6 +171,11 @@ struct MacTaskEditor: View {
                 }
             }
             .confirmationDialog("Delete this task?", isPresented: $deleteConfirmation) {
+                if let missed = model.missedOccurrenceCount(for: draft.id) {
+                    Button(missed > 1 ? "Catch Up to Today (\(missed) Missed)" : "Catch Up to Today") {
+                        model.catchUpRecurringTask(draft.id); dismiss()
+                    }
+                }
                 Button("Delete This Task", role: .destructive) { model.deleteTask(draft.id); dismiss() }
                 if draft.recurrence?.isActive == true {
                     Button("Delete This and Future Occurrences", role: .destructive) { model.deleteTask(draft.id, scope: .thisAndFuture); dismiss() }

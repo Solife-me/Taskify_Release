@@ -92,6 +92,11 @@ private struct MacBoardColumn: View {
                         .contextMenu {
                             Button("Edit…") { edit(task) }
                             Button(task.completed ? "Mark Incomplete" : "Complete") { model.toggleCompletion(task.id) }
+                            if let missed = model.missedOccurrenceCount(for: task.id) {
+                                Button(missed > 1 ? "Catch Up to Today (\(missed) Missed)" : "Catch Up to Today") {
+                                    model.catchUpRecurringTask(task.id)
+                                }
+                            }
                             Button("Postpone One Day") { _ = model.postponeTask(task.id, byDays: 1) }
                             Menu("Move to Board") {
                                 ForEach(model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }) { target in

@@ -2488,6 +2488,25 @@ public actor TaskSyncEngine {
 
 // MARK: - One-shot lookups over open connections
 
+/// The relays' current versions of some tasks (see `TaskSyncEngine.latestTaskRecords`).
+public struct LatestTaskRecords: Sendable {
+    public var records: [TaskRelayRecord]
+    /// Relays that finished answering at least one lookup; zero means nothing could be checked.
+    public var answeredRelays: Int
+}
+
+struct TaskVersionLookup: Sendable {
+    let board: Board
+    let author: String
+    let boardTag: String
+    let taskIDs: [String]
+}
+
+struct TaskVersionAnswer: Sendable {
+    var events: [(event: NostrEvent, board: Board)] = []
+    var answered = false
+}
+
 /// What checking the durable outbox against relays settled.
 public struct OutboxRelayAudit: Equatable, Sendable {
     /// Relay deliveries found unnecessary because the relay already holds the change.
@@ -2656,6 +2675,88 @@ extension TaskSyncEngine {
             latest[address] = event
         }
         return (latest, [])
+    }
+
+    /// The relays' current version of the given tasks (board local id → task ids), decoded.
+    ///
+    /// Boards resume their subscriptions from the newest event they've seen, so a change that
+    /// reaches the relays late — from a device that was offline, or working through a publish
+    /// backlog — carries an older `created_at` and is never replayed. The device then keeps
+    /// showing a task every other device has completed or deleted, and can publish it back.
+    /// Asking the relays for the tasks a device shows as open catches those changes. One request
+    /// per relay at a time; each address keeps its newest version across relays.
+    public func latestTaskRecords(
+        _ taskIDsByBoard: [String: [String]],
+        batchSize: Int = 100,
+        timeout: TimeInterval = 12
+    ) async -> LatestTaskRecords {
+        var lookups: [TaskVersionLookup] = []
+        for (boardLocalID, taskIDs) in taskIDsByBoard.sorted(by: { $0.key < $1.key }) where !taskIDs.isEmpty {
+            guard let board = boards.first(where: { $0.id == boardLocalID }),
+                  let author = try? BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID).hexString
+            else { continue }
+            lookups.append(TaskVersionLookup(
+                board: board,
+                author: author,
+                boardTag: BoardCrypto.boardTag(for: board.effectiveNostrBoardID),
+                taskIDs: Array(Set(taskIDs)).sorted()
+            ))
+        }
+        var work: [String: [TaskVersionLookup]] = [:]
+        for lookup in lookups {
+            for relayURL in TaskifyRelayURL.normalizedList(lookup.board.effectiveRelayURLs)
+            where connections[relayURL] != nil && relayPhases[relayURL] != .offline && !excludedRelayURLs.contains(relayURL) {
+                work[relayURL, default: []].append(lookup)
+            }
+        }
+        var newest: [String: (event: NostrEvent, board: Board)] = [:]
+        var answeredRelays = 0
+        await withTaskGroup(of: TaskVersionAnswer?.self) { group in
+            for (relayURL, relayLookups) in work {
+                group.addTask { [weak self] in
+                    await self?.latestTaskEvents(relayURL: relayURL, lookups: relayLookups, batchSize: batchSize, timeout: timeout)
+                }
+            }
+            for await answer in group {
+                guard let answer else { continue }
+                if answer.answered { answeredRelays += 1 }
+                for found in answer.events {
+                    let key = found.board.id + "\u{1}" + (found.event.firstTagValue(named: "d") ?? "")
+                    if let current = newest[key], !Self.replaces(found.event, current.event) { continue }
+                    newest[key] = (found.event, found.board)
+                }
+            }
+        }
+        let records = newest.values.compactMap { try? TaskEventCodec.decodeTaskEvent($0.event, board: $0.board) }
+        return LatestTaskRecords(records: records, answeredRelays: answeredRelays)
+    }
+
+    private func latestTaskEvents(
+        relayURL: String,
+        lookups: [TaskVersionLookup],
+        batchSize: Int,
+        timeout: TimeInterval
+    ) async -> TaskVersionAnswer {
+        var answer = TaskVersionAnswer()
+        let step = max(1, batchSize)
+        for lookup in lookups {
+            for start in stride(from: 0, to: lookup.taskIDs.count, by: step) {
+                let batch = Array(lookup.taskIDs[start..<min(start + step, lookup.taskIDs.count)])
+                guard let connection = connections[relayURL], relayPhases[relayURL] != .offline,
+                      let result = await requestOnce(
+                          relayURL: relayURL,
+                          connection: connection,
+                          filter: NostrRelayFilter(kinds: [TaskEventCodec.taskEventKind], authors: [lookup.author],
+                                                   dTags: batch, limit: batch.count * 3),
+                          timeout: timeout
+                      ) else { return answer }
+                if result.completed { answer.answered = true }
+                for event in Self.latestTaskVersions(result.events, author: lookup.author, boardTag: lookup.boardTag).values {
+                    answer.events.append((event, lookup.board))
+                }
+            }
+        }
+        return answer
     }
 
     /// Each address's winning version among a relay's answer, keeping only genuine task events of

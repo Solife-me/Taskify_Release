@@ -17,6 +17,8 @@ const NOSTR_CURSOR_LOOKBACK_SECS = 300;
 const NOSTR_BOARD_YIELD_INTERVAL = 50;
 /** Re-read this much before the last complete recovery, for clock skew between devices. */
 const BOARD_HISTORY_LOOKBACK_SECS = 300;
+/** Task ids per verify REQ, well inside relays' filter and message limits. */
+const VERIFY_UNSEEN_BATCH = 100;
 
 type MutableRef<T> = { current: T };
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
@@ -263,9 +265,13 @@ export function useBoardSync({
       const boardId = board.id;
       const verifyRecentGraceSecs = 60;
       const nowSecs = Math.floor(Date.now() / 1000);
+      // Open tasks only: a completion or deletion that reached the relays after this device's
+      // cursor passed it is what leaves a stale task showing. Asking about every task this board
+      // ever held put thousands of ids in one REQ, more than relays accept, so nothing was checked.
       const unseenIds = tasksRef.current
         .filter((task) => {
           if (task.boardId !== boardId) return false;
+          if (task.completed) return false;
           if (typeof task._nostrAt !== "number" || task._nostrAt <= 0) return false;
           if (seenIds.has(task.id)) return false;
           if (pendingNostrTasksRef.current.has(`${bTag}::${task.id}`)) return false;
@@ -276,26 +282,29 @@ export function useBoardSync({
       seenBoardTasksRef.current.delete(bTag);
       if (!unseenIds.length) return;
 
-      let verifyUnsub: (() => void) | null = null;
-      verifyUnsub = pool.subscribe(
-        boardRelays,
-        [{ kinds: [30301], "#b": [bTag], "#d": unseenIds }],
-        (ev, evRelay) => {
-          if (isDisposed()) return;
-          ev.__relay = evRelay;
-          enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
-        },
-        () => {
-          verifyUnsub?.();
-        },
-      );
-      window.setTimeout(() => {
-        try {
-          verifyUnsub?.();
-        } catch {
-          // already closed
-        }
-      }, 15000);
+      for (let start = 0; start < unseenIds.length; start += VERIFY_UNSEEN_BATCH) {
+        const batch = unseenIds.slice(start, start + VERIFY_UNSEEN_BATCH);
+        let verifyUnsub: (() => void) | null = null;
+        verifyUnsub = pool.subscribe(
+          boardRelays,
+          [{ kinds: [30301], "#b": [bTag], "#d": batch }],
+          (ev, evRelay) => {
+            if (isDisposed()) return;
+            ev.__relay = evRelay;
+            enqueueForBoard(bTag, () => applyTaskEvent(ev)).catch(() => {});
+          },
+          () => {
+            verifyUnsub?.();
+          },
+        );
+        window.setTimeout(() => {
+          try {
+            verifyUnsub?.();
+          } catch {
+            // already closed
+          }
+        }, 15000);
+      }
     },
     [
       applyTaskEvent,

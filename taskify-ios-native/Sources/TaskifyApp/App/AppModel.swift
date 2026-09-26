@@ -345,6 +345,9 @@ final class AppModel {
     /// republish an instance another device completed, with a newer timestamp, and reopen it.
     @ObservationIgnored private var relayHistorySettled = false
     @ObservationIgnored private var relayHistorySettleTask: Task<Void, Never>?
+    /// Checking this device's open tasks against the relays (see `verifyOpenTasksWithRelays`).
+    @ObservationIgnored private var openTaskVerificationTask: Task<Void, Never>?
+    @ObservationIgnored private var openTasksVerifiedAt: Date?
     @ObservationIgnored private var runningStreakCache: (revision: Int, lookup: (TaskItem) -> Int)?
 
     /// The series' running streak for a task (see `TaskifySnapshot.runningStreakLookup`); instances
@@ -1877,6 +1880,27 @@ final class AppModel {
         reconcileScriptureMemory()
     }
 
+    /// How many missed occurrences "Catch Up to Today" would clear from `taskID`'s recurring
+    /// series; nil when it doesn't apply (not recurring, not overdue, or the series has ended).
+    func missedOccurrenceCount(for taskID: String) -> Int? {
+        let count = snapshot.missedOccurrences(ofSeriesContaining: taskID, calendar: weekCalendar).count
+        return count > 0 ? count : nil
+    }
+
+    /// Gets a recurring series that fell behind back to one task, due today (see
+    /// `TaskifySnapshot.catchUpRecurringSeries`).
+    func catchUpRecurringTask(_ taskID: String) {
+        let changes = snapshot.catchUpRecurringSeries(
+            taskID: taskID,
+            editorPublicKey: identityPublicKey.nilIfEmpty,
+            calendar: weekCalendar
+        )
+        guard !changes.allTaskIDs.isEmpty else { return }
+        synchronizeTasks(changes.updatedTaskIDs, deletionTaskIDs: changes.deletedTaskIDs)
+        refreshNotifications(requestPermission: false)
+        reconcileScriptureMemory()
+    }
+
     /// Deletes every completed task on a board (and, for compound boards, its linked child boards),
     /// mirroring the PWA's "Clear completed" action.
     func clearCompletedTasks(forBoardID boardID: String) {
@@ -2219,6 +2243,38 @@ final class AppModel {
                 await syncEngine.refreshAfterForeground()
             }
         }
+        // Changes that reached the relays late aren't replayed on resume; check again after a
+        // while away.
+        if relayHistorySettled, openTaskVerificationTask == nil,
+           (openTasksVerifiedAt.map { Date().timeIntervalSince($0) > Self.openTaskVerificationInterval } ?? true) {
+            openTaskVerificationTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                await self?.verifyOpenTasksWithRelays()
+                self?.openTaskVerificationTask = nil
+            }
+        }
+    }
+
+    private static let openTaskVerificationInterval: TimeInterval = 30 * 60
+
+    /// Brings every task this device shows as open up to the relays' current version (see
+    /// `TaskSyncEngine.latestTaskRecords`): a completion or deletion that reached the relays late
+    /// is never replayed to a device that already synced past it.
+    func verifyOpenTasksWithRelays() async {
+        let syncedBoardIDs = Set(snapshot.boardsForSync.map(\.id))
+        var openTaskIDs: [String: [String]] = [:]
+        for task in snapshot.tasks where !task.completed && !task.isDeleted && syncedBoardIDs.contains(task.boardID) {
+            openTaskIDs[task.boardID, default: []].append(task.id)
+        }
+        guard !openTaskIDs.isEmpty else {
+            openTasksVerifiedAt = Date()
+            return
+        }
+        let latest = await syncEngine.latestTaskRecords(openTaskIDs)
+        if !latest.records.isEmpty {
+            await applySyncBatch(tasks: latest.records, calendarEvents: [])
+        }
+        if latest.answeredRelays > 0 { openTasksVerifiedAt = Date() }
     }
 
     @discardableResult
@@ -3912,8 +3968,10 @@ final class AppModel {
         }
 
         let calendar = weekCalendar
-        // Only open review tasks follow the configured board; history stays where it was.
-        for index in snapshot.tasks.indices {
+        // Only open review tasks follow the configured board; history stays where it was. Not
+        // before this device's open tasks are checked against the relays: moving a copy another
+        // device already completed or deleted republishes it, open, on the new board.
+        for index in snapshot.tasks.indices where canGenerateSharedTasks {
             var task = snapshot.tasks[index]
             guard isScriptureMemoryTask(task), !task.isDeleted, !task.completed else { continue }
             var taskChanged = false
@@ -3976,6 +4034,30 @@ final class AppModel {
             stateChanged = true
             updatedTaskIDs.insert(snapshot.tasks[nextIndex].id)
             retargetedTaskIDs.insert(snapshot.tasks[nextIndex].id)
+        }
+
+        // One review at a time. Devices that diverged (a completion one of them missed, a stale
+        // copy moved to the scripture board) can each leave an open review, and they'd pile up.
+        // Every device keeps the same one and deletes the rest.
+        if canGenerateSharedTasks {
+            let openReviews = snapshot.tasks.filter {
+                isScriptureMemoryTask($0) && !$0.completed && !$0.isDeleted
+            }
+            if let keep = ScriptureMemoryAlgorithm.reviewToKeep(openReviews) {
+                var updated = snapshot
+                for review in openReviews where review.id != keep.id {
+                    let deleted = updated.deleteTask(taskID: review.id, scope: .single, editorPublicKey: identityPublicKey.nilIfEmpty)
+                    updatedTaskIDs.formUnion(deleted.deletedTaskIDs)
+                    // Its passage is no longer waiting on a review.
+                    if let entryID = review.scriptureMemoryID, entryID != keep.scriptureMemoryID,
+                       let entryIndex = entryIndexByID[entryID],
+                       scriptureMemoryState.entries[entryIndex].scheduledAtISO != nil {
+                        scriptureMemoryState.entries[entryIndex].scheduledAtISO = nil
+                        stateChanged = true
+                    }
+                }
+                if updated != snapshot { snapshot = updated }
+            }
         }
 
         let hasActive = snapshot.tasks.contains {
@@ -5554,11 +5636,22 @@ final class AppModel {
         }
     }
 
-    /// Runs the task generation that waited for relay history.
+    /// Runs the task generation that waited for relay history, once this device's open tasks have
+    /// been checked against the relays: generating from, or moving, a task another device already
+    /// completed or deleted would publish it back.
     private func settleRelayHistory() {
+        guard !relayHistorySettled, openTaskVerificationTask == nil else { return }
+        relayHistorySettleTask = nil
+        openTaskVerificationTask = Task { [weak self] in
+            await self?.verifyOpenTasksWithRelays()
+            self?.finishRelayHistorySettle()
+        }
+    }
+
+    private func finishRelayHistorySettle() {
+        openTaskVerificationTask = nil
         guard !relayHistorySettled else { return }
         relayHistorySettled = true
-        relayHistorySettleTask = nil
         reconcileFastingReminders()
         if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
         _ = reconcileScriptureMemory()

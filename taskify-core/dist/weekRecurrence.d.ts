@@ -50,6 +50,11 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
      * device already completed (same id, newer timestamp) and reopen it.
      */
     canGenerateForBoard?: (boardId: string) => boolean;
+    /**
+     * Whether an occurrence id was deleted on this board. Clients that drop deleted tasks from their
+     * list (the PWA) must say so, or the occurrence is recreated, and republished open.
+     */
+    isDeletedOccurrence?: (boardId: string, taskId: string) => boolean;
 };
 export declare function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike>(options: EnsureWeekRecurrencesOptions<TTask>): TTask[];
 type StreakTaskLike = {

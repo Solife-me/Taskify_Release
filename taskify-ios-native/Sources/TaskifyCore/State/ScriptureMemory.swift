@@ -222,6 +222,19 @@ public enum ScriptureMemoryAlgorithm {
         )
     }
 
+    /// Which of several open review tasks every device keeps. A review is scheduled when the one
+    /// before it is completed, so the latest due is current and earlier ones are copies a device
+    /// missed the completion of. (Not the creation time: moving a stale copy to another board
+    /// republishes it as if new.) The lowest id breaks a tie. nil unless there is more than one.
+    public static func reviewToKeep(_ reviews: [TaskItem]) -> TaskItem? {
+        guard reviews.count > 1 else { return nil }
+        return reviews.min { lhs, rhs in
+            let lhsDue = lhs.dueDate ?? .distantPast
+            let rhsDue = rhs.dueDate ?? .distantPast
+            return lhsDue != rhsDue ? lhsDue > rhsDue : lhs.id < rhs.id
+        }
+    }
+
     public static func recurrence(for frequency: ScriptureMemoryFrequency) -> TaskRecurrence {
         frequency.days == 1
             ? .daily()

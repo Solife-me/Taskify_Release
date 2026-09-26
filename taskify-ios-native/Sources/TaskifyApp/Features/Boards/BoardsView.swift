@@ -4048,6 +4048,13 @@ struct TaskCardView: View {
                 } label: {
                     Label("Assign Task", systemImage: "person.badge.plus")
                 }
+                if let missed = model.missedOccurrenceCount(for: task.id) {
+                    Button {
+                        model.catchUpRecurringTask(task.id)
+                    } label: {
+                        Label(catchUpLabel(missed: missed), systemImage: "arrow.uturn.forward.circle")
+                    }
+                }
                 if task.dueDateEnabled, task.dueDate != nil {
                     Button {
                         model.postponeTask(task.id, byDays: 1)
@@ -4076,6 +4083,11 @@ struct TaskCardView: View {
             isPresented: $confirmingRecurringDeletion,
             titleVisibility: .visible
         ) {
+            if let missed = model.missedOccurrenceCount(for: task.id) {
+                Button(catchUpLabel(missed: missed)) {
+                    model.catchUpRecurringTask(task.id)
+                }
+            }
             Button("Delete This Task", role: .destructive) {
                 model.deleteTask(task.id, scope: .single)
             }
@@ -4084,7 +4096,9 @@ struct TaskCardView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Choose whether to delete only this occurrence or end the recurring series here.")
+            Text(model.missedOccurrenceCount(for: task.id) == nil
+                ? "Choose whether to delete only this occurrence or end the recurring series here."
+                : "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series.")
         }
         .sheet(isPresented: $showingEditor) {
             TaskEditorView(task: task)
@@ -4203,6 +4217,12 @@ private extension TaskPriority {
 }
 
 /// Fit whole, readable columns into wide windows while keeping the phone's next-column peek.
+/// "Catch Up to Today" for a recurring task that fell behind, with how many missed occurrences
+/// it clears (see `AppModel.catchUpRecurringTask`).
+func catchUpLabel(missed: Int) -> String {
+    missed > 1 ? "Catch Up to Today (\(missed) missed)" : "Catch Up to Today"
+}
+
 private func boardColumnWidth(in width: CGFloat) -> CGFloat {
     guard width >= 700 else { return max(1, min(330, width - 50)) }
     let available = width - 36

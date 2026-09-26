@@ -1341,6 +1341,19 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             earliestSeedBySeries[seriesID] = task
         }
 
+        // A date the series already has an occurrence on is taken, whatever that occurrence's id:
+        // one moved to a new date keeps the id of its old one (the PWA checks the same way).
+        var occupiedDays = Set<String>()
+        for task in tasks where !task.isDeleted && task.recurrence != nil {
+            guard let dueDate = task.dueDate else { continue }
+            occupiedDays.insert(Self.seriesDayKey(
+                boardID: task.boardID,
+                seriesID: task.seriesID ?? task.id,
+                dueDate: dueDate,
+                calendar: calendar
+            ))
+        }
+
         var created: [TaskItem] = []
         var updatedIDs: [String] = []
         for (seriesID, seed) in earliestSeedBySeries {
@@ -1377,6 +1390,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                     timeZoneIdentifier: seed.dueTimeZone
                 )
                 guard !tasks.contains(where: { $0.id == occurrenceID }) else { continue }
+                let dayKey = Self.seriesDayKey(boardID: seed.boardID, seriesID: seriesID, dueDate: occurrence, calendar: recurrenceCalendar)
+                guard occupiedDays.insert(dayKey).inserted else { continue }
 
                 let board = boards.first(where: { $0.id == seed.boardID })
                 let columnID = board?.kind == .week
@@ -1439,9 +1454,15 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     ) {
         let completedTask = tasks[index]
         guard let recurrence = completedTask.recurrence,
-              let dueDate = completedTask.dueDate,
-              let nextDueDate = recurrence.nextOccurrence(
-                  after: dueDate,
+              let dueDate = completedTask.dueDate else { return }
+        // A Scripture Memory review is spaced from when it was done: completing one left overdue
+        // since July scheduled the next for the day after it, still in July, so catching up took
+        // a completion per missed day.
+        let scheduledFrom = ScriptureMemoryAlgorithm.isSeriesID(completedTask.seriesID)
+            ? max(dueDate, Calendar.current.startOfDay(for: now))
+            : dueDate
+        guard let nextDueDate = recurrence.nextOccurrence(
+                  after: scheduledFrom,
                   dueTimeEnabled: completedTask.dueTimeEnabled,
                   timeZoneIdentifier: completedTask.dueTimeZone
               ) else { return }
@@ -1525,6 +1546,109 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         } else {
             tasks.append(next)
         }
+    }
+
+    private static func seriesDayKey(boardID: String, seriesID: String, dueDate: Date, calendar: Calendar) -> String {
+        let day = calendar.dateComponents([.year, .month, .day], from: dueDate)
+        return "\(boardID)\u{1}\(seriesID)\u{1}\(day.year ?? 0)-\(day.month ?? 0)-\(day.day ?? 0)"
+    }
+
+    /// The open occurrences of `taskID`'s recurring series due before today, when catching it up
+    /// (`catchUpRecurringSeries`) applies: the task is open, overdue, and its series still runs.
+    public func missedOccurrences(ofSeriesContaining taskID: String, now: Date = Date(), calendar: Calendar = .current) -> [TaskItem] {
+        guard let task = tasks.first(where: { $0.id == taskID && !$0.isDeleted }),
+              !task.completed,
+              let recurrence = task.recurrence, recurrence.isActive,
+              let dueDate = task.dueDate else { return [] }
+        let today = calendar.startOfDay(for: now)
+        guard dueDate < today else { return [] }
+        if let until = recurrence.untilDate, until < today { return [] }
+        let seriesID = Self.stableRecurringSeriesID(for: task)
+        if let cutoff = recurringTaskSeriesCutoffs?[task.boardID]?[seriesID], cutoff < today { return [] }
+        return tasks.filter {
+            $0.boardID == task.boardID && !$0.isDeleted && !$0.completed && $0.recurrence != nil &&
+                ($0.dueDate.map { $0 < today } ?? false) &&
+                Self.stableRecurringSeriesID(for: $0) == seriesID
+        }
+    }
+
+    /// Gets a recurring series that fell behind back to one task, due today: its missed open
+    /// occurrences are deleted and, unless the series already has today's occurrence, one is made
+    /// from `taskID` (keeping what it is, such as the passage a Scripture Memory review is for).
+    /// Today's occurrence takes the id every device derives for today, so devices catching up the
+    /// same series, or generating the week, produce one task.
+    @discardableResult
+    public mutating func catchUpRecurringSeries(
+        taskID: String,
+        editorPublicKey: String? = nil,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> TaskSeriesChanges {
+        let missed = missedOccurrences(ofSeriesContaining: taskID, now: now, calendar: calendar)
+        guard !missed.isEmpty,
+              let source = tasks.first(where: { $0.id == taskID && !$0.isDeleted }),
+              let recurrence = source.recurrence else { return TaskSeriesChanges() }
+        let seriesID = Self.stableRecurringSeriesID(for: source)
+        let today = calendar.startOfDay(for: now)
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) else { return TaskSeriesChanges() }
+
+        var changes = TaskSeriesChanges()
+        let missedIDs = Set(missed.map(\.id))
+        for index in tasks.indices where missedIDs.contains(tasks[index].id) {
+            tasks[index].deleted = true
+            tasks[index].lastEditedBy = editorPublicKey ?? tasks[index].lastEditedBy
+            changes.deletedTaskIDs.append(tasks[index].id)
+        }
+
+        let hasToday = tasks.contains {
+            $0.boardID == source.boardID && !$0.isDeleted &&
+                ($0.dueDate.map { $0 >= today && $0 < tomorrow } ?? false) &&
+                Self.stableRecurringSeriesID(for: $0) == seriesID
+        }
+        guard !hasToday else { return changes }
+
+        var dueCalendar = calendar
+        if source.dueTimeEnabled, let zone = source.dueTimeZone.flatMap(TimeZone.init(identifier:)) {
+            dueCalendar.timeZone = zone
+        }
+        var dueDate = dueCalendar.startOfDay(for: now)
+        if source.dueTimeEnabled, let sourceDue = source.dueDate {
+            let time = dueCalendar.dateComponents([.hour, .minute], from: sourceDue)
+            dueDate = dueCalendar.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0, of: dueDate) ?? dueDate
+        }
+        let id = Self.recurringInstanceID(
+            seriesID: seriesID,
+            dueDate: dueDate,
+            recurrence: recurrence,
+            timeZoneIdentifier: source.dueTimeZone
+        )
+        var caughtUp = source
+        caughtUp.id = id
+        caughtUp.seriesID = seriesID
+        caughtUp.dueDate = dueDate
+        caughtUp.dueDateEnabled = true
+        caughtUp.hiddenUntilDate = nil
+        caughtUp.completed = false
+        caughtUp.completedAt = nil
+        caughtUp.deleted = false
+        caughtUp.createdAt = now
+        caughtUp.nostrUpdatedAt = nil
+        caughtUp.publishedFingerprint = nil
+        caughtUp.lastEditedBy = editorPublicKey ?? source.lastEditedBy
+        caughtUp.subtasks = source.subtasks?.map { TaskSubtask(id: $0.id, title: $0.title, completed: false) }
+        if let board = boards.first(where: { $0.id == source.boardID }), board.kind == .week {
+            caughtUp.columnID = WeekdayColumn.containing(dueDate, calendar: dueCalendar).rawValue
+        }
+        if let existing = tasks.firstIndex(where: { $0.id == id }) {
+            // A deleted record of today's occurrence holds the id; replace it in place, keeping its
+            // clock so a relay replaying that deletion doesn't win (see `appendNextRecurrence`).
+            caughtUp.nostrUpdatedAt = tasks[existing].nostrUpdatedAt
+            tasks[existing] = caughtUp
+        } else {
+            tasks.append(caughtUp)
+        }
+        changes.updatedTaskIDs.append(id)
+        return changes
     }
 
     private func editorPublicKeyOrFallback(_ task: TaskItem) -> String? {

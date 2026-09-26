@@ -152,14 +152,18 @@ struct TaskEditorView: View {
         return city.replacingOccurrences(of: "_", with: " ")
     }
 
+    private var repeatEndsBeforeDueDate: Bool {
+        dueDateEnabled && repeatChoice != .never && repeatHasEnd &&
+            Calendar.current.startOfDay(for: repeatEndDate) < Calendar.current.startOfDay(for: dueDate)
+    }
+
     private var canSave: Bool {
         guard !isUploadingAttachment else { return false }
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         if dueDateEnabled, dueDate.timeIntervalSince1970 <= 0 { return false }
         if dueDateEnabled, repeatChoice == .custom,
            customRepeatUnit == .selectedWeekdays, customWeekdays.isEmpty { return false }
-        if dueDateEnabled, repeatChoice != .never, repeatHasEnd,
-           Calendar.current.startOfDay(for: repeatEndDate) < Calendar.current.startOfDay(for: dueDate) { return false }
+        if repeatEndsBeforeDueDate { return false }
         if board?.kind == .list, selectedColumnID.isEmpty { return false }
         return task != nil
     }
@@ -203,11 +207,25 @@ struct TaskEditorView: View {
         .preferredColorScheme(.dark)
         .tint(TaskifyTheme.accent)
         .interactiveDismissDisabled(isUploadingAttachment)
+        .onChange(of: dueDate) { _, newDueDate in
+            // Moving a task past its series' end date would leave nothing to save; the series
+            // now ends with this occurrence instead.
+            let newDay = Calendar.current.startOfDay(for: newDueDate)
+            if repeatHasEnd, Calendar.current.startOfDay(for: repeatEndDate) < newDay {
+                repeatEndDate = newDay
+            }
+        }
         .confirmationDialog(
             "Delete recurring task?",
             isPresented: $confirmingRecurringDeletion,
             titleVisibility: .visible
         ) {
+            if let taskID, let missed = model.missedOccurrenceCount(for: taskID) {
+                Button(catchUpLabel(missed: missed)) {
+                    model.catchUpRecurringTask(taskID)
+                    dismiss()
+                }
+            }
             Button("Delete This Task", role: .destructive) {
                 deleteTask(scope: .single)
             }
@@ -216,7 +234,9 @@ struct TaskEditorView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Choose whether to delete only this occurrence or end the recurring series here.")
+            Text(taskID.flatMap { model.missedOccurrenceCount(for: $0) } == nil
+                ? "Choose whether to delete only this occurrence or end the recurring series here."
+                : "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series.")
         }
         .fileImporter(
             isPresented: $showingFileImporter,
@@ -1122,6 +1142,26 @@ struct TaskEditorView: View {
                     )
                     .datePickerStyle(.compact)
                     .accessibilityIdentifier("task-editor-repeat-end-date")
+                    if repeatEndsBeforeDueDate {
+                        Text("The repeat ends before this task is due. Move the end date or choose Never to save.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                if let taskID, let missed = model.missedOccurrenceCount(for: taskID) {
+                    Button {
+                        model.catchUpRecurringTask(taskID)
+                        dismiss()
+                    } label: {
+                        Label(catchUpLabel(missed: missed), systemImage: "arrow.uturn.forward.circle")
+                    }
+                    .accessibilityIdentifier("task-editor-catch-up")
+                    Text(missed > 1
+                        ? "Deletes the \(missed) missed occurrences and keeps one task for today."
+                        : "Replaces this missed occurrence with one due today.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
