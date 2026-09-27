@@ -475,7 +475,7 @@ struct TaskSyncConfigurationFingerprint: Equatable, Sendable {
             .lowercased()
         let excludedRelays = Set(TaskifyRelayURL.normalizedList(Array(excludedRelayURLs)))
         let wantedRelays = Set(
-            boards.flatMap(\.effectiveRelayURLs)
+            boards.flatMap(\.syncRelayURLs)
                 + normalizedAuxiliaryRelays
                 + (normalizedInboxRelays ?? [])
         ).subtracting(excludedRelays)
@@ -483,7 +483,7 @@ struct TaskSyncConfigurationFingerprint: Equatable, Sendable {
         relayPlans = wantedRelays.map { relayURL in
             let boardTags = Set<String>(
                 boards.compactMap { board -> String? in
-                    guard board.effectiveRelayURLs.contains(relayURL) else { return nil }
+                    guard board.syncRelayURLs.contains(relayURL) else { return nil }
                     return BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
                 }
             ).sorted()
@@ -832,7 +832,7 @@ public actor TaskSyncEngine {
             uniqueKeysWithValues: fingerprint.relayPlans.map { ($0.relayURL, $0) }
         )
         let wantedRelays = Set(
-            self.boards.flatMap(\.effectiveRelayURLs)
+            self.boards.flatMap(\.syncRelayURLs)
                 + self.auxiliaryRelayURLs
                 + (normalizedInboxRelayURLs ?? [])
         ).subtracting(self.excludedRelayURLs)
@@ -1157,7 +1157,7 @@ public actor TaskSyncEngine {
         board: Board,
         taskID: String
     ) async throws {
-        let relayURLs = deliveryRelayURLs(board.effectiveRelayURLs, for: event)
+        let relayURLs = deliveryRelayURLs(board.syncRelayURLs, for: event)
         guard !relayURLs.isEmpty else { return }
         let entry = NostrOutboxEntry(
             event: event,
@@ -1199,7 +1199,7 @@ public actor TaskSyncEngine {
 
     public func queueForPublish(_ requests: [TaskSyncPublishRequest], isRepublish: Bool = false) async throws {
         let entries = requests.compactMap { request -> NostrOutboxEntry? in
-            let relayURLs = deliveryRelayURLs(request.board.effectiveRelayURLs, for: request.event)
+            let relayURLs = deliveryRelayURLs(request.board.syncRelayURLs, for: request.event)
             guard !relayURLs.isEmpty else { return nil }
             return NostrOutboxEntry(
                 event: request.event,
@@ -1546,7 +1546,7 @@ public actor TaskSyncEngine {
             guard let boardTag = event.firstTagValue(named: "b"),
                   let boardIndex = boards.firstIndex(where: {
                       BoardCrypto.boardTag(for: $0.effectiveNostrBoardID) == boardTag &&
-                      $0.effectiveRelayURLs.contains(relayURL)
+                      $0.syncRelayURLs.contains(relayURL)
                   }) else { return }
             let board = boards[boardIndex]
             guard subscriptionID == boardGrouping(relayURL: relayURL).groupID(for: boardTag) else { return }
@@ -2197,7 +2197,7 @@ public actor TaskSyncEngine {
         let grouping = BoardSubscriptionGrouping(
             relayURL: relayURL,
             boardTags: boards
-                .filter { $0.effectiveRelayURLs.contains(relayURL) }
+                .filter { $0.syncRelayURLs.contains(relayURL) }
                 .map { BoardCrypto.boardTag(for: $0.effectiveNostrBoardID) }
         )
         boardGroupingCache[relayURL] = grouping
@@ -2704,7 +2704,7 @@ extension TaskSyncEngine {
         }
         var work: [String: [TaskVersionLookup]] = [:]
         for lookup in lookups {
-            for relayURL in TaskifyRelayURL.normalizedList(lookup.board.effectiveRelayURLs)
+            for relayURL in TaskifyRelayURL.normalizedList(lookup.board.syncRelayURLs)
             where connections[relayURL] != nil && relayPhases[relayURL] != .offline && !excludedRelayURLs.contains(relayURL) {
                 work[relayURL, default: []].append(lookup)
             }

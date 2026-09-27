@@ -60,7 +60,7 @@ public extension TaskifySnapshot {
                 order: task.order,
                 columnID: task.columnID,
                 nostrBoardID: board.effectiveNostrBoardID,
-                relayURLs: board.effectiveRelayURLs,
+                relayURLs: board.syncRelayURLs,
                 syncPayload: try? payloadEncoder.encode(TaskSyncPayload(task: task)),
                 nostrUpdatedAt: task.nostrUpdatedAt
             )
@@ -72,7 +72,7 @@ public extension TaskifySnapshot {
                 openTaskCount: openTaskCountsByBoardID[board.id] ?? 0,
                 kind: board.kind.rawValue,
                 nostrBoardID: board.effectiveNostrBoardID,
-                relayURLs: board.effectiveRelayURLs,
+                relayURLs: board.syncRelayURLs,
                 defaultColumnID: board.kind == .week
                     ? WeekdayColumn.containing(now).rawValue
                     : board.columns.sorted { $0.order < $1.order }.first?.id,

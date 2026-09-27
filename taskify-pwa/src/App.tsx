@@ -230,7 +230,7 @@ import {
   type CalendarRsvpFb,
   type CalendarRsvpStatus,
 } from "./lib/privateCalendar";
-import { DEFAULT_NOSTR_RELAYS, relaysOrDefaults } from "./lib/relays";
+import { DEFAULT_NOSTR_RELAYS, relaysOrDefaults, boardSyncRelays } from "./lib/relays";
 import type { FinalTask } from "./nostr/useVoiceSession";
 import type { Contact } from "./lib/contacts";
 import {
@@ -5775,7 +5775,7 @@ export default function App() {
     const candidate = (board.nostr?.relays?.length ? board.nostr!.relays : fallback)
       .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
       .filter(Boolean);
-    return candidate.length ? candidate : fallback;
+    return boardSyncRelays(candidate.length ? candidate : fallback);
   }, [defaultRelays]);
   function markTaskRelayPublishPending(taskId: string, board: Board | null | undefined): number | null {
     if (!taskId || !board?.nostr?.boardId) return null;

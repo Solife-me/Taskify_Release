@@ -6,7 +6,8 @@ import XCTest
 /// account with compound boards easily has dozens of boards. Boards share a few REQs, one filter
 /// each, so every board keeps its own history cursor.
 final class BoardSubscriptionGroupingTests: XCTestCase {
-    private let relayURL = "wss://grouping.example"
+    // Taskify's relay, which every board syncs on, so each board here has exactly one relay.
+    private let relayURL = TaskifyRelayDefaults.taskifyRelayURL
 
     private func boards(_ count: Int) -> [Board] {
         (0..<count).map { Board(id: "board-\($0)", name: "Board \($0)", relayURLs: [relayURL]) }

@@ -169,7 +169,7 @@ final class LatestTaskRecordsTests: XCTestCase {
         let relay = StoredEventsRelay()
         let engine = TaskSyncEngine(
             outbox: NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json")),
-            connectionFactory: { _ in relay }
+            connectionFactory: { [relayURL] url in url == relayURL ? relay as any TaskSyncRelayTransport : InertRelayTransport() }
         )
         addTeardownBlock { await engine.stop() }
         await engine.configure(boards: [board], auxiliaryRelayURLs: [], inboxRelayURLs: [])

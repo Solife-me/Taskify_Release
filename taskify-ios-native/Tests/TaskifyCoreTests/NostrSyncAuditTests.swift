@@ -11,7 +11,7 @@ final class NostrSyncAuditTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let relay = AuditRelayTransport()
-        let engine = TaskSyncEngine(outbox: NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json")), connectionFactory: { _ in relay })
+        let engine = TaskSyncEngine(outbox: NostrOutboxStore(fileURL: directory.appendingPathComponent("outbox.json")), connectionFactory: { [relayURL] url in url == relayURL ? relay as any TaskSyncRelayTransport : InertRelayTransport() })
         addTeardownBlock { await engine.stop() }
         await engine.configure(boards: board.map { [$0] } ?? [], auxiliaryRelayURLs: [relayURL], inboxPublicKey: inbox, inboxRelayURLs: inbox == nil ? [] : [relayURL])
         return (engine, relay)

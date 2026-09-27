@@ -1,6 +1,8 @@
 import Foundation
 
 public enum TaskifyRelayDefaults {
+    /// Taskify's own relay (`TaskifyFirstPartyRelays.relayURL`), which every board also syncs on.
+    public static let taskifyRelayURL = "wss://relay.solife.me"
     public static let urls = [
         "wss://relay.damus.io",
         "wss://nos.lol",
@@ -249,6 +251,15 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
     public var effectiveRelayURLs: [String] {
         let configured = TaskifyRelayURL.normalizedList(relayURLs ?? [])
         return configured.isEmpty ? TaskifyRelayDefaults.urls : configured
+    }
+
+    /// Where the board syncs: its relays plus Taskify's own. Each device keeps its own relay list
+    /// for a board (board events don't carry one), so devices drift apart until they share no
+    /// relay that still answers, and changes stop crossing between them. Every client also reads
+    /// and writes every board on Taskify's relay, so there is always one they share.
+    /// `effectiveRelayURLs` stays the board's own, editable list.
+    public var syncRelayURLs: [String] {
+        TaskifyRelayURL.normalizedList(effectiveRelayURLs + [TaskifyRelayDefaults.taskifyRelayURL])
     }
 
     public func matchesReference(_ reference: String) -> Bool {

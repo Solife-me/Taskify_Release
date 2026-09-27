@@ -1354,7 +1354,7 @@ final class AppModel {
             viewAddress: "",
             eventKey: TaskifyCalendarEventCodec.generateEventKey(),
             inviteToken: "",
-            relayURLs: board.effectiveRelayURLs,
+            relayURLs: board.syncRelayURLs,
             rsvpStatus: .accepted,
             readOnly: false,
             deleted: false
@@ -1539,7 +1539,7 @@ final class AppModel {
 
         let relayURLs = TaskifyRelayURL.normalizedList(
             (event.relayURLs ?? [])
-                + board.effectiveRelayURLs
+                + board.syncRelayURLs
                 + appRelays
                 + sharedInboxRelayURLs
         )
@@ -2510,7 +2510,7 @@ final class AppModel {
             guard !assignment else { throw SharedTaskSendError.invalidRecipient }
             let identity = try outboundIdentity()
             let envelope = TaskifyShareEnvelope(
-                item: .task(SharedTaskDelivery(task: task, relayURLs: board.effectiveRelayURLs)),
+                item: .task(SharedTaskDelivery(task: task, relayURLs: board.syncRelayURLs)),
                 senderNpub: identity.npub
             )
             try await sendDirectMessage(to: group.groupID, content: envelope.messageContent())
@@ -2529,7 +2529,7 @@ final class AppModel {
             recipientPublicKey: recipientPublicKey.hexString
         )
         let fallbackRelays = TaskifyRelayURL.normalizedList(
-            knownContactRelays + board.effectiveRelayURLs
+            knownContactRelays + board.syncRelayURLs
         )
         guard !fallbackRelays.isEmpty else { throw SharedTaskSendError.noRelays }
         let recipientHex = recipientPublicKey.hexString
@@ -4279,7 +4279,7 @@ final class AppModel {
         let inboxPublicKey = identityPublicKey.nilIfEmpty
         let inboxRelays = effectiveNIP17InboxRelayURLs
         let timestamp = nextNostrTimestamp()
-        let boardRelayTargets = board.effectiveRelayURLs
+        let boardRelayTargets = board.syncRelayURLs
         scheduleSave()
         scheduleAccountBackupPublish()
         Task { [syncEngine] in
@@ -4463,7 +4463,7 @@ final class AppModel {
         ).hexString
         let boardTag = BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
         let relayResults = await withTaskGroup(of: (Bool, [NostrEvent]).self) { group in
-            for relayURL in board.effectiveRelayURLs {
+            for relayURL in board.syncRelayURLs {
                 group.addTask {
                     do {
                         return (true, try await NostrRelayHistoryFetcher.authoredBoardEvents(
@@ -4845,7 +4845,7 @@ final class AppModel {
     func watchChatProjection(now: Date = Date()) -> TaskifyWatchChatProjection {
         let identity = identityPublicKey.lowercased()
         let discoveryRelays = TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
         guard identity.count == 64 else {
             return TaskifyWatchChatProjection(
@@ -4953,7 +4953,7 @@ final class AppModel {
             throw KeychainIdentityError.keychain(errSecItemNotFound)
         }
         let discoveryRelays = TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
         let watchContacts = watchContacts(discoveryRelays: discoveryRelays)
         let accountPreference = nip17InboxRelayURLs.isEmpty
@@ -5111,7 +5111,7 @@ final class AppModel {
         lastAccountBackupCheckAt = Date()
         accountBackupMessage = "Checking your linked devices for updates…"
         let relays = TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
         accountBackupSearchTask = Task { [weak self] in
             let candidates = await NostrAccountBackupFinder.findCandidates(
@@ -6917,7 +6917,7 @@ final class AppModel {
 
     private var nip17DiscoveryRelayURLs: [String] {
         TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
     }
 
@@ -7337,7 +7337,7 @@ final class AppModel {
         }
 
         let lookupRelays = TaskifyRelayURL.normalizedList(
-            accountBackupRelayURLs + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            accountBackupRelayURLs + snapshot.boards.flatMap(\.syncRelayURLs)
         )
         let candidates = await NostrAccountBackupFinder.findCandidates(
             publicKey: identity.publicKeyHex,
@@ -7700,7 +7700,7 @@ extension AppModel {
 
     private func fetchAppState() async {
         guard let identity = appStateLedgerIdentity() else { return }
-        let lookupRelays = TaskifyRelayURL.normalizedList(appStateRelayURLs + snapshot.boards.flatMap(\.effectiveRelayURLs))
+        let lookupRelays = TaskifyRelayURL.normalizedList(appStateRelayURLs + snapshot.boards.flatMap(\.syncRelayURLs))
         let latest = await AppStateSyncFinder.findLatest(
             publicKey: identity.publicKeyHex,
             relayURLs: lookupRelays,
