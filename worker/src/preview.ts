@@ -401,7 +401,31 @@ function looksLikeBlockedPage(html: string): boolean {
   );
 }
 
-function buildPreviewResponse(preview: PreviewPayload, extras?: { blocked?: boolean; fallback?: boolean }): Response {
+function isHttpUrl(value: string | undefined): value is string {
+  if (!value) return false;
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// Every preview leaves through here. Page metadata and redirect unwrapping can yield any
+// scheme, and clients use these fields as link targets and image sources.
+function sanitizePreviewUrls(preview: PreviewPayload): PreviewPayload {
+  const finalUrl = isHttpUrl(preview.finalUrl) ? preview.finalUrl : preview.url;
+  return {
+    ...preview,
+    finalUrl,
+    displayUrl: finalUrl === preview.finalUrl ? preview.displayUrl : buildDisplayUrl(finalUrl),
+    image: isHttpUrl(preview.image) ? preview.image : undefined,
+    icon: isHttpUrl(preview.icon) ? preview.icon : undefined,
+  };
+}
+
+function buildPreviewResponse(unsafePreview: PreviewPayload, extras?: { blocked?: boolean; fallback?: boolean }): Response {
+  const preview = sanitizePreviewUrls(unsafePreview);
   const body = extras ? { preview, ...extras } : { preview };
   return new Response(JSON.stringify(body), {
     status: 200,

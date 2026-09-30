@@ -322,8 +322,9 @@ test("static assets are served with security headers", async () => {
   assert.equal(res.headers.get("Referrer-Policy"), "same-origin");
   assert.equal(
     res.headers.get("Permissions-Policy"),
-    "camera=(), microphone=(), geolocation=()",
+    "camera=(self), microphone=(self), geolocation=()",
   );
+  assert.match(res.headers.get("Content-Security-Policy") || "", /frame-ancestors 'none'/);
 });
 
 test("static assets and config do not initialize the D1 schema", async () => {
@@ -381,7 +382,7 @@ test("POST /api/reminders/poll retains notifications until the client acknowledg
   const db = new MockD1();
   const env = await makeEnv(db);
 
-  const endpoint = "https://push.example/dev-1";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/dev-1";
   db.devices.set("dev-1", {
     device_id: "dev-1",
     platform: "ios",
@@ -431,7 +432,7 @@ test("POST /api/reminders/poll retains notifications until the client acknowledg
 test("reminder mutations require the registered subscription capability", async () => {
   const db = new MockD1();
   const env = await makeEnv(db);
-  const endpoint = "https://push.example/capability";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/capability";
   const subscriptionId = await sha256Hex(endpoint);
   db.devices.set("dev-cap", {
     device_id: "dev-cap",
@@ -505,7 +506,7 @@ test("reminder mutations require the registered subscription capability", async 
 test("device registration cannot rebind an existing device without its prior capability", async () => {
   const db = new MockD1();
   const env = await makeEnv(db);
-  const oldEndpoint = "https://push.example/original";
+  const oldEndpoint = "https://fcm.googleapis.com/fcm/send/original";
   const oldSubscriptionId = await sha256Hex(oldEndpoint);
   db.devices.set("dev-rebind", {
     device_id: "dev-rebind",
@@ -521,7 +522,7 @@ test("device registration cannot rebind an existing device without its prior cap
     deviceId: "dev-rebind",
     platform: "ios",
     subscription: {
-      endpoint: "https://push.example/replacement",
+      endpoint: "https://fcm.googleapis.com/fcm/send/replacement",
       keys: { auth: "new-auth", p256dh: "new-p256dh" },
     },
   };
@@ -552,7 +553,7 @@ test("scheduled due reminders send push ping with VAPID headers and enqueue pend
   const db = new MockD1();
   const env = await makeEnv(db);
 
-  const endpoint = "https://push.example/send";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/send";
   const endpointHash = await sha256Hex(endpoint);
   db.devices.set("dev-1", {
     device_id: "dev-1",
@@ -602,7 +603,7 @@ test("scheduled handles 410 by removing expired device", async () => {
   const db = new MockD1();
   const env = await makeEnv(db);
 
-  const endpoint = "https://push.example/expired";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/expired";
   const endpointHash = await sha256Hex(endpoint);
   db.devices.set("dev-expired", {
     device_id: "dev-expired",
@@ -641,8 +642,8 @@ test("scheduled batches multiple devices and sends one push per device", async (
   const db = new MockD1();
   const env = await makeEnv(db);
 
-  const endpointA = "https://push.example/a";
-  const endpointB = "https://push.example/b";
+  const endpointA = "https://fcm.googleapis.com/fcm/send/a";
+  const endpointB = "https://fcm.googleapis.com/fcm/send/b";
   db.devices.set("dev-a", {
     device_id: "dev-a",
     platform: "ios",
@@ -732,7 +733,7 @@ test("scheduled processing does not delete a reminder when pending insertion fai
 
   const db = new FailingPendingD1();
   const env = await makeEnv(db);
-  const endpoint = "https://push.example/durable";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/durable";
   db.devices.set("dev-durable", {
     device_id: "dev-durable",
     platform: "ios",
@@ -1732,4 +1733,181 @@ test("provider failures still charge account, IP and global budgets", async () =
     assert.equal(db.quota.size, 3);
     for (const row of db.quota.values()) assert.equal(row.session_count, 1);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+// ── Audit fixes (2026-09-30): push registration, reminder caps, errors, previews ──
+
+function pushDevice(deviceId: string, endpoint: string, endpointHash: string): DeviceRow {
+  return {
+    device_id: deviceId,
+    platform: "ios",
+    endpoint,
+    endpoint_hash: endpointHash,
+    subscription_auth: "auth",
+    subscription_p256dh: "p256dh",
+    updated_at: Date.now(),
+  };
+}
+
+test("device registration accepts only browser push-service endpoints", async () => {
+  const env = await makeEnv(new MockD1());
+  const register = (endpoint: string, deviceId: string) => worker.fetch(new Request("https://taskify.test/api/devices", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId, platform: "ios", subscription: { endpoint, keys: { auth: "a", p256dh: "b" } } }),
+  }), env);
+  for (const endpoint of [
+    "https://victim.example/any/path",
+    "http://fcm.googleapis.com/fcm/send/x",
+    "https://10.0.0.5/x",
+    "https://fcm.googleapis.com:8443/fcm/send/x",
+    "https://user@fcm.googleapis.com/fcm/send/x",
+    "https://fcm.googleapis.com.evil.example/x",
+    "not a url",
+  ]) {
+    assert.equal((await register(endpoint, "bad-device")).status, 400, endpoint);
+  }
+  for (const [index, endpoint] of [
+    "https://fcm.googleapis.com/fcm/send/abc",
+    "https://updates.push.services.mozilla.com/wpush/v2/abc",
+    "https://web.push.apple.com/QOs0abc",
+    "https://wns2-by3p.notify.windows.com/w/?token=abc",
+  ].entries()) {
+    assert.equal((await register(endpoint, `good-${index}`)).status, 200, endpoint);
+  }
+});
+
+test("reminder saves are capped, de-duplicated, and truncate long titles", async () => {
+  const db = new MockD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://fcm.googleapis.com/fcm/send/caps";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("caps", pushDevice("caps", endpoint, subscriptionId));
+  const due = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString();
+  const soon = new Date(Date.now() + 24 * 60 * 60_000).toISOString(); // kept: the soonest win
+  const reminders = [
+    { taskId: "dup", title: "x", dueISO: soon, minutesBefore: [5, 5, 5] },
+    { taskId: "long", title: "T".repeat(10_000), dueISO: soon, minutesBefore: [0] },
+    ...Array.from({ length: 600 }, (_, i) => ({ taskId: `t-${i}`, title: "t", dueISO: due, minutesBefore: [i] })),
+  ];
+  const response = await worker.fetch(new Request("https://taskify.test/api/reminders", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId: "caps", subscriptionId, reminders }),
+  }), env);
+  assert.equal(response.status, 204);
+  assert.equal(db.reminders.length, 500);
+  assert.equal(db.reminders.filter((row) => row.task_id === "dup").length, 1);
+  const long = db.reminders.find((row) => row.task_id === "long");
+  assert.equal(long?.title.length, 200);
+});
+
+test("oversized push bodies are refused before parsing", async () => {
+  const env = await makeEnv(new MockD1());
+  const response = await worker.fetch(new Request("https://taskify.test/api/devices", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ padding: "x".repeat(300 * 1024) }),
+  }), env);
+  assert.equal(response.status, 413);
+});
+
+test("push routes honor their rate-limit binding", async () => {
+  const env = await makeEnv(new MockD1());
+  env.PUSH_RATE_LIMITER = { limit: async () => ({ success: false }) };
+  const response = await worker.fetch(new Request("https://taskify.test/api/reminders", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: "{}",
+  }), env);
+  assert.equal(response.status, 429);
+});
+
+test("errors do not reveal internal detail", async () => {
+  const env = await makeEnv(new MockD1());
+  const malformed = await worker.fetch(new Request("https://taskify.test/api/devices/%E0%A4%A", { method: "DELETE" }), env);
+  assert.equal(malformed.status, 400);
+  env.TASKIFY_DB = { prepare() { throw new Error("D1_ERROR: secret table detail"); } };
+  const failing = await worker.fetch(new Request("https://taskify.test/api/reminders", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ deviceId: "x", subscriptionId: "y", reminders: [] }),
+  }), env);
+  assert.equal(failing.status, 500);
+  assert.deepEqual(await failing.json(), { error: "Internal error" });
+});
+
+test("cron removes devices stored with endpoints that are no longer allowed, without contacting them", async () => {
+  const db = new MockD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://victim.example/legacy";
+  db.devices.set("legacy", pushDevice("legacy", endpoint, await sha256Hex(endpoint)));
+  db.reminders.push({ device_id: "legacy", reminder_key: "t:0", task_id: "t", board_id: null, title: "x", due_iso: new Date().toISOString(), minutes: 0, send_at: Date.now() - 1_000 });
+  const calls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => { calls.push(String(url)); return new Response("", { status: 201 }); }) as any;
+  try {
+    await worker.scheduled({ scheduledTime: Date.now(), cron: "* * * * *" } as any, env, undefined as any);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(calls, []);
+  assert.equal(db.devices.has("legacy"), false);
+});
+
+test("one cron tick handles a bounded number of due reminders", async () => {
+  const db = new MockD1();
+  const env = await makeEnv(db);
+  for (let i = 0; i < 300; i++) {
+    const endpoint = `https://fcm.googleapis.com/fcm/send/bulk-${i}`;
+    db.devices.set(`bulk-${i}`, pushDevice(`bulk-${i}`, endpoint, await sha256Hex(endpoint)));
+    db.reminders.push({ device_id: `bulk-${i}`, reminder_key: "t:0", task_id: "t", board_id: null, title: "x", due_iso: new Date().toISOString(), minutes: 0, send_at: Date.now() - 1_000 });
+  }
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("", { status: 201 })) as any;
+  try {
+    await worker.scheduled({ scheduledTime: Date.now(), cron: "* * * * *" } as any, env, undefined as any);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(db.pending.length, 200);
+  assert.equal(db.reminders.length, 100, "the rest waits for the next tick");
+});
+
+test("Watch bridge bodies are bounded before the signature is checked", async () => {
+  const env = await makeEnv(new MockD1());
+  const response = await worker.fetch(new Request("https://taskify.test/api/watch/nostr/query", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Taskify-Npub": "ab".repeat(32), "X-Taskify-Timestamp": String(Math.floor(Date.now() / 1000)), "X-Taskify-Sig": "cd".repeat(64) },
+    body: "x".repeat(300 * 1024),
+  }), env);
+  assert.equal(response.status, 413);
+});
+
+test("rate-limit keys group IPv6 callers by /64", async () => {
+  const { rateLimitAddress } = await import("./lib.ts");
+  assert.equal(rateLimitAddress("192.0.2.7"), "192.0.2.7");
+  assert.equal(rateLimitAddress("2001:db8:1:1::abcd"), "2001:db8:1:1::/64");
+  assert.equal(rateLimitAddress("2001:0db8:0001:0001:0000:0000:0000:0001"), "2001:db8:1:1::/64");
+  assert.equal(rateLimitAddress("2001:db8:1:1::1"), rateLimitAddress("2001:db8:1:1:ffff:ffff:ffff:ffff"));
+  assert.notEqual(rateLimitAddress("2001:db8:1:1::1"), rateLimitAddress("2001:db8:1:2::1"));
+});
+
+test("link previews never return a non-http final URL, image, or icon", async () => {
+  const env = await makeEnv(new MockD1());
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith("https://attacker.example/")) {
+      return new Response(null, { status: 302, headers: { Location: "https://www.google.com/url?q=javascript:alert(document.domain)" } });
+    }
+    return new Response("<html><head><title>Redirect</title><meta property='og:image' content='javascript:alert(1)'></head><body></body></html>", { status: 200, headers: { "Content-Type": "text/html" } });
+  }) as any;
+  try {
+    const response = await worker.fetch(new Request(`https://taskify.test/api/preview?url=${encodeURIComponent("https://attacker.example/r")}`), env);
+    const body = await response.json() as any;
+    for (const field of ["finalUrl", "image", "icon"]) {
+      const value = body.preview?.[field];
+      if (value !== undefined) assert.match(value, /^https?:\/\//, field);
+    }
+    assert.equal(body.preview.finalUrl, "https://attacker.example/r");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

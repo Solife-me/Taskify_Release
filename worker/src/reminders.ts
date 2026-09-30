@@ -13,7 +13,7 @@ import {
   jsonResponse,
   base64UrlEncode,
   base64UrlDecode,
-  parseJson,
+  parseJsonWithin,
   JSON_HEADERS,
   MINUTE_MS,
 } from "./lib.ts";
@@ -22,6 +22,41 @@ import {
 
 let cachedPrivateKey: CryptoKey | null = null;
 const PRIVATE_KEY_KV_KEYS = ["VAPID_PRIVATE_KEY", "private-key", "key"] as const;
+
+// Bounds on what one unauthenticated device can store. A save replaces the device's whole
+// schedule, so the reminder cap is also the per-device cap; the soonest reminders are kept.
+const MAX_PUSH_BODY_BYTES = 256 * 1024;
+const MAX_REMINDERS_PER_DEVICE = 500;
+const MAX_OFFSETS_PER_REMINDER = 8;
+const MAX_TITLE_LENGTH = 200;
+const MAX_ID_LENGTH = 128;
+const MAX_ENDPOINT_LENGTH = 2048;
+const MAX_KEY_LENGTH = 256;
+const MAX_OFFSET_MINUTES = 366 * 24 * 60;
+// Due rows handled per cron tick; the rest wait for the next minute.
+const MAX_BATCHES_PER_TICK = 4;
+
+// Browser push services. The cron sends a signed POST to a device's endpoint, so any other
+// host would let a caller aim the Worker at an address of their choosing.
+const PUSH_SERVICE_HOSTS = new Set(["fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"]);
+const PUSH_SERVICE_HOST_SUFFIXES = [".push.apple.com", ".notify.windows.com", ".push.services.mozilla.com"];
+
+function isAllowedPushEndpoint(raw: unknown): raw is string {
+  if (typeof raw !== "string" || raw.length > MAX_ENDPOINT_LENGTH) return false;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.port) return false;
+  const host = url.hostname.toLowerCase();
+  return PUSH_SERVICE_HOSTS.has(host) || PUSH_SERVICE_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+}
+
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength;
+}
 
 // ---- Types ----
 
@@ -100,9 +135,10 @@ type PendingRow = {
 // ---- Handlers / scheduled tasks ----
 
 async function handleRegisterDevice(request: Request, env: Env): Promise<Response> {
-  const body = await parseJson(request);
-  const { deviceId, platform, subscription, subscriptionId } = body || {};
-  if (!deviceId || typeof deviceId !== "string") {
+  const parsed = await parseJsonWithin(request, MAX_PUSH_BODY_BYTES);
+  if (parsed instanceof Response) return parsed;
+  const { deviceId, platform, subscription, subscriptionId } = parsed.body || {};
+  if (!isBoundedString(deviceId, MAX_ID_LENGTH)) {
     return jsonResponse({ error: "deviceId is required" }, 400);
   }
   if (platform !== "ios" && platform !== "android") {
@@ -111,7 +147,12 @@ async function handleRegisterDevice(request: Request, env: Env): Promise<Respons
   if (!subscription || typeof subscription !== "object" || typeof subscription.endpoint !== "string") {
     return jsonResponse({ error: "subscription is required" }, 400);
   }
-  if (!subscription.keys || typeof subscription.keys.auth !== "string" || typeof subscription.keys.p256dh !== "string") {
+  if (!isAllowedPushEndpoint(subscription.endpoint)) {
+    return jsonResponse({ error: "subscription endpoint is not a supported push service" }, 400);
+  }
+  if (!subscription.keys
+      || !isBoundedString(subscription.keys.auth, MAX_KEY_LENGTH)
+      || !isBoundedString(subscription.keys.p256dh, MAX_KEY_LENGTH)) {
     return jsonResponse({ error: "subscription keys are invalid" }, 400);
   }
 
@@ -190,8 +231,9 @@ async function deleteDeviceData(deviceId: string, env: Env, knownEndpointHash?: 
 }
 
 async function handleSaveReminders(request: Request, env: Env): Promise<Response> {
-  const body = await parseJson(request);
-  const { deviceId, subscriptionId, reminders } = body || {};
+  const parsed = await parseJsonWithin(request, MAX_PUSH_BODY_BYTES);
+  if (parsed instanceof Response) return parsed;
+  const { deviceId, subscriptionId, reminders } = parsed.body || {};
   if (!deviceId || typeof deviceId !== "string") {
     return jsonResponse({ error: "deviceId is required" }, 400);
   }
@@ -208,33 +250,38 @@ async function handleSaveReminders(request: Request, env: Env): Promise<Response
 
   const db = requireDb(env);
   const now = Date.now();
-  const entries: ReminderEntry[] = [];
+  const byKey = new Map<string, ReminderEntry>();
   for (const item of reminders as ReminderTaskInput[]) {
     if (!item || typeof item !== "object") continue;
-    if (typeof item.taskId !== "string" || typeof item.title !== "string" || typeof item.dueISO !== "string") continue;
+    if (!isBoundedString(item.taskId, MAX_ID_LENGTH) || typeof item.title !== "string" || !isBoundedString(item.dueISO, 64)) continue;
     if (!Array.isArray(item.minutesBefore)) continue;
     const dueTime = Date.parse(item.dueISO);
     if (Number.isNaN(dueTime)) continue;
-    for (const minutes of item.minutesBefore) {
-      if (!Number.isFinite(minutes)) continue;
+    const boardId = isBoundedString(item.boardId, MAX_ID_LENGTH) ? item.boardId : undefined;
+    const title = item.title.slice(0, MAX_TITLE_LENGTH);
+    for (const minutes of item.minutesBefore.slice(0, MAX_OFFSETS_PER_REMINDER)) {
+      if (!Number.isInteger(minutes) || Math.abs(minutes) > MAX_OFFSET_MINUTES) continue;
       const sendAt = dueTime - minutes * MINUTE_MS;
       if (sendAt <= now - MINUTE_MS) continue; // skip very old reminders
+      // A repeated offset is one reminder, not a duplicate-key failure for the whole save.
       const reminderKey = `${item.taskId}:${minutes}`;
-      entries.push({
+      byKey.set(reminderKey, {
         reminderKey,
         taskId: item.taskId,
-        boardId: item.boardId,
-        title: item.title,
+        boardId,
+        title,
         dueISO: item.dueISO,
         minutes,
         sendAt,
       });
     }
   }
+  const entries = Array.from(byKey.values())
+    .sort((a, b) => a.sendAt - b.sendAt)
+    .slice(0, MAX_REMINDERS_PER_DEVICE);
 
   const statements = [db.prepare("DELETE FROM reminders WHERE device_id = ?").bind(deviceId)];
   if (entries.length > 0) {
-    entries.sort((a, b) => a.sendAt - b.sendAt);
     for (const entry of entries) {
       statements.push(
         db
@@ -262,8 +309,9 @@ async function handleSaveReminders(request: Request, env: Env): Promise<Response
 }
 
 async function handlePollReminders(request: Request, env: Env): Promise<Response> {
-  const body = await parseJson(request);
-  const { endpoint, deviceId, subscriptionId, acknowledgeIds, ackOnly } = body || {};
+  const parsed = await parseJsonWithin(request, MAX_PUSH_BODY_BYTES);
+  if (parsed instanceof Response) return parsed;
+  const { endpoint, deviceId, subscriptionId, acknowledgeIds, ackOnly } = parsed.body || {};
   let resolvedDeviceId = typeof deviceId === "string" ? deviceId : undefined;
   if (!resolvedDeviceId && typeof endpoint === "string") {
     resolvedDeviceId = await findDeviceIdByEndpoint(env, endpoint);
@@ -331,8 +379,9 @@ async function processDueReminders(env: Env): Promise<void> {
   const batchSize = 50;
   const db = requireDb(env);
 
-  // Process in batches to keep cron executions bounded.
-  while (true) {
+  // Process in batches, and only a few per tick, so a backlog cannot run one invocation past
+  // its limits; whatever is left is picked up the next minute.
+  for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch += 1) {
     const dueResult = await db
       .prepare<ReminderRow>(
         `SELECT device_id, reminder_key, task_id, board_id, title, due_iso, minutes, send_at
@@ -701,11 +750,17 @@ function computeReminderTTL(reminders: PendingReminder[], now: number): number {
 async function sendPushPing(env: Env, device: DeviceRecord, deviceId: string, ttlSeconds: number): Promise<void> {
   try {
     const endpoint = device.subscription.endpoint;
+    // Devices stored before endpoints were checked are removed rather than contacted.
+    if (!isAllowedPushEndpoint(endpoint)) {
+      await deleteDeviceData(deviceId, env, device.endpointHash);
+      return;
+    }
     const url = new URL(endpoint);
     const aud = `${url.protocol}//${url.host}`;
     const token = await createVapidJWT(env, aud);
     const response = await fetch(endpoint, {
       method: "POST",
+      redirect: "manual",
       headers: {
         TTL: String(ttlSeconds),
         Authorization: `WebPush ${token}`,
@@ -715,17 +770,15 @@ async function sendPushPing(env: Env, device: DeviceRecord, deviceId: string, tt
     });
 
     if (response.status === 404 || response.status === 410) {
-      console.warn("Subscription expired", deviceId);
       await deleteDeviceData(deviceId, env, device.endpointHash);
       return;
     }
 
     if (!response.ok) {
-      const text = await response.text();
-      console.warn("Push ping failed", response.status, text);
+      console.warn("Push ping failed", response.status);
     }
   } catch (err) {
-    console.error("Push ping error", err);
+    console.error("Push ping error", err instanceof Error ? err.name : "Error");
   }
 }
 

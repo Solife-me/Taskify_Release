@@ -11,7 +11,10 @@ import {
 import { handleNip05Lookup } from "./nip05.ts";
 import { handleWatchNostrPublish, handleWatchNostrQuery } from "./nostr-bridge.ts";
 import type { Env } from "./lib.ts";
-import { enforceRateLimit, jsonResponse, requireDb } from "./lib.ts";
+import { enforceRateLimit, jsonResponse, requireDb, withBodyWithin } from "./lib.ts";
+
+// The Watch bridge verifies a signature over the whole body, so the body is bounded first.
+const MAX_WATCH_BRIDGE_BODY_BYTES = 256 * 1024;
 // Keep the shared library exports available to existing Worker-side consumers.
 export type { Env, D1Database } from "./lib.ts";
 export {
@@ -117,14 +120,19 @@ interface SchedulerController {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+// Keep in step with taskify-pwa/public/_headers. Cloudflare serves any request that matches a
+// static asset without running the Worker, so that file is what real asset responses carry;
+// this copy covers the responses the Worker itself builds from env.ASSETS (non-matching paths).
+// The PWA's scanners and dictation need the camera and microphone for its own origin.
 const ASSET_SECURITY_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
-  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Permissions-Policy": "camera=(self), microphone=(self), geolocation=()",
+  "Content-Security-Policy": "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+  "X-Frame-Options": "DENY",
+  "Strict-Transport-Security": "max-age=31536000",
 };
 
-// Static assets are served through the worker so these headers are
-// guaranteed — a `_headers` file is not reliably applied to env.ASSETS.
 async function serveAsset(request: Request, env: Env): Promise<Response> {
   const asset = await env.ASSETS.fetch(request);
   const response = new Response(asset.body, asset);
@@ -179,13 +187,19 @@ export default {
         return await handleNip05Lookup(url);
       }
       if (url.pathname === "/api/devices" && request.method === "PUT") {
+        const limited = await enforceRateLimit(request, env.PUSH_RATE_LIMITER, "push");
+        if (limited) return limited;
         return await handleRegisterDevice(request, env);
       }
       if (url.pathname.startsWith("/api/devices/") && request.method === "DELETE") {
+        const limited = await enforceRateLimit(request, env.PUSH_RATE_LIMITER, "push");
+        if (limited) return limited;
         const deviceId = decodeURIComponent(url.pathname.substring("/api/devices/".length));
         return await handleDeleteDevice(request, deviceId, env);
       }
       if (url.pathname === "/api/reminders" && request.method === "PUT") {
+        const limited = await enforceRateLimit(request, env.PUSH_RATE_LIMITER, "push");
+        if (limited) return limited;
         return await handleSaveReminders(request, env);
       }
       if (url.pathname === "/api/reminders/poll" && request.method === "POST") {
@@ -198,14 +212,21 @@ export default {
         return await handleVoiceFinalize(request, env);
       }
       if (url.pathname === "/api/watch/nostr/publish" && request.method === "POST") {
-        return await handleWatchNostrPublish(request, env);
+        const bounded = await withBodyWithin(request, MAX_WATCH_BRIDGE_BODY_BYTES);
+        if (bounded instanceof Response) return bounded;
+        return await handleWatchNostrPublish(bounded, env);
       }
       if (url.pathname === "/api/watch/nostr/query" && request.method === "POST") {
-        return await handleWatchNostrQuery(request, env);
+        const bounded = await withBodyWithin(request, MAX_WATCH_BRIDGE_BODY_BYTES);
+        if (bounded instanceof Response) return bounded;
+        return await handleWatchNostrQuery(bounded, env);
       }
     } catch (err) {
+      // Malformed percent-encoding in a path is the caller's mistake, not a server fault.
+      if (err instanceof URIError) return jsonResponse({ error: "Bad request" }, 400);
+      // Internal detail (database errors, binding names) stays in the log, not the response.
       console.error("Worker error", err);
-      return jsonResponse({ error: (err as Error).message || "Internal error" }, 500);
+      return jsonResponse({ error: "Internal error" }, 500);
     }
 
     // Do not serve the PWA shell for removed or misspelled API routes.

@@ -63,6 +63,12 @@ name = "WATCH_NOSTR_RATE_LIMITER"
 namespace_id = "1004"
 simple = { limit = 30, period = 60 }
 
+# Per-address limit on push registration and reminder saves, which need no account.
+[[ratelimits]]
+name = "PUSH_RATE_LIMITER"
+namespace_id = "1005"
+simple = { limit = 30, period = 60 }
+
 # Shared burst limit across both voice routes; daily budgets are atomic in D1.
 [[ratelimits]]
 name = "VOICE_RATE_LIMITER"

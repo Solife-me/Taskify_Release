@@ -121,6 +121,8 @@ Reference: `worker/src/index.ts:174–233`, plus migration baseline `worker/migr
 
 `PUT /api/reminders` (`handleSaveReminders`) validates payload and performs full replacement for device state.
 
+Stored per device: at most 500 reminders (the soonest are kept), at most 8 offsets per task, titles cut to 200 characters, task and board IDs of at most 128 characters, integer offsets within a year. A repeated offset is stored once rather than failing the save.
+
 High-level flow:
 1. Parse `{ deviceId, reminders[] }`
 2. Validate reminder item shape inline (`taskId`, `title`, `dueISO`, `minutesBefore[]`) and compute `sendAt`
@@ -170,6 +172,8 @@ References:
 ### Register (`PUT /api/devices`)
 
 `handleRegisterDevice` upserts device subscription into D1, tracks endpoint hash, and supports endpoint collision handling/migration.
+
+The endpoint must be an `https` URL, with no credentials or port, on a browser push service: `fcm.googleapis.com`, `updates.push.services.mozilla.com` (or `*.push.services.mozilla.com`), `web.push.apple.com` (or `*.push.apple.com`), or `*.notify.windows.com`. Anything else gets `400`, because the cron sends a signed POST to whatever endpoint is stored. `deviceId` is at most 128 characters and each subscription key at most 256. Registration, deletion, and reminder saves share `PUSH_RATE_LIMITER` (30 per minute per address, IPv6 grouped by /64), and their bodies are capped at 256 KiB (`413` above that).
 
 Reference: `worker/src/index.ts:608+`.
 
@@ -290,7 +294,7 @@ Use this when changing validation/handler behavior so clients and service worker
 
 | Route | Success | Caller-visible error statuses in current implementation | Notes / code anchors |
 |---|---|---|---|
-| `PUT /api/devices` | `200` JSON `{ subscriptionId, deviceId }` | `400` (`deviceId`/`platform`/`subscription` validation), `500` (router-level catch) | Validation in `handleRegisterDevice` (`worker/src/index.ts:608–622`) |
+| `PUT /api/devices` | `200` JSON `{ subscriptionId, deviceId }` | `400` (`deviceId`/`platform`/`subscription`/endpoint validation), `413` (body over 256 KiB), `429` (rate limit), `500` (router-level catch, generic `{"error":"Internal error"}`) | Validation in `handleRegisterDevice` (`worker/src/index.ts:608–622`) |
 | `DELETE /api/devices/:deviceId` | `204` empty body | `500` (unexpected DB/runtime error via router catch) | Delete is idempotent in practice; missing rows still return `204` (`worker/src/index.ts:2305–2333`) |
 | `PUT /api/reminders` | `204` empty body | `400` (`deviceId` missing, `reminders` not array), `404` (unknown device), `500` (router catch) | Existing reminders are replaced, then pending queue is cleared (`worker/src/index.ts:2335–2401`) |
 | `POST /api/reminders/poll` | `200` JSON (`[]` or `PendingReminder[]`), or `204` for acknowledgement-only | `400` (invalid acknowledgement list), `404` (unknown/unauthorized device), `500` (router catch) | Rows remain durable until explicitly acknowledged after display (`worker/src/reminders.ts`) |
@@ -465,9 +469,13 @@ Request contract to push endpoint:
   - `Crypto-Key: p256ecdsa=<VAPID_PUBLIC_KEY>`
 
 Error handling semantics:
+- stored endpoint not on the push-service allowlist (rows written before the check existed) => delete the device without contacting it.
+- the request is sent with `redirect: "manual"`; a redirect counts as a failure.
 - `404`/`410` => treat subscription as expired and call `handleDeleteDevice(deviceId, env)`.
-- other non-2xx => log warning, keep device.
-- transport/runtime exceptions => catch + log, do not throw to caller.
+- other non-2xx => log the status only, keep device.
+- transport/runtime exceptions => catch + log the error type, do not throw to caller.
+
+The cron handles at most four batches of 50 due reminders per tick; the rest wait for the next minute.
 
 ### 16.3 VAPID JWT contract (`createVapidJWT`)
 
@@ -928,3 +936,19 @@ is local to a Cloudflare location and eventually consistent; it is a burst guard
 D1 reservations provide the strict daily limits. Workers AI
 [does not use request content](https://developers.cloudflare.com/workers-ai/platform/privacy/)
 to train models or improve services.
+
+## Router error responses
+
+Malformed percent-encoding in a path answers `400`. Any other unexpected error answers `500`
+with the fixed body `{"error":"Internal error"}`; the detail goes to the Worker log only.
+
+## Static asset headers
+
+Cloudflare serves requests that match a static asset without running the Worker, so the
+headers on real asset responses come from `taskify-pwa/public/_headers`: `nosniff`,
+`Referrer-Policy: same-origin`, `Permissions-Policy: camera=(self), microphone=(self),
+geolocation=()` (the scanners and dictation need the first two), a
+`Content-Security-Policy` limited to `frame-ancestors 'none'; base-uri 'self'; object-src
+'none'`, `X-Frame-Options: DENY`, and HSTS for one year. `ASSET_SECURITY_HEADERS` in
+`worker/src/index.ts` carries the same set for responses the Worker builds itself. A script
+policy is not set yet; it needs testing against the PDF worker, wasm, and inline styles.

@@ -10,7 +10,7 @@
 // models or improve services.
 
 import type { Env, D1Database } from "./lib.ts";
-import { requireDb, jsonResponse, parseJson } from "./lib.ts";
+import { requireDb, jsonResponse, parseJson, rateLimitAddress } from "./lib.ts";
 import { normalizeVoiceDue, voiceLocalDates } from "./voice-dates.ts";
 import { normalizeNostrPublicKey, verifyTaskifyAuth } from "./nostr-auth.ts";
 
@@ -418,7 +418,7 @@ export async function reserveVoiceQuota(db: D1Database, key: string, date: strin
 async function reserveVoiceBudget(request: Request, env: Env, npub: string, seconds = 0): Promise<Response | null> {
   const db = requireDb(env);
   const day = utcDateString();
-  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const ip = rateLimitAddress(request.headers.get("CF-Connecting-IP") || "unknown");
   // Hash addresses; never trust caller-supplied X-Forwarded-For / X-Real-IP.
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${day}:${ip}`));
   const ipKey = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
@@ -436,7 +436,7 @@ async function reserveVoiceBudget(request: Request, env: Env, npub: string, seco
 export async function prepareVoiceRequest(request: Request, env: Env): Promise<Request | Response> {
   if (env.VOICE_DISABLED === "true") return jsonResponse({ error: "Voice disabled" }, 503);
   if (!env.VOICE_RATE_LIMITER) return jsonResponse({ error: "Voice protection unavailable" }, 503);
-  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const ip = rateLimitAddress(request.headers.get("CF-Connecting-IP") || "unknown");
   if (!(await env.VOICE_RATE_LIMITER.limit({ key: `voice:${ip}` })).success) {
     const response = jsonResponse({ error: "quota_exceeded" }, 429);
     response.headers.set("Retry-After", "60");

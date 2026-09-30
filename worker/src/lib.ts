@@ -59,6 +59,7 @@ export interface Env {
   PREVIEW_RATE_LIMITER?: RateLimitBinding;
   NIP05_RATE_LIMITER?: RateLimitBinding;
   WATCH_NOSTR_RATE_LIMITER?: RateLimitBinding;
+  PUSH_RATE_LIMITER?: RateLimitBinding;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +100,66 @@ export async function parseJson(request: Request): Promise<any> {
   }
 }
 
+/** Reads a request body, giving up (null) as soon as it passes `maxBytes`. */
+export async function readBodyWithin(request: Request, maxBytes: number): Promise<Uint8Array | null> {
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+/** Parses a JSON body of at most `maxBytes`: 413 when larger, `body: null` when not JSON. */
+export async function parseJsonWithin(request: Request, maxBytes: number): Promise<{ body: any } | Response> {
+  const bytes = await readBodyWithin(request, maxBytes);
+  if (!bytes) return jsonResponse({ error: "Request body too large" }, 413);
+  try {
+    return { body: JSON.parse(new TextDecoder().decode(bytes)) };
+  } catch {
+    return { body: null };
+  }
+}
+
+/** A copy of `request` whose body is at most `maxBytes`, for handlers that hash the exact bytes. */
+export async function withBodyWithin(request: Request, maxBytes: number): Promise<Request | Response> {
+  const bytes = await readBodyWithin(request, maxBytes);
+  if (!bytes) return jsonResponse({ error: "Request body too large" }, 413);
+  return new Request(request.url, { method: request.method, headers: request.headers, body: bytes });
+}
+
+/**
+ * The part of a caller's address that rate limits key on. One IPv6 subscriber usually holds a
+ * whole /64, so IPv6 callers are grouped by it; IPv4 addresses are used as they are.
+ */
+export function rateLimitAddress(address: string): string {
+  const trimmed = address.trim().toLowerCase();
+  if (!trimmed.includes(":") || trimmed.includes(".")) return trimmed;
+  const [head, tail] = trimmed.split("::");
+  const headGroups = head ? head.split(":") : [];
+  const tailGroups = tail ? tail.split(":") : [];
+  const groups = trimmed.includes("::")
+    ? [...headGroups, ...Array(Math.max(0, 8 - headGroups.length - tailGroups.length)).fill("0"), ...tailGroups]
+    : headGroups;
+  if (groups.length !== 8 || groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return trimmed;
+  return `${groups.slice(0, 4).map((group) => group.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
 export async function enforceRateLimit(
   request: Request,
   binding: RateLimitBinding | undefined,
@@ -108,7 +169,7 @@ export async function enforceRateLimit(
   const clientAddress = request.headers.get("CF-Connecting-IP")
     || request.headers.get("X-Real-IP")
     || "unknown";
-  const result = await binding.limit({ key: `${scope}:${clientAddress}` });
+  const result = await binding.limit({ key: `${scope}:${rateLimitAddress(clientAddress)}` });
   if (result.success) return null;
   const response = jsonResponse({ error: "Too many requests" }, 429);
   response.headers.set("Retry-After", "60");
