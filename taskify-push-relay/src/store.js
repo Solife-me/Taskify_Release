@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 
@@ -46,6 +46,7 @@ export class RelayStore {
     maxRegistrationsPerPubkey = 10,
     maxRegistrationsTotal = 100_000,
     previewTTLSeconds = 15 * 60,
+    minimumPushIntervalSeconds = 10,
     now = () => Math.floor(Date.now() / 1000),
   }) {
     this.dataDirectory = dataDirectory
@@ -59,6 +60,7 @@ export class RelayStore {
     this.maxRegistrationsPerPubkey = maxRegistrationsPerPubkey
     this.maxRegistrationsTotal = maxRegistrationsTotal
     this.previewTTLSeconds = previewTTLSeconds
+    this.minimumPushIntervalSeconds = minimumPushIntervalSeconds
     this.now = now
     this.state = cloneEmptyState()
     this.writeChain = Promise.resolve()
@@ -220,16 +222,31 @@ export class RelayStore {
         const previewToken = registration.platform === 'watchos'
           ? undefined
           : randomBytes(32).toString('base64url')
-        this.state.pushJobs.push({
-          id,
-          eventID: event.id,
-          pubkey: recipient,
-          registrationKey: registration.key,
-          attempts: 0,
-          nextAttemptAt: storedAt,
-          createdAt: storedAt,
-          previewToken,
-        })
+        // One unsent alert per device at a time, and a minimum gap after the last one sent,
+        // so a burst of wraps (from anyone) becomes a few alerts rather than one per wrap.
+        // The waiting job is repointed at the newest wrap so its preview shows the latest.
+        const waiting = this.state.pushJobs.find(
+          (job) => job.registrationKey === registration.key && job.attempts === 0,
+        )
+        if (waiting) {
+          if (waiting.previewToken) {
+            this.state.previews = this.state.previews.filter((preview) => preview.token !== waiting.previewToken)
+          }
+          waiting.id = id
+          waiting.eventID = event.id
+          waiting.previewToken = previewToken
+        } else {
+          this.state.pushJobs.push({
+            id,
+            eventID: event.id,
+            pubkey: recipient,
+            registrationKey: registration.key,
+            attempts: 0,
+            nextAttemptAt: Math.max(storedAt, (registration.lastPushAt ?? 0) + this.minimumPushIntervalSeconds),
+            createdAt: storedAt,
+            previewToken,
+          })
+        }
         if (previewToken) {
           this.state.previews.push({
             token: previewToken,
@@ -335,7 +352,8 @@ export class RelayStore {
     return this.state.events.find((entry) => entry.event.id === preview.eventID)?.event ?? null
   }
 
-  async completePushJob(id, { retainPreview = false } = {}) {
+  /// `delivered` marks an alert Apple accepted, which starts the device's minimum push gap.
+  async completePushJob(id, { retainPreview = false, delivered = false } = {}) {
     const completed = this.state.pushJobs.find((job) => job.id === id)
     const previousCount = this.state.pushJobs.length
     this.state.pushJobs = this.state.pushJobs.filter((job) => job.id !== id)
@@ -344,6 +362,8 @@ export class RelayStore {
         (preview) => preview.token !== completed.previewToken,
       )
     }
+    const registration = delivered && completed ? this.registrationByKey(completed.registrationKey) : null
+    if (registration) registration.lastPushAt = this.now()
     if (previousCount !== this.state.pushJobs.length) await this.persist()
   }
 
@@ -446,11 +466,19 @@ export class RelayStore {
   async persist() {
     const snapshot = JSON.stringify(this.state)
     const temporaryPath = `${this.statePath}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
-    this.writeChain = this.writeChain.then(async () => {
-      await writeFile(temporaryPath, snapshot, { encoding: 'utf8', mode: 0o600 })
-      await rename(temporaryPath, this.statePath)
+    // A failed write rejects its own caller only; the next write still runs, so one full disk
+    // or permissions slip does not stop every later change from being saved.
+    const write = this.writeChain.catch(() => {}).then(async () => {
+      try {
+        await writeFile(temporaryPath, snapshot, { encoding: 'utf8', mode: 0o600 })
+        await rename(temporaryPath, this.statePath)
+      } catch (error) {
+        await unlink(temporaryPath).catch(() => {})
+        throw error
+      }
     })
-    return this.writeChain
+    this.writeChain = write
+    return write
   }
 
   async flush() {

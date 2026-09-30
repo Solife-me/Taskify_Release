@@ -26,7 +26,8 @@ cannot suppress the remote arrival alert; they leave it generic instead. Payment
 so `Payment Received` never reflects an unverified claimed amount. Device registration
 uses a NIP-98 request signed by the user's Nostr identity. Gift-wrap reads and writes require
 NIP-42 authentication; kind `10050` inbox preferences remain publicly discoverable as NIP-17
-requires.
+requires, but a public query must name the accounts it wants (`authors`), so the relay cannot be
+asked for a list of everyone who uses it.
 
 ## Runtime
 
@@ -50,6 +51,8 @@ requires.
   30 days without being observed, at most 2,000 per public board author and 100,000 total
 - Device registrations: at most 10 per Nostr account and 100,000 total
 - APNs jobs survive restarts and retry temporary failures with bounded exponential backoff
+- At most one unsent alert per device: further wraps repoint it at the newest wrap, and a device
+  gets its next alert no sooner than 10 seconds after the last one Apple accepted
 
 The production public origins are intentionally pinned to `https://push.solife.me` and
 `wss://push.solife.me` so NIP-98 and NIP-42 signatures cannot be replayed to a different origin.

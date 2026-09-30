@@ -272,3 +272,44 @@ test('task cache keeps only the latest replaceable ciphertext without account me
   now += 101
   assert.deepEqual(store.taskEventsFor([alice]), [])
 })
+
+test('a burst of wraps to one device waits as a single alert for the newest wrap', async () => {
+  let now = 1_700_000_000
+  const { store } = await storeForTest({ now: () => now })
+  await store.putRegistration(bob, 'phone', { deviceToken: '77'.repeat(32), environment: 'production' })
+
+  for (const digit of ['1', '2', '3']) {
+    await store.putGiftWrap(giftWrap(digit.repeat(64), bob, now), { notify: true })
+  }
+  const jobs = store.duePushJobs(Number.MAX_SAFE_INTEGER)
+  assert.equal(jobs.length, 1)
+  assert.equal(jobs[0].eventID, '3'.repeat(64))
+  assert.equal(store.state.previews.length, 1, 'superseded previews are dropped')
+  assert.deepEqual(store.previewForToken(jobs[0].previewToken)?.id, '3'.repeat(64))
+})
+
+test('after a delivered alert the next one waits for the minimum gap', async () => {
+  let now = 1_700_000_000
+  const { store } = await storeForTest({ now: () => now, minimumPushIntervalSeconds: 10 })
+  await store.putRegistration(bob, 'phone', { deviceToken: '78'.repeat(32), environment: 'production' })
+
+  await store.putGiftWrap(giftWrap('4'.repeat(64), bob, now), { notify: true })
+  const [first] = store.duePushJobs(now)
+  await store.completePushJob(first.id, { retainPreview: true, delivered: true })
+
+  now += 2
+  await store.putGiftWrap(giftWrap('5'.repeat(64), bob, now), { notify: true })
+  assert.equal(store.duePushJobs(now).length, 0, 'held back inside the gap')
+  assert.equal(store.duePushJobs(now + 8).length, 1, 'due once the gap has passed')
+})
+
+test('one failed write does not stop later writes', async () => {
+  const { directory, store } = await storeForTest()
+  const { rm, mkdir } = await import('node:fs/promises')
+  await rm(directory, { recursive: true, force: true })
+  await assert.rejects(store.putPreference({ ...giftWrap('6'.repeat(64), bob), kind: 10_050, pubkey: alice, tags: [] }))
+  await mkdir(directory, { recursive: true })
+  await store.putPreference({ ...giftWrap('7'.repeat(64), bob), kind: 10_050, pubkey: carol, tags: [] })
+  const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
+  assert.deepEqual(onDisk.preferences.map((entry) => entry.pubkey).sort(), [alice, carol])
+})

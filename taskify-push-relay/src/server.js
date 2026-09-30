@@ -111,7 +111,9 @@ function isPublicPreferenceQuery(filters) {
       Array.isArray(filter?.kinds)
       && filter.kinds.length === 1
       && filter.kinds[0] === 10_050
-      && (!filter.authors || (Array.isArray(filter.authors) && filter.authors.length <= 100)),
+      // Naming the accounts keeps this a lookup; without it the relay would list every
+      // account that uses it as an inbox.
+      && Array.isArray(filter.authors) && filter.authors.length > 0 && filter.authors.length <= 100,
     )
 }
 
@@ -638,6 +640,18 @@ export function createTaskifyPushServer({
   }
 
   const httpServer = http.createServer(async (request, response) => {
+    // An async request handler that throws becomes an unhandled rejection, which stops Node.
+    // Request targets such as `//` make URL parsing throw, so every request is contained here.
+    try {
+      await handleHTTPRequest(request, response)
+    } catch (error) {
+      logger.warn?.('HTTP request failed', { error: error?.name ?? 'Error' })
+      if (!response.headersSent) sendJSON(response, 400, { error: 'Bad request' })
+      else response.destroy()
+    }
+  })
+
+  async function handleHTTPRequest(request, response) {
     const url = new URL(request.url ?? '/', config.publicBaseURL)
     if (request.method === 'GET' && url.pathname === '/healthz') {
       sendJSON(response, 200, { status: 'ok' })
@@ -673,7 +687,7 @@ export function createTaskifyPushServer({
       return
     }
     sendJSON(response, 404, { error: 'Not found' })
-  })
+  }
 
   const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 })
   httpServer.on('upgrade', (request, socket, head) => {
@@ -711,9 +725,10 @@ export function createTaskifyPushServer({
   }
 
   async function handleRelayEvent(state, event) {
-    if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
+    // Cheap checks first: an unauthenticated or over-limit socket must not cost a signature check.
     if (!state.authenticatedPubkey) throw new Error('auth-required: authenticate before publishing')
     if (!publishLimiter.consume(state.authenticatedPubkey)) throw new Error('rate-limited: publish limit exceeded')
+    if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
     if (event.kind === 10_050) {
       if (event.pubkey.toLowerCase() !== state.authenticatedPubkey) {
         throw new Error('restricted: kind 10050 author must match authenticated pubkey')
@@ -826,7 +841,7 @@ export function createTaskifyPushServer({
             : null
           const result = await apnsClient.send(registration, previewURL)
           if (result.status === 200) {
-            await store.completePushJob(job.id, { retainPreview: true })
+            await store.completePushJob(job.id, { retainPreview: true, delivered: true })
             continue
           }
           if (result.status === 410 || ['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered'].includes(result.reason)) {

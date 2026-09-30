@@ -229,3 +229,68 @@ test('history honors per-filter limits, newest-first ordering, and ignores limit
   socket.send(JSON.stringify(['EVENT', live]))
   assert.equal((await incoming)[2].id, live.id)
 })
+
+async function serverForTest(t) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory })
+  await store.load()
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me' },
+    store,
+    apnsClient: { async send() { return { status: 200, reason: null } } },
+    logger: { info() {}, warn() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+  return { store, port: address.port }
+}
+
+test('a request target that URL parsing rejects gets 400 and the server keeps running', async (t) => {
+  const { port } = await serverForTest(t)
+  const net = await import('node:net')
+  for (const target of ['//', '///', '//:', '//?x']) {
+    const reply = await new Promise((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write(`GET ${target} HTTP/1.1\r\nHost: push.solife.me\r\nConnection: close\r\n\r\n`)
+      })
+      let data = ''
+      socket.on('data', (chunk) => { data += chunk })
+      socket.on('end', () => resolve(data))
+      socket.on('error', reject)
+    })
+    assert.match(reply, /^HTTP\/1\.1 400 /, `target ${target}`)
+  }
+  const health = await fetch(`http://127.0.0.1:${port}/healthz`)
+  assert.equal(health.status, 200)
+})
+
+test('an unauthenticated socket is refused before its signature is checked', async (t) => {
+  const { port } = await serverForTest(t)
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+  t.after(() => socket.close())
+  await nextFrame(socket, (frame) => frame[0] === 'AUTH')
+  const forged = { ...finalizeEvent({ kind: 1059, created_at: 1, tags: [['p', 'a'.repeat(64)]], content: 'x' }, generateSecretKey()), sig: '00'.repeat(64) }
+  socket.send(JSON.stringify(['EVENT', forged]))
+  const reply = await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === forged.id)
+  assert.equal(reply[2], false)
+  assert.match(reply[3], /^auth-required:/)
+})
+
+test('public inbox-preference queries must name the accounts they want', async (t) => {
+  const { store, port } = await serverForTest(t)
+  const owner = generateSecretKey()
+  const preference = finalizeEvent({ kind: 10_050, created_at: 1_700_000_000, tags: [['relay', 'wss://push.solife.me']], content: '' }, owner)
+  await store.putPreference(preference)
+
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+  t.after(() => socket.close())
+  await nextFrame(socket, (frame) => frame[0] === 'AUTH')
+  socket.send(JSON.stringify(['REQ', 'everyone', { kinds: [10_050] }]))
+  const refused = await nextFrame(socket, (frame) => frame[1] === 'everyone')
+  assert.equal(refused[0], 'CLOSED')
+
+  socket.send(JSON.stringify(['REQ', 'named', { kinds: [10_050], authors: [getPublicKey(owner)] }]))
+  const found = await nextFrame(socket, (frame) => frame[1] === 'named')
+  assert.equal(found[0], 'EVENT')
+  assert.equal(found[2].id, preference.id)
+})

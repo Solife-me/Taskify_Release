@@ -37,6 +37,7 @@ Device-token rotation uses the same authenticated registration endpoint. The ser
 - Require NIP-42 for recipient reads and authorize reads so an authenticated account can request only gift wraps addressed to its public key.
 - Rate-limit writes, deduplicate event IDs, cap event size, and expire old events.
 - Map the outer recipient `p` tag to enabled installations and send a generic APNs alert containing a unique, short-lived preview URL. Never attempt server-side NIP-44 decryption.
+- Coalesce alerts per installation: keep at most one unsent alert, repoint it at the newest wrap, and space alerts at least 10 seconds apart, so a burst of wraps (including from strangers) becomes a few alerts rather than one per wrap.
 - If authenticated writes are required, suppress the visible notification when the authenticated publisher is also the outer recipient; this prevents a sender's self-copy from notifying their own device without adding a sender-identifying Nostr tag. If the deployment avoids write authentication for stronger sender-metadata privacy, Taskify should omit the dedicated push relay from its sender-copy destination set while still storing that copy on at least one other relay from the sender's kind-10050 list.
 
 The implementation requires NIP-42. Taskify answers the relay challenge, retries any pre-authentication subscription or publish, and suppresses APNs for an authenticated account's own `p` copy.
