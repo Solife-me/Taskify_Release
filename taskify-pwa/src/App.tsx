@@ -13,7 +13,7 @@ import {
   buildUpcomingDateKeyIndex,
   type UpcomingFlatRow,
 } from "./lib/upcomingRows";
-import { type EventTemplate, nip04, nip19, nip44 } from "nostr-tools";
+import { type EventTemplate, nip04, nip19 } from "nostr-tools";
 import {
   DEFAULT_DATE_REMINDER_TIME,
   MS_PER_DAY,
@@ -304,6 +304,7 @@ import {
   buildTaskShareEnvelope,
   parseShareEnvelope,
   sendShareMessage,
+  unwrapShareGiftWrap,
   type ShareEnvelope,
   type SharedCalendarEventInvitePayload,
   type SharedTaskAssignmentResponsePayload,
@@ -1768,24 +1769,13 @@ export default function App() {
             recipientPubkeys: extractPTagPubkeys(event.tags),
           };
         }
-        if (event.kind === 1059 && nip44?.v2) {
-          const wrapKey = nip44.v2.utils.getConversationKey(hexToBytes(nostrSkHex), event.pubkey);
-          const sealJson = await nip44.v2.decrypt(event.content, wrapKey);
-          const sealEvent = JSON.parse(sealJson) as NostrEvent;
-          if (!sealEvent || sealEvent.kind !== 13 || typeof sealEvent.content !== "string") {
-            return null;
-          }
-          if (typeof sealEvent.pubkey !== "string") return null;
-          const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(nostrSkHex), sealEvent.pubkey);
-          const dmJson = await nip44.v2.decrypt(sealEvent.content, dmKey);
-          const rumor = JSON.parse(dmJson) as NostrEvent;
-          if (!rumor || rumor.kind !== 14 || typeof rumor.content !== "string") {
-            return null;
-          }
+        if (event.kind === 1059) {
+          const opened = unwrapShareGiftWrap(event, nostrSkHex);
+          if (!opened) return null;
           return {
-            content: rumor.content,
-            senderPubkey: rumor.pubkey,
-            recipientPubkeys: extractPTagPubkeys(rumor.tags),
+            content: opened.content,
+            senderPubkey: opened.senderPubkey,
+            recipientPubkeys: extractPTagPubkeys(opened.tags),
           };
         }
       } catch (err) {
