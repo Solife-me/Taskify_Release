@@ -58,7 +58,7 @@ public struct VoiceExtractionResult: Equatable, Sendable {
 }
 
 /// Talks to the Taskify Worker's voice endpoints, the same two the PWA uses (`worker/src/voice.ts`):
-/// `/api/voice/extract` turns a raw transcript into candidate-list edits via Gemini, and
+/// `/api/voice/extract` turns a raw transcript into candidate-list edits via the Worker's model, and
 /// `/api/voice/finalize` resolves confirmed candidates into concrete tasks with real due dates.
 ///
 /// The transcription itself is on-device (`SFSpeechRecognizer`); only the text is ever sent, and

@@ -838,9 +838,24 @@ class MockD1WithVoice extends MockD1 {
   }
 }
 
-async function makeVoiceEnv(db: MockD1WithVoice, geminiApiKey = "fake-gemini-key") {
+async function makeVoiceEnv(db: MockD1WithVoice) {
   const base = await makeEnv(db);
-  return { ...base, GEMINI_API_KEY: geminiApiKey } as any;
+  return { ...base, CLOUDFLARE_ACCOUNT_ID: "acc-123", CLOUDFLARE_API_TOKEN: "cf-token" } as any;
+}
+
+const VOICE_PRIMARY_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const VOICE_FALLBACK_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+function isVoiceModelCall(url: RequestInfo | URL): boolean {
+  return String(url).startsWith("https://api.cloudflare.com/client/v4/accounts/acc-123/ai/run/");
+}
+
+// Workers AI envelope for chat-completions style models.
+function workersAiReply(payload: unknown): Response {
+  return new Response(
+    JSON.stringify({ success: true, result: { choices: [{ message: { role: "assistant", content: JSON.stringify(payload) } }] } }),
+    { status: 200 },
+  );
 }
 
 const VOICE_TEST_PRIVATE_KEY = schnorr.utils.randomSecretKey();
@@ -873,10 +888,10 @@ test("POST /api/voice/extract rejects unsigned requests", async () => {
   assert.equal(response.status, 401);
 });
 
-// ── Test 1: POST /api/voice/extract — returns 501 when GEMINI_API_KEY missing ─
-test("POST /api/voice/extract returns 501 when GEMINI_API_KEY not configured", async () => {
+// ── Test 1: POST /api/voice/extract — returns 501 when Workers AI credentials are missing ─
+test("POST /api/voice/extract returns 501 when Workers AI is not configured", async () => {
   const db = new MockD1WithVoice();
-  const env = await makeEnv(db); // no GEMINI_API_KEY
+  const env = await makeEnv(db); // no CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN
 
   const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
     method: "POST",
@@ -884,7 +899,7 @@ test("POST /api/voice/extract returns 501 when GEMINI_API_KEY not configured", a
     body: JSON.stringify({ npub: "npub1abc", transcript: "call dentist tomorrow", sessionDurationSeconds: 5 }),
   });
   const res = await worker.fetch(req, env);
-  assert.equal(res.status, 501, "should be 501 when GEMINI_API_KEY absent");
+  assert.equal(res.status, 501, "should be 501 when Workers AI credentials are absent");
   const body = await res.json() as any;
   assert.ok(body.error, "should have error field");
 });
@@ -921,25 +936,18 @@ test("POST /api/voice/extract returns 400 when transcript is empty", async () =>
   assert.ok(body.error);
 });
 
-// ── Test 4: POST /api/voice/extract — happy path: calls Gemini, returns operations ─
-test("POST /api/voice/extract calls Gemini and returns operations on success", async () => {
+// ── Test 4: POST /api/voice/extract — happy path: calls the model, returns operations ─
+test("POST /api/voice/extract calls Workers AI and returns operations on success", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
-  const geminiOperations = [
+  const modelTasks = [
     { type: "create_task", title: "Call dentist", dueText: "tomorrow" },
   ];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [
-            { content: { parts: [{ text: JSON.stringify({ tasks: geminiOperations }) }] } },
-          ],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({ tasks: modelTasks });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -967,7 +975,7 @@ test("POST /api/voice/extract calls Gemini and returns operations on success", a
   }
 });
 // ── Test 5: POST /api/voice/extract — quota is incremented after successful call ─
-test("POST /api/voice/extract increments quota after successful Gemini call", async () => {
+test("POST /api/voice/extract increments quota after a successful model call", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
   const npub = VOICE_TEST_PUBLIC_KEY;
@@ -975,13 +983,8 @@ test("POST /api/voice/extract increments quota after successful Gemini call", as
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [{ content: { parts: [{ text: JSON.stringify({ operations: [] }) }] } }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({ operations: [] });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1024,8 +1027,8 @@ test("POST /api/voice/extract returns 429 when quota exceeded", async () => {
   assert.ok(typeof body.message === "string");
 });
 
-// ── Test 7: POST /api/voice/extract — Gemini failure returns 503 ─
-test("POST /api/voice/extract returns 503 when Gemini fails", async () => {
+// ── Test 7: POST /api/voice/extract — model failure returns 503 ─
+test("POST /api/voice/extract returns 503 when every model fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -1044,37 +1047,31 @@ test("POST /api/voice/extract returns 503 when Gemini fails", async () => {
       }),
     });
     const res = await worker.fetch(req, env);
-    assert.equal(res.status, 503, "should return 503 when Gemini is unavailable");
+    assert.equal(res.status, 503, "should return 503 when no model answers");
     const body = await res.json() as any;
-    assert.equal(body.error, "gemini_unavailable");
+    assert.equal(body.error, "voice_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("POST /api/voice/extract falls back to Cloudflare Workers AI when Gemini fails", async () => {
+test("POST /api/voice/extract falls back to the JSON Mode model when the first fails", async () => {
   const db = new MockD1WithVoice();
-  const env = {
-    ...(await makeVoiceEnv(db)),
-    CLOUDFLARE_ACCOUNT_ID: "acc-123",
-    CLOUDFLARE_API_TOKEN: "cf-token",
-  } as any;
+  const env = await makeVoiceEnv(db);
 
+  const calls: string[] = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: RequestInfo | URL) => {
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
     const u = String(url);
-    if (u.includes("generativelanguage.googleapis.com")) {
-      return new Response("gemini down", { status: 503 });
+    calls.push(u);
+    if (u.endsWith(`/ai/run/${VOICE_PRIMARY_MODEL}`)) {
+      return new Response("model unavailable", { status: 503 });
     }
-    if (u.includes("/ai/run/@cf/zai-org/glm-5.3-flash")) {
+    if (u.endsWith(`/ai/run/${VOICE_FALLBACK_MODEL}`)) {
+      assert.deepEqual(JSON.parse(String(init?.body)).response_format, { type: "json_object" });
+      // JSON Mode returns `response` already parsed.
       return new Response(
-        JSON.stringify({
-          result: {
-            response: JSON.stringify({
-              tasks: [{ title: "Call dentist", dueText: "tomorrow", subtasks: [] }],
-            }),
-          },
-        }),
+        JSON.stringify({ success: true, result: { response: { tasks: [{ title: "Call dentist", dueText: "tomorrow", subtasks: [] }] } } }),
         { status: 200 },
       );
     }
@@ -1097,6 +1094,7 @@ test("POST /api/voice/extract falls back to Cloudflare Workers AI when Gemini fa
     const body = await res.json() as any;
     assert.ok(Array.isArray(body.operations));
     assert.equal(body.operations[0].title, "Call dentist");
+    assert.equal(calls.length, 2, "one attempt per model");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1108,28 +1106,13 @@ test("POST /api/voice/extract applies correction phrases to prior task dueText",
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [
-            {
-              content: {
-                parts: [
-                  {
-                    text: JSON.stringify({
-                      tasks: [
-                        { title: "Play date", dueText: "tomorrow at noon", subtasks: [] },
-                        { title: "then next Sunday at 2 PM we have a dinner after church", dueText: "next Sunday at 2 PM", subtasks: [] },
-                      ],
-                    }),
-                  },
-                ],
-              },
-            },
-          ],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          { title: "Play date", dueText: "tomorrow at noon", subtasks: [] },
+          { title: "then next Sunday at 2 PM we have a dinner after church", dueText: "next Sunday at 2 PM", subtasks: [] },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1163,32 +1146,17 @@ test("POST /api/voice/extract preserves explicit reminder requests", async () =>
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [
-            {
-              content: {
-                parts: [
-                  {
-                    text: JSON.stringify({
-                      tasks: [
-                        {
-                          title: "Remind me to call dentist",
-                          dueText: "tomorrow at 2 PM",
-                          reminderText: "at due time",
-                          subtasks: [],
-                        },
-                      ],
-                    }),
-                  },
-                ],
-              },
-            },
-          ],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          {
+            title: "Remind me to call dentist",
+            dueText: "tomorrow at 2 PM",
+            reminderText: "at due time",
+            subtasks: [],
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1215,10 +1183,10 @@ test("POST /api/voice/extract preserves explicit reminder requests", async () =>
   }
 });
 
-// ── Test 8: POST /api/voice/finalize — 501 when GEMINI_API_KEY missing ──────────
-test("POST /api/voice/finalize returns 501 when GEMINI_API_KEY not configured", async () => {
+// ── Test 8: POST /api/voice/finalize — 501 when Workers AI credentials are missing ──
+test("POST /api/voice/finalize returns 501 when Workers AI is not configured", async () => {
   const db = new MockD1WithVoice();
-  const env = await makeEnv(db); // no key
+  const env = await makeEnv(db); // no credentials
 
   const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
     method: "POST",
@@ -1264,32 +1232,21 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
   const referenceDate = "2026-03-24T18:00:00.000Z";
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      // Simulate Gemini normalizing the task
-      return new Response(
-        JSON.stringify({
-          candidates: [{
-            content: {
-              parts: [{
-                text: JSON.stringify({
-                  tasks: [
-                    {
-                      id: "c1",
-                      title: "Call Dentist",
-                      dueISO: "2026-03-25T14:00:00.000Z",
-                      subtasks: [],
-                      notes: null,
-                      boardId: null,
-                      priority: null,
-                    },
-                  ],
-                }),
-              }],
-            },
-          }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      // Simulate the model normalizing the task
+      return workersAiReply({
+        tasks: [
+          {
+            id: "c1",
+            title: "Call Dentist",
+            dueISO: "2026-03-25T14:00:00.000Z",
+            subtasks: [],
+            notes: null,
+            boardId: null,
+            priority: null,
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1326,29 +1283,18 @@ test("POST /api/voice/extract carries notes and recurrence text into operations"
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [{
-            content: {
-              parts: [{
-                text: JSON.stringify({
-                  tasks: [
-                    {
-                      title: "Take out the trash",
-                      dueText: "Monday evening",
-                      notes: "Recycling and compost bins too",
-                      recurrenceText: "every Monday",
-                      subtasks: [],
-                    },
-                  ],
-                }),
-              }],
-            },
-          }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          {
+            title: "Take out the trash",
+            dueText: "Monday evening",
+            notes: "Recycling and compost bins too",
+            recurrenceText: "every Monday",
+            subtasks: [],
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1381,48 +1327,37 @@ test("POST /api/voice/finalize normalizes recurrence and validates model-chosen 
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [{
-            content: {
-              parts: [{
-                text: JSON.stringify({
-                  tasks: [
-                    {
-                      id: "c1",
-                      title: "Trash night",
-                      dueISO: "2026-08-03T21:00:00.000Z",
-                      notes: "Recycling too",
-                      subtasks: [],
-                      boardId: "board-lists",
-                      columnId: "col-2",
-                      recurrence: { type: "weekly", days: [1, 4, 9] },
-                      priority: 3,
-                      reminderMinutesBeforeDue: [15, 60],
-                      reminderTime: null,
-                    },
-                    {
-                      id: "c2",
-                      title: "Groceries",
-                      dueISO: null,
-                      notes: null,
-                      subtasks: [],
-                      boardId: "board-hallucinated",
-                      columnId: "col-9",
-                      recurrence: { type: "monthlyDay", day: 40 },
-                      priority: null,
-                      reminderMinutesBeforeDue: null,
-                      reminderTime: null,
-                    },
-                  ],
-                }),
-              }],
-            },
-          }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          {
+            id: "c1",
+            title: "Trash night",
+            dueISO: "2026-08-03T21:00:00.000Z",
+            notes: "Recycling too",
+            subtasks: [],
+            boardId: "board-lists",
+            columnId: "col-2",
+            recurrence: { type: "weekly", days: [1, 4, 9] },
+            priority: 3,
+            reminderMinutesBeforeDue: [15, 60],
+            reminderTime: null,
+          },
+          {
+            id: "c2",
+            title: "Groceries",
+            dueISO: null,
+            notes: null,
+            subtasks: [],
+            boardId: "board-hallucinated",
+            columnId: "col-9",
+            recurrence: { type: "monthlyDay", day: 40 },
+            priority: null,
+            reminderMinutesBeforeDue: null,
+            reminderTime: null,
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1474,44 +1409,33 @@ test("POST /api/voice/finalize only returns reminders for explicit reminder requ
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [{
-            content: {
-              parts: [{
-                text: JSON.stringify({
-                  tasks: [
-                    {
-                      id: "c1",
-                      title: "Call Dentist",
-                      dueISO: "2026-03-25T14:00:00.000Z",
-                      subtasks: [],
-                      notes: null,
-                      boardId: null,
-                      priority: null,
-                      reminderMinutesBeforeDue: [15],
-                      reminderTime: null,
-                    },
-                    {
-                      id: "c2",
-                      title: "Pay Water Bill",
-                      dueISO: "2026-03-26T17:00:00.000Z",
-                      subtasks: [],
-                      notes: null,
-                      boardId: null,
-                      priority: null,
-                      reminderMinutesBeforeDue: [60],
-                      reminderTime: null,
-                    },
-                  ],
-                }),
-              }],
-            },
-          }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          {
+            id: "c1",
+            title: "Call Dentist",
+            dueISO: "2026-03-25T14:00:00.000Z",
+            subtasks: [],
+            notes: null,
+            boardId: null,
+            priority: null,
+            reminderMinutesBeforeDue: [15],
+            reminderTime: null,
+          },
+          {
+            id: "c2",
+            title: "Pay Water Bill",
+            dueISO: "2026-03-26T17:00:00.000Z",
+            subtasks: [],
+            notes: null,
+            boardId: null,
+            priority: null,
+            reminderMinutesBeforeDue: [60],
+            reminderTime: null,
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1539,38 +1463,28 @@ test("POST /api/voice/finalize only returns reminders for explicit reminder requ
   }
 });
 
-// ── Test 11: POST /api/voice/finalize — Gemini failure returns 503 ─
-test("POST /api/voice/finalize falls back to Cloudflare Workers AI when Gemini fails", async () => {
+// ── Test 11: POST /api/voice/finalize — second model answers when the first cannot ─
+test("POST /api/voice/finalize falls back to the JSON Mode model when the first fails", async () => {
   const db = new MockD1WithVoice();
-  const env = {
-    ...(await makeVoiceEnv(db)),
-    CLOUDFLARE_ACCOUNT_ID: "acc-123",
-    CLOUDFLARE_API_TOKEN: "cf-token",
-  } as any;
+  const env = await makeVoiceEnv(db);
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
     const u = String(url);
-    if (u.includes("generativelanguage.googleapis.com")) {
-      return new Response("error", { status: 503 });
+    if (u.endsWith(`/ai/run/${VOICE_PRIMARY_MODEL}`)) {
+      // Answers, but not with JSON.
+      return workersAiReply("Sorry, I can only help with tasks.");
     }
-    if (u.includes("/ai/run/@cf/zai-org/glm-5.3-flash")) {
+    if (u.endsWith(`/ai/run/${VOICE_FALLBACK_MODEL}`)) {
       return new Response(
         JSON.stringify({
+          success: true,
           result: {
-            response: JSON.stringify({
+            response: {
               tasks: [
-                {
-                  id: "c1",
-                  title: "Call Dentist",
-                  dueISO: "2026-03-25T14:00:00.000Z",
-                  subtasks: [],
-                  notes: null,
-                  boardId: null,
-                  priority: null,
-                },
+                { id: "c1", title: "Call Dentist", dueISO: "2026-03-25T14:00:00.000Z", subtasks: [], notes: null, boardId: null, priority: null },
               ],
-            }),
+            },
           },
         }),
         { status: 200 },
@@ -1599,7 +1513,7 @@ test("POST /api/voice/finalize falls back to Cloudflare Workers AI when Gemini f
   }
 });
 
-test("POST /api/voice/finalize returns 503 when Gemini fails", async () => {
+test("POST /api/voice/finalize returns 503 when every model fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -1619,15 +1533,15 @@ test("POST /api/voice/finalize returns 503 when Gemini fails", async () => {
       }),
     });
     const res = await worker.fetch(req, env);
-    assert.equal(res.status, 503, "must return 503 when Gemini is unavailable");
+    assert.equal(res.status, 503, "must return 503 when no model answers");
     const body = await res.json() as any;
-    assert.equal(body.error, "gemini_unavailable");
+    assert.equal(body.error, "voice_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when Gemini fails", async () => {
+test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when every model fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -1651,7 +1565,7 @@ test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when 
     const res = await worker.fetch(req, env);
     assert.equal(res.status, 503);
     const body = await res.json() as any;
-    assert.equal(body.error, "gemini_unavailable");
+    assert.equal(body.error, "voice_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1677,7 +1591,7 @@ for (const stall of ["headers", "body"] as const) {
         started();
         return stall === "headers" ? stalled : { ok: true, json: () => stalled };
       }
-      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ tasks: [{ title: "Team meeting", dueText: "tomorrow at 8 AM" }] }) }] } }] }));
+      return workersAiReply({ tasks: [{ title: "Team meeting", dueText: "tomorrow at 8 AM" }] });
     }) as typeof fetch;
     try {
       const request = authenticatedVoiceRequest("https://taskify.solife.me/api/voice/extract", {
@@ -1689,7 +1603,7 @@ for (const stall of ["headers", "body"] as const) {
       await firstStarted;
       // Let fetch/response.json attach their rejection handlers before expiring the timer.
       await new Promise<void>((resolve) => setImmediate(resolve));
-      t.mock.timers.tick(10_000);
+      t.mock.timers.tick(20_000);
       const response = await pending;
       assert.equal(response.status, 200);
       assert.equal(firstSignal?.aborted, true);
@@ -1706,13 +1620,13 @@ test('voice finalize anchors tomorrow locally and repairs an ambiguous appointme
   const env = await makeVoiceEnv(new MockD1WithVoice());
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
-    const prompt = JSON.parse(String(init?.body)).contents[0].parts[0].text;
+    const prompt = JSON.parse(String(init?.body)).messages[1].content;
     assert.ok(prompt.includes("User's local calendar date (today): 2026-09-11"));
     assert.ok(prompt.includes('Tomorrow in the user\'s time zone: 2026-09-12'));
-    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ tasks: [
+    return workersAiReply({ tasks: [
       { id: 'c1', title: "Meet the Spectrum guy at Gail's house", dueISO: '2026-09-13T06:00:00Z' },
       { id: 'c2', title: 'Buy groceries', dueISO: '2026-09-13' },
-    ] }) }] } }] }));
+    ] });
   }) as typeof fetch;
   try {
     const request = authenticatedVoiceRequest('https://taskify.solife.me/api/voice/finalize', {
@@ -1755,6 +1669,53 @@ test("voice rejects general API parameters and malformed candidates before provi
     }), env);
     assert.equal(response.status, 400);
   }
+});
+
+test("voice sends dictated text only to Workers AI", async () => {
+  const env = await makeVoiceEnv(new MockD1WithVoice());
+  const originalFetch = globalThis.fetch;
+  const calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return workersAiReply({ tasks: [{ title: "Call dentist", dueText: "tomorrow", subtasks: [] }] });
+  }) as any;
+  try {
+    const response = await worker.fetch(authenticatedVoiceRequest("https://taskify.test/api/voice/extract", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "Call dentist tomorrow" }),
+    }), env);
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, `https://api.cloudflare.com/client/v4/accounts/acc-123/ai/run/${VOICE_PRIMARY_MODEL}`);
+    assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, "Bearer cf-token");
+    const sent = JSON.parse(String(calls[0].init?.body));
+    assert.equal(sent.messages[0].role, "system");
+    assert.ok(sent.messages[1].content.includes("Call dentist tomorrow"));
+    assert.equal(sent.max_completion_tokens, 2048);
+    assert.equal(sent.response_format, undefined);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("voice accepts model JSON that is fenced or wrapped in a sentence", async () => {
+  const wrapped = [
+    "```json\n{\"tasks\":[{\"title\":\"Call dentist\",\"subtasks\":[]}]}\n```",
+    "Here is the JSON you asked for: {\"tasks\":[{\"title\":\"Call dentist\",\"subtasks\":[]}]} Let me know if you need more.",
+  ];
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const content of wrapped) {
+      const env = await makeVoiceEnv(new MockD1WithVoice());
+      globalThis.fetch = (async () => new Response(
+        JSON.stringify({ success: true, result: { choices: [{ message: { content } }] } }), { status: 200 },
+      )) as any;
+      const response = await worker.fetch(authenticatedVoiceRequest("https://taskify.test/api/voice/extract", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "Call dentist" }),
+      }), env);
+      assert.equal(response.status, 200);
+      assert.equal(((await response.json()) as any).operations[0].title, "Call dentist");
+    }
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("provider failures still charge account, IP and global budgets", async () => {

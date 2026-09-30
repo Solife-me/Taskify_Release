@@ -51,7 +51,7 @@ export interface Env {
   VAPID_PUBLIC_KEY: string;
   VAPID_PRIVATE_KEY: string | KVNamespace;
   VAPID_SUBJECT: string;
-  GEMINI_API_KEY?: string;
+  // Workers AI credentials for the voice routes.
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
   VOICE_DISABLED?: string;

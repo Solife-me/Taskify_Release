@@ -74,7 +74,7 @@ Use this table before changing handler logic so caller contracts stay aligned.
 | `POST /api/voice/extract` | signed request; `{ npub, transcript, candidates?, sessionDurationSeconds }` | `{ operations: TaskOperation[] }` where tasks carry `title/dueText/reminderText/notes/recurrenceText/subtasks`; `429` quota body may still include rule-based operations | PWA dictation, phone app, watch app (independent) | `worker/src/voice.ts` (`handleVoiceExtract`) |
 | `POST /api/voice/finalize` | signed request; `{ npub, candidates, boardId?, boards?[{id,name,kind,columns}], referenceDate, referenceTimeZone, referenceOffsetMinutes }` | `{ tasks: FinalTask[] }` with `title/dueISO/boardId/columnId/notes/subtasks/priority/reminderMinutesBeforeDue[]/reminderTime/recurrence`; model-chosen boards/columns are validated against the supplied `boards` list | PWA dictation, phone app, watch app (independent) | `worker/src/voice.ts` (`handleVoiceFinalize`) |
 
-Voice model attempts have a 10-second timeout covering response headers and body. Up to three Gemini attempts and one Cloudflare fallback fit within the native voice clients’ 60-second request timeout. The iPhone retains failed transcripts and exposes an explicit retry without adding waiting time to the reported recording duration.
+Voice requests go only to Cloudflare Workers AI, through its REST API with the `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` secrets. Two models are tried in order: `@cf/google/gemma-4-26b-a4b-it`, then `@cf/meta/llama-3.3-70b-instruct-fp8-fast` in JSON Mode. Each attempt has a 20-second timeout covering response headers and body, so both fit within the native voice clients’ 60-second request timeout. Both models were chosen because they run on the Workers Free plan; models that need a paid billing method (the GLM 5.x, Kimi, and DeepSeek v4 families) fail there. The iPhone retains failed transcripts and exposes an explicit retry without adding waiting time to the reported recording duration.
 
 Relative voice dates use the reference instant converted to the supplied IANA time zone. The prompt supplies explicit local dates for today and tomorrow, and finalization anchors these relative dates deterministically. Unqualified daytime appointment ranges such as “from 1–2” start at 1 PM; explicit AM/morning wording remains authoritative. Native clients decode `YYYY-MM-DD` as a local calendar day.
 
@@ -892,9 +892,14 @@ Daily slots use conditional D1 UPSERTs with RETURNING in the existing
 `voice_quota` table, reserved before provider work. Concurrent requests cannot
 exceed each counter. Failures and replays consume slots. Reservations across the
 three counters are deliberately conservative: a later rejection does not refund
-an earlier reservation. Each workflow can make at most four bounded provider
-attempts (three Gemini models and one GLM fallback). The global ceiling therefore
-bounds workflows, not exact dollars or tokens. UTC midnight resets the counters.
+an earlier reservation. Each workflow can make at most two bounded model
+attempts. The global ceiling therefore bounds workflows, not tokens. On the
+Workers Free plan the binding limit is Workers AI's allocation of 10,000 Neurons
+per day for the whole account: a typical request costs about 14 Neurons on the
+first model (roughly 700 requests a day), a request that fills the 2,048-token
+output about 80, and one that falls through to the second model several times
+more. When the allocation is spent the models return errors and both routes
+answer 503 `voice_unavailable` until 00:00 UTC. UTC midnight resets the counters.
 IP keys are hashed with the date; account counters retain their existing keys.
 Missing IP headers share an `unknown` bucket; forwarded client IP headers are
 ignored. This assumes direct Cloudflare ingress supplying `CF-Connecting-IP`.
@@ -902,7 +907,7 @@ ignored. This assumes direct Cloudflare ingress supplying `CF-Connecting-IP`.
 Requests are capped at 32 KiB before body hashing/signature verification, require
 JSON, reject unknown top-level fields, and bound nested strings and lists. Models,
 provider URLs, token ceilings, and system instructions remain server-controlled.
-Both providers receive task-only system instructions. Extraction only projects
+Each model receives task-only system instructions. Extraction only projects
 known task fields; arbitrary model `operations` are no longer passed through.
 Finalization preserves input notes rather than accepting generated notes.
 
@@ -920,6 +925,6 @@ active until deployed. Clients must handle 429 as temporary quota exhaustion.
 
 Cloudflare's [rate limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
 is local to a Cloudflare location and eventually consistent; it is a burst guard.
-D1 reservations provide the strict daily limits. Gemini's
-[system instruction API](https://ai.google.dev/api/generate-content) supplies the
-separate task-only system instruction.
+D1 reservations provide the strict daily limits. Workers AI
+[does not use request content](https://developers.cloudflare.com/workers-ai/platform/privacy/)
+to train models or improve services.

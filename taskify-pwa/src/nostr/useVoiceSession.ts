@@ -3,8 +3,8 @@
  *
  * Architecture:
  *   Web Speech API (browser-native) → live transcript
- *   POST /api/voice/extract (Gemini 2.0 Flash) → TaskOperation[] → reducer → candidates
- *   POST /api/voice/finalize (Gemini structured output) → FinalTask[]
+ *   POST /api/voice/extract (Worker-side model) → TaskOperation[] → reducer → candidates
+ *   POST /api/voice/finalize (Worker-side model) → FinalTask[]
  */
 import { useCallback, useEffect, useRef, useReducer } from "react";
 import { signTaskifyRequestHeaders } from "../lib/taskifyRequestAuth";
