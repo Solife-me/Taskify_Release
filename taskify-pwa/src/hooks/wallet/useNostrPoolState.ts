@@ -408,12 +408,18 @@ export function useNostrPoolState({
             }
             return null;
           }
-          const rumorRecipients = extractTagPubkeys(rumor.tags, "p");
+          let rumorRecipients = extractTagPubkeys(rumor.tags, "p");
           if (!rumorRecipients.length) {
-            if (PAYMENT_REQUEST_DEBUG) {
-              console.debug("[wallet] kind=14 rumor missing recipient p tags", event.id);
+            // NUT-18 payment senders built on CDK leave the rumor's `p` tags out. The wrap
+            // opened with this account's key, so it was addressed here (iOS accepts these
+            // too). A copy the account sent to itself with no tags names no one, so drop it.
+            if (normalizedSenderPubkey === normalizedIdentity) {
+              if (PAYMENT_REQUEST_DEBUG) {
+                console.debug("[wallet] self-addressed rumor without recipient p tags", event.id);
+              }
+              return null;
             }
-            return null;
+            rumorRecipients = [normalizedIdentity];
           }
           const rumorCreatedAt =
             typeof rumor.created_at === "number" && Number.isFinite(rumor.created_at) && rumor.created_at > 0
