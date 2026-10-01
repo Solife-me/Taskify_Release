@@ -35,4 +35,36 @@ describe("sanitizeHtml", () => {
     expect(out.toLowerCase()).not.toContain("<iframe");
     expect(out.toLowerCase()).not.toContain("<object");
   });
+
+  test("loads nothing from the network: remote media, srcset, background, styles", () => {
+    const out = sanitizeHtml(
+      '<img src="https://tracker.example/p.gif" alt="a"><img srcset="https://tracker.example/a 1x">' +
+        '<table background="https://tracker.example/t"><tr><td>x</td></tr></table>' +
+        '<div style="background:url(https://tracker.example/bg)">s</div>' +
+        '<video src="https://tracker.example/v" poster="https://tracker.example/p"></video>',
+    );
+    expect(out).not.toContain("tracker.example");
+  });
+
+  test("keeps embedded images from documents", () => {
+    const out = sanitizeHtml('<img src="data:image/png;base64,iVBORw0KGgo=" alt="chart">');
+    expect(out).toContain('src="data:image/png;base64,iVBORw0KGgo="');
+  });
+
+  test("drops forms, inputs, and <style>", () => {
+    const out = sanitizeHtml(
+      '<style>body{display:none}</style><form action="https://evil.example"><input name="seed"><textarea></textarea><button>Restore</button></form><p>ok</p>',
+    );
+    expect(out).toBe("Restore<p>ok</p>");
+  });
+
+  test("keeps only document classes and prefixes ids", () => {
+    const out = sanitizeHtml('<div class="doc-rich fixed inset-0 z-50" id="eruda"><h1 class="doc-title">T</h1></div>');
+    expect(out).toBe('<div class="doc-rich" id="user-content-eruda"><h1 class="doc-title">T</h1></div>');
+  });
+
+  test("links open in a new tab", () => {
+    const out = sanitizeHtml('<a href="https://example.com/x">x</a>');
+    expect(out).toBe('<a href="https://example.com/x" target="_blank" rel="noopener noreferrer">x</a>');
+  });
 });
