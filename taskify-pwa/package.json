@@ -25,7 +25,7 @@
     "@tanstack/react-virtual": "^3.14.13",
     "bech32": "^2.0.0",
     "buffer": "^6.0.3",
-    "dompurify": "^3.4.15",
+    "dompurify": "^3.4.16",
     "eruda": "3.4.3",
     "events": "^3.3.0",
     "jszip": "^3.10.2",
