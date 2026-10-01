@@ -692,10 +692,35 @@ export function createTaskifyPushServer({
     }
     const previewMatch = /^\/v1\/previews\/([A-Za-z0-9_-]{43})$/.exec(url.pathname)
     if (request.method === 'GET' && previewMatch) {
-      const event = store.previewForToken(previewMatch[1])
       response.setHeader('Cache-Control', 'no-store')
       response.setHeader('Pragma', 'no-cache')
-      sendJSON(response, event ? 200 : 404, event ? { event } : { error: 'Preview not found' })
+      const token = previewMatch[1]
+      const entry = store.previewEntryForToken(token)
+      if (!entry) {
+        sendJSON(response, 404, { error: 'Preview not found' })
+        return
+      }
+      if (request.headers.authorization) {
+        // A signed fetch must come from the recipient. Anything else looks like a missing preview.
+        let signer = null
+        try {
+          signer = authenticatePrivateRequest(request, url, Buffer.alloc(0)).pubkey
+        } catch (error) {
+          if (/limit exceeded/i.test(error.message)) {
+            sendJSON(response, 429, { error: error.message })
+            return
+          }
+        }
+        if (!signer || signer !== entry.recipient) {
+          sendJSON(response, 404, { error: 'Preview not found' })
+          return
+        }
+      } else if (config.requireSignedPreviews) {
+        sendJSON(response, 401, { error: 'NIP-98 authorization is required' })
+        return
+      }
+      await store.consumePreview(token)
+      sendJSON(response, 200, { event: entry.event })
       return
     }
     if (await handleRegistrationRequest(request, response, url)) return

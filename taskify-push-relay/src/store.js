@@ -386,11 +386,25 @@ export class RelayStore {
   }
 
   previewForToken(token) {
+    return this.previewEntryForToken(token)?.event ?? null
+  }
+
+  /// The gift wrap a preview token points at, and the account it was sent to.
+  previewEntryForToken(token) {
     // Unauthenticated: never a full prune per request. Expiry is checked here directly.
     this.pruneForRead()
     const preview = this.state.previews.find((candidate) => candidate.token === token)
     if (!preview || preview.expiresAt < this.now()) return null
-    return this.state.events.find((entry) => entry.event.id === preview.eventID)?.event ?? null
+    const event = this.state.events.find((entry) => entry.event.id === preview.eventID)?.event
+    if (!event) return null
+    return { event, recipient: this.registrationByKey(preview.registrationKey)?.pubkey ?? null }
+  }
+
+  /// Preview URLs work once: the notification extension fetches each a single time.
+  async consumePreview(token) {
+    const count = this.state.previews.length
+    this.state.previews = this.state.previews.filter((preview) => preview.token !== token)
+    if (this.state.previews.length !== count) await this.persist()
   }
 
   /// `delivered` marks an alert Apple accepted, which starts the device's minimum push gap.

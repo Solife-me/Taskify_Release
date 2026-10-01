@@ -30,6 +30,9 @@ export async function loadConfig(environment = process.env) {
     dataDirectory: environment.DATA_DIR ?? '/data',
     publicBaseURL: environment.PUBLIC_BASE_URL ?? 'https://push.solife.me',
     publicRelayURL: environment.PUBLIC_RELAY_URL ?? 'wss://push.solife.me',
+    // iPhone builds from 2026-10 sign preview fetches; older ones do not. Set to "true" once
+    // those are gone, so a leaked preview URL is useless without the recipient's key.
+    requireSignedPreviews: environment.REQUIRE_SIGNED_PREVIEWS === 'true',
     apns,
   }
 }

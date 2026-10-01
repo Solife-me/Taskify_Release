@@ -41,7 +41,9 @@ asked for a list of everyone who uses it.
 - Watch task/board propagation API: `POST /v1/watch/task-events/publish`
 - Nostr WebSocket relay: kinds `1059` and `10050`
 - Health endpoint: `GET /healthz`
-- One-use-style preview retrieval: `GET /v1/previews/:opaqueToken` (expires after 15 minutes)
+- One-use preview retrieval: `GET /v1/previews/:opaqueToken` (expires after 15 minutes, works once).
+  A NIP-98-signed fetch must be signed by the recipient; unsigned fetches from older iPhone builds
+  are accepted until `REQUIRE_SIGNED_PREVIEWS=true`
 - Persistent state: `/data/state.json`
 - APNs configuration: `/data/apns.json`
 - Separate iOS and watchOS APNs topics; the defaults are `solife.me.Taskify.Native` and

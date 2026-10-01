@@ -6,6 +6,7 @@ import test from 'node:test'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools'
 import WebSocket from 'ws'
 
+import { createHash } from 'node:crypto'
 import { createTaskifyPushServer } from '../src/server.js'
 import { RelayStore } from '../src/store.js'
 
@@ -119,6 +120,10 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   assert.equal(previewResponse.status, 200)
   assert.equal(previewResponse.headers.get('cache-control'), 'no-store')
   assert.deepEqual(await previewResponse.json(), JSON.parse(JSON.stringify({ event: giftWrap })))
+  const secondFetch = await fetch(
+    sentPreviews[0].replace('https://push.solife.me', `http://127.0.0.1:${address.port}`),
+  )
+  assert.equal(secondFetch.status, 404, 'a preview URL works once')
 
   const missingPreview = await fetch(
     `http://127.0.0.1:${address.port}/v1/previews/${'x'.repeat(43)}`,
@@ -341,5 +346,53 @@ test('a socket that sends too many messages is closed', async (t) => {
   const done = closed(socket)
   for (let index = 0; index < 10; index += 1) socket.send(JSON.stringify(['CLOSE', `s${index}`]))
   assert.equal(await done, 1008)
+})
+
+function nip98(secretKey, url, method = 'GET', body = Buffer.alloc(0)) {
+  const event = finalizeEvent({
+    kind: 27_235,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [['u', url], ['method', method], ['payload', createHash('sha256').update(body).digest('hex')], ['nonce', Math.random().toString(16)]],
+    content: '',
+  }, secretKey)
+  return `Nostr ${Buffer.from(JSON.stringify(event)).toString('base64')}`
+}
+
+async function previewFixture(t, config = {}) {
+  const sentPreviews = []
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory })
+  await store.load()
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me', ...config },
+    store,
+    apnsClient: { async send(_registration, previewURL) { sentPreviews.push(previewURL); return { status: 200, reason: null } } },
+    logger: { info() {}, warn() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+  const recipientKey = generateSecretKey()
+  const recipient = getPublicKey(recipientKey)
+  await store.putRegistration(recipient, 'phone-1', { deviceToken: '12'.repeat(32), environment: 'production' })
+  const wrap = finalizeEvent({ kind: 1059, created_at: Math.floor(Date.now() / 1000), tags: [['p', recipient]], content: 'x' }, generateSecretKey())
+  await store.putGiftWrap(wrap, { notify: true })
+  await server.processPushJobs()
+  const publicURL = sentPreviews[0]
+  const localURL = publicURL.replace('https://push.solife.me', `http://127.0.0.1:${address.port}`)
+  return { recipientKey, publicURL, localURL }
+}
+
+test('a signed preview fetch must come from the recipient', async (t) => {
+  const { recipientKey, publicURL, localURL } = await previewFixture(t)
+  const stranger = await fetch(localURL, { headers: { authorization: nip98(generateSecretKey(), publicURL) } })
+  assert.equal(stranger.status, 404)
+  const recipient = await fetch(localURL, { headers: { authorization: nip98(recipientKey, publicURL) } })
+  assert.equal(recipient.status, 200)
+})
+
+test('unsigned preview fetches are refused once signatures are required', async (t) => {
+  const { recipientKey, publicURL, localURL } = await previewFixture(t, { requireSignedPreviews: true })
+  assert.equal((await fetch(localURL)).status, 401)
+  assert.equal((await fetch(localURL, { headers: { authorization: nip98(recipientKey, publicURL) } })).status, 200)
 })
 
