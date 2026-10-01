@@ -324,3 +324,21 @@ test("version-1 signatures are refused once the Worker is told to", async () => 
   assert.equal(await verifyTaskifyAuth(v1(), { allowV1: false }), null);
 });
 
+
+test("the Watch publish route accepts a version-2 request once and refuses its replay", async () => {
+  const privateKey = schnorr.utils.randomSecretKey();
+  const publicKey = bytesToHex(schnorr.getPublicKey(privateKey));
+  const env = {
+    ASSETS: { fetch: async () => new Response("asset") },
+    TASKIFY_DB: replayDb(),
+    // Refusing at the rate limit proves authentication passed without opening relays.
+    WATCH_NOSTR_RATE_LIMITER: { limit: async () => ({ success: false }) },
+  } as any;
+  const url = "https://taskify.example/api/watch/nostr/publish";
+  const body = JSON.stringify({ relays: ["wss://relay.example"] });
+  const headers = { "Content-Type": "application/json", ...signedHeadersV2(privateKey, publicKey, "POST", url, body) };
+  const first = await worker.fetch(new Request(url, { method: "POST", headers, body }), env);
+  assert.equal(first.status, 429);
+  const replay = await worker.fetch(new Request(url, { method: "POST", headers, body }), env);
+  assert.equal(replay.status, 401);
+});
