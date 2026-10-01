@@ -139,6 +139,16 @@ final class NotificationService: UNNotificationServiceExtension {
         contentHandler = nil
         self.genericAlert = nil
         finishLock.unlock()
-        handler(content ?? genericAlert)
+        handler(content ?? Self.withoutActions(genericAlert))
+    }
+
+    /// The push as received, minus any category or reply, task, or destination keys it carried:
+    /// those are set only after this extension decrypts a preview, so a push cannot choose where a
+    /// Reply goes or which task a button completes.
+    private static func withoutActions(_ alert: UNNotificationContent) -> UNNotificationContent {
+        guard let cleaned = alert.mutableCopy() as? UNMutableNotificationContent else { return alert }
+        cleaned.categoryIdentifier = ""
+        cleaned.userInfo = TaskifyNotificationContract.removingActionKeys(from: alert.userInfo)
+        return cleaned
     }
 }

@@ -236,4 +236,18 @@ final class TaskifyNotificationContractTests: XCTestCase {
             minute: minute
         )))
     }
+
+    func testFallbackPushLosesEveryActionKey() {
+        let pushed: [AnyHashable: Any] = [
+            "aps": ["alert": "New Message"],
+            "taskify": ["type": "dm-preview"],
+            TaskifyNotificationContract.taskIDKey: "task-1",
+            TaskifyNotificationContract.boardIDKey: "board-1",
+            TaskifyNotificationContract.destinationKey: "chat",
+            TaskifyNotificationContract.conversationIDKey: String(repeating: "a", count: 64),
+            TaskifyNotificationContract.conversationKindKey: "direct",
+        ]
+        let cleaned = TaskifyNotificationContract.removingActionKeys(from: pushed)
+        XCTAssertEqual(Set(cleaned.keys.compactMap { $0 as? String }), ["aps", "taskify"])
+    }
 }
