@@ -1911,3 +1911,51 @@ test("link previews never return a non-http final URL, image, or icon", async ()
     globalThis.fetch = originalFetch;
   }
 });
+
+// ── Audit fix pass 2 ──
+
+test("the public-address guard expands IPv6 before checking ranges", () => {
+  for (const target of [
+    "http://[::ffff:127.0.0.1]/",
+    "http://[::ffff:10.0.0.1]/",
+    "http://[::ffff:169.254.169.254]/",
+    "http://[::ffff:7f00:1]/",
+    "http://[64:ff9b::a00:1]/",
+    "http://[2002:a00:1::]/",
+    "http://[::127.0.0.1]/",
+    "http://[2001:db8::1]/",
+    "http://[ff02::1]/",
+  ]) {
+    assert.throws(() => assertPublicHttpUrl(target), UnsafePublicUrlError, target);
+  }
+  for (const target of ["http://[::ffff:8.8.8.8]/", "http://[2606:4700:4700::1111]/"]) {
+    assert.doesNotThrow(() => assertPublicHttpUrl(target), target);
+  }
+});
+
+test("the Watch bridge drops relay targets that are not public hosts", async () => {
+  const { watchNostrBridgeTestHooks } = await import("./nostr-bridge.ts");
+  const kept = watchNostrBridgeTestHooks.normalizedRelayURLs([
+    "wss://10.0.0.1", "wss://192.168.1.1:8443", "wss://169.254.169.254", "wss://[::ffff:7f00:1]",
+    "wss://service.internal", "wss://printer.local", "wss://localhost", "wss://relay.damus.io",
+  ]);
+  assert.deepEqual(kept, ["wss://relay.damus.io"]);
+});
+
+test("hourly pruning deletes week-old voice counters and two-week-old undelivered notifications", async () => {
+  const { pruneStaleRows } = await import("./index.ts");
+  const statements: Array<{ sql: string; params: unknown[] }> = [];
+  const db = {
+    prepare(sql: string) {
+      const statement = { sql, params: [] as unknown[], bind(...params: unknown[]) { statement.params = params; return statement; } };
+      return statement;
+    },
+    async batch(list: any[]) { statements.push(...list.map((s) => ({ sql: s.sql, params: s.params }))); return []; },
+  };
+  const now = Date.parse("2026-09-30T12:17:00Z");
+  await pruneStaleRows({ TASKIFY_DB: db } as any, now);
+  assert.deepEqual(statements, [
+    { sql: "DELETE FROM voice_quota WHERE date < ?", params: ["2026-09-23"] },
+    { sql: "DELETE FROM pending_notifications WHERE created_at < ?", params: [now - 14 * 24 * 60 * 60 * 1000] },
+  ]);
+});

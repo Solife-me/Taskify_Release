@@ -111,6 +111,21 @@ function routeUsesDatabase(pathname: string): boolean {
     || pathname.startsWith("/api/voice/");
 }
 
+// Rows kept only as long as they are useful: daily voice counters for a week, and reminder
+// notifications a device never fetched for two weeks.
+const VOICE_QUOTA_RETENTION_DAYS = 7;
+const PENDING_NOTIFICATION_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const PRUNE_MINUTE = 17;
+
+export async function pruneStaleRows(env: Env, now = Date.now()): Promise<void> {
+  const db = requireDb(env);
+  const quotaCutoff = new Date(now - VOICE_QUOTA_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await db.batch([
+    db.prepare("DELETE FROM voice_quota WHERE date < ?").bind(quotaCutoff),
+    db.prepare("DELETE FROM pending_notifications WHERE created_at < ?").bind(now - PENDING_NOTIFICATION_RETENTION_MS),
+  ]);
+}
+
 interface ScheduledEvent {
   scheduledTime: number;
   cron: string;
@@ -242,6 +257,8 @@ export default {
       try {
         await ensureSchema(env);
         await processDueReminders(env);
+        // Once an hour is plenty, and keeps the other 59 ticks to their own work.
+        if (new Date().getUTCMinutes() === PRUNE_MINUTE) await pruneStaleRows(env);
       } catch (err) {
         console.error('Scheduled task failed', { cron: event?.cron, error: err instanceof Error ? err.message : String(err) });
         throw err;

@@ -952,3 +952,17 @@ geolocation=()` (the scanners and dictation need the first two), a
 'none'`, `X-Frame-Options: DENY`, and HSTS for one year. `ASSET_SECURITY_HEADERS` in
 `worker/src/index.ts` carries the same set for responses the Worker builds itself. A script
 policy is not set yet; it needs testing against the PDF worker, wasm, and inline styles.
+
+## Retention
+
+Once an hour (minute 17 of the cron), the Worker deletes `voice_quota` rows older than seven
+days and `pending_notifications` rows a device has not fetched within fourteen days
+(`pruneStaleRows` in `worker/src/index.ts`).
+
+## Watch bridge relay targets
+
+Relay targets must be `wss` URLs that pass the same public-host check as the preview and
+NIP-05 fetchers (`assertPublicHttpUrl`): no localhost, `.local` or `.internal` names, and no
+private, link-local, IPv4-mapped, NAT64, or 6to4 addresses (IPv6 literals are expanded before
+the check). A query stops reading a relay once it has the filter's limit of events, and frames
+over 256 KiB are ignored unread.
