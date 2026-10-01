@@ -1,12 +1,11 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { NwcClient, parseNwcUri, type ParsedNwcUri } from "../wallet/nwc";
-import { kvStorage } from "../storage/kvStorage";
 import { setWalletMode } from "../wallet/walletMode";
 import {
   emptyNwcWalletCatalog,
-  loadNwcWalletCatalog,
+  loadStoredNwcWalletCatalog,
   removeNwcWalletProfile,
-  saveNwcWalletCatalog,
+  saveStoredNwcWalletCatalog,
   upsertNwcWalletProfile,
   type NwcWalletCatalog,
   type NwcWalletProfile,
@@ -140,7 +139,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let parsed: ParsedNwcUri | null = null;
     try {
-      const saved = loadNwcWalletCatalog(kvStorage);
+      const saved = loadStoredNwcWalletCatalog();
       setCatalog(saved);
       const profile = saved.wallets.find((wallet) => wallet.id === saved.activeWalletId) ?? saved.wallets[0];
       if (profile) parsed = parseNwcUri(profile.uri);
@@ -196,7 +195,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
           uri: parsed.uri,
           receiveAddress: receiveAddress === null ? undefined : (receiveAddress ?? existing?.receiveAddress),
         }).catalog;
-        try { saveNwcWalletCatalog(kvStorage, saved); } catch {}
+        try { saveStoredNwcWalletCatalog(saved); } catch {}
         return saved;
       });
     } catch (err: any) {
@@ -220,7 +219,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
         setLastError(null);
         setStatus("connected");
         const next = { ...current, activeWalletId: id };
-        saveNwcWalletCatalog(kvStorage, next);
+        saveStoredNwcWalletCatalog(next);
         return next;
       } catch (error) {
         setLastError(error instanceof Error ? error.message : String(error));
@@ -236,7 +235,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
         ? { ...wallet, receiveAddress: address?.trim().toLowerCase() || undefined }
         : wallet);
       const next = { ...current, wallets };
-      try { saveNwcWalletCatalog(kvStorage, next); } catch {}
+      try { saveStoredNwcWalletCatalog(next); } catch {}
       return next;
     });
   }, []);
@@ -244,7 +243,7 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
   const removeWallet = useCallback((id: string) => {
     setCatalog((current) => {
       const next = removeNwcWalletProfile(current, id);
-      try { saveNwcWalletCatalog(kvStorage, next); } catch {}
+      try { saveStoredNwcWalletCatalog(next); } catch {}
       if (current.activeWalletId === id) {
         const replacement = next.wallets.find((wallet) => wallet.id === next.activeWalletId) ?? null;
         if (replacement) {

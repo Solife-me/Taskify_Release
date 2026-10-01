@@ -1,8 +1,11 @@
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { kvStorage } from "../storage/kvStorage";
+import { createEncryptedSlot } from "../lib/encryptedSlot";
 
+// v1 held the seed record as plaintext JSON; v2 holds the same JSON as device-key ciphertext.
 const LS_WALLET_SEED = "cashu_wallet_seed_v1";
+export const LS_WALLET_SEED_ENCRYPTED = "cashu_wallet_seed_v2";
 const LS_WALLET_COUNTERS = "cashu_wallet_seed_counters_v1";
 const DEFAULT_STRENGTH = 128;
 const COUNTER_KEY_SEPARATOR = "|";
@@ -65,10 +68,8 @@ function splitCounterKey(key: string): [string, string] | null {
   return [mint, keysetId];
 }
 
-function readSeedRecordFromStorage(): WalletSeedRecord | null {
+function parseSeedRecord(raw: string): WalletSeedRecord | null {
   try {
-    const raw = kvStorage.getItem(LS_WALLET_SEED);
-    if (!raw) return null;
     const parsed = JSON.parse(raw);
     const mnemonicRaw = typeof parsed?.mnemonic === "string" ? parsed.mnemonic : "";
     const seedHexRaw = typeof parsed?.seedHex === "string" ? parsed.seedHex : "";
@@ -87,20 +88,47 @@ function readSeedRecordFromStorage(): WalletSeedRecord | null {
   }
 }
 
+const seedSlot = createEncryptedSlot({
+  plainKey: LS_WALLET_SEED,
+  cipherKey: LS_WALLET_SEED_ENCRYPTED,
+  label: "walletSeed",
+  isValid: (raw) => parseSeedRecord(raw) !== null,
+});
+
+/** Decrypts the stored seed, or encrypts a plaintext one. Awaited by `storageBootstrap`. */
+export function initWalletSeedStore(): Promise<void> {
+  return seedSlot.init();
+}
+
+function readSeedRecordFromStorage(): WalletSeedRecord | null {
+  if (seedSlot.isLoaded()) {
+    const raw = seedSlot.get();
+    return raw ? parseSeedRecord(raw) : null;
+  }
+  // A seed exists but has not been decrypted. Generating one here would replace it.
+  if (seedSlot.hasCiphertext()) {
+    throw new Error("The wallet seed has not been unlocked yet.");
+  }
+  const raw = kvStorage.getItem(LS_WALLET_SEED);
+  return raw ? parseSeedRecord(raw) : null;
+}
+
 function persistSeedRecord(record: WalletSeedRecord) {
   seedCache = record;
-  try {
-    kvStorage.setItem(
-      LS_WALLET_SEED,
-      JSON.stringify({
-        mnemonic: record.mnemonic,
-        seedHex: record.seedHex,
-        createdAt: record.createdAt,
-      }),
-    );
-  } catch {
-    // ignore persistence failures
-  }
+  void seedSlot.set(
+    JSON.stringify({
+      mnemonic: record.mnemonic,
+      seedHex: record.seedHex,
+      createdAt: record.createdAt,
+    }),
+  );
+}
+
+/** Test-only: forget the decrypted seed and counters. Does not touch storage. */
+export function __resetWalletSeedForTests(): void {
+  seedCache = null;
+  counterCache = null;
+  seedSlot.__resetForTests();
 }
 
 function generateSeedRecord(): WalletSeedRecord {

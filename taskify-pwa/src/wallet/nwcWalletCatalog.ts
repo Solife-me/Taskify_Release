@@ -1,4 +1,6 @@
 import { LS_NWC_RECEIVE_ADDRESS, LS_NWC_WALLET_CATALOG } from "../localStorageKeys";
+import { createEncryptedSlot } from "../lib/encryptedSlot";
+import { kvStorage } from "../storage/kvStorage";
 
 export const LEGACY_NWC_URI_KEY = "cashu_nwc_connection_v1";
 
@@ -50,24 +52,29 @@ export function saveNwcWalletCatalog(storage: StorageLike, catalog: NwcWalletCat
   storage.setItem(LS_NWC_WALLET_CATALOG, JSON.stringify(catalog));
 }
 
+function parseNwcWalletCatalog(raw: string): NwcWalletCatalog | null {
+  try {
+    const decoded = JSON.parse(raw) as Partial<NwcWalletCatalog>;
+    if (!decoded || typeof decoded !== "object") return null;
+    const wallets = Array.isArray(decoded.wallets)
+      ? decoded.wallets.map(cleanProfile).filter((wallet): wallet is NwcWalletProfile => !!wallet)
+      : [];
+    const requestedActive = typeof decoded.activeWalletId === "string" ? decoded.activeWalletId : null;
+    const activeWalletId = wallets.some((wallet) => wallet.id === requestedActive)
+      ? requestedActive
+      : wallets[0]?.id ?? null;
+    return { version: 1, activeWalletId, wallets };
+  } catch {
+    return null;
+  }
+}
+
 /** Reads the catalog and performs the one-time migration from the original single-wallet keys. */
 export function loadNwcWalletCatalog(storage: StorageLike): NwcWalletCatalog {
-  try {
-    const raw = storage.getItem(LS_NWC_WALLET_CATALOG);
-    if (raw) {
-      const decoded = JSON.parse(raw) as Partial<NwcWalletCatalog>;
-      const wallets = Array.isArray(decoded.wallets)
-        ? decoded.wallets.map(cleanProfile).filter((wallet): wallet is NwcWalletProfile => !!wallet)
-        : [];
-      const requestedActive = typeof decoded.activeWalletId === "string" ? decoded.activeWalletId : null;
-      const activeWalletId = wallets.some((wallet) => wallet.id === requestedActive)
-        ? requestedActive
-        : wallets[0]?.id ?? null;
-      return { version: 1, activeWalletId, wallets };
-    }
-  } catch {
-    // Fall through to the legacy record. A malformed catalog must never strand that connection.
-  }
+  const raw = storage.getItem(LS_NWC_WALLET_CATALOG);
+  const parsed = raw ? parseNwcWalletCatalog(raw) : null;
+  // A malformed catalog falls through to the legacy record; it must never strand that connection.
+  if (parsed) return parsed;
 
   const legacyUri = storage.getItem(LEGACY_NWC_URI_KEY)?.trim();
   if (!legacyUri) return emptyNwcWalletCatalog();
@@ -111,4 +118,36 @@ export function removeNwcWalletProfile(catalog: NwcWalletCatalog, id: string): N
     wallets,
     activeWalletId: catalog.activeWalletId === id ? wallets[0]?.id ?? null : catalog.activeWalletId,
   };
+}
+
+// Connection strings carry the secret that authorises spending, so the catalog is kept as
+// device-key ciphertext. The plaintext catalog key above is what it migrates from.
+export const LS_NWC_WALLET_CATALOG_ENCRYPTED = "taskify_nwc_wallet_catalog_v2";
+
+const catalogSlot = createEncryptedSlot({
+  plainKey: LS_NWC_WALLET_CATALOG,
+  cipherKey: LS_NWC_WALLET_CATALOG_ENCRYPTED,
+  label: "nwcWalletCatalog",
+  isValid: (raw) => parseNwcWalletCatalog(raw) !== null,
+});
+
+/** Awaited by `storageBootstrap`. Folds the original single-wallet record in, then encrypts. */
+export async function initNwcWalletCatalogStore(): Promise<void> {
+  if (!catalogSlot.hasCiphertext()) loadNwcWalletCatalog(kvStorage);
+  await catalogSlot.init();
+}
+
+export function loadStoredNwcWalletCatalog(): NwcWalletCatalog {
+  if (!catalogSlot.isLoaded()) return loadNwcWalletCatalog(kvStorage);
+  const raw = catalogSlot.get();
+  return (raw && parseNwcWalletCatalog(raw)) || emptyNwcWalletCatalog();
+}
+
+export function saveStoredNwcWalletCatalog(catalog: NwcWalletCatalog): void {
+  void catalogSlot.set(JSON.stringify(catalog));
+}
+
+/** Test-only: forget the decrypted catalog. Does not touch storage. */
+export function __resetNwcWalletCatalogForTests(): void {
+  catalogSlot.__resetForTests();
 }

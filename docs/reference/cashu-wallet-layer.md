@@ -437,6 +437,7 @@ An external lightning wallet connected over NWC can replace the ecash wallet. Im
 
 ### 1) Mode and storage
 
+- NWC connections: `taskify_nwc_wallet_catalog_v2`, the catalog JSON as device-key ciphertext (`wallet/nwcWalletCatalog.ts`, `initNwcWalletCatalogStore`). The plaintext catalog `taskify_nwc_wallet_catalog_v1` and the original single-connection key `cashu_nwc_connection_v1` are folded in and removed on first load.
 - Mode flag: `taskify_wallet_mode_v1` (`"nwc"` or absent), `taskify-pwa/src/wallet/walletMode.ts`. Disconnecting the NWC wallet switches back to ecash. The ecash seed and proofs are never deleted.
 - Receive address: the connection's `lud16` by default, or a user-entered address in `taskify_nwc_receive_address_v1`. The Nostr profile `lud16` is never changed automatically; only the user edits it, in the profile editor.
 - In NWC mode only Lightning send and receive are shown. Sends go through `useNwcWalletMode.payLightningInvoice` (with a timeout, it looks up the invoice before reporting anything).
@@ -476,7 +477,7 @@ Solife calls from the apps authenticate with the session's **bearer token only**
 
 ### 1) Seed generation/storage invariants
 
-- Seed record key: `cashu_wallet_seed_v1`
+- Seed record key: `cashu_wallet_seed_v2`, the seed-record JSON as device-key ciphertext (`lib/deviceKeyCrypto.ts`, the same non-extractable IndexedDB key that wraps the Nostr key). `storageBootstrap` decrypts it before first render via `initWalletSeedStore()`; the original plaintext key `cashu_wallet_seed_v1` is migrated and removed only after the ciphertext reads back. A ciphertext that no longer decrypts is kept as `cashu_wallet_seed_v2_unreadable`, never deleted, and a seed that exists but is not yet decrypted is never replaced by a new one. If WebCrypto or IndexedDB is unavailable the record stays in plaintext. This protects against dumps of the browser's storage, not against script running in the page.
 - Counter store key: `cashu_wallet_seed_counters_v1`
 - New seed generation uses 128-bit mnemonic entropy and stores both mnemonic + derived `seedHex`.
 

@@ -72,6 +72,15 @@ export async function initializeStorageBoundaries(): Promise<void> {
     initNostrSkStore().catch((err) => {
       console.warn("nostrSkStore init failed", err);
     }),
+    // The wallet seed and NWC connections are device-key ciphertext too; decrypt them before
+    // anything reads them synchronously.
+    // Imported here so the seed and wallet code stay out of the startup chunk.
+    import("../wallet/seed").then(({ initWalletSeedStore }) => initWalletSeedStore()).catch((err) => {
+      console.warn("wallet seed store init failed", err);
+    }),
+    import("../wallet/nwcWalletCatalog").then(({ initNwcWalletCatalogStore }) => initNwcWalletCatalogStore()).catch((err) => {
+      console.warn("NWC wallet catalog init failed", err);
+    }),
     // Per-entity v3 stores. Loaded into memory so the synchronous `useState`
     // initializers in App.tsx see populated data on first render.
     taskEntityStore.load(),
