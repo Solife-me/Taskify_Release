@@ -72,10 +72,12 @@ import { runSweep, type SweepDestination, type SweepJournal, type SweepJournalSt
 import { amountToSat, mintSweepSource } from "./nwcSweepAdapters";
 import { listPendingMelts } from "./storage";
 
-const MINT_A = process.env.CASHU_TEST_MINT_A ?? "";
+// Vitest runs under Node; the app's type config has no Node types.
+const testEnv = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
+const MINT_A = testEnv.CASHU_TEST_MINT_A ?? "";
 /** nutshell's FakeWallet reports a 1 sat fee for every outgoing payment. */
 const FAKEWALLET_LN_FEE = 1;
-const MINT_B = process.env.CASHU_TEST_MINT_B ?? "";
+const MINT_B = testEnv.CASHU_TEST_MINT_B ?? "";
 
 class MemoryJournal implements SweepJournalStore {
   saved: SweepJournal | null = null;
@@ -319,7 +321,7 @@ describe.skipIf(!MINT_A || !MINT_B)("sweep against real nutshell mints", () => {
 // ---------------------------------------------------------------------------
 
 import * as CashuLib from "@cashu/cashu-ts";
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import {
   resolveOutstandingTokenSweeps,
   tokenSweepSource,
@@ -443,7 +445,7 @@ describe.skipIf(!MINT_A || !MINT_B)("sweeping stored tokens against real nutshel
 
   test("sweeps a token locked to the user's key (P2PK)", async () => {
     const privkey = bytesToHex(CashuLib.createRandomSecretKey() as Uint8Array);
-    const pubkey = bytesToHex(CashuLib.getPubKeyFromPrivKey(Buffer.from(privkey, "hex")) as Uint8Array);
+    const pubkey = bytesToHex(CashuLib.getPubKeyFromPrivKey(hexToBytes(privkey)) as Uint8Array);
     const manager = new CashuManager(MINT_A, { getP2PKPrivkey: (pk: string) => (pk.endsWith(pubkey.slice(2)) ? privkey : null) });
     await manager.init();
     const { token, proofs } = await receiveTokenFromSender(1500, pubkey);
