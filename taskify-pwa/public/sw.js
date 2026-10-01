@@ -558,20 +558,25 @@ function formatOffset(minutes) {
   return `${absMinutes} minute${absMinutes === 1 ? '' : 's'}`;
 }
 
+// An open app window is focused and told which item to open (useReminderDeepLink);
+// otherwise a new window opens at `/?task=<id>`, which the app reads on start.
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = (event.notification.data && event.notification.data.url) || '/';
+  const data = event.notification.data || {};
+  const taskId = typeof data.taskId === 'string' && data.taskId ? data.taskId : null;
+  const targetUrl = new URL(taskId ? `/?task=${encodeURIComponent(taskId)}` : '/', self.location.origin).href;
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      for (const client of windowClients) {
-        if ('focus' in client && client.url === targetUrl) {
-          return client.focus();
-        }
+    (async () => {
+      const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const client = windowClients.find(
+        (candidate) => new URL(candidate.url).origin === self.location.origin && 'focus' in candidate,
+      );
+      if (client) {
+        if (taskId) client.postMessage({ type: 'TASKIFY_OPEN_REMINDER', taskId });
+        return client.focus();
       }
-      if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
-      }
+      if (clients.openWindow) return clients.openWindow(targetUrl);
       return undefined;
-    }),
+    })(),
   );
 });

@@ -259,6 +259,7 @@ import { useNostrSubscriptions, type CalendarViewSubscriptionTarget, type Subscr
 import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
 import { useSelectionMode } from "./ui/selection/useSelectionMode";
 import { useBoardViewScrollState } from "./ui/board/useBoardViewScrollState";
+import { useReminderDeepLink } from "./hooks/useReminderDeepLink";
 import { BoardUpcomingView, CompletedBoardView } from "./ui/board/BoardSecondaryViews";
 import { ShareBoardDialogs } from "./ui/board/ShareBoardDialogs";
 import { useShareBoardState } from "./ui/board/useShareBoardState";
@@ -924,6 +925,7 @@ export default function App() {
     ((invite: CalendarInvite, status: CalendarRsvpStatus) => Promise<unknown>) | null
   >(null);
   const [editing, setEditing] = useState<EditingState | null>(null);
+  useReminderDeepLink({ tasks, calendarEvents, openEditor: setEditing });
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
   const {
     closeShareBoard,
