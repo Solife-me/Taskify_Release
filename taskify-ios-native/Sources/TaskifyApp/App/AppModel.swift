@@ -231,6 +231,9 @@ final class AppModel {
     /// When this process last wrote the store, so a newer file can be recognised as someone
     /// else's write rather than an echo of our own.
     private var lastStoreWriteAt = Date.distantPast
+    /// The tasks as this process last read or wrote them: the base for merging what another
+    /// process (the widget, the Add Task and Siri shortcuts) wrote to the shared store since.
+    @ObservationIgnored private var persistedTasks: [TaskItem] = []
     private(set) var syncStatus = "Starting"
     private(set) var syncDetail = "Preparing secure relay connections"
     private(set) var relayStatuses: [TaskRelayStatus] = []
@@ -2208,27 +2211,43 @@ final class AppModel {
         }
     }
 
-    /// Re-reads the store when something outside the app has written to it -- currently the
-    /// widget's complete-task button, which edits the shared file directly.
-    ///
-    /// Without this the app keeps its in-memory snapshot across a backgrounding, so a task
-    /// completed from the widget reappears when the app comes forward, and the app's next save
-    /// writes that stale state back over the widget's. The file's modification date is the signal:
-    /// anything newer than our own last write came from elsewhere.
+    /// Picks up what something outside the app has written to the store -- the widget's
+    /// complete-task button and the Add Task and Siri shortcuts edit the shared file directly.
     func reloadIfChangedExternally() {
-        guard !isLoading else { return }
-        guard let modified = try? FileManager.default.attributesOfItem(
-            atPath: JSONTaskStore.defaultURL.path
-        )[.modificationDate] as? Date else { return }
-        guard modified > lastStoreWriteAt.addingTimeInterval(0.5) else { return }
+        Task { @MainActor in await absorbExternalStoreChanges() }
+    }
 
-        Task { @MainActor in
-            guard let reloaded = try? await store.load() else { return }
-            guard reloaded != snapshot else { return }
-            snapshot = reloaded
-            lastStoreWriteAt = Date()
-            refreshNotifications(requestPermission: false)
-        }
+    /// Merges task changes another process wrote to the store since this process last read or
+    /// wrote it, and publishes them. Without this the app keeps its in-memory snapshot, a
+    /// completion or task added outside the app never reaches the relays, and the app's next
+    /// save writes over it. The file's modification date is the signal: anything newer than our
+    /// own last write came from elsewhere. Only tasks are merged; nothing else writes the rest.
+    private func absorbExternalStoreChanges() async {
+        guard !isLoading,
+              let modified = try? FileManager.default.attributesOfItem(
+                  atPath: JSONTaskStore.defaultURL.path
+              )[.modificationDate] as? Date,
+              modified > lastStoreWriteAt.addingTimeInterval(0.5),
+              let onDisk = try? await store.load() else { return }
+        let merge = TaskifySnapshot.mergingExternalTaskChanges(
+            base: persistedTasks,
+            ours: snapshot.tasks,
+            theirs: onDisk.tasks
+        )
+        persistedTasks = onDisk.tasks
+        lastStoreWriteAt = Date()
+        guard !merge.changedTaskIDs.isEmpty else { return }
+        snapshot.tasks = merge.tasks
+        let liveIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
+        synchronizeTasks(merge.changedTaskIDs.filter(liveIDs.contains))
+        refreshNotifications(requestPermission: false)
+        scheduleSave()
+    }
+
+    /// Records a write of `saved` to the store by this process.
+    private func noteStoreWritten(_ saved: TaskifySnapshot) {
+        lastStoreWriteAt = Date()
+        persistedTasks = saved.tasks
     }
 
     func refreshSyncIfNeeded() {
@@ -5198,6 +5217,7 @@ final class AppModel {
         do {
             let loadResult = try await store.loadWithRepairStatus()
             snapshot = loadResult.snapshot
+            persistedTasks = loadResult.snapshot.tasks
             let retentionPruneChanged: Bool
             if let cutoff = chatMessageRetention.cutoffTimestamp() {
                 retentionPruneChanged = snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed
@@ -5207,6 +5227,7 @@ final class AppModel {
             if loadResult.wasRepaired || retentionPruneChanged {
                 do {
                     try await store.save(snapshot)
+                    noteStoreWritten(snapshot)
                 } catch {
                     errorMessage = "Taskify repaired your local data but could not save the repair."
                 }
@@ -5225,7 +5246,7 @@ final class AppModel {
             // fixture before the test's first assertion. Persist the fixture and stamp the write
             // so that reload recognises the file as our own.
             try? await store.save(snapshot)
-            lastStoreWriteAt = Date()
+            noteStoreWritten(snapshot)
         }
 #endif
         applyStartupBoardPreference()
@@ -6826,7 +6847,7 @@ final class AppModel {
                         // Persist even an unchanged receipt before consuming it: a
                         // previous save may have failed after its in-memory merge.
                         try await store.save(snapshot)
-                        lastStoreWriteAt = Date()
+                        noteStoreWritten(snapshot)
                         ShareTransferStore.remove(job.id)
                     }
                 }
@@ -6846,11 +6867,14 @@ final class AppModel {
             // reading `snapshot` only after) collapses a burst into one save of the final state.
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled, let self else { return }
+            // Never write over a change the widget or a shortcut made since our last write.
+            await self.absorbExternalStoreChanges()
+            guard !Task.isCancelled else { return }
             let snapshotToSave = self.snapshot
             do {
                 try await store.save(snapshotToSave)
                 await MainActor.run {
-                    self.lastStoreWriteAt = Date()
+                    self.noteStoreWritten(snapshotToSave)
                     self.scheduleWidgetReload()
                 }
             } catch {
@@ -6881,9 +6905,12 @@ final class AppModel {
     private func persistImmediately() async {
         saveTask?.cancel()
         saveTask = nil
+        await absorbExternalStoreChanges()
+        saveTask?.cancel()
+        saveTask = nil
         do {
             try await store.save(snapshot)
-            lastStoreWriteAt = Date()
+            noteStoreWritten(snapshot)
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
             errorMessage = "Taskify could not save the latest change."
@@ -6898,9 +6925,12 @@ final class AppModel {
         await taskPublicationTask?.value
         saveTask?.cancel()
         saveTask = nil
+        await absorbExternalStoreChanges()
+        saveTask?.cancel()
+        saveTask = nil
         do {
             try await store.save(snapshot)
-            lastStoreWriteAt = Date()
+            noteStoreWritten(snapshot)
             return true
         } catch {
             errorMessage = "Taskify could not save the latest change."
