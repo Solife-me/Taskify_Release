@@ -948,10 +948,21 @@ Cloudflare serves requests that match a static asset without running the Worker,
 headers on real asset responses come from `taskify-pwa/public/_headers`: `nosniff`,
 `Referrer-Policy: same-origin`, `Permissions-Policy: camera=(self), microphone=(self),
 geolocation=()` (the scanners and dictation need the first two), a
-`Content-Security-Policy` limited to `frame-ancestors 'none'; base-uri 'self'; object-src
-'none'`, `X-Frame-Options: DENY`, and HSTS for one year. `ASSET_SECURITY_HEADERS` in
-`worker/src/index.ts` carries the same set for responses the Worker builds itself. A script
-policy is not set yet; it needs testing against the PDF worker, wasm, and inline styles.
+`Content-Security-Policy`, `X-Frame-Options: DENY`, and HSTS for one year.
+`ASSET_SECURITY_HEADERS` in `worker/src/index.ts` carries the same set for responses the
+Worker builds itself, and a Worker test fails if the two policies differ.
+
+The policy allows script only from the origin (`script-src 'self'`, no `'unsafe-eval'` or
+inline script), because the page holds the Nostr key, the wallet, and the device key that
+decrypts them. `connect-src` (`https: wss: data: blob:`), `img-src`, and `media-src` stay
+open because relays, mints, file hosts, and pictures are user-chosen. `form-action 'self'`,
+`frame-src 'none'`, `object-src 'none'`, `base-uri 'self'`, and `frame-ancestors 'none'`
+close the rest. Two parts of the PWA exist to fit it: NDK's emitter `tseep` compiles
+handlers with `eval`, so `vite.config.ts` aliases it to `src/lib/eventEmitterShim.ts`; and
+the wallet debug console (`eruda`) is a pinned dependency loaded from the origin by dynamic
+import, whose command line cannot run JavaScript under this policy. A new library that needs
+`eval`, an inline script, or a third-party script will be blocked; check a production build
+with the policy before relying on one.
 
 ## Retention
 

@@ -1,32 +1,29 @@
 import { defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   plugins: [tailwindcss(), react()],
   resolve: {
     preserveSymlinks: true,
     dedupe: ["@nostr-dev-kit/ndk", "nostr-tools", "tseep"],
-    alias: {
-      "@gandlaf21/bc-ur": "@gandlaf21/bc-ur/dist/lib/es6/index.js",
-      buffer: "buffer",
-      process: "process/browser",
-      stream: "stream-browserify",
-      util: "util",
-      events: "events",
-    },
+    alias: [
+      { find: "@gandlaf21/bc-ur", replacement: "@gandlaf21/bc-ur/dist/lib/es6/index.js" },
+      // NDK's emitter, tseep, compiles its dispatch functions with eval, which the CSP blocks.
+      { find: /^tseep$/, replacement: fileURLToPath(new URL("./src/lib/eventEmitterShim.ts", import.meta.url)) },
+      { find: "buffer", replacement: "buffer" },
+      { find: "process", replacement: "process/browser" },
+      { find: "stream", replacement: "stream-browserify" },
+      { find: "util", replacement: "util" },
+      { find: "events", replacement: "events" },
+    ],
   },
   define: {
     global: "globalThis",
   },
   build: {
     rollupOptions: {
-      onwarn(warning, warn) {
-        if (warning.code === "EVAL" && warning.id?.includes("node_modules/tseep/")) {
-          return;
-        }
-        warn(warning);
-      },
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;

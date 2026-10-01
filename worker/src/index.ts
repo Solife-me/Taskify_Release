@@ -143,7 +143,24 @@ const ASSET_SECURITY_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
   "Permissions-Policy": "camera=(self), microphone=(self), geolocation=()",
-  "Content-Security-Policy": "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+  // Scripts only from this origin: the page holds the Nostr key, the wallet, and the device key
+  // that decrypts them. Connections and media stay open because relays, mints, file hosts, and
+  // pictures are user-chosen. Keep in step with taskify-pwa/public/_headers.
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' data: blob: https:",
+    "font-src 'self' data: blob:",
+    "connect-src 'self' data: blob: https: wss:",
+    "worker-src 'self' blob:",
+    "frame-src 'none'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; "),
   "X-Frame-Options": "DENY",
   "Strict-Transport-Security": "max-age=31536000",
 };

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import worker from "./index.ts";
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -324,7 +325,13 @@ test("static assets are served with security headers", async () => {
     res.headers.get("Permissions-Policy"),
     "camera=(self), microphone=(self), geolocation=()",
   );
-  assert.match(res.headers.get("Content-Security-Policy") || "", /frame-ancestors 'none'/);
+  const csp = res.headers.get("Content-Security-Policy") || "";
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /script-src 'self'(;|$)/);
+  // The Worker's copy and the static _headers file must send the same policy.
+  const headersFile = readFileSync(new URL("../../taskify-pwa/public/_headers", import.meta.url), "utf8");
+  const fileCsp = headersFile.match(/^\s*Content-Security-Policy: (.+)$/m)?.[1];
+  assert.equal(csp, fileCsp);
 });
 
 test("static assets and config do not initialize the D1 schema", async () => {
