@@ -303,10 +303,14 @@ function queryAuthorizationSession(socket, filter, maximumEvents, challenge, tim
   }
 }
 
+/// A relay's answer to one query is held in memory until it is complete; this bounds it.
+export const MAX_QUERY_RESPONSE_BYTES = 4 * 1024 * 1024
+
 export function queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, requireEOSE = false, allowAuth = false) {
   const subscriptionID = `taskify-cache-${randomBytes(12).toString('hex')}`
   return new Promise((resolve, reject) => {
     const events = new Map()
+    let receivedBytes = 0
     let finished = false
     let timer
     const cleanup = () => {
@@ -329,6 +333,11 @@ export function queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, req
       reject(new RemoteRelayError(message))
     }
     const onMessage = (data) => {
+      receivedBytes += data.length ?? 0
+      if (receivedBytes > MAX_QUERY_RESPONSE_BYTES) {
+        fail('Relay query response too large')
+        return
+      }
       let frame
       try {
         frame = JSON.parse(data.toString())

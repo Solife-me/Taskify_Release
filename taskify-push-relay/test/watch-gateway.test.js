@@ -665,3 +665,20 @@ test('a signed request refused by the rate limit does not use a replay-guard slo
   assert.match((await (await send()).json()).error, /replay/i)
 })
 
+
+test('forwards to one destination are bounded across all accounts', async (t) => {
+  const published = []
+  const { address } = await fixture(t, {
+    async publish(relayURL) { published.push(relayURL); return { outcome: 'accepted', message: 'ok' } },
+  }, { watchForwardsPerDestinationPerMinute: 1 })
+  const send = (key) => post(address, '/v1/watch/outbox/submit', {
+    event: giftWrap(getPublicKey(generateSecretKey())),
+    relays: ['wss://busy.example'],
+  }, key)
+  const first = await (await send(generateSecretKey())).json()
+  const second = await (await send(generateSecretKey())).json()
+  assert.equal(first.results[0].status, 'accepted')
+  assert.equal(second.results[0].status, 'failed')
+  assert.match(second.results[0].message, /destination limit/)
+  assert.equal(published.length, 1)
+})

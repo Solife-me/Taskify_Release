@@ -143,3 +143,18 @@ test('authenticated query waits for AUTH OK before replaying REQ on the same soc
   assert.deepEqual(await authorized, { accepted: true, events: [] })
   assert.equal(sent.filter(f => f[0] === 'REQ').length, 2)
 })
+
+test('a query stops once a relay has sent more than the byte budget', async () => {
+  const socket = new EventEmitter()
+  socket.send = (text) => {
+    const [type, subscription] = JSON.parse(text)
+    if (type !== 'REQ') return
+    queueMicrotask(() => {
+      // Frames the client would discard still count: each is 1 MiB of a junk event.
+      for (let index = 0; index < 5; index += 1) {
+        socket.emit('message', Buffer.from(JSON.stringify(['EVENT', subscription, { id: `e${index}`, content: 'x'.repeat(1024 * 1024) }])))
+      }
+    })
+  }
+  await assert.rejects(queryEventsAndWait(socket, {}, 1_000, 1_000, false), /too large/)
+})

@@ -205,6 +205,7 @@ export function createTaskifyPushServer({
   // relays apply per-IP limits (noteguard's documented example is 8/min). Bound each account's
   // share; the Watch keeps a limited change queued and retries.
   watchForwardsPerMinute = 30,
+  watchForwardsPerDestinationPerMinute = 240,
   // The relay sits behind a proxy, so every socket shares one peer address; the caps are
   // per process and per socket instead.
   maxSockets = 2_000,
@@ -213,6 +214,9 @@ export function createTaskifyPushServer({
   const replayGuard = new NIP98ReplayGuard()
   const publishLimiter = new SlidingWindowRateLimiter()
   const watchForwardLimiter = new SlidingWindowRateLimiter({ maximum: watchForwardsPerMinute })
+  // Every forward leaves from this server's one address, so a relay that rate-limits by address
+  // sees all accounts together. Bound what any one destination receives from all of them.
+  const watchDestinationLimiter = new SlidingWindowRateLimiter({ maximum: watchForwardsPerDestinationPerMinute })
   const privateRequestLimiter = new SlidingWindowRateLimiter({ maximum: 300 })
   const privateIPLimiter = new SlidingWindowRateLimiter({ maximum: 1_200 })
   const sockets = new Set()
@@ -398,6 +402,9 @@ export function createTaskifyPushServer({
           if (relayURL === localRelayURL) {
             const local = await ingestLocalWatchEvent(event, authenticatedPubkey)
             return { relay: relayURL, status: 'accepted', message: local.message }
+          }
+          if (!watchDestinationLimiter.consume(new URL(relayURL).host)) {
+            return { relay: relayURL, status: 'failed', message: 'Relay destination limit exceeded' }
           }
           const result = await relayForwarder.publish(relayURL, event)
           if (result.outcome === 'auth-required') {

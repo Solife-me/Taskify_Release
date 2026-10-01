@@ -62,6 +62,9 @@ asked for a list of everyone who uses it.
   10 seconds (the relay sits behind a proxy, so there is no per-address cap)
 - NIP-98 requests: signature, then per-account rate limit, then the one-use record, which refuses
   new requests rather than forgetting live entries when full
+- Watch forwarding: at most 240 forwards a minute to any one destination host across all
+  accounts (they all leave from this server's address), and at most 4 MiB buffered from one
+  relay's answer to a query
 - A refusal from another relay during Watch forwarding is returned as `502` with the relay's text
   in `relayMessage`, never as `401` or `429`
 - APNs jobs survive restarts and retry temporary failures with bounded exponential backoff
