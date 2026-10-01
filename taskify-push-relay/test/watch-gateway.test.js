@@ -244,6 +244,8 @@ test('Watch gateway forwards only to Watch-supplied targets and directly ingests
   const { store, address } = await fixture(t, relayForwarder)
   const accountKey = generateSecretKey()
   const recipient = getPublicKey(generateSecretKey())
+  // The relay stores wraps only for accounts that have an inbox here.
+  await store.putRegistration(recipient, 'phone', { deviceToken: '21'.repeat(32), environment: 'production' })
   const event = giftWrap(recipient)
 
   const response = await post(address, '/v1/watch/outbox/submit', {
@@ -273,6 +275,7 @@ test('fast Watch submit acknowledges local storage before slow replicas and stil
     },
   })
   const recipient = getPublicKey(generateSecretKey())
+  await store.putRegistration(recipient, 'phone', { deviceToken: '22'.repeat(32), environment: 'production' })
   const event = giftWrap(recipient)
   const remotes = Array.from({ length: 5 }, (_, index) => `wss://slow-${index}.example`)
   const responsePromise = post(address, '/v1/watch/outbox/submit', {
@@ -594,4 +597,23 @@ test('Watch forwarding to public relays is limited per account', async (t) => {
   // bounded share; the Watch keeps a limited change queued and retries.
   assert.deepEqual(statuses.slice(0, 3).every((status) => status === 200), true)
   assert.equal(statuses[3], 429)
+})
+
+test('relay sessions waiting for authorization are capped per account', async (t) => {
+  let opened = 0
+  let closed = 0
+  const { address } = await fixture(t, {
+    async publish() {
+      opened += 1
+      return { outcome: 'auth-required', challenge: 'c', authorize: async () => ({ accepted: true }), close: () => { closed += 1 } }
+    },
+  })
+  const accountKey = generateSecretKey()
+  const relays = Array.from({ length: 16 }, (_, index) => `wss://auth-${index}.example`)
+  for (let i = 0; i < 3; i += 1) {
+    const response = await post(address, '/v1/watch/outbox/submit', { event: giftWrap(getPublicKey(generateSecretKey())), relays }, accountKey)
+    await response.arrayBuffer()
+  }
+  assert.equal(opened, 48)
+  assert.equal(opened - closed, 32, 'sessions beyond the per-account cap are closed at once')
 })

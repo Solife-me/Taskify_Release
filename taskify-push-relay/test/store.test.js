@@ -313,3 +313,21 @@ test('one failed write does not stop later writes', async () => {
   const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
   assert.deepEqual(onDisk.preferences.map((entry) => entry.pubkey).sort(), [alice, carol])
 })
+
+test('byte budgets evict the oldest wraps, per recipient and in total', async () => {
+  let now = 1_700_000_000
+  const big = (id, recipient) => ({ ...giftWrap(id, recipient, now), content: 'x'.repeat(4_000) })
+  const { store } = await storeForTest({ now: () => now, maxBytesPerRecipient: 10_000, maxBytesTotal: 13_000 })
+  for (const digit of ['1', '2', '3']) {
+    await store.putGiftWrap(big(digit.repeat(64), bob), { notify: false })
+    now += 1
+  }
+  assert.deepEqual(store.eventsFor(bob).map((event) => event.id), ['2'.repeat(64), '3'.repeat(64)], 'per-recipient budget keeps the newest')
+  for (const digit of ['4', '5', '6']) {
+    await store.putGiftWrap(big(digit.repeat(64), carol), { notify: false })
+    now += 1
+  }
+  const total = store.state.events.reduce((sum, entry) => sum + entry.bytes, 0)
+  assert.ok(total <= 13_000, `total ${total} within budget`)
+  assert.equal(store.eventsFor(bob).length, 0, 'oldest wraps anywhere go first')
+})

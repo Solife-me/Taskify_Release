@@ -46,7 +46,11 @@ asked for a list of everyone who uses it.
 - APNs configuration: `/data/apns.json`
 - Separate iOS and watchOS APNs topics; the defaults are `solife.me.Taskify.Native` and
   `solife.me.Taskify.Native.watchkitapp`
-- Event retention: 30 days, at most 500 wraps per recipient and 100,000 total
+- Event retention: 30 days, at most 500 wraps and 8 MiB per recipient, and 100,000 wraps and 128 MiB
+  in total (oldest evicted first)
+- Gift wraps are stored only for accounts that use this relay as an inbox: a registered device or
+  an inbox preference stored here. Others are refused with `restricted:`.
+- At most 32 relay-authorization sessions per account and 256 in total wait for a Watch to sign
 - Task/board cache retention: latest encrypted event per replaceable coordinate, discarded after
   30 days without being observed, at most 2,000 per public board author and 100,000 total
 - Device registrations: at most 10 per Nostr account and 100,000 total

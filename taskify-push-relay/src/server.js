@@ -24,6 +24,9 @@ const WATCH_PREFERENCE_EVENT_LIMIT = 4
 /// POSTs; with several restricted relays in one submit the later sessions are only reached
 /// after the earlier ones complete. The TTL must cover that whole loop, not one hop.
 const WATCH_SESSION_TTL_MS = 120_000
+// Each pending session holds an open socket to a remote relay until it is used or expires.
+const WATCH_SESSION_LIMIT = 256
+const WATCH_SESSION_LIMIT_PER_ACCOUNT = 32
 const WATCH_TASK_ACCESS_KIND = 27_236
 const WATCH_TASK_EVENT_KINDS = new Set([30_300, 30_301])
 const WATCH_TASK_AUTHOR_LIMIT = 64
@@ -214,6 +217,15 @@ export function createTaskifyPushServer({
     }
   }
 
+  function hasWatchSessionCapacity(accountPubkey) {
+    if (watchAuthSessions.size >= WATCH_SESSION_LIMIT) return false
+    let held = 0
+    for (const session of watchAuthSessions.values()) {
+      if (session.accountPubkey === accountPubkey) held += 1
+    }
+    return held < WATCH_SESSION_LIMIT_PER_ACCOUNT
+  }
+
   function discardExpiredWatchSessions() {
     const now = Date.now()
     for (const [token, session] of watchAuthSessions) {
@@ -290,6 +302,7 @@ export function createTaskifyPushServer({
   async function ingestLocalWatchEvent(event, authenticatedPubkey) {
     if (event.kind === 1059) {
       const recipient = giftWrapRecipient(event)
+      if (!store.hasInbox(recipient)) throw new Error('restricted: recipient does not use this relay')
       const stored = await store.putGiftWrap(event, {
         notify: shouldNotifyRecipient({
           authenticatedPubkey,
@@ -316,7 +329,7 @@ export function createTaskifyPushServer({
   }
 
   function registerReadAuthorization(result, relayURL, accountPubkey, maximumEvents, accept, onEvents) {
-    if (watchAuthSessions.size >= 256) {
+    if (!hasWatchSessionCapacity(accountPubkey)) {
       result.close?.()
       throw new Error('Relay authorization capacity exceeded')
     }
@@ -368,6 +381,10 @@ export function createTaskifyPushServer({
           }
           const result = await relayForwarder.publish(relayURL, event)
           if (result.outcome === 'auth-required') {
+            if (!hasWatchSessionCapacity(authenticatedPubkey)) {
+              result.close?.()
+              return { relay: relayURL, status: 'failed', message: 'Relay authorization capacity exceeded' }
+            }
             const token = randomBytes(32).toString('base64url')
             watchAuthSessions.set(token, {
               accountPubkey: authenticatedPubkey,
@@ -739,6 +756,9 @@ export function createTaskifyPushServer({
     }
     if (event.kind !== 1059) throw new Error('restricted: only kinds 1059 and 10050 are accepted')
     const recipient = giftWrapRecipient(event)
+    // Only accounts that registered a device or published their inbox preference here use
+    // this relay; storing wraps for any other key would let anyone fill it.
+    if (!store.hasInbox(recipient)) throw new Error('restricted: recipient does not use this relay')
     if (event.content.length > 128 * 1024) throw new Error('invalid: gift wrap is too large')
     const stored = await store.putGiftWrap(event, {
       notify: shouldNotifyRecipient({

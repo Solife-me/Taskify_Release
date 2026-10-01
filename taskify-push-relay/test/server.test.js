@@ -207,6 +207,7 @@ test('history honors per-filter limits, newest-first ordering, and ignores limit
   t.after(() => server.stop())
   const key = generateSecretKey()
   const recipient = getPublicKey(key)
+  await store.putPreference(finalizeEvent({ kind: 10_050, created_at: 1, tags: [['relay', 'wss://push.solife.me']], content: '' }, key))
   const now = Math.floor(Date.now() / 1000)
   const events = [now - 3, now - 2, now - 1, now - 1].map((created_at, index) => finalizeEvent({
     kind: 1059, created_at, tags: [['p', recipient]], content: `opaque-${index}`,
@@ -293,4 +294,24 @@ test('public inbox-preference queries must name the accounts they want', async (
   const found = await nextFrame(socket, (frame) => frame[1] === 'named')
   assert.equal(found[0], 'EVENT')
   assert.equal(found[2].id, preference.id)
+})
+
+test('gift wraps are stored only for accounts that use this relay', async (t) => {
+  const { store, port } = await serverForTest(t)
+  const sender = await connectAndAuthenticate(port, generateSecretKey())
+  t.after(() => sender.close())
+  const publish = async (event) => {
+    sender.send(JSON.stringify(['EVENT', event]))
+    return nextFrame(sender, (frame) => frame[0] === 'OK' && frame[1] === event.id)
+  }
+  const stranger = getPublicKey(generateSecretKey())
+  const refused = await publish(finalizeEvent({ kind: 1059, created_at: 1, tags: [['p', stranger]], content: 'x' }, generateSecretKey()))
+  assert.equal(refused[2], false)
+  assert.match(refused[3], /^restricted:/)
+  assert.equal(store.eventsFor(stranger).length, 0)
+
+  const userKey = generateSecretKey()
+  await store.putPreference(finalizeEvent({ kind: 10_050, created_at: 1, tags: [['relay', 'wss://push.solife.me']], content: '' }, userKey))
+  const accepted = await publish(finalizeEvent({ kind: 1059, created_at: 1, tags: [['p', getPublicKey(userKey)]], content: 'x' }, generateSecretKey()))
+  assert.deepEqual(accepted.slice(2), [true, 'saved'])
 })

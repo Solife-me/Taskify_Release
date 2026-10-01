@@ -40,6 +40,10 @@ export class RelayStore {
     eventTTLSeconds = 30 * 24 * 60 * 60,
     maxEventsPerRecipient = 500,
     maxEventsTotal = 100_000,
+    // Byte budgets keep the whole-file state small enough to rewrite quickly and well below
+    // the engine's maximum string size, however many keys a sender uses.
+    maxBytesPerRecipient = 8 * 1024 * 1024,
+    maxBytesTotal = 128 * 1024 * 1024,
     taskEventTTLSeconds = 30 * 24 * 60 * 60,
     maxTaskEventsPerAuthor = 2_000,
     maxTaskEventsTotal = 100_000,
@@ -54,6 +58,8 @@ export class RelayStore {
     this.eventTTLSeconds = eventTTLSeconds
     this.maxEventsPerRecipient = maxEventsPerRecipient
     this.maxEventsTotal = maxEventsTotal
+    this.maxBytesPerRecipient = maxBytesPerRecipient
+    this.maxBytesTotal = maxBytesTotal
     this.taskEventTTLSeconds = taskEventTTLSeconds
     this.maxTaskEventsPerAuthor = maxTaskEventsPerAuthor
     this.maxTaskEventsTotal = maxTaskEventsTotal
@@ -84,6 +90,7 @@ export class RelayStore {
       }
       let nextSequence = this.state.nextEventSequence
       for (const entry of this.state.events.sort((left, right) => left.storedAt - right.storedAt)) {
+        if (!Number.isInteger(entry.bytes)) entry.bytes = Buffer.byteLength(JSON.stringify(entry.event))
         if (!Number.isSafeInteger(entry.sequence) || entry.sequence < 1) {
           entry.sequence = nextSequence
           nextSequence += 1
@@ -134,6 +141,14 @@ export class RelayStore {
 
   registrationByKey(key) {
     return this.state.registrations.find((registration) => registration.key === key) ?? null
+  }
+
+  /// Whether `pubkey` uses this relay as an inbox: it has a device registered here or has
+  /// published its inbox preference here. Gift wraps for anyone else are not stored.
+  hasInbox(pubkey) {
+    const normalized = pubkey.toLowerCase()
+    return this.state.registrations.some((registration) => registration.pubkey === normalized)
+      || this.state.preferences.some((preference) => preference.pubkey === normalized)
   }
 
   async putRegistration(pubkey, installationID, { deviceToken, environment, platform = 'ios' }) {
@@ -213,7 +228,8 @@ export class RelayStore {
     const storedAt = this.now()
     const sequence = this.state.nextEventSequence
     this.state.nextEventSequence += 1
-    this.state.events.push({ event, recipient, storedAt, sequence })
+    const bytes = Buffer.byteLength(JSON.stringify(event))
+    this.state.events.push({ event, recipient, storedAt, sequence, bytes })
     this.enforceEventBounds(recipient)
     if (notify) {
       for (const registration of this.registrationsFor(recipient)) {
@@ -411,12 +427,30 @@ export class RelayStore {
   }
 
   enforceEventBounds(recipient) {
+    const remove = new Set()
+    const evictOldest = (entries, count, bytes, maxCount, maxBytes) => {
+      entries.sort((left, right) => left.storedAt - right.storedAt)
+      for (const entry of entries) {
+        if (count <= maxCount && bytes <= maxBytes) break
+        remove.add(entry.event.id)
+        count -= 1
+        bytes -= entry.bytes ?? 0
+      }
+    }
     const recipientEntries = this.state.events.filter((entry) => entry.recipient === recipient)
-    if (recipientEntries.length > this.maxEventsPerRecipient) {
-      recipientEntries.sort((left, right) => left.storedAt - right.storedAt)
-      const remove = new Set(
-        recipientEntries.slice(0, recipientEntries.length - this.maxEventsPerRecipient).map((entry) => entry.event.id),
-      )
+    evictOldest(
+      recipientEntries,
+      recipientEntries.length,
+      recipientEntries.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0),
+      this.maxEventsPerRecipient,
+      this.maxBytesPerRecipient,
+    )
+    const retained = this.state.events.filter((entry) => !remove.has(entry.event.id))
+    const totalBytes = retained.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0)
+    if (totalBytes > this.maxBytesTotal) {
+      evictOldest(retained, 0, totalBytes, Number.MAX_SAFE_INTEGER, this.maxBytesTotal)
+    }
+    if (remove.size > 0) {
       this.state.events = this.state.events.filter((entry) => !remove.has(entry.event.id))
       this.state.pushJobs = this.state.pushJobs.filter((job) => !remove.has(job.eventID))
       this.state.previews = this.state.previews.filter((preview) => !remove.has(preview.eventID))
