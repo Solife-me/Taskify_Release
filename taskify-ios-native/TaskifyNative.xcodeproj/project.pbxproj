@@ -98,6 +98,12 @@
 		7F25A594E7354A9F9F7DA94B /* Share TaskifyCore Framework */ = { isa = PBXBuildFile; productRef = 3FB8C1B3F2C50B01217E2C6A; };
 		CAAE24AA05C5D82DE8ACA71C /* Share Embed */ = { isa = PBXBuildFile; fileRef = DE65B8396C47D9F682A045D2; settings = { ATTRIBUTES = ( RemoveHeadersOnCopy, ); }; };
 		6B082B3AA9D859EE3EC6F0A8 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = C9EA85AA65C9D15DB82B6FF7; };
+		455C5314AFCF62850C9317C5 /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 572F1643415F88B9E8772BCB /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy */; };
+		524914867E478BAF6BB5AC6B /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6D3C51C09E63F031A92D2F5F /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy */; };
+		72ABADD2393C3AFA34E502FF /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 388E4A60777F6BE83EB77DB1 /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy */; };
+		483D83CD19D3DBC2DF7B8B31 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A78AD6772993A619159ABA27 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy */; };
+		D59E194044FC1446E2F88BFC /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 0AF9E1AED16CFCC779616790 /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy */; };
+		AAA94B320DB6AFBECAA4A2AD /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 4C6634A18180188058AB8E32 /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -231,6 +237,12 @@
 		41F7374394EF535EDDCF5923 /* Sources/TaskifyApp/Features/Tasks/TaskifyPhotoFile.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskifyPhotoFile.swift; sourceTree = SOURCE_ROOT; };
 		DE65B8396C47D9F682A045D2 /* TaskifyShareExtension.appex */ = { isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TaskifyShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C9EA85AA65C9D15DB82B6FF7 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sources/TaskifyApp/Resources/ThirdPartyNotices.txt; sourceTree = SOURCE_ROOT; };
+		572F1643415F88B9E8772BCB /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		6D3C51C09E63F031A92D2F5F /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		388E4A60777F6BE83EB77DB1 /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		A78AD6772993A619159ABA27 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		0AF9E1AED16CFCC779616790 /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		4C6634A18180188058AB8E32 /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyWidgets/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -387,6 +399,12 @@
 				B00000000000000000000211 /* Sources/TaskifyApp/Notifications/TaskNotificationCoordinator.swift */,
 				B00000000000000000000229 /* Sources/TaskifyApp/Notifications/DMPushNotificationCoordinator.swift */,
 				B00000000000000000000212 /* Sources/TaskifyApp/Resources/Assets.xcassets */,
+				572F1643415F88B9E8772BCB /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy */,
+				6D3C51C09E63F031A92D2F5F /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy */,
+				388E4A60777F6BE83EB77DB1 /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy */,
+				A78AD6772993A619159ABA27 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy */,
+				0AF9E1AED16CFCC779616790 /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy */,
+				4C6634A18180188058AB8E32 /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy */,
 				B00000000000000000000213 /* Sources/TaskifyApp/Features/Tasks/TaskMediaView.swift */,
 				B00000000000000000000214 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentUploadService.swift */,
 				B00000000000000000000215 /* Sources/TaskifyApp/Features/Upcoming/DeviceCalendarStore.swift */,
@@ -491,6 +509,7 @@
 			buildPhases = (
 				R1000000000000000000000B /* Sources */,
 				R1000000000000000000000A /* Frameworks */,
+				639D6939CFCD072FFCA46CA6 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -556,6 +575,7 @@
 			buildPhases = (
 				B0000000000000000000W05 /* Sources */,
 				B0000000000000000000W06 /* Frameworks */,
+				331E6B2F48204388D0C9A276 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -680,6 +700,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				455C5314AFCF62850C9317C5 /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy in Resources */,
 				B00000000000000000000112 /* Sources/TaskifyApp/Resources/Assets.xcassets in Resources */,
 				6B082B3AA9D859EE3EC6F0A8 /* ThirdPartyNotices.txt */,
 			);
@@ -689,6 +710,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				524914867E478BAF6BB5AC6B /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy in Resources */,
 				A10000000000000000000204 /* Sources/TaskifyApp/Resources/Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -697,10 +719,27 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				72ABADD2393C3AFA34E502FF /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		8E7BCD585EB4654682959BAA /* Share Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
+		8E7BCD585EB4654682959BAA /* Share Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( 483D83CD19D3DBC2DF7B8B31 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy in Resources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		639D6939CFCD072FFCA46CA6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D59E194044FC1446E2F88BFC /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		331E6B2F48204388D0C9A276 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AAA94B320DB6AFBECAA4A2AD /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
