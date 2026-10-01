@@ -204,6 +204,12 @@ export function useNwcSweeps({
     await Promise.all(
       list.map(async (entry) => {
         let state: StoredTokenState;
+        if (entry.held) {
+          // Checking would contact a mint the sender chose; that waits for the user to act.
+          state = { status: "error", message: "From an unfamiliar mint. Not checked until you redeem or move it." };
+          if (generation === checkGeneration.current) setTokenStates((prev) => ({ ...prev, [entry.id]: state }));
+          return;
+        }
         try {
           const conn = await getMintConnection(entry.mint);
           const decoded = await conn.decodeTokenWithKeysets(entry.token);

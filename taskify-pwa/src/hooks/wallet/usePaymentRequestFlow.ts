@@ -24,6 +24,7 @@ import {
   decodeCashuTokenLoose,
 } from "../../wallet/cashuProofHelpers";
 import { deriveSpentHistoryTokenStateFromToken } from "../../wallet/walletHistoryTypes";
+import { getMintList, normalizeMintUrl as normalizeStoredMintUrl } from "../../wallet/storage";
 import {
   isSamePaymentRequest,
   type ActivePaymentRequest,
@@ -43,6 +44,7 @@ export interface UsePaymentRequestFlowOptions {
   info: any;
   mintUrl: string | null;
   receiveToken: (token: string) => Promise<any>;
+  savePendingTokenForRedemption: (token: string, options?: { held?: boolean }) => Promise<{ id: string; mintUrl: string }>;
 
   // From useNostrPoolState
   addSpentIncomingPayment: (eventId: string, fingerprint: string | null) => void;
@@ -120,10 +122,19 @@ export interface UsePaymentRequestFlowOptions {
   PAYMENT_REQUEST_SAFETY_WINDOW_SECONDS: number;
 }
 
+/** Whether `mint` is the active mint or one this wallet already tracks. */
+export function isKnownMint(mint: string | null | undefined, activeMint: string | null): boolean {
+  if (!mint) return true; // No mint named: the token is for the active mint.
+  const normalized = normalizeStoredMintUrl(mint);
+  if (activeMint && normalizeStoredMintUrl(activeMint) === normalized) return true;
+  return getMintList().includes(normalized);
+}
+
 export function usePaymentRequestFlow({
   info,
   mintUrl,
   receiveToken,
+  savePendingTokenForRedemption,
   addSpentIncomingPayment,
   defaultNostrRelays,
   ensureNostrIdentity,
@@ -518,6 +529,35 @@ export function usePaymentRequestFlow({
       }
       setClaimingEventIds((prev) => [...prev, entry.eventId]);
       try {
+        // Anyone can send a payment DM naming any mint. Claiming contacts that mint, so a token
+        // from a mint this wallet does not use is held for the user instead (see F2-5).
+        if (!isKnownMint(entry.mint, mintUrl)) {
+          const held = await savePendingTokenForRedemption(entry.token, { held: true });
+          setHistory((prev) => [
+            buildHistoryEntry({
+              id: `payment-request-held-${entry.eventId}`,
+              summary: `Held ${formatSatAmount(entry.amount)} from an unfamiliar mint. Redeem it only if you expected it.`,
+              detail: entry.token,
+              detailKind: "token",
+              type: "ecash",
+              direction: "in",
+              amountSat: entry.amount,
+              mintUrl: held.mintUrl,
+              pendingTokenId: held.id,
+              pendingTokenAmount: entry.amount,
+              pendingTokenMint: held.mintUrl,
+              pendingStatus: "pending",
+            }),
+            ...prev,
+          ]);
+          incomingPaymentRequestsRef.current = incomingPaymentRequestsRef.current.filter(
+            (item) => item.eventId !== entry.eventId,
+          );
+          addSpentIncomingPayment(entry.eventId, fingerprint ?? fingerprintIncomingToken(entry.token) ?? null);
+          persistSpentIncomingEvents();
+          showToast(`Held a ${formatSatAmount(entry.amount)} payment from an unfamiliar mint. See wallet history.`, 5000);
+          return;
+        }
         const res = await receiveToken(entry.token);
         if (res.savedForLater) {
           setHistory((prev) => [
@@ -665,12 +705,15 @@ export function usePaymentRequestFlow({
       currentPaymentRequest,
       fingerprintIncomingToken,
       formatSatAmount,
+      incomingPaymentRequestsRef,
       isIncomingPaymentSpent,
+      mintUrl,
       nip05Checks,
       normalizeNip05,
       requestNostrPaymentDeletion,
       persistSpentIncomingEvents,
       receiveToken,
+      savePendingTokenForRedemption,
       setHistory,
       setPaymentRequestStatusMessage,
       showToast,

@@ -528,7 +528,7 @@ It lives in `wallet/storage.ts` and is executed in `context/CashuContext.tsx`.
 
 Persistent key + shape:
 - key: `cashu_pending_tokens_v1`
-- entry fields: `id`, `mint`, `token`, `addedAt`, `attempts`, optional `amount`, optional `lastTriedAt`, optional `lastError`, optional `source`
+- entry fields: `id`, `mint`, `token`, `addedAt`, `attempts`, optional `amount`, optional `lastTriedAt`, optional `lastError`, optional `source`, optional `held`
 
 Anchors:
 - `taskify-pwa/src/wallet/storage.ts` (`LS_PENDING_TOKENS`, `PendingTokenEntry`, `normalizePendingTokens`)
@@ -545,7 +545,7 @@ Primary runner: `redeemPendingTokens()` in `CashuContext`.
 
 Flow:
 1. Guard against concurrent runs using `redeemingPendingRef`.
-2. Snapshot pending entries via `listPendingTokens()`.
+2. Snapshot pending entries via `listPendingTokens()`, skipping `held` entries.
 3. Process each entry sequentially through `processPendingEntry(...)`.
 4. On per-entry failure:
    - store attempt/error via `markPendingTokenAttempt(...)`,
@@ -574,8 +574,24 @@ Anchors:
 
 - derives target mint from token payload when possible,
 - falls back to active mint when token is opaque,
-- ensures mint is tracked (`addMintToList`) before queueing,
+- ensures mint is tracked (`addMintToList`) before queueing, unless the token is `held`,
 - returns `crossMint` flag for caller/UI context.
+
+### 5) Held tokens: payments at a mint the wallet does not use
+
+Anyone can send a payment DM, and it can name any mint; claiming it would make the wallet
+contact a server the sender chose. Incoming payments are therefore auto-claimed only when
+their mint is the active mint or already in the tracked list (`isKnownMint` in
+`hooks/wallet/usePaymentRequestFlow.ts`). Any other payment is saved with
+`savePendingTokenForRedemption(token, { held: true })`:
+
+- the entry carries `held: true` and its mint is not added to the tracked list,
+- it is excluded from the balance (`pending` in `refreshTotalBalance`) and from
+  `redeemPendingTokens`, and `StoredTokensSheet` does not check it with the mint,
+- a history entry ("Held … from an unfamiliar mint") offers the usual Redeem button, which calls
+  `redeemPendingToken(id)` and is the only path that contacts that mint.
+
+This mirrors iOS, which accepts a payment only against a request it created (audit F2-5).
 
 Anchors:
 - `taskify-pwa/src/context/CashuContext.tsx` (`savePendingTokenForRedemption`)

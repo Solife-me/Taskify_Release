@@ -2685,6 +2685,7 @@ export default function CashuWalletModal({
     info,
     mintUrl,
     receiveToken,
+    savePendingTokenForRedemption,
     addSpentIncomingPayment,
     defaultNostrRelays,
     ensureNostrIdentity,
