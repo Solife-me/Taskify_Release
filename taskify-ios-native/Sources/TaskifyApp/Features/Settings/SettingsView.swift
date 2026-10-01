@@ -1414,7 +1414,12 @@ struct SettingsView: View {
                         .buttonStyle(.plain)
                         .contextMenu {
                             Button {
-                                UIPasteboard.general.string = board.effectiveNostrBoardID
+                                UIPasteboard.general.setItems(
+                                    // A board ID grants full access to the board; don't leave it on
+                                    // the clipboard (or other devices' clipboards) indefinitely.
+                                    [[UTType.plainText.identifier: board.effectiveNostrBoardID]],
+                                    options: [.expirationDate: Date().addingTimeInterval(600)]
+                                )
                             } label: {
                                 Label("Copy board ID", systemImage: "doc.on.doc")
                             }
@@ -2691,7 +2696,12 @@ private struct BoardManagerSheet: View {
             .font(.subheadline)
 
             Button {
-                UIPasteboard.general.string = board.effectiveNostrBoardID
+                UIPasteboard.general.setItems(
+                    // A board ID grants full access to the board; don't leave it on the clipboard
+                    // (or other devices' clipboards) indefinitely.
+                    [[UTType.plainText.identifier: board.effectiveNostrBoardID]],
+                    options: [.expirationDate: Date().addingTimeInterval(600)]
+                )
             } label: {
                 Label("Copy board ID", systemImage: "doc.on.doc")
             }

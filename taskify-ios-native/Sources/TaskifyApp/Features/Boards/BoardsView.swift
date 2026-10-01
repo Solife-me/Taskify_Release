@@ -2775,7 +2775,12 @@ private struct BoardShareSheet: View {
 
     private func copyBoardID() {
         guard let activeShareBoard else { return }
-        UIPasteboard.general.string = activeShareBoard.effectiveNostrBoardID
+        // A board ID grants full access to the board; don't leave it on the clipboard (or other
+        // devices' clipboards) indefinitely. Cross-device paste is kept for sharing to a Mac.
+        UIPasteboard.general.setItems(
+            [[UTType.plainText.identifier: activeShareBoard.effectiveNostrBoardID]],
+            options: [.expirationDate: Date().addingTimeInterval(600)]
+        )
         withAnimation(.snappy) { copied = true }
     }
 
