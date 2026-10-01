@@ -411,6 +411,12 @@ function isHttpUrl(value: string | undefined): value is string {
   }
 }
 
+/** An absolute http(s) URL from page data, or null. */
+function sanitizeUrl(value: string): string | null {
+  const trimmed = value.trim();
+  return isHttpUrl(trimmed) ? new URL(trimmed).href : null;
+}
+
 // Every preview leaves through here. Page metadata and redirect unwrapping can yield any
 // scheme, and clients use these fields as link targets and image sources.
 function sanitizePreviewUrls(preview: PreviewPayload): PreviewPayload {
@@ -995,14 +1001,40 @@ function canonicalizeEtsyUrl(url: string): string | null {
   }
 }
 
+// Exact host checks for the site-specific fallbacks. Substring matches let one hostname
+// (say `youtube.amazon.etsy.example`) trigger every fallback and fan one preview request
+// out to several third-party services.
+const AMAZON_DOMAINS = [
+  "amazon.com", "amazon.ca", "amazon.com.mx", "amazon.com.br", "amazon.co.uk", "amazon.de",
+  "amazon.fr", "amazon.it", "amazon.es", "amazon.nl", "amazon.se", "amazon.pl", "amazon.com.be",
+  "amazon.com.tr", "amazon.ae", "amazon.sa", "amazon.eg", "amazon.in", "amazon.co.jp",
+  "amazon.sg", "amazon.com.au", "amzn.to", "a.co",
+];
+
+function hostIsOrUnder(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+export function isYouTubeHost(host: string): boolean {
+  return ["youtube.com", "youtu.be", "youtube-nocookie.com"].some((domain) => hostIsOrUnder(host, domain));
+}
+
+export function isAmazonHost(host: string): boolean {
+  return AMAZON_DOMAINS.some((domain) => hostIsOrUnder(host, domain));
+}
+
+export function isEtsyHost(host: string): boolean {
+  return hostIsOrUnder(host, "etsy.com") || host === "etsy.me";
+}
+
 function extractYouTubeId(url: string): string | null {
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.endsWith("youtu.be")) {
+    if (hostIsOrUnder(parsed.hostname.toLowerCase(), "youtu.be")) {
       const id = parsed.pathname.replace(/^\/+/, "");
       return id || null;
     }
-    if (parsed.hostname.includes("youtube.")) {
+    if (isYouTubeHost(parsed.hostname.toLowerCase())) {
       const id = parsed.searchParams.get("v");
       if (id) return id;
       const match = parsed.pathname.match(/\/embed\/([a-zA-Z0-9_-]{6,})/);
@@ -1301,6 +1333,17 @@ async function fetchAlternateEtsy(requestedUrl: string, finalUrl: string): Promi
   return derived;
 }
 
+// The free plan allows 10 ms of CPU per request, and the library parser builds a full DOM: about
+// 90 ms for a 600 kB page. Page metadata lives in <head>, so the library sees only that; the
+// streaming collector below still reads the whole page for body images and headings.
+const LIBRARY_PARSE_MAX_CHARS = 64_000;
+
+export function documentHead(html: string): string {
+  const end = html.search(/<\/head\s*>|<body[\s>]/i);
+  const head = end >= 0 ? html.slice(0, end) : html;
+  return head.length > LIBRARY_PARSE_MAX_CHARS ? head.slice(0, LIBRARY_PARSE_MAX_CHARS) : head;
+}
+
 async function derivePreviewFromHtml(
   requestedUrl: string,
   finalUrl: string,
@@ -1314,7 +1357,7 @@ async function derivePreviewFromHtml(
     const linkPreviewResult = await getPreviewFromContent(
       {
         url: finalUrl,
-        data: html,
+        data: documentHead(html),
         headers,
         status,
       },
@@ -1355,7 +1398,7 @@ async function fetchYouTubeOEmbed(url: string): Promise<PreviewPayload | null> {
   let target = url;
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.endsWith("youtu.be")) {
+    if (hostIsOrUnder(parsed.hostname.toLowerCase(), "youtu.be")) {
       const videoId = parsed.pathname.replace(/^\/+/, "");
       if (videoId) {
         target = `https://www.youtube.com/watch?v=${videoId}`;
@@ -1496,7 +1539,7 @@ async function attemptAlternatePreview(
     }
   };
 
-  if (hostMatches((host) => host.includes("youtube.") || host.endsWith("youtu.be"))) {
+  if (hostMatches(isYouTubeHost)) {
     const canonicalYouTubeUrl =
       canonicalizeYouTubeUrl(canonicalFinal || canonicalRequested) ?? canonicalizeYouTubeUrl(canonicalRequested);
     const targetYoutubeUrl = canonicalYouTubeUrl || canonicalFinal || canonicalRequested;
@@ -1526,8 +1569,8 @@ async function attemptAlternatePreview(
     }
   }
 
-  const isAmazonHost = hostMatches((host) => host.includes("amazon."));
-  if (isAmazonHost) {
+  const amazonLink = hostMatches(isAmazonHost);
+  if (amazonLink) {
     const canonicalAmazon = canonicalizeAmazonUrl(canonicalFinal || canonicalRequested) ?? canonicalizeAmazonUrl(canonicalRequested);
     if (canonicalAmazon) {
       const noembed = await fetchNoembedMetadata(canonicalAmazon);
@@ -1546,7 +1589,7 @@ async function attemptAlternatePreview(
     }
   }
 
-  if (isAmazonHost && (reason === "blocked" || needsUpgrade)) {
+  if (amazonLink && (reason === "blocked" || needsUpgrade)) {
     const amazonResult = await fetchAlternateAmazon(canonicalRequested, canonicalFinal || canonicalRequested);
     if (amazonResult?.preview) {
       if (amazonResult.rich) {
@@ -1556,8 +1599,8 @@ async function attemptAlternatePreview(
     }
   }
 
-  const isEtsyHost = hostMatches((host) => host.includes("etsy."));
-  if (isEtsyHost) {
+  const etsyLink = hostMatches(isEtsyHost);
+  if (etsyLink) {
     const canonicalEtsyUrl =
       canonicalizeEtsyUrl(canonicalFinal || canonicalRequested) ?? canonicalizeEtsyUrl(canonicalRequested);
     const targetEtsyUrl = canonicalEtsyUrl || canonicalFinal || canonicalRequested;
@@ -1580,7 +1623,7 @@ async function attemptAlternatePreview(
     }
   }
 
-  if (isEtsyHost && (reason === "blocked" || needsUpgrade)) {
+  if (etsyLink && (reason === "blocked" || needsUpgrade)) {
     const etsyResult = await fetchAlternateEtsy(canonicalRequested, canonicalFinal || canonicalRequested);
     if (etsyResult?.preview) {
       if (etsyResult.rich) {

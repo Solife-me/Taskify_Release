@@ -5,6 +5,7 @@ import worker from "./index.ts";
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { assertPublicHttpUrl, UnsafePublicUrlError } from "./public-fetch.ts";
+import { documentHead, isAmazonHost, isEtsyHost, isYouTubeHost } from "./preview.ts";
 
 function bytesToHex(bytes: Uint8Array): string {
   return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
@@ -1965,4 +1966,54 @@ test("hourly pruning deletes week-old voice counters and two-week-old undelivere
     { sql: "DELETE FROM voice_quota WHERE date < ?", params: ["2026-09-23"] },
     { sql: "DELETE FROM pending_notifications WHERE created_at < ?", params: [now - 14 * 24 * 60 * 60 * 1000] },
   ]);
+});
+
+
+test("API responses carry no CORS grant, so other sites cannot read them", async () => {
+  const env = await makeEnv(new MockD1());
+  const preflight = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/preview?url=https://example.com", {
+      method: "OPTIONS",
+      headers: { Origin: "https://elsewhere.example", "Access-Control-Request-Method": "GET" },
+    }),
+    env,
+  );
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("Access-Control-Allow-Origin"), null);
+  const config = await worker.fetch(new Request("https://taskify-v2.solife.me/api/config"), env);
+  assert.equal(config.headers.get("Access-Control-Allow-Origin"), null);
+});
+
+test("NIP-05 refuses an oversized response", async () => {
+  const env = await makeEnv(new MockD1());
+  const originalFetch = globalThis.fetch;
+  const huge = JSON.stringify({ names: { alice: "a".repeat(64) }, padding: "x".repeat(300 * 1024) });
+  globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    assert.ok(init?.signal, "the lookup has a timeout signal");
+    return new Response(huge, { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as any;
+  try {
+    const res = await worker.fetch(new Request("https://taskify-v2.solife.me/api/nip05?address=alice@example.com"), env);
+    assert.equal(res.status, 502);
+    assert.match(((await res.json()) as any).error, /too large/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("site fallbacks match hosts exactly", () => {
+  assert.ok(isYouTubeHost("www.youtube.com") && isYouTubeHost("youtu.be") && isYouTubeHost("m.youtube.com"));
+  assert.ok(isAmazonHost("www.amazon.co.uk") && isAmazonHost("amazon.com") && isAmazonHost("amzn.to"));
+  assert.ok(isEtsyHost("www.etsy.com"));
+  for (const host of ["youtube.amazon.etsy.example", "notyoutube.com", "amazon.evil.co", "etsy.com.evil.example"]) {
+    assert.ok(!isYouTubeHost(host) && !isAmazonHost(host) && !isEtsyHost(host), host);
+  }
+});
+
+test("the library parser gets only the document head", () => {
+  const html = `<html><head><title>T</title><meta property="og:image" content="https://x.example/i.png"></head><body>${"<p>body</p>".repeat(50_000)}</body></html>`;
+  const head = documentHead(html);
+  assert.ok(head.includes("og:image"));
+  assert.ok(!head.includes("<p>body</p>"));
+  assert.ok(documentHead("<p>" + "x".repeat(200_000)).length <= 64_000);
 });

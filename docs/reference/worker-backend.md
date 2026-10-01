@@ -623,8 +623,13 @@ Core flow:
 1. Fetch target with browser-like headers (`buildBrowserHeaders`) and manually validate each redirect.
 2. Abort the fetch after `PREVIEW_TIMEOUT_MS` via `AbortController`.
 3. Read body through `readResponseBodyLimited(...)` (bounded body read).
-4. Attempt rich extraction via `derivePreviewFromHtml(...)`.
+4. Attempt rich extraction via `derivePreviewFromHtml(...)`. The `link-preview-js` parser
+   builds a full DOM, so it gets only the document head (`documentHead`, at most 64,000
+   characters); the free plan allows 10 ms of CPU and a 600 kB page took about 150 ms. The
+   streaming `HTMLRewriter` collector still reads the whole bounded body.
 5. If incomplete/blocked, attempt alternate resolver path (`attemptAlternatePreview(...)`).
+   The YouTube, Amazon, and Etsy fallbacks run only for those sites' own hosts
+   (`isYouTubeHost`, `isAmazonHost`, `isEtsyHost`), so one hostname cannot trigger all three.
 6. If still unresolved, return deterministic fallback preview (`buildFallbackPreview(...)`).
 
 Behavioral invariants:
@@ -647,7 +652,11 @@ Lookup sequence:
 1. Try Cloudflare cache hit (`caches.default`) keyed by normalized address.
 2. If cache stale/miss, fetch `https://<domain>/.well-known/nostr.json?name=<name>`.
 3. Then fetch `https://<domain>/.well-known/nostr.json`.
-4. Return the first successful JSON record and cache it with timestamp headers.
+4. Return the first successful JSON record and cache it with timestamp headers; the cache
+   write is kept alive with the request's `waitUntil`.
+
+Each upstream fetch has a 5-second timeout and reads at most 256 KiB; a larger response
+counts as a failed attempt.
 
 Status semantics:
 - `400` for invalid address format.
@@ -759,25 +768,24 @@ If you change registration identity behavior, re-verify:
 
 ## 21) CORS + request trust boundary contract (agent verification chunk)
 
-The Worker currently exposes a public cross-origin API surface with no auth/session layer in this file.
-That is intentional for push-reminder device flows, but it is a high-impact contract that should not be changed accidentally.
+The API is same-origin only. Changed deliberately on 2026-09-30 (audit finding F1A-14):
+before then every response carried `Access-Control-Allow-Origin: *`, which let any website
+use `/api/preview` and `/api/nip05` as its own proxy, with each of its visitors getting a
+separate rate-limit allowance.
 
-### 21.1 CORS behavior is globally permissive
+### 21.1 No CORS grant
 
-Current response behavior:
-- JSON helper responses include `Access-Control-Allow-Origin: *` via `JSON_HEADERS`.
-- `OPTIONS` preflight returns `204` with:
-  - `Access-Control-Allow-Origin: *`
-  - `Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS`
-  - `Access-Control-Allow-Headers: Content-Type,Authorization`
-  - `Access-Control-Max-Age: 86400`
+- `JSON_HEADERS` (`worker/src/lib.ts`) sets no `Access-Control-Allow-Origin`.
+- `OPTIONS` returns `204` with no CORS headers, so a cross-origin preflight fails.
 
-Anchors:
-- `worker/src/index.ts:147–150` (`JSON_HEADERS`)
-- `worker/src/index.ts:261–270` (`OPTIONS` preflight branch)
-- `worker/src/index.ts:2922–2926` (`jsonResponse`)
-
-Operational implication: browser clients can call API endpoints cross-origin without credential coupling in this layer.
+Who this affects:
+- The PWA is served by this Worker and calls the origin it was loaded from: `/api/config`
+  returns `workerBaseUrl: url.origin`, so `taskify.solife.me`, `taskify-v2.solife.me`, and
+  the preview aliases each call themselves.
+- The native apps, the Watch, the notification extension, and the CLI are not browsers;
+  CORS does not apply to them.
+- A browser client on another origin (none exists today) would need an explicit allow-list
+  here.
 
 ### 21.2 Request identity is payload-driven, not authenticated
 
@@ -811,7 +819,7 @@ Why this matters:
 ### Safe-edit guardrails
 
 If modifying API security/CORS behavior, preserve or intentionally migrate with rollout notes:
-- explicit CORS preflight handling for browser clients,
+- same-origin only unless a cross-origin browser client is added deliberately (21.1),
 - stable handler-level validation error shapes/statuses,
 - clear compatibility plan before introducing auth requirements on existing device/reminder routes.
 

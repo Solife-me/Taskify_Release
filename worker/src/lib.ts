@@ -66,9 +66,11 @@ export interface Env {
 // Shared constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+// No Access-Control-Allow-Origin: the PWA calls this origin (`/api/config` hands it its own
+// origin), and the native apps and CLI are not browsers. Without it, other websites cannot
+// read these responses, so they cannot use the preview and NIP-05 routes as their own.
 export const JSON_HEADERS = {
   "Content-Type": "application/json",
-  "Access-Control-Allow-Origin": "*",
   "Cache-Control": "no-store",
 };
 
@@ -101,7 +103,7 @@ export async function parseJson(request: Request): Promise<any> {
 }
 
 /** Reads a request body, giving up (null) as soon as it passes `maxBytes`. */
-export async function readBodyWithin(request: Request, maxBytes: number): Promise<Uint8Array | null> {
+export async function readBodyWithin(request: Request | Response, maxBytes: number): Promise<Uint8Array | null> {
   const reader = request.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];

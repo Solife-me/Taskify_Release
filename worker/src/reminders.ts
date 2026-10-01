@@ -600,7 +600,7 @@ async function migrateDeviceFromKv(env: Env, deviceId: string): Promise<DeviceRe
       parsed = maybe;
     }
   } catch (err) {
-    console.warn("Failed to parse legacy device record", deviceId, err);
+    console.warn("Failed to parse legacy device record", err instanceof Error ? err.name : "Error");
     return null;
   }
 
@@ -637,7 +637,7 @@ async function migrateRemindersFromKv(env: Env, deviceId: string): Promise<void>
       entries = maybe as ReminderEntry[];
     }
   } catch (err) {
-    console.warn("Failed to parse legacy reminders", { deviceId, err });
+    console.warn("Failed to parse legacy reminders", err instanceof Error ? err.name : "Error");
     entries = [];
   }
 
@@ -695,7 +695,7 @@ async function migratePendingFromKv(env: Env, deviceId: string): Promise<void> {
       entries = maybe as PendingReminder[];
     }
   } catch (err) {
-    console.warn("Failed to parse legacy pending payload", { deviceId, err });
+    console.warn("Failed to parse legacy pending payload", err instanceof Error ? err.name : "Error");
     entries = [];
   }
 

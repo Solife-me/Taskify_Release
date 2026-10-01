@@ -180,17 +180,10 @@ async function serveAsset(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: SchedulerController): Promise<Response> {
     if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Taskify-Subscription,X-Taskify-Npub,X-Taskify-Timestamp,X-Taskify-Sig",
-          "Access-Control-Max-Age": "86400",
-        },
-      });
+      // Same-origin only (see JSON_HEADERS); a cross-origin preflight gets no CORS grant.
+      return new Response(null, { status: 204 });
     }
 
     const url = new URL(request.url);
@@ -216,7 +209,7 @@ export default {
       if (url.pathname === "/api/nip05" && request.method === "GET") {
         const limited = await enforceRateLimit(request, env.NIP05_RATE_LIMITER, "nip05");
         if (limited) return limited;
-        return await handleNip05Lookup(url);
+        return await handleNip05Lookup(url, ctx);
       }
       if (url.pathname === "/api/devices" && request.method === "PUT") {
         const limited = await enforceRateLimit(request, env.PUSH_RATE_LIMITER, "push");
