@@ -125,8 +125,43 @@ final class TaskifySharedContainerTests: XCTestCase {
 
         XCTAssertTrue(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in true }))
         XCTAssertEqual(readStore(in: group), "{\"boards\":[]}")
-        // Left in place: if anything went wrong the original is still where the app used to read it.
-        XCTAssertEqual(readStore(in: support), "{\"boards\":[]}")
+        // The copy read back identically, so the private original is removed rather than left
+        // holding the same boards, messages, and contacts indefinitely.
+        XCTAssertNil(readStore(in: support))
+    }
+
+    private func setModified(_ date: Date, in directory: URL) throws {
+        let file = directory
+            .appendingPathComponent("TaskifyNative", isDirectory: true)
+            .appendingPathComponent(TaskifySharedContainer.storeFilename)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+    }
+
+    /// A private copy an earlier version left behind is removed once it is older than the
+    /// shared store.
+    func testRemovesAStalePrivateCopyLeftByAnEarlierMigration() throws {
+        let (manager, group, support) = try makeManager(withGroup: true)
+        try writeStore("old", in: support)
+        try writeStore("current", in: group)
+        try setModified(Date(timeIntervalSince1970: 1_000), in: support)
+        try setModified(Date(timeIntervalSince1970: 2_000), in: group)
+
+        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in true }))
+        XCTAssertNil(readStore(in: support))
+        XCTAssertEqual(readStore(in: group), "current")
+    }
+
+    /// An unentitled development build writes to private storage; that newer data is kept.
+    func testKeepsAPrivateCopyNewerThanTheSharedStore() throws {
+        let (manager, group, support) = try makeManager(withGroup: true)
+        try writeStore("newer private", in: support)
+        try writeStore("older shared", in: group)
+        try setModified(Date(timeIntervalSince1970: 2_000), in: support)
+        try setModified(Date(timeIntervalSince1970: 1_000), in: group)
+
+        XCTAssertFalse(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in true }))
+        XCTAssertEqual(readStore(in: support), "newer private")
+        XCTAssertEqual(readStore(in: group), "older shared")
     }
 
     /// Running again must not clobber newer shared data with the stale private copy.

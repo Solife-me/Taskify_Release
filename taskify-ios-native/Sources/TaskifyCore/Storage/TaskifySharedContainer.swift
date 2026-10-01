@@ -70,8 +70,12 @@ public enum TaskifySharedContainer {
     /// Moves an existing store into the shared container the first time the group becomes
     /// available, so enabling the capability doesn't look like the app lost everything.
     ///
-    /// Copies rather than moves, and only when the destination is empty: if anything goes wrong
-    /// the original is still sitting where the app used to read it. Returns whether it copied.
+    /// Copies, and removes the private original only once the copy reads back identically, so a
+    /// failure leaves it where the app used to read it. A private copy left by an earlier launch
+    /// is removed once it is older than the shared store: kept, it held old boards (whose IDs
+    /// grant access), messages, and contacts indefinitely, and would come back if the shared copy
+    /// were ever missing. A private copy newer than the shared one (an unentitled development
+    /// build writes there) is left alone. Returns whether it copied.
     @discardableResult
     public static func migrateIfNeeded(
         appGroupID: String = TaskifySharedContainer.appGroupID,
@@ -86,12 +90,25 @@ public enum TaskifySharedContainer {
         let destinationDirectory = group.appendingPathComponent("TaskifyNative", isDirectory: true)
         let destination = destinationDirectory.appendingPathComponent(storeFilename, isDirectory: false)
 
-        guard fileManager.fileExists(atPath: source.path),
-              !fileManager.fileExists(atPath: destination.path) else { return false }
+        guard fileManager.fileExists(atPath: source.path) else { return false }
+        if fileManager.fileExists(atPath: destination.path) {
+            let modified: (URL) -> Date? = { url in
+                (try? fileManager.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            }
+            if let sourceDate = modified(source), let destinationDate = modified(destination),
+               sourceDate <= destinationDate {
+                try? fileManager.removeItem(at: source)
+            }
+            return false
+        }
 
         do {
             try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
             try fileManager.copyItem(at: source, to: destination)
+            if let original = fileManager.contents(atPath: source.path),
+               fileManager.contents(atPath: destination.path) == original {
+                try? fileManager.removeItem(at: source)
+            }
             return true
         } catch {
             return false
