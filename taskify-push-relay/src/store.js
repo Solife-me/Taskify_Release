@@ -49,6 +49,11 @@ export class RelayStore {
     maxTaskEventsTotal = 100_000,
     maxRegistrationsPerPubkey = 10,
     maxRegistrationsTotal = 100_000,
+    // The apps re-register on every launch or activation, so a registration nobody has
+    // refreshed in this long belongs to an app that is gone or never opened.
+    registrationTTLSeconds = 90 * 24 * 60 * 60,
+    // Reads prune at most this often; writes still prune every time.
+    readPruneIntervalSeconds = 10,
     previewTTLSeconds = 15 * 60,
     minimumPushIntervalSeconds = 10,
     now = () => Math.floor(Date.now() / 1000),
@@ -65,6 +70,9 @@ export class RelayStore {
     this.maxTaskEventsTotal = maxTaskEventsTotal
     this.maxRegistrationsPerPubkey = maxRegistrationsPerPubkey
     this.maxRegistrationsTotal = maxRegistrationsTotal
+    this.registrationTTLSeconds = registrationTTLSeconds
+    this.readPruneIntervalSeconds = readPruneIntervalSeconds
+    this.lastPrunedAt = Number.NEGATIVE_INFINITY
     this.previewTTLSeconds = previewTTLSeconds
     this.minimumPushIntervalSeconds = minimumPushIntervalSeconds
     this.now = now
@@ -100,6 +108,9 @@ export class RelayStore {
       }
       this.state.nextEventSequence = nextSequence
       const loadedAt = this.now()
+      for (const registration of this.state.registrations) {
+        if (!Number.isInteger(registration.updatedAt)) registration.updatedAt = loadedAt
+      }
       this.state.taskEvents = this.state.taskEvents.filter((entry) => {
         if (!taskEventCoordinate(entry.event)) return false
         if (!Number.isInteger(entry.lastSeenAt)) entry.lastSeenAt = loadedAt
@@ -172,9 +183,22 @@ export class RelayStore {
     const resultingForPubkey = retainedRegistrations.filter(
       (candidate) => candidate.pubkey === normalizedPubkey,
     ).length + (existingIndex >= 0 ? 0 : 1)
-    if (resultingForPubkey > this.maxRegistrationsPerPubkey
-        || resultingTotal > this.maxRegistrationsTotal) {
+    if (resultingForPubkey > this.maxRegistrationsPerPubkey) {
       throw new Error('Device registration limit exceeded')
+    }
+    if (resultingTotal > this.maxRegistrationsTotal) {
+      // Full: make room by dropping the registration refreshed longest ago, rather than
+      // refusing every new user. A live app that is dropped re-registers on its next launch.
+      let stalest = -1
+      for (let index = 0; index < retainedRegistrations.length; index += 1) {
+        const candidate = retainedRegistrations[index]
+        if (candidate.pubkey === normalizedPubkey) continue
+        if (stalest < 0 || candidate.updatedAt < retainedRegistrations[stalest].updatedAt) stalest = index
+      }
+      if (stalest < 0) throw new Error('Device registration limit exceeded')
+      const [evicted] = retainedRegistrations.splice(stalest, 1)
+      this.state.pushJobs = this.state.pushJobs.filter((job) => job.registrationKey !== evicted.key)
+      this.state.previews = this.state.previews.filter((preview) => preview.registrationKey !== evicted.key)
     }
     this.state.registrations = retainedRegistrations
     if (existingIndex >= 0) this.state.registrations[existingIndex] = registration
@@ -200,7 +224,7 @@ export class RelayStore {
   }
 
   eventsFor(pubkey) {
-    this.prune()
+    this.pruneForRead()
     return this.state.events
       .filter((entry) => entry.recipient === pubkey.toLowerCase())
       .map((entry) => entry.event)
@@ -208,7 +232,7 @@ export class RelayStore {
   }
 
   eventsAfter(pubkey, sequence = 0, limit = 100) {
-    this.prune()
+    this.pruneForRead()
     const normalizedLimit = Math.max(1, Math.min(500, Number.isInteger(limit) ? limit : 100))
     const matches = this.state.events
       .filter((entry) => entry.recipient === pubkey.toLowerCase() && entry.sequence > sequence)
@@ -328,7 +352,7 @@ export class RelayStore {
   }
 
   taskEventsFor(authors, limit = 1_000, boardTagsByAuthor = null) {
-    this.prune()
+    this.pruneForRead()
     const normalized = new Set(authors.map((author) => author.toLowerCase()))
     const boundedLimit = Math.max(1, Math.min(1_000, Number.isInteger(limit) ? limit : 1_000))
     return this.state.taskEvents
@@ -362,9 +386,10 @@ export class RelayStore {
   }
 
   previewForToken(token) {
-    this.prune()
+    // Unauthenticated: never a full prune per request. Expiry is checked here directly.
+    this.pruneForRead()
     const preview = this.state.previews.find((candidate) => candidate.token === token)
-    if (!preview) return null
+    if (!preview || preview.expiresAt < this.now()) return null
     return this.state.events.find((entry) => entry.event.id === preview.eventID)?.event ?? null
   }
 
@@ -391,7 +416,19 @@ export class RelayStore {
     await this.persist()
   }
 
+  pruneForRead() {
+    if (this.now() - this.lastPrunedAt >= this.readPruneIntervalSeconds) this.prune()
+  }
+
   prune() {
+    this.lastPrunedAt = this.now()
+    const registrationCutoff = this.now() - this.registrationTTLSeconds
+    this.state.registrations = this.state.registrations.filter(
+      (registration) => !Number.isInteger(registration.updatedAt) || registration.updatedAt >= registrationCutoff,
+    )
+    const registrationsByKey = new Map(
+      this.state.registrations.map((registration) => [registration.key, registration]),
+    )
     const cutoff = this.now() - this.eventTTLSeconds
     const retainedEventIDs = new Set()
     this.state.events = this.state.events.filter((entry) => {
@@ -400,12 +437,12 @@ export class RelayStore {
       return true
     })
     this.state.pushJobs = this.state.pushJobs.filter(
-      (job) => retainedEventIDs.has(job.eventID) && this.registrationByKey(job.registrationKey),
+      (job) => retainedEventIDs.has(job.eventID) && registrationsByKey.has(job.registrationKey),
     )
     this.state.previews = this.state.previews.filter(
       (preview) => preview.expiresAt >= this.now()
         && retainedEventIDs.has(preview.eventID)
-        && this.registrationByKey(preview.registrationKey)?.platform !== 'watchos',
+        && registrationsByKey.get(preview.registrationKey)?.platform !== 'watchos',
     )
     if (this.state.events.length > this.maxEventsTotal) {
       this.state.events.sort((left, right) => left.storedAt - right.storedAt)

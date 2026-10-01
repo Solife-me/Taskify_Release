@@ -231,7 +231,7 @@ test('history honors per-filter limits, newest-first ordering, and ignores limit
   assert.equal((await incoming)[2].id, live.id)
 })
 
-async function serverForTest(t) {
+async function serverForTest(t, options = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
   const store = new RelayStore({ dataDirectory: directory })
   await store.load()
@@ -240,6 +240,7 @@ async function serverForTest(t) {
     store,
     apnsClient: { async send() { return { status: 200, reason: null } } },
     logger: { info() {}, warn() {} },
+    ...options,
   })
   const address = await server.start(0)
   t.after(() => server.stop())
@@ -315,3 +316,30 @@ test('gift wraps are stored only for accounts that use this relay', async (t) =>
   const accepted = await publish(finalizeEvent({ kind: 1059, created_at: 1, tags: [['p', getPublicKey(userKey)]], content: 'x' }, generateSecretKey()))
   assert.deepEqual(accepted.slice(2), [true, 'saved'])
 })
+
+function closed(socket) {
+  return new Promise((resolve) => socket.once('close', (code) => resolve(code)))
+}
+
+test('sockets beyond the process cap are closed straight away', async (t) => {
+  const { port } = await serverForTest(t, { maxSockets: 2 })
+  const open = []
+  for (let index = 0; index < 2; index += 1) {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+    t.after(() => socket.close())
+    await nextFrame(socket, (frame) => frame[0] === 'AUTH')
+    open.push(socket)
+  }
+  const extra = new WebSocket(`ws://127.0.0.1:${port}`)
+  assert.equal(await closed(extra), 1013)
+})
+
+test('a socket that sends too many messages is closed', async (t) => {
+  const { port } = await serverForTest(t, { maxSocketMessagesPerTenSeconds: 5 })
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+  await nextFrame(socket, (frame) => frame[0] === 'AUTH')
+  const done = closed(socket)
+  for (let index = 0; index < 10; index += 1) socket.send(JSON.stringify(['CLOSE', `s${index}`]))
+  assert.equal(await done, 1008)
+})
+

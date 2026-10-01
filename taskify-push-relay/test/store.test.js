@@ -74,9 +74,11 @@ test('moving one installation to another identity removes the stale registration
 })
 
 test('device registration is bounded without preventing token rotation', async () => {
+  let clock = 1_800_000_000
   const { store } = await storeForTest({
     maxRegistrationsPerPubkey: 1,
     maxRegistrationsTotal: 2,
+    now: () => clock,
   })
   await store.putRegistration(alice, 'phone-1', {
     deviceToken: '12'.repeat(32),
@@ -94,17 +96,46 @@ test('device registration is bounded without preventing token rotation', async (
     }),
     /registration limit/i,
   )
+  clock += 60
   await store.putRegistration(bob, 'phone-2', {
     deviceToken: '78'.repeat(32),
     environment: 'production',
   })
-  await assert.rejects(
-    store.putRegistration(carol, 'phone-3', {
-      deviceToken: '90'.repeat(32),
-      environment: 'production',
-    }),
-    /registration limit/i,
-  )
+  // A full table makes room by dropping the registration refreshed longest ago (alice's),
+  // instead of refusing every new user.
+  clock += 60
+  await store.putRegistration(carol, 'phone-3', {
+    deviceToken: '90'.repeat(32),
+    environment: 'production',
+  })
+  assert.deepEqual(store.state.registrations.map((registration) => registration.pubkey).sort(), [bob, carol])
+})
+
+test('registrations nobody refreshes expire, and refreshing keeps them', async () => {
+  let clock = 1_800_000_000
+  const { store } = await storeForTest({ registrationTTLSeconds: 1_000, now: () => clock })
+  await store.putRegistration(alice, 'phone-1', { deviceToken: '12'.repeat(32), environment: 'production' })
+  await store.putRegistration(bob, 'phone-2', { deviceToken: '34'.repeat(32), environment: 'production' })
+  clock += 900
+  await store.putRegistration(bob, 'phone-2', { deviceToken: '34'.repeat(32), environment: 'production' })
+  clock += 200
+  store.prune()
+  assert.deepEqual(store.state.registrations.map((registration) => registration.pubkey), [bob])
+  assert.equal(store.hasInbox(alice), false)
+})
+
+test('unauthenticated preview reads do not prune on every call', async () => {
+  let clock = 1_800_000_000
+  const { store } = await storeForTest({ now: () => clock })
+  let prunes = 0
+  const prune = store.prune.bind(store)
+  store.prune = () => { prunes += 1; prune() }
+  // load() has just pruned, so reads within the interval do not.
+  for (let index = 0; index < 50; index += 1) store.previewForToken('x'.repeat(43))
+  assert.equal(prunes, 0)
+  clock += 10
+  for (let index = 0; index < 50; index += 1) store.previewForToken('x'.repeat(43))
+  assert.equal(prunes, 1)
 })
 
 test('accepted gift wraps are durable, deduplicated, and enqueue one job per device', async () => {

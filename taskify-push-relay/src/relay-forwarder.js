@@ -3,6 +3,15 @@ import dns from 'node:dns/promises'
 import net from 'node:net'
 import { WebSocket } from 'ws'
 
+/// Raised when a remote relay refuses or drops a request. Its message can be text the relay
+/// chose, so the HTTP layer reports it as an upstream failure and never derives a status from it.
+export class RemoteRelayError extends Error {
+  constructor(message) {
+    super(typeof message === 'string' ? message.slice(0, 256) : 'Relay request failed')
+    this.name = 'RemoteRelayError'
+  }
+}
+
 const AUTH_KIND = 22_242
 
 function isPrivateIPv4(address) {
@@ -128,18 +137,18 @@ function frameEvent(socket, predicate, timeoutMs) {
     }
     const onClose = () => {
       cleanup()
-      reject(new Error('Relay connection closed'))
+      reject(new RemoteRelayError('Relay connection closed'))
     }
     const onError = () => {
       cleanup()
-      reject(new Error('Relay connection failed'))
+      reject(new RemoteRelayError('Relay connection failed'))
     }
     socket.on('message', onMessage)
     socket.once('close', onClose)
     socket.once('error', onError)
     timer = setTimeout(() => {
       cleanup()
-      reject(new Error('Relay acknowledgement timed out'))
+      reject(new RemoteRelayError('Relay acknowledgement timed out'))
     }, timeoutMs)
   })
 }
@@ -147,14 +156,14 @@ function frameEvent(socket, predicate, timeoutMs) {
 function waitForOpen(socket, timeoutMs) {
   if (socket.readyState === WebSocket.OPEN) return Promise.resolve()
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Relay connection timed out')), timeoutMs)
+    const timer = setTimeout(() => reject(new RemoteRelayError('Relay connection timed out')), timeoutMs)
     socket.once('open', () => {
       clearTimeout(timer)
       resolve()
     })
     socket.once('error', () => {
       clearTimeout(timer)
-      reject(new Error('Relay connection failed'))
+      reject(new RemoteRelayError('Relay connection failed'))
     })
   })
 }
@@ -214,7 +223,7 @@ export function sendEventOrAuthAndWait(socket, event, timeoutMs) {
     }
     const fail = (message) => {
       cleanup()
-      reject(new Error(message))
+      reject(new RemoteRelayError(message))
     }
     const onMessage = (data) => {
       let frame
@@ -268,7 +277,7 @@ function authorizationSession(socket, event, challenge, timeoutMs) {
       socket.send(JSON.stringify(['AUTH', authEvent]))
       const authFrame = await authAcknowledgement
       if (authFrame[2] !== true) {
-        throw new Error(typeof authFrame[3] === 'string' ? authFrame[3] : 'Relay authentication failed')
+        throw new RemoteRelayError(typeof authFrame[3] === 'string' ? authFrame[3] : 'Relay authentication failed')
       }
       const result = await sendEventAndWait(socket, event, timeoutMs)
       socket.close()
@@ -286,7 +295,7 @@ function queryAuthorizationSession(socket, filter, maximumEvents, challenge, tim
         frame => frame[0] === 'OK' && frame[1] === authEvent.id, timeoutMs)
       socket.send(JSON.stringify(['AUTH', authEvent]))
       const frame = await acknowledgement
-      if (frame[2] !== true) throw new Error('Relay authentication rejected')
+      if (frame[2] !== true) throw new RemoteRelayError('Relay authentication rejected')
       const events = await queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, requireEOSE)
       return { accepted: true, events }
     },
@@ -317,7 +326,7 @@ export function queryEventsAndWait(socket, filter, maximumEvents, timeoutMs, req
       if (finished) return
       finished = true
       cleanup()
-      reject(new Error(message))
+      reject(new RemoteRelayError(message))
     }
     const onMessage = (data) => {
       let frame

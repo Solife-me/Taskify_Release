@@ -3,14 +3,14 @@ import http from 'node:http'
 import { verifyEvent } from 'nostr-tools'
 import { WebSocket, WebSocketServer } from 'ws'
 
-import { NIP98ReplayGuard, verifyNip98Request } from './auth.js'
+import { NIP98_MAX_AGE_SECONDS, NIP98ReplayGuard, verifyNip98Request } from './auth.js'
 import {
   assertAuthorizedGiftWrapFilters,
   giftWrapRecipient,
   matchesFilter,
   shouldNotifyRecipient,
 } from './relay-policy.js'
-import { NostrRelayForwarder, normalizeRelayTargets } from './relay-forwarder.js'
+import { NostrRelayForwarder, RemoteRelayError, normalizeRelayTargets } from './relay-forwarder.js'
 
 const MAX_HTTP_BODY_BYTES = 256 * 1024
 const INSTALLATION_ID = /^[A-Za-z0-9._:-]{1,128}$/
@@ -93,11 +93,19 @@ class SlidingWindowRateLimiter {
     this.windowSeconds = windowSeconds
     this.now = now
     this.entries = new Map()
+    this.sweepAt = 1_024
   }
 
   consume(key) {
     const now = this.now()
     const cutoff = now - this.windowSeconds
+    // Every new key or address adds an entry; drop the idle ones before the map grows large.
+    if (this.entries.size >= this.sweepAt) {
+      for (const [entryKey, timestamps] of this.entries) {
+        if (timestamps.at(-1) <= cutoff) this.entries.delete(entryKey)
+      }
+      this.sweepAt = Math.max(1_024, this.entries.size * 2)
+    }
     const recent = (this.entries.get(key) ?? []).filter((timestamp) => timestamp > cutoff)
     if (recent.length >= this.maximum) return false
     recent.push(now)
@@ -197,6 +205,10 @@ export function createTaskifyPushServer({
   // relays apply per-IP limits (noteguard's documented example is 8/min). Bound each account's
   // share; the Watch keeps a limited change queued and retries.
   watchForwardsPerMinute = 30,
+  // The relay sits behind a proxy, so every socket shares one peer address; the caps are
+  // per process and per socket instead.
+  maxSockets = 2_000,
+  maxSocketMessagesPerTenSeconds = 100,
 }) {
   const replayGuard = new NIP98ReplayGuard()
   const publishLimiter = new SlidingWindowRateLimiter()
@@ -215,6 +227,36 @@ export function createTaskifyPushServer({
     if (!privateRequestLimiter.consume(pubkey) || !privateIPLimiter.consume(address)) {
       throw new Error('Private request limit exceeded')
     }
+  }
+
+  /// Signature, then rate limit, then replay record: a request refused by the limit does not
+  /// take a slot in the replay guard, so a flood of signed requests cannot crowd it out.
+  function authenticatePrivateRequest(request, url, body) {
+    const expectedURL = new URL(`${url.pathname}${url.search}`, config.publicBaseURL).toString()
+    const auth = verifyNip98Request({
+      authorization: request.headers.authorization,
+      method: request.method,
+      expectedURL,
+      body,
+    })
+    enforcePrivateRequestLimit(request, auth.pubkey)
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    replayGuard.consume(auth.event.id, auth.event.created_at + NIP98_MAX_AGE_SECONDS, nowSeconds)
+    return auth
+  }
+
+  /// Our own validation errors map to a status by their wording. A remote relay's refusal can
+  /// carry any text, so it is always reported as an upstream failure.
+  function sendRequestError(response, error) {
+    if (error instanceof RemoteRelayError) {
+      sendJSON(response, 502, { error: 'Relay request failed', relayMessage: error.message })
+      return
+    }
+    const message = error instanceof Error ? error.message : 'Bad request'
+    const status = /limit exceeded/i.test(message)
+      ? 429
+      : /authorization|NIP-98|replay|account mismatch/i.test(message) ? 401 : 400
+    sendJSON(response, status, { error: message })
   }
 
   function hasWatchSessionCapacity(accountPubkey) {
@@ -251,15 +293,7 @@ export function createTaskifyPushServer({
     }
     try {
       const body = await requestBody(request)
-      const expectedURL = new URL(`${url.pathname}${url.search}`, config.publicBaseURL).toString()
-      const auth = verifyNip98Request({
-        authorization: request.headers.authorization,
-        method: request.method,
-        expectedURL,
-        body,
-        replayGuard,
-      })
-      enforcePrivateRequestLimit(request, auth.pubkey)
+      const auth = authenticatePrivateRequest(request, url, body)
       if (request.method === 'DELETE') {
         await store.removeRegistration(auth.pubkey, installationID)
         sendJSON(response, 200, {
@@ -280,23 +314,9 @@ export function createTaskifyPushServer({
         remainingRegistrations: store.registrationsFor(auth.pubkey).length,
       })
     } catch (error) {
-      const status = /limit exceeded/i.test(error.message)
-        ? 429
-        : /authorization|NIP-98|replay/i.test(error.message) ? 401 : 400
-      sendJSON(response, status, { error: error.message })
+      sendRequestError(response, error)
     }
     return true
-  }
-
-  async function authenticateWatchRequest(request, url, body) {
-    const expectedURL = new URL(`${url.pathname}${url.search}`, config.publicBaseURL).toString()
-    return verifyNip98Request({
-      authorization: request.headers.authorization,
-      method: request.method,
-      expectedURL,
-      body,
-      replayGuard,
-    })
   }
 
   async function ingestLocalWatchEvent(event, authenticatedPubkey) {
@@ -434,8 +454,7 @@ export function createTaskifyPushServer({
     discardExpiredWatchSessions()
     try {
       const body = await requestBody(request)
-      const auth = await authenticateWatchRequest(request, url, body)
-      enforcePrivateRequestLimit(request, auth.pubkey)
+      const auth = authenticatePrivateRequest(request, url, body)
       const payload = JSON.parse(body.toString('utf8'))
 
       if (url.pathname === '/v1/watch/inbox-preference/query') {
@@ -648,10 +667,7 @@ export function createTaskifyPushServer({
         results,
       })
     } catch (error) {
-      const status = /limit exceeded/i.test(error.message)
-        ? 429
-        : /authorization|NIP-98|replay|account mismatch/i.test(error.message) ? 401 : 400
-      sendJSON(response, status, { error: error.message })
+      sendRequestError(response, error)
     }
     return true
   }
@@ -691,7 +707,7 @@ export function createTaskifyPushServer({
         pubkey: '',
         contact: 'https://solife.me',
         supported_nips: [1, 11, 17, 42, 59, 98],
-        software: 'https://github.com/nathanhughes/Taskify_Release',
+        software: 'https://github.com/Solife-me/Taskify_Release',
         version: '0.4.1',
         limitation: {
           auth_required: true,
@@ -801,17 +817,34 @@ export function createTaskifyPushServer({
   }
 
   webSocketServer.on('connection', (socket) => {
+    if (sockets.size >= maxSockets) {
+      socket.close(1013, 'relay is at capacity')
+      return
+    }
     const state = {
       socket,
       challenge: randomBytes(32).toString('base64url'),
       authenticatedPubkey: null,
       subscriptions: new Map(),
+      messageWindowStartedAt: Date.now(),
+      messagesInWindow: 0,
     }
     sockets.add(state)
     relaySend(socket, ['AUTH', state.challenge])
     socket.on('close', () => sockets.delete(state))
     socket.on('error', () => {})
     socket.on('message', async (data) => {
+      const now = Date.now()
+      if (now - state.messageWindowStartedAt >= 10_000) {
+        state.messageWindowStartedAt = now
+        state.messagesInWindow = 0
+      }
+      state.messagesInWindow += 1
+      if (state.messagesInWindow > maxSocketMessagesPerTenSeconds) {
+        relaySend(socket, ['NOTICE', 'rate-limited: too many messages'])
+        socket.close(1008, 'too many messages')
+        return
+      }
       let message
       try {
         message = JSON.parse(data.toString())

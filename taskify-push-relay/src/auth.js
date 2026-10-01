@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { verifyEvent } from 'nostr-tools'
 
 const NIP98_KIND = 27_235
-const DEFAULT_MAX_AGE_SECONDS = 60
+export const NIP98_MAX_AGE_SECONDS = 60
 
 function tagValue(event, name) {
   const matches = event.tags.filter((tag) => Array.isArray(tag) && tag.length >= 2 && tag[0] === name)
@@ -33,15 +33,17 @@ export class NIP98ReplayGuard {
     this.entries = new Map()
   }
 
+  /// Records a used authorization until it expires. When every slot holds a live entry the
+  /// request is refused rather than forgetting one, since a forgotten entry could be replayed.
   consume(eventID, expiresAt, nowSeconds) {
-    for (const [id, expiry] of this.entries) {
-      if (expiry < nowSeconds) this.entries.delete(id)
+    if (this.entries.size >= this.maxEntries) {
+      for (const [id, expiry] of this.entries) {
+        if (expiry < nowSeconds) this.entries.delete(id)
+      }
     }
     if (this.entries.has(eventID)) throw new Error('NIP-98 replay rejected')
+    if (this.entries.size >= this.maxEntries) throw new Error('Request limit exceeded: try again shortly')
     this.entries.set(eventID, expiresAt)
-    while (this.entries.size > this.maxEntries) {
-      this.entries.delete(this.entries.keys().next().value)
-    }
   }
 }
 
@@ -51,7 +53,7 @@ export function verifyNip98Request({
   expectedURL,
   body = Buffer.alloc(0),
   nowSeconds = Math.floor(Date.now() / 1000),
-  maxAgeSeconds = DEFAULT_MAX_AGE_SECONDS,
+  maxAgeSeconds = NIP98_MAX_AGE_SECONDS,
   replayGuard,
 }) {
   const event = decodeAuthorization(authorization)

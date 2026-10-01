@@ -53,7 +53,15 @@ asked for a list of everyone who uses it.
 - At most 32 relay-authorization sessions per account and 256 in total wait for a Watch to sign
 - Task/board cache retention: latest encrypted event per replaceable coordinate, discarded after
   30 days without being observed, at most 2,000 per public board author and 100,000 total
-- Device registrations: at most 10 per Nostr account and 100,000 total
+- Device registrations: at most 10 per Nostr account and 100,000 total. A registration not
+  refreshed for 90 days expires (the apps re-register on every launch); when the table is full
+  the registration refreshed longest ago is dropped to make room
+- WebSocket: at most 2,000 connections per process and 100 messages per connection every
+  10 seconds (the relay sits behind a proxy, so there is no per-address cap)
+- NIP-98 requests: signature, then per-account rate limit, then the one-use record, which refuses
+  new requests rather than forgetting live entries when full
+- A refusal from another relay during Watch forwarding is returned as `502` with the relay's text
+  in `relayMessage`, never as `401` or `429`
 - APNs jobs survive restarts and retry temporary failures with bounded exponential backoff
 - At most one unsent alert per device: further wraps repoint it at the newest wrap, and a device
   gets its next alert no sooner than 10 seconds after the last one Apple accepted
