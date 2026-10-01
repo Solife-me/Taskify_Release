@@ -33,6 +33,13 @@ import {
   LS_WALLET_SEED_ENCRYPTED,
   regenerateWalletSeed,
 } from "./seed";
+import {
+  __resetP2pkKeyStoreForTests,
+  initP2pkKeyStore,
+  LS_P2PK_KEYS_ENCRYPTED,
+  readStoredP2pkKeys,
+  writeStoredP2pkKeys,
+} from "./p2pkKeyStore";
 
 const LS_WALLET_SEED = "cashu_wallet_seed_v1";
 const MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -42,6 +49,7 @@ function newPage() {
   __resetDeviceKeyForTests();
   __resetWalletSeedForTests();
   __resetNwcWalletCatalogForTests();
+  __resetP2pkKeyStoreForTests();
 }
 
 function storedValues(): string[] {
@@ -120,5 +128,33 @@ describe("NWC connections at rest", () => {
     await vi.waitFor(() => expect(localStorage.getItem(LS_NWC_WALLET_CATALOG_ENCRYPTED)).toBeTruthy());
     expect(storedValues().some((value) => value.includes("secret="))).toBe(false);
     expect(loadStoredNwcWalletCatalog().wallets[0].uri).toBe(NWC_URI);
+  });
+});
+
+describe("P2PK keys at rest", () => {
+  const PRIV = "7f".repeat(32);
+  const LIST = JSON.stringify({ keys: [{ id: "k1", publicKey: "02" + "aa".repeat(32), privateKey: PRIV, createdAt: 1, usedCount: 0 }], primaryKeyId: "k1" });
+
+  test("a plaintext key list is encrypted, the plaintext removed, and read back on the next page", async () => {
+    localStorage.setItem("cashu_p2pk_keys_v1", LIST);
+    await initP2pkKeyStore();
+    expect(readStoredP2pkKeys()).toBe(LIST);
+    expect(localStorage.getItem("cashu_p2pk_keys_v1")).toBeNull();
+    expect(localStorage.getItem(LS_P2PK_KEYS_ENCRYPTED)).toBeTruthy();
+    expect(storedValues().some((value) => value.includes(PRIV))).toBe(false);
+
+    newPage();
+    await initP2pkKeyStore();
+    expect(readStoredP2pkKeys()).toBe(LIST);
+  });
+
+  test("an encrypted list that has not been unlocked is neither read as empty nor overwritten", async () => {
+    await initP2pkKeyStore();
+    await writeStoredP2pkKeys(LIST);
+    const cipher = localStorage.getItem(LS_P2PK_KEYS_ENCRYPTED);
+    newPage();
+    expect(() => readStoredP2pkKeys()).toThrow();
+    await expect(writeStoredP2pkKeys(JSON.stringify({ keys: [], primaryKeyId: null }))).rejects.toThrow();
+    expect(localStorage.getItem(LS_P2PK_KEYS_ENCRYPTED)).toBe(cipher);
   });
 });

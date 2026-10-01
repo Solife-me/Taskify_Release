@@ -478,6 +478,7 @@ Solife calls from the apps authenticate with the session's **bearer token only**
 ### 1) Seed generation/storage invariants
 
 - Seed record key: `cashu_wallet_seed_v2`, the seed-record JSON as device-key ciphertext (`lib/deviceKeyCrypto.ts`, the same non-extractable IndexedDB key that wraps the Nostr key). `storageBootstrap` decrypts it before first render via `initWalletSeedStore()`; the original plaintext key `cashu_wallet_seed_v1` is migrated and removed only after the ciphertext reads back. A ciphertext that no longer decrypts is kept as `cashu_wallet_seed_v2_unreadable`, never deleted, and a seed that exists but is not yet decrypted is never replaced by a new one. If WebCrypto or IndexedDB is unavailable the record stays in plaintext. This protects against dumps of the browser's storage, not against script running in the page.
+- P2PK keys: `cashu_p2pk_keys_v2`, the key-list JSON as device-key ciphertext (`wallet/p2pkKeyStore.ts`, `initP2pkKeyStore`). The plaintext `cashu_p2pk_keys_v1` is migrated and removed on first load; while a stored list is still encrypted and unread, `P2PKContext` refuses to save so it cannot be overwritten.
 - Counter store key: `cashu_wallet_seed_counters_v1`
 - New seed generation uses 128-bit mnemonic entropy and stores both mnemonic + derived `seedHex`.
 

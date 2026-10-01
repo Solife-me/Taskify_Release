@@ -78,6 +78,9 @@ export async function initializeStorageBoundaries(): Promise<void> {
     import("../wallet/seed").then(({ initWalletSeedStore }) => initWalletSeedStore()).catch((err) => {
       console.warn("wallet seed store init failed", err);
     }),
+    import("../wallet/p2pkKeyStore").then(({ initP2pkKeyStore }) => initP2pkKeyStore()).catch((err) => {
+      console.warn("P2PK key store init failed", err);
+    }),
     import("../wallet/nwcWalletCatalog").then(({ initNwcWalletCatalogStore }) => initNwcWalletCatalogStore()).catch((err) => {
       console.warn("NWC wallet catalog init failed", err);
     }),

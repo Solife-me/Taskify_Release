@@ -7,9 +7,8 @@ import React, {
 } from "react";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { generateSecretKey, nip19 } from "nostr-tools";
-import { LS_P2PK_KEYS } from "../localStorageKeys";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
-import { kvStorage } from "../storage/kvStorage";
+import { readStoredP2pkKeys, writeStoredP2pkKeys } from "../wallet/p2pkKeyStore";
 
 export type P2PKKey = {
   id: string;
@@ -65,7 +64,7 @@ function normalizeStoredPubkey(value: string): string | null {
 
 function loadStoredKeys(): { keys: P2PKKey[]; primaryKeyId: string | null } {
   try {
-    const raw = kvStorage.getItem(LS_P2PK_KEYS);
+    const raw = readStoredP2pkKeys();
     if (!raw) return { keys: [], primaryKeyId: null };
     const parsed = JSON.parse(raw);
     if (
@@ -120,17 +119,15 @@ export function P2PKProvider({ children }: { children: React.ReactNode }) {
     (nextKeys: P2PKKey[], nextPrimary: string | null) => {
       setKeys(nextKeys);
       setPrimaryKeyId(nextPrimary);
-      try {
-        kvStorage.setItem(
-          LS_P2PK_KEYS,
-          JSON.stringify({
-            keys: nextKeys,
-            primaryKeyId: nextPrimary,
-          }),
-        );
-      } catch {
-        // ignore persistence failures
-      }
+      // Refused while a stored list is still encrypted and unread, so it is never overwritten.
+      writeStoredP2pkKeys(
+        JSON.stringify({
+          keys: nextKeys,
+          primaryKeyId: nextPrimary,
+        }),
+      ).catch((err) => {
+        console.warn("[p2pkKeys] could not save keys", err);
+      });
     },
     [],
   );
