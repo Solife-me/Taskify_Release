@@ -1965,6 +1965,7 @@ test("hourly pruning deletes week-old voice counters and two-week-old undelivere
   assert.deepEqual(statements, [
     { sql: "DELETE FROM voice_quota WHERE date < ?", params: ["2026-09-23"] },
     { sql: "DELETE FROM pending_notifications WHERE created_at < ?", params: [now - 14 * 24 * 60 * 60 * 1000] },
+    { sql: "DELETE FROM request_signatures WHERE expires_at < ?", params: [now] },
   ]);
 });
 

@@ -83,7 +83,8 @@ Relative voice dates use the reference instant converted to the supplied IANA ti
 The Watch bridge is transport, not a custody or decryption service:
 
 - The Apple Watch constructs, AES-GCM encrypts, and Schnorr-signs task events locally.
-- HTTPS requests are authenticated with a short-lived Schnorr signature over the exact body.
+- HTTPS requests are authenticated with a short-lived Schnorr signature over the method, host,
+  route, and exact body (see Request signatures below).
 - The Worker validates authentication and event signatures, restricts relay destinations to a
   bounded list of public `wss` endpoints, and narrows reads to kind 30301 plus explicit authors.
 - The Worker receives the account public key, relay URLs, outer Nostr tags/IDs/timestamps, and
@@ -887,6 +888,27 @@ If modifying backup handlers, re-verify:
 - mixed-case `npub` lookups still hit existing backup keys,
 - load path continues to be resilient to unreadable/corrupt objects with explicit 4xx/5xx responses,
 - `lastReadAt` behavior remains intentional (kept in storage, excluded from response unless consciously changed with client coordination).
+
+### Request signatures
+
+Voice and Watch bridge requests carry `X-Taskify-Npub`, `X-Taskify-Timestamp`, and
+`X-Taskify-Sig`, a BIP-340 Schnorr signature by the account key (`verifyTaskifyAuth` in
+`worker/src/nostr-auth.ts`).
+
+- **Version 2** (`X-Taskify-Auth: v2`, sent by the PWA, iOS, Mac, and Watch since 2026-10-01)
+  signs SHA-256 of six lines: `taskify-request-v2`, the method, the host, the path with its
+  query, the Unix timestamp, and the body's SHA-256 in hex (`taskifyAuthV2Message`). It is valid
+  for 60 seconds either side. Voice and `/api/watch/nostr/publish` record each signature in
+  `request_signatures` (migration `0006`) until it expires, so a captured request is refused the
+  second time; `/api/watch/nostr/query` is read-only and frequent, so it is bound to its route
+  and time but not recorded. The hourly prune deletes expired rows.
+- **Version 1** signs SHA-256 of `timestamp + "." + body`, is valid for 300 seconds, and is bound
+  to nothing else. It is accepted only for clients released before version 2. Set the Worker
+  variable `TASKIFY_AUTH_V1 = "off"` once those are gone.
+
+The four signers (`worker/src/nostr-auth.ts`, `taskify-pwa/src/lib/taskifyRequestAuth.ts`,
+`NostrIdentity.taskifyRequestHeaders`, `TaskifyWatchNostrCrypto.requestAuthentication`) are
+tested against the same message and hash vector.
 
 ### Voice abuse controls
 

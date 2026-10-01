@@ -1,5 +1,5 @@
 import { verifyEvent, type Event as NostrEvent } from "nostr-tools";
-import { verifyTaskifyAuth } from "./nostr-auth.ts";
+import { verifyTaskifyAuth, type ReplayStore } from "./nostr-auth.ts";
 import { jsonResponse, parseJson } from "./lib.ts";
 import { assertPublicHttpUrl } from "./public-fetch.ts";
 
@@ -180,10 +180,18 @@ async function accountRateLimited(env: BridgeEnv | undefined, npub: string): Pro
   return response;
 }
 
-type BridgeEnv = { WATCH_NOSTR_RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> } };
+type BridgeEnv = {
+  WATCH_NOSTR_RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  TASKIFY_AUTH_V1?: string;
+  TASKIFY_DB?: ReplayStore;
+};
 
 export async function handleWatchNostrPublish(request: Request, env?: BridgeEnv): Promise<Response> {
-  const auth = await verifyTaskifyAuth(request);
+  // Publishing is single-use; a captured request cannot be sent again.
+  const auth = await verifyTaskifyAuth(request, {
+    allowV1: env?.TASKIFY_AUTH_V1 !== "off",
+    replayStore: env?.TASKIFY_DB,
+  });
   if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
   const limited = await accountRateLimited(env, auth.npub);
   if (limited) return limited;
@@ -198,7 +206,9 @@ export async function handleWatchNostrPublish(request: Request, env?: BridgeEnv)
 }
 
 export async function handleWatchNostrQuery(request: Request, env?: BridgeEnv): Promise<Response> {
-  const auth = await verifyTaskifyAuth(request);
+  // Read-only and frequent: bound to this route and 60 seconds, but not recorded, which would
+  // cost a database write per Watch refresh.
+  const auth = await verifyTaskifyAuth(request, { allowV1: env?.TASKIFY_AUTH_V1 !== "off" });
   if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
   const limited = await accountRateLimited(env, auth.npub);
   if (limited) return limited;

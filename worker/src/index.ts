@@ -93,6 +93,13 @@ async function ensureSchema(env: Env): Promise<void> {
          PRIMARY KEY (npub, date)
        )`,
     ).run();
+
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS request_signatures (
+         signature  TEXT    PRIMARY KEY,
+         expires_at INTEGER NOT NULL
+       )`,
+    ).run();
   })()
     .catch((err) => {
       schemaReadyPromise = null;
@@ -108,11 +115,12 @@ function routeUsesDatabase(pathname: string): boolean {
     || pathname.startsWith("/api/devices/")
     || pathname === "/api/reminders"
     || pathname === "/api/reminders/poll"
-    || pathname.startsWith("/api/voice/");
+    || pathname.startsWith("/api/voice/")
+    || pathname === "/api/watch/nostr/publish";
 }
 
-// Rows kept only as long as they are useful: daily voice counters for a week, and reminder
-// notifications a device never fetched for two weeks.
+// Rows kept only as long as they are useful: daily voice counters for a week, reminder
+// notifications a device never fetched for two weeks, and used request signatures until expiry.
 const VOICE_QUOTA_RETENTION_DAYS = 7;
 const PENDING_NOTIFICATION_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const PRUNE_MINUTE = 17;
@@ -123,6 +131,7 @@ export async function pruneStaleRows(env: Env, now = Date.now()): Promise<void> 
   await db.batch([
     db.prepare("DELETE FROM voice_quota WHERE date < ?").bind(quotaCutoff),
     db.prepare("DELETE FROM pending_notifications WHERE created_at < ?").bind(now - PENDING_NOTIFICATION_RETENTION_MS),
+    db.prepare("DELETE FROM request_signatures WHERE expires_at < ?").bind(now),
   ]);
 }
 

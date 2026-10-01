@@ -55,6 +55,8 @@ export interface Env {
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
   VOICE_DISABLED?: string;
+  /** "off" refuses version-1 request signatures, once every client sends version 2. */
+  TASKIFY_AUTH_V1?: string;
   VOICE_RATE_LIMITER?: RateLimitBinding;
   PREVIEW_RATE_LIMITER?: RateLimitBinding;
   NIP05_RATE_LIMITER?: RateLimitBinding;

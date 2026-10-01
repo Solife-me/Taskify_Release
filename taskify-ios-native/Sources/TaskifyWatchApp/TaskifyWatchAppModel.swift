@@ -1695,6 +1695,8 @@ final class TaskifyWatchAppModel: NSObject {
         _ = try TaskifyWatchNostrCrypto.requestAuthentication(
             privateKey: payload.privateKey,
             publicKeyHex: payload.publicKeyHex,
+            method: "POST",
+            url: URL(string: "https://taskify.invalid/provisioning-check")!,
             body: Data(),
             timestamp: 0
         )

@@ -51,6 +51,7 @@ public struct TaskifyWatchRequestAuthentication: Equatable, Sendable {
 
     public var headers: [String: String] {
         [
+            "X-Taskify-Auth": "v2",
             "X-Taskify-Npub": publicKeyHex,
             "X-Taskify-Timestamp": timestamp,
             "X-Taskify-Sig": signature,
@@ -186,19 +187,42 @@ public enum TaskifyWatchNostrCrypto {
         }
     }
 
+    /// The text a version-2 Worker request signature covers; matches
+    /// `NostrIdentity.taskifyRequestMessage` and `taskifyAuthV2Message` in the Worker.
+    public static func requestMessage(method: String, url: URL, timestamp: Int, body: Data) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = components.host?.lowercased(), !host.isEmpty else { return nil }
+        let scheme = components.scheme?.lowercased()
+        var hostField = host
+        if let port = components.port, !(scheme == "https" && port == 443), !(scheme == "http" && port == 80) {
+            hostField += ":\(port)"
+        }
+        var target = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
+        if let query = components.percentEncodedQuery { target += "?\(query)" }
+        return [
+            "taskify-request-v2",
+            method.uppercased(),
+            hostField,
+            target,
+            String(timestamp),
+            Data(CryptoKit.SHA256.hash(data: body)).taskifyHexString,
+        ].joined(separator: "\n")
+    }
+
     public static func requestAuthentication(
         privateKey: Data,
         publicKeyHex: String,
+        method: String,
+        url: URL,
         body: Data,
         timestamp: Int = Int(Date().timeIntervalSince1970)
     ) throws -> TaskifyWatchRequestAuthentication {
         let normalizedPublicKey = publicKeyHex.lowercased()
-        guard normalizedPublicKey.count == 64 else {
+        guard normalizedPublicKey.count == 64,
+              let text = requestMessage(method: method, url: url, timestamp: timestamp, body: body) else {
             throw TaskifyWatchNostrCryptoError.invalidPrivateKey
         }
-        let hash = CryptoKit.SHA256.hash(
-            data: Data("\(timestamp).".utf8) + body
-        )
+        let hash = CryptoKit.SHA256.hash(data: Data(text.utf8))
         let key = try schnorrPrivateKey(privateKey)
         guard Data(key.xonly.bytes).taskifyHexString == normalizedPublicKey else {
             throw TaskifyWatchNostrCryptoError.invalidPrivateKey

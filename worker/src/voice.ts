@@ -568,7 +568,10 @@ async function handleVoiceExtract(request: Request, env: Env): Promise<Response>
   const prepared = await prepareVoiceRequest(request, env);
   if (prepared instanceof Response) return prepared;
   request = prepared;
-  const auth = await verifyTaskifyAuth(request);
+  const auth = await verifyTaskifyAuth(request, {
+    allowV1: env.TASKIFY_AUTH_V1 !== "off",
+    replayStore: requireDb(env),
+  });
   if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
 
   if (!voiceConfigured(env)) {
@@ -646,7 +649,10 @@ async function handleVoiceFinalize(request: Request, env: Env): Promise<Response
   const prepared = await prepareVoiceRequest(request, env);
   if (prepared instanceof Response) return prepared;
   request = prepared;
-  const auth = await verifyTaskifyAuth(request);
+  const auth = await verifyTaskifyAuth(request, {
+    allowV1: env.TASKIFY_AUTH_V1 !== "off",
+    replayStore: requireDb(env),
+  });
   if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
 
   if (!voiceConfigured(env)) {

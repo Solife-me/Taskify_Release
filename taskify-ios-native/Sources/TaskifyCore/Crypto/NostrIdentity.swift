@@ -68,16 +68,47 @@ public struct NostrIdentity: Equatable, Sendable {
     public var nsec: String { (try? Bech32.encode(prefix: "nsec", data: privateKey)) ?? "" }
     public var npub: String { (try? Bech32.encode(prefix: "npub", data: publicKey)) ?? "" }
 
-    /// Authenticate a Taskify Worker request without sending the account secret key.
+    /// The text a version-2 Worker request signature covers: a label, the method, the host, the
+    /// path with its query, the timestamp, and the body's SHA-256 in hex, one per line. Must match
+    /// `taskifyAuthV2Message` in worker/src/nostr-auth.ts, the PWA, and the Watch signer.
+    public static func taskifyRequestMessage(method: String, url: URL, timestamp: Int, body: Data) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = components.host?.lowercased(), !host.isEmpty else { return nil }
+        let scheme = components.scheme?.lowercased()
+        var hostField = host
+        if let port = components.port, !(scheme == "https" && port == 443), !(scheme == "http" && port == 80) {
+            hostField += ":\(port)"
+        }
+        var target = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
+        if let query = components.percentEncodedQuery { target += "?\(query)" }
+        return [
+            "taskify-request-v2",
+            method.uppercased(),
+            hostField,
+            target,
+            String(timestamp),
+            Data(CryptoKit.SHA256.hash(data: body)).hexString,
+        ].joined(separator: "\n")
+    }
+
+    /// Authenticate a Taskify Worker request without sending the account secret key. The
+    /// signature covers the method, host, route, and exact body; the Worker accepts it for a
+    /// minute, and for voice and Watch publishing only once.
     public func taskifyRequestHeaders(
+        method: String,
+        url: URL,
         body: Data,
         timestamp: Int = Int(Date().timeIntervalSince1970)
     ) throws -> [String: String] {
-        let hash = CryptoKit.SHA256.hash(data: Data("\(timestamp).".utf8) + body)
+        guard let text = Self.taskifyRequestMessage(method: method, url: url, timestamp: timestamp, body: body) else {
+            throw URLError(.badURL)
+        }
+        let hash = CryptoKit.SHA256.hash(data: Data(text.utf8))
         let key = try P256K.Schnorr.PrivateKey(dataRepresentation: privateKey)
         var message = Array(hash)
         let signature = try key.signature(message: &message, auxiliaryRand: nil, strict: false)
         return [
+            "X-Taskify-Auth": "v2",
             "X-Taskify-Npub": publicKeyHex,
             "X-Taskify-Timestamp": String(timestamp),
             "X-Taskify-Sig": signature.dataRepresentation.hexString,

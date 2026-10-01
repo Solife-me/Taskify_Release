@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import TaskifyCore
@@ -932,6 +933,8 @@ final class TaskifyWatchDataTests: XCTestCase {
         let authentication = try TaskifyWatchNostrCrypto.requestAuthentication(
             privateKey: privateKey,
             publicKeyHex: identity.publicKeyHex,
+            method: "POST",
+            url: URL(string: "https://taskify.solife.me/api/watch/nostr/query")!,
             body: Data("{\"test\":true}".utf8),
             timestamp: 1_786_000_000
         )
@@ -943,6 +946,8 @@ final class TaskifyWatchDataTests: XCTestCase {
             try TaskifyWatchNostrCrypto.requestAuthentication(
                 privateKey: privateKey,
                 publicKeyHex: String(repeating: "b", count: 64),
+                method: "POST",
+                url: URL(string: "https://taskify.solife.me/api/watch/nostr/query")!,
                 body: Data("{}".utf8),
                 timestamp: 1_786_000_000
             )
@@ -1022,15 +1027,33 @@ final class TaskifyWatchDataTests: XCTestCase {
         let identity = try NostrIdentity(privateKey: privateKey)
         let body = Data("{\"transcript\":\"call dentist\"}".utf8)
         let timestamp = 1_786_000_123
-        let nativeHeaders = try identity.taskifyRequestHeaders(body: body, timestamp: timestamp)
+        let url = URL(string: "https://taskify.solife.me/api/voice/extract")!
+        let nativeHeaders = try identity.taskifyRequestHeaders(method: "POST", url: url, body: body, timestamp: timestamp)
         let watchAuthentication = try TaskifyWatchNostrCrypto.requestAuthentication(
             privateKey: privateKey,
             publicKeyHex: identity.publicKeyHex,
+            method: "POST",
+            url: url,
             body: body,
             timestamp: timestamp
         )
 
         XCTAssertEqual(nativeHeaders, watchAuthentication.headers)
+        XCTAssertEqual(nativeHeaders["X-Taskify-Auth"], "v2")
+    }
+
+    /// The same vector is checked in worker/src/nostr-auth.test.ts and the PWA's
+    /// taskifyRequestAuth.test.ts, so all four signers sign the same text.
+    func testWorkerRequestMessageMatchesTheSharedVector() throws {
+        let url = URL(string: "https://taskify.solife.me/api/voice/extract")!
+        let body = Data("{\"a\":1}".utf8)
+        let expected = "taskify-request-v2\nPOST\ntaskify.solife.me\n/api/voice/extract\n1790000000\n015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862"
+        XCTAssertEqual(NostrIdentity.taskifyRequestMessage(method: "post", url: url, timestamp: 1_790_000_000, body: body), expected)
+        XCTAssertEqual(TaskifyWatchNostrCrypto.requestMessage(method: "post", url: url, timestamp: 1_790_000_000, body: body), expected)
+        XCTAssertEqual(
+            Data(SHA256.hash(data: Data(expected.utf8))).map { String(format: "%02x", $0) }.joined(),
+            "c0a46a916c09e41e1657f3fd34913825aeaaece8de15596f4fb7a850f6d42e50"
+        )
     }
 
     func testSnapshotWrittenBeforeCommandAcknowledgementsStillDecodes() throws {

@@ -208,7 +208,12 @@ public struct VoiceDictationClient: Sendable {
     }
 
     private func authenticate(_ request: inout URLRequest, identity: NostrIdentity) throws {
-        let headers = try identity.taskifyRequestHeaders(body: request.httpBody ?? Data())
+        guard let url = request.url else { throw URLError(.badURL) }
+        let headers = try identity.taskifyRequestHeaders(
+            method: request.httpMethod ?? "GET",
+            url: url,
+            body: request.httpBody ?? Data()
+        )
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }

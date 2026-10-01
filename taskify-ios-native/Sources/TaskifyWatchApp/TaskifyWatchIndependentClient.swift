@@ -473,14 +473,17 @@ struct TaskifyWatchIndependentClient: Sendable {
         acceptsRateLimitBody: Bool = false
     ) async throws -> Reply {
         let data = try encoded(body)
+        let url = fallbackBaseURL.appendingPathComponent(path)
         let authentication = try TaskifyWatchNostrCrypto.requestAuthentication(
             privateKey: privateKey,
             publicKeyHex: profile.publicKeyHex,
+            method: "POST",
+            url: url,
             body: data
         )
         // Voice can try several providers; allow the Worker's bounded fallback chain to finish.
         let timeout: TimeInterval = path.hasPrefix("api/voice/") ? 60 : 15
-        var request = URLRequest(url: fallbackBaseURL.appendingPathComponent(path), timeoutInterval: timeout)
+        var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.httpBody = data
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
