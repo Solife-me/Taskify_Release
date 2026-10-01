@@ -1,0 +1,11 @@
+# Secret scanning for CI (.github/workflows/ci.yml). Default rules, plus an allowance for test
+# fixtures, which use made-up keys and connection strings.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures use generated or fake secrets"
+paths = [
+  '''\.test\.(ts|tsx|js|mjs)$''',
+  '''(^|/)tests?/''',
+]

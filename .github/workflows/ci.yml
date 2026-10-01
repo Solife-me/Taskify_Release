@@ -1,0 +1,151 @@
+# Runs every package's checks on pushes and pull requests to main and Beta.
+# Swift targets are not covered here; run their tests from Xcode or `swift test`.
+name: CI
+
+on:
+  push:
+    branches: [main, Beta]
+  pull_request:
+    branches: [main, Beta]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+
+jobs:
+  secrets:
+    name: Secret scan (new commits)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Choose the commit range
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Only commits this push or pull request adds. Older history holds credentials that
+          # were rotated (audit F0-1) and would fail every run.
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "range=$BASE..$HEAD" >> "$GITHUB_OUTPUT"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "range=origin/main..$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=$BEFORE..$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git --redact --verbose --config /repo/.gitleaks.toml \
+            --log-opts="${{ steps.range.outputs.range }}" /repo
+
+  worker:
+    name: Cloudflare Worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+
+  push-relay:
+    name: Push relay
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: taskify-push-relay
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      # Development tooling inside @start9labs/start-sdk carries advisories that only an SDK
+      # release can fix; the image installs with --omit=dev, so that is what is gated.
+      - run: npm audit --omit=dev --audit-level=high
+
+  shared-libraries:
+    name: taskify-core and taskify-runtime-nostr
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+        working-directory: taskify-core
+      - run: npm test
+        working-directory: taskify-core
+      - run: npm ci
+        working-directory: taskify-runtime-nostr
+      - run: npm test
+        working-directory: taskify-runtime-nostr
+      - name: Committed dist matches the source
+        # Each package's pretest rebuilds dist/; the PWA and CLI consume the committed copy.
+        run: |
+          git diff --exit-code -- taskify-core/dist taskify-runtime-nostr/dist
+          test -z "$(git status --porcelain -- taskify-core/dist taskify-runtime-nostr/dist)"
+
+  cli:
+    name: CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # The CLI links the shared libraries by path, so their dependencies must be installed.
+      - run: npm ci
+        working-directory: taskify-core
+      - run: npm ci
+        working-directory: taskify-runtime-nostr
+      - run: npm ci
+        working-directory: taskify-cli
+      - run: npm test
+        working-directory: taskify-cli
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: taskify-cli
+
+  pwa:
+    name: PWA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+        working-directory: taskify-core
+      - run: npm ci
+        working-directory: taskify-runtime-nostr
+      - run: npm ci
+        working-directory: taskify-pwa
+      - run: npm run lint
+        working-directory: taskify-pwa
+      - run: npx tsc -b
+        working-directory: taskify-pwa
+      - run: npm test
+        working-directory: taskify-pwa
+      - run: npm run build
+        working-directory: taskify-pwa
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: taskify-pwa
