@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { readSecret } from "../shared/readSecret.js";
 import type { Command } from "commander";
 import { resolveBoardReference } from "taskify-core";
 import { loadConfig,redactConfig,saveConfig } from "../config.js";
@@ -12,9 +13,10 @@ export function registerConfigCommands(program: Command, initRuntime: typeof cre
   const configSet = configCmd.command("set").description("Set config values");
 
   configSet
-    .command("nsec <nsec>")
-    .description("Set your nsec private key")
-    .action(async (nsec: string) => {
+    .command("nsec [nsec]")
+    .description("Set your nsec private key (omit it to be prompted, or pass - to read standard input)")
+    .action(async (provided: string | undefined) => {
+      const nsec = await readSecret(provided, "nsec: ");
       if (!nsec.startsWith("nsec1")) {
         console.error(chalk.red(`Invalid nsec: must start with "nsec1".`));
         process.exit(1);

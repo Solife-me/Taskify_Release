@@ -23,9 +23,9 @@ taskify --help
 Set key:
 
 ```bash
-taskify config set nsec nsec1...
-# or
-export TASKIFY_NSEC=nsec1...
+taskify config set nsec          # prompts without echoing; never put the key on the command line
+# or, without storing it (read -s keeps it out of shell history):
+read -rs TASKIFY_NSEC && export TASKIFY_NSEC
 ```
 
 Check config:

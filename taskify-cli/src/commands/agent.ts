@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { readSecret } from "../shared/readSecret.js";
 import type { Command } from "commander";
 import { loadConfig,saveConfig } from "../config.js";
 import { renderJson } from "../render.js";
@@ -16,9 +17,14 @@ export function registerAgentCommands(program: Command, context: Pick<CommandCon
     .description("Manage agent AI configuration");
 
   agentConfigCmd
-    .command("set-key <key>")
-    .description("Set the AI API key")
-    .action(async (key: string) => {
+    .command("set-key [key]")
+    .description("Set the AI API key (omit it to be prompted, or pass - to read standard input)")
+    .action(async (provided: string | undefined) => {
+      const key = await readSecret(provided, "API key: ");
+      if (!key) {
+        console.error(chalk.red("No API key given."));
+        process.exit(1);
+      }
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.agent) config.agent = {};
       config.agent.apiKey = key;
