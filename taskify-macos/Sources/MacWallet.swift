@@ -137,7 +137,7 @@ struct MacWalletView: View {
                                     Text(String(describing: token.status).capitalized).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Button("Copy Token") { macCopy(token.token) }
+                                Button("Copy Token") { macCopySecret(token.token) }
                                 Button("Check Status") { Task { do { _ = try await wallet.checkOutgoingToken(token) } catch { self.error = error.localizedDescription } } }
                                 if token.status == .ready || token.status == .partiallyRedeemed {
                                     Button("Reclaim") { Task { do { _ = try await wallet.reclaim(token) } catch { self.error = error.localizedDescription } } }
@@ -225,7 +225,8 @@ private struct MacWalletTransfer: View {
                 ScrollView { Text(output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 110)
                 MacQRCodeView(value: output)
                 HStack {
-                    Button("Copy") { macCopy(output) }
+                    // In send mode the output is a token, which is cash; an invoice is fine to share.
+                    Button("Copy") { if mode == "send" { macCopySecret(output) } else { macCopy(output) } }
                     if mode == "send", let contact, !sentViaMessage {
                         Button("Send to \(contact.displayName) via Message") {
                             perform {

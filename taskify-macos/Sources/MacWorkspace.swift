@@ -53,7 +53,7 @@ struct MacWorkspace: View {
                                 Button("Board Settings…") { boardToManage = board }
                                 Button("Move Up") { _ = model.moveBoard(boardID: board.id, direction: -1) }
                                 Button("Move Down") { _ = model.moveBoard(boardID: board.id, direction: 1) }
-                                Button("Copy Board Share") { if let value = try? BoardShareContract.encode(board: board) { macCopy(value) } }
+                                Button("Copy Board Share") { if let value = try? BoardShareContract.encode(board: board) { macCopyExpiring(value) } }
                                 Button("Archive Board") { _ = model.archiveBoard(boardID: board.id) }
                             }
                     }

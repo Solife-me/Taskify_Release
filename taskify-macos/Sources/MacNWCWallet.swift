@@ -90,7 +90,7 @@ struct MacNWCWalletPanel: View {
                                 Spacer()
                                 Button("Move to \(wallet.nwcWalletLabel)") { Task { await wallet.moveTokenToNWC(pending) } }
                                     .disabled(wallet.isMovingToNWC || tokenStates[pending.id] == "Already claimed")
-                                Button("Copy") { macCopy(pending.token) }
+                                Button("Copy") { macCopySecret(pending.token) }
                                 Button(role: .destructive) { removing = pending } label: { Image(systemName: "minus.circle") }.buttonStyle(.borderless)
                             }
                         }

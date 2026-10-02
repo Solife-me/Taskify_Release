@@ -327,10 +327,10 @@ struct MacBoardEditor: View {
                         Button("Update Board Relays") { if !model.updateBoardRelayURLs(boardID: current.id, relayURLs: relays.split(separator: ",").map(String.init)) { error = "Enter valid relay URLs." } }
                     }
                     Section("Sharing") {
-                        Button("Copy Live Board Share") { if let value = try? BoardShareContract.encode(board: current) { macCopy(value) } }
+                        Button("Copy Live Board Share") { if let value = try? BoardShareContract.encode(board: current) { macCopyExpiring(value) } }
                         Button("Create Independent Template") {
                             Task {
-                                do { let result = try await model.createTemplateShare(for: current.id); macCopy(try BoardShareContract.encode(board: result.board)) }
+                                do { let result = try await model.createTemplateShare(for: current.id); macCopyExpiring(try BoardShareContract.encode(board: result.board)) }
                                 catch { self.error = error.localizedDescription }
                             }
                         }
