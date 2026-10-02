@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import http from 'node:http'
+import { isIP } from 'node:net'
 import { verifyEvent } from 'nostr-tools'
 import { WebSocket, WebSocketServer } from 'ws'
 
@@ -31,6 +32,23 @@ const WATCH_TASK_ACCESS_KIND = 27_236
 const WATCH_TASK_EVENT_KINDS = new Set([30_300, 30_301])
 const WATCH_TASK_AUTHOR_LIMIT = 64
 const WATCH_TASK_EVENT_LIMIT = 1_000
+
+/// The address a request came from, for limits. Behind the Cloudflare tunnel every socket's peer
+/// is the connector, so the client's address comes from the configured header when present. An
+/// IPv6 client is grouped by its /64, which one subscriber controls in full.
+export function clientAddressKey(request, header) {
+  const supplied = header ? request.headers[header] : undefined
+  const candidate = typeof supplied === 'string' ? supplied.split(',')[0].trim() : ''
+  const address = isIP(candidate) ? candidate : (request.socket?.remoteAddress ?? 'unknown')
+  if (isIP(address) !== 6 || address.startsWith('::ffff:')) return address
+  const [head, tail = ''] = address.split('::')
+  const headGroups = head ? head.split(':') : []
+  const tailGroups = tail ? tail.split(':') : []
+  const groups = address.includes('::')
+    ? [...headGroups, ...Array(8 - headGroups.length - tailGroups.length).fill('0'), ...tailGroups]
+    : headGroups
+  return `${groups.slice(0, 4).map((group) => group.toLowerCase().replace(/^0+(?=.)/, '')).join(':')}::/64`
+}
 
 function sendJSON(response, status, value, contentType = 'application/json') {
   const data = Buffer.from(JSON.stringify(value))
@@ -210,7 +228,15 @@ export function createTaskifyPushServer({
   // per process and per socket instead.
   maxSockets = 2_000,
   maxSocketMessagesPerTenSeconds = 100,
+  // One address must not be able to take every socket. Applies per client address, which
+  // needs `clientAddressHeader` behind a proxy; without it every socket shares the proxy's.
+  maxSocketsPerAddress = 64,
+  // Every Taskify client answers the AUTH challenge on connect. A socket that has not by now
+  // is holding a slot without using the relay.
+  unauthenticatedSocketTimeoutMs = 60_000,
 }) {
+  const clientAddressHeader = config.clientAddressHeader?.toLowerCase() || null
+  const socketsPerAddress = new Map()
   const replayGuard = new NIP98ReplayGuard()
   const publishLimiter = new SlidingWindowRateLimiter()
   const watchForwardLimiter = new SlidingWindowRateLimiter({ maximum: watchForwardsPerMinute })
@@ -227,7 +253,7 @@ export function createTaskifyPushServer({
   let pushWorkerPromise = null
 
   function enforcePrivateRequestLimit(request, pubkey) {
-    const address = request.socket.remoteAddress ?? 'unknown'
+    const address = clientAddressKey(request, clientAddressHeader)
     if (!privateRequestLimiter.consume(pubkey) || !privateIPLimiter.consume(address)) {
       throw new Error('Private request limit exceeded')
     }
@@ -848,10 +874,21 @@ export function createTaskifyPushServer({
     relaySend(state.socket, ['EOSE', subscriptionID])
   }
 
-  webSocketServer.on('connection', (socket) => {
+  webSocketServer.on('connection', (socket, request) => {
     if (sockets.size >= maxSockets) {
       socket.close(1013, 'relay is at capacity')
       return
+    }
+    // Without a trusted client-address header every socket arrives from the proxy, so a
+    // per-address cap would be one cap for everyone; only the total applies then.
+    const address = clientAddressHeader && request ? clientAddressKey(request, clientAddressHeader) : null
+    if (address) {
+      const count = socketsPerAddress.get(address) ?? 0
+      if (count >= maxSocketsPerAddress) {
+        socket.close(1013, 'too many connections from this address')
+        return
+      }
+      socketsPerAddress.set(address, count + 1)
     }
     const state = {
       socket,
@@ -863,7 +900,18 @@ export function createTaskifyPushServer({
     }
     sockets.add(state)
     relaySend(socket, ['AUTH', state.challenge])
-    socket.on('close', () => sockets.delete(state))
+    const authenticationDeadline = setTimeout(() => {
+      if (!state.authenticatedPubkey) socket.close(1008, 'auth-required: authenticate sooner')
+    }, unauthenticatedSocketTimeoutMs)
+    authenticationDeadline.unref?.()
+    socket.on('close', () => {
+      clearTimeout(authenticationDeadline)
+      sockets.delete(state)
+      if (!address) return
+      const remaining = (socketsPerAddress.get(address) ?? 1) - 1
+      if (remaining > 0) socketsPerAddress.set(address, remaining)
+      else socketsPerAddress.delete(address)
+    })
     socket.on('error', () => {})
     socket.on('message', async (data) => {
       const now = Date.now()

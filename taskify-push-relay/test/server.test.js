@@ -7,7 +7,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools'
 import WebSocket from 'ws'
 
 import { createHash } from 'node:crypto'
-import { createTaskifyPushServer } from '../src/server.js'
+import { clientAddressKey, createTaskifyPushServer } from '../src/server.js'
 import { RelayStore } from '../src/store.js'
 
 function nextFrame(socket, predicate = () => true) {
@@ -394,5 +394,68 @@ test('unsigned preview fetches are refused once signatures are required', async 
   const { recipientKey, publicURL, localURL } = await previewFixture(t, { requireSignedPreviews: true })
   assert.equal((await fetch(localURL)).status, 401)
   assert.equal((await fetch(localURL, { headers: { authorization: nip98(recipientKey, publicURL) } })).status, 200)
+})
+
+function openSocket(port, headers = {}) {
+  return new Promise((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}`, { headers })
+    const closed = new Promise((done) => socket.on('close', (code, reason) => done({ code, reason: reason.toString() })))
+    socket.on('error', () => {})
+    socket.once('message', () => resolve({ socket, closed }))
+    socket.once('close', () => resolve({ socket, closed }))
+  })
+}
+
+test('the client address comes from the trusted header, and IPv6 is grouped by /64', () => {
+  const request = (value) => ({ headers: value === undefined ? {} : { 'cf-connecting-ip': value }, socket: { remoteAddress: '10.0.0.9' } })
+  assert.equal(clientAddressKey(request('203.0.113.7'), 'cf-connecting-ip'), '203.0.113.7')
+  assert.equal(clientAddressKey(request('2001:db8:1:2:aaaa::1'), 'cf-connecting-ip'), '2001:db8:1:2::/64')
+  assert.equal(clientAddressKey(request('2001:0db8:0001:0002:ffff:1:2:3'), 'cf-connecting-ip'), '2001:db8:1:2::/64')
+  assert.equal(clientAddressKey(request('2001:db8::7'), 'cf-connecting-ip'), '2001:db8:0:0::/64')
+  // Not an address, absent, or no header configured: the socket's own peer.
+  assert.equal(clientAddressKey(request('not-an-ip'), 'cf-connecting-ip'), '10.0.0.9')
+  assert.equal(clientAddressKey(request(undefined), 'cf-connecting-ip'), '10.0.0.9')
+  assert.equal(clientAddressKey(request('203.0.113.7'), null), '10.0.0.9')
+})
+
+test('one address cannot hold more than its share of sockets', async (t) => {
+  const { port } = await serverForTest(t, {
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me', clientAddressHeader: 'cf-connecting-ip' },
+    maxSocketsPerAddress: 2,
+  })
+  const attacker = { 'cf-connecting-ip': '203.0.113.7' }
+  const held = [await openSocket(port, attacker), await openSocket(port, attacker)]
+  const refused = await openSocket(port, attacker)
+  assert.deepEqual(await refused.closed, { code: 1013, reason: 'too many connections from this address' })
+
+  const other = await openSocket(port, { 'cf-connecting-ip': '198.51.100.4' })
+  assert.equal(other.socket.readyState, WebSocket.OPEN, 'another address still gets in')
+
+  // A closed socket gives its address the slot back.
+  held[0].socket.close()
+  await held[0].closed
+  const again = await openSocket(port, attacker)
+  assert.equal(again.socket.readyState, WebSocket.OPEN)
+  for (const { socket } of [held[1], other, again]) socket.close()
+})
+
+test('without a trusted header there is no per-address socket cap, since every peer is the proxy', async (t) => {
+  const { port } = await serverForTest(t, { maxSocketsPerAddress: 1 })
+  const first = await openSocket(port)
+  const second = await openSocket(port)
+  assert.equal(second.socket.readyState, WebSocket.OPEN)
+  first.socket.close()
+  second.socket.close()
+})
+
+test('a socket that never answers the challenge is closed, an authenticated one is kept', async (t) => {
+  const { port } = await serverForTest(t, { unauthenticatedSocketTimeoutMs: 300 })
+  const idle = await openSocket(port)
+  const secretKey = generateSecretKey()
+  const authed = await connectAndAuthenticate(port, secretKey)
+  assert.deepEqual(await idle.closed, { code: 1008, reason: 'auth-required: authenticate sooner' })
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  assert.equal(authed.readyState, WebSocket.OPEN)
+  authed.close()
 })
 

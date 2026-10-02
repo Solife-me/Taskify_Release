@@ -58,8 +58,15 @@ asked for a list of everyone who uses it.
 - Device registrations: at most 10 per Nostr account and 100,000 total. A registration not
   refreshed for 90 days expires (the apps re-register on every launch); when the table is full
   the registration refreshed longest ago is dropped to make room
-- WebSocket: at most 2,000 connections per process and 100 messages per connection every
-  10 seconds (the relay sits behind a proxy, so there is no per-address cap)
+- WebSocket: at most 2,000 connections per process, 64 per client address, and 100 messages per
+  connection every 10 seconds; a connection that has not answered the NIP-42 challenge within
+  60 seconds is closed
+- Client address: behind a proxy every connection comes from the proxy, so per-address limits
+  (the WebSocket cap above and the 1,200-a-minute NIP-98 request limit) read the address from the
+  header named by `CLIENT_ADDRESS_HEADER`, grouping IPv6 by /64. The StartOS package sets
+  `cf-connecting-ip` for the Cloudflare tunnel. Without the header, the per-address WebSocket cap
+  is off and the request limit is shared by everyone. A client that can reach the port without
+  going through the proxy can choose its own address
 - NIP-98 requests: signature, then per-account rate limit, then the one-use record, which refuses
   new requests rather than forgetting live entries when full
 - Watch forwarding: at most 240 forwards a minute to any one destination host across all

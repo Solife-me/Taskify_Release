@@ -33,6 +33,10 @@ export async function loadConfig(environment = process.env) {
     // iPhone builds from 2026-10 sign preview fetches; older ones do not. Set to "true" once
     // those are gone, so a leaked preview URL is useless without the recipient's key.
     requireSignedPreviews: environment.REQUIRE_SIGNED_PREVIEWS === 'true',
+    // The header a trusted proxy puts the client's address in (Cloudflare: cf-connecting-ip).
+    // Set it only when the proxy is the sole way in: a client that reaches the port directly
+    // could otherwise choose its own address.
+    clientAddressHeader: environment.CLIENT_ADDRESS_HEADER?.trim() || null,
     apns,
   }
 }

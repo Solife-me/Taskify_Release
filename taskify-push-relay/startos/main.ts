@@ -28,6 +28,9 @@ export const main = sdk.setupMain(async ({ effects }) => {
         APNS_CONFIG_PATH: apnsConfigPath,
         PUBLIC_BASE_URL: 'https://push.solife.me',
         PUBLIC_RELAY_URL: 'wss://push.solife.me',
+        // push.solife.me reaches this service through a Cloudflare tunnel, so every connection's
+        // peer is the connector; Cloudflare supplies the client's address in this header.
+        CLIENT_ADDRESS_HEADER: 'cf-connecting-ip',
       },
       sigtermTimeout: 30_000,
     },
