@@ -4,6 +4,7 @@ import { writeFile } from "fs/promises";
 import { decryptAttachmentToDataUrl } from "../attachmentCrypto.js";
 import { loadConfig } from "../config.js";
 import { renderJson } from "../render.js";
+import { safeDownloadName } from "../shared/safeDownloadName.js";
 import type { CommandContext } from "./context.js";
 
 export function registerAttachmentsCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "extractDocumentUrl" | "resolveDocumentByRef">) {
@@ -81,7 +82,9 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
         if (!hit) throw new Error(`Attachment not found: ${attachmentRef}`);
         const name = typeof hit.doc.name === "string" ? hit.doc.name : `document-${hit.index + 1}`;
         const mime = typeof hit.doc.mimeType === "string" ? hit.doc.mimeType : "application/octet-stream";
-        const outPath = opts.out || name;
+        // Without --out the name comes from whoever attached the file: keep it inside the current
+        // directory and never replace an existing file.
+        const outPath = opts.out || safeDownloadName(name, `document-${hit.index + 1}`);
         let dataUrl = typeof hit.doc.dataUrl === "string" ? hit.doc.dataUrl : "";
         const remoteUrl = extractDocumentUrl(hit.doc);
         if ((!dataUrl || dataUrl.startsWith("data:application/octet-stream;base64,")) && remoteUrl) {
@@ -96,7 +99,7 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
         }
         if (!dataUrl.startsWith("data:")) throw new Error("Attachment has no retrievable data.");
         const base64 = dataUrl.split(",", 2)[1] || "";
-        await writeFile(outPath, Buffer.from(base64, "base64"));
+        await writeFile(outPath, Buffer.from(base64, "base64"), opts.out ? undefined : { flag: "wx" });
         console.log(chalk.green(`✓ Saved attachment to ${outPath}`));
         process.exit(0);
       } catch (err) {
@@ -159,7 +162,9 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
         if (!hit) throw new Error(`Attachment not found: ${attachmentRef}`);
         const name = typeof hit.doc.name === "string" ? hit.doc.name : `document-${hit.index + 1}`;
         const mime = typeof hit.doc.mimeType === "string" ? hit.doc.mimeType : "application/octet-stream";
-        const outPath = opts.out || name;
+        // Without --out the name comes from whoever attached the file: keep it inside the current
+        // directory and never replace an existing file.
+        const outPath = opts.out || safeDownloadName(name, `document-${hit.index + 1}`);
         let dataUrl = typeof hit.doc.dataUrl === "string" ? hit.doc.dataUrl : "";
         const remoteUrl = extractDocumentUrl(hit.doc);
         if ((!dataUrl || dataUrl.startsWith("data:application/octet-stream;base64,")) && remoteUrl) {
@@ -174,7 +179,7 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
         }
         if (!dataUrl.startsWith("data:")) throw new Error("Attachment has no retrievable data.");
         const base64 = dataUrl.split(",", 2)[1] || "";
-        await writeFile(outPath, Buffer.from(base64, "base64"));
+        await writeFile(outPath, Buffer.from(base64, "base64"), opts.out ? undefined : { flag: "wx" });
         console.log(chalk.green(`✓ Saved attachment to ${outPath}`));
         process.exit(0);
       } catch (err) {
