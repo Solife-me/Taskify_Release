@@ -689,6 +689,9 @@ struct BoardsView: View {
     @State private var selection = TaskSelectionController()
     @State private var completionAnimations = TaskCompletionAnimationController()
     @FocusState private var quickTaskFieldIsFocused: Bool
+    /// The quick-add field is a UIKit text field, which a FocusState write alone cannot reach;
+    /// bumping this asks it to become first responder.
+    @State private var quickAddFocusRequest = 0
 
     private var sortMode: UpcomingSortMode {
         UpcomingSortMode(rawValue: sortModeRaw) ?? .manual
@@ -753,6 +756,7 @@ struct BoardsView: View {
                 FloatingQuickAddBar(
                     draft: $quickTaskDraft,
                     isFocused: $quickTaskFieldIsFocused,
+                    focusRequest: quickAddFocusRequest,
                     destinationName: quickAddDestination.displayName,
                     onSubmit: { addQuickTask(dismissKeyboard: false) },
                     onAddButton: { addQuickTask(dismissKeyboard: true) },
@@ -845,6 +849,7 @@ struct BoardsView: View {
                 }
                 quickAddColumnID = nil
                 quickTaskFieldIsFocused = true
+                quickAddFocusRequest += 1
                 focusQuickAdd = false
             }
         }
@@ -2095,6 +2100,7 @@ private struct BoardAddSheet: View {
 private struct FloatingQuickAddBar: View {
     @Binding var draft: String
     var isFocused: FocusState<Bool>.Binding
+    let focusRequest: Int
     let destinationName: String
     let onSubmit: () -> Void
     let onAddButton: () -> Void
@@ -2105,6 +2111,7 @@ private struct FloatingQuickAddBar: View {
             QuickAddTextField(
                 text: $draft,
                 isFocused: isFocused,
+                focusRequest: focusRequest,
                 accessibilityLabel: "New task in \(destinationName)",
                 onSubmit: onSubmit
             )
@@ -2159,11 +2166,14 @@ private struct FloatingQuickAddBar: View {
 private struct QuickAddTextField: UIViewRepresentable {
     @Binding var text: String
     var isFocused: FocusState<Bool>.Binding
+    let focusRequest: Int
     let accessibilityLabel: String
     let onSubmit: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
+        let coordinator = Coordinator(parent: self)
+        coordinator.handledFocusRequest = focusRequest
+        return coordinator
     }
 
     func makeUIView(context: Context) -> UITextField {
@@ -2202,7 +2212,16 @@ private struct QuickAddTextField: UIViewRepresentable {
         if field.text != text {
             field.text = text
         }
-        if isFocused.wrappedValue {
+        if focusRequest != context.coordinator.handledFocusRequest {
+            context.coordinator.handledFocusRequest = focusRequest
+            if !field.isFirstResponder {
+                if field.window != nil {
+                    field.becomeFirstResponder()
+                } else {
+                    DispatchQueue.main.async { [weak field] in field?.becomeFirstResponder() }
+                }
+            }
+        } else if isFocused.wrappedValue {
             context.coordinator.hasSynchronizedFocus = true
             if !field.isFirstResponder {
                 field.becomeFirstResponder()
@@ -2216,6 +2235,7 @@ private struct QuickAddTextField: UIViewRepresentable {
     final class Coordinator: NSObject, UITextFieldDelegate, UIGestureRecognizerDelegate {
         var parent: QuickAddTextField
         var hasSynchronizedFocus = false
+        var handledFocusRequest = 0
         // The floating field sits outside the task scroll views, and an empty scroll view has no
         // draggable content. Observe the active window so swipe-down works on populated and empty
         // boards.
