@@ -1785,6 +1785,7 @@ struct ManualIncomingPaymentsView: View {
 #if os(iOS)
 struct WalletView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var wallet: WalletViewModel
     @State private var showingMints = false
     @State private var showingHistory = false
@@ -1988,22 +1989,31 @@ struct WalletView: View {
             Spacer()
 
             TaskifyGlassControlGroup(spacing: 8) {
-                VStack(alignment: .trailing, spacing: 9) {
-                    WalletUtilityButton(title: "History", systemImage: "clock.arrow.circlepath") {
-                        if wallet.isNWCWalletActive { showingNWCHistory = true } else { showingHistory = true }
-                    }
-                    .accessibilityLabel("Wallet history")
-
-                    WalletUtilityButton(title: "Wallets", systemImage: "wallet.pass") {
-                        showingWalletMode = true
-                    }
-                    .accessibilityIdentifier("wallet-mode-button")
-
-                    WalletUtilityButton(title: "Settings", systemImage: "gearshape.fill") {
-                        showingWalletSettings = true
-                    }
+                // A phone stacks these beside the balance; a regular-width window has room for a
+                // row, which keeps the balance from being pushed down the page.
+                if horizontalSizeClass == .regular {
+                    HStack(spacing: 9) { utilityButtons }
+                } else {
+                    VStack(alignment: .trailing, spacing: 9) { utilityButtons }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var utilityButtons: some View {
+        WalletUtilityButton(title: "History", systemImage: "clock.arrow.circlepath") {
+            if wallet.isNWCWalletActive { showingNWCHistory = true } else { showingHistory = true }
+        }
+        .accessibilityLabel("Wallet history")
+
+        WalletUtilityButton(title: "Wallets", systemImage: "wallet.pass") {
+            showingWalletMode = true
+        }
+        .accessibilityIdentifier("wallet-mode-button")
+
+        WalletUtilityButton(title: "Settings", systemImage: "gearshape.fill") {
+            showingWalletSettings = true
         }
     }
 
