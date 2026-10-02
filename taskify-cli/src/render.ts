@@ -28,11 +28,16 @@ function npubToHex(npubOrHex: string): string {
   return npubOrHex;
 }
 
+/**
+ * Whether the task says it was last edited by a trusted npub. Every board member signs with the
+ * shared board key and `lastEditedBy` is a field inside the task, so any member can write any npub
+ * there: this is a claim, not a verified author, and the label says so.
+ */
 export function trustLabel(lastEditedBy: string | undefined, trustedNpubs: string[]): string {
   if (!lastEditedBy) return chalk.yellow("? unknown");
   // Normalize all trusted entries to raw hex for comparison
   const trustedHexSet = new Set(trustedNpubs.map(npubToHex));
-  if (trustedHexSet.has(lastEditedBy)) return chalk.green("✓ trusted");
+  if (trustedHexSet.has(lastEditedBy)) return chalk.yellow("~ claims trusted");
   return chalk.red("✗ untrusted");
 }
 
