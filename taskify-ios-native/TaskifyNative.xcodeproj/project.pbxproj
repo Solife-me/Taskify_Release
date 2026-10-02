@@ -13,6 +13,7 @@
 		R10000000000000000000003 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = R10000000000000000000012 /* TaskifyCore */; };
 		R10000000000000000000004 /* TaskifyNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = R10000000000000000000005 /* TaskifyNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */; };
+		DE03707800A9FDC91E489014 /* IPadKeyboardUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */; };
 		0B64CE2D2E8DC2C381D5DFA2 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */; };
 		0F0D02A663DD9FC10DEA44B1 /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE60E2576148EFF86B5FB8E /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift */; };
 		204177419B8968CC8C904B29 /* ScrollPerformanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */; };
@@ -159,6 +160,7 @@
 		57F458985178452A2D282E74 /* ReceiveLightningSheetUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReceiveLightningSheetUITests.swift; sourceTree = "<group>"; };
 		B00000000000000000009A04 /* NWCWalletUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NWCWalletUITests.swift; sourceTree = "<group>"; };
 		58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TimeZonePickerUITests.swift; sourceTree = "<group>"; };
+		126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPadKeyboardUITests.swift; sourceTree = "<group>"; };
 		69AB7FE65898EA9D39EC4DAE /* TaskifyNativeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskifyNativeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8578A541E8A9F26924788981 /* Sources/TaskifyApp/App/StartupViewSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/StartupViewSettings.swift; sourceTree = SOURCE_ROOT; };
 		8A5E0768C8D7B1E2BECC61D8 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
@@ -461,6 +463,7 @@
 				12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */,
 				DF2D5621648AA754EA642832 /* FirstRunOnboardingUITests.swift */,
 				58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */,
+				126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */,
 				B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */,
 				BB07C0DE0000000000000002 /* ChatComposerUITests.swift */,
 			);
@@ -785,6 +788,7 @@
 				204177419B8968CC8C904B29 /* ScrollPerformanceUITests.swift in Sources */,
 				9731A21014C92A8CB3F1A5EB /* FirstRunOnboardingUITests.swift in Sources */,
 				0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */,
+				DE03707800A9FDC91E489014 /* IPadKeyboardUITests.swift in Sources */,
 				BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */,
 				BB07C0DE0000000000000001 /* ChatComposerUITests.swift in Sources */,
 			);

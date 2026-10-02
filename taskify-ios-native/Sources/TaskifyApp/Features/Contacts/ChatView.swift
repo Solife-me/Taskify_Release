@@ -38,6 +38,8 @@ struct ContactsView: View {
     @Environment(AppModel.self) private var model
     @State private var navigationPath: [ChatConversationRoute] = []
     @State private var preferredChatColumn: NavigationSplitViewColumn = .sidebar
+    @State private var chatColumnVisibility: NavigationSplitViewVisibility = .all
+    @Environment(\.horizontalSizeClass) private var chatHorizontalSizeClass
     @State private var searchText = ""
     @State private var showingContactDirectory = false
     @State private var showingNewConversation = false
@@ -377,7 +379,10 @@ struct ContactsView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         if UIDevice.current.userInterfaceIdiom == .pad {
-            NavigationSplitView(preferredCompactColumn: $preferredChatColumn) {
+            NavigationSplitView(
+                columnVisibility: $chatColumnVisibility,
+                preferredCompactColumn: $preferredChatColumn
+            ) {
                 content()
                     .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 380)
             } detail: {
@@ -417,7 +422,12 @@ struct ContactsView: View {
             onClose: {
                 navigationPath = []
                 preferredChatColumn = .sidebar
-            }
+            },
+            // Expanded, the conversation list sits beside the thread, so "back" has nowhere to
+            // go; the thread offers the list's column instead. Collapsed (Slide Over, a narrow
+            // Split View), it is a pushed screen and keeps its back button.
+            conversationListVisibility: UIDevice.current.userInterfaceIdiom == .pad
+                && chatHorizontalSizeClass == .regular ? $chatColumnVisibility : nil
         )
         .environment(model)
     }
@@ -2364,6 +2374,26 @@ private final class ChatPasteTextView: UITextView {
         }
     }
 
+    /// Command-Return with a hardware keyboard. The text view consumes Return key presses
+    /// before SwiftUI shortcuts or menu commands see them, so the command lives here.
+    var commandReturn: (() -> Void)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard commandReturn != nil else { return super.keyCommands }
+        let send = UIKeyCommand(
+            title: "Send Message",
+            action: #selector(performCommandReturn),
+            input: "\r",
+            modifierFlags: .command
+        )
+        send.wantsPriorityOverSystemBehavior = true
+        return (super.keyCommands ?? []) + [send]
+    }
+
+    @objc private func performCommandReturn() {
+        commandReturn?()
+    }
+
     override func paste(itemProviders: [NSItemProvider]) {
         if pasteAttachment?(itemProviders) == true { return }
         super.paste(itemProviders: itemProviders)
@@ -2375,6 +2405,7 @@ private final class ChatPasteTextView: UITextView {
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(performCommandReturn) { return commandReturn != nil }
         // An image/file-only clipboard is attachable but not pasteable text, and UIKit
         // would otherwise hide the Paste item entirely. Keep it offered so the paste
         // override can stage the clipboard contents as an attachment. The has* family is
@@ -2396,6 +2427,7 @@ private struct ChatComposerTextView: UIViewRepresentable {
     let accessibilityLabel: String
     let onSubmit: () -> Void
     let pasteAttachment: ([NSItemProvider]) -> Bool
+    var onCommandReturn: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -2425,6 +2457,7 @@ private struct ChatComposerTextView: UIViewRepresentable {
         )
         view.accessibilityLabel = accessibilityLabel
         view.pasteAttachment = pasteAttachment
+        view.commandReturn = onCommandReturn
         let tapRecognizer = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.focusComposer(_:))
@@ -2440,6 +2473,7 @@ private struct ChatComposerTextView: UIViewRepresentable {
         view.isEditable = isEnabled
         view.accessibilityLabel = accessibilityLabel
         view.pasteAttachment = pasteAttachment
+        view.commandReturn = onCommandReturn
 
         if dismissKeyboard {
             view.dismissFocus()
@@ -2601,6 +2635,8 @@ private struct DirectMessageConversationView: View {
     let peerPublicKey: String
     let initialTimelineItemID: String?
     var onClose: (() -> Void)? = nil
+    var conversationListVisibility: Binding<NavigationSplitViewVisibility>? = nil
+    @State private var isAttachmentDropTargeted = false
 
     private func closeConversation() {
         if let onClose { onClose() } else { dismiss() }
@@ -3051,6 +3087,18 @@ private struct DirectMessageConversationView: View {
             }
         }
         .background(TaskifyAppBackground())
+        .onDrop(of: [.item], isTargeted: $isAttachmentDropTargeted) { providers in
+            guard !hasLeftGroup, !isBlocked else { return false }
+            return stageAttachmentProviders(providers, fromPasteboard: false)
+        }
+        .overlay {
+            if isAttachmentDropTargeted, !hasLeftGroup, !isBlocked {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(TaskifyTheme.accent, lineWidth: 3)
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
+        }
         .task(id: "\(peerPublicKey):\(scenePhase == .active)") {
             // Keep cached commands visible while revalidating on chat open and foreground.
             // Read the observed model directly so concurrent refreshes also update the menu.
@@ -3217,8 +3265,18 @@ private struct DirectMessageConversationView: View {
             .accessibilityLabel(group == nil ? "Open contact details" : "Open group details")
 
             HStack {
-                HeaderIconButton(systemName: "chevron.left", accessibilityLabel: "Back to chats") {
-                    closeConversation()
+                if let conversationListVisibility {
+                    // The list's own column carries the system toggle while it is showing; the
+                    // thread only needs a way to bring it back once it has been hidden.
+                    if conversationListVisibility.wrappedValue == .detailOnly {
+                        HeaderIconButton(systemName: "sidebar.left", accessibilityLabel: "Show conversations") {
+                            withAnimation { conversationListVisibility.wrappedValue = .all }
+                        }
+                    }
+                } else {
+                    HeaderIconButton(systemName: "chevron.left", accessibilityLabel: "Back to chats") {
+                        closeConversation()
+                    }
                 }
 
                 Spacer()
@@ -3784,7 +3842,9 @@ private struct DirectMessageConversationView: View {
                                 dismissKeyboard: isSearchingConversation,
                                 accessibilityLabel: composerPrompt,
                                 onSubmit: send,
-                                pasteAttachment: pasteAttachmentProviders
+                                pasteAttachment: pasteAttachmentProviders,
+                                // Command-Return sends from a hardware keyboard.
+                                onCommandReturn: { if canSend { send() } }
                             )
                         }
                         .padding(.leading, 15)
@@ -4013,10 +4073,19 @@ private struct DirectMessageConversationView: View {
 
     @MainActor
     private func pasteAttachmentProviders(_ providers: [NSItemProvider]) -> Bool {
-        guard Self.clipboardAttachmentSource(in: providers) != nil else { return false }
+        stageAttachmentProviders(providers, fromPasteboard: true)
+    }
+
+    /// Stages pasted or dropped media as an attachment. A drop carries its own providers, so the
+    /// general pasteboard's unrelated text must not turn a dropped photo away.
+    private func stageAttachmentProviders(_ providers: [NSItemProvider], fromPasteboard: Bool) -> Bool {
+        guard Self.clipboardAttachmentSource(in: providers, fromPasteboard: fromPasteboard) != nil
+        else { return false }
         guard !isSending, !isSendingAttachment else { return true }
         attachmentPreparationTask?.cancel()
-        attachmentPreparationTask = Task { await stageClipboardAttachment(providers) }
+        attachmentPreparationTask = Task {
+            await stageClipboardAttachment(providers, fromPasteboard: fromPasteboard)
+        }
         return true
     }
 
@@ -4089,9 +4158,10 @@ private struct DirectMessageConversationView: View {
     }
 
     @MainActor
-    private func stageClipboardAttachment(_ providers: [NSItemProvider]) async {
+    private func stageClipboardAttachment(_ providers: [NSItemProvider], fromPasteboard: Bool) async {
         guard !isSending, !isSendingAttachment,
-              let source = Self.clipboardAttachmentSource(in: providers) else { return }
+              let source = Self.clipboardAttachmentSource(in: providers, fromPasteboard: fromPasteboard)
+        else { return }
         isSendingAttachment = true
         defer { isSendingAttachment = false }
         var imported: URL?
@@ -4153,13 +4223,14 @@ private struct DirectMessageConversationView: View {
     }
 
     private static func clipboardAttachmentSource(
-        in providers: [NSItemProvider]
+        in providers: [NSItemProvider],
+        fromPasteboard: Bool
     ) -> ClipboardAttachmentSource? {
         // If the clipboard can paste as text at all, text wins: plain or styled text
         // copies must never stage as a file attachment, no matter what companion types
         // the source app registers. Media with no text representation (a copied
         // screenshot, video, or file) still stages as an attachment below.
-        let hasTextRepresentation = UIPasteboard.general.hasStrings || providers.contains { provider in
+        let hasTextRepresentation = (fromPasteboard && UIPasteboard.general.hasStrings) || providers.contains { provider in
             provider.registeredTypeIdentifiers.compactMap(UTType.init).contains {
                 $0.conforms(to: .text)
             }
