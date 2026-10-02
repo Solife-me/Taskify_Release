@@ -57,6 +57,14 @@ struct RootTabView: View {
                 _ = appearanceRevision
                 return TaskifyAppearanceSettings.hasBackgroundImage
             }())
+            .focusedSceneValue(\.taskifyNavigator, TaskifyNavigator(
+                select: { selectedTab = $0 },
+                newTask: {
+                    selectedTab = .boards
+                    pendingQuickAddColumnID = nil
+                    pendingQuickAdd = true
+                }
+            ))
             .onOpenURL { url in
                 guard let link = TaskifyWidgetLink(url: url) else { return }
                 handle(link)
@@ -417,5 +425,45 @@ private struct BottomTabItem: View {
                 .lineLimit(1)
         }
         .foregroundStyle(TaskifyTheme.primaryText)
+    }
+}
+
+// MARK: - Hardware keyboard
+
+/// What the scene's keyboard commands act on. Published by `RootTabView` so the commands reach
+/// the window that has focus.
+struct TaskifyNavigator {
+    let select: (AppTab) -> Void
+    let newTask: () -> Void
+}
+
+private struct TaskifyNavigatorKey: FocusedValueKey {
+    typealias Value = TaskifyNavigator
+}
+
+extension FocusedValues {
+    var taskifyNavigator: TaskifyNavigator? {
+        get { self[TaskifyNavigatorKey.self] }
+        set { self[TaskifyNavigatorKey.self] = newValue }
+    }
+}
+
+/// Keyboard shortcuts for an iPad with a hardware keyboard; holding Command lists them.
+struct TaskifyKeyboardCommands: Commands {
+    @FocusedValue(\.taskifyNavigator) private var navigator
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Task") { navigator?.newTask() }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(navigator == nil)
+        }
+        CommandMenu("Go") {
+            ForEach(Array(AppTab.allCases.enumerated()), id: \.element) { index, tab in
+                Button(tab.title) { navigator?.select(tab) }
+                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+                    .disabled(navigator == nil)
+            }
+        }
     }
 }
