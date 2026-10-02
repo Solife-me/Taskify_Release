@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import worker from "./index.ts";
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -211,6 +212,102 @@ class MockD1 {
   }
 }
 
+/// D1 over a real in-memory SQLite database built from the migrations, for tests whose SQL
+/// matters (JSON arrays, upserts, transactions). Exposes the same table views as `MockD1`.
+class SqliteD1 {
+  sqlite = new DatabaseSync(":memory:");
+  /// Statements executed, counting each statement inside a batch, as D1's per-invocation
+  /// query limit may.
+  queries = 0;
+
+  constructor() {
+    const directory = new URL("../migrations/", import.meta.url);
+    for (const name of readdirSync(directory).filter((file) => file.endsWith(".sql")).sort()) {
+      this.sqlite.exec(readFileSync(new URL(name, directory), "utf8"));
+    }
+    this.sqlite.exec("PRAGMA foreign_keys = ON"); // D1 enforces foreign keys
+  }
+
+  prepare(query: string) {
+    const d1 = this;
+    let params: any[] = [];
+    return {
+      _sql: query.replace(/\s+/g, " ").trim(),
+      bind(...values: unknown[]) {
+        params = values as any[];
+        return this;
+      },
+      async run() {
+        d1.queries += 1;
+        const result = d1.sqlite.prepare(query).run(...params);
+        return { success: true, meta: { changes: Number(result.changes) } };
+      },
+      async first() {
+        d1.queries += 1;
+        return (d1.sqlite.prepare(query).get(...params) as any) ?? null;
+      },
+      async all() {
+        d1.queries += 1;
+        return { success: true, results: d1.sqlite.prepare(query).all(...params) as any[] };
+      },
+    };
+  }
+
+  async batch(statements: any[]) {
+    this.sqlite.exec("BEGIN");
+    try {
+      const out: any[] = [];
+      for (const statement of statements) out.push(await statement.run());
+      this.sqlite.exec("COMMIT");
+      return out;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private insert(table: string, row: Record<string, unknown>) {
+    const columns = Object.keys(row);
+    this.sqlite
+      .prepare(`INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+      .run(...(Object.values(row) as any[]));
+  }
+
+  private rows<T>(table: string): T[] & { push: (...rows: T[]) => number } {
+    const rows = this.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all() as any;
+    rows.push = (...added: T[]) => {
+      for (const row of added) this.insert(table, row as any);
+      return rows.length + added.length;
+    };
+    return rows;
+  }
+
+  get reminders(): ReminderRow[] & { push: (...rows: ReminderRow[]) => number } {
+    return this.rows<ReminderRow>("reminders");
+  }
+
+  get pending(): PendingRow[] & { push: (...rows: PendingRow[]) => number } {
+    return this.rows<PendingRow>("pending_notifications");
+  }
+
+  get devices() {
+    const d1 = this;
+    return {
+      set(_id: string, row: DeviceRow) { d1.insert("devices", row); },
+      get(id: string) { return (d1.sqlite.prepare("SELECT * FROM devices WHERE device_id = ?").get(id) as DeviceRow) ?? undefined; },
+      has(id: string) { return !!d1.sqlite.prepare("SELECT 1 FROM devices WHERE device_id = ?").get(id); },
+      delete(id: string) { d1.sqlite.prepare("DELETE FROM devices WHERE device_id = ?").run(id); },
+      get size() { return Number((d1.sqlite.prepare("SELECT count(*) AS n FROM devices").get() as any).n); },
+      values() { return (d1.sqlite.prepare("SELECT * FROM devices").all() as DeviceRow[]).values(); },
+    };
+  }
+
+  budget(key: string): number {
+    const row = this.sqlite.prepare("SELECT sum(used) AS used FROM write_budget WHERE key LIKE ?").get(key) as any;
+    return Number(row?.used ?? 0);
+  }
+}
+
 function base64UrlEncode(buffer: Uint8Array): string {
   let s = "";
   for (const b of buffer) s += String.fromCharCode(b);
@@ -255,7 +352,7 @@ async function makeEnv(db: MockD1) {
 }
 
 test("GET /api/config returns worker origin and vapid key", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const req = new Request("https://taskify-v2.solife.me/api/config", { method: "GET" });
@@ -282,7 +379,7 @@ test("public fetch validation blocks local and private network targets", () => {
 });
 
 test("preview and NIP-05 endpoints honor their rate-limit bindings", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const denied = { limit: async () => ({ success: false }) };
   env.PREVIEW_RATE_LIMITER = denied;
   env.NIP05_RATE_LIMITER = denied;
@@ -301,7 +398,7 @@ test("preview and NIP-05 endpoints honor their rate-limit bindings", async () =>
 });
 
 test("NIP-05 rejects private-network and malformed domains before fetching", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   for (const address of ["alice@localhost", "alice@127.0.0.1", "alice@example.com/path"]) {
     const response = await worker.fetch(
       new Request(`https://taskify-v2.solife.me/api/nip05?address=${encodeURIComponent(address)}`),
@@ -312,7 +409,7 @@ test("NIP-05 rejects private-network and malformed domains before fetching", asy
 });
 
 test("static assets are served with security headers", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const res = await worker.fetch(
@@ -336,7 +433,7 @@ test("static assets are served with security headers", async () => {
 });
 
 test("static assets and config do not initialize the D1 schema", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   env.TASKIFY_DB = {
     prepare() {
       throw new Error("D1 should not be touched for this route");
@@ -350,7 +447,7 @@ test("static assets and config do not initialize the D1 schema", async () => {
 });
 
 test("removed cloud-backup API returns 404 instead of the PWA shell", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const res = await worker.fetch(
     new Request("https://taskify-v2.solife.me/api/backups?npub=npub1obsolete"),
     env,
@@ -359,7 +456,7 @@ test("removed cloud-backup API returns 404 instead of the PWA shell", async () =
 });
 
 test("sw.js is served with no-cache and worker-allowed scope", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const res = await worker.fetch(
@@ -373,7 +470,7 @@ test("sw.js is served with no-cache and worker-allowed scope", async () => {
 });
 
 test("PUT /api/reminders returns 404 for unknown device", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const req = new Request("https://taskify-v2.solife.me/api/reminders", {
@@ -387,7 +484,7 @@ test("PUT /api/reminders returns 404 for unknown device", async () => {
 });
 
 test("POST /api/reminders/poll retains notifications until the client acknowledges them", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const endpoint = "https://fcm.googleapis.com/fcm/send/dev-1";
@@ -438,7 +535,7 @@ test("POST /api/reminders/poll retains notifications until the client acknowledg
 });
 
 test("reminder mutations require the registered subscription capability", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
   const endpoint = "https://fcm.googleapis.com/fcm/send/capability";
   const subscriptionId = await sha256Hex(endpoint);
@@ -512,7 +609,7 @@ test("reminder mutations require the registered subscription capability", async 
 });
 
 test("device registration cannot rebind an existing device without its prior capability", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
   const oldEndpoint = "https://fcm.googleapis.com/fcm/send/original";
   const oldSubscriptionId = await sha256Hex(oldEndpoint);
@@ -558,7 +655,7 @@ test("device registration cannot rebind an existing device without its prior cap
 });
 
 test("scheduled due reminders send push ping with VAPID headers and enqueue pending", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const endpoint = "https://fcm.googleapis.com/fcm/send/send";
@@ -608,7 +705,7 @@ test("scheduled due reminders send push ping with VAPID headers and enqueue pend
 });
 
 test("scheduled handles 410 by removing expired device", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const endpoint = "https://fcm.googleapis.com/fcm/send/expired";
@@ -647,7 +744,7 @@ test("scheduled handles 410 by removing expired device", async () => {
 });
 
 test("scheduled batches multiple devices and sends one push per device", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const endpointA = "https://fcm.googleapis.com/fcm/send/a";
@@ -730,7 +827,7 @@ test("scheduled batches multiple devices and sends one push per device", async (
 });
 
 test("scheduled processing does not delete a reminder when pending insertion fails", async () => {
-  class FailingPendingD1 extends MockD1 {
+  class FailingPendingD1 extends SqliteD1 {
     override async batch(statements: any[]) {
       if (statements.some((statement) => /^INSERT INTO pending_notifications /i.test(statement._sql ?? ""))) {
         throw new Error("simulated pending insert failure");
@@ -1758,7 +1855,7 @@ function pushDevice(deviceId: string, endpoint: string, endpointHash: string): D
 }
 
 test("device registration accepts only browser push-service endpoints", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const register = (endpoint: string, deviceId: string) => worker.fetch(new Request("https://taskify.test/api/devices", {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -1786,7 +1883,7 @@ test("device registration accepts only browser push-service endpoints", async ()
 });
 
 test("reminder saves are capped, de-duplicated, and truncate long titles", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
   const endpoint = "https://fcm.googleapis.com/fcm/send/caps";
   const subscriptionId = await sha256Hex(endpoint);
@@ -1811,7 +1908,7 @@ test("reminder saves are capped, de-duplicated, and truncate long titles", async
 });
 
 test("oversized push bodies are refused before parsing", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const response = await worker.fetch(new Request("https://taskify.test/api/devices", {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -1821,7 +1918,7 @@ test("oversized push bodies are refused before parsing", async () => {
 });
 
 test("push routes honor their rate-limit binding", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   env.PUSH_RATE_LIMITER = { limit: async () => ({ success: false }) };
   const response = await worker.fetch(new Request("https://taskify.test/api/reminders", {
     method: "PUT", headers: { "content-type": "application/json" }, body: "{}",
@@ -1830,7 +1927,7 @@ test("push routes honor their rate-limit binding", async () => {
 });
 
 test("errors do not reveal internal detail", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const malformed = await worker.fetch(new Request("https://taskify.test/api/devices/%E0%A4%A", { method: "DELETE" }), env);
   assert.equal(malformed.status, 400);
   env.TASKIFY_DB = { prepare() { throw new Error("D1_ERROR: secret table detail"); } };
@@ -1842,7 +1939,7 @@ test("errors do not reveal internal detail", async () => {
 });
 
 test("cron removes devices stored with endpoints that are no longer allowed, without contacting them", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
   const endpoint = "https://victim.example/legacy";
   db.devices.set("legacy", pushDevice("legacy", endpoint, await sha256Hex(endpoint)));
@@ -1859,27 +1956,141 @@ test("cron removes devices stored with endpoints that are no longer allowed, wit
   assert.equal(db.devices.has("legacy"), false);
 });
 
-test("one cron tick handles a bounded number of due reminders", async () => {
-  const db = new MockD1();
-  const env = await makeEnv(db);
-  for (let i = 0; i < 300; i++) {
-    const endpoint = `https://fcm.googleapis.com/fcm/send/bulk-${i}`;
-    db.devices.set(`bulk-${i}`, pushDevice(`bulk-${i}`, endpoint, await sha256Hex(endpoint)));
-    db.reminders.push({ device_id: `bulk-${i}`, reminder_key: "t:0", task_id: "t", board_id: null, title: "x", due_iso: new Date().toISOString(), minutes: 0, send_at: Date.now() - 1_000 });
-  }
+async function runCronTick(env: any): Promise<string[]> {
+  const calls: string[] = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response("", { status: 201 })) as any;
+  globalThis.fetch = (async (url: RequestInfo | URL) => { calls.push(String(url)); return new Response("", { status: 201 }); }) as any;
   try {
     await worker.scheduled({ scheduledTime: Date.now(), cron: "* * * * *" } as any, env, undefined as any);
   } finally {
     globalThis.fetch = originalFetch;
   }
-  assert.equal(db.pending.length, 200);
-  assert.equal(db.reminders.length, 100, "the rest waits for the next tick");
+  return calls;
+}
+
+function dueReminder(deviceId: string, key: string, sendAt = Date.now() - 1_000): ReminderRow {
+  return { device_id: deviceId, reminder_key: key, task_id: key, board_id: null, title: "x", due_iso: new Date().toISOString(), minutes: 0, send_at: sendAt };
+}
+
+test("one cron tick wakes at most 45 devices, within the free plan's 50 outbound requests", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  for (let i = 0; i < 300; i++) {
+    const endpoint = `https://fcm.googleapis.com/fcm/send/bulk-${i}`;
+    db.devices.set(`bulk-${i}`, pushDevice(`bulk-${i}`, endpoint, await sha256Hex(endpoint)));
+    db.reminders.push(dueReminder(`bulk-${i}`, "t:0"));
+  }
+  db.queries = 0;
+  const calls = await runCronTick(env);
+  assert.equal(calls.length, 45);
+  assert.equal(db.pending.length, 45);
+  assert.equal(db.reminders.length, 255, "the rest waits for the next tick");
+  assert.ok(db.queries <= 5, `a tick runs a fixed number of statements, ran ${db.queries}`);
+});
+
+test("one device's backlog cannot hold other devices' reminders back", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const hogEndpoint = "https://fcm.googleapis.com/fcm/send/hog";
+  db.devices.set("hog", pushDevice("hog", hogEndpoint, await sha256Hex(hogEndpoint)));
+  const old = Date.now() - 60 * 60_000;
+  for (let i = 0; i < 300; i++) db.reminders.push(dueReminder("hog", `hog:${i}`, old + i));
+  for (let i = 0; i < 10; i++) {
+    const endpoint = `https://fcm.googleapis.com/fcm/send/user-${i}`;
+    db.devices.set(`user-${i}`, pushDevice(`user-${i}`, endpoint, await sha256Hex(endpoint)));
+    db.reminders.push(dueReminder(`user-${i}`, "real:0"));
+  }
+  const calls = await runCronTick(env);
+  assert.equal(calls.length, 11);
+  const pending = db.pending;
+  assert.equal(pending.filter((row) => row.device_id === "hog").length, 5);
+  assert.equal(pending.filter((row) => row.device_id.startsWith("user-")).length, 10, "every other device is served this tick");
+});
+
+async function saveReminders(env: any, deviceId: string, subscriptionId: string, reminders: unknown[], address = "192.0.2.10") {
+  return worker.fetch(new Request("https://taskify.test/api/reminders", {
+    method: "PUT",
+    headers: { "content-type": "application/json", "CF-Connecting-IP": address },
+    body: JSON.stringify({ deviceId, subscriptionId, reminders }),
+  }), env);
+}
+
+const SCHEDULE_DUE = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
+
+function schedule(count: number, title = "t", prefix = "task") {
+  const due = SCHEDULE_DUE;
+  return Array.from({ length: count }, (_, i) => ({ taskId: `${prefix}-${i}`, title, dueISO: due, minutesBefore: [0] }));
+}
+
+test("a reminder save writes only what changed, in a fixed number of statements", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://fcm.googleapis.com/fcm/send/diff";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("diff", pushDevice("diff", endpoint, subscriptionId));
+
+  db.queries = 0;
+  assert.equal((await saveReminders(env, "diff", subscriptionId, schedule(500))).status, 204);
+  assert.equal(db.reminders.length, 500);
+  assert.ok(db.queries <= 8, `500 new reminders took ${db.queries} statements`);
+  assert.equal(db.budget("reminders:all"), 500);
+
+  // The PWA re-sends its whole schedule on every load: nothing changes, nothing is written.
+  assert.equal((await saveReminders(env, "diff", subscriptionId, schedule(500))).status, 204);
+  assert.equal(db.budget("reminders:all"), 500);
+
+  // One title edited and one reminder removed: two changes.
+  const edited = schedule(499);
+  edited[0].title = "renamed";
+  assert.equal((await saveReminders(env, "diff", subscriptionId, edited)).status, 204);
+  assert.equal(db.budget("reminders:all"), 502);
+  const rows = db.reminders;
+  assert.equal(rows.length, 499);
+  assert.equal(rows.find((row) => row.task_id === "task-0")?.title, "renamed");
+  assert.equal(rows.some((row) => row.task_id === "task-499"), false);
+});
+
+test("an address runs out of reminder changes for the day; another address does not", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://fcm.googleapis.com/fcm/send/budget";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("budget", pushDevice("budget", endpoint, subscriptionId));
+
+  assert.equal((await saveReminders(env, "budget", subscriptionId, schedule(500, "t", "a"))).status, 204); // 500
+  assert.equal((await saveReminders(env, "budget", subscriptionId, schedule(500, "t", "b"))).status, 204); // +1,000
+  const refused = await saveReminders(env, "budget", subscriptionId, schedule(500, "t", "c"));
+  assert.equal(refused.status, 429);
+  assert.ok(Number(refused.headers.get("Retry-After")) > 0);
+  assert.equal(db.reminders.filter((row) => row.task_id.startsWith("b-")).length, 500, "a refused save changes nothing");
+
+  const elsewhere = await saveReminders(env, "budget", subscriptionId, schedule(10, "t", "c"), "198.51.100.20");
+  assert.equal(elsewhere.status, 204);
+});
+
+test("once the day's shared reminder budget is spent, changes are refused but unchanged registrations still answer", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const register = (deviceId: string, endpoint: string) => worker.fetch(new Request("https://taskify.test/api/devices", {
+    method: "PUT",
+    headers: { "content-type": "application/json", "CF-Connecting-IP": "192.0.2.30" },
+    body: JSON.stringify({ deviceId, platform: "ios", subscription: { endpoint, keys: { auth: "a", p256dh: "b" } } }),
+  }), env);
+
+  assert.equal((await register("known", "https://fcm.googleapis.com/fcm/send/known")).status, 200);
+  assert.equal(db.budget("reminders:all"), 1);
+  assert.equal((await register("known", "https://fcm.googleapis.com/fcm/send/known")).status, 200);
+  assert.equal(db.budget("reminders:all"), 1, "an unchanged registration writes nothing");
+
+  db.sqlite.prepare("UPDATE write_budget SET used = 6000 WHERE key = 'reminders:all'").run();
+  assert.equal((await register("known", "https://fcm.googleapis.com/fcm/send/known")).status, 200);
+  assert.equal((await register("newcomer", "https://fcm.googleapis.com/fcm/send/newcomer")).status, 429);
+  const subscriptionId = await sha256Hex("https://fcm.googleapis.com/fcm/send/known");
+  assert.equal((await saveReminders(env, "known", subscriptionId, schedule(1), "203.0.113.9")).status, 429);
 });
 
 test("Watch bridge bodies are bounded before the signature is checked", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const response = await worker.fetch(new Request("https://taskify.test/api/watch/nostr/query", {
     method: "POST",
     headers: { "content-type": "application/json", "X-Taskify-Npub": "ab".repeat(32), "X-Taskify-Timestamp": String(Math.floor(Date.now() / 1000)), "X-Taskify-Sig": "cd".repeat(64) },
@@ -1898,7 +2109,7 @@ test("rate-limit keys group IPv6 callers by /64", async () => {
 });
 
 test("link previews never return a non-http final URL, image, or icon", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -1950,7 +2161,7 @@ test("the Watch bridge drops relay targets that are not public hosts", async () 
   assert.deepEqual(kept, ["wss://relay.damus.io"]);
 });
 
-test("hourly pruning deletes week-old voice counters and two-week-old undelivered notifications", async () => {
+test("hourly pruning deletes week-old counters and two-week-old undelivered notifications", async () => {
   const { pruneStaleRows } = await import("./index.ts");
   const statements: Array<{ sql: string; params: unknown[] }> = [];
   const db = {
@@ -1964,6 +2175,7 @@ test("hourly pruning deletes week-old voice counters and two-week-old undelivere
   await pruneStaleRows({ TASKIFY_DB: db } as any, now);
   assert.deepEqual(statements, [
     { sql: "DELETE FROM voice_quota WHERE date < ?", params: ["2026-09-23"] },
+    { sql: "DELETE FROM write_budget WHERE date < ?", params: ["2026-09-23"] },
     { sql: "DELETE FROM pending_notifications WHERE created_at < ?", params: [now - 14 * 24 * 60 * 60 * 1000] },
     { sql: "DELETE FROM request_signatures WHERE expires_at < ?", params: [now] },
   ]);
@@ -1971,7 +2183,7 @@ test("hourly pruning deletes week-old voice counters and two-week-old undelivere
 
 
 test("API responses carry no CORS grant, so other sites cannot read them", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const preflight = await worker.fetch(
     new Request("https://taskify-v2.solife.me/api/preview?url=https://example.com", {
       method: "OPTIONS",
@@ -1986,7 +2198,7 @@ test("API responses carry no CORS grant, so other sites cannot read them", async
 });
 
 test("NIP-05 refuses an oversized response", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const originalFetch = globalThis.fetch;
   const huge = JSON.stringify({ names: { alice: "a".repeat(64) }, padding: "x".repeat(300 * 1024) });
   globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {

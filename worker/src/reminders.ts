@@ -14,6 +14,7 @@ import {
   base64UrlEncode,
   base64UrlDecode,
   parseJsonWithin,
+  rateLimitAddress,
   JSON_HEADERS,
   MINUTE_MS,
 } from "./lib.ts";
@@ -33,8 +34,21 @@ const MAX_ID_LENGTH = 128;
 const MAX_ENDPOINT_LENGTH = 2048;
 const MAX_KEY_LENGTH = 256;
 const MAX_OFFSET_MINUTES = 366 * 24 * 60;
-// Due rows handled per cron tick; the rest wait for the next minute.
-const MAX_BATCHES_PER_TICK = 4;
+// The cron examines the oldest due rows and serves a bounded set of devices from them. On the
+// free plan an invocation may make 50 outbound requests, and a push past that fails, so one tick
+// wakes at most 45 devices. A device's reminders go out a few at a time, so one device's backlog
+// cannot hold everyone else's. Whatever is left waits for the next minute.
+const MAX_DUE_ROWS_SCANNED = 400;
+const MAX_PUSHES_PER_TICK = 45;
+const MAX_REMINDERS_PER_DEVICE_PER_TICK = 5;
+
+// Daily budgets on reminder changes (a reminder row added, changed, or removed, or a device row
+// written). D1's free plan allows 100,000 rows written a day for everything the Worker stores,
+// and each reminder costs about ten over its life once index entries, the cron's move to
+// pending, and the poll's removal are counted. These keep one address, or every address
+// together, from spending the allowance; voice and the rest keep the remainder.
+const REMINDER_CHANGES_PER_ADDRESS_PER_DAY = 1_500;
+const REMINDER_CHANGES_PER_DAY = 6_000;
 
 // Browser push services. The cron sends a signed POST to a device's endpoint, so any other
 // host would let a caller aim the Worker at an address of their choosing.
@@ -186,7 +200,19 @@ async function handleRegisterDevice(request: Request, env: Env): Promise<Respons
     },
     endpointHash,
   };
-  await upsertDevice(env, record, Date.now());
+  // The PWA registers on every load; a registration that changes nothing writes nothing.
+  const unchanged = existingById
+    && resolvedDeviceId === deviceId
+    && existingById.platform === record.platform
+    && existingById.endpointHash === record.endpointHash
+    && existingById.subscription.endpoint === record.subscription.endpoint
+    && existingById.subscription.keys.auth === record.subscription.keys.auth
+    && existingById.subscription.keys.p256dh === record.subscription.keys.p256dh;
+  if (!unchanged) {
+    const refused = await reserveReminderBudget(request, requireDb(env), 1);
+    if (refused) return refused;
+    await upsertDevice(env, record, Date.now());
+  }
 
   return jsonResponse({ subscriptionId: endpointHash, deviceId: resolvedDeviceId });
 }
@@ -280,32 +306,139 @@ async function handleSaveReminders(request: Request, env: Env): Promise<Response
     .sort((a, b) => a.sendAt - b.sendAt)
     .slice(0, MAX_REMINDERS_PER_DEVICE);
 
-  const statements = [db.prepare("DELETE FROM reminders WHERE device_id = ?").bind(deviceId)];
-  if (entries.length > 0) {
-    for (const entry of entries) {
-      statements.push(
-        db
-          .prepare(
-            `INSERT INTO reminders (device_id, reminder_key, task_id, board_id, title, due_iso, minutes, send_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .bind(
-            deviceId,
-            entry.reminderKey,
-            entry.taskId,
-            entry.boardId ?? null,
-            entry.title,
-            entry.dueISO,
-            entry.minutes,
-            entry.sendAt,
-          ),
-      );
-    }
-  }
+  // Refuse before reading the stored set once the day's budget is gone, so refused saves stay cheap.
+  const budget = await reminderBudgetKeys(request);
+  if (!(await hasReminderBudget(db, budget))) return reminderBudgetExceeded(budget.day);
 
+  // The client sends its whole schedule each time. Write only the difference: an unchanged save
+  // costs no writes, and an edit costs the reminders it touched.
+  const stored = await db
+    .prepare<ReminderRow>(
+      `SELECT device_id, reminder_key, task_id, board_id, title, due_iso, minutes, send_at
+       FROM reminders WHERE device_id = ?`,
+    )
+    .bind(deviceId)
+    .all<ReminderRow>();
+  const storedByKey = new Map((stored.results ?? []).map((row) => [row.reminder_key, row]));
+  const changed: ReminderEntry[] = [];
+  for (const entry of entries) {
+    const row = storedByKey.get(entry.reminderKey);
+    storedByKey.delete(entry.reminderKey);
+    if (row
+      && row.task_id === entry.taskId
+      && (row.board_id ?? undefined) === entry.boardId
+      && row.title === entry.title
+      && row.due_iso === entry.dueISO
+      && row.minutes === entry.minutes
+      && row.send_at === entry.sendAt) {
+      continue;
+    }
+    changed.push(entry);
+  }
+  const removedKeys = [...storedByKey.keys()];
+  const changes = changed.length + removedKeys.length;
+  if (changes === 0) {
+    return new Response(null, { status: 204, headers: JSON_HEADERS });
+  }
+  const refused = await reserveReminderBudget(request, db, changes, budget);
+  if (refused) return refused;
+
+  // Two statements however many reminders change: D1 on the free plan allows 50 queries per
+  // invocation, and each statement in a batch may count as one.
+  const statements: D1PreparedStatement[] = [];
+  if (removedKeys.length) {
+    statements.push(
+      db.prepare(
+        `DELETE FROM reminders WHERE device_id = ? AND reminder_key IN (SELECT value FROM json_each(?))`,
+      ).bind(deviceId, JSON.stringify(removedKeys)),
+    );
+  }
+  if (changed.length) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO reminders (device_id, reminder_key, task_id, board_id, title, due_iso, minutes, send_at)
+         SELECT ?, json_extract(value, '$.key'), json_extract(value, '$.taskId'), json_extract(value, '$.boardId'),
+                json_extract(value, '$.title'), json_extract(value, '$.dueISO'), json_extract(value, '$.minutes'),
+                json_extract(value, '$.sendAt')
+         FROM json_each(?) WHERE true
+         ON CONFLICT(device_id, reminder_key) DO UPDATE SET
+           task_id = excluded.task_id, board_id = excluded.board_id, title = excluded.title,
+           due_iso = excluded.due_iso, minutes = excluded.minutes, send_at = excluded.send_at`,
+      ).bind(deviceId, JSON.stringify(changed.map((entry) => ({
+        key: entry.reminderKey,
+        taskId: entry.taskId,
+        boardId: entry.boardId ?? null,
+        title: entry.title,
+        dueISO: entry.dueISO,
+        minutes: entry.minutes,
+        sendAt: entry.sendAt,
+      })))),
+    );
+  }
   await db.batch(statements);
 
   return new Response(null, { status: 204, headers: JSON_HEADERS });
+}
+
+type ReminderBudget = { day: string; keys: [string, number][] };
+
+async function reminderBudgetKeys(request: Request): Promise<ReminderBudget> {
+  const day = new Date().toISOString().slice(0, 10);
+  const address = rateLimitAddress(request.headers.get("CF-Connecting-IP") || "unknown");
+  // Day-salted, as for voice: the table holds no addresses, and nothing links one day's to the next.
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${day}:${address}`));
+  const addressKey = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  return {
+    day,
+    keys: [
+      [`reminders:address:${addressKey}`, REMINDER_CHANGES_PER_ADDRESS_PER_DAY],
+      ["reminders:all", REMINDER_CHANGES_PER_DAY],
+    ],
+  };
+}
+
+async function hasReminderBudget(db: D1Database, budget: ReminderBudget): Promise<boolean> {
+  const rows = await db
+    .prepare<{ key: string; used: number }>(
+      `SELECT key, used FROM write_budget WHERE date = ? AND key IN (?, ?)`,
+    )
+    .bind(budget.day, budget.keys[0][0], budget.keys[1][0])
+    .all<{ key: string; used: number }>();
+  const used = new Map((rows.results ?? []).map((row) => [row.key, row.used]));
+  return budget.keys.every(([key, limit]) => (used.get(key) ?? 0) < limit);
+}
+
+function reminderBudgetExceeded(day: string): Response {
+  const response = jsonResponse({ error: "Too many reminder changes today" }, 429);
+  const nextDay = Date.parse(`${day}T00:00:00Z`) + 24 * 60 * 60 * 1000;
+  response.headers.set("Retry-After", String(Math.max(60, Math.ceil((nextDay - Date.now()) / 1000))));
+  return response;
+}
+
+/// Reserves `cost` changes against the caller's address and the whole service, atomically per
+/// counter. The address is charged first, so an address that has spent its own budget never
+/// touches the shared one.
+async function reserveReminderBudget(
+  request: Request,
+  db: D1Database,
+  cost: number,
+  known?: ReminderBudget,
+): Promise<Response | null> {
+  const budget = known ?? await reminderBudgetKeys(request);
+  for (const [key, limit] of budget.keys) {
+    if (cost > limit) return reminderBudgetExceeded(budget.day);
+    const row = await db
+      .prepare(
+        `INSERT INTO write_budget (key, date, used) VALUES (?, ?, ?)
+         ON CONFLICT(key, date) DO UPDATE SET used = used + excluded.used
+         WHERE used + excluded.used <= ?
+         RETURNING used`,
+      )
+      .bind(key, budget.day, cost, limit)
+      .first();
+    if (!row) return reminderBudgetExceeded(budget.day);
+  }
+  return null;
 }
 
 async function handlePollReminders(request: Request, env: Env): Promise<Response> {
@@ -374,105 +507,120 @@ async function handlePollReminders(request: Request, env: Env): Promise<Response
 
 async function processDueReminders(env: Env): Promise<void> {
   const now = Date.now();
-  // Each live reminder produces one pending insert and one source delete.
-  // Keep the pair count within D1's batch statement limit.
-  const batchSize = 50;
   const db = requireDb(env);
 
-  // Process in batches, and only a few per tick, so a backlog cannot run one invocation past
-  // its limits; whatever is left is picked up the next minute.
-  for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch += 1) {
-    const dueResult = await db
-      .prepare<ReminderRow>(
-        `SELECT device_id, reminder_key, task_id, board_id, title, due_iso, minutes, send_at
-         FROM reminders
-         WHERE send_at <= ?
-         ORDER BY send_at
-         LIMIT ?`,
-      )
-      .bind(now, batchSize)
-      .all<ReminderRow>();
+  const scanned = (await db
+    .prepare<ReminderRow & { row_id: number }>(
+      `SELECT rowid AS row_id, device_id, reminder_key, task_id, board_id, title, due_iso, minutes, send_at
+       FROM reminders
+       WHERE send_at <= ?
+       ORDER BY send_at
+       LIMIT ?`,
+    )
+    .bind(now, MAX_DUE_ROWS_SCANNED)
+    .all<ReminderRow & { row_id: number }>()).results ?? [];
+  if (!scanned.length) return;
 
-    const dueReminders = dueResult.results ?? [];
-    if (!dueReminders.length) {
-      break;
-    }
-
-    const grouped = new Map<string, ReminderRow[]>();
-    for (const reminder of dueReminders) {
-      const existing = grouped.get(reminder.device_id);
-      if (existing) {
-        existing.push(reminder);
-      } else {
-        grouped.set(reminder.device_id, [reminder]);
-      }
-    }
-
-    const deviceGroups = await mapWithConcurrency(
-      Array.from(grouped.entries()),
-      8,
-      async ([deviceId, reminders]) => ({
-        deviceId,
-        reminders,
-        device: await getDeviceRecord(env, deviceId),
-      }),
-    );
-
-    const deliveryStatements: D1PreparedStatement[] = [];
-    for (const { deviceId, reminders, device } of deviceGroups) {
-      if (!device) {
-        for (const reminder of reminders) {
-          deliveryStatements.push(
-            db.prepare("DELETE FROM reminders WHERE device_id = ? AND reminder_key = ?")
-              .bind(deviceId, reminder.reminder_key),
-          );
-        }
-        continue;
-      }
-      for (const reminder of reminders) {
-        // Insertion precedes deletion. D1 executes batch() transactionally, so
-        // a failed pending write cannot consume the source reminder.
-        deliveryStatements.push(
-          db
-            .prepare(
-              `INSERT INTO pending_notifications (device_id, task_id, board_id, title, due_iso, minutes, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            )
-            .bind(
-              deviceId,
-              reminder.task_id,
-              reminder.board_id,
-              reminder.title,
-              reminder.due_iso,
-              reminder.minutes,
-              now,
-            ),
-          db.prepare("DELETE FROM reminders WHERE device_id = ? AND reminder_key = ?")
-            .bind(deviceId, reminder.reminder_key),
-        );
-      }
-    }
-    await db.batch(deliveryStatements);
-
-    // The durable pending rows now exist. Push is only a wake-up signal; a
-    // failed push leaves the notifications available for a later poll.
-    await mapWithConcurrency(deviceGroups, 8, async ({ deviceId, reminders, device }) => {
-      if (!device) return;
-      const pendingNotifications: PendingReminder[] = reminders.map((reminder) => ({
-        taskId: reminder.task_id,
-        boardId: reminder.board_id ?? undefined,
-        title: reminder.title,
-        dueISO: reminder.due_iso,
-        minutes: reminder.minutes,
-      }));
-      const ttlSeconds = computeReminderTTL(pendingNotifications, now);
-      await sendPushPing(env, device, deviceId, ttlSeconds);
-    });
-
-    if (dueReminders.length < batchSize) {
-      break;
+  // Oldest first, but at most a few per device and a bounded number of devices.
+  const grouped = new Map<string, Array<ReminderRow & { row_id: number }>>();
+  for (const row of scanned) {
+    const group = grouped.get(row.device_id);
+    if (group) {
+      if (group.length < MAX_REMINDERS_PER_DEVICE_PER_TICK) group.push(row);
+    } else if (grouped.size < MAX_PUSHES_PER_TICK) {
+      grouped.set(row.device_id, [row]);
     }
   }
+
+  const devices = await getDeviceRecords(env, [...grouped.keys()]);
+  const delivered: Array<ReminderRow & { row_id: number }> = [];
+  const finishedRowIds: number[] = [];
+  for (const [deviceId, rows] of grouped) {
+    // Delivered reminders move to pending; one whose device is gone is simply removed.
+    if (devices.has(deviceId)) delivered.push(...rows);
+    finishedRowIds.push(...rows.map((row) => row.row_id));
+  }
+
+  // One insert and one delete however many rows move. D1 executes batch() as one transaction,
+  // so a failed pending write cannot consume the source reminders.
+  const statements: D1PreparedStatement[] = [];
+  if (delivered.length) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO pending_notifications (device_id, task_id, board_id, title, due_iso, minutes, created_at)
+         SELECT json_extract(value, '$.deviceId'), json_extract(value, '$.taskId'), json_extract(value, '$.boardId'),
+                json_extract(value, '$.title'), json_extract(value, '$.dueISO'), json_extract(value, '$.minutes'), ?
+         FROM json_each(?)`,
+      ).bind(now, JSON.stringify(delivered.map((row) => ({
+        deviceId: row.device_id,
+        taskId: row.task_id,
+        boardId: row.board_id,
+        title: row.title,
+        dueISO: row.due_iso,
+        minutes: row.minutes,
+      })))),
+    );
+  }
+  statements.push(
+    db.prepare(`DELETE FROM reminders WHERE rowid IN (SELECT value FROM json_each(?))`)
+      .bind(JSON.stringify(finishedRowIds)),
+  );
+  await db.batch(statements);
+
+  // The durable pending rows now exist. Push is only a wake-up signal; a
+  // failed push leaves the notifications available for a later poll.
+  await mapWithConcurrency([...grouped.entries()], 8, async ([deviceId, reminders]) => {
+    const device = devices.get(deviceId);
+    if (!device) return;
+    const pendingNotifications: PendingReminder[] = reminders.map((reminder) => ({
+      taskId: reminder.task_id,
+      boardId: reminder.board_id ?? undefined,
+      title: reminder.title,
+      dueISO: reminder.due_iso,
+      minutes: reminder.minutes,
+    }));
+    const ttlSeconds = computeReminderTTL(pendingNotifications, now);
+    await sendPushPing(env, device, deviceId, ttlSeconds);
+  });
+}
+
+/// Devices by ID in one query; an ID missing from D1 falls back to the legacy KV record.
+async function getDeviceRecords(env: Env, deviceIds: string[]): Promise<Map<string, DeviceRecord>> {
+  const records = new Map<string, DeviceRecord>();
+  if (!deviceIds.length) return records;
+  const db = requireDb(env);
+  const rows = await db
+    .prepare<DeviceRow>(
+      `SELECT device_id, platform, endpoint, endpoint_hash, subscription_auth, subscription_p256dh
+       FROM devices
+       WHERE device_id IN (SELECT value FROM json_each(?))`,
+    )
+    .bind(JSON.stringify(deviceIds))
+    .all<DeviceRow>();
+  for (const row of rows.results ?? []) {
+    records.set(row.device_id, deviceRecordFromRow(row));
+  }
+  for (const deviceId of deviceIds) {
+    if (records.has(deviceId)) continue;
+    const legacy = await migrateDeviceFromKv(env, deviceId);
+    if (legacy) records.set(deviceId, legacy);
+  }
+  return records;
+}
+
+function deviceRecordFromRow(row: DeviceRow): DeviceRecord {
+  return {
+    deviceId: row.device_id,
+    platform: row.platform,
+    endpointHash: row.endpoint_hash,
+    subscription: {
+      endpoint: row.endpoint,
+      keys: {
+        auth: row.subscription_auth,
+        p256dh: row.subscription_p256dh,
+      },
+    },
+  };
 }
 
 async function appendPending(env: Env, deviceId: string, notifications: PendingReminder[]): Promise<void> {
@@ -538,18 +686,7 @@ async function getDeviceRecord(env: Env, deviceId: string): Promise<DeviceRecord
   if (!row) {
     return migrateDeviceFromKv(env, deviceId);
   }
-  return {
-    deviceId: row.device_id,
-    platform: row.platform,
-    endpointHash: row.endpoint_hash,
-    subscription: {
-      endpoint: row.endpoint,
-      keys: {
-        auth: row.subscription_auth,
-        p256dh: row.subscription_p256dh,
-      },
-    },
-  };
+  return deviceRecordFromRow(row);
 }
 
 async function findDeviceIdByEndpoint(env: Env, endpoint: string): Promise<string | undefined> {

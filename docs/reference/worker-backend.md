@@ -120,38 +120,35 @@ Reference: `worker/src/index.ts:174–233`, plus migration baseline `worker/migr
 
 ### 5.1 Save/update reminders
 
-`PUT /api/reminders` (`handleSaveReminders`) validates payload and performs full replacement for device state.
+`PUT /api/reminders` (`handleSaveReminders`) takes the device's whole schedule and stores it, writing only the difference from what is already stored.
 
 Stored per device: at most 500 reminders (the soonest are kept), at most 8 offsets per task, titles cut to 200 characters, task and board IDs of at most 128 characters, integer offsets within a year. A repeated offset is stored once rather than failing the save.
 
 High-level flow:
-1. Parse `{ deviceId, reminders[] }`
+1. Parse `{ deviceId, subscriptionId, reminders[] }` and verify the device's capability
 2. Validate reminder item shape inline (`taskId`, `title`, `dueISO`, `minutesBefore[]`) and compute `sendAt`
-3. Resolve/verify device record
-4. Replace existing device reminder rows in D1
-5. Clear existing pending rows for the device to avoid stale deliveries
+3. Refuse with `429` if the day's reminder budget is already spent (below)
+4. Read the stored rows and compare: unchanged reminders are skipped, so re-sending the same schedule (the PWA does on every load) writes nothing
+5. Charge the number of changes to the budget, then delete removed reminders and upsert new or changed ones: two statements, however many reminders change (each statement takes a JSON array through `json_each`)
+
+**Daily write budget.** On the free plan D1 allows 100,000 rows written per day for everything the Worker stores, and each reminder costs about ten over its life (index entries, the cron's move to `pending_notifications`, the poll's removal). Reminder changes — a reminder added, changed, or removed, or a device row written by registration — are therefore counted in `write_budget`: at most 1,500 a day per address (IPv6 grouped by /64; the address is stored only as a day-salted hash) and 6,000 a day for the whole service. The address is charged first. Past either, saves and registrations that would change something get `429` with `Retry-After` set to the next UTC midnight; an unchanged registration still answers `200`. Counters are pruned after a week.
 
 Reference:
-- `handleSaveReminders`: `worker/src/index.ts:2335+`
+- `handleSaveReminders`, `reserveReminderBudget`: `worker/src/reminders.ts`
 
 ### 5.2 Cron dispatch
 
 `scheduled()` runs once per minute and calls `processDueReminders()`.
 
-`processDueReminders` behavior:
-1. Query due rows from `reminders` where `send_at <= now` in batches
-2. Delete processed reminder rows
-3. Group by device
-4. Insert mapped reminder payload rows into `pending_notifications` (`appendPending`)
-5. Resolve device subscription (D1 first, KV migration fallback)
-6. Send lightweight Web Push ping (`sendPushPing`) so SW wakes and polls
-7. If push endpoint expired (410), remove device state
+`processDueReminders` behavior, once per tick:
+1. Read the 400 oldest due rows (`send_at <= now`)
+2. Take rows oldest first, at most 5 per device and at most 45 devices: the free plan allows 50 outbound requests per invocation, and a push past that fails. One device's backlog therefore cannot hold back everyone else's; whatever is left waits for the next minute
+3. Load those devices in one query (`getDeviceRecords`; KV migration fallback for IDs missing from D1)
+4. In one transaction: insert the delivered rows into `pending_notifications` and delete the taken rows (rows whose device is gone are just deleted)
+5. Send one lightweight Web Push ping per device (`sendPushPing`) so the service worker wakes and polls
+6. If the push endpoint has expired (404/410), remove the device's state
 
-References:
-- `scheduled`: `worker/src/index.ts:317–335`
-- `processDueReminders`: `worker/src/index.ts:2443+`
-- `appendPending`: `worker/src/index.ts:2507+`
-- `sendPushPing`: `worker/src/index.ts:2779+`
+References: `scheduled` in `worker/src/index.ts`; `processDueReminders`, `getDeviceRecords`, `sendPushPing` in `worker/src/reminders.ts`.
 
 ### 5.3 Client poll + drain
 
@@ -174,9 +171,9 @@ References:
 
 `handleRegisterDevice` upserts device subscription into D1, tracks endpoint hash, and supports endpoint collision handling/migration.
 
-The endpoint must be an `https` URL, with no credentials or port, on a browser push service: `fcm.googleapis.com`, `updates.push.services.mozilla.com` (or `*.push.services.mozilla.com`), `web.push.apple.com` (or `*.push.apple.com`), or `*.notify.windows.com`. Anything else gets `400`, because the cron sends a signed POST to whatever endpoint is stored. `deviceId` is at most 128 characters and each subscription key at most 256. Registration, deletion, and reminder saves share `PUSH_RATE_LIMITER` (30 per minute per address, IPv6 grouped by /64), and their bodies are capped at 256 KiB (`413` above that).
+The endpoint must be an `https` URL, with no credentials or port, on a browser push service: `fcm.googleapis.com`, `updates.push.services.mozilla.com` (or `*.push.services.mozilla.com`), `web.push.apple.com` (or `*.push.apple.com`), or `*.notify.windows.com`. Anything else gets `400`, because the cron sends a signed POST to whatever endpoint is stored. `deviceId` is at most 128 characters and each subscription key at most 256. Registration, deletion, and reminder saves share `PUSH_RATE_LIMITER` (30 per minute per address, IPv6 grouped by /64), and their bodies are capped at 256 KiB (`413` above that). A registration that changes nothing is not written; one that does counts one change against the daily write budget (section 5.1).
 
-Reference: `worker/src/index.ts:608+`.
+Reference: `handleRegisterDevice` in `worker/src/reminders.ts`.
 
 ### Delete (`DELETE /api/devices/:deviceId`)
 
@@ -297,7 +294,7 @@ Use this when changing validation/handler behavior so clients and service worker
 |---|---|---|---|
 | `PUT /api/devices` | `200` JSON `{ subscriptionId, deviceId }` | `400` (`deviceId`/`platform`/`subscription`/endpoint validation), `413` (body over 256 KiB), `429` (rate limit), `500` (router-level catch, generic `{"error":"Internal error"}`) | Validation in `handleRegisterDevice` (`worker/src/index.ts:608–622`) |
 | `DELETE /api/devices/:deviceId` | `204` empty body | `500` (unexpected DB/runtime error via router catch) | Delete is idempotent in practice; missing rows still return `204` (`worker/src/index.ts:2305–2333`) |
-| `PUT /api/reminders` | `204` empty body | `400` (`deviceId` missing, `reminders` not array), `404` (unknown device), `500` (router catch) | Existing reminders are replaced, then pending queue is cleared (`worker/src/index.ts:2335–2401`) |
+| `PUT /api/reminders` | `204` empty body | `400` (`deviceId` missing, `reminders` not array), `404` (unknown device), `429` (rate limit or daily write budget), `500` (router catch) | Stored reminders are brought in line with the request, writing only what changed (`worker/src/reminders.ts`) |
 | `POST /api/reminders/poll` | `200` JSON (`[]` or `PendingReminder[]`), or `204` for acknowledgement-only | `400` (invalid acknowledgement list), `404` (unknown/unauthorized device), `500` (router catch) | Rows remain durable until explicitly acknowledged after display (`worker/src/reminders.ts`) |
 
 Implementation detail worth preserving:
@@ -309,25 +306,18 @@ Implementation detail worth preserving:
 This section is a precise "what runs in what order" map for the cron-to-device path.
 Use it when changing idempotency or debugging duplicate/missed notifications.
 
-### 12.1 `processDueReminders` batch loop contract
+### 12.1 `processDueReminders` tick contract
 
-Anchor: `worker/src/index.ts:2443–2504`
+Anchor: `processDueReminders` in `worker/src/reminders.ts`
 
-Per iteration:
-1. **Select due rows** (`send_at <= now`, ordered, capped by `LIMIT 256`).
-   - SQL anchor: `:2451–2457`
-2. **Delete selected reminder rows immediately** (device_id + reminder_key pairs).
-   - SQL anchor: `:2466–2471`
-3. **Group reminders by device** in-memory.
-   - Grouping anchor: `:2473–2481`
-4. For each device:
-   - Load device record (`getDeviceRecord`).
-   - If missing device: clear pending rows for that device and skip push.
-     - Missing-device cleanup anchor: `:2484–2487`
-   - Else append pending rows (`appendPending`) and push ping.
-     - append + ping anchor: `:2496–2499`
+Per tick:
+1. **Select due rows**: the 400 oldest with `send_at <= now`, with their `rowid`.
+2. **Choose fairly**: oldest first, at most 5 rows per device and 45 devices.
+3. **Load devices** for the chosen rows in one query.
+4. **Move in one transaction**: insert pending rows for devices that exist, then delete every chosen row by `rowid`. If the insert fails, nothing is deleted.
+5. **Ping** each device that exists, at most 45 a tick.
 
-Important behavior: reminder rows are removed **before** push ping, so queue durability relies on `pending_notifications`, not `reminders`.
+Important behavior: reminder rows are removed **before** the push ping, so queue durability relies on `pending_notifications`, not `reminders`.
 
 ### 12.2 Queue append/poll drain semantics
 
