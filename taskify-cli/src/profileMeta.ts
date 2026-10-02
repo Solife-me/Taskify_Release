@@ -9,6 +9,8 @@ import { nip19, getPublicKey } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { normalizeRelayUrls } from "taskify-runtime-nostr";
 import type { NostrEvent } from "nostr-tools";
+import { sanitizeRemote } from "./shared/displaySafe.js";
+import { verifiedRawEvents } from "./shared/verifiedEvents.js";
 
 export type ProfileMetadataDraft = {
   name?: string;
@@ -73,19 +75,20 @@ export async function fetchLatestProfileEvent(
     new Promise<Set<NDKEvent>>((r) => setTimeout(() => r(new Set()), timeoutMs)),
   ]).catch(() => new Set<NDKEvent>());
 
-  if (!events.size) return { event: null, metadata: {} };
+  // Only signed copies count: `profile` merges this into what it republishes under the user's key.
+  const verified = verifiedRawEvents(events).filter((ev) => ev.kind === 0 && ev.pubkey === pubkeyHex);
+  if (!verified.length) return { event: null, metadata: {} };
 
   // Pick highest created_at
-  let latest: NDKEvent | null = null;
-  for (const ev of events) {
-    if (!latest || (ev.created_at ?? 0) > (latest.created_at ?? 0)) latest = ev;
+  let raw: NostrEvent | null = null;
+  for (const ev of verified) {
+    if (!raw || (ev.created_at ?? 0) > (raw.created_at ?? 0)) raw = ev;
   }
-  if (!latest) return { event: null, metadata: {} };
+  if (!raw) return { event: null, metadata: {} };
 
-  const raw = latest.rawEvent?.() as NostrEvent ?? (latest as unknown as NostrEvent);
   let metadata: ProfileMetadata = {};
   try {
-    metadata = JSON.parse(raw.content ?? "{}");
+    metadata = sanitizeRemote(JSON.parse(raw.content ?? "{}"));
   } catch {
     // ignore
   }

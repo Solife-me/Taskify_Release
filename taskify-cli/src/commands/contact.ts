@@ -7,6 +7,8 @@ import { loadConfig, saveConfig, type Contact } from "../config.js";
 import type { createNostrRuntime } from "../nostrRuntime.js";
 import { renderJson } from "../render.js";
 import { pickLatestEvent } from "../shared/latestEvent.js";
+import { sanitizeRemote } from "../shared/displaySafe.js";
+import { verifiedRawEvents } from "../shared/verifiedEvents.js";
 import {
   buildNip51PrivateItems,
   decryptNip51PrivateItems,
@@ -146,9 +148,11 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
           { closeOnEose: true },
         );
         let profileData: Record<string, unknown> = {};
-        if (events.size > 0) {
-          const [evt] = events;
-          try { profileData = JSON.parse(evt.content); } catch { /* ignore */ }
+        const signed = pickLatestEvent(
+          verifiedRawEvents(events).filter((evt) => evt.kind === 0 && evt.pubkey === pubkeyHex),
+        );
+        if (signed) {
+          try { profileData = sanitizeRemote(JSON.parse(signed.content)); } catch { /* ignore */ }
         }
         const contacts = config.contacts ?? [];
         const idx = contacts.findIndex((c) => c.pubkey === pubkeyHex);
@@ -214,7 +218,8 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
         const hasDTag = (evt: { tags?: string[][] }, dTag: string) =>
           Array.isArray(evt.tags) && evt.tags.some((tag) => tag[0] === "d" && tag[1] === dTag);
 
-        const latestPrivate = pickLatestEvent(Array.from(existing).filter((evt) => hasDTag(evt, NIP51_PRIVATE_CONTACTS_D_TAG)));
+        const signedLists = verifiedRawEvents(existing).filter((evt) => evt.pubkey === userPk);
+        const latestPrivate = pickLatestEvent(signedLists.filter((evt) => hasDTag(evt, NIP51_PRIVATE_CONTACTS_D_TAG)));
         if (latestPrivate) {
           try {
             const privateItems = await decryptNip51PrivateItems(latestPrivate.content, keys);
@@ -229,7 +234,7 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
           }
         }
 
-        const latestLegacy = pickLatestEvent(Array.from(existing).filter((evt) => hasDTag(evt, NIP51_LEGACY_CONTACTS_D_TAG)));
+        const latestLegacy = pickLatestEvent(signedLists.filter((evt) => hasDTag(evt, NIP51_LEGACY_CONTACTS_D_TAG)));
         if (latestLegacy) {
           const pTags = latestLegacy.tags.filter((t: string[]) => t[0] === "p");
           for (const pTag of pTags) {
