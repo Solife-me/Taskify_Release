@@ -65,12 +65,3 @@ export type AgentRuntime = {
   setAgentSecurityConfig(config: AgentSecurityConfig): Promise<AgentSecurityConfig> | AgentSecurityConfig;
 };
 
-let currentAgentRuntime: AgentRuntime | null = null;
-
-export function setAgentRuntime(runtime: AgentRuntime | null): void {
-  currentAgentRuntime = runtime;
-}
-
-export function getAgentRuntime(): AgentRuntime | null {
-  return currentAgentRuntime;
-}
