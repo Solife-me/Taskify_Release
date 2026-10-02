@@ -244,6 +244,16 @@ struct TaskEditorView: View {
             allowsMultipleSelection: true,
             onCompletion: handleFileImport
         )
+        // Files dragged in from Files, Photos, or another app attach like imported ones. Text
+        // drags are left to the field under the pointer.
+        .onDrop(of: [.data], isTargeted: nil) { providers in
+            let files = providers.filter { provider in
+                !provider.registeredTypeIdentifiers.compactMap(UTType.init).contains { $0.conforms(to: .text) }
+            }
+            guard task != nil, !files.isEmpty, !isUploadingAttachment else { return false }
+            Task { await addDroppedFiles(files) }
+            return true
+        }
         .photosPicker(
             isPresented: $showingPhotoLibrary,
             selection: $selectedPhotos,
@@ -994,6 +1004,54 @@ struct TaskEditorView: View {
             }
         } catch {
             attachmentError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func addDroppedFiles(_ providers: [NSItemProvider]) async {
+        var copies: [URL] = []
+        defer {
+            for copy in copies { try? FileManager.default.removeItem(at: copy.deletingLastPathComponent()) }
+        }
+        do {
+            for provider in providers { copies.append(try await Self.copyDroppedFile(provider)) }
+        } catch {
+            attachmentError = error.localizedDescription
+            return
+        }
+        await addFiles(copies)
+    }
+
+    /// The system deletes a drop's file when the load callback returns, so it is copied into a
+    /// private temporary folder first, under the name the source app suggested.
+    private static func copyDroppedFile(_ provider: NSItemProvider) async throws -> URL {
+        let types = provider.registeredTypeIdentifiers.compactMap(UTType.init)
+        guard let type = types.first(where: { $0.conforms(to: .data) }) else {
+            throw TaskAttachmentUploadError.unsupportedFile
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            _ = provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, error in
+                guard let url else {
+                    continuation.resume(throwing: error ?? TaskAttachmentUploadError.unsupportedFile)
+                    return
+                }
+                do {
+                    let directory = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+                    let suggested = (provider.suggestedName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    var name = ((suggested.isEmpty ? url.lastPathComponent : suggested) as NSString).lastPathComponent
+                    if name.isEmpty || name == "/" || name.hasPrefix(".") { name = "Dropped File" }
+                    if (name as NSString).pathExtension.isEmpty, let ext = type.preferredFilenameExtension {
+                        name += ".\(ext)"
+                    }
+                    let copy = directory.appendingPathComponent(name)
+                    try FileManager.default.copyItem(at: url, to: copy)
+                    continuation.resume(returning: copy)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 
