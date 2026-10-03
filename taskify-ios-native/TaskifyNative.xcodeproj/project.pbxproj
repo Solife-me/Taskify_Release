@@ -30,6 +30,7 @@
 		B00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */; };
 		B00000000000000000000106 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */; };
 		B00000000000000000000107 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */; };
+		B00000000000000000009A0B /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */; };
 		B00000000000000000000108 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */; };
 		B00000000000000000000109 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */; };
 		B00000000000000000000110 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000210 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift */; };
@@ -177,6 +178,7 @@
 		B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Security/KeychainIdentityStore.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000210 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift; sourceTree = SOURCE_ROOT; };
@@ -397,6 +399,7 @@
 				A0009C830AAB8965BF019980 /* Sources/TaskifyApp/App/NpubCashSettings.swift */,
 				B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */,
 				B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */,
+				B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */,
 				B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */,
 				B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */,
 				B00000000000000000000210 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift */,
@@ -828,6 +831,7 @@
 				796D1AE211EE8CD2720A10F9 /* Sources/TaskifyApp/App/NpubCashSettings.swift in Sources */,
 				B00000000000000000000106 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift in Sources */,
 				B00000000000000000000107 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift in Sources */,
+				B00000000000000000009A0B /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift in Sources */,
 				B00000000000000000000108 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift in Sources */,
 				B00000000000000000000109 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift in Sources */,
 				B00000000000000000000110 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift in Sources */,
