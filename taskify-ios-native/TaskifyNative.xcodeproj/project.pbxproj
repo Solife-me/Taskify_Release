@@ -59,6 +59,11 @@
 		B00000000000000000000121 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */; };
 		B00000000000000000009A07 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A08 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift */; };
 		B00000000000000000009A0D /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A0E /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift */; };
+		B00000000000000000009A15 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A16 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift */; };
+		B00000000000000000009A17 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A18 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift */; };
+		B00000000000000000009A19 /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A1A /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift */; };
+		B00000000000000000009A1B /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A1C /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift */; };
+		B00000000000000000009A1D /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A1E /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift */; };
 		B00000000000000000009A01 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A02 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift */; };
 		B00000000000000000009A05 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A06 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift */; };
 		B00000000000000000000122 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000223 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift */; };
@@ -213,6 +218,11 @@
 		B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A08 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A0E /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletComponents.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A16 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A18 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A1A /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A1C /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A1E /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A02 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A06 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift"; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000223 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift; sourceTree = SOURCE_ROOT; };
@@ -438,6 +448,11 @@
 				B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */,
 				B00000000000000000009A08 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift */,
 				B00000000000000000009A0E /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift */,
+				B00000000000000000009A16 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift */,
+				B00000000000000000009A18 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift */,
+				B00000000000000000009A1A /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift */,
+				B00000000000000000009A1C /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift */,
+				B00000000000000000009A1E /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift */,
 				B00000000000000000009A02 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift */,
 				B00000000000000000009A06 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift */,
 			);
@@ -866,6 +881,11 @@
 				B00000000000000000000121 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift in Sources */,
 				B00000000000000000009A07 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift in Sources */,
 				B00000000000000000009A0D /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift in Sources */,
+				B00000000000000000009A15 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift in Sources */,
+				B00000000000000000009A17 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift in Sources */,
+				B00000000000000000009A19 /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift in Sources */,
+				B00000000000000000009A1B /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift in Sources */,
+				B00000000000000000009A1D /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift in Sources */,
 				B00000000000000000009A01 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift in Sources */,
 				B00000000000000000009A05 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift in Sources */,
 				67DF407096EEB8D0283BC0DC,
