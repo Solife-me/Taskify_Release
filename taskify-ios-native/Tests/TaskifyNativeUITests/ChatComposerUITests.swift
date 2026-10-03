@@ -71,9 +71,8 @@ final class ChatComposerUITests: XCTestCase {
         XCTAssertTrue(selfRow.waitForExistence(timeout: 5), "Message Yourself row should be offered")
         selfRow.tap()
 
-        // Type enough text to wrap well past the composer's 15-line cap. Newlines are
-        // remapped to send, so rely on word wrap alone. Distinct markers at each end make
-        // the screenshots prove which part of the draft is on screen.
+        // Type enough text to wrap well past the composer's 15-line cap. Distinct markers at
+        // each end make the screenshots prove which part of the draft is on screen.
         let composer = app.textViews.firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 5), "Composer text view should exist")
         composer.tap()
@@ -100,6 +99,30 @@ final class ChatComposerUITests: XCTestCase {
             "Scrolling a long draft must keep the keyboard open")
         XCTAssertEqual(composer.value as? String, longMessage)
         attach(app, name: "composer-long-text-after-scroll-up")
+    }
+
+    func testReturnInComposerInsertsNewlineWithoutSending() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_INITIAL_TAB"] = "chat"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+
+        let composer = app.textViews.firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("First line")
+
+        let returnKey = app.keyboards.buttons["return"]
+        XCTAssertTrue(returnKey.waitForExistence(timeout: 5), "The keyboard Return key should be visible")
+        returnKey.tap()
+
+        XCTAssertEqual(composer.value as? String, "First line\n")
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "Return should keep the keyboard open")
     }
 
     func testDraggingConversationDownDismissesKeyboardAndPreservesDraft() throws {

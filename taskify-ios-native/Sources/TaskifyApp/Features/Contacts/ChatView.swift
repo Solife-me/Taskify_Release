@@ -2425,7 +2425,6 @@ private struct ChatComposerTextView: UIViewRepresentable {
     let isEnabled: Bool
     let dismissKeyboard: Bool
     let accessibilityLabel: String
-    let onSubmit: () -> Void
     let pasteAttachment: ([NSItemProvider]) -> Bool
     var onCommandReturn: (() -> Void)? = nil
 
@@ -2448,7 +2447,9 @@ private struct ChatComposerTextView: UIViewRepresentable {
         // tracks the caret natively.
         view.isScrollEnabled = true
         view.alwaysBounceVertical = false
-        view.returnKeyType = .send
+        // Chat messages are multiline drafts. Return should insert a newline; the adjacent
+        // send button is the explicit submit action.
+        view.returnKeyType = .default
         // Draft scrolling belongs to the editor, including downward drags near
         // the keyboard. Only a drag that starts in the conversation dismisses it.
         view.keyboardDismissMode = .none
@@ -2574,15 +2575,6 @@ private struct ChatComposerTextView: UIViewRepresentable {
             DispatchQueue.main.async { self.parent.isFocused.wrappedValue = false }
         }
 
-        func textView(
-            _ textView: UITextView,
-            shouldChangeTextIn range: NSRange,
-            replacementText text: String
-        ) -> Bool {
-            guard text == "\n" else { return true }
-            parent.onSubmit()
-            return false
-        }
     }
 }
 
@@ -3841,7 +3833,6 @@ private struct DirectMessageConversationView: View {
                                 isEnabled: !isSending,
                                 dismissKeyboard: isSearchingConversation,
                                 accessibilityLabel: composerPrompt,
-                                onSubmit: send,
                                 pasteAttachment: pasteAttachmentProviders,
                                 // Command-Return sends from a hardware keyboard.
                                 onCommandReturn: { if canSend { send() } }

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TaskifyCore
 
@@ -98,6 +99,12 @@ private struct MacConversation: View {
         let matched = commands.filter { $0.name.hasPrefix(query) }
         return matched.isEmpty ? nil : matched
     }
+    private var canSend: Bool {
+        !sending && !attachments.importing &&
+        (!composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.files.isEmpty) &&
+        !model.isDirectMessagePeerBlocked(peer) && !model.hasLeftDirectMessageGroup(peer)
+    }
+
 
     // Shared items delivered to this conversation, correlated the same way the Inbox tab
     // correlates them — filtered here by peer instead of by pending status, so a responded-to
@@ -211,12 +218,22 @@ private struct MacConversation: View {
                     PasteButton(payloadType: URL.self) { urls in attachments.stage(urls) }
                         .labelStyle(.iconOnly).disabled(sending || attachments.importing || model.isDirectMessagePeerBlocked(peer))
                         .help("Paste Files")
-                    TextField("Message", text: $composer, axis: .vertical).lineLimit(2...8).textFieldStyle(.plain)
-                        .padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isDropTargeted ? Color.accentColor : .clear, lineWidth: 2))
+                    ZStack(alignment: .topLeading) {
+                        if composer.isEmpty {
+                            Text("Message").font(.body).foregroundStyle(.secondary)
+                                .padding(.top, 12).padding(.leading, 2).allowsHitTesting(false)
+                        }
+                        MacChatComposerTextView(
+                            text: $composer,
+                            onSubmit: { if canSend { send() } }
+                        )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(isDropTargeted ? Color.accentColor : .clear, lineWidth: 2))
                     Button(action: send) { if sending { ProgressView().controlSize(.small) } else { Label("Send", systemImage: "arrow.up") } }
                         .buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
-                        .disabled(sending || attachments.importing || (composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.files.isEmpty) || model.isDirectMessagePeerBlocked(peer) || model.hasLeftDirectMessageGroup(peer))
+                        .disabled(!canSend)
                 }
                 .dropDestination(for: URL.self) { urls, _ in
                     guard !sending, !model.isDirectMessagePeerBlocked(peer) else { return false }
@@ -255,6 +272,83 @@ private struct MacConversation: View {
                 attachments.progress = nil
             } catch { self.error = error.localizedDescription }
         }
+    }
+}
+
+private struct MacChatComposerTextView: NSViewRepresentable {
+    @Binding var text: String
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let coordinator = context.coordinator
+        let view = MacChatComposerField()
+        view.delegate = coordinator
+        view.font = NSFont.preferredFont(forTextStyle: .body)
+        view.textColor = .labelColor
+        view.drawsBackground = false
+        view.focusRingType = .none
+        view.isRichText = false
+        view.allowsUndo = true
+        view.importsGraphics = false
+        view.textContainerInset = .zero
+        view.textContainer?.widthTracksTextView = true
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.onSubmit = { [weak coordinator] in coordinator?.parent.onSubmit() }
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = view
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let view = scrollView.documentView as? MacChatComposerField else { return }
+        if view.string != text {
+            view.string = text
+            view.invalidateIntrinsicContentSize()
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        guard let view = nsView.documentView as? MacChatComposerField,
+              let width = proposal.width, width.isFinite
+        else { return nil }
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        let lineHeight = if let font = view.font { font.ascender - font.descender } else { CGFloat(17) }
+        let contentHeight = view.layoutManager?.usedRect(for: view.textContainer!).height ?? 0
+        let height = min(max(contentHeight, lineHeight * 2), lineHeight * 8)
+        return CGSize(width: width, height: height)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: MacChatComposerTextView
+
+        init(parent: MacChatComposerTextView) { self.parent = parent }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? MacChatComposerField else { return }
+            parent.text = view.string
+        }
+    }
+}
+
+final class MacChatComposerField: NSTextView {
+    var onSubmit: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36, !event.modifierFlags.contains(.shift) {
+            onSubmit?()
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 
