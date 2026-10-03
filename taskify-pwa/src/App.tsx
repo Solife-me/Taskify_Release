@@ -65,9 +65,6 @@ import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryList
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { toBufferSource } from "./lib/binary";
 import { useCashu } from "./context/CashuContext";
-import {
-  getSkSync as nostrSkSync,
-} from "./lib/nostrSkStore";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
 
@@ -191,9 +188,15 @@ import {
   weekdayFromISO,
 } from "./domains/dateTime/dateUtils";
 import {
+  decryptEcashTokenForFunder,
   decryptEcashTokenForRecipient,
   encryptEcashTokenForRecipient,
+  hexToBytes,
 } from "./domains/nostr/nostrCrypto";
+import {
+  deriveBoardNostrKeys,
+  type BoardNostrKeyPair,
+} from "./domains/nostr/nostrKeyUtils";
 import {
   appendWalletHistoryEntry,
 } from "./domains/backup/backupUtils";
@@ -217,6 +220,7 @@ import {
   calendarEventEndMs,
   isCalendarEventVisibleOnListBoard,
   calendarEventStartISOForRecurrence,
+  startOfWeek,
 } from "./domains/calendar/calendarUtils";
 import { ShareBoardIcon } from "./ui/icons";
 import {
@@ -225,7 +229,7 @@ import {
   recurringSeriesId,
   tasksInSameSeries,
 } from "./lib/app/weekRecurrenceDomain";
-import { isoForWeekdayLocal, startOfWeekLocal } from "./lib/app/weekBoardDate";
+import { isoForWeekdayLocal } from "./lib/app/weekBoardDate";
 import {
   TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_VIEW_KIND,
@@ -261,7 +265,6 @@ import { parseFileServers, findServerEntry } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
 import { SessionPool } from "./nostr/SessionPool";
 import { NostrSession } from "./nostr/NostrSession";
-import { BoardKeyManager } from "./nostr/BoardKeyManager";
 import {
   loadDefaultRelays,
   saveDefaultRelays,
@@ -443,99 +446,13 @@ const LS_TASK_TOMBSTONES = "taskify_task_tombstones_v1";
 // timestamp — the most recent N deletions are always retained, which is what
 // matters for protecting against stale relay re-creates.
 const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
-/* ================== Crypto helpers (AES-GCM via local Nostr key) ================== */
-async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const h = await crypto.subtle.digest("SHA-256", toBufferSource(data));
-  return new Uint8Array(h);
-}
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const out = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
-  return out;
-}
-function concatBytes(a: Uint8Array, b: Uint8Array) {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a); out.set(b, a.length);
-  return out;
-}
-function b64encode(buf: ArrayBuffer | Uint8Array): string {
-  const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  let s = ""; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
-  return btoa(s);
-}
-function b64decode(s: string): Uint8Array {
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-async function deriveAesKeyFromLocalSk(): Promise<CryptoKey> {
-  // Derive a stable AES key from local Nostr SK: AES-GCM 256 with SHA-256(sk || label)
-  const skHex = nostrSkSync();
-  if (!skHex || !/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
-  const label = new TextEncoder().encode("taskify-ecash-v1");
-  const raw = concatBytes(hexToBytes(skHex), label);
-  const digest = await sha256(raw);
-  return await crypto.subtle.importKey("raw", toBufferSource(digest), "AES-GCM", false, ["encrypt","decrypt"]);
-}
-export async function encryptEcashTokenForFunder(plain: string): Promise<{alg:"aes-gcm-256";iv:string;ct:string}> {
-  const key = await deriveAesKeyFromLocalSk();
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ctBuf = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: toBufferSource(iv) },
-    key,
-    toBufferSource(new TextEncoder().encode(plain)),
-  );
-  return { alg: "aes-gcm-256", iv: b64encode(iv), ct: b64encode(ctBuf) };
-}
-export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:string;ct:string}): Promise<string> {
-  if (enc.alg !== "aes-gcm-256") throw new Error("Unsupported cipher");
-  const key = await deriveAesKeyFromLocalSk();
-  const iv = b64decode(enc.iv);
-  const ct = b64decode(enc.ct);
-  const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toBufferSource(iv) }, key, toBufferSource(ct));
-  return new TextDecoder().decode(new Uint8Array(ptBuf));
-}
-
-type BoardNostrKeyPair = {
-  sk: Uint8Array;
-  skHex: string;
-  pk: string;
-  npub: string;
-  nsec: string;
-};
-const boardKeyManager = new BoardKeyManager();
-async function deriveBoardNostrKeys(boardId: string): Promise<BoardNostrKeyPair> {
-  return boardKeyManager.getBoardKeys(boardId);
-}
-
 /* ================= Date helpers ================= */
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-function isoForWeekday(
-  target: Weekday,
-  options: { base?: Date; weekStart?: Weekday } = {}
-): string {
-  return isoForWeekdayLocal(target, options);
-}
+const isoForWeekday = isoForWeekdayLocal;
 
 function isoForToday(base = new Date()): string {
   return startOfDay(base).toISOString();
-}
-
-function calendarWeekRangeKeys(weekStart: Weekday, base = new Date()): { startKey: string; endKey: string } {
-  const start = startOfWeek(base, weekStart);
-  const startKey = formatDateKeyLocal(start);
-  const end = new Date(start.getTime() + 6 * MS_PER_DAY);
-  const endKey = formatDateKeyLocal(end);
-  return { startKey, endKey };
-}
-
-/* ============= Visibility helpers (hide until X) ============= */
-
-function startOfWeek(d: Date, weekStart: Weekday): Date {
-  return startOfWeekLocal(d, weekStart);
 }
 
 /* ================= App ================= */
@@ -12863,4 +12780,3 @@ function isVoiceRecurrence(value: unknown): value is NonNullable<Task["recurrenc
       return false;
   }
 }
-

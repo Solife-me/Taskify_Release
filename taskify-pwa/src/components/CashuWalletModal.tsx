@@ -3,10 +3,8 @@
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
-import type { SharedTaskPayload, InboxSender } from "taskify-core";
-import type { Settings } from "../domains/tasks/settingsTypes";
 import { useSyncResume } from "../nostr/useSyncResume";
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PaymentRequestTransportType,
   type PaymentRequestPayload,
@@ -140,20 +138,17 @@ import {
 import {
   BackIcon,
   CHAT_FILE_PICKER_ACCEPT,
-  ChatBubbleIcon,
   CheckIcon,
   CloseIcon,
   GroupAvatar,
   LightningGlyph,
   MessengerFileBubble,
   PencilIcon,
-  PersonIcon,
   QrCodeCard,
   QrScanner,
   ShareArrowIcon,
   SwipeableDmThreadRow,
   VerifiedBadgeIcon,
-  WalletGlyphIcon,
   avatarInitials,
   formatDmDateSeparator,
   formatDmDay,
@@ -192,41 +187,23 @@ import {
   NPUB_CASH_REFRESH_STAGGER_MS,
   TOKEN_STATE_BACKGROUND_STAGGER_MS,
   SUBSCRIPTION_RETRY_DELAY_MS,
-  type PendingCalendarInvite,
   type SharedContactPreview,
   type NostrEvent,
 } from "../wallet/walletModalHelpers";
-
-const EcashReceiveSheet = lazy(() =>
-  import("../ui/wallet/EcashReceiveSheet").then((module) => ({ default: module.EcashReceiveSheet })),
-);
-const LightningReceiveSheet = lazy(() =>
-  import("../ui/wallet/LightningReceiveSheet").then((module) => ({ default: module.LightningReceiveSheet })),
-);
-const EcashSendSheet = lazy(() =>
-  import("../ui/wallet/EcashSendSheet").then((module) => ({ default: module.EcashSendSheet })),
-);
-const WalletContactsSheet = lazy(() =>
-  import("../ui/wallet/WalletContactsSheet").then((module) => ({ default: module.WalletContactsSheet })),
-);
-const LightningSendSheet = lazy(() =>
-  import("../ui/wallet/LightningSendSheet").then((module) => ({ default: module.LightningSendSheet })),
-);
-const WalletHistorySheet = lazy(() =>
-  import("../ui/wallet/WalletHistorySheet").then((module) => ({ default: module.WalletHistorySheet })),
-);
-const WalletSwapSheet = lazy(() =>
-  import("../ui/wallet/WalletSwapSheet").then((module) => ({ default: module.WalletSwapSheet })),
-);
-const WalletNwcManagerSheet = lazy(() =>
-  import("../ui/wallet/WalletNwcManagerSheet").then((module) => ({ default: module.WalletNwcManagerSheet })),
-);
-const WalletSettingsSheet = lazy(() =>
-  import("../ui/wallet/WalletSettingsSheet").then((module) => ({ default: module.WalletSettingsSheet })),
-);
-const PaymentRequestFulfillSheet = lazy(() =>
-  import("../ui/wallet/PaymentRequestFulfillSheet").then((module) => ({ default: module.PaymentRequestFulfillSheet })),
-);
+import type { CashuWalletModalProps } from "./cashuWalletModalTypes";
+import { WalletTabSwitcher } from "../ui/wallet/WalletTabSwitcher";
+import {
+  EcashReceiveSheet,
+  EcashSendSheet,
+  LightningReceiveSheet,
+  LightningSendSheet,
+  PaymentRequestFulfillSheet,
+  WalletContactsSheet,
+  WalletHistorySheet,
+  WalletNwcManagerSheet,
+  WalletSettingsSheet,
+  WalletSwapSheet,
+} from "../ui/wallet/walletModalSheets";
 
 export default function CashuWalletModal({
   open,
@@ -271,52 +248,7 @@ export default function CashuWalletModal({
   formatCalendarInviteWhen,
   onDmUnreadCountChange,
   chatMessageRetention = "forever",
-}: {
-  open: boolean;
-  onClose: () => void;
-  onOpenAddress?: () => void;
-  onOpenBounties?: () => void;
-  page?: "wallet" | "contacts" | "chat";
-  showTabSwitcher?: boolean;
-  showBottomNav?: boolean;
-  walletConversionEnabled: boolean;
-  walletSettings: Settings;
-  setWalletSettings: (patch: Partial<Settings>) => void;
-  defaultRelays: string[];
-  onResetWalletTokenTracking: () => void;
-  walletPrimaryCurrency: "sat" | "usd";
-  walletDenominationDisplay: "bitcoin-symbol" | "sat";
-  setWalletPrimaryCurrency: (currency: "sat" | "usd") => void;
-  lightningAddressProvider?: "solife.me" | "npub.cash" | "none";
-  solifeLightningAddress?: string;
-  npubCashLightningAddressEnabled: boolean;
-  npubCashAutoClaim: boolean;
-  sentTokenStateChecksEnabled: boolean;
-  paymentRequestsEnabled: boolean;
-  paymentRequestsBackgroundChecksEnabled: boolean;
-  tokenStateResetNonce: number;
-  mintBackupEnabled: boolean;
-  contactsSyncEnabled: boolean;
-  fileStorageServer: string;
-  fileServers?: string;
-  encryptedFileStorageServer?: string;
-  encryptedFileServers?: string;
-  messageItems: WalletMessageItem[];
-  messagesUnreadCount: number;
-  onAcceptMessage: (id: string) => void;
-  onAddTaskAgain: (task: SharedTaskPayload, sender?: InboxSender) => void;
-  onMaybeMessage: (id: string) => void;
-  onDeclineMessage: (id: string) => void;
-  onDismissMessage: (id: string) => void;
-  onMarkMessagesRead: (dmEventIds: string[]) => void;
-  inboxPendingItems?: WalletMessageItem[];
-  pendingCalendarInvites?: PendingCalendarInvite[];
-  onCalendarInviteRsvp?: (invite: any, status: string) => void;
-  onDismissCalendarInvite?: (invite: any) => void;
-  formatCalendarInviteWhen?: (invite: any) => string;
-  onDmUnreadCountChange?: (count: number) => void;
-  chatMessageRetention?: string;
-}) {
+}: CashuWalletModalProps) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
       return kvStorage.getItem("taskify.wallet.debug") === "1";
@@ -5871,45 +5803,19 @@ export default function CashuWalletModal({
           </div>
 
           {showWalletTabSwitcher && (
-            <div className="wallet-tab-switcher">
-              <div className="wallet-tab-switcher__pill">
-                <button
-                  className={`wallet-tab-switcher__btn pressable${walletTab === "wallet" ? " wallet-tab-switcher__btn--active" : ""}`}
-                  onClick={() => setWalletTab("wallet")}
-                >
-                  <div className="wallet-tab-switcher__icon">
-                    <WalletGlyphIcon className="wallet-tab-switcher__icon-svg" />
-                  </div>
-                  <div className="wallet-tab-switcher__label">Wallet</div>
-                </button>
-                <button
-                  className={`wallet-tab-switcher__btn pressable${walletTab === "messages" ? " wallet-tab-switcher__btn--active" : ""}`}
-                  onClick={() => {
-                    setWalletTab("messages");
-                    setDmView("list");
-                  }}
-                >
-                  <div className="wallet-tab-switcher__icon">
-                    <ChatBubbleIcon className="wallet-tab-switcher__icon-svg" />
-                  </div>
-                  <div className="wallet-tab-switcher__label">
-                    Messages{mainUnreadCount > 0 ? ` (${mainUnreadCount})` : ""}
-                  </div>
-                </button>
-                <button
-                  className={`wallet-tab-switcher__btn pressable${walletTab === "contacts" ? " wallet-tab-switcher__btn--active" : ""}`}
-                  onClick={() => {
-                    setWalletTab("contacts");
-                    setContactsTabOpen(true);
-                  }}
-                >
-                  <div className="wallet-tab-switcher__icon">
-                    <PersonIcon className="wallet-tab-switcher__icon-svg" />
-                  </div>
-                  <div className="wallet-tab-switcher__label">Contacts</div>
-                </button>
-              </div>
-            </div>
+            <WalletTabSwitcher
+              activeTab={walletTab}
+              unreadMessages={mainUnreadCount}
+              onSelectWallet={() => setWalletTab("wallet")}
+              onSelectMessages={() => {
+                setWalletTab("messages");
+                setDmView("list");
+              }}
+              onSelectContacts={() => {
+                setWalletTab("contacts");
+                setContactsTabOpen(true);
+              }}
+            />
           )}
         </>
       )}
