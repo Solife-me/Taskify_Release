@@ -51,9 +51,9 @@ export default defineConfig({
           if (id.includes("qr-scanner") || id.includes("qrcode.react")) {
             return "qr-tools";
           }
-          if (id.includes("pdfjs-dist")) {
-            return "pdf-worker";
-          }
+          // pdfjs-dist is left to the default splitting. As a manual chunk it received the
+          // bundler's dynamic-import helper, so every lazy import (the entry's included) pulled
+          // the whole PDF library into startup.
           if (id.includes("xlsx")) {
             return "spreadsheet-tools";
           }
