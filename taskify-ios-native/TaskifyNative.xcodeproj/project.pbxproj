@@ -49,6 +49,10 @@
 		B00000000000000000000118 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000219 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift */; };
 		B00000000000000000000810 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000811 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift */; };
 		B00000000000000000000119 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000221 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift */; };
+		B00000000000000000009A1F /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A20 /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift */; };
+		B00000000000000000009A21 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A22 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift */; };
+		B00000000000000000009A23 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A24 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift */; };
+		B00000000000000000009A25 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A26 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift */; };
 		B0000000000000000000D02 /* DeviceItemsReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000D01 /* DeviceItemsReader.swift */; };
 		B0000000000000000000W18 /* TaskifyWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000W15 /* TaskifyWidgetBundle.swift */; };
 		B0000000000000000000W19 /* TaskifyWidgetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000W16 /* TaskifyWidgetStore.swift */; };
@@ -215,6 +219,10 @@
 		B0000000000000000000W04 /* TaskifyWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TaskifyWidgets.entitlements; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000220 /* TaskifyNative.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TaskifyNative.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B00000000000000000000221 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ChatView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A20 /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ChatListViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A22 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A24 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A26 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A08 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A0E /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletComponents.swift; sourceTree = SOURCE_ROOT; };
@@ -444,6 +452,10 @@
 				B00000000000000000000218 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift */,
 				B00000000000000000000219 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift */,
 				B00000000000000000000221 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift */,
+				B00000000000000000009A20 /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift */,
+				B00000000000000000009A22 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift */,
+				B00000000000000000009A24 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift */,
+				B00000000000000000009A26 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift */,
 				B00000000000000000000811 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift */,
 				B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */,
 				B00000000000000000009A08 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift */,
@@ -877,6 +889,10 @@
 				B00000000000000000000117 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift in Sources */,
 				B00000000000000000000118 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift in Sources */,
 				B00000000000000000000119 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift in Sources */,
+				B00000000000000000009A1F /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift in Sources */,
+				B00000000000000000009A21 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift in Sources */,
+				B00000000000000000009A23 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift in Sources */,
+				B00000000000000000009A25 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift in Sources */,
 				B00000000000000000000810 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift in Sources */,
 				B00000000000000000000121 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift in Sources */,
 				B00000000000000000009A07 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift in Sources */,
