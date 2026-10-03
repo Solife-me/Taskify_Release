@@ -71,7 +71,6 @@ import {
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
 
-
 import { encryptToBoard, decryptFromBoard, boardTag } from "./boardCrypto";
 import { useToast } from "./context/ToastContext";
 import { useAppAppearance } from "./theme/useAppAppearance";
@@ -198,12 +197,28 @@ import {
 import {
   appendWalletHistoryEntry,
 } from "./domains/backup/backupUtils";
-import {
-  type PushPreferences,
-  type Settings,
-} from "./domains/tasks/settingsTypes";
+import { type PushPreferences } from "./domains/tasks/settingsTypes";
 import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/settingsHook";
-import { withBoardOrder } from "./domains/tasks/boardUtils";
+import {
+  withBoardOrder,
+  nextOccurrence,
+  boardScopeIds,
+  hiddenUntilForBoard,
+  isVisibleNow,
+  applyHiddenForCalendarEvent,
+  nextOrderForCalendarBoard,
+  nextOrderForBoard,
+  isFrequentRecurrence,
+  hiddenUntilForNext,
+  applyHiddenForFuture,
+  findBoardByCompoundChildId,
+} from "./domains/tasks/boardUtils";
+import {
+  calendarEventEndMs,
+  isCalendarEventVisibleOnListBoard,
+  calendarEventStartISOForRecurrence,
+} from "./domains/calendar/calendarUtils";
+import { ShareBoardIcon } from "./ui/icons";
 import {
   ensureWeekRecurrencesForCurrentWeek,
   buildRunningStreakLookup,
@@ -241,7 +256,6 @@ import {
   normalizeContact,
   saveContactsToStorage,
 } from "./lib/contacts";
-
 
 import { parseFileServers, findServerEntry } from "./lib/fileStorage";
 import { encryptAndUploadAttachment, parseDataUrl, decryptAttachment } from "./lib/attachmentCrypto";
@@ -335,7 +349,6 @@ const SPECIAL_CALENDAR_US_HOLIDAYS_LABEL = "US Holidays";
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
 const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
-
 const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const MONTH_NAMES = [
   "January",
@@ -352,25 +365,9 @@ const MONTH_NAMES = [
   "December",
 ] as const;
 
-
-
 function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean {
   return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
 }
-
-
-
-
-function ShareBoardIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-      <path d="M12 3v12" />
-      <path d="m8 7 4-4 4 4" />
-      <path d="M4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" />
-    </svg>
-  );
-}
-
 
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
 const MESSAGES_COLUMN_ID = "messages-shared";
@@ -432,42 +429,9 @@ type CompoundIndexGroup = {
   columns: { id: string; name: string }[];
 };
 
-
 function compoundColumnKey(boardId: string, columnId: string): string {
   return `${boardId}::${columnId}`;
 }
-
-function boardScopeIds(board: Board, boards: Board[]): string[] {
-  const ids = new Set<string>();
-  const addId = (value?: string | null) => {
-    if (typeof value === "string" && value) ids.add(value);
-  };
-  const addBoard = (target: Board | undefined) => {
-    if (!target) return;
-    addId(target.id);
-    addId(target.nostr?.boardId);
-  };
-
-  addBoard(board);
-
-  if (board.kind === "compound") {
-    board.children.forEach((childId) => {
-      addId(childId);
-      addBoard(findBoardByCompoundChildId(boards, childId));
-    });
-  }
-
-  return Array.from(ids);
-}
-
-function findBoardByCompoundChildId(boards: Board[], childId: string): Board | undefined {
-  return boards.find((board) => {
-    if (board.id === childId) return true;
-    return !!board.nostr?.boardId && board.nostr.boardId === childId;
-  });
-}
-
-
 
 const LS_BOARD_SYNC_CURSORS = "taskify_board_sync_cursors_v1";
 // Persistent task-deletion tombstones, keyed by board tag → task id → unix-secs
@@ -549,8 +513,6 @@ async function deriveBoardNostrKeys(boardId: string): Promise<BoardNostrKeyPair>
 /* ================= Date helpers ================= */
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-
-
 function isoForWeekday(
   target: Weekday,
   options: { base?: Date; weekStart?: Weekday } = {}
@@ -561,173 +523,6 @@ function isoForWeekday(
 function isoForToday(base = new Date()): string {
   return startOfDay(base).toISOString();
 }
-function nextOccurrence(
-  currentISO: string,
-  rule: Recurrence,
-  keepTime = false,
-  timeZone?: string,
-): string | null {
-  const safeZone = normalizeTimeZone(timeZone);
-  if (safeZone) {
-    const dateKey = isoDatePart(currentISO, safeZone);
-    const dateParts = parseDateKey(dateKey);
-    if (dateParts) {
-      const baseTime = keepTime ? isoTimePart(currentISO, safeZone) : "";
-      const applyDate = (parts: { year: number; month: number; day: number }): string => {
-        const nextDateKey = formatDateKeyFromParts(parts.year, parts.month, parts.day);
-        return isoFromDateTime(nextDateKey, baseTime || undefined, safeZone);
-      };
-      const addDays = (d: number) => {
-        const base = new Date(Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day));
-        base.setUTCDate(base.getUTCDate() + d);
-        return {
-          year: base.getUTCFullYear(),
-          month: base.getUTCMonth() + 1,
-          day: base.getUTCDate(),
-        };
-      };
-      const weekdayForParts = (parts: { year: number; month: number; day: number }) =>
-        new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay() as Weekday;
-      let next: string | null = null;
-      switch (rule.type) {
-        case "none":
-          next = null; break;
-        case "daily":
-          next = applyDate(addDays(1)); break;
-        case "weekly": {
-          if (!rule.days.length) return null;
-          for (let i = 1; i <= 28; i++) {
-            const cand = addDays(i);
-            const wd = weekdayForParts(cand);
-            if (rule.days.includes(wd)) { next = applyDate(cand); break; }
-          }
-          break;
-        }
-        case "every": {
-          if (rule.unit === "hour") {
-            const current = new Date(currentISO);
-            const n = new Date(current.getTime() + rule.n * 3600000);
-            next = n.toISOString();
-          } else {
-            const daysToAdd = rule.unit === "day" ? rule.n : rule.n * 7;
-            next = applyDate(addDays(daysToAdd));
-          }
-          break;
-        }
-        case "monthlyDay": {
-          const interval = Math.max(1, rule.interval ?? 1);
-          const base = new Date(Date.UTC(dateParts.year, dateParts.month - 1 + interval, 1));
-          const n = {
-            year: base.getUTCFullYear(),
-            month: base.getUTCMonth() + 1,
-            day: Math.min(rule.day, 28),
-          };
-          next = applyDate(n);
-          break;
-        }
-      }
-      if (next && rule.untilISO) {
-        const limitKey = isoDatePart(rule.untilISO, safeZone);
-        const nextKey = isoDatePart(next, safeZone);
-        if (nextKey > limitKey) return null;
-      }
-      return next;
-    }
-  }
-  const currentDate = new Date(currentISO);
-  const curDay = startOfDay(currentDate);
-  const timeOffset = currentDate.getTime() - curDay.getTime();
-  const baseTime = keepTime ? isoTimePart(currentISO) : "";
-  const applyTime = (day: Date): string => {
-    if (keepTime && baseTime) {
-      const datePart = isoDatePart(day.toISOString());
-      return isoFromDateTime(datePart, baseTime);
-    }
-    return new Date(day.getTime() + timeOffset).toISOString();
-  };
-  const addDays = (d: number) => {
-    const nextDay = startOfDay(new Date(curDay.getTime() + d * 86400000));
-    return applyTime(nextDay);
-  };
-  let next: string | null = null;
-  switch (rule.type) {
-    case "none":
-      next = null; break;
-    case "daily":
-      next = addDays(1); break;
-    case "weekly": {
-      if (!rule.days.length) return null;
-      for (let i = 1; i <= 28; i++) {
-        const cand = addDays(i);
-        const wd = new Date(cand).getDay() as Weekday;
-        if (rule.days.includes(wd)) { next = cand; break; }
-      }
-      break;
-    }
-    case "every": {
-      if (rule.unit === "hour") {
-        const current = new Date(currentISO);
-        const n = new Date(current.getTime() + rule.n * 3600000);
-        next = n.toISOString();
-      } else {
-        const daysToAdd = rule.unit === "day" ? rule.n : rule.n * 7;
-        next = addDays(daysToAdd);
-      }
-      break;
-    }
-    case "monthlyDay": {
-      const y = curDay.getFullYear(), m = curDay.getMonth();
-      const interval = Math.max(1, rule.interval ?? 1);
-      const n = startOfDay(new Date(y, m + interval, Math.min(rule.day, 28)));
-      next = applyTime(n);
-      break;
-    }
-  }
-  if (next && rule.untilISO) {
-    const limit = startOfDay(new Date(rule.untilISO)).getTime();
-    const n = startOfDay(new Date(next)).getTime();
-    if (n > limit) return null;
-  }
-  return next;
-}
-
-function calendarEventDateKey(event: CalendarEvent): string | null {
-  if (event.kind === "date") {
-    return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
-  }
-  const key = isoDatePart(event.startISO, event.startTzid);
-  return ISO_DATE_PATTERN.test(key) ? key : null;
-}
-
-function calendarEventStartISOForRecurrence(event: CalendarEvent): string | null {
-  if (event.kind === "time") return event.startISO;
-  const dateKey = ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
-  if (!dateKey) return null;
-  return isoFromDateTime(dateKey, "00:00", "UTC");
-}
-
-function calendarEventEndMs(event: CalendarEvent): number | null {
-  if (event.kind === "time") {
-    const start = Date.parse(event.startISO);
-    if (Number.isNaN(start)) return null;
-    if (event.endISO) {
-      const end = Date.parse(event.endISO);
-      if (!Number.isNaN(end) && end >= start) return end;
-    }
-    return start;
-  }
-  const startKey = ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
-  if (!startKey) return null;
-  const endKey =
-    event.endDate && ISO_DATE_PATTERN.test(event.endDate) && event.endDate >= startKey
-      ? event.endDate
-      : startKey;
-  const parsed = parseDateKey(endKey);
-  if (!parsed) return null;
-  const endUtc = Date.UTC(parsed.year, parsed.month - 1, parsed.day);
-  if (!Number.isFinite(endUtc)) return null;
-  return endUtc + MS_PER_DAY;
-}
 
 function calendarWeekRangeKeys(weekStart: Weekday, base = new Date()): { startKey: string; endKey: string } {
   const start = startOfWeek(base, weekStart);
@@ -737,90 +532,12 @@ function calendarWeekRangeKeys(weekStart: Weekday, base = new Date()): { startKe
   return { startKey, endKey };
 }
 
-function hiddenUntilForCalendarEvent(
-  event: CalendarEvent,
-  boardKind: Board["kind"],
-  weekStart: Weekday,
-): string | undefined {
-  if (boardKind !== "lists" && boardKind !== "compound") return undefined;
-  const dateKey = calendarEventDateKey(event);
-  if (!dateKey) return undefined;
-  const parsed = parseDateKey(dateKey);
-  if (!parsed) return undefined;
-  const eventDate = new Date(parsed.year, parsed.month - 1, parsed.day);
-  if (Number.isNaN(eventDate.getTime())) return undefined;
-  const eventWeekStart = startOfWeek(eventDate, weekStart);
-  const currentWeekStart = startOfWeek(new Date(), weekStart);
-  if (eventWeekStart.getTime() > currentWeekStart.getTime()) {
-    return eventWeekStart.toISOString();
-  }
-  return undefined;
-}
-
-function isCalendarEventVisibleOnListBoard(event: CalendarEvent, weekStart: Weekday, now = new Date()): boolean {
-  const dateKey = calendarEventDateKey(event);
-  if (!dateKey) return false;
-  const { startKey, endKey } = calendarWeekRangeKeys(weekStart, now);
-
-  if (event.kind === "date") {
-    const startKeyForEvent = ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : dateKey;
-    const endKeyForEvent =
-      event.endDate && ISO_DATE_PATTERN.test(event.endDate) && event.endDate >= startKeyForEvent
-        ? event.endDate
-        : startKeyForEvent;
-    if (endKeyForEvent < startKey) return false;
-    if (startKeyForEvent <= endKey && endKeyForEvent >= startKey) return true;
-    return !event.hiddenUntilISO;
-  }
-
-  if (dateKey < startKey) return false;
-  if (dateKey > endKey) return !event.hiddenUntilISO;
-  return true;
-}
-
 /* ============= Visibility helpers (hide until X) ============= */
-function revealsOnDueDate(rule: Recurrence): boolean {
-  if (isFrequentRecurrence(rule)) return true;
-  return false;
-}
-
-function isFrequentRecurrence(rule?: Recurrence | null): boolean {
-  if (!rule) return false;
-  if (rule.type === "daily" || rule.type === "weekly") return true;
-  if (rule.type === "every") {
-    return rule.unit === "day" || rule.unit === "week";
-  }
-  return false;
-}
-
-function isVisibleNow(t: Task, now = new Date()): boolean {
-  if (!t.hiddenUntilISO) return true;
-  const today = startOfDay(now).getTime();
-  if (t.recurrence && revealsOnDueDate(t.recurrence)) {
-    const dueReveal = startOfDay(new Date(t.dueISO)).getTime();
-    if (!Number.isNaN(dueReveal)) return today >= dueReveal;
-  }
-  const reveal = startOfDay(new Date(t.hiddenUntilISO)).getTime();
-  return today >= reveal;
-}
 
 function startOfWeek(d: Date, weekStart: Weekday): Date {
   return startOfWeekLocal(d, weekStart);
 }
 
-/** Decide when the next instance should re-appear (hiddenUntilISO). */
-function hiddenUntilForNext(
-  nextISO: string,
-  rule: Recurrence,
-  weekStart: Weekday
-): string | undefined {
-  const nextMidnight = startOfDay(new Date(nextISO));
-  if (revealsOnDueDate(rule)) {
-    return nextMidnight.toISOString();
-  }
-  const sow = startOfWeek(nextMidnight, weekStart);
-  return sow.toISOString();
-}
 /* ================= App ================= */
 export default function App() {
   const { show: showToast } = useToast();
@@ -1642,7 +1359,6 @@ export default function App() {
   type TaskUpdater = (prev: Task[]) => Task[];
   const liveBatchRef = useRef<Map<string, { updaters: TaskUpdater[]; timer: number }>>(new Map());
 
-
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
     completedNostrInitialSyncRef.current.add(bTag);
@@ -2266,7 +1982,6 @@ export default function App() {
   }, [currentBoard?.kind, view]);
   const showSettings = activePage === "settings";
   const [addBoardOpen, setAddBoardOpen] = useState(false);
-
 
   useNostrAppBackupSync({
     bibleTracker,
@@ -9412,8 +9127,6 @@ export default function App() {
     });
   }
 
-
-
   function restoreTask(id: string) {
     const t = tasks.find((x) => x.id === id);
     if (!t) return;
@@ -11231,7 +10944,6 @@ export default function App() {
       return arr;
     });
   }
-
 
   const completeSelectedItems = useCallback(() => {
     if (!selectedTasks.length) return;
@@ -13181,58 +12893,3 @@ function isVoiceRecurrence(value: unknown): value is NonNullable<Task["recurrenc
   }
 }
 
-function hiddenUntilForBoard(dueISO: string, boardKind: Board["kind"], weekStart: Weekday): string | undefined {
-  const dueDate = startOfDay(new Date(dueISO));
-  if (Number.isNaN(dueDate.getTime())) return undefined;
-  const today = startOfDay(new Date());
-  if (boardKind === "lists" || boardKind === "compound") {
-    return dueDate.getTime() > today.getTime() ? dueDate.toISOString() : undefined;
-  }
-  const nowSow = startOfWeek(new Date(), weekStart);
-  const dueSow = startOfWeek(dueDate, weekStart);
-  return dueSow.getTime() > nowSow.getTime() ? dueSow.toISOString() : undefined;
-}
-
-function applyHiddenForFuture(task: Task, weekStart: Weekday, boardKind: Board["kind"]): void {
-  if (task.dueDateEnabled === false) {
-    task.hiddenUntilISO = undefined;
-    return;
-  }
-  task.hiddenUntilISO = hiddenUntilForBoard(task.dueISO, boardKind, weekStart);
-}
-
-function applyHiddenForCalendarEvent(event: CalendarEvent, weekStart: Weekday, boardKind: Board["kind"]): CalendarEvent {
-  const hiddenUntilISO = hiddenUntilForCalendarEvent(event, boardKind, weekStart);
-  if (hiddenUntilISO) {
-    if (event.hiddenUntilISO === hiddenUntilISO) return event;
-    return { ...event, hiddenUntilISO };
-  }
-  if (!event.hiddenUntilISO) return event;
-  return { ...event, hiddenUntilISO: undefined };
-}
-
-function nextOrderForBoard(
-  boardId: string,
-  tasks: Task[],
-  newTaskPosition: Settings["newTaskPosition"]
-): number {
-  const boardTasks = tasks.filter(task => task.boardId === boardId);
-  if (newTaskPosition === "top") {
-    const minOrder = boardTasks.reduce((min, task) => Math.min(min, task.order ?? 0), 0);
-    return minOrder - 1;
-  }
-  return boardTasks.reduce((max, task) => Math.max(max, task.order ?? -1), -1) + 1;
-}
-
-function nextOrderForCalendarBoard(
-  boardId: string,
-  events: CalendarEvent[],
-  newItemPosition: Settings["newTaskPosition"],
-): number {
-  const boardEvents = events.filter((event) => event.boardId === boardId && !event.external);
-  if (newItemPosition === "top") {
-    const minOrder = boardEvents.reduce((min, event) => Math.min(min, event.order ?? 0), 0);
-    return minOrder - 1;
-  }
-  return boardEvents.reduce((max, event) => Math.max(max, event.order ?? -1), -1) + 1;
-}
