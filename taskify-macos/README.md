@@ -147,8 +147,10 @@ Send Message `⌘Return`, Settings `⌘,`.
 
 Mac identity and wallet Keychain services use the Mac bundle identifier, separate
 from iOS. Import the same Nostr identity for account continuity; wallet recovery
-is a separate explicit operation. Do not assume signing an existing ad-hoc
-installation will migrate its storage or Keychain automatically.
+is a separate explicit operation. A signed build uses the Mac target's app-specific
+Keychain access group and migrates legacy login-Keychain items into the data-protection
+Keychain when they are first read. An ad-hoc or unsigned build cannot perform that
+migration and must not replace the signed app used with real account data.
 
 Quit awaits task publication preparation and durable local snapshot saving,
 without waiting for relay acknowledgement. A failed local save cancels quitting.

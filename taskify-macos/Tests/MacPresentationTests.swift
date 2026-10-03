@@ -3,6 +3,20 @@ import TaskifyCore
 @testable import MacPresentation
 
 final class MacPresentationTests: XCTestCase {
+    func testMacAppDeclaresDataProtectionKeychainAccessGroup() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let entitlementsURL = testsDirectory.deletingLastPathComponent().appendingPathComponent("TaskifyMac.entitlements")
+        let data = try Data(contentsOf: entitlementsURL)
+        let entitlements = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+
+        XCTAssertEqual(
+            entitlements["keychain-access-groups"] as? [String],
+            ["$(AppIdentifierPrefix)solife.me.Taskify.Mac"]
+        )
+    }
+
     func testNewWeekTaskAppearsInTodayColumnAcrossDaylightSavingBoundary() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Chicago"))
