@@ -28,6 +28,7 @@
 		B00000000000000000000104 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */; };
 		B00000000000000000000199 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */; };
 		B00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */; };
+		B00000000000000000009A0F /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */; };
 		B00000000000000000000106 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */; };
 		B00000000000000000000107 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */; };
 		B00000000000000000009A0B /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */; };
@@ -177,6 +178,7 @@
 		B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift; sourceTree = SOURCE_ROOT; };
@@ -389,6 +391,7 @@
 				B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */,
 				B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */,
 				B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */,
+				B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */,
 				FF90D06B99BC2A3790D9DC41 /* Sources/TaskifyApp/App/OnboardingSettings.swift */,
 				CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */,
 				B00000000000000000000223 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift */,
@@ -824,6 +827,7 @@
 				B00000000000000000000104 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift in Sources */,
 				B00000000000000000000199 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift in Sources */,
 				B00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift in Sources */,
+				B00000000000000000009A0F /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift in Sources */,
 				B00000000000000000000122 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift in Sources */,
 				B00000000000000000000123 /* Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift in Sources */,
 				45B0FD54A518483096597A9F /* Sources/TaskifyApp/App/FastingRemindersSettings.swift in Sources */,
