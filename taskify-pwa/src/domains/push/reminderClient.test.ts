@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { syncRemindersToWorker } from "./reminderClient";
+import { ReminderSyncError, reminderRetryDelayMs, syncRemindersToWorker } from "./reminderClient";
 import type { PushPreferences } from "../tasks/settingsTypes";
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 const push = { deviceId: "device", subscriptionId: "subscription" } as PushPreferences;
@@ -34,4 +34,21 @@ test("propagates rejected responses and aborts", async () => {
   const error = new DOMException("Cancelled", "AbortError");
   fetchMock.mockRejectedValue(error);
   await expect(syncRemindersToWorker("https://worker.test", push, [])).rejects.toBe(error);
+});
+test("a refused save carries its status and Retry-After", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429, headers: new Headers({ "Retry-After": "3600" }) });
+  vi.stubGlobal("fetch", fetchMock);
+  const error = await syncRemindersToWorker("https://worker.test", push, []).catch((e) => e);
+  expect(error).toBeInstanceOf(ReminderSyncError);
+  expect(error.status).toBe(429);
+  expect(error.retryAfterSeconds).toBe(3600);
+  expect(error.message).toMatch(/sync again later/);
+});
+test("retries wait for Retry-After, otherwise back off from 30 seconds to 15 minutes", () => {
+  expect(reminderRetryDelayMs(new ReminderSyncError(429, 3600), 1)).toBe(3_600_000);
+  expect(reminderRetryDelayMs(new ReminderSyncError(429, 5), 1)).toBe(30_000);
+  expect(reminderRetryDelayMs(new ReminderSyncError(503, null), 1)).toBe(30_000);
+  expect(reminderRetryDelayMs(new Error("offline"), 2)).toBe(60_000);
+  expect(reminderRetryDelayMs(new Error("offline"), 3)).toBe(120_000);
+  expect(reminderRetryDelayMs(new Error("offline"), 20)).toBe(15 * 60_000);
 });

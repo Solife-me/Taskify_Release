@@ -1,6 +1,7 @@
 import { prepareRelayEvent } from "./nostr/prepareRelayEvent";
 import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
-import { syncRemindersToWorker, PUSH_OPERATION_TIMEOUT_MS } from "./domains/push/reminderClient";
+import { PUSH_OPERATION_TIMEOUT_MS } from "./domains/push/reminderClient";
+import { useReminderSync } from "./domains/push/useReminderSync";
 import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
 import { withTimeout } from "./lib/withTimeout";
 import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
@@ -26,7 +27,6 @@ import {
   isListLikeBoard,
   normalizeReminderTime,
   reminderPresetIdForMode,
-  reminderPresetToMinutes,
   sanitizeReminderList,
   type Board,
   type BoardSortDirection,
@@ -5340,43 +5340,14 @@ export default function App() {
   }, [calendarEvents, reminderSystemTimeZone, tasks]);
   const reminderPayloadRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    const pushPrefs = settings.pushNotifications;
-    if (!pushPrefs?.enabled || !pushPrefs.deviceId || !pushPrefs.subscriptionId) {
-      reminderPayloadRef.current = null;
-      return;
-    }
-    if (!workerBaseUrl) {
-      return;
-    }
-
-    const remindersPayload = reminderSyncItems
-      .map((item) => ({
-        taskId: item.taskId,
-        boardId: item.boardId,
-        dueISO: item.dueISO,
-        title: item.title,
-        minutesBefore: (item.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
-      }))
-      .sort((a, b) => a.taskId.localeCompare(b.taskId));
-    const payloadString = JSON.stringify(remindersPayload);
-    if (reminderPayloadRef.current === payloadString) return;
-    reminderPayloadRef.current = payloadString;
-
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      syncRemindersToWorker(workerBaseUrl, pushPrefs, reminderSyncItems, { signal: controller.signal }).catch((err) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        console.error('Reminder sync failed', err);
-        setPushError(err instanceof Error ? err.message : 'Failed to sync reminders');
-      });
-    }, 400);
-
-    return () => {
-      controller.abort();
-      window.clearTimeout(timer);
-    };
-  }, [reminderSyncItems, settings.pushNotifications, workerBaseUrl]);
+  useReminderSync({
+    reminderSyncItems,
+    pushPrefs: settings.pushNotifications,
+    workerBaseUrl,
+    sentPayloadRef: reminderPayloadRef,
+    setPushError,
+    showToast,
+  });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
