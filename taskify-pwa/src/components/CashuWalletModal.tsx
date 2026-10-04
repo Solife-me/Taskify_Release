@@ -192,6 +192,7 @@ import {
 import type { CashuWalletModalProps } from "./cashuWalletModalTypes";
 import { WalletTabSwitcher } from "../ui/wallet/WalletTabSwitcher";
 import { WalletContactsListPanel } from "../ui/wallet/WalletContactsListPanel";
+import { WalletMessagesListPanel } from "../ui/wallet/WalletMessagesListPanel";
 import {
   EcashReceiveSheet,
   EcashSendSheet,
@@ -4904,116 +4905,23 @@ export default function CashuWalletModal({
             </div>
             <div className="wallet-messages__body">
               {(dmView === "list" || dmView === "strangers") && (
-                <div className="wallet-messages__list space-y-2">
-                  {dmView === "strangers" && !dmSearch.trim() && (
-                    <button
-                      className="wallet-messages__thread pressable"
-                      onClick={() => {
-                        dmListViewRef.current = "list";
-                        setDmView("list");
-                        setActiveThreadPeer(null);
-                      }}
-                    >
-                      <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&larr;</div>
-                      <div className="wallet-messages__thread-body">
-                        <div className="wallet-messages__thread-title">Back to everyone</div>
-                        <div className="wallet-messages__thread-preview">View all conversations</div>
-                      </div>
-                    </button>
-                  )}
-                  {dmThreadListEntries.map((entry) => {
-                    if (entry.kind === "strangers") {
-                      return (
-                        <button
-                          key="wallet-strangers-group"
-                          className="wallet-messages__thread wallet-messages__thread--stranger pressable"
-                          onClick={() => {
-                            dmListViewRef.current = "strangers";
-                            setDmView("strangers");
-                            setActiveThreadPeer(null);
-                          }}
-                        >
-                          <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&#9678;</div>
-                          <div className="wallet-messages__thread-body">
-                            <div className="wallet-messages__thread-title">
-                              Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
-                            </div>
-                            <div className="wallet-messages__thread-preview">{entry.lastPreview}</div>
-                          </div>
-                          <div className="wallet-messages__thread-meta">
-                            <span className="wallet-messages__thread-date">
-                              {formatShortDate(entry.lastCreatedAt)}
-                            </span>
-                            {strangerUnreadCount > 0 && (
-                              <span className="chat-unread-badge">{strangerUnreadCount}</span>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    }
-                    const thread = entry.thread;
-                    const isGroupThread = !!thread.groupId;
-                    const groupMeta = isGroupThread ? groupChats.find((g) => g.groupId === thread.groupId) : null;
-                    const groupAvatarMembers = isGroupThread ? groupAvatarMembersFor(groupMeta, thread, groupMeta?.name || "Group") : [];
-                    const meta = isGroupThread
-                      ? { label: groupMeta?.name || "Group", picture: undefined, subtitle: `${groupMeta?.members.length || 0} members`, verifiedNip05: null }
-                      : peerLabelFor(thread.peerPubkey);
-                    const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
-                    return (
-                      <SwipeableDmThreadRow
-                        key={thread.peerPubkey}
-                        onArchive={() => handleArchiveDmThread(thread)}
-                        onDelete={() => handleDeleteDmThread(thread)}
-                      >
-                        <button
-                          className="wallet-messages__thread pressable"
-                          onClick={() => {
-                            dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
-                            setActiveThreadPeer(thread.peerPubkey);
-                            setDmView("thread");
-                            const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
-                            if (unreadIds.length) {
-                              onMarkMessagesRead(unreadIds);
-                            }
-                          }}
-                        >
-                          <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
-                            {isGroupThread ? (
-                              <GroupAvatar members={groupAvatarMembers} />
-                            ) : meta.picture ? (
-                              <img
-                                src={meta.picture}
-                                alt={meta.label}
-                                className="wallet-messages__avatar-img"
-                              />
-                            ) : (
-                              <span>{meta.label.slice(0, 2)}</span>
-                            )}
-                          </div>
-                          <div className="wallet-messages__thread-body">
-                            <div className="wallet-messages__thread-title">
-                              {meta.label}
-                            </div>
-                            <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
-                          </div>
-                          <div className="wallet-messages__thread-meta">
-                            <span className="wallet-messages__thread-date">
-                              {formatShortDate(thread.lastCreatedAt)}
-                            </span>
-                            {unreadCount > 0 && <span className="chat-unread-badge">{unreadCount}</span>}
-                          </div>
-                        </button>
-                      </SwipeableDmThreadRow>
-                    );
-                  })}
-                {dmThreadListEntries.length === 0 && (
-                  <div className="wallet-messages__empty text-secondary text-sm text-center">
-                    {dmView === "strangers" && !dmSearch.trim()
-                      ? "No stranger messages yet."
-                      : "No messages yet. Incoming DMs will appear here."}
-                  </div>
-                )}
-                </div>
+                <WalletMessagesListPanel
+                  dmSearch={dmSearch}
+                  dmView={dmView}
+                  setDmView={setDmView}
+                  dmListViewRef={dmListViewRef}
+                  setActiveThreadPeer={setActiveThreadPeer}
+                  dmThreadListEntries={dmThreadListEntries}
+                  strangerUnreadCount={strangerUnreadCount}
+                  groupChats={groupChats}
+                  groupAvatarMembersFor={groupAvatarMembersFor}
+                  peerLabelFor={peerLabelFor}
+                  threadUnreadMap={threadUnreadMap}
+                  handleArchiveDmThread={handleArchiveDmThread}
+                  handleDeleteDmThread={handleDeleteDmThread}
+                  collectUnreadThreadItemEventIds={collectUnreadThreadItemEventIds}
+                  onMarkMessagesRead={onMarkMessagesRead}
+                />
               )}
               {dmView === "thread" && activeThread && (
                 <div className="wallet-messages__thread-view">
