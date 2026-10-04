@@ -180,7 +180,6 @@ import {
   shouldSuppressProofStateChecks,
   buildWalletMessageSyntheticEventId,
   buildCalendarInviteSyntheticEventId,
-  CONTACT_PANEL_HEIGHT,
   UNPAID_MINT_QUOTE_RETENTION_MS,
   CHAT_TIMESTAMP_REVEAL_WIDTH,
   BACKGROUND_REFRESH_INTERVAL_MS,
@@ -192,6 +191,7 @@ import {
 } from "../wallet/walletModalHelpers";
 import type { CashuWalletModalProps } from "./cashuWalletModalTypes";
 import { WalletTabSwitcher } from "../ui/wallet/WalletTabSwitcher";
+import { WalletContactsListPanel } from "../ui/wallet/WalletContactsListPanel";
 import {
   EcashReceiveSheet,
   EcashSendSheet,
@@ -1627,73 +1627,6 @@ export default function CashuWalletModal({
     const lead = Math.max(8, Math.min(18, Math.floor((maxLength - 1) / 2)));
     const tail = Math.max(6, maxLength - lead - 1);
     return `${normalized.slice(0, lead)}${ellipsis}${normalized.slice(-tail)}`;
-  };
-  const contactsPanelContent = (context: "lightning" | "ecash") => {
-    if (contactsContext !== context) return null;
-    const hasContacts = visibleContacts.length > 0;
-    const contactPanelHeight = CONTACT_PANEL_HEIGHT;
-    return (
-      <div
-        className="flex flex-col gap-3 text-xs"
-        style={{ minHeight: contactPanelHeight, maxHeight: contactPanelHeight }}
-      >
-        <div className="contacts-list-view flex-1 min-h-0">
-          {hasContacts ? (
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-              <div className="contact-list">
-                {visibleContacts.map((contact) => {
-                  const displayName = contactDisplayLabel(contact);
-                  const displayNameTrimmed = truncateContactName(displayName);
-                  const subtitle = contactSubtitle(contact) || "No details added";
-                  const subtitleIsNip05 =
-                    !!contact.nip05 &&
-                    !!subtitle &&
-                    normalizeNip05(contact.nip05) === normalizeNip05(subtitle);
-                  const nip05Verified =
-                    subtitleIsNip05 &&
-                    isNip05VerifiedForRef.current?.(contact.id, contact.nip05, contact.npub);
-                  const photo = contact.picture?.trim();
-                  return (
-                    <button
-                      key={contact.id}
-                      type="button"
-                      className="contact-row pressable"
-                      onClick={() => handleSelectContact(contact)}
-                    >
-                      <div className={photo ? "contact-avatar contact-avatar--image" : "contact-avatar"}>
-                        {photo ? (
-                          <img src={photo} alt={displayName} className="contact-avatar__img" />
-                        ) : (
-                          contactInitials(displayName)
-                        )}
-                      </div>
-                      <div className="contact-row__text">
-                        <div className="contact-row__name">{displayNameTrimmed}</div>
-                        <div
-                          className={`contact-row__meta${subtitleIsNip05 ? " contact-row__meta--nip05" : ""}`}
-                        >
-                          <span className="contact-row__meta-text">{subtitle}</span>
-                          {subtitleIsNip05 && nip05Verified && (
-                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
-                          )}
-                        </div>
-                      </div>
-                      <span className="contact-chevron">›</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className="contact-empty text-secondary">
-              {context === "ecash"
-                ? "Add a contact with an npub from the Contacts tab."
-                : "Save a lightning address from the Contacts tab."}
-            </div>
-          )}
-        </div>
-      </div>
-    );
   };
   const lnurlWithdrawStatusText = useMemo(() => {
     switch (lnurlWithdrawState) {
@@ -8977,7 +8910,7 @@ export default function CashuWalletModal({
       >
         {contactsContext && (
           <div className="wallet-section space-y-3 text-sm">
-            {contactsPanelContent(contactsContext)}
+            <WalletContactsListPanel context={contactsContext} activeContext={contactsContext} contacts={visibleContacts} contactSubtitle={contactSubtitle} isNip05VerifiedForRef={isNip05VerifiedForRef} onSelectContact={handleSelectContact} normalizeNip05={normalizeNip05} initialsFor={contactInitials} truncateContactName={truncateContactName} />
           </div>
         )}
       </ActionSheet>
