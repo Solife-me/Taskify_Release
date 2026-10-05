@@ -1,5 +1,5 @@
-# Secret scanning for CI (.github/workflows/ci.yml). Default rules, plus an allowance for test
-# fixtures, which use made-up keys and connection strings.
+# Secret scanning for CI (.github/workflows/ci.yml). Default rules, plus narrow allowances for
+# deterministic test fixtures and Swift syntax that the generic API-key rule misidentifies.
 [extend]
 useDefault = true
 
@@ -7,5 +7,12 @@ useDefault = true
 description = "Test fixtures use generated or fake secrets"
 paths = [
   '''\.test\.(ts|tsx|js|mjs)$''',
-  '''(^|/)tests?/''',
+  '''(?i)(^|/)tests?/''',
+]
+
+[[allowlists]]
+description = "Swift optional binding is not an API credential"
+regexTarget = "line"
+regexes = [
+  '''^\s*if let key = wallet\.primaryP2PKKey \{\s*$''',
 ]
