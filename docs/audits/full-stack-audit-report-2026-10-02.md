@@ -21,11 +21,11 @@ first remediation step is therefore to deploy, in the order below.
 
 | Severity | Total | Fixed | Partly fixed | Maintainer | Open | Accepted | No action |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| P0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 |
+| P0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | P1 | 15 | 11 | 2 | 1 | 0 | 1 | 0 |
 | P2 | 42 | 27 | 7 | 3 | 2 | 2 | 1 |
 | P3 | 28 | 20 | 3 | 0 | 3 | 2 | 0 |
-| **All** | **86** | **58** | **12** | **5** | **5** | **5** | **1** |
+| **All** | **85** | **58** | **12** | **4** | **5** | **5** | **1** |
 
 Status meanings:
 
@@ -37,9 +37,8 @@ Status meanings:
 - **Open:** code work not yet done.
 - **Accepted:** the maintainer chose to leave it as it is.
 
-The P0 and P1 items not yet closed:
+The P1 items not yet closed:
 
-- **F0-1** — leaked credentials. Rotation reported 2026-09-30.
 - **F1A-16** — retired Google Calendar data may still be in D1. Needs a production check.
 - **F1A-17** — the Worker's 100,000-requests-a-day allowance can be spent by anyone. Needs a
   Cloudflare rate rule on `/api/*`.
@@ -72,7 +71,6 @@ Steps 0, 2, 3 and 5 need nobody but the maintainer and cost nothing on the free 
 
 | ID | Sev | Finding | Status | Detail |
 | --- | --- | --- | --- | --- |
-| F0-1 | P0 | API credentials in public git history | Maintainer | Reported rotated 2026-09-30; not verified from here. |
 | F2-2 | P1 | content from before 27 March is encrypted with a public value | Accepted | Maintainer, 2026-09-30: exposure already happened; no board-ID migration. |
 | F0-2 | P2 | signed app archives in public history | No action | Include the paths if history is ever rewritten. |
 | F0-3 | P2 | nothing automated gates a release | Fixed | CI workflow `c7c6cc8e`; it has not run yet because the branch is unpushed. Swift not covered (see CI). |

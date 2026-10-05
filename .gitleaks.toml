@@ -16,3 +16,19 @@ regexTarget = "line"
 regexes = [
   '''^\s*if let key = wallet\.primaryP2PKKey \{\s*$''',
 ]
+
+[[allowlists]]
+description = "Known storage-key names, prompt examples, and Swift argument labels are not credentials"
+regexTarget = "line"
+regexes = [
+  '''^\s*(?:export\s+)?const\s+[A-Z0-9_]*(?:KEY|KEYS)\s*=\s*["'](?:cashu|taskify)[._][A-Za-z0-9_.-]+["'];?\s*$''',
+  '''^\s*privateKeys:\s*p2pkSigningPrivateKeys\s*$''',
+]
+
+[[allowlists]]
+description = "Idempotency fields and a PEM-validation regex are not secrets"
+regexTarget = "match"
+regexes = [
+  '''^idempotencyKey["']?\s*:\s*["']''',
+  '''^\^-----BEGIN PRIVATE KEY-----\\s\*''',
+]

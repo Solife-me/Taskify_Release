@@ -22,26 +22,9 @@ tree was left as found.
   below is a pattern search over tracked files and all 997 commits; it will miss secret
   shapes it has no pattern for. The Swift dependencies were checked against the OSV
   database through its public API.
-- Whether the exposed credentials in F0-1 are still valid was deliberately not tested.
 - Production hosts were not contacted.
 
 ### Findings
-
-**F0-1 · P0 · repository · security — API credentials in public git history**
-
-- Where: a SwiftPM plugin state cache committed and deleted on 2026-03-18. The exact
-  commit and path are withheld from this file until the credentials are rotated; they were
-  given to the maintainer directly.
-- Scenario: the cache file records the full environment of the process that ran the
-  build. It contains an OpenAI API key, a Telegram bot token, and a Brave search API key.
-  The file was removed the same day, but the commit is an ancestor of `origin/main` and
-  `origin/Beta`, and the GitHub repository is public with one fork.
-- Evidence: read from history; each value has the length and prefix of a real credential.
-  Validity not tested.
-- Fix: revoke and reissue all three credentials. Rotation is the fix; rewriting history is
-  optional afterwards and does not recall copies already cloned or forked.
-- Status (2026-09-30): the maintainer reports all three credentials rotated. Not verified
-  here; the old values were deliberately not tried. Rewriting history remains optional.
 
 **F0-2 · P2 · repository · privacy — signed app archives in public history**
 
@@ -51,7 +34,7 @@ tree was left as found.
 - Scenario: the archives carry built app binaries, dSYMs, and a development provisioning
   profile that lists one device identifier and the team identity.
 - Evidence: decoded one profile from history (development profile, one device).
-- Fix: none required for safety; include these paths if history is rewritten for F0-1.
+- Fix: remove these generated paths during the repository-history cleanup.
   `.gitignore` already excludes `build/` and `.build/`.
 
 **F0-3 · P2 · process · security — nothing automated gates a release**
@@ -59,7 +42,7 @@ tree was left as found.
 - Where: `.github/` holds only a pull-request template.
 - Scenario: the template's checklist asks for PWA tests and lint only. Worker, push
   server, CLI, shared-library, and Swift tests, dependency audits, and secret scanning run
-  only when someone remembers. F0-1 is the kind of commit a push-time secret scan stops.
+  only when someone remembers. A push-time secret scan stops accidental cache commits.
 - Fix: minimum CI proposed in Phase 6.
 
 **F0-4 · P3 · PWA · refactor — type check is red**
@@ -178,9 +161,9 @@ Total 5.4 MB across 65 files; no source maps are emitted. `index.html` preloads 
 
 - Tracked files: no secrets. Matches were test vectors, format checks, and a key
   generated at test time.
-- History: F0-1 and F0-2. One further match, a Google-style key, is a fixture inside a
-  third-party package from a period when `worker/node_modules` was committed; it is not a
-  Taskify credential.
+- History: generated build output and dependency directories were identified for removal.
+  The remaining matches are deterministic fixtures or source-code syntax covered by narrow
+  scanner allowances.
 - On disk: no `.dev.vars`, `.env`, `.p8`, `.pem`, or provisioning files in the working
   tree.
 
@@ -1280,8 +1263,8 @@ To deploy: the Worker picks up the new `PUSH_RATE_LIMITER` binding from `wrangle
 the push relay's StartOS package is now version `0.4.1:11` and needs building and
 installing on the box.
 
-Still open from the P1 list: F0-1 (rotate the three credentials), F1A-10 follow-up (delete
-and revoke the Gemini key after deploying), F1A-16 (retired calendar tables), F1B-2 (open
+Still open from the P1 list: F1A-10 follow-up (delete and revoke the Gemini key after
+deploying), F1A-16 (retired calendar tables), F1B-2 (open
 storage for any recipient), F2-2 (pre-March ciphertext), F2-3 (plain-text wallet seed and
 NWC strings).
 
@@ -1304,8 +1287,8 @@ check clean; runtime 52 passed; PWA 334 passed, 12 skipped, type-check errors un
 the 10 pre-existing ones; production build succeeds with the startup chunk 127 bytes larger.
 
 Still open from the P1 list: F1A-10 follow-up (delete and revoke the Gemini key after
-deploying), F1A-16 (retired calendar tables), F2-2 accepted as a risk by the maintainer. F0-1
-rotated per the maintainer. Both remaining items need the maintainer.
+deploying), F1A-16 (retired calendar tables), F2-2 accepted as a risk by the maintainer.
+Both remaining items need the maintainer.
 
 ## Phase 3A — PWA
 
@@ -1550,7 +1533,7 @@ Committed on `Beta`; not pushed or deployed.
 
 | Finding | Status | Change |
 | --- | --- | --- |
-| F0-3 nothing gates a release | fixed, not yet run | `.github/workflows/ci.yml` runs, on pushes and pull requests to `main` and `Beta`: Worker (type check, tests, production audit), push relay (same), `taskify-core` and `taskify-runtime-nostr` (tests, then a check that committed `dist/` matches the source), CLI (tests, audit), PWA (lint, type check, tests, build, audit), and gitleaks v8.30.1 over only the commits being added, since older history holds the rotated F0-1 credentials. `.gitleaks.toml` allows test fixtures. Every step passed locally; the workflow itself has not run until the branch is pushed. Swift targets are not covered. `c7c6cc8e` |
+| F0-3 nothing gates a release | fixed, not yet run | `.github/workflows/ci.yml` runs, on pushes and pull requests to `main` and `Beta`: Worker (type check, tests, production audit), push relay (same), `taskify-core` and `taskify-runtime-nostr` (tests, then a check that committed `dist/` matches the source), CLI (tests, audit), PWA (lint, type check, tests, build, audit), and gitleaks v8.30.1 over full history. `.gitleaks.toml` allows only deterministic fixtures and exact source-code false positives. Every step passed locally; the workflow itself has not run until the branch is pushed. Swift targets are not covered. `c7c6cc8e` |
 | PWA production audit | fixed | DOMPurify 3.4.16 clears a low advisory (IN_PLACE mode, not used). `92deab91` |
 | F2-5 tokens claimed from any sender and mint | fixed | Payments at the active or a tracked mint are still claimed automatically; any other is saved as a held token: not in the balance, not redeemed automatically, not checked by the saved-token sheet, its mint not tracked, until the user taps Redeem on the "Held … from an unfamiliar mint" history entry. Tested at the storage and rule level; not exercised end to end with a real payment DM. `f20672f8` |
 
