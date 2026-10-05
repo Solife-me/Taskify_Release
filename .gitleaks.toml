@@ -30,5 +30,11 @@ description = "Idempotency fields and a PEM-validation regex are not secrets"
 regexTarget = "match"
 regexes = [
   '''^idempotencyKey["']?\s*:\s*["']''',
-  '''^\^-----BEGIN PRIVATE KEY-----\\s\*''',
+]
+
+[[allowlists]]
+description = "APNs configuration validates PEM input but does not contain a private key"
+targetRules = ["private-key"]
+paths = [
+  '''^taskify-push-relay/startos/actions/configureAPNs\.ts$''',
 ]
