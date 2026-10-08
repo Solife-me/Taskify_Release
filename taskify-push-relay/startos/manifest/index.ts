@@ -9,9 +9,6 @@ export const manifest = setupManifest({
   upstreamRepo: 'https://github.com/Solife-me/Taskify_Release',
   marketingUrl: 'https://solife.me',
   donationUrl: null,
-  docsUrls: [
-    'https://github.com/Solife-me/Taskify_Release/blob/main/docs/reference/native-dm-push-relay.md',
-  ],
   description: { short, long },
   volumes: ['main'],
   images: {
@@ -25,5 +22,4 @@ export const manifest = setupManifest({
       arch: ['x86_64', 'aarch64'],
     },
   },
-  dependencies: {},
 })

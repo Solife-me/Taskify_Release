@@ -5,7 +5,17 @@ import {
   assertAuthorizedGiftWrapFilters,
   giftWrapRecipient,
   shouldNotifyRecipient,
+  socketApplication,
 } from '../src/relay-policy.js'
+
+test('a socket is Snapstr only when its sign-in names exactly one Snapstr client', () => {
+  const auth = (...tags) => ({ kind: 22_242, tags: [['relay', 'wss://push.solife.me'], ...tags] })
+  assert.equal(socketApplication(auth(['client', 'snapstr'])), 'snapstr')
+  assert.equal(socketApplication(auth()), 'taskify')
+  assert.equal(socketApplication(auth(['client', 'amethyst'])), 'taskify')
+  assert.equal(socketApplication(auth(['client', 'snapstr'], ['client', 'snapstr'])), 'taskify')
+  assert.equal(socketApplication(null), 'taskify')
+})
 
 const alice = 'a'.repeat(64)
 const bob = 'b'.repeat(64)

@@ -14,6 +14,50 @@ const EMPTY_STATE = Object.freeze({
 })
 
 const TASK_EVENT_KINDS = new Set([30_300, 30_301])
+const HEX_EVENT_ID = /^[0-9a-f]{64}$/
+const HEX_PUBLIC_KEY = /^[0-9a-f]{64}$/
+
+function eventCoordinate(event) {
+  const pubkey = event?.pubkey?.toLowerCase()
+  if (!HEX_PUBLIC_KEY.test(pubkey ?? '')) return null
+  if (event.kind === 0 || event.kind === 3 || (event.kind >= 10_000 && event.kind < 20_000)) {
+    return `${event.kind}:${pubkey}:`
+  }
+  if (event.kind < 30_000 || event.kind >= 40_000) return null
+  const identifiers = event.tags?.filter(
+    (tag) => Array.isArray(tag) && tag[0] === 'd' && typeof tag[1] === 'string',
+  ) ?? []
+  if (identifiers.length !== 1) return null
+  return `${event.kind}:${pubkey}:${identifiers[0][1]}`
+}
+
+function deletionTargets(event) {
+  if (event?.kind !== 5 || !HEX_PUBLIC_KEY.test(event.pubkey?.toLowerCase() ?? '')) {
+    throw new Error('Invalid kind 5 deletion request')
+  }
+  const eventIDs = new Set()
+  const addresses = new Set()
+  for (const tag of event.tags ?? []) {
+    if (!Array.isArray(tag) || (tag[0] !== 'e' && tag[0] !== 'a')) continue
+    if (tag[0] === 'e') {
+      if (!HEX_EVENT_ID.test(tag[1] ?? '')) throw new Error('Invalid deletion event ID')
+      eventIDs.add(tag[1])
+      continue
+    }
+    const match = /^(\d+):([0-9a-f]{64}):(.*)$/.exec(tag[1] ?? '')
+    if (!match || match[2] !== event.pubkey.toLowerCase()) {
+      throw new Error('Invalid deletion event address')
+    }
+    addresses.add(tag[1])
+  }
+  if (eventIDs.size + addresses.size === 0) {
+    throw new Error('Deletion request must identify at least one event')
+  }
+  if (eventIDs.size + addresses.size > 100) {
+    throw new Error('Deletion request has too many targets')
+  }
+  return { eventIDs, addresses }
+}
 
 function taskEventCoordinate(event) {
   if (!TASK_EVENT_KINDS.has(event?.kind) || typeof event.pubkey !== 'string') return null
@@ -162,7 +206,11 @@ export class RelayStore {
       || this.state.preferences.some((preference) => preference.pubkey === normalized)
   }
 
-  async putRegistration(pubkey, installationID, { deviceToken, environment, platform = 'ios' }) {
+  async putRegistration(
+    pubkey,
+    installationID,
+    { deviceToken, environment, platform = 'ios', application = 'taskify' },
+  ) {
     const normalizedPubkey = pubkey.toLowerCase()
     const key = this.registrationKey(normalizedPubkey, installationID)
     const registration = {
@@ -172,12 +220,35 @@ export class RelayStore {
       deviceToken: deviceToken.toLowerCase(),
       environment,
       platform,
+      application,
       updatedAt: this.now(),
     }
-    const retainedRegistrations = this.state.registrations.filter(
-      (candidate) => candidate.key === key
-        || (candidate.installationID !== installationID && candidate.deviceToken !== registration.deviceToken),
-    )
+    // Snapstr keeps several profiles on one phone and alerts for all of them, so its other
+    // profiles on this installation stay registered, following the device's current token.
+    // Taskify has one account per installation: registering another replaces it. Either way, a
+    // registration elsewhere with this token is a stale install of the same app and is dropped.
+    const keepsOtherProfiles = application === 'snapstr'
+    const retainedRegistrations = []
+    for (const candidate of this.state.registrations) {
+      if (candidate.key === key) {
+        retainedRegistrations.push(candidate)
+      } else if (
+        keepsOtherProfiles
+        && candidate.installationID === installationID
+        && candidate.application === application
+      ) {
+        retainedRegistrations.push({
+          ...candidate,
+          deviceToken: registration.deviceToken,
+          environment: registration.environment,
+        })
+      } else if (
+        candidate.installationID !== installationID
+        && candidate.deviceToken !== registration.deviceToken
+      ) {
+        retainedRegistrations.push(candidate)
+      }
+    }
     const existingIndex = retainedRegistrations.findIndex((candidate) => candidate.key === key)
     const resultingTotal = retainedRegistrations.length + (existingIndex >= 0 ? 0 : 1)
     const resultingForPubkey = retainedRegistrations.filter(
@@ -245,7 +316,21 @@ export class RelayStore {
     }
   }
 
-  async putGiftWrap(event, { notify }) {
+  /// `application` names the app the publishing socket signed in as. Only that app's devices are
+  /// alerted: Taskify cannot hide an alert for a wrap it cannot preview, so a Snapstr message would
+  /// otherwise appear as a Taskify notification, and the reverse.
+  registrationsToNotify(recipient, application) {
+    const registrations = this.registrationsFor(recipient)
+    const matching = registrations.filter(
+      (registration) => (registration.application ?? 'taskify') === application,
+    )
+    // An unnamed sender is Taskify, another NIP-17 client, or a Snapstr build from before Snapstr
+    // named itself. An account with only Snapstr devices still gets its alert rather than none.
+    if (application === 'taskify' && matching.length === 0) return registrations
+    return matching
+  }
+
+  async putGiftWrap(event, { notify, application = 'taskify' }) {
     this.prune()
     if (this.state.events.some((entry) => entry.event.id === event.id)) return false
     const recipient = event.tags.find((tag) => tag[0] === 'p')[1].toLowerCase()
@@ -256,7 +341,7 @@ export class RelayStore {
     this.state.events.push({ event, recipient, storedAt, sequence, bytes })
     this.enforceEventBounds(recipient)
     if (notify) {
-      for (const registration of this.registrationsFor(recipient)) {
+      for (const registration of this.registrationsToNotify(recipient, application)) {
         const id = `${event.id}:${registration.key}`
         if (this.state.pushJobs.some((job) => job.id === id)) continue
         const previewToken = registration.platform === 'watchos'
@@ -312,6 +397,41 @@ export class RelayStore {
     this.state.preferences.push({ pubkey, event })
     await this.persist()
     return true
+  }
+
+  /// Applies a NIP-09 request only to events signed by the same key. Deleting an event also
+  /// removes any notification job or preview that could still reveal the deleted ciphertext.
+  async applyDeletionRequest(event) {
+    const { eventIDs, addresses } = deletionTargets(event)
+    const author = event.pubkey.toLowerCase()
+    const deletes = (candidate) => {
+      if (candidate.pubkey?.toLowerCase() !== author) return false
+      if (eventIDs.has(candidate.id)) return true
+      const coordinate = eventCoordinate(candidate)
+      return coordinate != null
+        && addresses.has(coordinate)
+        && candidate.created_at <= event.created_at
+    }
+
+    const deletedEventIDs = new Set()
+    this.state.events = this.state.events.filter((entry) => {
+      if (!deletes(entry.event)) return true
+      deletedEventIDs.add(entry.event.id)
+      return false
+    })
+    const preferenceCount = this.state.preferences.length
+    this.state.preferences = this.state.preferences.filter((entry) => !deletes(entry.event))
+    const taskEventCount = this.state.taskEvents.length
+    this.state.taskEvents = this.state.taskEvents.filter((entry) => !deletes(entry.event))
+    if (deletedEventIDs.size > 0) {
+      this.state.pushJobs = this.state.pushJobs.filter((job) => !deletedEventIDs.has(job.eventID))
+      this.state.previews = this.state.previews.filter((preview) => !deletedEventIDs.has(preview.eventID))
+    }
+    const deletedCount = deletedEventIDs.size
+      + (preferenceCount - this.state.preferences.length)
+      + (taskEventCount - this.state.taskEvents.length)
+    if (deletedCount > 0) await this.persist()
+    return deletedCount
   }
 
   /// Caches only the latest signed replaceable board/task event per public Nostr coordinate.

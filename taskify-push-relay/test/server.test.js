@@ -31,7 +31,7 @@ function nextFrame(socket, predicate = () => true) {
   })
 }
 
-async function connectAndAuthenticate(port, secretKey) {
+async function connectAndAuthenticate(port, secretKey, extraTags = []) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}`)
   const challengeFrame = await nextFrame(socket, (frame) => frame[0] === 'AUTH')
   const authEvent = finalizeEvent(
@@ -41,6 +41,7 @@ async function connectAndAuthenticate(port, secretKey) {
       tags: [
         ['relay', 'wss://push.solife.me'],
         ['challenge', challengeFrame[1]],
+        ...extraTags,
       ],
       content: '',
     },
@@ -83,7 +84,7 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   assert.equal(relayInfoResponse.status, 200)
   assert.match(relayInfoResponse.headers.get('content-type'), /^application\/nostr\+json/)
   const relayInfo = await relayInfoResponse.json()
-  assert.deepEqual(relayInfo.supported_nips, [1, 11, 17, 42, 59, 98])
+  assert.deepEqual(relayInfo.supported_nips, [1, 9, 11, 17, 42, 59, 98])
 
   const senderKey = generateSecretKey()
   const recipientKey = generateSecretKey()
@@ -141,6 +142,100 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   const closed = await nextFrame(senderSocket, (frame) => frame[0] === 'CLOSED' && frame[1] === 'forbidden-inbox')
   assert.match(closed[2], /recipient/i)
   assert.notEqual(senderPubkey, recipientPubkey)
+})
+
+test('kind 5 requests delete only events signed by the deletion author', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory })
+  await store.load()
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me' },
+    store,
+    apnsClient: { async send() { return { status: 200, reason: null } } },
+    logger: { info() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+
+  const authorKey = generateSecretKey()
+  const recipientPubkey = getPublicKey(generateSecretKey())
+  await store.putRegistration(recipientPubkey, 'phone-1', {
+    deviceToken: '12'.repeat(32), environment: 'production',
+  })
+  const socket = await connectAndAuthenticate(address.port, generateSecretKey())
+  t.after(() => socket.close())
+  const giftWrap = finalizeEvent({
+    kind: 1059,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [['p', recipientPubkey]],
+    content: 'opaque',
+  }, authorKey)
+  socket.send(JSON.stringify(['EVENT', giftWrap]))
+  await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === giftWrap.id)
+
+  const impostorDeletion = finalizeEvent({
+    kind: 5, created_at: giftWrap.created_at + 1, tags: [['e', giftWrap.id]], content: '',
+  }, generateSecretKey())
+  socket.send(JSON.stringify(['EVENT', impostorDeletion]))
+  const ignored = await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === impostorDeletion.id)
+  assert.deepEqual(ignored.slice(2), [true, 'deleted: 0 events'])
+  assert.equal(store.eventsFor(recipientPubkey).length, 1)
+
+  const deletion = finalizeEvent({
+    kind: 5, created_at: giftWrap.created_at + 2, tags: [['e', giftWrap.id], ['k', '1059']], content: '',
+  }, authorKey)
+  socket.send(JSON.stringify(['EVENT', deletion]))
+  const removed = await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === deletion.id)
+  assert.deepEqual(removed.slice(2), [true, 'deleted: 1 event'])
+  assert.equal(store.eventsFor(recipientPubkey).length, 0)
+  assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 0)
+  assert.equal(store.state.previews.length, 0)
+})
+
+test('a Snapstr sender alerts only Snapstr devices and a Taskify sender only Taskify devices', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory, minimumPushIntervalSeconds: 0 })
+  await store.load()
+  const sent = []
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me' },
+    store,
+    apnsClient: {
+      async send(registration) {
+        sent.push(registration.installationID)
+        return { status: 200, reason: null }
+      },
+    },
+    logger: { info() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+
+  const recipientPubkey = getPublicKey(generateSecretKey())
+  await store.putRegistration(recipientPubkey, 'taskify-phone', { deviceToken: '11'.repeat(32), environment: 'production' })
+  await store.putRegistration(recipientPubkey, 'snapstr-phone', {
+    deviceToken: '33'.repeat(32), environment: 'production', application: 'snapstr',
+  })
+  const publish = async (socket) => {
+    const wrap = finalizeEvent(
+      { kind: 1059, created_at: Math.floor(Date.now() / 1000), tags: [['p', recipientPubkey]], content: 'opaque' },
+      generateSecretKey(),
+    )
+    socket.send(JSON.stringify(['EVENT', wrap]))
+    const saved = await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === wrap.id)
+    assert.deepEqual(saved.slice(2), [true, 'saved'])
+    await server.processPushJobs()
+  }
+
+  const snapstrSender = await connectAndAuthenticate(address.port, generateSecretKey(), [['client', 'snapstr']])
+  t.after(() => snapstrSender.close())
+  await publish(snapstrSender)
+  assert.deepEqual(sent, ['snapstr-phone'])
+
+  const taskifySender = await connectAndAuthenticate(address.port, generateSecretKey())
+  t.after(() => taskifySender.close())
+  await publish(taskifySender)
+  assert.deepEqual(sent, ['snapstr-phone', 'taskify-phone'])
 })
 
 test('APNs provider-token rejection invalidates the cache and preserves the job for retry', async () => {
@@ -458,4 +553,3 @@ test('a socket that never answers the challenge is closed, an authenticated one 
   assert.equal(authed.readyState, WebSocket.OPEN)
   authed.close()
 })
-

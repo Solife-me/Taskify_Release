@@ -30,6 +30,14 @@ export function assertAuthorizedGiftWrapFilters(filters, authenticatedPubkey) {
   }
 }
 
+/// The app a socket publishes for, from its NIP-42 sign-in. A gift wrap is opaque, so this is
+/// the only way to tell a Snapstr message from a Taskify DM. Snapstr adds `["client", "snapstr"]`
+/// when it signs in here; Taskify and every other NIP-17 client send no such tag.
+export function socketApplication(authEvent) {
+  const clients = authEvent?.tags?.filter((tag) => Array.isArray(tag) && tag[0] === 'client') ?? []
+  return clients.length === 1 && clients[0][1] === 'snapstr' ? 'snapstr' : 'taskify'
+}
+
 export function shouldNotifyRecipient({ authenticatedPubkey, recipientPubkey }) {
   return authenticatedPubkey?.toLowerCase() !== recipientPubkey?.toLowerCase()
 }

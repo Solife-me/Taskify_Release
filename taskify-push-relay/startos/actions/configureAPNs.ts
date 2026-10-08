@@ -73,6 +73,20 @@ const inputSpec = InputSpec.of({
       },
     ],
   }),
+  snapstrTopic: Value.text({
+    name: i18n('Snapstr App Bundle ID'),
+    description: i18n(
+      'The APNs topic. It must match the signed Snapstr app bundle identifier.',
+    ),
+    default: 'app.snapstr.ios',
+    required: true,
+    patterns: [
+      {
+        regex: '^[A-Za-z0-9.-]+$',
+        description: 'Must be a valid Apple bundle identifier.',
+      },
+    ],
+  }),
 })
 
 export const configureAPNs = sdk.Action.withInput(
@@ -96,6 +110,7 @@ export const configureAPNs = sdk.Action.withInput(
       return {
         topic: 'solife.me.Taskify.Native',
         watchTopic: 'solife.me.Taskify.Native.watchkitapp',
+        snapstrTopic: 'app.snapstr.ios',
       }
     }
     return {
@@ -103,6 +118,7 @@ export const configureAPNs = sdk.Action.withInput(
       keyID: current.keyID,
       topic: current.topic,
       watchTopic: current.watchTopic ?? 'solife.me.Taskify.Native.watchkitapp',
+      snapstrTopic: current.snapstrTopic ?? 'app.snapstr.ios',
     }
   },
   async ({ effects, input }) => {
@@ -110,6 +126,7 @@ export const configureAPNs = sdk.Action.withInput(
     const keyID = input.keyID.trim().toUpperCase()
     const topic = input.topic.trim()
     const watchTopic = input.watchTopic.trim()
+    const snapstrTopic = input.snapstrTopic.trim()
     const privateKey = normalizePrivateKey(input.privateKey)
     createPrivateKey(privateKey)
     await apnsConfigJson.write(effects, {
@@ -118,6 +135,7 @@ export const configureAPNs = sdk.Action.withInput(
       privateKey,
       topic,
       watchTopic,
+      snapstrTopic,
     })
     await chmod(apnsConfigJson.path, 0o600)
   },

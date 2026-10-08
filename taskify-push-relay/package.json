@@ -3,7 +3,7 @@
   "version": "0.4.1",
   "private": true,
   "type": "module",
-  "description": "Privacy-preserving NIP-17 relay and APNs bridge for Taskify",
+  "description": "Privacy-preserving NIP-17 relay and APNs bridge for Taskify and Snapstr",
   "scripts": {
     "build": "rm -rf ./javascript && ncc build startos/index.ts -o ./javascript",
     "check": "tsc --noEmit",
@@ -13,13 +13,13 @@
   },
   "dependencies": {
     "nostr-tools": "2.25.2",
-    "ws": "8.21.3"
+    "ws": "8.22.0"
   },
   "devDependencies": {
-    "@start9labs/start-sdk": "2.0.9",
-    "@types/node": "^22.20.2",
+    "@start9labs/start-sdk": "3.0.3",
+    "@types/node": "^26.6.4",
     "@vercel/ncc": "^0.45.0",
-    "prettier": "^3.6.2",
+    "prettier": "^3.9.9",
     "typescript": "^6.0.3"
   },
   "overrides": {

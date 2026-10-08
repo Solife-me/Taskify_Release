@@ -10,6 +10,7 @@ import {
   giftWrapRecipient,
   matchesFilter,
   shouldNotifyRecipient,
+  socketApplication,
 } from './relay-policy.js'
 import { NostrRelayForwarder, RemoteRelayError, normalizeRelayTargets } from './relay-forwarder.js'
 
@@ -338,6 +339,12 @@ export function createTaskifyPushServer({
       if (payload.platform != null && !['ios', 'watchos'].includes(payload.platform)) {
         throw new Error('Invalid APNs platform')
       }
+      if (payload.application != null && !['taskify', 'snapstr'].includes(payload.application)) {
+        throw new Error('Invalid application')
+      }
+      if (payload.application === 'snapstr' && payload.platform === 'watchos') {
+        throw new Error('Snapstr does not support watchOS registrations')
+      }
       await store.putRegistration(auth.pubkey, installationID, payload)
       sendJSON(response, 200, {
         enabled: true,
@@ -358,6 +365,8 @@ export function createTaskifyPushServer({
           authenticatedPubkey,
           recipientPubkey: recipient,
         }),
+        // Only the Taskify Watch uses this gateway.
+        application: 'taskify',
       })
       if (stored) broadcastEvent(event)
       return { accepted: true, message: stored ? 'saved' : 'duplicate: event already stored' }
@@ -764,7 +773,7 @@ export function createTaskifyPushServer({
         description: 'NIP-17 inbox relay with privacy-preserving APNs wake delivery',
         pubkey: '',
         contact: 'https://solife.me',
-        supported_nips: [1, 11, 17, 42, 59, 98],
+        supported_nips: [1, 9, 11, 17, 42, 59, 98],
         software: 'https://github.com/Solife-me/Taskify_Release',
         version: '0.4.1',
         limitation: {
@@ -813,6 +822,7 @@ export function createTaskifyPushServer({
       throw new Error('auth-required: relay URL does not match')
     }
     state.authenticatedPubkey = event.pubkey.toLowerCase()
+    state.application = socketApplication(event)
   }
 
   async function handleRelayEvent(state, event) {
@@ -820,6 +830,14 @@ export function createTaskifyPushServer({
     if (!state.authenticatedPubkey) throw new Error('auth-required: authenticate before publishing')
     if (!publishLimiter.consume(state.authenticatedPubkey)) throw new Error('rate-limited: publish limit exceeded')
     if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
+    if (event.kind === 5) {
+      if (Buffer.byteLength(JSON.stringify(event)) > 16 * 1024) {
+        throw new Error('invalid: deletion request is too large')
+      }
+      const deletedCount = await store.applyDeletionRequest(event)
+      if (deletedCount > 0) broadcastEvent(event)
+      return `deleted: ${deletedCount} event${deletedCount === 1 ? '' : 's'}`
+    }
     if (event.kind === 10_050) {
       if (event.pubkey.toLowerCase() !== state.authenticatedPubkey) {
         throw new Error('restricted: kind 10050 author must match authenticated pubkey')
@@ -828,7 +846,7 @@ export function createTaskifyPushServer({
       if (stored) broadcastEvent(event)
       return stored ? 'saved' : 'duplicate: older replaceable event'
     }
-    if (event.kind !== 1059) throw new Error('restricted: only kinds 1059 and 10050 are accepted')
+    if (event.kind !== 1059) throw new Error('restricted: only kinds 5, 1059, and 10050 are accepted')
     const recipient = giftWrapRecipient(event)
     // Only accounts that registered a device or published their inbox preference here use
     // this relay; storing wraps for any other key would let anyone fill it.
@@ -839,6 +857,7 @@ export function createTaskifyPushServer({
         authenticatedPubkey: state.authenticatedPubkey,
         recipientPubkey: recipient,
       }),
+      application: state.application,
     })
     if (stored) broadcastEvent(event)
     return stored ? 'saved' : 'duplicate: event already stored'

@@ -1,6 +1,7 @@
 # Taskify Push Relay
 
-Taskify Push Relay is a restricted Nostr inbox relay and Apple Push Notification service bridge.
+Taskify Push Relay is a restricted Nostr inbox relay and Apple Push Notification service bridge
+for Taskify and Snapstr.
 It stores encrypted NIP-59 gift wraps, exposes the NIP-17 inbox preference event, and sends a
 metadata-free generic APNs alert when a new recipient copy arrives.
 
@@ -17,7 +18,7 @@ latest encrypted replaceable event for each requested coordinate. It does not cr
 rest of any upstream relay. The Watch verifies signatures and decrypts all board and task payloads
 locally. If this gateway is unavailable, the Watch retries through `https://taskify.solife.me`.
 
-The relay cannot decrypt the gift wrap. It sends only a generic alert; the app fetches and unwraps
+The relay cannot decrypt the gift wrap. It sends only an app-specific generic alert; the app fetches and unwraps
 the message locally. iPhone alerts also carry `mutable-content` and a random, 15-minute preview URL
 so the iOS Notification Service Extension can fetch the encrypted gift wrap, decrypt it on the
 device, and replace the generic text with a rich preview. The extension does not use Apple's
@@ -39,15 +40,19 @@ asked for a list of everyone who uses it.
 - Watch public inbox-preference lookup: `POST /v1/watch/inbox-preference/query`
 - Watch task/board gather API: `POST /v1/watch/tasks/query`
 - Watch task/board propagation API: `POST /v1/watch/task-events/publish`
-- Nostr WebSocket relay: kinds `1059` and `10050`
+- Nostr WebSocket relay: kinds `5`, `1059`, and `10050`
 - Health endpoint: `GET /healthz`
 - One-use preview retrieval: `GET /v1/previews/:opaqueToken` (expires after 15 minutes, works once).
   A NIP-98-signed fetch must be signed by the recipient; unsigned fetches from older iPhone builds
   are accepted until `REQUIRE_SIGNED_PREVIEWS=true`
 - Persistent state: `/data/state.json`
 - APNs configuration: `/data/apns.json`
-- Separate iOS and watchOS APNs topics; the defaults are `solife.me.Taskify.Native` and
-  `solife.me.Taskify.Native.watchkitapp`
+- Separate Taskify iOS, Taskify watchOS, and Snapstr iOS APNs topics; the defaults are
+  `solife.me.Taskify.Native`, `solife.me.Taskify.Native.watchkitapp`, and `app.snapstr.ios`
+- Alerts are routed by the sending app. Gift wraps are opaque, so Snapstr adds
+  `["client", "snapstr"]` to its NIP-42 sign-in here (and only here); its wraps alert only Snapstr
+  devices. Any other sender alerts only Taskify devices, or an account's Snapstr devices when it
+  has no Taskify device.
 - Event retention: 30 days, at most 500 wraps and 8 MiB per recipient, and 100,000 wraps and 128 MiB
   in total (oldest evicted first)
 - Gift wraps are stored only for accounts that use this relay as an inbox: a registered device or
@@ -57,7 +62,9 @@ asked for a list of everyone who uses it.
   30 days without being observed, at most 2,000 per public board author and 100,000 total
 - Device registrations: at most 10 per Nostr account and 100,000 total. A registration not
   refreshed for 90 days expires (the apps re-register on every launch); when the table is full
-  the registration refreshed longest ago is dropped to make room
+  the registration refreshed longest ago is dropped to make room. Registrations identify their
+  application so APNs uses the matching bundle topic; omitted application values remain Taskify
+  for backward compatibility
 - WebSocket: at most 2,000 connections per process, 64 per client address, and 100 messages per
   connection every 10 seconds; a connection that has not answered the NIP-42 challenge within
   60 seconds is closed
@@ -127,8 +134,9 @@ See the [September 2026 pipeline audit](../docs/audits/nostr-sync-audit-2026-09-
 is newest-first, resolves equal timestamps by ascending event ID, and applies each filter's
 limit independently; limits do not suppress subsequent live events. ID/author filters use exact
 matches. Forwarding honors the relay's OK acceptance boolean even if rejection text says
-`duplicate`. The NIP-11 capability list no longer claims NIP-09 deletion support: kind-5 deletion
-requests are not implemented. Existing retention limits continue to apply.
+`duplicate`. The relay accepts NIP-09 kind-5 deletion requests and removes only referenced events
+signed by the deletion author, including pending alerts and previews for a deleted gift wrap.
+Existing retention limits continue to apply.
 
 Client fallback DM delivery remains supported for users without published inbox preferences.
 The gateway forwards only the targets explicitly supplied by the Watch and does not choose

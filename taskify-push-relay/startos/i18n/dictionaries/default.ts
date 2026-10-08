@@ -21,6 +21,8 @@ const dict = {
   'Waiting for Taskify Push Relay': 17,
   'Watch App Bundle ID': 18,
   'The Watch APNs topic. It must match the signed Taskify Watch app bundle identifier.': 19,
+  'Snapstr App Bundle ID': 20,
+  'The APNs topic. It must match the signed Snapstr app bundle identifier.': 21,
 } as const
 
 export type I18nKey = keyof typeof dict

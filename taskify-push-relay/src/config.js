@@ -21,6 +21,12 @@ export async function loadConfig(environment = process.env) {
         ?? 'solife.me.Taskify.Native.watchkitapp',
       'APNS_WATCH_TOPIC',
     ),
+    snapstrTopic: required(
+      environment.APNS_SNAPSTR_TOPIC
+        ?? fileConfig.snapstrTopic
+        ?? 'app.snapstr.ios',
+      'APNS_SNAPSTR_TOPIC',
+    ),
   }
   if (!/^[A-Z0-9]{10}$/.test(apns.teamID)) throw new Error('APNS_TEAM_ID must be a 10-character Apple Team ID')
   if (!/^[A-Z0-9]{10}$/.test(apns.keyID)) throw new Error('APNS_KEY_ID must be a 10-character Apple Key ID')

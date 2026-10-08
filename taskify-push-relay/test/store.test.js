@@ -63,6 +63,56 @@ test('registrations are namespaced by the authenticated Nostr pubkey', async () 
   assert.notEqual(store.registrationsFor(alice)[0].deviceToken, store.registrationsFor(bob)[0].deviceToken)
 })
 
+test('registration application defaults to Taskify and persists Snapstr selection', async () => {
+  const { store } = await storeForTest()
+  await store.putRegistration(alice, 'taskify-phone', {
+    deviceToken: '12'.repeat(32), environment: 'production',
+  })
+  await store.putRegistration(bob, 'snapstr-phone', {
+    deviceToken: '34'.repeat(32), environment: 'production', application: 'snapstr',
+  })
+
+  assert.equal(store.registrationsFor(alice)[0].application, 'taskify')
+  assert.equal(store.registrationsFor(bob)[0].application, 'snapstr')
+})
+
+test('a gift wrap alerts only the devices of the app that sent it', async () => {
+  const { store } = await storeForTest()
+  await store.putRegistration(alice, 'taskify-phone', { deviceToken: '11'.repeat(32), environment: 'production' })
+  await store.putRegistration(alice, 'taskify-watch', {
+    deviceToken: '22'.repeat(32), environment: 'production', platform: 'watchos',
+  })
+  await store.putRegistration(alice, 'snapstr-phone', {
+    deviceToken: '33'.repeat(32), environment: 'production', application: 'snapstr',
+  })
+  const notified = () => store.duePushJobs(Number.MAX_SAFE_INTEGER)
+    .map((job) => store.registrationByKey(job.registrationKey).installationID)
+    .sort()
+
+  await store.putGiftWrap(giftWrap('1'.repeat(64), alice), { notify: true, application: 'snapstr' })
+  assert.deepEqual(notified(), ['snapstr-phone'])
+  assert.equal(store.state.previews.length, 1)
+
+  await store.completePushJob(store.duePushJobs(Number.MAX_SAFE_INTEGER)[0].id)
+  await store.putGiftWrap(giftWrap('2'.repeat(64), alice), { notify: true })
+  assert.deepEqual(notified(), ['taskify-phone', 'taskify-watch'])
+})
+
+test('an unnamed sender still alerts an account that has only Snapstr devices', async () => {
+  const { store } = await storeForTest()
+  await store.putRegistration(alice, 'snapstr-phone', {
+    deviceToken: '33'.repeat(32), environment: 'production', application: 'snapstr',
+  })
+  await store.putRegistration(bob, 'taskify-phone', { deviceToken: '11'.repeat(32), environment: 'production' })
+
+  await store.putGiftWrap(giftWrap('1'.repeat(64), alice), { notify: true })
+  await store.putGiftWrap(giftWrap('2'.repeat(64), bob), { notify: true, application: 'snapstr' })
+
+  const jobs = store.duePushJobs(Number.MAX_SAFE_INTEGER)
+  assert.deepEqual(jobs.map((job) => job.eventID), ['1'.repeat(64)], 'a snap never alerts Taskify')
+  assert.equal(store.registrationByKey(jobs[0].registrationKey).installationID, 'snapstr-phone')
+})
+
 test('moving one installation to another identity removes the stale registration', async () => {
   const { store } = await storeForTest()
   const deviceToken = '12'.repeat(32)
@@ -71,6 +121,38 @@ test('moving one installation to another identity removes the stale registration
 
   assert.equal(store.registrationsFor(alice).length, 0)
   assert.equal(store.registrationsFor(bob).length, 1)
+})
+
+test('Snapstr profiles on one phone all stay registered and follow its token', async () => {
+  const { store } = await storeForTest()
+  const snapstr = (deviceToken) => ({ deviceToken, environment: 'production', application: 'snapstr' })
+  await store.putRegistration(alice, 'snapstr-phone', snapstr('12'.repeat(32)))
+  await store.putRegistration(bob, 'snapstr-phone', snapstr('12'.repeat(32)))
+
+  assert.equal(store.registrationsFor(alice).length, 1)
+  assert.equal(store.registrationsFor(bob).length, 1)
+
+  await store.putGiftWrap(giftWrap('1'.repeat(64), alice), { notify: true, application: 'snapstr' })
+  await store.putGiftWrap(giftWrap('2'.repeat(64), bob), { notify: true, application: 'snapstr' })
+  assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 2, 'both profiles are alerted')
+
+  await store.putRegistration(bob, 'snapstr-phone', snapstr('34'.repeat(32)))
+  assert.equal(store.registrationsFor(alice)[0].deviceToken, '34'.repeat(32), 'a new token reaches every profile')
+
+  await store.removeRegistration(bob, 'snapstr-phone')
+  assert.equal(store.registrationsFor(alice).length, 1, 'turning one profile off leaves the other')
+  assert.equal(store.registrationsFor(bob).length, 0)
+})
+
+test('a reinstalled Snapstr replaces the old installation for every profile', async () => {
+  const { store } = await storeForTest()
+  const snapstr = { deviceToken: '12'.repeat(32), environment: 'production', application: 'snapstr' }
+  await store.putRegistration(alice, 'old-install', snapstr)
+  await store.putRegistration(bob, 'old-install', snapstr)
+  await store.putRegistration(alice, 'new-install', snapstr)
+
+  assert.deepEqual(store.registrationsFor(alice).map((item) => item.installationID), ['new-install'])
+  assert.equal(store.registrationsFor(bob).length, 0)
 })
 
 test('device registration is bounded without preventing token rotation', async () => {
@@ -151,6 +233,46 @@ test('accepted gift wraps are durable, deduplicated, and enqueue one job per dev
   const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
   assert.equal(onDisk.events.length, 1)
   assert.equal(onDisk.pushJobs.length, 2)
+})
+
+test('NIP-09 deletion requests remove only same-author IDs and older addressable events', async () => {
+  const { store } = await storeForTest()
+  const author = 'c'.repeat(64)
+  await store.putRegistration(bob, 'phone-1', { deviceToken: '12'.repeat(32), environment: 'production' })
+  const wrap = giftWrap('1'.repeat(64), bob, 100)
+  const otherAuthorWrap = { ...giftWrap('2'.repeat(64), bob, 100), pubkey: alice }
+  await store.putGiftWrap(wrap, { notify: true })
+  await store.putGiftWrap(otherAuthorWrap, { notify: true })
+  await store.putPreference(preferenceEvent('3'.repeat(64), author, 100, 'wss://push.solife.me'))
+
+  const deleted = await store.applyDeletionRequest({
+    id: '4'.repeat(64),
+    pubkey: author,
+    created_at: 101,
+    kind: 5,
+    tags: [['e', wrap.id], ['e', otherAuthorWrap.id], ['a', `10050:${author}:`]],
+    content: '',
+    sig: '5'.repeat(128),
+  })
+
+  assert.equal(deleted, 2)
+  assert.deepEqual(store.eventsFor(bob).map((event) => event.id), [otherAuthorWrap.id])
+  assert.equal(store.preferencesFor([author]).length, 0)
+  assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 1)
+  assert.equal(store.state.previews.length, 1)
+})
+
+test('NIP-09 deletion requests require bounded valid e or a targets', async () => {
+  const { store } = await storeForTest()
+  const request = (tags) => ({
+    id: '4'.repeat(64), pubkey: alice, created_at: 101, kind: 5, tags, content: '', sig: '5'.repeat(128),
+  })
+  await assert.rejects(store.applyDeletionRequest(request([])), /at least one event/i)
+  await assert.rejects(store.applyDeletionRequest(request([['e', 'not-an-id']])), /event ID/i)
+  await assert.rejects(
+    store.applyDeletionRequest(request([['a', `30301:${bob}:task`]])),
+    /event address/i,
+  )
 })
 
 test('each device gets a short-lived opaque preview token for the encrypted gift wrap', async () => {

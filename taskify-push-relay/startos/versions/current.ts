@@ -1,10 +1,10 @@
 import { IMPOSSIBLE, VersionInfo } from '@start9labs/start-sdk'
 
 export const current = VersionInfo.of({
-  version: '0.4.1:11',
+  version: '0.4.1:15',
   releaseNotes: {
     en_US:
-      'Hardens the relay: a malformed request can no longer stop the service; messages are stored only for accounts that use this relay, within per-account and total size limits; alerts to a device are merged and spaced at least 10 seconds apart so a burst of messages cannot flood it; unauthenticated connections are refused before any signature work; inbox-preference lookups must name the accounts they want; pending relay sign-ins from the Watch are capped; a failed save no longer blocks later ones; device registrations not refreshed for 90 days expire and the stalest is replaced when the table is full; connections and per-connection messages are capped; a refusal from another relay is reported as an upstream error; message preview links work once, only for the recipient when signed; Watch forwarding is bounded per destination relay and per query response; and per-address limits now use the client address Cloudflare supplies, with at most 64 connections per address and connections that never sign in closed after a minute, so one client can no longer fill the relay.',
+      'Accepts signed NIP-09 kind-5 deletion requests and removes only referenced events authored by the same key, including any pending alert or preview for a deleted gift wrap. Routes alerts by the sending app: when one account uses both Taskify and Snapstr, a Snapstr message alerts only Snapstr and a Taskify message only Taskify. Includes Snapstr notification delivery alongside Taskify with application-scoped registration, a separate APNs bundle topic, and opaque on-device rich previews; existing registrations remain Taskify-compatible. Several Snapstr profiles on one phone now all stay registered and are all alerted; registering one no longer unregisters the others, while Taskify keeps one account per installation. Also retains the relay hardening for bounded storage, traffic, Watch forwarding, preview access, and stale registrations. Repackages the service with StartOS SDK 3 for StartOS 0.4.0.2 and newer.',
   },
   migrations: {
     up: async () => {},
