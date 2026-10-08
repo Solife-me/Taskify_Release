@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import worker from "./index.ts";
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { assertPublicHttpUrl, UnsafePublicUrlError } from "./public-fetch.ts";
+import { documentHead, isAmazonHost, isEtsyHost, isYouTubeHost } from "./preview.ts";
 
 function bytesToHex(bytes: Uint8Array): string {
   return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
@@ -209,6 +212,102 @@ class MockD1 {
   }
 }
 
+/// D1 over a real in-memory SQLite database built from the migrations, for tests whose SQL
+/// matters (JSON arrays, upserts, transactions). Exposes the same table views as `MockD1`.
+class SqliteD1 {
+  sqlite = new DatabaseSync(":memory:");
+  /// Statements executed, counting each statement inside a batch, as D1's per-invocation
+  /// query limit may.
+  queries = 0;
+
+  constructor() {
+    const directory = new URL("../migrations/", import.meta.url);
+    for (const name of readdirSync(directory).filter((file) => file.endsWith(".sql")).sort()) {
+      this.sqlite.exec(readFileSync(new URL(name, directory), "utf8"));
+    }
+    this.sqlite.exec("PRAGMA foreign_keys = ON"); // D1 enforces foreign keys
+  }
+
+  prepare(query: string) {
+    const d1 = this;
+    let params: any[] = [];
+    return {
+      _sql: query.replace(/\s+/g, " ").trim(),
+      bind(...values: unknown[]) {
+        params = values as any[];
+        return this;
+      },
+      async run() {
+        d1.queries += 1;
+        const result = d1.sqlite.prepare(query).run(...params);
+        return { success: true, meta: { changes: Number(result.changes) } };
+      },
+      async first() {
+        d1.queries += 1;
+        return (d1.sqlite.prepare(query).get(...params) as any) ?? null;
+      },
+      async all() {
+        d1.queries += 1;
+        return { success: true, results: d1.sqlite.prepare(query).all(...params) as any[] };
+      },
+    };
+  }
+
+  async batch(statements: any[]) {
+    this.sqlite.exec("BEGIN");
+    try {
+      const out: any[] = [];
+      for (const statement of statements) out.push(await statement.run());
+      this.sqlite.exec("COMMIT");
+      return out;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private insert(table: string, row: Record<string, unknown>) {
+    const columns = Object.keys(row);
+    this.sqlite
+      .prepare(`INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+      .run(...(Object.values(row) as any[]));
+  }
+
+  private rows<T>(table: string): T[] & { push: (...rows: T[]) => number } {
+    const rows = this.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all() as any;
+    rows.push = (...added: T[]) => {
+      for (const row of added) this.insert(table, row as any);
+      return rows.length + added.length;
+    };
+    return rows;
+  }
+
+  get reminders(): ReminderRow[] & { push: (...rows: ReminderRow[]) => number } {
+    return this.rows<ReminderRow>("reminders");
+  }
+
+  get pending(): PendingRow[] & { push: (...rows: PendingRow[]) => number } {
+    return this.rows<PendingRow>("pending_notifications");
+  }
+
+  get devices() {
+    const d1 = this;
+    return {
+      set(_id: string, row: DeviceRow) { d1.insert("devices", row); },
+      get(id: string) { return (d1.sqlite.prepare("SELECT * FROM devices WHERE device_id = ?").get(id) as DeviceRow) ?? undefined; },
+      has(id: string) { return !!d1.sqlite.prepare("SELECT 1 FROM devices WHERE device_id = ?").get(id); },
+      delete(id: string) { d1.sqlite.prepare("DELETE FROM devices WHERE device_id = ?").run(id); },
+      get size() { return Number((d1.sqlite.prepare("SELECT count(*) AS n FROM devices").get() as any).n); },
+      values() { return (d1.sqlite.prepare("SELECT * FROM devices").all() as DeviceRow[]).values(); },
+    };
+  }
+
+  budget(key: string): number {
+    const row = this.sqlite.prepare("SELECT sum(used) AS used FROM write_budget WHERE key LIKE ?").get(key) as any;
+    return Number(row?.used ?? 0);
+  }
+}
+
 function base64UrlEncode(buffer: Uint8Array): string {
   let s = "";
   for (const b of buffer) s += String.fromCharCode(b);
@@ -253,7 +352,7 @@ async function makeEnv(db: MockD1) {
 }
 
 test("GET /api/config returns worker origin and vapid key", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const req = new Request("https://taskify-v2.solife.me/api/config", { method: "GET" });
@@ -280,7 +379,7 @@ test("public fetch validation blocks local and private network targets", () => {
 });
 
 test("preview and NIP-05 endpoints honor their rate-limit bindings", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const denied = { limit: async () => ({ success: false }) };
   env.PREVIEW_RATE_LIMITER = denied;
   env.NIP05_RATE_LIMITER = denied;
@@ -299,7 +398,7 @@ test("preview and NIP-05 endpoints honor their rate-limit bindings", async () =>
 });
 
 test("NIP-05 rejects private-network and malformed domains before fetching", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   for (const address of ["alice@localhost", "alice@127.0.0.1", "alice@example.com/path"]) {
     const response = await worker.fetch(
       new Request(`https://taskify-v2.solife.me/api/nip05?address=${encodeURIComponent(address)}`),
@@ -310,7 +409,7 @@ test("NIP-05 rejects private-network and malformed domains before fetching", asy
 });
 
 test("static assets are served with security headers", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const res = await worker.fetch(
@@ -322,12 +421,19 @@ test("static assets are served with security headers", async () => {
   assert.equal(res.headers.get("Referrer-Policy"), "same-origin");
   assert.equal(
     res.headers.get("Permissions-Policy"),
-    "camera=(), microphone=(), geolocation=()",
+    "camera=(self), microphone=(self), geolocation=()",
   );
+  const csp = res.headers.get("Content-Security-Policy") || "";
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /script-src 'self'(;|$)/);
+  // The Worker's copy and the static _headers file must send the same policy.
+  const headersFile = readFileSync(new URL("../../taskify-pwa/public/_headers", import.meta.url), "utf8");
+  const fileCsp = headersFile.match(/^\s*Content-Security-Policy: (.+)$/m)?.[1];
+  assert.equal(csp, fileCsp);
 });
 
 test("static assets and config do not initialize the D1 schema", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   env.TASKIFY_DB = {
     prepare() {
       throw new Error("D1 should not be touched for this route");
@@ -341,7 +447,7 @@ test("static assets and config do not initialize the D1 schema", async () => {
 });
 
 test("removed cloud-backup API returns 404 instead of the PWA shell", async () => {
-  const env = await makeEnv(new MockD1());
+  const env = await makeEnv(new SqliteD1());
   const res = await worker.fetch(
     new Request("https://taskify-v2.solife.me/api/backups?npub=npub1obsolete"),
     env,
@@ -350,7 +456,7 @@ test("removed cloud-backup API returns 404 instead of the PWA shell", async () =
 });
 
 test("sw.js is served with no-cache and worker-allowed scope", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const res = await worker.fetch(
@@ -364,7 +470,7 @@ test("sw.js is served with no-cache and worker-allowed scope", async () => {
 });
 
 test("PUT /api/reminders returns 404 for unknown device", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
   const req = new Request("https://taskify-v2.solife.me/api/reminders", {
@@ -378,10 +484,10 @@ test("PUT /api/reminders returns 404 for unknown device", async () => {
 });
 
 test("POST /api/reminders/poll retains notifications until the client acknowledges them", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
-  const endpoint = "https://push.example/dev-1";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/dev-1";
   db.devices.set("dev-1", {
     device_id: "dev-1",
     platform: "ios",
@@ -429,9 +535,9 @@ test("POST /api/reminders/poll retains notifications until the client acknowledg
 });
 
 test("reminder mutations require the registered subscription capability", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
-  const endpoint = "https://push.example/capability";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/capability";
   const subscriptionId = await sha256Hex(endpoint);
   db.devices.set("dev-cap", {
     device_id: "dev-cap",
@@ -503,9 +609,9 @@ test("reminder mutations require the registered subscription capability", async 
 });
 
 test("device registration cannot rebind an existing device without its prior capability", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
-  const oldEndpoint = "https://push.example/original";
+  const oldEndpoint = "https://fcm.googleapis.com/fcm/send/original";
   const oldSubscriptionId = await sha256Hex(oldEndpoint);
   db.devices.set("dev-rebind", {
     device_id: "dev-rebind",
@@ -521,7 +627,7 @@ test("device registration cannot rebind an existing device without its prior cap
     deviceId: "dev-rebind",
     platform: "ios",
     subscription: {
-      endpoint: "https://push.example/replacement",
+      endpoint: "https://fcm.googleapis.com/fcm/send/replacement",
       keys: { auth: "new-auth", p256dh: "new-p256dh" },
     },
   };
@@ -549,10 +655,10 @@ test("device registration cannot rebind an existing device without its prior cap
 });
 
 test("scheduled due reminders send push ping with VAPID headers and enqueue pending", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
-  const endpoint = "https://push.example/send";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/send";
   const endpointHash = await sha256Hex(endpoint);
   db.devices.set("dev-1", {
     device_id: "dev-1",
@@ -599,10 +705,10 @@ test("scheduled due reminders send push ping with VAPID headers and enqueue pend
 });
 
 test("scheduled handles 410 by removing expired device", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
-  const endpoint = "https://push.example/expired";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/expired";
   const endpointHash = await sha256Hex(endpoint);
   db.devices.set("dev-expired", {
     device_id: "dev-expired",
@@ -638,11 +744,11 @@ test("scheduled handles 410 by removing expired device", async () => {
 });
 
 test("scheduled batches multiple devices and sends one push per device", async () => {
-  const db = new MockD1();
+  const db = new SqliteD1();
   const env = await makeEnv(db);
 
-  const endpointA = "https://push.example/a";
-  const endpointB = "https://push.example/b";
+  const endpointA = "https://fcm.googleapis.com/fcm/send/a";
+  const endpointB = "https://fcm.googleapis.com/fcm/send/b";
   db.devices.set("dev-a", {
     device_id: "dev-a",
     platform: "ios",
@@ -721,7 +827,7 @@ test("scheduled batches multiple devices and sends one push per device", async (
 });
 
 test("scheduled processing does not delete a reminder when pending insertion fails", async () => {
-  class FailingPendingD1 extends MockD1 {
+  class FailingPendingD1 extends SqliteD1 {
     override async batch(statements: any[]) {
       if (statements.some((statement) => /^INSERT INTO pending_notifications /i.test(statement._sql ?? ""))) {
         throw new Error("simulated pending insert failure");
@@ -732,7 +838,7 @@ test("scheduled processing does not delete a reminder when pending insertion fai
 
   const db = new FailingPendingD1();
   const env = await makeEnv(db);
-  const endpoint = "https://push.example/durable";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/durable";
   db.devices.set("dev-durable", {
     device_id: "dev-durable",
     platform: "ios",
@@ -838,9 +944,24 @@ class MockD1WithVoice extends MockD1 {
   }
 }
 
-async function makeVoiceEnv(db: MockD1WithVoice, geminiApiKey = "fake-gemini-key") {
+async function makeVoiceEnv(db: MockD1WithVoice) {
   const base = await makeEnv(db);
-  return { ...base, GEMINI_API_KEY: geminiApiKey } as any;
+  return { ...base, CLOUDFLARE_ACCOUNT_ID: "acc-123", CLOUDFLARE_API_TOKEN: "cf-token" } as any;
+}
+
+const VOICE_PRIMARY_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const VOICE_FALLBACK_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+function isVoiceModelCall(url: RequestInfo | URL): boolean {
+  return String(url).startsWith("https://api.cloudflare.com/client/v4/accounts/acc-123/ai/run/");
+}
+
+// Workers AI envelope for chat-completions style models.
+function workersAiReply(payload: unknown): Response {
+  return new Response(
+    JSON.stringify({ success: true, result: { choices: [{ message: { role: "assistant", content: JSON.stringify(payload) } }] } }),
+    { status: 200 },
+  );
 }
 
 const VOICE_TEST_PRIVATE_KEY = schnorr.utils.randomSecretKey();
@@ -873,10 +994,10 @@ test("POST /api/voice/extract rejects unsigned requests", async () => {
   assert.equal(response.status, 401);
 });
 
-// ── Test 1: POST /api/voice/extract — returns 501 when GEMINI_API_KEY missing ─
-test("POST /api/voice/extract returns 501 when GEMINI_API_KEY not configured", async () => {
+// ── Test 1: POST /api/voice/extract — returns 501 when Workers AI credentials are missing ─
+test("POST /api/voice/extract returns 501 when Workers AI is not configured", async () => {
   const db = new MockD1WithVoice();
-  const env = await makeEnv(db); // no GEMINI_API_KEY
+  const env = await makeEnv(db); // no CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN
 
   const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/extract", {
     method: "POST",
@@ -884,7 +1005,7 @@ test("POST /api/voice/extract returns 501 when GEMINI_API_KEY not configured", a
     body: JSON.stringify({ npub: "npub1abc", transcript: "call dentist tomorrow", sessionDurationSeconds: 5 }),
   });
   const res = await worker.fetch(req, env);
-  assert.equal(res.status, 501, "should be 501 when GEMINI_API_KEY absent");
+  assert.equal(res.status, 501, "should be 501 when Workers AI credentials are absent");
   const body = await res.json() as any;
   assert.ok(body.error, "should have error field");
 });
@@ -921,25 +1042,18 @@ test("POST /api/voice/extract returns 400 when transcript is empty", async () =>
   assert.ok(body.error);
 });
 
-// ── Test 4: POST /api/voice/extract — happy path: calls Gemini, returns operations ─
-test("POST /api/voice/extract calls Gemini and returns operations on success", async () => {
+// ── Test 4: POST /api/voice/extract — happy path: calls the model, returns operations ─
+test("POST /api/voice/extract calls Workers AI and returns operations on success", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
-  const geminiOperations = [
+  const modelTasks = [
     { type: "create_task", title: "Call dentist", dueText: "tomorrow" },
   ];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [
-            { content: { parts: [{ text: JSON.stringify({ tasks: geminiOperations }) }] } },
-          ],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({ tasks: modelTasks });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -967,7 +1081,7 @@ test("POST /api/voice/extract calls Gemini and returns operations on success", a
   }
 });
 // ── Test 5: POST /api/voice/extract — quota is incremented after successful call ─
-test("POST /api/voice/extract increments quota after successful Gemini call", async () => {
+test("POST /api/voice/extract increments quota after a successful model call", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
   const npub = VOICE_TEST_PUBLIC_KEY;
@@ -975,13 +1089,8 @@ test("POST /api/voice/extract increments quota after successful Gemini call", as
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [{ content: { parts: [{ text: JSON.stringify({ operations: [] }) }] } }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({ operations: [] });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1024,8 +1133,8 @@ test("POST /api/voice/extract returns 429 when quota exceeded", async () => {
   assert.ok(typeof body.message === "string");
 });
 
-// ── Test 7: POST /api/voice/extract — Gemini failure returns 503 ─
-test("POST /api/voice/extract returns 503 when Gemini fails", async () => {
+// ── Test 7: POST /api/voice/extract — model failure returns 503 ─
+test("POST /api/voice/extract returns 503 when every model fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -1044,37 +1153,31 @@ test("POST /api/voice/extract returns 503 when Gemini fails", async () => {
       }),
     });
     const res = await worker.fetch(req, env);
-    assert.equal(res.status, 503, "should return 503 when Gemini is unavailable");
+    assert.equal(res.status, 503, "should return 503 when no model answers");
     const body = await res.json() as any;
-    assert.equal(body.error, "gemini_unavailable");
+    assert.equal(body.error, "voice_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("POST /api/voice/extract falls back to Cloudflare Workers AI when Gemini fails", async () => {
+test("POST /api/voice/extract falls back to the JSON Mode model when the first fails", async () => {
   const db = new MockD1WithVoice();
-  const env = {
-    ...(await makeVoiceEnv(db)),
-    CLOUDFLARE_ACCOUNT_ID: "acc-123",
-    CLOUDFLARE_API_TOKEN: "cf-token",
-  } as any;
+  const env = await makeVoiceEnv(db);
 
+  const calls: string[] = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: RequestInfo | URL) => {
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
     const u = String(url);
-    if (u.includes("generativelanguage.googleapis.com")) {
-      return new Response("gemini down", { status: 503 });
+    calls.push(u);
+    if (u.endsWith(`/ai/run/${VOICE_PRIMARY_MODEL}`)) {
+      return new Response("model unavailable", { status: 503 });
     }
-    if (u.includes("/ai/run/@cf/zai-org/glm-5.3-flash")) {
+    if (u.endsWith(`/ai/run/${VOICE_FALLBACK_MODEL}`)) {
+      assert.deepEqual(JSON.parse(String(init?.body)).response_format, { type: "json_object" });
+      // JSON Mode returns `response` already parsed.
       return new Response(
-        JSON.stringify({
-          result: {
-            response: JSON.stringify({
-              tasks: [{ title: "Call dentist", dueText: "tomorrow", subtasks: [] }],
-            }),
-          },
-        }),
+        JSON.stringify({ success: true, result: { response: { tasks: [{ title: "Call dentist", dueText: "tomorrow", subtasks: [] }] } } }),
         { status: 200 },
       );
     }
@@ -1097,6 +1200,7 @@ test("POST /api/voice/extract falls back to Cloudflare Workers AI when Gemini fa
     const body = await res.json() as any;
     assert.ok(Array.isArray(body.operations));
     assert.equal(body.operations[0].title, "Call dentist");
+    assert.equal(calls.length, 2, "one attempt per model");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1108,28 +1212,13 @@ test("POST /api/voice/extract applies correction phrases to prior task dueText",
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [
-            {
-              content: {
-                parts: [
-                  {
-                    text: JSON.stringify({
-                      tasks: [
-                        { title: "Play date", dueText: "tomorrow at noon", subtasks: [] },
-                        { title: "then next Sunday at 2 PM we have a dinner after church", dueText: "next Sunday at 2 PM", subtasks: [] },
-                      ],
-                    }),
-                  },
-                ],
-              },
-            },
-          ],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          { title: "Play date", dueText: "tomorrow at noon", subtasks: [] },
+          { title: "then next Sunday at 2 PM we have a dinner after church", dueText: "next Sunday at 2 PM", subtasks: [] },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1163,32 +1252,17 @@ test("POST /api/voice/extract preserves explicit reminder requests", async () =>
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [
-            {
-              content: {
-                parts: [
-                  {
-                    text: JSON.stringify({
-                      tasks: [
-                        {
-                          title: "Remind me to call dentist",
-                          dueText: "tomorrow at 2 PM",
-                          reminderText: "at due time",
-                          subtasks: [],
-                        },
-                      ],
-                    }),
-                  },
-                ],
-              },
-            },
-          ],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          {
+            title: "Remind me to call dentist",
+            dueText: "tomorrow at 2 PM",
+            reminderText: "at due time",
+            subtasks: [],
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1215,10 +1289,10 @@ test("POST /api/voice/extract preserves explicit reminder requests", async () =>
   }
 });
 
-// ── Test 8: POST /api/voice/finalize — 501 when GEMINI_API_KEY missing ──────────
-test("POST /api/voice/finalize returns 501 when GEMINI_API_KEY not configured", async () => {
+// ── Test 8: POST /api/voice/finalize — 501 when Workers AI credentials are missing ──
+test("POST /api/voice/finalize returns 501 when Workers AI is not configured", async () => {
   const db = new MockD1WithVoice();
-  const env = await makeEnv(db); // no key
+  const env = await makeEnv(db); // no credentials
 
   const req = authenticatedVoiceRequest("https://taskify-v2.solife.me/api/voice/finalize", {
     method: "POST",
@@ -1264,32 +1338,21 @@ test("POST /api/voice/finalize returns normalized FinalTask array from confirmed
   const referenceDate = "2026-03-24T18:00:00.000Z";
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      // Simulate Gemini normalizing the task
-      return new Response(
-        JSON.stringify({
-          candidates: [{
-            content: {
-              parts: [{
-                text: JSON.stringify({
-                  tasks: [
-                    {
-                      id: "c1",
-                      title: "Call Dentist",
-                      dueISO: "2026-03-25T14:00:00.000Z",
-                      subtasks: [],
-                      notes: null,
-                      boardId: null,
-                      priority: null,
-                    },
-                  ],
-                }),
-              }],
-            },
-          }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      // Simulate the model normalizing the task
+      return workersAiReply({
+        tasks: [
+          {
+            id: "c1",
+            title: "Call Dentist",
+            dueISO: "2026-03-25T14:00:00.000Z",
+            subtasks: [],
+            notes: null,
+            boardId: null,
+            priority: null,
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1326,29 +1389,18 @@ test("POST /api/voice/extract carries notes and recurrence text into operations"
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [{
-            content: {
-              parts: [{
-                text: JSON.stringify({
-                  tasks: [
-                    {
-                      title: "Take out the trash",
-                      dueText: "Monday evening",
-                      notes: "Recycling and compost bins too",
-                      recurrenceText: "every Monday",
-                      subtasks: [],
-                    },
-                  ],
-                }),
-              }],
-            },
-          }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          {
+            title: "Take out the trash",
+            dueText: "Monday evening",
+            notes: "Recycling and compost bins too",
+            recurrenceText: "every Monday",
+            subtasks: [],
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1381,48 +1433,37 @@ test("POST /api/voice/finalize normalizes recurrence and validates model-chosen 
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [{
-            content: {
-              parts: [{
-                text: JSON.stringify({
-                  tasks: [
-                    {
-                      id: "c1",
-                      title: "Trash night",
-                      dueISO: "2026-08-03T21:00:00.000Z",
-                      notes: "Recycling too",
-                      subtasks: [],
-                      boardId: "board-lists",
-                      columnId: "col-2",
-                      recurrence: { type: "weekly", days: [1, 4, 9] },
-                      priority: 3,
-                      reminderMinutesBeforeDue: [15, 60],
-                      reminderTime: null,
-                    },
-                    {
-                      id: "c2",
-                      title: "Groceries",
-                      dueISO: null,
-                      notes: null,
-                      subtasks: [],
-                      boardId: "board-hallucinated",
-                      columnId: "col-9",
-                      recurrence: { type: "monthlyDay", day: 40 },
-                      priority: null,
-                      reminderMinutesBeforeDue: null,
-                      reminderTime: null,
-                    },
-                  ],
-                }),
-              }],
-            },
-          }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          {
+            id: "c1",
+            title: "Trash night",
+            dueISO: "2026-08-03T21:00:00.000Z",
+            notes: "Recycling too",
+            subtasks: [],
+            boardId: "board-lists",
+            columnId: "col-2",
+            recurrence: { type: "weekly", days: [1, 4, 9] },
+            priority: 3,
+            reminderMinutesBeforeDue: [15, 60],
+            reminderTime: null,
+          },
+          {
+            id: "c2",
+            title: "Groceries",
+            dueISO: null,
+            notes: null,
+            subtasks: [],
+            boardId: "board-hallucinated",
+            columnId: "col-9",
+            recurrence: { type: "monthlyDay", day: 40 },
+            priority: null,
+            reminderMinutesBeforeDue: null,
+            reminderTime: null,
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1474,44 +1515,33 @@ test("POST /api/voice/finalize only returns reminders for explicit reminder requ
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
-    if (String(url).includes("generativelanguage.googleapis.com")) {
-      return new Response(
-        JSON.stringify({
-          candidates: [{
-            content: {
-              parts: [{
-                text: JSON.stringify({
-                  tasks: [
-                    {
-                      id: "c1",
-                      title: "Call Dentist",
-                      dueISO: "2026-03-25T14:00:00.000Z",
-                      subtasks: [],
-                      notes: null,
-                      boardId: null,
-                      priority: null,
-                      reminderMinutesBeforeDue: [15],
-                      reminderTime: null,
-                    },
-                    {
-                      id: "c2",
-                      title: "Pay Water Bill",
-                      dueISO: "2026-03-26T17:00:00.000Z",
-                      subtasks: [],
-                      notes: null,
-                      boardId: null,
-                      priority: null,
-                      reminderMinutesBeforeDue: [60],
-                      reminderTime: null,
-                    },
-                  ],
-                }),
-              }],
-            },
-          }],
-        }),
-        { status: 200 },
-      );
+    if (isVoiceModelCall(url)) {
+      return workersAiReply({
+        tasks: [
+          {
+            id: "c1",
+            title: "Call Dentist",
+            dueISO: "2026-03-25T14:00:00.000Z",
+            subtasks: [],
+            notes: null,
+            boardId: null,
+            priority: null,
+            reminderMinutesBeforeDue: [15],
+            reminderTime: null,
+          },
+          {
+            id: "c2",
+            title: "Pay Water Bill",
+            dueISO: "2026-03-26T17:00:00.000Z",
+            subtasks: [],
+            notes: null,
+            boardId: null,
+            priority: null,
+            reminderMinutesBeforeDue: [60],
+            reminderTime: null,
+          },
+        ],
+      });
     }
     return new Response("", { status: 200 });
   }) as any;
@@ -1539,38 +1569,28 @@ test("POST /api/voice/finalize only returns reminders for explicit reminder requ
   }
 });
 
-// ── Test 11: POST /api/voice/finalize — Gemini failure returns 503 ─
-test("POST /api/voice/finalize falls back to Cloudflare Workers AI when Gemini fails", async () => {
+// ── Test 11: POST /api/voice/finalize — second model answers when the first cannot ─
+test("POST /api/voice/finalize falls back to the JSON Mode model when the first fails", async () => {
   const db = new MockD1WithVoice();
-  const env = {
-    ...(await makeVoiceEnv(db)),
-    CLOUDFLARE_ACCOUNT_ID: "acc-123",
-    CLOUDFLARE_API_TOKEN: "cf-token",
-  } as any;
+  const env = await makeVoiceEnv(db);
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL) => {
     const u = String(url);
-    if (u.includes("generativelanguage.googleapis.com")) {
-      return new Response("error", { status: 503 });
+    if (u.endsWith(`/ai/run/${VOICE_PRIMARY_MODEL}`)) {
+      // Answers, but not with JSON.
+      return workersAiReply("Sorry, I can only help with tasks.");
     }
-    if (u.includes("/ai/run/@cf/zai-org/glm-5.3-flash")) {
+    if (u.endsWith(`/ai/run/${VOICE_FALLBACK_MODEL}`)) {
       return new Response(
         JSON.stringify({
+          success: true,
           result: {
-            response: JSON.stringify({
+            response: {
               tasks: [
-                {
-                  id: "c1",
-                  title: "Call Dentist",
-                  dueISO: "2026-03-25T14:00:00.000Z",
-                  subtasks: [],
-                  notes: null,
-                  boardId: null,
-                  priority: null,
-                },
+                { id: "c1", title: "Call Dentist", dueISO: "2026-03-25T14:00:00.000Z", subtasks: [], notes: null, boardId: null, priority: null },
               ],
-            }),
+            },
           },
         }),
         { status: 200 },
@@ -1599,7 +1619,7 @@ test("POST /api/voice/finalize falls back to Cloudflare Workers AI when Gemini f
   }
 });
 
-test("POST /api/voice/finalize returns 503 when Gemini fails", async () => {
+test("POST /api/voice/finalize returns 503 when every model fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -1619,15 +1639,15 @@ test("POST /api/voice/finalize returns 503 when Gemini fails", async () => {
       }),
     });
     const res = await worker.fetch(req, env);
-    assert.equal(res.status, 503, "must return 503 when Gemini is unavailable");
+    assert.equal(res.status, 503, "must return 503 when no model answers");
     const body = await res.json() as any;
-    assert.equal(body.error, "gemini_unavailable");
+    assert.equal(body.error, "voice_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when Gemini fails", async () => {
+test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when every model fails", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
 
@@ -1651,7 +1671,7 @@ test("POST /api/voice/finalize returns 503 (no local due parsing fallback) when 
     const res = await worker.fetch(req, env);
     assert.equal(res.status, 503);
     const body = await res.json() as any;
-    assert.equal(body.error, "gemini_unavailable");
+    assert.equal(body.error, "voice_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1677,7 +1697,7 @@ for (const stall of ["headers", "body"] as const) {
         started();
         return stall === "headers" ? stalled : { ok: true, json: () => stalled };
       }
-      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ tasks: [{ title: "Team meeting", dueText: "tomorrow at 8 AM" }] }) }] } }] }));
+      return workersAiReply({ tasks: [{ title: "Team meeting", dueText: "tomorrow at 8 AM" }] });
     }) as typeof fetch;
     try {
       const request = authenticatedVoiceRequest("https://taskify.solife.me/api/voice/extract", {
@@ -1689,7 +1709,7 @@ for (const stall of ["headers", "body"] as const) {
       await firstStarted;
       // Let fetch/response.json attach their rejection handlers before expiring the timer.
       await new Promise<void>((resolve) => setImmediate(resolve));
-      t.mock.timers.tick(10_000);
+      t.mock.timers.tick(20_000);
       const response = await pending;
       assert.equal(response.status, 200);
       assert.equal(firstSignal?.aborted, true);
@@ -1706,13 +1726,13 @@ test('voice finalize anchors tomorrow locally and repairs an ambiguous appointme
   const env = await makeVoiceEnv(new MockD1WithVoice());
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
-    const prompt = JSON.parse(String(init?.body)).contents[0].parts[0].text;
+    const prompt = JSON.parse(String(init?.body)).messages[1].content;
     assert.ok(prompt.includes("User's local calendar date (today): 2026-09-11"));
     assert.ok(prompt.includes('Tomorrow in the user\'s time zone: 2026-09-12'));
-    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ tasks: [
+    return workersAiReply({ tasks: [
       { id: 'c1', title: "Meet the Spectrum guy at Gail's house", dueISO: '2026-09-13T06:00:00Z' },
       { id: 'c2', title: 'Buy groceries', dueISO: '2026-09-13' },
-    ] }) }] } }] }));
+    ] });
   }) as typeof fetch;
   try {
     const request = authenticatedVoiceRequest('https://taskify.solife.me/api/voice/finalize', {
@@ -1757,6 +1777,53 @@ test("voice rejects general API parameters and malformed candidates before provi
   }
 });
 
+test("voice sends dictated text only to Workers AI", async () => {
+  const env = await makeVoiceEnv(new MockD1WithVoice());
+  const originalFetch = globalThis.fetch;
+  const calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return workersAiReply({ tasks: [{ title: "Call dentist", dueText: "tomorrow", subtasks: [] }] });
+  }) as any;
+  try {
+    const response = await worker.fetch(authenticatedVoiceRequest("https://taskify.test/api/voice/extract", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "Call dentist tomorrow" }),
+    }), env);
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, `https://api.cloudflare.com/client/v4/accounts/acc-123/ai/run/${VOICE_PRIMARY_MODEL}`);
+    assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, "Bearer cf-token");
+    const sent = JSON.parse(String(calls[0].init?.body));
+    assert.equal(sent.messages[0].role, "system");
+    assert.ok(sent.messages[1].content.includes("Call dentist tomorrow"));
+    assert.equal(sent.max_completion_tokens, 2048);
+    assert.equal(sent.response_format, undefined);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("voice accepts model JSON that is fenced or wrapped in a sentence", async () => {
+  const wrapped = [
+    "```json\n{\"tasks\":[{\"title\":\"Call dentist\",\"subtasks\":[]}]}\n```",
+    "Here is the JSON you asked for: {\"tasks\":[{\"title\":\"Call dentist\",\"subtasks\":[]}]} Let me know if you need more.",
+  ];
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const content of wrapped) {
+      const env = await makeVoiceEnv(new MockD1WithVoice());
+      globalThis.fetch = (async () => new Response(
+        JSON.stringify({ success: true, result: { choices: [{ message: { content } }] } }), { status: 200 },
+      )) as any;
+      const response = await worker.fetch(authenticatedVoiceRequest("https://taskify.test/api/voice/extract", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "Call dentist" }),
+      }), env);
+      assert.equal(response.status, 200);
+      assert.equal(((await response.json()) as any).operations[0].title, "Call dentist");
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("provider failures still charge account, IP and global budgets", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
@@ -1771,4 +1838,395 @@ test("provider failures still charge account, IP and global budgets", async () =
     assert.equal(db.quota.size, 3);
     for (const row of db.quota.values()) assert.equal(row.session_count, 1);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+// ── Audit fixes (2026-09-30): push registration, reminder caps, errors, previews ──
+
+function pushDevice(deviceId: string, endpoint: string, endpointHash: string): DeviceRow {
+  return {
+    device_id: deviceId,
+    platform: "ios",
+    endpoint,
+    endpoint_hash: endpointHash,
+    subscription_auth: "auth",
+    subscription_p256dh: "p256dh",
+    updated_at: Date.now(),
+  };
+}
+
+test("device registration accepts only browser push-service endpoints", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const register = (endpoint: string, deviceId: string) => worker.fetch(new Request("https://taskify.test/api/devices", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId, platform: "ios", subscription: { endpoint, keys: { auth: "a", p256dh: "b" } } }),
+  }), env);
+  for (const endpoint of [
+    "https://victim.example/any/path",
+    "http://fcm.googleapis.com/fcm/send/x",
+    "https://10.0.0.5/x",
+    "https://fcm.googleapis.com:8443/fcm/send/x",
+    "https://user@fcm.googleapis.com/fcm/send/x",
+    "https://fcm.googleapis.com.evil.example/x",
+    "not a url",
+  ]) {
+    assert.equal((await register(endpoint, "bad-device")).status, 400, endpoint);
+  }
+  for (const [index, endpoint] of [
+    "https://fcm.googleapis.com/fcm/send/abc",
+    "https://updates.push.services.mozilla.com/wpush/v2/abc",
+    "https://web.push.apple.com/QOs0abc",
+    "https://wns2-by3p.notify.windows.com/w/?token=abc",
+  ].entries()) {
+    assert.equal((await register(endpoint, `good-${index}`)).status, 200, endpoint);
+  }
+});
+
+test("reminder saves are capped, de-duplicated, and truncate long titles", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://fcm.googleapis.com/fcm/send/caps";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("caps", pushDevice("caps", endpoint, subscriptionId));
+  const due = new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString();
+  const soon = new Date(Date.now() + 24 * 60 * 60_000).toISOString(); // kept: the soonest win
+  const reminders = [
+    { taskId: "dup", title: "x", dueISO: soon, minutesBefore: [5, 5, 5] },
+    { taskId: "long", title: "T".repeat(10_000), dueISO: soon, minutesBefore: [0] },
+    ...Array.from({ length: 600 }, (_, i) => ({ taskId: `t-${i}`, title: "t", dueISO: due, minutesBefore: [i] })),
+  ];
+  const response = await worker.fetch(new Request("https://taskify.test/api/reminders", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ deviceId: "caps", subscriptionId, reminders }),
+  }), env);
+  assert.equal(response.status, 204);
+  assert.equal(db.reminders.length, 500);
+  assert.equal(db.reminders.filter((row) => row.task_id === "dup").length, 1);
+  const long = db.reminders.find((row) => row.task_id === "long");
+  assert.equal(long?.title.length, 200);
+});
+
+test("oversized push bodies are refused before parsing", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const response = await worker.fetch(new Request("https://taskify.test/api/devices", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ padding: "x".repeat(300 * 1024) }),
+  }), env);
+  assert.equal(response.status, 413);
+});
+
+test("push routes honor their rate-limit binding", async () => {
+  const env = await makeEnv(new SqliteD1());
+  env.PUSH_RATE_LIMITER = { limit: async () => ({ success: false }) };
+  const response = await worker.fetch(new Request("https://taskify.test/api/reminders", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: "{}",
+  }), env);
+  assert.equal(response.status, 429);
+});
+
+test("errors do not reveal internal detail", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const malformed = await worker.fetch(new Request("https://taskify.test/api/devices/%E0%A4%A", { method: "DELETE" }), env);
+  assert.equal(malformed.status, 400);
+  env.TASKIFY_DB = { prepare() { throw new Error("D1_ERROR: secret table detail"); } };
+  const failing = await worker.fetch(new Request("https://taskify.test/api/reminders", {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ deviceId: "x", subscriptionId: "y", reminders: [] }),
+  }), env);
+  assert.equal(failing.status, 500);
+  assert.deepEqual(await failing.json(), { error: "Internal error" });
+});
+
+test("cron removes devices stored with endpoints that are no longer allowed, without contacting them", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://victim.example/legacy";
+  db.devices.set("legacy", pushDevice("legacy", endpoint, await sha256Hex(endpoint)));
+  db.reminders.push({ device_id: "legacy", reminder_key: "t:0", task_id: "t", board_id: null, title: "x", due_iso: new Date().toISOString(), minutes: 0, send_at: Date.now() - 1_000 });
+  const calls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => { calls.push(String(url)); return new Response("", { status: 201 }); }) as any;
+  try {
+    await worker.scheduled({ scheduledTime: Date.now(), cron: "* * * * *" } as any, env, undefined as any);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(calls, []);
+  assert.equal(db.devices.has("legacy"), false);
+});
+
+async function runCronTick(env: any): Promise<string[]> {
+  const calls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => { calls.push(String(url)); return new Response("", { status: 201 }); }) as any;
+  try {
+    await worker.scheduled({ scheduledTime: Date.now(), cron: "* * * * *" } as any, env, undefined as any);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return calls;
+}
+
+function dueReminder(deviceId: string, key: string, sendAt = Date.now() - 1_000): ReminderRow {
+  return { device_id: deviceId, reminder_key: key, task_id: key, board_id: null, title: "x", due_iso: new Date().toISOString(), minutes: 0, send_at: sendAt };
+}
+
+test("one cron tick wakes at most 45 devices, within the free plan's 50 outbound requests", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  for (let i = 0; i < 300; i++) {
+    const endpoint = `https://fcm.googleapis.com/fcm/send/bulk-${i}`;
+    db.devices.set(`bulk-${i}`, pushDevice(`bulk-${i}`, endpoint, await sha256Hex(endpoint)));
+    db.reminders.push(dueReminder(`bulk-${i}`, "t:0"));
+  }
+  db.queries = 0;
+  const calls = await runCronTick(env);
+  assert.equal(calls.length, 45);
+  assert.equal(db.pending.length, 45);
+  assert.equal(db.reminders.length, 255, "the rest waits for the next tick");
+  assert.ok(db.queries <= 5, `a tick runs a fixed number of statements, ran ${db.queries}`);
+});
+
+test("one device's backlog cannot hold other devices' reminders back", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const hogEndpoint = "https://fcm.googleapis.com/fcm/send/hog";
+  db.devices.set("hog", pushDevice("hog", hogEndpoint, await sha256Hex(hogEndpoint)));
+  const old = Date.now() - 60 * 60_000;
+  for (let i = 0; i < 300; i++) db.reminders.push(dueReminder("hog", `hog:${i}`, old + i));
+  for (let i = 0; i < 10; i++) {
+    const endpoint = `https://fcm.googleapis.com/fcm/send/user-${i}`;
+    db.devices.set(`user-${i}`, pushDevice(`user-${i}`, endpoint, await sha256Hex(endpoint)));
+    db.reminders.push(dueReminder(`user-${i}`, "real:0"));
+  }
+  const calls = await runCronTick(env);
+  assert.equal(calls.length, 11);
+  const pending = db.pending;
+  assert.equal(pending.filter((row) => row.device_id === "hog").length, 5);
+  assert.equal(pending.filter((row) => row.device_id.startsWith("user-")).length, 10, "every other device is served this tick");
+});
+
+async function saveReminders(env: any, deviceId: string, subscriptionId: string, reminders: unknown[], address = "192.0.2.10") {
+  return worker.fetch(new Request("https://taskify.test/api/reminders", {
+    method: "PUT",
+    headers: { "content-type": "application/json", "CF-Connecting-IP": address },
+    body: JSON.stringify({ deviceId, subscriptionId, reminders }),
+  }), env);
+}
+
+const SCHEDULE_DUE = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
+
+function schedule(count: number, title = "t", prefix = "task") {
+  const due = SCHEDULE_DUE;
+  return Array.from({ length: count }, (_, i) => ({ taskId: `${prefix}-${i}`, title, dueISO: due, minutesBefore: [0] }));
+}
+
+test("a reminder save writes only what changed, in a fixed number of statements", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://fcm.googleapis.com/fcm/send/diff";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("diff", pushDevice("diff", endpoint, subscriptionId));
+
+  db.queries = 0;
+  assert.equal((await saveReminders(env, "diff", subscriptionId, schedule(500))).status, 204);
+  assert.equal(db.reminders.length, 500);
+  assert.ok(db.queries <= 8, `500 new reminders took ${db.queries} statements`);
+  assert.equal(db.budget("reminders:all"), 500);
+
+  // The PWA re-sends its whole schedule on every load: nothing changes, nothing is written.
+  assert.equal((await saveReminders(env, "diff", subscriptionId, schedule(500))).status, 204);
+  assert.equal(db.budget("reminders:all"), 500);
+
+  // One title edited and one reminder removed: two changes.
+  const edited = schedule(499);
+  edited[0].title = "renamed";
+  assert.equal((await saveReminders(env, "diff", subscriptionId, edited)).status, 204);
+  assert.equal(db.budget("reminders:all"), 502);
+  const rows = db.reminders;
+  assert.equal(rows.length, 499);
+  assert.equal(rows.find((row) => row.task_id === "task-0")?.title, "renamed");
+  assert.equal(rows.some((row) => row.task_id === "task-499"), false);
+});
+
+test("an address runs out of reminder changes for the day; another address does not", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://fcm.googleapis.com/fcm/send/budget";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("budget", pushDevice("budget", endpoint, subscriptionId));
+
+  assert.equal((await saveReminders(env, "budget", subscriptionId, schedule(500, "t", "a"))).status, 204); // 500
+  assert.equal((await saveReminders(env, "budget", subscriptionId, schedule(500, "t", "b"))).status, 204); // +1,000
+  const refused = await saveReminders(env, "budget", subscriptionId, schedule(500, "t", "c"));
+  assert.equal(refused.status, 429);
+  assert.ok(Number(refused.headers.get("Retry-After")) > 0);
+  assert.equal(db.reminders.filter((row) => row.task_id.startsWith("b-")).length, 500, "a refused save changes nothing");
+
+  const elsewhere = await saveReminders(env, "budget", subscriptionId, schedule(10, "t", "c"), "198.51.100.20");
+  assert.equal(elsewhere.status, 204);
+});
+
+test("once the day's shared reminder budget is spent, changes are refused but unchanged registrations still answer", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const register = (deviceId: string, endpoint: string) => worker.fetch(new Request("https://taskify.test/api/devices", {
+    method: "PUT",
+    headers: { "content-type": "application/json", "CF-Connecting-IP": "192.0.2.30" },
+    body: JSON.stringify({ deviceId, platform: "ios", subscription: { endpoint, keys: { auth: "a", p256dh: "b" } } }),
+  }), env);
+
+  assert.equal((await register("known", "https://fcm.googleapis.com/fcm/send/known")).status, 200);
+  assert.equal(db.budget("reminders:all"), 1);
+  assert.equal((await register("known", "https://fcm.googleapis.com/fcm/send/known")).status, 200);
+  assert.equal(db.budget("reminders:all"), 1, "an unchanged registration writes nothing");
+
+  db.sqlite.prepare("UPDATE write_budget SET used = 6000 WHERE key = 'reminders:all'").run();
+  assert.equal((await register("known", "https://fcm.googleapis.com/fcm/send/known")).status, 200);
+  assert.equal((await register("newcomer", "https://fcm.googleapis.com/fcm/send/newcomer")).status, 429);
+  const subscriptionId = await sha256Hex("https://fcm.googleapis.com/fcm/send/known");
+  assert.equal((await saveReminders(env, "known", subscriptionId, schedule(1), "203.0.113.9")).status, 429);
+});
+
+test("Watch bridge bodies are bounded before the signature is checked", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const response = await worker.fetch(new Request("https://taskify.test/api/watch/nostr/query", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Taskify-Npub": "ab".repeat(32), "X-Taskify-Timestamp": String(Math.floor(Date.now() / 1000)), "X-Taskify-Sig": "cd".repeat(64) },
+    body: "x".repeat(300 * 1024),
+  }), env);
+  assert.equal(response.status, 413);
+});
+
+test("rate-limit keys group IPv6 callers by /64", async () => {
+  const { rateLimitAddress } = await import("./lib.ts");
+  assert.equal(rateLimitAddress("192.0.2.7"), "192.0.2.7");
+  assert.equal(rateLimitAddress("2001:db8:1:1::abcd"), "2001:db8:1:1::/64");
+  assert.equal(rateLimitAddress("2001:0db8:0001:0001:0000:0000:0000:0001"), "2001:db8:1:1::/64");
+  assert.equal(rateLimitAddress("2001:db8:1:1::1"), rateLimitAddress("2001:db8:1:1:ffff:ffff:ffff:ffff"));
+  assert.notEqual(rateLimitAddress("2001:db8:1:1::1"), rateLimitAddress("2001:db8:1:2::1"));
+});
+
+test("link previews never return a non-http final URL, image, or icon", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith("https://attacker.example/")) {
+      return new Response(null, { status: 302, headers: { Location: "https://www.google.com/url?q=javascript:alert(document.domain)" } });
+    }
+    return new Response("<html><head><title>Redirect</title><meta property='og:image' content='javascript:alert(1)'></head><body></body></html>", { status: 200, headers: { "Content-Type": "text/html" } });
+  }) as any;
+  try {
+    const response = await worker.fetch(new Request(`https://taskify.test/api/preview?url=${encodeURIComponent("https://attacker.example/r")}`), env);
+    const body = await response.json() as any;
+    for (const field of ["finalUrl", "image", "icon"]) {
+      const value = body.preview?.[field];
+      if (value !== undefined) assert.match(value, /^https?:\/\//, field);
+    }
+    assert.equal(body.preview.finalUrl, "https://attacker.example/r");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ── Audit fix pass 2 ──
+
+test("the public-address guard expands IPv6 before checking ranges", () => {
+  for (const target of [
+    "http://[::ffff:127.0.0.1]/",
+    "http://[::ffff:10.0.0.1]/",
+    "http://[::ffff:169.254.169.254]/",
+    "http://[::ffff:7f00:1]/",
+    "http://[64:ff9b::a00:1]/",
+    "http://[2002:a00:1::]/",
+    "http://[::127.0.0.1]/",
+    "http://[2001:db8::1]/",
+    "http://[ff02::1]/",
+  ]) {
+    assert.throws(() => assertPublicHttpUrl(target), UnsafePublicUrlError, target);
+  }
+  for (const target of ["http://[::ffff:8.8.8.8]/", "http://[2606:4700:4700::1111]/"]) {
+    assert.doesNotThrow(() => assertPublicHttpUrl(target), target);
+  }
+});
+
+test("the Watch bridge drops relay targets that are not public hosts", async () => {
+  const { watchNostrBridgeTestHooks } = await import("./nostr-bridge.ts");
+  const kept = watchNostrBridgeTestHooks.normalizedRelayURLs([
+    "wss://10.0.0.1", "wss://192.168.1.1:8443", "wss://169.254.169.254", "wss://[::ffff:7f00:1]",
+    "wss://service.internal", "wss://printer.local", "wss://localhost", "wss://relay.damus.io",
+  ]);
+  assert.deepEqual(kept, ["wss://relay.damus.io"]);
+});
+
+test("hourly pruning deletes week-old counters and two-week-old undelivered notifications", async () => {
+  const { pruneStaleRows } = await import("./index.ts");
+  const statements: Array<{ sql: string; params: unknown[] }> = [];
+  const db = {
+    prepare(sql: string) {
+      const statement = { sql, params: [] as unknown[], bind(...params: unknown[]) { statement.params = params; return statement; } };
+      return statement;
+    },
+    async batch(list: any[]) { statements.push(...list.map((s) => ({ sql: s.sql, params: s.params }))); return []; },
+  };
+  const now = Date.parse("2026-09-30T12:17:00Z");
+  await pruneStaleRows({ TASKIFY_DB: db } as any, now);
+  assert.deepEqual(statements, [
+    { sql: "DELETE FROM voice_quota WHERE date < ?", params: ["2026-09-23"] },
+    { sql: "DELETE FROM write_budget WHERE date < ?", params: ["2026-09-23"] },
+    { sql: "DELETE FROM pending_notifications WHERE created_at < ?", params: [now - 14 * 24 * 60 * 60 * 1000] },
+    { sql: "DELETE FROM request_signatures WHERE expires_at < ?", params: [now] },
+  ]);
+});
+
+
+test("API responses carry no CORS grant, so other sites cannot read them", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const preflight = await worker.fetch(
+    new Request("https://taskify-v2.solife.me/api/preview?url=https://example.com", {
+      method: "OPTIONS",
+      headers: { Origin: "https://elsewhere.example", "Access-Control-Request-Method": "GET" },
+    }),
+    env,
+  );
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("Access-Control-Allow-Origin"), null);
+  const config = await worker.fetch(new Request("https://taskify-v2.solife.me/api/config"), env);
+  assert.equal(config.headers.get("Access-Control-Allow-Origin"), null);
+});
+
+test("NIP-05 refuses an oversized response", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const originalFetch = globalThis.fetch;
+  const huge = JSON.stringify({ names: { alice: "a".repeat(64) }, padding: "x".repeat(300 * 1024) });
+  globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    assert.ok(init?.signal, "the lookup has a timeout signal");
+    return new Response(huge, { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as any;
+  try {
+    const res = await worker.fetch(new Request("https://taskify-v2.solife.me/api/nip05?address=alice@example.com"), env);
+    assert.equal(res.status, 502);
+    assert.match(((await res.json()) as any).error, /too large/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("site fallbacks match hosts exactly", () => {
+  assert.ok(isYouTubeHost("www.youtube.com") && isYouTubeHost("youtu.be") && isYouTubeHost("m.youtube.com"));
+  assert.ok(isAmazonHost("www.amazon.co.uk") && isAmazonHost("amazon.com") && isAmazonHost("amzn.to"));
+  assert.ok(isEtsyHost("www.etsy.com"));
+  for (const host of ["youtube.amazon.etsy.example", "notyoutube.com", "amazon.evil.co", "etsy.com.evil.example"]) {
+    assert.ok(!isYouTubeHost(host) && !isAmazonHost(host) && !isEtsyHost(host), host);
+  }
+});
+
+test("the library parser gets only the document head", () => {
+  const html = `<html><head><title>T</title><meta property="og:image" content="https://x.example/i.png"></head><body>${"<p>body</p>".repeat(50_000)}</body></html>`;
+  const head = documentHead(html);
+  assert.ok(head.includes("og:image"));
+  assert.ok(!head.includes("<p>body</p>"));
+  assert.ok(documentHead("<p>" + "x".repeat(200_000)).length <= 64_000);
 });

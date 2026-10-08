@@ -9,6 +9,7 @@ import {
   type Event,
 } from "nostr-tools";
 import { parseShareEnvelope, type ShareEnvelope } from "taskify-core";
+import { sanitizeRemote } from "./displaySafe.js";
 import { mineEventTemplate, relayProofOfWorkDifficulty } from "taskify-runtime-nostr";
 
 export type InboxShareItem = {
@@ -125,7 +126,8 @@ export async function fetchShareInboxNip17(input: {
           senderPubkey: rumor.pubkey,
           createdAt: rumor.created_at,
           raw: rumor.content,
-          envelope,
+          // Anyone can send a share; its text is shown in the terminal.
+          envelope: sanitizeRemote(envelope),
         });
       } catch {
         // ignore invalid wraps

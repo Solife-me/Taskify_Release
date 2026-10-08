@@ -85,7 +85,8 @@ type CashuContextType = {
     amount: number,
     options?: { mintUrl?: string },
   ) => Promise<Proof[]>;
-  savePendingTokenForRedemption: (encoded: string) => Promise<SavePendingTokenResult>;
+  /** `held`: keep it out of the balance and automatic redemption until the user redeems it. */
+  savePendingTokenForRedemption: (encoded: string, options?: { held?: boolean }) => Promise<SavePendingTokenResult>;
   receiveToken: (encoded: string) => Promise<ReceiveTokenResult>;
   createSendToken: (
     amount: number,
@@ -333,6 +334,8 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       try {
         const pendingEntries = listPendingTokens();
         pendingSum = pendingEntries.reduce((sum, entry) => {
+          // Held tokens are unverified claims from an unfamiliar mint; they are not balance.
+          if (entry.held) return sum;
           if (typeof entry.amount === "number" && Number.isFinite(entry.amount)) {
             return sum + entry.amount;
           }
@@ -487,6 +490,8 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
     } catch {
       entries = [];
     }
+    // Held tokens wait for the user: redeeming one contacts a mint the sender chose.
+    entries = entries.filter((entry) => !entry.held);
     if (!entries.length) return;
     redeemingPendingRef.current = true;
     try {
@@ -508,7 +513,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
   }, [processPendingEntry, refreshTotalBalance]);
 
   const savePendingTokenForRedemption = useCallback(
-    async (rawToken: string): Promise<SavePendingTokenResult> => {
+    async (rawToken: string, options: { held?: boolean } = {}): Promise<SavePendingTokenResult> => {
       if (!manager) throw new Error("Wallet not ready");
       const tokenInput = rawToken.trim();
       if (!tokenInput) throw new Error("Paste a Cashu token");
@@ -554,9 +559,12 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
       }
 
       const normalizedTarget = normalizeMintUrl(targetMintUrl);
-      addMintToList(normalizedTarget);
+      // A held token's mint joins the wallet only if the user redeems it.
+      if (!options.held) addMintToList(normalizedTarget);
 
-      const entry = addPendingToken(targetMintUrl, tokenInput, tokenAmount || undefined);
+      const entry = addPendingToken(targetMintUrl, tokenInput, tokenAmount || undefined, undefined, {
+        held: options.held === true,
+      });
       await flushWalletStorage();
       refreshTotalBalance();
 

@@ -1,5 +1,5 @@
 import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus } from "@nostr-dev-kit/ndk";
-import { finalizeEvent } from "nostr-tools";
+import { finalizeEvent, verifyEvent } from "nostr-tools";
 import { applyProofOfWork, mineEventTemplate } from "./ProofOfWork.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager } from "./SubscriptionManager.js";
@@ -224,6 +224,19 @@ export class RuntimeNostrSession {
                     return;
                 const raw = evt.rawEvent?.() ?? evt;
                 if (!raw?.id || seenIds.has(raw.id))
+                    return;
+                // NDK only samples signatures once a relay looks trustworthy. History reads decide
+                // where messages are sent and whose profile is shown, so every event is checked here as
+                // in SubscriptionManager. The ID is recorded only after the check, so a forged copy
+                // cannot shadow the genuine event arriving from another relay.
+                let signatureValid = false;
+                try {
+                    signatureValid = verifyEvent({ id: raw.id, pubkey: raw.pubkey, sig: raw.sig, kind: raw.kind, created_at: raw.created_at, tags: raw.tags, content: raw.content });
+                }
+                catch {
+                    signatureValid = false;
+                }
+                if (!signatureValid)
                     return;
                 seenIds.add(raw.id);
                 collected.push(raw);

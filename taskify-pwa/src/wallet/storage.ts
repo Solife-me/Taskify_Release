@@ -20,6 +20,11 @@ export type PendingTokenEntry = {
   lastTriedAt?: number;
   lastError?: string;
   source?: PendingTokenSource;
+  /**
+   * Received from someone else at a mint this wallet does not use. Kept out of the balance and
+   * of automatic redemption, so the wallet contacts that mint only when the user redeems it.
+   */
+  held?: boolean;
 };
 
 export type PendingTokenSource =
@@ -237,6 +242,7 @@ function normalizePendingTokens(entries: PendingTokenEntry[]): PendingTokenEntry
       lastTriedAt: entry.lastTriedAt,
       lastError: entry.lastError,
       source: normalizePendingTokenSource((entry as any).source),
+      ...(entry.held === true ? { held: true } : {}),
     });
   }
   return normalized;
@@ -365,6 +371,7 @@ export function addPendingToken(
   token: string,
   amount?: number,
   source?: PendingTokenSource,
+  options: { held?: boolean } = {},
 ): PendingTokenEntry {
   const normalizedMint = normalizeMintUrl(mintUrl);
   const entry: PendingTokenEntry = {
@@ -375,6 +382,7 @@ export function addPendingToken(
     attempts: 0,
     amount: typeof amount === "number" && Number.isFinite(amount) ? amount : undefined,
     source: normalizePendingTokenSource(source),
+    ...(options.held ? { held: true } : {}),
   };
   const existing = loadPendingTokenEntries();
   const deduped = existing.filter((item) => item.token !== token);

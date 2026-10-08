@@ -21,6 +21,8 @@ const english = {
   17: 'Waiting for Taskify Push Relay',
   18: 'Watch App Bundle ID',
   19: 'The Watch APNs topic. It must match the signed Taskify Watch app bundle identifier.',
+  20: 'Snapstr App Bundle ID',
+  21: 'The APNs topic. It must match the signed Snapstr app bundle identifier.',
 } satisfies LangDict
 
 export default {

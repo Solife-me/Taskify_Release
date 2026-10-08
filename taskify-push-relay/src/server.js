@@ -1,16 +1,18 @@
 import { randomBytes } from 'node:crypto'
 import http from 'node:http'
+import { isIP } from 'node:net'
 import { verifyEvent } from 'nostr-tools'
 import { WebSocket, WebSocketServer } from 'ws'
 
-import { NIP98ReplayGuard, verifyNip98Request } from './auth.js'
+import { NIP98_MAX_AGE_SECONDS, NIP98ReplayGuard, verifyNip98Request } from './auth.js'
 import {
   assertAuthorizedGiftWrapFilters,
   giftWrapRecipient,
   matchesFilter,
   shouldNotifyRecipient,
+  socketApplication,
 } from './relay-policy.js'
-import { NostrRelayForwarder, normalizeRelayTargets } from './relay-forwarder.js'
+import { NostrRelayForwarder, RemoteRelayError, normalizeRelayTargets } from './relay-forwarder.js'
 
 const MAX_HTTP_BODY_BYTES = 256 * 1024
 const INSTALLATION_ID = /^[A-Za-z0-9._:-]{1,128}$/
@@ -24,10 +26,30 @@ const WATCH_PREFERENCE_EVENT_LIMIT = 4
 /// POSTs; with several restricted relays in one submit the later sessions are only reached
 /// after the earlier ones complete. The TTL must cover that whole loop, not one hop.
 const WATCH_SESSION_TTL_MS = 120_000
+// Each pending session holds an open socket to a remote relay until it is used or expires.
+const WATCH_SESSION_LIMIT = 256
+const WATCH_SESSION_LIMIT_PER_ACCOUNT = 32
 const WATCH_TASK_ACCESS_KIND = 27_236
 const WATCH_TASK_EVENT_KINDS = new Set([30_300, 30_301])
 const WATCH_TASK_AUTHOR_LIMIT = 64
 const WATCH_TASK_EVENT_LIMIT = 1_000
+
+/// The address a request came from, for limits. Behind the Cloudflare tunnel every socket's peer
+/// is the connector, so the client's address comes from the configured header when present. An
+/// IPv6 client is grouped by its /64, which one subscriber controls in full.
+export function clientAddressKey(request, header) {
+  const supplied = header ? request.headers[header] : undefined
+  const candidate = typeof supplied === 'string' ? supplied.split(',')[0].trim() : ''
+  const address = isIP(candidate) ? candidate : (request.socket?.remoteAddress ?? 'unknown')
+  if (isIP(address) !== 6 || address.startsWith('::ffff:')) return address
+  const [head, tail = ''] = address.split('::')
+  const headGroups = head ? head.split(':') : []
+  const tailGroups = tail ? tail.split(':') : []
+  const groups = address.includes('::')
+    ? [...headGroups, ...Array(8 - headGroups.length - tailGroups.length).fill('0'), ...tailGroups]
+    : headGroups
+  return `${groups.slice(0, 4).map((group) => group.toLowerCase().replace(/^0+(?=.)/, '')).join(':')}::/64`
+}
 
 function sendJSON(response, status, value, contentType = 'application/json') {
   const data = Buffer.from(JSON.stringify(value))
@@ -90,11 +112,19 @@ class SlidingWindowRateLimiter {
     this.windowSeconds = windowSeconds
     this.now = now
     this.entries = new Map()
+    this.sweepAt = 1_024
   }
 
   consume(key) {
     const now = this.now()
     const cutoff = now - this.windowSeconds
+    // Every new key or address adds an entry; drop the idle ones before the map grows large.
+    if (this.entries.size >= this.sweepAt) {
+      for (const [entryKey, timestamps] of this.entries) {
+        if (timestamps.at(-1) <= cutoff) this.entries.delete(entryKey)
+      }
+      this.sweepAt = Math.max(1_024, this.entries.size * 2)
+    }
     const recent = (this.entries.get(key) ?? []).filter((timestamp) => timestamp > cutoff)
     if (recent.length >= this.maximum) return false
     recent.push(now)
@@ -111,7 +141,9 @@ function isPublicPreferenceQuery(filters) {
       Array.isArray(filter?.kinds)
       && filter.kinds.length === 1
       && filter.kinds[0] === 10_050
-      && (!filter.authors || (Array.isArray(filter.authors) && filter.authors.length <= 100)),
+      // Naming the accounts keeps this a lookup; without it the relay would list every
+      // account that uses it as an inbox.
+      && Array.isArray(filter.authors) && filter.authors.length > 0 && filter.authors.length <= 100,
     )
 }
 
@@ -192,10 +224,26 @@ export function createTaskifyPushServer({
   // relays apply per-IP limits (noteguard's documented example is 8/min). Bound each account's
   // share; the Watch keeps a limited change queued and retries.
   watchForwardsPerMinute = 30,
+  watchForwardsPerDestinationPerMinute = 240,
+  // The relay sits behind a proxy, so every socket shares one peer address; the caps are
+  // per process and per socket instead.
+  maxSockets = 2_000,
+  maxSocketMessagesPerTenSeconds = 100,
+  // One address must not be able to take every socket. Applies per client address, which
+  // needs `clientAddressHeader` behind a proxy; without it every socket shares the proxy's.
+  maxSocketsPerAddress = 64,
+  // Every Taskify client answers the AUTH challenge on connect. A socket that has not by now
+  // is holding a slot without using the relay.
+  unauthenticatedSocketTimeoutMs = 60_000,
 }) {
+  const clientAddressHeader = config.clientAddressHeader?.toLowerCase() || null
+  const socketsPerAddress = new Map()
   const replayGuard = new NIP98ReplayGuard()
   const publishLimiter = new SlidingWindowRateLimiter()
   const watchForwardLimiter = new SlidingWindowRateLimiter({ maximum: watchForwardsPerMinute })
+  // Every forward leaves from this server's one address, so a relay that rate-limits by address
+  // sees all accounts together. Bound what any one destination receives from all of them.
+  const watchDestinationLimiter = new SlidingWindowRateLimiter({ maximum: watchForwardsPerDestinationPerMinute })
   const privateRequestLimiter = new SlidingWindowRateLimiter({ maximum: 300 })
   const privateIPLimiter = new SlidingWindowRateLimiter({ maximum: 1_200 })
   const sockets = new Set()
@@ -206,10 +254,49 @@ export function createTaskifyPushServer({
   let pushWorkerPromise = null
 
   function enforcePrivateRequestLimit(request, pubkey) {
-    const address = request.socket.remoteAddress ?? 'unknown'
+    const address = clientAddressKey(request, clientAddressHeader)
     if (!privateRequestLimiter.consume(pubkey) || !privateIPLimiter.consume(address)) {
       throw new Error('Private request limit exceeded')
     }
+  }
+
+  /// Signature, then rate limit, then replay record: a request refused by the limit does not
+  /// take a slot in the replay guard, so a flood of signed requests cannot crowd it out.
+  function authenticatePrivateRequest(request, url, body) {
+    const expectedURL = new URL(`${url.pathname}${url.search}`, config.publicBaseURL).toString()
+    const auth = verifyNip98Request({
+      authorization: request.headers.authorization,
+      method: request.method,
+      expectedURL,
+      body,
+    })
+    enforcePrivateRequestLimit(request, auth.pubkey)
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    replayGuard.consume(auth.event.id, auth.event.created_at + NIP98_MAX_AGE_SECONDS, nowSeconds)
+    return auth
+  }
+
+  /// Our own validation errors map to a status by their wording. A remote relay's refusal can
+  /// carry any text, so it is always reported as an upstream failure.
+  function sendRequestError(response, error) {
+    if (error instanceof RemoteRelayError) {
+      sendJSON(response, 502, { error: 'Relay request failed', relayMessage: error.message })
+      return
+    }
+    const message = error instanceof Error ? error.message : 'Bad request'
+    const status = /limit exceeded/i.test(message)
+      ? 429
+      : /authorization|NIP-98|replay|account mismatch/i.test(message) ? 401 : 400
+    sendJSON(response, status, { error: message })
+  }
+
+  function hasWatchSessionCapacity(accountPubkey) {
+    if (watchAuthSessions.size >= WATCH_SESSION_LIMIT) return false
+    let held = 0
+    for (const session of watchAuthSessions.values()) {
+      if (session.accountPubkey === accountPubkey) held += 1
+    }
+    return held < WATCH_SESSION_LIMIT_PER_ACCOUNT
   }
 
   function discardExpiredWatchSessions() {
@@ -237,15 +324,7 @@ export function createTaskifyPushServer({
     }
     try {
       const body = await requestBody(request)
-      const expectedURL = new URL(`${url.pathname}${url.search}`, config.publicBaseURL).toString()
-      const auth = verifyNip98Request({
-        authorization: request.headers.authorization,
-        method: request.method,
-        expectedURL,
-        body,
-        replayGuard,
-      })
-      enforcePrivateRequestLimit(request, auth.pubkey)
+      const auth = authenticatePrivateRequest(request, url, body)
       if (request.method === 'DELETE') {
         await store.removeRegistration(auth.pubkey, installationID)
         sendJSON(response, 200, {
@@ -260,39 +339,34 @@ export function createTaskifyPushServer({
       if (payload.platform != null && !['ios', 'watchos'].includes(payload.platform)) {
         throw new Error('Invalid APNs platform')
       }
+      if (payload.application != null && !['taskify', 'snapstr'].includes(payload.application)) {
+        throw new Error('Invalid application')
+      }
+      if (payload.application === 'snapstr' && payload.platform === 'watchos') {
+        throw new Error('Snapstr does not support watchOS registrations')
+      }
       await store.putRegistration(auth.pubkey, installationID, payload)
       sendJSON(response, 200, {
         enabled: true,
         remainingRegistrations: store.registrationsFor(auth.pubkey).length,
       })
     } catch (error) {
-      const status = /limit exceeded/i.test(error.message)
-        ? 429
-        : /authorization|NIP-98|replay/i.test(error.message) ? 401 : 400
-      sendJSON(response, status, { error: error.message })
+      sendRequestError(response, error)
     }
     return true
-  }
-
-  async function authenticateWatchRequest(request, url, body) {
-    const expectedURL = new URL(`${url.pathname}${url.search}`, config.publicBaseURL).toString()
-    return verifyNip98Request({
-      authorization: request.headers.authorization,
-      method: request.method,
-      expectedURL,
-      body,
-      replayGuard,
-    })
   }
 
   async function ingestLocalWatchEvent(event, authenticatedPubkey) {
     if (event.kind === 1059) {
       const recipient = giftWrapRecipient(event)
+      if (!store.hasInbox(recipient)) throw new Error('restricted: recipient does not use this relay')
       const stored = await store.putGiftWrap(event, {
         notify: shouldNotifyRecipient({
           authenticatedPubkey,
           recipientPubkey: recipient,
         }),
+        // Only the Taskify Watch uses this gateway.
+        application: 'taskify',
       })
       if (stored) broadcastEvent(event)
       return { accepted: true, message: stored ? 'saved' : 'duplicate: event already stored' }
@@ -314,7 +388,7 @@ export function createTaskifyPushServer({
   }
 
   function registerReadAuthorization(result, relayURL, accountPubkey, maximumEvents, accept, onEvents) {
-    if (watchAuthSessions.size >= 256) {
+    if (!hasWatchSessionCapacity(accountPubkey)) {
       result.close?.()
       throw new Error('Relay authorization capacity exceeded')
     }
@@ -364,8 +438,15 @@ export function createTaskifyPushServer({
             const local = await ingestLocalWatchEvent(event, authenticatedPubkey)
             return { relay: relayURL, status: 'accepted', message: local.message }
           }
+          if (!watchDestinationLimiter.consume(new URL(relayURL).host)) {
+            return { relay: relayURL, status: 'failed', message: 'Relay destination limit exceeded' }
+          }
           const result = await relayForwarder.publish(relayURL, event)
           if (result.outcome === 'auth-required') {
+            if (!hasWatchSessionCapacity(authenticatedPubkey)) {
+              result.close?.()
+              return { relay: relayURL, status: 'failed', message: 'Relay authorization capacity exceeded' }
+            }
             const token = randomBytes(32).toString('base64url')
             watchAuthSessions.set(token, {
               accountPubkey: authenticatedPubkey,
@@ -415,8 +496,7 @@ export function createTaskifyPushServer({
     discardExpiredWatchSessions()
     try {
       const body = await requestBody(request)
-      const auth = await authenticateWatchRequest(request, url, body)
-      enforcePrivateRequestLimit(request, auth.pubkey)
+      const auth = authenticatePrivateRequest(request, url, body)
       const payload = JSON.parse(body.toString('utf8'))
 
       if (url.pathname === '/v1/watch/inbox-preference/query') {
@@ -629,15 +709,24 @@ export function createTaskifyPushServer({
         results,
       })
     } catch (error) {
-      const status = /limit exceeded/i.test(error.message)
-        ? 429
-        : /authorization|NIP-98|replay|account mismatch/i.test(error.message) ? 401 : 400
-      sendJSON(response, status, { error: error.message })
+      sendRequestError(response, error)
     }
     return true
   }
 
   const httpServer = http.createServer(async (request, response) => {
+    // An async request handler that throws becomes an unhandled rejection, which stops Node.
+    // Request targets such as `//` make URL parsing throw, so every request is contained here.
+    try {
+      await handleHTTPRequest(request, response)
+    } catch (error) {
+      logger.warn?.('HTTP request failed', { error: error?.name ?? 'Error' })
+      if (!response.headersSent) sendJSON(response, 400, { error: 'Bad request' })
+      else response.destroy()
+    }
+  })
+
+  async function handleHTTPRequest(request, response) {
     const url = new URL(request.url ?? '/', config.publicBaseURL)
     if (request.method === 'GET' && url.pathname === '/healthz') {
       sendJSON(response, 200, { status: 'ok' })
@@ -645,10 +734,35 @@ export function createTaskifyPushServer({
     }
     const previewMatch = /^\/v1\/previews\/([A-Za-z0-9_-]{43})$/.exec(url.pathname)
     if (request.method === 'GET' && previewMatch) {
-      const event = store.previewForToken(previewMatch[1])
       response.setHeader('Cache-Control', 'no-store')
       response.setHeader('Pragma', 'no-cache')
-      sendJSON(response, event ? 200 : 404, event ? { event } : { error: 'Preview not found' })
+      const token = previewMatch[1]
+      const entry = store.previewEntryForToken(token)
+      if (!entry) {
+        sendJSON(response, 404, { error: 'Preview not found' })
+        return
+      }
+      if (request.headers.authorization) {
+        // A signed fetch must come from the recipient. Anything else looks like a missing preview.
+        let signer = null
+        try {
+          signer = authenticatePrivateRequest(request, url, Buffer.alloc(0)).pubkey
+        } catch (error) {
+          if (/limit exceeded/i.test(error.message)) {
+            sendJSON(response, 429, { error: error.message })
+            return
+          }
+        }
+        if (!signer || signer !== entry.recipient) {
+          sendJSON(response, 404, { error: 'Preview not found' })
+          return
+        }
+      } else if (config.requireSignedPreviews) {
+        sendJSON(response, 401, { error: 'NIP-98 authorization is required' })
+        return
+      }
+      await store.consumePreview(token)
+      sendJSON(response, 200, { event: entry.event })
       return
     }
     if (await handleRegistrationRequest(request, response, url)) return
@@ -659,8 +773,8 @@ export function createTaskifyPushServer({
         description: 'NIP-17 inbox relay with privacy-preserving APNs wake delivery',
         pubkey: '',
         contact: 'https://solife.me',
-        supported_nips: [1, 11, 17, 42, 59, 98],
-        software: 'https://github.com/nathanhughes/Taskify_Release',
+        supported_nips: [1, 9, 11, 17, 42, 59, 98],
+        software: 'https://github.com/Solife-me/Taskify_Release',
         version: '0.4.1',
         limitation: {
           auth_required: true,
@@ -673,7 +787,7 @@ export function createTaskifyPushServer({
       return
     }
     sendJSON(response, 404, { error: 'Not found' })
-  })
+  }
 
   const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 })
   httpServer.on('upgrade', (request, socket, head) => {
@@ -708,12 +822,22 @@ export function createTaskifyPushServer({
       throw new Error('auth-required: relay URL does not match')
     }
     state.authenticatedPubkey = event.pubkey.toLowerCase()
+    state.application = socketApplication(event)
   }
 
   async function handleRelayEvent(state, event) {
-    if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
+    // Cheap checks first: an unauthenticated or over-limit socket must not cost a signature check.
     if (!state.authenticatedPubkey) throw new Error('auth-required: authenticate before publishing')
     if (!publishLimiter.consume(state.authenticatedPubkey)) throw new Error('rate-limited: publish limit exceeded')
+    if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
+    if (event.kind === 5) {
+      if (Buffer.byteLength(JSON.stringify(event)) > 16 * 1024) {
+        throw new Error('invalid: deletion request is too large')
+      }
+      const deletedCount = await store.applyDeletionRequest(event)
+      if (deletedCount > 0) broadcastEvent(event)
+      return `deleted: ${deletedCount} event${deletedCount === 1 ? '' : 's'}`
+    }
     if (event.kind === 10_050) {
       if (event.pubkey.toLowerCase() !== state.authenticatedPubkey) {
         throw new Error('restricted: kind 10050 author must match authenticated pubkey')
@@ -722,14 +846,18 @@ export function createTaskifyPushServer({
       if (stored) broadcastEvent(event)
       return stored ? 'saved' : 'duplicate: older replaceable event'
     }
-    if (event.kind !== 1059) throw new Error('restricted: only kinds 1059 and 10050 are accepted')
+    if (event.kind !== 1059) throw new Error('restricted: only kinds 5, 1059, and 10050 are accepted')
     const recipient = giftWrapRecipient(event)
+    // Only accounts that registered a device or published their inbox preference here use
+    // this relay; storing wraps for any other key would let anyone fill it.
+    if (!store.hasInbox(recipient)) throw new Error('restricted: recipient does not use this relay')
     if (event.content.length > 128 * 1024) throw new Error('invalid: gift wrap is too large')
     const stored = await store.putGiftWrap(event, {
       notify: shouldNotifyRecipient({
         authenticatedPubkey: state.authenticatedPubkey,
         recipientPubkey: recipient,
       }),
+      application: state.application,
     })
     if (stored) broadcastEvent(event)
     return stored ? 'saved' : 'duplicate: event already stored'
@@ -765,18 +893,57 @@ export function createTaskifyPushServer({
     relaySend(state.socket, ['EOSE', subscriptionID])
   }
 
-  webSocketServer.on('connection', (socket) => {
+  webSocketServer.on('connection', (socket, request) => {
+    if (sockets.size >= maxSockets) {
+      socket.close(1013, 'relay is at capacity')
+      return
+    }
+    // Without a trusted client-address header every socket arrives from the proxy, so a
+    // per-address cap would be one cap for everyone; only the total applies then.
+    const address = clientAddressHeader && request ? clientAddressKey(request, clientAddressHeader) : null
+    if (address) {
+      const count = socketsPerAddress.get(address) ?? 0
+      if (count >= maxSocketsPerAddress) {
+        socket.close(1013, 'too many connections from this address')
+        return
+      }
+      socketsPerAddress.set(address, count + 1)
+    }
     const state = {
       socket,
       challenge: randomBytes(32).toString('base64url'),
       authenticatedPubkey: null,
       subscriptions: new Map(),
+      messageWindowStartedAt: Date.now(),
+      messagesInWindow: 0,
     }
     sockets.add(state)
     relaySend(socket, ['AUTH', state.challenge])
-    socket.on('close', () => sockets.delete(state))
+    const authenticationDeadline = setTimeout(() => {
+      if (!state.authenticatedPubkey) socket.close(1008, 'auth-required: authenticate sooner')
+    }, unauthenticatedSocketTimeoutMs)
+    authenticationDeadline.unref?.()
+    socket.on('close', () => {
+      clearTimeout(authenticationDeadline)
+      sockets.delete(state)
+      if (!address) return
+      const remaining = (socketsPerAddress.get(address) ?? 1) - 1
+      if (remaining > 0) socketsPerAddress.set(address, remaining)
+      else socketsPerAddress.delete(address)
+    })
     socket.on('error', () => {})
     socket.on('message', async (data) => {
+      const now = Date.now()
+      if (now - state.messageWindowStartedAt >= 10_000) {
+        state.messageWindowStartedAt = now
+        state.messagesInWindow = 0
+      }
+      state.messagesInWindow += 1
+      if (state.messagesInWindow > maxSocketMessagesPerTenSeconds) {
+        relaySend(socket, ['NOTICE', 'rate-limited: too many messages'])
+        socket.close(1008, 'too many messages')
+        return
+      }
       let message
       try {
         message = JSON.parse(data.toString())
@@ -826,7 +993,7 @@ export function createTaskifyPushServer({
             : null
           const result = await apnsClient.send(registration, previewURL)
           if (result.status === 200) {
-            await store.completePushJob(job.id, { retainPreview: true })
+            await store.completePushJob(job.id, { retainPreview: true, delivered: true })
             continue
           }
           if (result.status === 410 || ['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered'].includes(result.reason)) {

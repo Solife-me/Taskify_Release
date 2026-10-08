@@ -3,10 +3,8 @@
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
-import type { SharedTaskPayload, InboxSender } from "taskify-core";
-import type { Settings } from "../domains/tasks/settingsTypes";
 import { useSyncResume } from "../nostr/useSyncResume";
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PaymentRequestTransportType,
   type PaymentRequestPayload,
@@ -140,20 +138,17 @@ import {
 import {
   BackIcon,
   CHAT_FILE_PICKER_ACCEPT,
-  ChatBubbleIcon,
   CheckIcon,
   CloseIcon,
   GroupAvatar,
   LightningGlyph,
   MessengerFileBubble,
   PencilIcon,
-  PersonIcon,
   QrCodeCard,
   QrScanner,
   ShareArrowIcon,
   SwipeableDmThreadRow,
   VerifiedBadgeIcon,
-  WalletGlyphIcon,
   avatarInitials,
   formatDmDateSeparator,
   formatDmDay,
@@ -185,48 +180,31 @@ import {
   shouldSuppressProofStateChecks,
   buildWalletMessageSyntheticEventId,
   buildCalendarInviteSyntheticEventId,
-  CONTACT_PANEL_HEIGHT,
   UNPAID_MINT_QUOTE_RETENTION_MS,
   CHAT_TIMESTAMP_REVEAL_WIDTH,
   BACKGROUND_REFRESH_INTERVAL_MS,
   NPUB_CASH_REFRESH_STAGGER_MS,
   TOKEN_STATE_BACKGROUND_STAGGER_MS,
   SUBSCRIPTION_RETRY_DELAY_MS,
-  type PendingCalendarInvite,
   type SharedContactPreview,
   type NostrEvent,
 } from "../wallet/walletModalHelpers";
-
-const EcashReceiveSheet = lazy(() =>
-  import("../ui/wallet/EcashReceiveSheet").then((module) => ({ default: module.EcashReceiveSheet })),
-);
-const LightningReceiveSheet = lazy(() =>
-  import("../ui/wallet/LightningReceiveSheet").then((module) => ({ default: module.LightningReceiveSheet })),
-);
-const EcashSendSheet = lazy(() =>
-  import("../ui/wallet/EcashSendSheet").then((module) => ({ default: module.EcashSendSheet })),
-);
-const WalletContactsSheet = lazy(() =>
-  import("../ui/wallet/WalletContactsSheet").then((module) => ({ default: module.WalletContactsSheet })),
-);
-const LightningSendSheet = lazy(() =>
-  import("../ui/wallet/LightningSendSheet").then((module) => ({ default: module.LightningSendSheet })),
-);
-const WalletHistorySheet = lazy(() =>
-  import("../ui/wallet/WalletHistorySheet").then((module) => ({ default: module.WalletHistorySheet })),
-);
-const WalletSwapSheet = lazy(() =>
-  import("../ui/wallet/WalletSwapSheet").then((module) => ({ default: module.WalletSwapSheet })),
-);
-const WalletNwcManagerSheet = lazy(() =>
-  import("../ui/wallet/WalletNwcManagerSheet").then((module) => ({ default: module.WalletNwcManagerSheet })),
-);
-const WalletSettingsSheet = lazy(() =>
-  import("../ui/wallet/WalletSettingsSheet").then((module) => ({ default: module.WalletSettingsSheet })),
-);
-const PaymentRequestFulfillSheet = lazy(() =>
-  import("../ui/wallet/PaymentRequestFulfillSheet").then((module) => ({ default: module.PaymentRequestFulfillSheet })),
-);
+import type { CashuWalletModalProps } from "./cashuWalletModalTypes";
+import { WalletTabSwitcher } from "../ui/wallet/WalletTabSwitcher";
+import { WalletContactsListPanel } from "../ui/wallet/WalletContactsListPanel";
+import { WalletMessagesListPanel } from "../ui/wallet/WalletMessagesListPanel";
+import {
+  EcashReceiveSheet,
+  EcashSendSheet,
+  LightningReceiveSheet,
+  LightningSendSheet,
+  PaymentRequestFulfillSheet,
+  WalletContactsSheet,
+  WalletHistorySheet,
+  WalletNwcManagerSheet,
+  WalletSettingsSheet,
+  WalletSwapSheet,
+} from "../ui/wallet/walletModalSheets";
 
 export default function CashuWalletModal({
   open,
@@ -271,52 +249,7 @@ export default function CashuWalletModal({
   formatCalendarInviteWhen,
   onDmUnreadCountChange,
   chatMessageRetention = "forever",
-}: {
-  open: boolean;
-  onClose: () => void;
-  onOpenAddress?: () => void;
-  onOpenBounties?: () => void;
-  page?: "wallet" | "contacts" | "chat";
-  showTabSwitcher?: boolean;
-  showBottomNav?: boolean;
-  walletConversionEnabled: boolean;
-  walletSettings: Settings;
-  setWalletSettings: (patch: Partial<Settings>) => void;
-  defaultRelays: string[];
-  onResetWalletTokenTracking: () => void;
-  walletPrimaryCurrency: "sat" | "usd";
-  walletDenominationDisplay: "bitcoin-symbol" | "sat";
-  setWalletPrimaryCurrency: (currency: "sat" | "usd") => void;
-  lightningAddressProvider?: "solife.me" | "npub.cash" | "none";
-  solifeLightningAddress?: string;
-  npubCashLightningAddressEnabled: boolean;
-  npubCashAutoClaim: boolean;
-  sentTokenStateChecksEnabled: boolean;
-  paymentRequestsEnabled: boolean;
-  paymentRequestsBackgroundChecksEnabled: boolean;
-  tokenStateResetNonce: number;
-  mintBackupEnabled: boolean;
-  contactsSyncEnabled: boolean;
-  fileStorageServer: string;
-  fileServers?: string;
-  encryptedFileStorageServer?: string;
-  encryptedFileServers?: string;
-  messageItems: WalletMessageItem[];
-  messagesUnreadCount: number;
-  onAcceptMessage: (id: string) => void;
-  onAddTaskAgain: (task: SharedTaskPayload, sender?: InboxSender) => void;
-  onMaybeMessage: (id: string) => void;
-  onDeclineMessage: (id: string) => void;
-  onDismissMessage: (id: string) => void;
-  onMarkMessagesRead: (dmEventIds: string[]) => void;
-  inboxPendingItems?: WalletMessageItem[];
-  pendingCalendarInvites?: PendingCalendarInvite[];
-  onCalendarInviteRsvp?: (invite: any, status: string) => void;
-  onDismissCalendarInvite?: (invite: any) => void;
-  formatCalendarInviteWhen?: (invite: any) => string;
-  onDmUnreadCountChange?: (count: number) => void;
-  chatMessageRetention?: string;
-}) {
+}: CashuWalletModalProps) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
       return kvStorage.getItem("taskify.wallet.debug") === "1";
@@ -1696,73 +1629,6 @@ export default function CashuWalletModal({
     const tail = Math.max(6, maxLength - lead - 1);
     return `${normalized.slice(0, lead)}${ellipsis}${normalized.slice(-tail)}`;
   };
-  const contactsPanelContent = (context: "lightning" | "ecash") => {
-    if (contactsContext !== context) return null;
-    const hasContacts = visibleContacts.length > 0;
-    const contactPanelHeight = CONTACT_PANEL_HEIGHT;
-    return (
-      <div
-        className="flex flex-col gap-3 text-xs"
-        style={{ minHeight: contactPanelHeight, maxHeight: contactPanelHeight }}
-      >
-        <div className="contacts-list-view flex-1 min-h-0">
-          {hasContacts ? (
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-              <div className="contact-list">
-                {visibleContacts.map((contact) => {
-                  const displayName = contactDisplayLabel(contact);
-                  const displayNameTrimmed = truncateContactName(displayName);
-                  const subtitle = contactSubtitle(contact) || "No details added";
-                  const subtitleIsNip05 =
-                    !!contact.nip05 &&
-                    !!subtitle &&
-                    normalizeNip05(contact.nip05) === normalizeNip05(subtitle);
-                  const nip05Verified =
-                    subtitleIsNip05 &&
-                    isNip05VerifiedForRef.current?.(contact.id, contact.nip05, contact.npub);
-                  const photo = contact.picture?.trim();
-                  return (
-                    <button
-                      key={contact.id}
-                      type="button"
-                      className="contact-row pressable"
-                      onClick={() => handleSelectContact(contact)}
-                    >
-                      <div className={photo ? "contact-avatar contact-avatar--image" : "contact-avatar"}>
-                        {photo ? (
-                          <img src={photo} alt={displayName} className="contact-avatar__img" />
-                        ) : (
-                          contactInitials(displayName)
-                        )}
-                      </div>
-                      <div className="contact-row__text">
-                        <div className="contact-row__name">{displayNameTrimmed}</div>
-                        <div
-                          className={`contact-row__meta${subtitleIsNip05 ? " contact-row__meta--nip05" : ""}`}
-                        >
-                          <span className="contact-row__meta-text">{subtitle}</span>
-                          {subtitleIsNip05 && nip05Verified && (
-                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
-                          )}
-                        </div>
-                      </div>
-                      <span className="contact-chevron">›</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className="contact-empty text-secondary">
-              {context === "ecash"
-                ? "Add a contact with an npub from the Contacts tab."
-                : "Save a lightning address from the Contacts tab."}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
   const lnurlWithdrawStatusText = useMemo(() => {
     switch (lnurlWithdrawState) {
       case "creating":
@@ -2685,6 +2551,7 @@ export default function CashuWalletModal({
     info,
     mintUrl,
     receiveToken,
+    savePendingTokenForRedemption,
     addSpentIncomingPayment,
     defaultNostrRelays,
     ensureNostrIdentity,
@@ -5038,116 +4905,23 @@ export default function CashuWalletModal({
             </div>
             <div className="wallet-messages__body">
               {(dmView === "list" || dmView === "strangers") && (
-                <div className="wallet-messages__list space-y-2">
-                  {dmView === "strangers" && !dmSearch.trim() && (
-                    <button
-                      className="wallet-messages__thread pressable"
-                      onClick={() => {
-                        dmListViewRef.current = "list";
-                        setDmView("list");
-                        setActiveThreadPeer(null);
-                      }}
-                    >
-                      <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&larr;</div>
-                      <div className="wallet-messages__thread-body">
-                        <div className="wallet-messages__thread-title">Back to everyone</div>
-                        <div className="wallet-messages__thread-preview">View all conversations</div>
-                      </div>
-                    </button>
-                  )}
-                  {dmThreadListEntries.map((entry) => {
-                    if (entry.kind === "strangers") {
-                      return (
-                        <button
-                          key="wallet-strangers-group"
-                          className="wallet-messages__thread wallet-messages__thread--stranger pressable"
-                          onClick={() => {
-                            dmListViewRef.current = "strangers";
-                            setDmView("strangers");
-                            setActiveThreadPeer(null);
-                          }}
-                        >
-                          <div className="wallet-messages__avatar wallet-messages__avatar--stranger">&#9678;</div>
-                          <div className="wallet-messages__thread-body">
-                            <div className="wallet-messages__thread-title">
-                              Strangers{strangerUnreadCount > 0 ? ` (${strangerUnreadCount})` : ""}
-                            </div>
-                            <div className="wallet-messages__thread-preview">{entry.lastPreview}</div>
-                          </div>
-                          <div className="wallet-messages__thread-meta">
-                            <span className="wallet-messages__thread-date">
-                              {formatShortDate(entry.lastCreatedAt)}
-                            </span>
-                            {strangerUnreadCount > 0 && (
-                              <span className="chat-unread-badge">{strangerUnreadCount}</span>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    }
-                    const thread = entry.thread;
-                    const isGroupThread = !!thread.groupId;
-                    const groupMeta = isGroupThread ? groupChats.find((g) => g.groupId === thread.groupId) : null;
-                    const groupAvatarMembers = isGroupThread ? groupAvatarMembersFor(groupMeta, thread, groupMeta?.name || "Group") : [];
-                    const meta = isGroupThread
-                      ? { label: groupMeta?.name || "Group", picture: undefined, subtitle: `${groupMeta?.members.length || 0} members`, verifiedNip05: null }
-                      : peerLabelFor(thread.peerPubkey);
-                    const unreadCount = threadUnreadMap.get(thread.peerPubkey) || 0;
-                    return (
-                      <SwipeableDmThreadRow
-                        key={thread.peerPubkey}
-                        onArchive={() => handleArchiveDmThread(thread)}
-                        onDelete={() => handleDeleteDmThread(thread)}
-                      >
-                        <button
-                          className="wallet-messages__thread pressable"
-                          onClick={() => {
-                            dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
-                            setActiveThreadPeer(thread.peerPubkey);
-                            setDmView("thread");
-                            const unreadIds = collectUnreadThreadItemEventIds(thread.messages, thread.peerPubkey);
-                            if (unreadIds.length) {
-                              onMarkMessagesRead(unreadIds);
-                            }
-                          }}
-                        >
-                          <div className={`wallet-messages__avatar${isGroupThread ? " wallet-messages__avatar--group" : ""}`}>
-                            {isGroupThread ? (
-                              <GroupAvatar members={groupAvatarMembers} />
-                            ) : meta.picture ? (
-                              <img
-                                src={meta.picture}
-                                alt={meta.label}
-                                className="wallet-messages__avatar-img"
-                              />
-                            ) : (
-                              <span>{meta.label.slice(0, 2)}</span>
-                            )}
-                          </div>
-                          <div className="wallet-messages__thread-body">
-                            <div className="wallet-messages__thread-title">
-                              {meta.label}
-                            </div>
-                            <div className="wallet-messages__thread-preview">{thread.lastPreview}</div>
-                          </div>
-                          <div className="wallet-messages__thread-meta">
-                            <span className="wallet-messages__thread-date">
-                              {formatShortDate(thread.lastCreatedAt)}
-                            </span>
-                            {unreadCount > 0 && <span className="chat-unread-badge">{unreadCount}</span>}
-                          </div>
-                        </button>
-                      </SwipeableDmThreadRow>
-                    );
-                  })}
-                {dmThreadListEntries.length === 0 && (
-                  <div className="wallet-messages__empty text-secondary text-sm text-center">
-                    {dmView === "strangers" && !dmSearch.trim()
-                      ? "No stranger messages yet."
-                      : "No messages yet. Incoming DMs will appear here."}
-                  </div>
-                )}
-                </div>
+                <WalletMessagesListPanel
+                  dmSearch={dmSearch}
+                  dmView={dmView}
+                  setDmView={setDmView}
+                  dmListViewRef={dmListViewRef}
+                  setActiveThreadPeer={setActiveThreadPeer}
+                  dmThreadListEntries={dmThreadListEntries}
+                  strangerUnreadCount={strangerUnreadCount}
+                  groupChats={groupChats}
+                  groupAvatarMembersFor={groupAvatarMembersFor}
+                  peerLabelFor={peerLabelFor}
+                  threadUnreadMap={threadUnreadMap}
+                  handleArchiveDmThread={handleArchiveDmThread}
+                  handleDeleteDmThread={handleDeleteDmThread}
+                  collectUnreadThreadItemEventIds={collectUnreadThreadItemEventIds}
+                  onMarkMessagesRead={onMarkMessagesRead}
+                />
               )}
               {dmView === "thread" && activeThread && (
                 <div className="wallet-messages__thread-view">
@@ -5870,45 +5644,19 @@ export default function CashuWalletModal({
           </div>
 
           {showWalletTabSwitcher && (
-            <div className="wallet-tab-switcher">
-              <div className="wallet-tab-switcher__pill">
-                <button
-                  className={`wallet-tab-switcher__btn pressable${walletTab === "wallet" ? " wallet-tab-switcher__btn--active" : ""}`}
-                  onClick={() => setWalletTab("wallet")}
-                >
-                  <div className="wallet-tab-switcher__icon">
-                    <WalletGlyphIcon className="wallet-tab-switcher__icon-svg" />
-                  </div>
-                  <div className="wallet-tab-switcher__label">Wallet</div>
-                </button>
-                <button
-                  className={`wallet-tab-switcher__btn pressable${walletTab === "messages" ? " wallet-tab-switcher__btn--active" : ""}`}
-                  onClick={() => {
-                    setWalletTab("messages");
-                    setDmView("list");
-                  }}
-                >
-                  <div className="wallet-tab-switcher__icon">
-                    <ChatBubbleIcon className="wallet-tab-switcher__icon-svg" />
-                  </div>
-                  <div className="wallet-tab-switcher__label">
-                    Messages{mainUnreadCount > 0 ? ` (${mainUnreadCount})` : ""}
-                  </div>
-                </button>
-                <button
-                  className={`wallet-tab-switcher__btn pressable${walletTab === "contacts" ? " wallet-tab-switcher__btn--active" : ""}`}
-                  onClick={() => {
-                    setWalletTab("contacts");
-                    setContactsTabOpen(true);
-                  }}
-                >
-                  <div className="wallet-tab-switcher__icon">
-                    <PersonIcon className="wallet-tab-switcher__icon-svg" />
-                  </div>
-                  <div className="wallet-tab-switcher__label">Contacts</div>
-                </button>
-              </div>
-            </div>
+            <WalletTabSwitcher
+              activeTab={walletTab}
+              unreadMessages={mainUnreadCount}
+              onSelectWallet={() => setWalletTab("wallet")}
+              onSelectMessages={() => {
+                setWalletTab("messages");
+                setDmView("list");
+              }}
+              onSelectContacts={() => {
+                setWalletTab("contacts");
+                setContactsTabOpen(true);
+              }}
+            />
           )}
         </>
       )}
@@ -9070,7 +8818,7 @@ export default function CashuWalletModal({
       >
         {contactsContext && (
           <div className="wallet-section space-y-3 text-sm">
-            {contactsPanelContent(contactsContext)}
+            <WalletContactsListPanel context={contactsContext} activeContext={contactsContext} contacts={visibleContacts} contactSubtitle={contactSubtitle} isNip05VerifiedForRef={isNip05VerifiedForRef} onSelectContact={handleSelectContact} normalizeNip05={normalizeNip05} initialsFor={contactInitials} truncateContactName={truncateContactName} />
           </div>
         )}
       </ActionSheet>

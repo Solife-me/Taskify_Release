@@ -56,8 +56,7 @@ export class NostrSession {
         relayInfoCache: relayInfoCacheAdapter,
         relayHealth: relayHealthAdapter,
         createAuthManager: (ndk) => new RelayAuthManager(ndk),
-        createWalletClient: ({ ndk, publisher, subscriptions, resolveRelaySet }) =>
-          new WalletNostrClient(ndk, publisher, subscriptions, resolveRelaySet),
+        createWalletClient: ({ publisher, subscriptions }) => new WalletNostrClient(publisher, subscriptions),
         outboxStore: nostrOutboxStore,
         isDev: Boolean((import.meta as any)?.env?.DEV),
       });

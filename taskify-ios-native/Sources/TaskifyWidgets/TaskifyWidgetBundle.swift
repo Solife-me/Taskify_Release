@@ -503,7 +503,9 @@ struct NextTaskWidgetView: View {
             }
         case .accessoryInline:
             if let next = entry.data.nextTask {
+                // Hidden while the iPhone is locked, as the Watch widgets do.
                 Label(next.title, systemImage: "checklist")
+                    .privacySensitive()
             } else {
                 Label("All clear", systemImage: "checkmark.circle")
             }
@@ -518,6 +520,7 @@ struct NextTaskWidgetView: View {
 /// because Lock Screen accessories route their single tap through the widget URL.
 private struct LockScreenTaskList: View {
     let tasks: [TaskifyWidgetTask]
+    @Environment(\.redactionReasons) private var redactionReasons
 
     private var visibleTasks: [TaskifyWidgetTask] { Array(tasks.prefix(2)) }
     private var hiddenCount: Int { max(0, tasks.count - visibleTasks.count) }
@@ -552,10 +555,12 @@ private struct LockScreenTaskList: View {
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .frame(width: 11)
+                        // Hidden while the iPhone is locked, as the Watch widgets do.
                         Text(task.title)
                             .font(.caption2.weight(.semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.78)
+                            .privacySensitive()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -569,6 +574,10 @@ private struct LockScreenTaskList: View {
     private var accessibilitySummary: String {
         guard !tasks.isEmpty else { return "No Taskify tasks due today" }
         let count = tasks.count
+        // VoiceOver must not read the titles the locked screen hides.
+        guard !redactionReasons.contains(.privacy) else {
+            return "\(count) Taskify \(count == 1 ? "task" : "tasks") due today"
+        }
         let titles = visibleTasks.map(\.title).joined(separator: ", ")
         return "\(count) Taskify \(count == 1 ? "task" : "tasks") due today: \(titles)"
     }

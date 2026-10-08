@@ -74,7 +74,7 @@ Use this table before changing handler logic so caller contracts stay aligned.
 | `POST /api/voice/extract` | signed request; `{ npub, transcript, candidates?, sessionDurationSeconds }` | `{ operations: TaskOperation[] }` where tasks carry `title/dueText/reminderText/notes/recurrenceText/subtasks`; `429` quota body may still include rule-based operations | PWA dictation, phone app, watch app (independent) | `worker/src/voice.ts` (`handleVoiceExtract`) |
 | `POST /api/voice/finalize` | signed request; `{ npub, candidates, boardId?, boards?[{id,name,kind,columns}], referenceDate, referenceTimeZone, referenceOffsetMinutes }` | `{ tasks: FinalTask[] }` with `title/dueISO/boardId/columnId/notes/subtasks/priority/reminderMinutesBeforeDue[]/reminderTime/recurrence`; model-chosen boards/columns are validated against the supplied `boards` list | PWA dictation, phone app, watch app (independent) | `worker/src/voice.ts` (`handleVoiceFinalize`) |
 
-Voice model attempts have a 10-second timeout covering response headers and body. Up to three Gemini attempts and one Cloudflare fallback fit within the native voice clients’ 60-second request timeout. The iPhone retains failed transcripts and exposes an explicit retry without adding waiting time to the reported recording duration.
+Voice requests go only to Cloudflare Workers AI, through its REST API with the `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` secrets. Two models are tried in order: `@cf/google/gemma-4-26b-a4b-it`, then `@cf/meta/llama-3.3-70b-instruct-fp8-fast` in JSON Mode. Each attempt has a 20-second timeout covering response headers and body, so both fit within the native voice clients’ 60-second request timeout. Both models were chosen because they run on the Workers Free plan; models that need a paid billing method (the GLM 5.x, Kimi, and DeepSeek v4 families) fail there. The iPhone retains failed transcripts and exposes an explicit retry without adding waiting time to the reported recording duration.
 
 Relative voice dates use the reference instant converted to the supplied IANA time zone. The prompt supplies explicit local dates for today and tomorrow, and finalization anchors these relative dates deterministically. Unqualified daytime appointment ranges such as “from 1–2” start at 1 PM; explicit AM/morning wording remains authoritative. Native clients decode `YYYY-MM-DD` as a local calendar day.
 
@@ -83,7 +83,8 @@ Relative voice dates use the reference instant converted to the supplied IANA ti
 The Watch bridge is transport, not a custody or decryption service:
 
 - The Apple Watch constructs, AES-GCM encrypts, and Schnorr-signs task events locally.
-- HTTPS requests are authenticated with a short-lived Schnorr signature over the exact body.
+- HTTPS requests are authenticated with a short-lived Schnorr signature over the method, host,
+  route, and exact body (see Request signatures below).
 - The Worker validates authentication and event signatures, restricts relay destinations to a
   bounded list of public `wss` endpoints, and narrows reads to kind 30301 plus explicit authors.
 - The Worker receives the account public key, relay URLs, outer Nostr tags/IDs/timestamps, and
@@ -119,36 +120,35 @@ Reference: `worker/src/index.ts:174–233`, plus migration baseline `worker/migr
 
 ### 5.1 Save/update reminders
 
-`PUT /api/reminders` (`handleSaveReminders`) validates payload and performs full replacement for device state.
+`PUT /api/reminders` (`handleSaveReminders`) takes the device's whole schedule and stores it, writing only the difference from what is already stored.
+
+Stored per device: at most 500 reminders (the soonest are kept), at most 8 offsets per task, titles cut to 200 characters, task and board IDs of at most 128 characters, integer offsets within a year. A repeated offset is stored once rather than failing the save.
 
 High-level flow:
-1. Parse `{ deviceId, reminders[] }`
+1. Parse `{ deviceId, subscriptionId, reminders[] }` and verify the device's capability
 2. Validate reminder item shape inline (`taskId`, `title`, `dueISO`, `minutesBefore[]`) and compute `sendAt`
-3. Resolve/verify device record
-4. Replace existing device reminder rows in D1
-5. Clear existing pending rows for the device to avoid stale deliveries
+3. Refuse with `429` if the day's reminder budget is already spent (below)
+4. Read the stored rows and compare: unchanged reminders are skipped, so re-sending the same schedule (the PWA does on every load) writes nothing
+5. Charge the number of changes to the budget, then delete removed reminders and upsert new or changed ones: two statements, however many reminders change (each statement takes a JSON array through `json_each`)
+
+**Daily write budget.** On the free plan D1 allows 100,000 rows written per day for everything the Worker stores, and each reminder costs about ten over its life (index entries, the cron's move to `pending_notifications`, the poll's removal). Reminder changes — a reminder added, changed, or removed, or a device row written by registration — are therefore counted in `write_budget`: at most 1,500 a day per address (IPv6 grouped by /64; the address is stored only as a day-salted hash) and 6,000 a day for the whole service. The address is charged first. Past either, saves and registrations that would change something get `429` with `Retry-After` set to the next UTC midnight; an unchanged registration still answers `200`. Counters are pruned after a week.
 
 Reference:
-- `handleSaveReminders`: `worker/src/index.ts:2335+`
+- `handleSaveReminders`, `reserveReminderBudget`: `worker/src/reminders.ts`
 
 ### 5.2 Cron dispatch
 
 `scheduled()` runs once per minute and calls `processDueReminders()`.
 
-`processDueReminders` behavior:
-1. Query due rows from `reminders` where `send_at <= now` in batches
-2. Delete processed reminder rows
-3. Group by device
-4. Insert mapped reminder payload rows into `pending_notifications` (`appendPending`)
-5. Resolve device subscription (D1 first, KV migration fallback)
-6. Send lightweight Web Push ping (`sendPushPing`) so SW wakes and polls
-7. If push endpoint expired (410), remove device state
+`processDueReminders` behavior, once per tick:
+1. Read the 400 oldest due rows (`send_at <= now`)
+2. Take rows oldest first, at most 5 per device and at most 45 devices: the free plan allows 50 outbound requests per invocation, and a push past that fails. One device's backlog therefore cannot hold back everyone else's; whatever is left waits for the next minute
+3. Load those devices in one query (`getDeviceRecords`; KV migration fallback for IDs missing from D1)
+4. In one transaction: insert the delivered rows into `pending_notifications` and delete the taken rows (rows whose device is gone are just deleted)
+5. Send one lightweight Web Push ping per device (`sendPushPing`) so the service worker wakes and polls
+6. If the push endpoint has expired (404/410), remove the device's state
 
-References:
-- `scheduled`: `worker/src/index.ts:317–335`
-- `processDueReminders`: `worker/src/index.ts:2443+`
-- `appendPending`: `worker/src/index.ts:2507+`
-- `sendPushPing`: `worker/src/index.ts:2779+`
+References: `scheduled` in `worker/src/index.ts`; `processDueReminders`, `getDeviceRecords`, `sendPushPing` in `worker/src/reminders.ts`.
 
 ### 5.3 Client poll + drain
 
@@ -171,7 +171,9 @@ References:
 
 `handleRegisterDevice` upserts device subscription into D1, tracks endpoint hash, and supports endpoint collision handling/migration.
 
-Reference: `worker/src/index.ts:608+`.
+The endpoint must be an `https` URL, with no credentials or port, on a browser push service: `fcm.googleapis.com`, `updates.push.services.mozilla.com` (or `*.push.services.mozilla.com`), `web.push.apple.com` (or `*.push.apple.com`), or `*.notify.windows.com`. Anything else gets `400`, because the cron sends a signed POST to whatever endpoint is stored. `deviceId` is at most 128 characters and each subscription key at most 256. Registration, deletion, and reminder saves share `PUSH_RATE_LIMITER` (30 per minute per address, IPv6 grouped by /64), and their bodies are capped at 256 KiB (`413` above that). A registration that changes nothing is not written; one that does counts one change against the daily write budget (section 5.1).
+
+Reference: `handleRegisterDevice` in `worker/src/reminders.ts`.
 
 ### Delete (`DELETE /api/devices/:deviceId`)
 
@@ -290,9 +292,9 @@ Use this when changing validation/handler behavior so clients and service worker
 
 | Route | Success | Caller-visible error statuses in current implementation | Notes / code anchors |
 |---|---|---|---|
-| `PUT /api/devices` | `200` JSON `{ subscriptionId, deviceId }` | `400` (`deviceId`/`platform`/`subscription` validation), `500` (router-level catch) | Validation in `handleRegisterDevice` (`worker/src/index.ts:608–622`) |
+| `PUT /api/devices` | `200` JSON `{ subscriptionId, deviceId }` | `400` (`deviceId`/`platform`/`subscription`/endpoint validation), `413` (body over 256 KiB), `429` (rate limit), `500` (router-level catch, generic `{"error":"Internal error"}`) | Validation in `handleRegisterDevice` (`worker/src/index.ts:608–622`) |
 | `DELETE /api/devices/:deviceId` | `204` empty body | `500` (unexpected DB/runtime error via router catch) | Delete is idempotent in practice; missing rows still return `204` (`worker/src/index.ts:2305–2333`) |
-| `PUT /api/reminders` | `204` empty body | `400` (`deviceId` missing, `reminders` not array), `404` (unknown device), `500` (router catch) | Existing reminders are replaced, then pending queue is cleared (`worker/src/index.ts:2335–2401`) |
+| `PUT /api/reminders` | `204` empty body | `400` (`deviceId` missing, `reminders` not array), `404` (unknown device), `429` (rate limit or daily write budget), `500` (router catch) | Stored reminders are brought in line with the request, writing only what changed (`worker/src/reminders.ts`) |
 | `POST /api/reminders/poll` | `200` JSON (`[]` or `PendingReminder[]`), or `204` for acknowledgement-only | `400` (invalid acknowledgement list), `404` (unknown/unauthorized device), `500` (router catch) | Rows remain durable until explicitly acknowledged after display (`worker/src/reminders.ts`) |
 
 Implementation detail worth preserving:
@@ -304,25 +306,18 @@ Implementation detail worth preserving:
 This section is a precise "what runs in what order" map for the cron-to-device path.
 Use it when changing idempotency or debugging duplicate/missed notifications.
 
-### 12.1 `processDueReminders` batch loop contract
+### 12.1 `processDueReminders` tick contract
 
-Anchor: `worker/src/index.ts:2443–2504`
+Anchor: `processDueReminders` in `worker/src/reminders.ts`
 
-Per iteration:
-1. **Select due rows** (`send_at <= now`, ordered, capped by `LIMIT 256`).
-   - SQL anchor: `:2451–2457`
-2. **Delete selected reminder rows immediately** (device_id + reminder_key pairs).
-   - SQL anchor: `:2466–2471`
-3. **Group reminders by device** in-memory.
-   - Grouping anchor: `:2473–2481`
-4. For each device:
-   - Load device record (`getDeviceRecord`).
-   - If missing device: clear pending rows for that device and skip push.
-     - Missing-device cleanup anchor: `:2484–2487`
-   - Else append pending rows (`appendPending`) and push ping.
-     - append + ping anchor: `:2496–2499`
+Per tick:
+1. **Select due rows**: the 400 oldest with `send_at <= now`, with their `rowid`.
+2. **Choose fairly**: oldest first, at most 5 rows per device and 45 devices.
+3. **Load devices** for the chosen rows in one query.
+4. **Move in one transaction**: insert pending rows for devices that exist, then delete every chosen row by `rowid`. If the insert fails, nothing is deleted.
+5. **Ping** each device that exists, at most 45 a tick.
 
-Important behavior: reminder rows are removed **before** push ping, so queue durability relies on `pending_notifications`, not `reminders`.
+Important behavior: reminder rows are removed **before** the push ping, so queue durability relies on `pending_notifications`, not `reminders`.
 
 ### 12.2 Queue append/poll drain semantics
 
@@ -465,9 +460,13 @@ Request contract to push endpoint:
   - `Crypto-Key: p256ecdsa=<VAPID_PUBLIC_KEY>`
 
 Error handling semantics:
+- stored endpoint not on the push-service allowlist (rows written before the check existed) => delete the device without contacting it.
+- the request is sent with `redirect: "manual"`; a redirect counts as a failure.
 - `404`/`410` => treat subscription as expired and call `handleDeleteDevice(deviceId, env)`.
-- other non-2xx => log warning, keep device.
-- transport/runtime exceptions => catch + log, do not throw to caller.
+- other non-2xx => log the status only, keep device.
+- transport/runtime exceptions => catch + log the error type, do not throw to caller.
+
+The cron handles at most four batches of 50 due reminders per tick; the rest wait for the next minute.
 
 ### 16.3 VAPID JWT contract (`createVapidJWT`)
 
@@ -615,8 +614,13 @@ Core flow:
 1. Fetch target with browser-like headers (`buildBrowserHeaders`) and manually validate each redirect.
 2. Abort the fetch after `PREVIEW_TIMEOUT_MS` via `AbortController`.
 3. Read body through `readResponseBodyLimited(...)` (bounded body read).
-4. Attempt rich extraction via `derivePreviewFromHtml(...)`.
+4. Attempt rich extraction via `derivePreviewFromHtml(...)`. The `link-preview-js` parser
+   builds a full DOM, so it gets only the document head (`documentHead`, at most 64,000
+   characters); the free plan allows 10 ms of CPU and a 600 kB page took about 150 ms. The
+   streaming `HTMLRewriter` collector still reads the whole bounded body.
 5. If incomplete/blocked, attempt alternate resolver path (`attemptAlternatePreview(...)`).
+   The YouTube, Amazon, and Etsy fallbacks run only for those sites' own hosts
+   (`isYouTubeHost`, `isAmazonHost`, `isEtsyHost`), so one hostname cannot trigger all three.
 6. If still unresolved, return deterministic fallback preview (`buildFallbackPreview(...)`).
 
 Behavioral invariants:
@@ -639,7 +643,11 @@ Lookup sequence:
 1. Try Cloudflare cache hit (`caches.default`) keyed by normalized address.
 2. If cache stale/miss, fetch `https://<domain>/.well-known/nostr.json?name=<name>`.
 3. Then fetch `https://<domain>/.well-known/nostr.json`.
-4. Return the first successful JSON record and cache it with timestamp headers.
+4. Return the first successful JSON record and cache it with timestamp headers; the cache
+   write is kept alive with the request's `waitUntil`.
+
+Each upstream fetch has a 5-second timeout and reads at most 256 KiB; a larger response
+counts as a failed attempt.
 
 Status semantics:
 - `400` for invalid address format.
@@ -751,25 +759,24 @@ If you change registration identity behavior, re-verify:
 
 ## 21) CORS + request trust boundary contract (agent verification chunk)
 
-The Worker currently exposes a public cross-origin API surface with no auth/session layer in this file.
-That is intentional for push-reminder device flows, but it is a high-impact contract that should not be changed accidentally.
+The API is same-origin only. Changed deliberately on 2026-09-30 (audit finding F1A-14):
+before then every response carried `Access-Control-Allow-Origin: *`, which let any website
+use `/api/preview` and `/api/nip05` as its own proxy, with each of its visitors getting a
+separate rate-limit allowance.
 
-### 21.1 CORS behavior is globally permissive
+### 21.1 No CORS grant
 
-Current response behavior:
-- JSON helper responses include `Access-Control-Allow-Origin: *` via `JSON_HEADERS`.
-- `OPTIONS` preflight returns `204` with:
-  - `Access-Control-Allow-Origin: *`
-  - `Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS`
-  - `Access-Control-Allow-Headers: Content-Type,Authorization`
-  - `Access-Control-Max-Age: 86400`
+- `JSON_HEADERS` (`worker/src/lib.ts`) sets no `Access-Control-Allow-Origin`.
+- `OPTIONS` returns `204` with no CORS headers, so a cross-origin preflight fails.
 
-Anchors:
-- `worker/src/index.ts:147–150` (`JSON_HEADERS`)
-- `worker/src/index.ts:261–270` (`OPTIONS` preflight branch)
-- `worker/src/index.ts:2922–2926` (`jsonResponse`)
-
-Operational implication: browser clients can call API endpoints cross-origin without credential coupling in this layer.
+Who this affects:
+- The PWA is served by this Worker and calls the origin it was loaded from: `/api/config`
+  returns `workerBaseUrl: url.origin`, so `taskify.solife.me`, `taskify-v2.solife.me`, and
+  the preview aliases each call themselves.
+- The native apps, the Watch, the notification extension, and the CLI are not browsers;
+  CORS does not apply to them.
+- A browser client on another origin (none exists today) would need an explicit allow-list
+  here.
 
 ### 21.2 Request identity is payload-driven, not authenticated
 
@@ -803,7 +810,7 @@ Why this matters:
 ### Safe-edit guardrails
 
 If modifying API security/CORS behavior, preserve or intentionally migrate with rollout notes:
-- explicit CORS preflight handling for browser clients,
+- same-origin only unless a cross-origin browser client is added deliberately (21.1),
 - stable handler-level validation error shapes/statuses,
 - clear compatibility plan before introducing auth requirements on existing device/reminder routes.
 
@@ -872,6 +879,27 @@ If modifying backup handlers, re-verify:
 - load path continues to be resilient to unreadable/corrupt objects with explicit 4xx/5xx responses,
 - `lastReadAt` behavior remains intentional (kept in storage, excluded from response unless consciously changed with client coordination).
 
+### Request signatures
+
+Voice and Watch bridge requests carry `X-Taskify-Npub`, `X-Taskify-Timestamp`, and
+`X-Taskify-Sig`, a BIP-340 Schnorr signature by the account key (`verifyTaskifyAuth` in
+`worker/src/nostr-auth.ts`).
+
+- **Version 2** (`X-Taskify-Auth: v2`, sent by the PWA, iOS, Mac, and Watch since 2026-10-01)
+  signs SHA-256 of six lines: `taskify-request-v2`, the method, the host, the path with its
+  query, the Unix timestamp, and the body's SHA-256 in hex (`taskifyAuthV2Message`). It is valid
+  for 60 seconds either side. Voice and `/api/watch/nostr/publish` record each signature in
+  `request_signatures` (migration `0006`) until it expires, so a captured request is refused the
+  second time; `/api/watch/nostr/query` is read-only and frequent, so it is bound to its route
+  and time but not recorded. The hourly prune deletes expired rows.
+- **Version 1** signs SHA-256 of `timestamp + "." + body`, is valid for 300 seconds, and is bound
+  to nothing else. It is accepted only for clients released before version 2. Set the Worker
+  variable `TASKIFY_AUTH_V1 = "off"` once those are gone.
+
+The four signers (`worker/src/nostr-auth.ts`, `taskify-pwa/src/lib/taskifyRequestAuth.ts`,
+`NostrIdentity.taskifyRequestHeaders`, `TaskifyWatchNostrCrypto.requestAuthentication`) are
+tested against the same message and hash vector.
+
 ### Voice abuse controls
 
 Both `/api/voice/extract` and `/api/voice/finalize` require existing signed
@@ -892,9 +920,14 @@ Daily slots use conditional D1 UPSERTs with RETURNING in the existing
 `voice_quota` table, reserved before provider work. Concurrent requests cannot
 exceed each counter. Failures and replays consume slots. Reservations across the
 three counters are deliberately conservative: a later rejection does not refund
-an earlier reservation. Each workflow can make at most four bounded provider
-attempts (three Gemini models and one GLM fallback). The global ceiling therefore
-bounds workflows, not exact dollars or tokens. UTC midnight resets the counters.
+an earlier reservation. Each workflow can make at most two bounded model
+attempts. The global ceiling therefore bounds workflows, not tokens. On the
+Workers Free plan the binding limit is Workers AI's allocation of 10,000 Neurons
+per day for the whole account: a typical request costs about 14 Neurons on the
+first model (roughly 700 requests a day), a request that fills the 2,048-token
+output about 80, and one that falls through to the second model several times
+more. When the allocation is spent the models return errors and both routes
+answer 503 `voice_unavailable` until 00:00 UTC. UTC midnight resets the counters.
 IP keys are hashed with the date; account counters retain their existing keys.
 Missing IP headers share an `unknown` bucket; forwarded client IP headers are
 ignored. This assumes direct Cloudflare ingress supplying `CF-Connecting-IP`.
@@ -902,7 +935,7 @@ ignored. This assumes direct Cloudflare ingress supplying `CF-Connecting-IP`.
 Requests are capped at 32 KiB before body hashing/signature verification, require
 JSON, reject unknown top-level fields, and bound nested strings and lists. Models,
 provider URLs, token ceilings, and system instructions remain server-controlled.
-Both providers receive task-only system instructions. Extraction only projects
+Each model receives task-only system instructions. Extraction only projects
 known task fields; arbitrary model `operations` are no longer passed through.
 Finalization preserves input notes rather than accepting generated notes.
 
@@ -920,6 +953,47 @@ active until deployed. Clients must handle 429 as temporary quota exhaustion.
 
 Cloudflare's [rate limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
 is local to a Cloudflare location and eventually consistent; it is a burst guard.
-D1 reservations provide the strict daily limits. Gemini's
-[system instruction API](https://ai.google.dev/api/generate-content) supplies the
-separate task-only system instruction.
+D1 reservations provide the strict daily limits. Workers AI
+[does not use request content](https://developers.cloudflare.com/workers-ai/platform/privacy/)
+to train models or improve services.
+
+## Router error responses
+
+Malformed percent-encoding in a path answers `400`. Any other unexpected error answers `500`
+with the fixed body `{"error":"Internal error"}`; the detail goes to the Worker log only.
+
+## Static asset headers
+
+Cloudflare serves requests that match a static asset without running the Worker, so the
+headers on real asset responses come from `taskify-pwa/public/_headers`: `nosniff`,
+`Referrer-Policy: same-origin`, `Permissions-Policy: camera=(self), microphone=(self),
+geolocation=()` (the scanners and dictation need the first two), a
+`Content-Security-Policy`, `X-Frame-Options: DENY`, and HSTS for one year.
+`ASSET_SECURITY_HEADERS` in `worker/src/index.ts` carries the same set for responses the
+Worker builds itself, and a Worker test fails if the two policies differ.
+
+The policy allows script only from the origin (`script-src 'self'`, no `'unsafe-eval'` or
+inline script), because the page holds the Nostr key, the wallet, and the device key that
+decrypts them. `connect-src` (`https: wss: data: blob:`), `img-src`, and `media-src` stay
+open because relays, mints, file hosts, and pictures are user-chosen. `form-action 'self'`,
+`frame-src 'none'`, `object-src 'none'`, `base-uri 'self'`, and `frame-ancestors 'none'`
+close the rest. Two parts of the PWA exist to fit it: NDK's emitter `tseep` compiles
+handlers with `eval`, so `vite.config.ts` aliases it to `src/lib/eventEmitterShim.ts`; and
+the wallet debug console (`eruda`) is a pinned dependency loaded from the origin by dynamic
+import, whose command line cannot run JavaScript under this policy. A new library that needs
+`eval`, an inline script, or a third-party script will be blocked; check a production build
+with the policy before relying on one.
+
+## Retention
+
+Once an hour (minute 17 of the cron), the Worker deletes `voice_quota` rows older than seven
+days and `pending_notifications` rows a device has not fetched within fourteen days
+(`pruneStaleRows` in `worker/src/index.ts`).
+
+## Watch bridge relay targets
+
+Relay targets must be `wss` URLs that pass the same public-host check as the preview and
+NIP-05 fetchers (`assertPublicHttpUrl`): no localhost, `.local` or `.internal` names, and no
+private, link-local, IPv4-mapped, NAT64, or 6to4 addresses (IPv6 literals are expanded before
+the check). A query stops reading a relay once it has the filter's limit of events, and frames
+over 256 KiB are ignored unread.

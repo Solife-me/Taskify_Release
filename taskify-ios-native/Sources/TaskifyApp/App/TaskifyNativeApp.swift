@@ -127,5 +127,6 @@ struct TaskifyNativeApp: App {
                     TaskifyWatchBridge.shared.scheduleSnapshot(from: model)
                 }
         }
+        .commands { TaskifyKeyboardCommands() }
     }
 }

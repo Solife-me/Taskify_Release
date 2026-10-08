@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { readSecret } from "../shared/readSecret.js";
 import type { Command } from "commander";
 import { generateSecretKey,getPublicKey,nip19 } from "nostr-tools";
 import { createInterface } from "readline";
@@ -71,7 +72,7 @@ export function registerProfileCommands(program: Command): void {
   profileCmd
     .command("add <name>")
     .description("Add a new profile (runs mini onboarding for the new identity)")
-    .option("--nsec <key>", "Nostr private key (skips interactive prompt)")
+    .option("--nsec <key>", "Nostr private key, or - to read it from standard input (skips interactive prompt)")
     .option("--relay <url>", "Add a relay (repeatable)", (val: string, acc: string[]) => { acc.push(val); return acc; }, [] as string[])
     .action(async (name: string, opts: { nsec?: string; relay: string[] }) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
@@ -82,7 +83,7 @@ export function registerProfileCommands(program: Command): void {
 
       // Non-interactive mode when --nsec is provided
       if (opts.nsec !== undefined) {
-        const nsecInput = opts.nsec.trim();
+        const nsecInput = await readSecret(opts.nsec, "nsec: ");
         if (!nsecInput.startsWith("nsec1")) {
           console.error(chalk.red("Invalid nsec key"));
           process.exit(1);

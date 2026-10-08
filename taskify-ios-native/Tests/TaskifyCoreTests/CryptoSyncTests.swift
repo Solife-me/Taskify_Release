@@ -53,7 +53,8 @@ final class CryptoSyncTests: XCTestCase {
         let persisted = await NostrOutboxStore(fileURL: file).allEntries()
         XCTAssertEqual(Set(persisted.map(\.event.id)), Set(requests.map(\.event.id)))
         XCTAssertEqual(persisted.count, 102)
-        XCTAssertTrue(persisted.allSatisfy { $0.pendingRelayURLs == ["wss://batch.example"] })
+        XCTAssertTrue(persisted.allSatisfy { $0.pendingRelayURLs == ["wss://batch.example", TaskifyRelayDefaults.taskifyRelayURL] },
+                      "The board's relays plus Taskify's, where every board syncs")
         await engine.stop()
     }
 

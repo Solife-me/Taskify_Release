@@ -4,6 +4,17 @@ A verified, prioritized punch-list of fixes/refactors to bring Taskify closer to
 
 Compiled from two independent audits (Claude Code + Codex). Every item below was verified against the actual code — file paths and line numbers reference the current `Taskify-V2` branch (commit `9147543` at the time of writing). Items are ordered **most critical → least critical**, and within each tier, **easiest first** so quick wins land before larger refactors.
 
+## Status — October 2, 2026
+
+Reconciled during the [full-stack audit](../audits/full-stack-audit-report-2026-10-02.md#reliability-todo-reconciled):
+
+- **Done:** items 1–10 and 12. Item 3 was extended to history fetches and CLI reads; item 5
+  was hardened; item 7 was extended to the wallet seed, NWC strings, and P2PK keys.
+- **Partly done:** item 9 — the DM cache is still one stored value. Item 11 — remaining are
+  contacts, board columns, and DM threads; the wallet bounties list is superseded, because
+  bounties are deprecated.
+- **Still deferred:** conflict resolution.
+
 ---
 
 ## Tier 1 — Critical for "reliable + offline-first + secure"

@@ -4,8 +4,6 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import { PublishCoordinator, type PublishResult } from "./PublishCoordinator";
 import { SubscriptionManager, type ManagedSubscription } from "./SubscriptionManager";
 
-type RelayResolver = (relayUrls?: string[]) => Promise<unknown>;
-
 type SubscribeHandlers = {
   onEvent?: (event: NostrEvent) => void;
   onEose?: (relay?: string) => void;
@@ -13,21 +11,14 @@ type SubscribeHandlers = {
 };
 
 export class WalletNostrClient {
-  private readonly ndk: any;
   private readonly publisher: PublishCoordinator;
   private readonly subscriptions: SubscriptionManager;
-  private readonly resolveRelaySet: RelayResolver;
 
-  constructor(
-    ndk: any,
-    publisher: PublishCoordinator,
-    subscriptions: SubscriptionManager,
-    resolveRelaySet: RelayResolver,
-  ) {
-    this.ndk = ndk;
+  // Reads go through `RuntimeNostrSession.fetchEvents`, which verifies signatures; this client
+  // only publishes and subscribes.
+  constructor(publisher: PublishCoordinator, subscriptions: SubscriptionManager) {
     this.publisher = publisher;
     this.subscriptions = subscriptions;
-    this.resolveRelaySet = resolveRelaySet;
   }
 
   async publishWalletState(event: EventTemplate, relays: string[], opts: { signer?: Uint8Array | string } = {}): Promise<PublishResult> {
@@ -52,14 +43,6 @@ export class WalletNostrClient {
       replaceableKey: opts.replaceableKey || this.buildReplaceableKey(event, opts.signer),
       returnEvent: opts.returnEvent,
     });
-  }
-
-  async fetchEvents(filters: NDKFilter[], relays: string[]): Promise<NostrEvent[]> {
-    const relaySet = await this.resolveRelaySet(relays);
-    const fetched = await this.ndk.fetchEvents(filters, { closeOnEose: true }, relaySet);
-    return Array.from(fetched as Iterable<any>)
-      .map((ev) => ev.rawEvent?.() ?? (ev as NostrEvent))
-      .filter((ev): ev is NostrEvent => !!ev?.id);
   }
 
   async subscribe(filters: NDKFilter[], relays: string[], handlers: SubscribeHandlers): Promise<ManagedSubscription> {

@@ -73,6 +73,19 @@ public enum TaskifyNotificationContract {
         }
     }
 
+    /// Keys that make a notification actionable: a task to complete, a conversation to reply to,
+    /// or a tab to open. A push delivered without a decrypted preview must not carry them; only
+    /// this app's own processing may set them.
+    public static let actionKeys: [String] = [
+        taskIDKey, boardIDKey, destinationKey, conversationIDKey, conversationKindKey,
+    ]
+
+    public static func removingActionKeys(from userInfo: [AnyHashable: Any]) -> [AnyHashable: Any] {
+        var cleaned = userInfo
+        for key in actionKeys { cleaned.removeValue(forKey: key) }
+        return cleaned
+    }
+
     public static func destination(userInfo: [String: String]) -> Destination? {
         guard let value = userInfo[destinationKey]?
             .trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }

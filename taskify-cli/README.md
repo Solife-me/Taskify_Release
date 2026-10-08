@@ -27,9 +27,9 @@ taskify --help
 Use the same Nostr identity as the Taskify iOS/PWA account whose boards should be available:
 
 ```bash
-taskify config set nsec nsec1...
-# Or provide the key without storing it:
-export TASKIFY_NSEC=nsec1...
+taskify config set nsec          # prompts without echoing; or pipe it in with: ... | taskify config set nsec -
+# Or provide the key without storing it (read -s keeps it out of shell history):
+read -rs TASKIFY_NSEC && export TASKIFY_NSEC
 ```
 
 Then discover the account catalog and verify connectivity:

@@ -16,3 +16,20 @@ export function relaysOrDefaults(...lists: Array<readonly (string | null | undef
   ));
   return relays.length ? relays : Array.from(DEFAULT_NOSTR_RELAYS);
 }
+
+/** Taskify's own relay, which every board also syncs on (see `boardSyncRelays`). */
+export const TASKIFY_SYNC_RELAY = "wss://relay.solife.me";
+
+/**
+ * A board's relays plus Taskify's own. Each device keeps its own relay list for a board (board
+ * events don't carry one), so devices drift apart until they share no relay that still answers,
+ * and changes stop crossing between them. Every client also reads and writes every board on
+ * Taskify's relay, so there is always one they share. The native clients do the same
+ * (`Board.syncRelayURLs`).
+ */
+export function boardSyncRelays(relays: readonly string[]): string[] {
+  const normalize = (relay: string) => relay.trim().toLowerCase().replace(/\/+$/, "");
+  return relays.some((relay) => normalize(relay) === TASKIFY_SYNC_RELAY)
+    ? [...relays]
+    : [...relays, TASKIFY_SYNC_RELAY];
+}

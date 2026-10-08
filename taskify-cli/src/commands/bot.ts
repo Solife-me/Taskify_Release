@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { sanitizeRemote } from "../shared/displaySafe.js";
 import chalk from "chalk";
 import { readFile } from "fs/promises";
 import { nip19, getPublicKey } from "nostr-tools";
@@ -107,7 +108,10 @@ export function registerBotCommands(program: Command) {
       const inboxRelays = await fetchInboxRelays(peerHex, config.relays);
       const relays = Array.from(new Set([...config.relays, ...inboxRelays]));
       console.error(chalk.dim("  Fetching bot commands from relays..."));
-      const { event, commands } = await fetchBotCommands(peerHex, relays);
+      const fetched = await fetchBotCommands(peerHex, relays);
+      const event = fetched.event;
+      // The bot writes these names and descriptions; they are shown in the terminal.
+      const commands = sanitizeRemote(fetched.commands);
 
       if (!event) {
         if (opts.json) {

@@ -7,6 +7,7 @@ import test from 'node:test'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools'
 
 import { createTaskifyPushServer } from '../src/server.js'
+import { RemoteRelayError } from '../src/relay-forwarder.js'
 import { RelayStore } from '../src/store.js'
 
 const taskBoardTag = createHash('sha256').update('private-board-id').digest('hex')
@@ -244,6 +245,8 @@ test('Watch gateway forwards only to Watch-supplied targets and directly ingests
   const { store, address } = await fixture(t, relayForwarder)
   const accountKey = generateSecretKey()
   const recipient = getPublicKey(generateSecretKey())
+  // The relay stores wraps only for accounts that have an inbox here.
+  await store.putRegistration(recipient, 'phone', { deviceToken: '21'.repeat(32), environment: 'production' })
   const event = giftWrap(recipient)
 
   const response = await post(address, '/v1/watch/outbox/submit', {
@@ -273,6 +276,7 @@ test('fast Watch submit acknowledges local storage before slow replicas and stil
     },
   })
   const recipient = getPublicKey(generateSecretKey())
+  await store.putRegistration(recipient, 'phone', { deviceToken: '22'.repeat(32), environment: 'production' })
   const event = giftWrap(recipient)
   const remotes = Array.from({ length: 5 }, (_, index) => `wss://slow-${index}.example`)
   const responsePromise = post(address, '/v1/watch/outbox/submit', {
@@ -594,4 +598,87 @@ test('Watch forwarding to public relays is limited per account', async (t) => {
   // bounded share; the Watch keeps a limited change queued and retries.
   assert.deepEqual(statuses.slice(0, 3).every((status) => status === 200), true)
   assert.equal(statuses[3], 429)
+})
+
+test('relay sessions waiting for authorization are capped per account', async (t) => {
+  let opened = 0
+  let closed = 0
+  const { address } = await fixture(t, {
+    async publish() {
+      opened += 1
+      return { outcome: 'auth-required', challenge: 'c', authorize: async () => ({ accepted: true }), close: () => { closed += 1 } }
+    },
+  })
+  const accountKey = generateSecretKey()
+  const relays = Array.from({ length: 16 }, (_, index) => `wss://auth-${index}.example`)
+  for (let i = 0; i < 3; i += 1) {
+    const response = await post(address, '/v1/watch/outbox/submit', { event: giftWrap(getPublicKey(generateSecretKey())), relays }, accountKey)
+    await response.arrayBuffer()
+  }
+  assert.equal(opened, 48)
+  assert.equal(opened - closed, 32, 'sessions beyond the per-account cap are closed at once')
+})
+
+test('a remote relay refusal is a 502 whatever its wording, never a 401 or 429', async (t) => {
+  const relayForwarder = {
+    async publish() {
+      return {
+        outcome: 'auth-required',
+        challenge: 'relay-challenge',
+        close() {},
+        async authorize() {
+          throw new RemoteRelayError('NIP-98 authorization replay: limit exceeded')
+        },
+      }
+    },
+  }
+  const { address } = await fixture(t, relayForwarder)
+  const accountKey = generateSecretKey()
+  const submit = await (await post(address, '/v1/watch/outbox/submit', {
+    event: giftWrap(getPublicKey(generateSecretKey())),
+    relays: ['wss://auth-required.example'],
+  }, accountKey)).json()
+  const pending = submit.results[0]
+  const authEvent = finalizeEvent({
+    kind: 22_242,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [['relay', pending.relay], ['challenge', pending.challenge]],
+    content: '',
+  }, accountKey)
+  const response = await post(address, `/v1/watch/outbox/${pending.session}/authorize`, { event: authEvent }, accountKey)
+  assert.equal(response.status, 502)
+  const body = await response.json()
+  assert.equal(body.error, 'Relay request failed')
+  assert.match(body.relayMessage, /limit exceeded/)
+})
+
+test('a signed request refused by the rate limit does not use a replay-guard slot', async (t) => {
+  const { address } = await fixture(t, { async publish() { return { outcome: 'accepted' } } })
+  const accountKey = generateSecretKey()
+  const pathname = '/v1/watch/inbox/query'
+  const body = Buffer.from(JSON.stringify({}))
+  const header = nip98Header(accountKey, `https://push.solife.me${pathname}`, 'POST', body)
+  const send = () => fetch(`http://127.0.0.1:${address.port}${pathname}`, {
+    method: 'POST', headers: { authorization: header, 'content-type': 'application/json' }, body,
+  })
+  assert.equal((await send()).status, 200)
+  assert.match((await (await send()).json()).error, /replay/i)
+})
+
+
+test('forwards to one destination are bounded across all accounts', async (t) => {
+  const published = []
+  const { address } = await fixture(t, {
+    async publish(relayURL) { published.push(relayURL); return { outcome: 'accepted', message: 'ok' } },
+  }, { watchForwardsPerDestinationPerMinute: 1 })
+  const send = (key) => post(address, '/v1/watch/outbox/submit', {
+    event: giftWrap(getPublicKey(generateSecretKey())),
+    relays: ['wss://busy.example'],
+  }, key)
+  const first = await (await send(generateSecretKey())).json()
+  const second = await (await send(generateSecretKey())).json()
+  assert.equal(first.results[0].status, 'accepted')
+  assert.equal(second.results[0].status, 'failed')
+  assert.match(second.results[0].message, /destination limit/)
+  assert.equal(published.length, 1)
 })

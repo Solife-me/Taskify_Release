@@ -21,6 +21,12 @@ export async function loadConfig(environment = process.env) {
         ?? 'solife.me.Taskify.Native.watchkitapp',
       'APNS_WATCH_TOPIC',
     ),
+    snapstrTopic: required(
+      environment.APNS_SNAPSTR_TOPIC
+        ?? fileConfig.snapstrTopic
+        ?? 'app.snapstr.ios',
+      'APNS_SNAPSTR_TOPIC',
+    ),
   }
   if (!/^[A-Z0-9]{10}$/.test(apns.teamID)) throw new Error('APNS_TEAM_ID must be a 10-character Apple Team ID')
   if (!/^[A-Z0-9]{10}$/.test(apns.keyID)) throw new Error('APNS_KEY_ID must be a 10-character Apple Key ID')
@@ -30,6 +36,13 @@ export async function loadConfig(environment = process.env) {
     dataDirectory: environment.DATA_DIR ?? '/data',
     publicBaseURL: environment.PUBLIC_BASE_URL ?? 'https://push.solife.me',
     publicRelayURL: environment.PUBLIC_RELAY_URL ?? 'wss://push.solife.me',
+    // iPhone builds from 2026-10 sign preview fetches; older ones do not. Set to "true" once
+    // those are gone, so a leaked preview URL is useless without the recipient's key.
+    requireSignedPreviews: environment.REQUIRE_SIGNED_PREVIEWS === 'true',
+    // The header a trusted proxy puts the client's address in (Cloudflare: cf-connecting-ip).
+    // Set it only when the proxy is the sole way in: a client that reaches the port directly
+    // could otherwise choose its own address.
+    clientAddressHeader: environment.CLIENT_ADDRESS_HEADER?.trim() || null,
     apns,
   }
 }

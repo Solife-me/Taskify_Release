@@ -1,12 +1,15 @@
 import { verifyEvent, type Event as NostrEvent } from "nostr-tools";
-import { verifyTaskifyAuth } from "./nostr-auth.ts";
+import { verifyTaskifyAuth, type ReplayStore } from "./nostr-auth.ts";
 import { jsonResponse, parseJson } from "./lib.ts";
+import { assertPublicHttpUrl } from "./public-fetch.ts";
 
 const TASK_KIND = 30_301;
 const MAX_RELAYS = 8;
 const MAX_AUTHORS = 128;
 const MAX_EVENTS = 1_000;
 const RELAY_TIMEOUT_MS = 5_000;
+// A relay frame larger than this is ignored unread; a whole task event is far smaller.
+const MAX_RELAY_FRAME_CHARS = 256 * 1024;
 
 type RelayResult = { relay: string; accepted: boolean; message?: string };
 type NostrFilter = { kinds: number[]; authors: string[]; limit: number };
@@ -21,8 +24,13 @@ function normalizedRelayURLs(values: unknown): string[] {
       const url = new URL(raw.trim());
       // The deployed bridge must never become an internal-network WebSocket proxy.
       if (url.protocol !== "wss:" || !url.hostname || url.username || url.password) continue;
-      const host = url.hostname.toLowerCase();
-      if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local")) continue;
+      // Same public-host rules as the preview and NIP-05 fetchers: no localhost, local or
+      // internal names, or private, link-local, or mapped addresses.
+      try {
+        assertPublicHttpUrl(url.href.replace(/^wss:/i, "https:"));
+      } catch {
+        continue;
+      }
       url.hash = "";
       const normalized = url.toString().replace(/\/$/, "");
       if (!seen.has(normalized)) {
@@ -128,11 +136,16 @@ async function queryRelay(relay: string, filter: NostrFilter): Promise<NostrEven
         resolve();
       };
       socket!.addEventListener("message", (message) => {
+        if (events.length >= filter.limit) return;
         try {
-          const frame = JSON.parse(String(message.data));
+          const data = String(message.data);
+          if (data.length > MAX_RELAY_FRAME_CHARS) return;
+          const frame = JSON.parse(data);
           if (!Array.isArray(frame)) return;
           if (frame[0] === "EVENT" && frame[1] === subscriptionID && validTaskEvent(frame[2])) {
             events.push(frame[2]);
+            // One relay cannot make the Worker check more events than a whole answer may hold.
+            if (events.length >= filter.limit) finish();
           } else if (frame[0] === "EOSE" && frame[1] === subscriptionID) {
             finish();
           }
@@ -167,10 +180,18 @@ async function accountRateLimited(env: BridgeEnv | undefined, npub: string): Pro
   return response;
 }
 
-type BridgeEnv = { WATCH_NOSTR_RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> } };
+type BridgeEnv = {
+  WATCH_NOSTR_RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  TASKIFY_AUTH_V1?: string;
+  TASKIFY_DB?: ReplayStore;
+};
 
 export async function handleWatchNostrPublish(request: Request, env?: BridgeEnv): Promise<Response> {
-  const auth = await verifyTaskifyAuth(request);
+  // Publishing is single-use; a captured request cannot be sent again.
+  const auth = await verifyTaskifyAuth(request, {
+    allowV1: env?.TASKIFY_AUTH_V1 !== "off",
+    replayStore: env?.TASKIFY_DB,
+  });
   if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
   const limited = await accountRateLimited(env, auth.npub);
   if (limited) return limited;
@@ -185,7 +206,9 @@ export async function handleWatchNostrPublish(request: Request, env?: BridgeEnv)
 }
 
 export async function handleWatchNostrQuery(request: Request, env?: BridgeEnv): Promise<Response> {
-  const auth = await verifyTaskifyAuth(request);
+  // Read-only and frequent: bound to this route and 60 seconds, but not recorded, which would
+  // cost a database write per Watch refresh.
+  const auth = await verifyTaskifyAuth(request, { allowV1: env?.TASKIFY_AUTH_V1 !== "off" });
   if (!auth) return jsonResponse({ error: "Unauthorized" }, 401);
   const limited = await accountRateLimited(env, auth.npub);
   if (limited) return limited;

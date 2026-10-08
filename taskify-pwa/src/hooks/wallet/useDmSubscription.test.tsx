@@ -4,6 +4,8 @@ import { createRoot } from 'react-dom/client';
 import { expect, test, vi } from 'vitest';
 import { useDmSubscription } from './useDmSubscription';
 
+const wrap = (id: string) => ({ id, pubkey: 'a'.repeat(64), created_at: 500, kind: 1059, tags: [], content: '', sig: '' });
+
 vi.mock('../../nostr/NostrSession', () => ({ NostrSession: { init: vi.fn() } }));
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -22,10 +24,10 @@ test('receiving another DM preserves history beyond 400 messages and deduplicate
   const root = createRoot(document.createElement('div'));
   await act(async () => root.render(<Harness />));
   try {
-    await hook!.handleDmEvent({ id: 'wrap-1', pubkey: 'a'.repeat(64), created_at: 500 });
+    await hook!.handleDmEvent(wrap('wrap-1'));
     expect(messages).toHaveLength(401);
     expect(messages[0].eventId).toBe('0');
-    await hook!.handleDmEvent({ id: 'wrap-2', pubkey: 'a'.repeat(64), created_at: 500 });
+    await hook!.handleDmEvent(wrap('wrap-2'));
     expect(messages).toHaveLength(401);
   } finally { await act(async () => root.unmount()); }
 });

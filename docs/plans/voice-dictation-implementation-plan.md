@@ -1,5 +1,9 @@
 # Voice Dictation — Implementation Plan
 
+> Historical. The voice routes no longer call Gemini: since 2026-09-30 they use Cloudflare
+> Workers AI only. The current behaviour is described in
+> [the Worker reference](../reference/worker-backend.md).
+
 **Status:** READY TO IMPLEMENT  
 **Feature branch:** `feat/cli-pwa-feature-parity`  
 **Last updated:** 2026-03-24

@@ -1,7 +1,7 @@
 import { prepareRelayEvent } from "../nostr/prepareRelayEvent";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { finalizeEvent, getEventHash, getPublicKey, nip19, nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
+import { finalizeEvent, getEventHash, getPublicKey, nip19, nip44, nip59, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
 
 import {
   buildBoardShareEnvelope as buildBoardShareEnvelopeCore,
@@ -239,6 +239,26 @@ async function resolveRecipientInboxRelays(
     return Array.from(new Set([...inboxRelays, ...normalizedFallback]));
   } catch {
     return normalizedFallback;
+  }
+}
+
+/**
+ * Opens a kind-1059 gift wrap sent to the share inbox. NIP-17's sender is the seal's author,
+ * not the rumor's self-declared pubkey: `nip59.unwrapEvent` checks the seal's signature and
+ * rejects a rumor that names anyone else, so a stranger cannot pass a share off as coming
+ * from one of the recipient's contacts. Returns null for anything that does not open.
+ */
+export function unwrapShareGiftWrap(
+  wrap: NostrEvent,
+  recipientSecretHex: string,
+): { content: string; senderPubkey: string; tags: string[][] } | null {
+  if (wrap?.kind !== 1059) return null;
+  try {
+    const rumor = nip59.unwrapEvent(wrap, hexToBytes(recipientSecretHex));
+    if (rumor.kind !== 14 || typeof rumor.content !== "string") return null;
+    return { content: rumor.content, senderPubkey: rumor.pubkey, tags: Array.isArray(rumor.tags) ? rumor.tags : [] };
+  } catch {
+    return null;
   }
 }
 

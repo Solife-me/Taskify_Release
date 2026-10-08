@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import worker from "./index.ts";
-import { verifyTaskifyAuth } from "./nostr-auth.ts";
+import { taskifyAuthV2Message, verifyTaskifyAuth } from "./nostr-auth.ts";
 import { watchNostrBridgeTestHooks } from "./nostr-bridge.ts";
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -149,13 +149,13 @@ test("Taskify auth accepts hex and npub public keys and canonicalizes to hex", a
     headers: { "Content-Type": "application/json", ...signedHeaders(privateKey, publicKey, body) },
     body,
   });
-  assert.deepEqual(await verifyTaskifyAuth(hexRequest), { npub: publicKey });
+  assert.deepEqual(await verifyTaskifyAuth(hexRequest), { npub: publicKey, version: 1 });
 
   const npub = encodeNpub(publicKey);
   const npubRequest = new Request("https://example.com", {
     headers: signedHeaders(privateKey, npub),
   });
-  assert.deepEqual(await verifyTaskifyAuth(npubRequest), { npub: publicKey });
+  assert.deepEqual(await verifyTaskifyAuth(npubRequest), { npub: publicKey, version: 1 });
 });
 
 test("Watch Nostr bridge only accepts bounded public wss relay URLs", () => {
@@ -182,8 +182,33 @@ test("Watch Nostr bridge narrows query filters to Taskify task authors", () => {
   }), { kinds: [30_301], authors: [author], limit: 1_000 });
 });
 
+/** Enough of D1 for schema setup and the replay record. */
+function replayDb() {
+  const used = new Set<string>();
+  return {
+    used,
+    prepare(sql: string) {
+      let params: unknown[] = [];
+      const statement = {
+        bind(...values: unknown[]) { params = values; return statement; },
+        async run() { return { success: true }; },
+        async first() {
+          if (!/INSERT INTO request_signatures/.test(sql)) return null;
+          const signature = String(params[0]);
+          if (used.has(signature)) return null;
+          used.add(signature);
+          return { signature };
+        },
+        async all() { return { results: [] }; },
+      };
+      return statement;
+    },
+  };
+}
+
 const routeTestEnv = {
   ASSETS: { fetch: async () => new Response("asset") },
+  TASKIFY_DB: replayDb(),
 } as any;
 
 test("Watch Nostr query requires signed Taskify authentication", async () => {
@@ -236,4 +261,84 @@ test("Watch Nostr bridge rate-limits each account before opening relays", async 
   }
   // Keyed by the signed account, not the (shared) client address.
   assert.ok(keys.every((key) => key.endsWith(publicKey)), keys.join(","));
+});
+
+function signedHeadersV2(
+  privateKey: Uint8Array,
+  publicKey: string,
+  method: string,
+  url: string,
+  body = "",
+  timestamp = Math.floor(Date.now() / 1000),
+): Record<string, string> {
+  const message = taskifyAuthV2Message(method, new URL(url), timestamp, bytesToHex(sha256(new TextEncoder().encode(body))));
+  return {
+    "X-Taskify-Auth": "v2",
+    "X-Taskify-Npub": publicKey,
+    "X-Taskify-Timestamp": String(timestamp),
+    "X-Taskify-Sig": bytesToHex(schnorr.sign(sha256(new TextEncoder().encode(message)), privateKey)),
+  };
+}
+
+test("the version-2 message matches the vector the PWA, iOS, and Watch tests use", () => {
+  const body = JSON.stringify({ a: 1 });
+  const message = taskifyAuthV2Message(
+    "post",
+    new URL("https://taskify.solife.me/api/voice/extract"),
+    1_790_000_000,
+    bytesToHex(sha256(new TextEncoder().encode(body))),
+  );
+  assert.equal(message, "taskify-request-v2\nPOST\ntaskify.solife.me\n/api/voice/extract\n1790000000\n015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862");
+  assert.equal(bytesToHex(sha256(new TextEncoder().encode(message))), "c0a46a916c09e41e1657f3fd34913825aeaaece8de15596f4fb7a850f6d42e50");
+});
+
+test("a version-2 signature is bound to its method, host, route, and minute, and used once", async () => {
+  const privateKey = schnorr.utils.randomSecretKey();
+  const publicKey = bytesToHex(schnorr.getPublicKey(privateKey));
+  const url = "https://taskify.solife.me/api/watch/nostr/publish";
+  const body = '{"x":1}';
+  const request = (target: string, method: string, headers: Record<string, string>) =>
+    new Request(target, { method, headers: { "Content-Type": "application/json", ...headers }, body: method === "GET" ? undefined : body });
+
+  const headers = signedHeadersV2(privateKey, publicKey, "POST", url, body);
+  const db = replayDb();
+  assert.deepEqual(await verifyTaskifyAuth(request(url, "POST", headers), { replayStore: db as any }), { npub: publicKey, version: 2 });
+  assert.equal(await verifyTaskifyAuth(request(url, "POST", headers), { replayStore: db as any }), null, "replayed");
+
+  assert.equal(await verifyTaskifyAuth(request("https://taskify.solife.me/api/watch/nostr/query", "POST", headers)), null, "other route");
+  assert.equal(await verifyTaskifyAuth(request("https://beta.example.workers.dev/api/watch/nostr/publish", "POST", headers)), null, "other host");
+  assert.equal(await verifyTaskifyAuth(request(url, "PUT", headers)), null, "other method");
+  const tampered = new Request(url, { method: "POST", headers, body: '{"x":2}' });
+  assert.equal(await verifyTaskifyAuth(tampered), null, "other body");
+
+  const stale = signedHeadersV2(privateKey, publicKey, "POST", url, body, Math.floor(Date.now() / 1000) - 61);
+  assert.equal(await verifyTaskifyAuth(request(url, "POST", stale)), null, "older than 60 seconds");
+});
+
+test("version-1 signatures are refused once the Worker is told to", async () => {
+  const privateKey = schnorr.utils.randomSecretKey();
+  const publicKey = bytesToHex(schnorr.getPublicKey(privateKey));
+  const body = '{"x":1}';
+  const v1 = () => new Request("https://taskify.solife.me/api/voice/extract", { method: "POST", headers: signedHeaders(privateKey, publicKey, body), body });
+  assert.equal((await verifyTaskifyAuth(v1()))?.version, 1);
+  assert.equal(await verifyTaskifyAuth(v1(), { allowV1: false }), null);
+});
+
+
+test("the Watch publish route accepts a version-2 request once and refuses its replay", async () => {
+  const privateKey = schnorr.utils.randomSecretKey();
+  const publicKey = bytesToHex(schnorr.getPublicKey(privateKey));
+  const env = {
+    ASSETS: { fetch: async () => new Response("asset") },
+    TASKIFY_DB: replayDb(),
+    // Refusing at the rate limit proves authentication passed without opening relays.
+    WATCH_NOSTR_RATE_LIMITER: { limit: async () => ({ success: false }) },
+  } as any;
+  const url = "https://taskify.example/api/watch/nostr/publish";
+  const body = JSON.stringify({ relays: ["wss://relay.example"] });
+  const headers = { "Content-Type": "application/json", ...signedHeadersV2(privateKey, publicKey, "POST", url, body) };
+  const first = await worker.fetch(new Request(url, { method: "POST", headers, body }), env);
+  assert.equal(first.status, 429);
+  const replay = await worker.fetch(new Request(url, { method: "POST", headers, body }), env);
+  assert.equal(replay.status, 401);
 });

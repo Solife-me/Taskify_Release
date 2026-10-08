@@ -1,12 +1,13 @@
 import { FileHelper, z } from '@start9labs/start-sdk'
 import { sdk } from '../sdk'
 
-const shape = z.object({
+const shape = z.looseObject({
   teamID: z.string(),
   keyID: z.string(),
   privateKey: z.string(),
   topic: z.string(),
   watchTopic: z.string().optional(),
+  snapstrTopic: z.string().optional(),
 })
 
 export type APNsConfiguration = z.infer<typeof shape>

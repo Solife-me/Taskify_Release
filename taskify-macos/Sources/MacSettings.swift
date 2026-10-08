@@ -94,7 +94,7 @@ struct MacSettingsView: View {
                     if let message = model.accountBackupMessage { Text(message).font(.caption) }
                     Button("Copy Private Key…") {
                         Task {
-                            do { try await authenticate("Copy your Taskify private key"); macCopy(try model.exportIdentityNsec()); message = "Private key copied." }
+                            do { try await authenticate("Copy your Taskify private key"); macCopySecret(try model.exportIdentityNsec()); message = "Private key copied." }
                             catch { message = error.localizedDescription }
                         }
                     }

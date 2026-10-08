@@ -1,4 +1,5 @@
 import { type NDKEvent } from "@nostr-dev-kit/ndk";
+import { sanitizeRemote } from "./shared/displaySafe.js";
 import { getPublicKey, nip19 } from "nostr-tools";
 import { boardTagHash, collectRuntimeRelayUrls, deriveBoardKeyPair } from "taskify-runtime-nostr";
 import type { ReminderPreset, Recurrence, Subtask, TaskAssignee } from "./shared/taskTypes.js";
@@ -132,7 +133,8 @@ function recordToCache(r: FullTaskRecord): CachedTask {
 }
 
 function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
-  return {
+  // The cache may hold text written before records were cleaned.
+  return sanitizeRemote({
     id: t.id,
     boardId: t.boardId,
     boardName: t.boardName ?? boardName,
@@ -168,7 +170,7 @@ function cacheToRecord(t: CachedTask, boardName?: string): FullTaskRecord {
     images: t.images,
     nostrEventId: t.nostrEventId,
     deleted: t.status === "deleted",
-  };
+  });
 }
 
 // ---- Public types ----
@@ -323,7 +325,16 @@ async function decryptCalendarEventPayload(event: NDKEvent, boardId: string): Pr
   }
 }
 
+/** Parsed records are for display: other people's text is cleaned (see displaySafe). */
 async function parseDecryptedEvent(
+  event: NDKEvent,
+  boardId: string,
+  boardName?: string,
+): Promise<FullTaskRecord | null> {
+  return sanitizeRemote(await parseDecryptedEventUnsafe(event, boardId, boardName));
+}
+
+async function parseDecryptedEventUnsafe(
   event: NDKEvent,
   boardId: string,
   boardName?: string,
@@ -403,6 +414,14 @@ async function parseDecryptedEvent(
 }
 
 async function parseDecryptedCalendarEvent(
+  event: NDKEvent,
+  boardId: string,
+  boardName?: string,
+): Promise<FullEventRecord | null> {
+  return sanitizeRemote(await parseDecryptedCalendarEventUnsafe(event, boardId, boardName));
+}
+
+async function parseDecryptedCalendarEventUnsafe(
   event: NDKEvent,
   boardId: string,
   boardName?: string,
@@ -1158,7 +1177,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           });
         }
 
-        const meta = pickBestBoardMeta(eventLikes, boardId);
+        // Any member can publish board metadata; its names reach the terminal and the config.
+        const meta = sanitizeRemote(pickBestBoardMeta(eventLikes, boardId));
         name = meta.name;
         kind = meta.kind;
         columns = meta.columns;

@@ -35,34 +35,20 @@ public struct KeychainNWCConnectionStore: NWCConnectionStore {
     }
 
     public func load() -> String? {
-        var query = query
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
+        guard let data = try? TaskifyKeychainItem.load(query) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
     public func save(_ uri: String) throws {
-        let data = Data(uri.utf8)
-        let update: [String: Any] = [kSecValueData as String: data]
-        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if updateStatus == errSecSuccess { return }
-        guard updateStatus == errSecItemNotFound else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(updateStatus))
-        }
-        var attributes = query
-        attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        do {
+            try TaskifyKeychainItem.save(query, value: Data(uri.utf8))
+        } catch let failure as TaskifyKeychainItem.Failure {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(failure.status))
         }
     }
 
     public func delete() {
-        SecItemDelete(query as CFDictionary)
+        TaskifyKeychainItem.delete(query)
     }
 }
 

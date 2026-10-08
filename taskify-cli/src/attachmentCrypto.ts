@@ -161,12 +161,17 @@ export async function buildAttachmentDocuments(opts: {
     if (serverType === "originless" || serverType === "blossom") {
       remoteUrl = await uploadBlobToOriginless(serverUrl, encrypted, `${name}.bin`, "application/octet-stream");
     } else {
-      const tmpPath = `/tmp/taskify-attachment-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.bin`;
-      await import('node:fs/promises').then(fs => fs.writeFile(tmpPath, Buffer.from(encrypted)));
+      // A private directory and owner-only file, not a guessable name in the shared /tmp.
+      const fs = await import("node:fs/promises");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const tmpDir = await fs.mkdtemp(join(tmpdir(), "taskify-attachment-"));
+      const tmpPath = join(tmpDir, "upload.bin");
       try {
+        await fs.writeFile(tmpPath, Buffer.from(encrypted), { mode: 0o600 });
         remoteUrl = await uploadImageToNip96({ serverUrl, filePath: tmpPath, nsec });
       } finally {
-        await import('node:fs/promises').then(fs => fs.unlink(tmpPath).catch(() => {}));
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       }
     }
     out.push({ ...base, remoteUrl, encrypted: true, encryptionBoardId: opts.boardId });

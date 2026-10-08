@@ -5,15 +5,34 @@ function base64url(value) {
   return Buffer.from(value).toString('base64url')
 }
 
-// The iPhone alert adds `mutable-content` and a random, short-lived preview capability URL so the
-// Notification Service Extension can fetch the encrypted gift wrap, decrypt it on-device, and
-// rewrite the alert. The URL contains no event ID, public key, sender, or category. Without a
+// iPhone alerts add `mutable-content` and a random, short-lived preview capability URL so each
+// app's Notification Service Extension can fetch the encrypted gift wrap, decrypt it on-device,
+// and rewrite the alert. The URL contains no event ID, public key, sender, application, or
+// category. Without a
 // preview token the iPhone receives the same generic alert as the Watch.
 export function genericDMPayload(previewURL = null) {
   const payload = genericWatchDMPayload()
   if (!previewURL) return payload
   payload.aps['mutable-content'] = 1
   payload.taskify.previewURL = previewURL
+  return payload
+}
+
+export function genericSnapstrPayload(previewURL = null) {
+  const payload = {
+    aps: {
+      alert: {
+        title: 'New Snap',
+        body: 'Open Snapstr to view it.',
+      },
+      sound: 'default',
+      'content-available': 1,
+    },
+    snapstr: { type: 'message-preview' },
+  }
+  if (!previewURL) return payload
+  payload.aps['mutable-content'] = 1
+  payload.snapstr.previewURL = previewURL
   return payload
 }
 
@@ -35,11 +54,17 @@ export function genericWatchDMPayload() {
   }
 }
 
-export function apnsDeliveryProfile(registration, { topic, watchTopic, previewURL = null }) {
+export function apnsDeliveryProfile(
+  registration,
+  { topic, watchTopic, snapstrTopic, previewURL = null },
+) {
   const isWatch = registration.platform === 'watchos'
+  const isSnapstr = registration.application === 'snapstr'
   return {
-    payload: isWatch ? genericWatchDMPayload() : genericDMPayload(previewURL),
-    topic: isWatch ? watchTopic : topic,
+    payload: isWatch
+      ? genericWatchDMPayload()
+      : isSnapstr ? genericSnapstrPayload(previewURL) : genericDMPayload(previewURL),
+    topic: isWatch ? watchTopic : isSnapstr ? snapstrTopic : topic,
     pushType: 'alert',
     priority: '10',
   }
@@ -52,6 +77,7 @@ export class APNsClient {
     privateKey,
     topic,
     watchTopic = 'solife.me.Taskify.Native.watchkitapp',
+    snapstrTopic = 'app.snapstr.ios',
     requestTimeoutMs = 10_000,
     now = () => Date.now(),
   }) {
@@ -60,6 +86,7 @@ export class APNsClient {
     this.privateKey = createPrivateKey(privateKey.replaceAll('\\n', '\n'))
     this.topic = topic
     this.watchTopic = watchTopic
+    this.snapstrTopic = snapstrTopic
     this.requestTimeoutMs = requestTimeoutMs
     this.now = now
     this.cachedToken = null
@@ -93,6 +120,7 @@ export class APNsClient {
     const delivery = apnsDeliveryProfile(registration, {
       topic: this.topic,
       watchTopic: this.watchTopic,
+      snapstrTopic: this.snapstrTopic,
       previewURL,
     })
     const body = Buffer.from(JSON.stringify(delivery.payload))

@@ -1,0 +1,40 @@
+# Secret scanning for CI (.github/workflows/ci.yml). Default rules, plus narrow allowances for
+# deterministic test fixtures and Swift syntax that the generic API-key rule misidentifies.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures use generated or fake secrets"
+paths = [
+  '''\.test\.(ts|tsx|js|mjs)$''',
+  '''(?i)(^|/)tests?/''',
+]
+
+[[allowlists]]
+description = "Swift optional binding is not an API credential"
+regexTarget = "line"
+regexes = [
+  '''^\s*if let key = wallet\.primaryP2PKKey \{\s*$''',
+]
+
+[[allowlists]]
+description = "Known storage-key names, prompt examples, and Swift argument labels are not credentials"
+regexTarget = "line"
+regexes = [
+  '''^\s*(?:export\s+)?const\s+[A-Z0-9_]*(?:KEY|KEYS)\s*=\s*["'](?:cashu|taskify)[._][A-Za-z0-9_.-]+["'];?\s*$''',
+  '''^\s*privateKeys:\s*p2pkSigningPrivateKeys\s*$''',
+]
+
+[[allowlists]]
+description = "Idempotency fields and a PEM-validation regex are not secrets"
+regexTarget = "match"
+regexes = [
+  '''^idempotencyKey["']?\s*:\s*["']''',
+]
+
+[[allowlists]]
+description = "APNs configuration validates PEM input but does not contain a private key"
+targetRules = ["private-key"]
+paths = [
+  '''^taskify-push-relay/startos/actions/configureAPNs\.ts$''',
+]

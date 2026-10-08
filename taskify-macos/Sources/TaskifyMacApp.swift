@@ -166,3 +166,28 @@ func macCopy(_ text: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
 }
+
+/// For a private key or a Cashu token: kept to this Mac (no Universal Clipboard), marked concealed
+/// so clipboard managers that honour the nspasteboard.org convention skip it, and cleared after
+/// two minutes unless something else has been copied since.
+func macCopySecret(_ text: String) {
+    let pasteboard = NSPasteboard.general
+    pasteboard.prepareForNewContents(with: .currentHostOnly)
+    pasteboard.setString(text, forType: .string)
+    pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+    clearPasteboard(after: 120, ifStill: pasteboard.changeCount)
+}
+
+/// For a board share, which carries the board ID: it may still be pasted on another device, but it
+/// is cleared after ten minutes unless something else has been copied since.
+func macCopyExpiring(_ text: String) {
+    macCopy(text)
+    clearPasteboard(after: 600, ifStill: NSPasteboard.general.changeCount)
+}
+
+private func clearPasteboard(after seconds: TimeInterval, ifStill changeCount: Int) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+        guard NSPasteboard.general.changeCount == changeCount else { return }
+        NSPasteboard.general.clearContents()
+    }
+}

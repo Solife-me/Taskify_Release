@@ -11,7 +11,10 @@ import {
 import { handleNip05Lookup } from "./nip05.ts";
 import { handleWatchNostrPublish, handleWatchNostrQuery } from "./nostr-bridge.ts";
 import type { Env } from "./lib.ts";
-import { enforceRateLimit, jsonResponse, requireDb } from "./lib.ts";
+import { enforceRateLimit, jsonResponse, requireDb, withBodyWithin } from "./lib.ts";
+
+// The Watch bridge verifies a signature over the whole body, so the body is bounded first.
+const MAX_WATCH_BRIDGE_BODY_BYTES = 256 * 1024;
 // Keep the shared library exports available to existing Worker-side consumers.
 export type { Env, D1Database } from "./lib.ts";
 export {
@@ -90,6 +93,22 @@ async function ensureSchema(env: Env): Promise<void> {
          PRIMARY KEY (npub, date)
        )`,
     ).run();
+
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS request_signatures (
+         signature  TEXT    PRIMARY KEY,
+         expires_at INTEGER NOT NULL
+       )`,
+    ).run();
+
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS write_budget (
+         key  TEXT    NOT NULL,
+         date TEXT    NOT NULL,
+         used INTEGER NOT NULL DEFAULT 0,
+         PRIMARY KEY (key, date)
+       )`,
+    ).run();
   })()
     .catch((err) => {
       schemaReadyPromise = null;
@@ -105,7 +124,26 @@ function routeUsesDatabase(pathname: string): boolean {
     || pathname.startsWith("/api/devices/")
     || pathname === "/api/reminders"
     || pathname === "/api/reminders/poll"
-    || pathname.startsWith("/api/voice/");
+    || pathname.startsWith("/api/voice/")
+    || pathname === "/api/watch/nostr/publish";
+}
+
+// Rows kept only as long as they are useful: daily voice and write-budget counters for a week,
+// reminder notifications a device never fetched for two weeks, and used request signatures until
+// expiry.
+const VOICE_QUOTA_RETENTION_DAYS = 7;
+const PENDING_NOTIFICATION_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const PRUNE_MINUTE = 17;
+
+export async function pruneStaleRows(env: Env, now = Date.now()): Promise<void> {
+  const db = requireDb(env);
+  const quotaCutoff = new Date(now - VOICE_QUOTA_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await db.batch([
+    db.prepare("DELETE FROM voice_quota WHERE date < ?").bind(quotaCutoff),
+    db.prepare("DELETE FROM write_budget WHERE date < ?").bind(quotaCutoff),
+    db.prepare("DELETE FROM pending_notifications WHERE created_at < ?").bind(now - PENDING_NOTIFICATION_RETENTION_MS),
+    db.prepare("DELETE FROM request_signatures WHERE expires_at < ?").bind(now),
+  ]);
 }
 
 interface ScheduledEvent {
@@ -117,14 +155,36 @@ interface SchedulerController {
   waitUntil(promise: Promise<unknown>): void;
 }
 
+// Keep in step with taskify-pwa/public/_headers. Cloudflare serves any request that matches a
+// static asset without running the Worker, so that file is what real asset responses carry;
+// this copy covers the responses the Worker itself builds from env.ASSETS (non-matching paths).
+// The PWA's scanners and dictation need the camera and microphone for its own origin.
 const ASSET_SECURITY_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
-  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Permissions-Policy": "camera=(self), microphone=(self), geolocation=()",
+  // Scripts only from this origin: the page holds the Nostr key, the wallet, and the device key
+  // that decrypts them. Connections and media stay open because relays, mints, file hosts, and
+  // pictures are user-chosen. Keep in step with taskify-pwa/public/_headers.
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' data: blob: https:",
+    "font-src 'self' data: blob:",
+    "connect-src 'self' data: blob: https: wss:",
+    "worker-src 'self' blob:",
+    "frame-src 'none'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; "),
+  "X-Frame-Options": "DENY",
+  "Strict-Transport-Security": "max-age=31536000",
 };
 
-// Static assets are served through the worker so these headers are
-// guaranteed — a `_headers` file is not reliably applied to env.ASSETS.
 async function serveAsset(request: Request, env: Env): Promise<Response> {
   const asset = await env.ASSETS.fetch(request);
   const response = new Response(asset.body, asset);
@@ -140,17 +200,10 @@ async function serveAsset(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: SchedulerController): Promise<Response> {
     if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Taskify-Subscription,X-Taskify-Npub,X-Taskify-Timestamp,X-Taskify-Sig",
-          "Access-Control-Max-Age": "86400",
-        },
-      });
+      // Same-origin only (see JSON_HEADERS); a cross-origin preflight gets no CORS grant.
+      return new Response(null, { status: 204 });
     }
 
     const url = new URL(request.url);
@@ -176,16 +229,22 @@ export default {
       if (url.pathname === "/api/nip05" && request.method === "GET") {
         const limited = await enforceRateLimit(request, env.NIP05_RATE_LIMITER, "nip05");
         if (limited) return limited;
-        return await handleNip05Lookup(url);
+        return await handleNip05Lookup(url, ctx);
       }
       if (url.pathname === "/api/devices" && request.method === "PUT") {
+        const limited = await enforceRateLimit(request, env.PUSH_RATE_LIMITER, "push");
+        if (limited) return limited;
         return await handleRegisterDevice(request, env);
       }
       if (url.pathname.startsWith("/api/devices/") && request.method === "DELETE") {
+        const limited = await enforceRateLimit(request, env.PUSH_RATE_LIMITER, "push");
+        if (limited) return limited;
         const deviceId = decodeURIComponent(url.pathname.substring("/api/devices/".length));
         return await handleDeleteDevice(request, deviceId, env);
       }
       if (url.pathname === "/api/reminders" && request.method === "PUT") {
+        const limited = await enforceRateLimit(request, env.PUSH_RATE_LIMITER, "push");
+        if (limited) return limited;
         return await handleSaveReminders(request, env);
       }
       if (url.pathname === "/api/reminders/poll" && request.method === "POST") {
@@ -198,14 +257,21 @@ export default {
         return await handleVoiceFinalize(request, env);
       }
       if (url.pathname === "/api/watch/nostr/publish" && request.method === "POST") {
-        return await handleWatchNostrPublish(request, env);
+        const bounded = await withBodyWithin(request, MAX_WATCH_BRIDGE_BODY_BYTES);
+        if (bounded instanceof Response) return bounded;
+        return await handleWatchNostrPublish(bounded, env);
       }
       if (url.pathname === "/api/watch/nostr/query" && request.method === "POST") {
-        return await handleWatchNostrQuery(request, env);
+        const bounded = await withBodyWithin(request, MAX_WATCH_BRIDGE_BODY_BYTES);
+        if (bounded instanceof Response) return bounded;
+        return await handleWatchNostrQuery(bounded, env);
       }
     } catch (err) {
+      // Malformed percent-encoding in a path is the caller's mistake, not a server fault.
+      if (err instanceof URIError) return jsonResponse({ error: "Bad request" }, 400);
+      // Internal detail (database errors, binding names) stays in the log, not the response.
       console.error("Worker error", err);
-      return jsonResponse({ error: (err as Error).message || "Internal error" }, 500);
+      return jsonResponse({ error: "Internal error" }, 500);
     }
 
     // Do not serve the PWA shell for removed or misspelled API routes.
@@ -221,6 +287,8 @@ export default {
       try {
         await ensureSchema(env);
         await processDueReminders(env);
+        // Once an hour is plenty, and keeps the other 59 ticks to their own work.
+        if (new Date().getUTCMinutes() === PRUNE_MINUTE) await pruneStaleRows(env);
       } catch (err) {
         console.error('Scheduled task failed', { cron: event?.cron, error: err instanceof Error ? err.message : String(err) });
         throw err;

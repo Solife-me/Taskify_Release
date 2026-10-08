@@ -58,7 +58,7 @@ public struct VoiceExtractionResult: Equatable, Sendable {
 }
 
 /// Talks to the Taskify Worker's voice endpoints, the same two the PWA uses (`worker/src/voice.ts`):
-/// `/api/voice/extract` turns a raw transcript into candidate-list edits via Gemini, and
+/// `/api/voice/extract` turns a raw transcript into candidate-list edits via the Worker's model, and
 /// `/api/voice/finalize` resolves confirmed candidates into concrete tasks with real due dates.
 ///
 /// The transcription itself is on-device (`SFSpeechRecognizer`); only the text is ever sent, and
@@ -208,7 +208,12 @@ public struct VoiceDictationClient: Sendable {
     }
 
     private func authenticate(_ request: inout URLRequest, identity: NostrIdentity) throws {
-        let headers = try identity.taskifyRequestHeaders(body: request.httpBody ?? Data())
+        guard let url = request.url else { throw URLError(.badURL) }
+        let headers = try identity.taskifyRequestHeaders(
+            method: request.httpMethod ?? "GET",
+            url: url,
+            body: request.httpBody ?? Data()
+        )
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }

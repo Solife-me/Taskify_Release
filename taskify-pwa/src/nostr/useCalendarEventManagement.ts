@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { NostrEvent } from "nostr-tools";
 import type { Board, CalendarEvent, EditingState } from "../domains/tasks/taskTypes";
-import { relaysOrDefaults } from "../lib/relays";
+import { relaysOrDefaults, boardSyncRelays } from "../lib/relays";
 import {
   calendarAddress,
   decryptCalendarRsvpPayload,
@@ -183,7 +183,7 @@ export function useCalendarEventManagement({
     if (!editing || editing.type !== "event") return;
     const event = editing.event;
     const board = boards.find((candidate) => candidate.id === event.boardId);
-    const relays = relaysOrDefaults(board?.nostr?.relays, defaultRelays, inboxRelays);
+    const relays = boardSyncRelays(relaysOrDefaults(board?.nostr?.relays, defaultRelays, inboxRelays));
 
     if (board?.nostr?.boardId && relays.length) {
       let cancelled = false;

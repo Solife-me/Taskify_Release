@@ -63,6 +63,56 @@ test('registrations are namespaced by the authenticated Nostr pubkey', async () 
   assert.notEqual(store.registrationsFor(alice)[0].deviceToken, store.registrationsFor(bob)[0].deviceToken)
 })
 
+test('registration application defaults to Taskify and persists Snapstr selection', async () => {
+  const { store } = await storeForTest()
+  await store.putRegistration(alice, 'taskify-phone', {
+    deviceToken: '12'.repeat(32), environment: 'production',
+  })
+  await store.putRegistration(bob, 'snapstr-phone', {
+    deviceToken: '34'.repeat(32), environment: 'production', application: 'snapstr',
+  })
+
+  assert.equal(store.registrationsFor(alice)[0].application, 'taskify')
+  assert.equal(store.registrationsFor(bob)[0].application, 'snapstr')
+})
+
+test('a gift wrap alerts only the devices of the app that sent it', async () => {
+  const { store } = await storeForTest()
+  await store.putRegistration(alice, 'taskify-phone', { deviceToken: '11'.repeat(32), environment: 'production' })
+  await store.putRegistration(alice, 'taskify-watch', {
+    deviceToken: '22'.repeat(32), environment: 'production', platform: 'watchos',
+  })
+  await store.putRegistration(alice, 'snapstr-phone', {
+    deviceToken: '33'.repeat(32), environment: 'production', application: 'snapstr',
+  })
+  const notified = () => store.duePushJobs(Number.MAX_SAFE_INTEGER)
+    .map((job) => store.registrationByKey(job.registrationKey).installationID)
+    .sort()
+
+  await store.putGiftWrap(giftWrap('1'.repeat(64), alice), { notify: true, application: 'snapstr' })
+  assert.deepEqual(notified(), ['snapstr-phone'])
+  assert.equal(store.state.previews.length, 1)
+
+  await store.completePushJob(store.duePushJobs(Number.MAX_SAFE_INTEGER)[0].id)
+  await store.putGiftWrap(giftWrap('2'.repeat(64), alice), { notify: true })
+  assert.deepEqual(notified(), ['taskify-phone', 'taskify-watch'])
+})
+
+test('an unnamed sender still alerts an account that has only Snapstr devices', async () => {
+  const { store } = await storeForTest()
+  await store.putRegistration(alice, 'snapstr-phone', {
+    deviceToken: '33'.repeat(32), environment: 'production', application: 'snapstr',
+  })
+  await store.putRegistration(bob, 'taskify-phone', { deviceToken: '11'.repeat(32), environment: 'production' })
+
+  await store.putGiftWrap(giftWrap('1'.repeat(64), alice), { notify: true })
+  await store.putGiftWrap(giftWrap('2'.repeat(64), bob), { notify: true, application: 'snapstr' })
+
+  const jobs = store.duePushJobs(Number.MAX_SAFE_INTEGER)
+  assert.deepEqual(jobs.map((job) => job.eventID), ['1'.repeat(64)], 'a snap never alerts Taskify')
+  assert.equal(store.registrationByKey(jobs[0].registrationKey).installationID, 'snapstr-phone')
+})
+
 test('moving one installation to another identity removes the stale registration', async () => {
   const { store } = await storeForTest()
   const deviceToken = '12'.repeat(32)
@@ -73,10 +123,44 @@ test('moving one installation to another identity removes the stale registration
   assert.equal(store.registrationsFor(bob).length, 1)
 })
 
+test('Snapstr profiles on one phone all stay registered and follow its token', async () => {
+  const { store } = await storeForTest()
+  const snapstr = (deviceToken) => ({ deviceToken, environment: 'production', application: 'snapstr' })
+  await store.putRegistration(alice, 'snapstr-phone', snapstr('12'.repeat(32)))
+  await store.putRegistration(bob, 'snapstr-phone', snapstr('12'.repeat(32)))
+
+  assert.equal(store.registrationsFor(alice).length, 1)
+  assert.equal(store.registrationsFor(bob).length, 1)
+
+  await store.putGiftWrap(giftWrap('1'.repeat(64), alice), { notify: true, application: 'snapstr' })
+  await store.putGiftWrap(giftWrap('2'.repeat(64), bob), { notify: true, application: 'snapstr' })
+  assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 2, 'both profiles are alerted')
+
+  await store.putRegistration(bob, 'snapstr-phone', snapstr('34'.repeat(32)))
+  assert.equal(store.registrationsFor(alice)[0].deviceToken, '34'.repeat(32), 'a new token reaches every profile')
+
+  await store.removeRegistration(bob, 'snapstr-phone')
+  assert.equal(store.registrationsFor(alice).length, 1, 'turning one profile off leaves the other')
+  assert.equal(store.registrationsFor(bob).length, 0)
+})
+
+test('a reinstalled Snapstr replaces the old installation for every profile', async () => {
+  const { store } = await storeForTest()
+  const snapstr = { deviceToken: '12'.repeat(32), environment: 'production', application: 'snapstr' }
+  await store.putRegistration(alice, 'old-install', snapstr)
+  await store.putRegistration(bob, 'old-install', snapstr)
+  await store.putRegistration(alice, 'new-install', snapstr)
+
+  assert.deepEqual(store.registrationsFor(alice).map((item) => item.installationID), ['new-install'])
+  assert.equal(store.registrationsFor(bob).length, 0)
+})
+
 test('device registration is bounded without preventing token rotation', async () => {
+  let clock = 1_800_000_000
   const { store } = await storeForTest({
     maxRegistrationsPerPubkey: 1,
     maxRegistrationsTotal: 2,
+    now: () => clock,
   })
   await store.putRegistration(alice, 'phone-1', {
     deviceToken: '12'.repeat(32),
@@ -94,17 +178,46 @@ test('device registration is bounded without preventing token rotation', async (
     }),
     /registration limit/i,
   )
+  clock += 60
   await store.putRegistration(bob, 'phone-2', {
     deviceToken: '78'.repeat(32),
     environment: 'production',
   })
-  await assert.rejects(
-    store.putRegistration(carol, 'phone-3', {
-      deviceToken: '90'.repeat(32),
-      environment: 'production',
-    }),
-    /registration limit/i,
-  )
+  // A full table makes room by dropping the registration refreshed longest ago (alice's),
+  // instead of refusing every new user.
+  clock += 60
+  await store.putRegistration(carol, 'phone-3', {
+    deviceToken: '90'.repeat(32),
+    environment: 'production',
+  })
+  assert.deepEqual(store.state.registrations.map((registration) => registration.pubkey).sort(), [bob, carol])
+})
+
+test('registrations nobody refreshes expire, and refreshing keeps them', async () => {
+  let clock = 1_800_000_000
+  const { store } = await storeForTest({ registrationTTLSeconds: 1_000, now: () => clock })
+  await store.putRegistration(alice, 'phone-1', { deviceToken: '12'.repeat(32), environment: 'production' })
+  await store.putRegistration(bob, 'phone-2', { deviceToken: '34'.repeat(32), environment: 'production' })
+  clock += 900
+  await store.putRegistration(bob, 'phone-2', { deviceToken: '34'.repeat(32), environment: 'production' })
+  clock += 200
+  store.prune()
+  assert.deepEqual(store.state.registrations.map((registration) => registration.pubkey), [bob])
+  assert.equal(store.hasInbox(alice), false)
+})
+
+test('unauthenticated preview reads do not prune on every call', async () => {
+  let clock = 1_800_000_000
+  const { store } = await storeForTest({ now: () => clock })
+  let prunes = 0
+  const prune = store.prune.bind(store)
+  store.prune = () => { prunes += 1; prune() }
+  // load() has just pruned, so reads within the interval do not.
+  for (let index = 0; index < 50; index += 1) store.previewForToken('x'.repeat(43))
+  assert.equal(prunes, 0)
+  clock += 10
+  for (let index = 0; index < 50; index += 1) store.previewForToken('x'.repeat(43))
+  assert.equal(prunes, 1)
 })
 
 test('accepted gift wraps are durable, deduplicated, and enqueue one job per device', async () => {
@@ -120,6 +233,46 @@ test('accepted gift wraps are durable, deduplicated, and enqueue one job per dev
   const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
   assert.equal(onDisk.events.length, 1)
   assert.equal(onDisk.pushJobs.length, 2)
+})
+
+test('NIP-09 deletion requests remove only same-author IDs and older addressable events', async () => {
+  const { store } = await storeForTest()
+  const author = 'c'.repeat(64)
+  await store.putRegistration(bob, 'phone-1', { deviceToken: '12'.repeat(32), environment: 'production' })
+  const wrap = giftWrap('1'.repeat(64), bob, 100)
+  const otherAuthorWrap = { ...giftWrap('2'.repeat(64), bob, 100), pubkey: alice }
+  await store.putGiftWrap(wrap, { notify: true })
+  await store.putGiftWrap(otherAuthorWrap, { notify: true })
+  await store.putPreference(preferenceEvent('3'.repeat(64), author, 100, 'wss://push.solife.me'))
+
+  const deleted = await store.applyDeletionRequest({
+    id: '4'.repeat(64),
+    pubkey: author,
+    created_at: 101,
+    kind: 5,
+    tags: [['e', wrap.id], ['e', otherAuthorWrap.id], ['a', `10050:${author}:`]],
+    content: '',
+    sig: '5'.repeat(128),
+  })
+
+  assert.equal(deleted, 2)
+  assert.deepEqual(store.eventsFor(bob).map((event) => event.id), [otherAuthorWrap.id])
+  assert.equal(store.preferencesFor([author]).length, 0)
+  assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 1)
+  assert.equal(store.state.previews.length, 1)
+})
+
+test('NIP-09 deletion requests require bounded valid e or a targets', async () => {
+  const { store } = await storeForTest()
+  const request = (tags) => ({
+    id: '4'.repeat(64), pubkey: alice, created_at: 101, kind: 5, tags, content: '', sig: '5'.repeat(128),
+  })
+  await assert.rejects(store.applyDeletionRequest(request([])), /at least one event/i)
+  await assert.rejects(store.applyDeletionRequest(request([['e', 'not-an-id']])), /event ID/i)
+  await assert.rejects(
+    store.applyDeletionRequest(request([['a', `30301:${bob}:task`]])),
+    /event address/i,
+  )
 })
 
 test('each device gets a short-lived opaque preview token for the encrypted gift wrap', async () => {
@@ -271,4 +424,63 @@ test('task cache keeps only the latest replaceable ciphertext without account me
 
   now += 101
   assert.deepEqual(store.taskEventsFor([alice]), [])
+})
+
+test('a burst of wraps to one device waits as a single alert for the newest wrap', async () => {
+  let now = 1_700_000_000
+  const { store } = await storeForTest({ now: () => now })
+  await store.putRegistration(bob, 'phone', { deviceToken: '77'.repeat(32), environment: 'production' })
+
+  for (const digit of ['1', '2', '3']) {
+    await store.putGiftWrap(giftWrap(digit.repeat(64), bob, now), { notify: true })
+  }
+  const jobs = store.duePushJobs(Number.MAX_SAFE_INTEGER)
+  assert.equal(jobs.length, 1)
+  assert.equal(jobs[0].eventID, '3'.repeat(64))
+  assert.equal(store.state.previews.length, 1, 'superseded previews are dropped')
+  assert.deepEqual(store.previewForToken(jobs[0].previewToken)?.id, '3'.repeat(64))
+})
+
+test('after a delivered alert the next one waits for the minimum gap', async () => {
+  let now = 1_700_000_000
+  const { store } = await storeForTest({ now: () => now, minimumPushIntervalSeconds: 10 })
+  await store.putRegistration(bob, 'phone', { deviceToken: '78'.repeat(32), environment: 'production' })
+
+  await store.putGiftWrap(giftWrap('4'.repeat(64), bob, now), { notify: true })
+  const [first] = store.duePushJobs(now)
+  await store.completePushJob(first.id, { retainPreview: true, delivered: true })
+
+  now += 2
+  await store.putGiftWrap(giftWrap('5'.repeat(64), bob, now), { notify: true })
+  assert.equal(store.duePushJobs(now).length, 0, 'held back inside the gap')
+  assert.equal(store.duePushJobs(now + 8).length, 1, 'due once the gap has passed')
+})
+
+test('one failed write does not stop later writes', async () => {
+  const { directory, store } = await storeForTest()
+  const { rm, mkdir } = await import('node:fs/promises')
+  await rm(directory, { recursive: true, force: true })
+  await assert.rejects(store.putPreference({ ...giftWrap('6'.repeat(64), bob), kind: 10_050, pubkey: alice, tags: [] }))
+  await mkdir(directory, { recursive: true })
+  await store.putPreference({ ...giftWrap('7'.repeat(64), bob), kind: 10_050, pubkey: carol, tags: [] })
+  const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
+  assert.deepEqual(onDisk.preferences.map((entry) => entry.pubkey).sort(), [alice, carol])
+})
+
+test('byte budgets evict the oldest wraps, per recipient and in total', async () => {
+  let now = 1_700_000_000
+  const big = (id, recipient) => ({ ...giftWrap(id, recipient, now), content: 'x'.repeat(4_000) })
+  const { store } = await storeForTest({ now: () => now, maxBytesPerRecipient: 10_000, maxBytesTotal: 13_000 })
+  for (const digit of ['1', '2', '3']) {
+    await store.putGiftWrap(big(digit.repeat(64), bob), { notify: false })
+    now += 1
+  }
+  assert.deepEqual(store.eventsFor(bob).map((event) => event.id), ['2'.repeat(64), '3'.repeat(64)], 'per-recipient budget keeps the newest')
+  for (const digit of ['4', '5', '6']) {
+    await store.putGiftWrap(big(digit.repeat(64), carol), { notify: false })
+    now += 1
+  }
+  const total = store.state.events.reduce((sum, entry) => sum + entry.bytes, 0)
+  assert.ok(total <= 13_000, `total ${total} within budget`)
+  assert.equal(store.eventsFor(bob).length, 0, 'oldest wraps anywhere go first')
 })

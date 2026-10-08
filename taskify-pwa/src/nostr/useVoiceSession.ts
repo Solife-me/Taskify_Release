@@ -3,8 +3,8 @@
  *
  * Architecture:
  *   Web Speech API (browser-native) → live transcript
- *   POST /api/voice/extract (Gemini 2.0 Flash) → TaskOperation[] → reducer → candidates
- *   POST /api/voice/finalize (Gemini structured output) → FinalTask[]
+ *   POST /api/voice/extract (Worker-side model) → TaskOperation[] → reducer → candidates
+ *   POST /api/voice/finalize (Worker-side model) → FinalTask[]
  */
 import { useCallback, useEffect, useRef, useReducer } from "react";
 import { signTaskifyRequestHeaders } from "../lib/taskifyRequestAuth";
@@ -388,8 +388,9 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
           candidates: candidatesRef.current,
           sessionDurationSeconds,
         });
-        const authHeaders = await signTaskifyRequestHeaders(privateKeyHex, body);
-        const res = await fetch(`${workerBaseUrl}/api/voice/extract`, {
+        const extractUrl = `${workerBaseUrl}/api/voice/extract`;
+        const authHeaders = await signTaskifyRequestHeaders(privateKeyHex, { method: "POST", url: extractUrl, body });
+        const res = await fetch(extractUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders },
           body,
@@ -521,8 +522,9 @@ export function useVoiceSession(options: UseVoiceSessionOptions): UseVoiceSessio
         referenceTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         referenceOffsetMinutes: new Date().getTimezoneOffset(),
       });
-      const authHeaders = await signTaskifyRequestHeaders(privateKeyHex, requestBody);
-      const res = await fetch(`${workerBaseUrl}/api/voice/finalize`, {
+      const finalizeUrl = `${workerBaseUrl}/api/voice/finalize`;
+      const authHeaders = await signTaskifyRequestHeaders(privateKeyHex, { method: "POST", url: finalizeUrl, body: requestBody });
+      const res = await fetch(finalizeUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders },
         body: requestBody,

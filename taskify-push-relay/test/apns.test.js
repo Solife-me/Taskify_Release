@@ -4,11 +4,16 @@ import test from 'node:test'
 import {
   apnsDeliveryProfile,
   genericDMPayload,
+  genericSnapstrPayload,
   genericWatchDMPayload,
 } from '../src/apns.js'
 
 const previewURL = `https://push.solife.me/v1/previews/${'A'.repeat(43)}`
-const topics = { topic: 'solife.me.Taskify.Native', watchTopic: 'solife.me.Taskify.Native.watchkitapp' }
+const topics = {
+  topic: 'solife.me.Taskify.Native',
+  watchTopic: 'solife.me.Taskify.Native.watchkitapp',
+  snapstrTopic: 'app.snapstr.ios',
+}
 
 test('iPhone APNs payload is a generic alert carrying only an opaque preview URL', () => {
   const payload = genericDMPayload(previewURL)
@@ -61,4 +66,25 @@ test('Watch APNs delivery uses its own topic and never carries a preview URL', (
     pushType: 'alert',
     priority: '10',
   })
+})
+
+test('Snapstr APNs delivery uses its own topic and opaque preview namespace', () => {
+  const registration = { platform: 'ios', application: 'snapstr' }
+  assert.deepEqual(apnsDeliveryProfile(registration, { ...topics, previewURL }), {
+    payload: genericSnapstrPayload(previewURL),
+    topic: 'app.snapstr.ios',
+    pushType: 'alert',
+    priority: '10',
+  })
+  assert.deepEqual(genericSnapstrPayload(previewURL), {
+    aps: {
+      alert: { title: 'New Snap', body: 'Open Snapstr to view it.' },
+      sound: 'default',
+      'content-available': 1,
+      'mutable-content': 1,
+    },
+    snapstr: { type: 'message-preview', previewURL },
+  })
+  const encoded = JSON.stringify(genericSnapstrPayload(previewURL))
+  assert.doesNotMatch(encoded, /sender|recipient|pubkey|event|ciphertext/i)
 })

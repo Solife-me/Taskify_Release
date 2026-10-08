@@ -25,6 +25,7 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 - [Taskify iOS to Web-Wrapped PWA Plan](plans/2026-04-21-ios-webwrap.md)
 - [Independent Apple Watch Chat Plan](plans/2026-08-31-independent-watch-chat.md)
 - [iOS sharing and 500 MB attachments](plans/2026-09-02-ios-sharing-large-attachments.md)
+- [Full-stack audit plan — security, privacy, abuse resistance, and efficiency](plans/2026-09-30-full-stack-audit-plan.md)
 - [CLI ↔ Core Integration Plan (runtime-nostr slice1)](plans/cli-core-integration-plan.md)
 - [Engineering Roadmap — Documentation & Testing Initiative](plans/engineering-roadmap.md)
 - [Native iOS Parity Execution Strategy (Formal)](plans/native-ios-parity-execution-strategy.md)
@@ -35,6 +36,8 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 
 ## Audits and dated investigations
 
+- [Full-stack audit report — October 2, 2026](audits/full-stack-audit-report-2026-10-02.md)
+- [Full-stack audit record — September 30 to October 2, 2026](audits/full-stack-audit-2026-09-30.md)
 - [Native board view performance — 2026-09-12](audits/native-board-performance-2026-09-12.md)
 - [Nostr sync pipeline audit — September 3, 2026](audits/nostr-sync-audit-2026-09-03.md)
 - [PWA / iOS task and DM history recovery](audits/pwa-client-history-sync-2026-09-11.md)

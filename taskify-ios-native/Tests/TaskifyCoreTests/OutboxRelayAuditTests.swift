@@ -57,7 +57,9 @@ final class OutboxRelayAuditTests: XCTestCase {
     // MARK: - Engine
 
     private func makeEngine(relay: AuditingRelayTransport, outbox: NostrOutboxStore) async -> TaskSyncEngine {
-        let engine = TaskSyncEngine(outbox: outbox, connectionFactory: { _ in relay })
+        let engine = TaskSyncEngine(outbox: outbox, connectionFactory: { [relayURL] url in
+            url == relayURL ? relay as any TaskSyncRelayTransport : InertRelayTransport()
+        })
         addTeardownBlock { await engine.stop() }
         return engine
     }

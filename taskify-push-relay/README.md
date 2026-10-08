@@ -1,6 +1,7 @@
 # Taskify Push Relay
 
-Taskify Push Relay is a restricted Nostr inbox relay and Apple Push Notification service bridge.
+Taskify Push Relay is a restricted Nostr inbox relay and Apple Push Notification service bridge
+for Taskify and Snapstr.
 It stores encrypted NIP-59 gift wraps, exposes the NIP-17 inbox preference event, and sends a
 metadata-free generic APNs alert when a new recipient copy arrives.
 
@@ -17,7 +18,7 @@ latest encrypted replaceable event for each requested coordinate. It does not cr
 rest of any upstream relay. The Watch verifies signatures and decrypts all board and task payloads
 locally. If this gateway is unavailable, the Watch retries through `https://taskify.solife.me`.
 
-The relay cannot decrypt the gift wrap. It sends only a generic alert; the app fetches and unwraps
+The relay cannot decrypt the gift wrap. It sends only an app-specific generic alert; the app fetches and unwraps
 the message locally. iPhone alerts also carry `mutable-content` and a random, 15-minute preview URL
 so the iOS Notification Service Extension can fetch the encrypted gift wrap, decrypt it on the
 device, and replace the generic text with a rich preview. The extension does not use Apple's
@@ -26,7 +27,8 @@ cannot suppress the remote arrival alert; they leave it generic instead. Payment
 so `Payment Received` never reflects an unverified claimed amount. Device registration
 uses a NIP-98 request signed by the user's Nostr identity. Gift-wrap reads and writes require
 NIP-42 authentication; kind `10050` inbox preferences remain publicly discoverable as NIP-17
-requires.
+requires, but a public query must name the accounts it wants (`authors`), so the relay cannot be
+asked for a list of everyone who uses it.
 
 ## Runtime
 
@@ -38,18 +40,50 @@ requires.
 - Watch public inbox-preference lookup: `POST /v1/watch/inbox-preference/query`
 - Watch task/board gather API: `POST /v1/watch/tasks/query`
 - Watch task/board propagation API: `POST /v1/watch/task-events/publish`
-- Nostr WebSocket relay: kinds `1059` and `10050`
+- Nostr WebSocket relay: kinds `5`, `1059`, and `10050`
 - Health endpoint: `GET /healthz`
-- One-use-style preview retrieval: `GET /v1/previews/:opaqueToken` (expires after 15 minutes)
+- One-use preview retrieval: `GET /v1/previews/:opaqueToken` (expires after 15 minutes, works once).
+  A NIP-98-signed fetch must be signed by the recipient; unsigned fetches from older iPhone builds
+  are accepted until `REQUIRE_SIGNED_PREVIEWS=true`
 - Persistent state: `/data/state.json`
 - APNs configuration: `/data/apns.json`
-- Separate iOS and watchOS APNs topics; the defaults are `solife.me.Taskify.Native` and
-  `solife.me.Taskify.Native.watchkitapp`
-- Event retention: 30 days, at most 500 wraps per recipient and 100,000 total
+- Separate Taskify iOS, Taskify watchOS, and Snapstr iOS APNs topics; the defaults are
+  `solife.me.Taskify.Native`, `solife.me.Taskify.Native.watchkitapp`, and `app.snapstr.ios`
+- Alerts are routed by the sending app. Gift wraps are opaque, so Snapstr adds
+  `["client", "snapstr"]` to its NIP-42 sign-in here (and only here); its wraps alert only Snapstr
+  devices. Any other sender alerts only Taskify devices, or an account's Snapstr devices when it
+  has no Taskify device.
+- Event retention: 30 days, at most 500 wraps and 8 MiB per recipient, and 100,000 wraps and 128 MiB
+  in total (oldest evicted first)
+- Gift wraps are stored only for accounts that use this relay as an inbox: a registered device or
+  an inbox preference stored here. Others are refused with `restricted:`.
+- At most 32 relay-authorization sessions per account and 256 in total wait for a Watch to sign
 - Task/board cache retention: latest encrypted event per replaceable coordinate, discarded after
   30 days without being observed, at most 2,000 per public board author and 100,000 total
-- Device registrations: at most 10 per Nostr account and 100,000 total
+- Device registrations: at most 10 per Nostr account and 100,000 total. A registration not
+  refreshed for 90 days expires (the apps re-register on every launch); when the table is full
+  the registration refreshed longest ago is dropped to make room. Registrations identify their
+  application so APNs uses the matching bundle topic; omitted application values remain Taskify
+  for backward compatibility
+- WebSocket: at most 2,000 connections per process, 64 per client address, and 100 messages per
+  connection every 10 seconds; a connection that has not answered the NIP-42 challenge within
+  60 seconds is closed
+- Client address: behind a proxy every connection comes from the proxy, so per-address limits
+  (the WebSocket cap above and the 1,200-a-minute NIP-98 request limit) read the address from the
+  header named by `CLIENT_ADDRESS_HEADER`, grouping IPv6 by /64. The StartOS package sets
+  `cf-connecting-ip` for the Cloudflare tunnel. Without the header, the per-address WebSocket cap
+  is off and the request limit is shared by everyone. A client that can reach the port without
+  going through the proxy can choose its own address
+- NIP-98 requests: signature, then per-account rate limit, then the one-use record, which refuses
+  new requests rather than forgetting live entries when full
+- Watch forwarding: at most 240 forwards a minute to any one destination host across all
+  accounts (they all leave from this server's address), and at most 4 MiB buffered from one
+  relay's answer to a query
+- A refusal from another relay during Watch forwarding is returned as `502` with the relay's text
+  in `relayMessage`, never as `401` or `429`
 - APNs jobs survive restarts and retry temporary failures with bounded exponential backoff
+- At most one unsent alert per device: further wraps repoint it at the newest wrap, and a device
+  gets its next alert no sooner than 10 seconds after the last one Apple accepted
 
 The production public origins are intentionally pinned to `https://push.solife.me` and
 `wss://push.solife.me` so NIP-98 and NIP-42 signatures cannot be replayed to a different origin.
@@ -100,8 +134,9 @@ See the [September 2026 pipeline audit](../docs/audits/nostr-sync-audit-2026-09-
 is newest-first, resolves equal timestamps by ascending event ID, and applies each filter's
 limit independently; limits do not suppress subsequent live events. ID/author filters use exact
 matches. Forwarding honors the relay's OK acceptance boolean even if rejection text says
-`duplicate`. The NIP-11 capability list no longer claims NIP-09 deletion support: kind-5 deletion
-requests are not implemented. Existing retention limits continue to apply.
+`duplicate`. The relay accepts NIP-09 kind-5 deletion requests and removes only referenced events
+signed by the deletion author, including pending alerts and previews for a deleted gift wrap.
+Existing retention limits continue to apply.
 
 Client fallback DM delivery remains supported for users without published inbox preferences.
 The gateway forwards only the targets explicitly supplied by the Watch and does not choose

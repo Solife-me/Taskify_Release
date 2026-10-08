@@ -2,6 +2,7 @@ import SwiftUI
 import TaskifyCore
 #if canImport(UIKit)
 import UIKit
+import UniformTypeIdentifiers
 #endif
 
 // MARK: - Solife forwarding
@@ -1012,7 +1013,13 @@ struct NWCTokensSheet: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(wallet.isMovingToNWC || states[pending.id] == .claimed)
-                            Button("Copy") { UIPasteboard.general.string = pending.token }
+                            Button("Copy") {
+                                // A token is cash: keep it off Universal Clipboard and clear it soon.
+                                UIPasteboard.general.setItems(
+                                    [[UTType.plainText.identifier: pending.token]],
+                                    options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(600)]
+                                )
+                            }
                                 .buttonStyle(.bordered)
                             Button("Remove", role: .destructive) { confirmRemove = pending }
                                 .buttonStyle(.bordered)

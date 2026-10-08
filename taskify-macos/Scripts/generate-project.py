@@ -33,7 +33,7 @@ for path in paths:
     builds.append(obj(rel+'build', f'isa = PBXBuildFile; fileRef = {ident(rel)};'))
 product=obj('product','isa = PBXFileReference; explicitFileType = wrapper.application; path = Taskify.app; sourceTree = BUILT_PRODUCTS_DIR;')
 resource_builds=[]
-for rel, file_type in [('Taskify.icns', 'image.icns'), ('../taskify-ios-native/Sources/TaskifyApp/Resources/ThirdPartyNotices.txt', 'text')]:
+for rel, file_type in [('Taskify.icns', 'image.icns'), ('PrivacyInfo.xcprivacy', 'text.xml'), ('../taskify-ios-native/Sources/TaskifyApp/Resources/ThirdPartyNotices.txt', 'text')]:
     files.append(obj(rel, f'isa = PBXFileReference; lastKnownFileType = {file_type}; path = {q(rel)}; sourceTree = SOURCE_ROOT;'))
     resource_builds.append(obj(rel+'build',f'isa = PBXBuildFile; fileRef = {ident(rel)};'))
 obj('group',f'isa = PBXGroup; children = ({",".join(files+[product])}); sourceTree = "<group>";')

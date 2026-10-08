@@ -9,6 +9,7 @@
 <key>CFBundleShortVersionString</key><string>0.1</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+<key>ITSAppUsesNonExemptEncryption</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSCalendarsFullAccessUsageDescription</key><string>Show and manage your calendar events in Taskify.</string>
 <key>NSRemindersFullAccessUsageDescription</key><string>Show and complete your reminders in Taskify.</string>

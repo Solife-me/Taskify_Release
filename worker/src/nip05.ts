@@ -2,15 +2,17 @@
 // split, pass 5).
 //
 // Resolves `name@domain` style NIP-05 identifiers to a pubkey by fetching
-// `https://<domain>/.well-known/nostr.json?name=<name>`. Falls back to http
-// only for localhost, and caches successful responses in Cloudflare's Cache API
+// `https://<domain>/.well-known/nostr.json?name=<name>` (then the whole file),
+// public hosts only, and caches successful responses in Cloudflare's Cache API
 // for 15 minutes (the cache also protects upstream identity servers from
 // hammering during sync storms).
 
-import { jsonResponse, MINUTE_MS } from "./lib.ts";
+import { jsonResponse, MINUTE_MS, readBodyWithin } from "./lib.ts";
 import { assertPublicHttpUrl, fetchPublicHttpUrl, UnsafePublicUrlError } from "./public-fetch.ts";
 
 const NIP05_CACHE_MAX_AGE_MS = 15 * MINUTE_MS;
+const NIP05_FETCH_TIMEOUT_MS = 5_000;
+const NIP05_MAX_RESPONSE_BYTES = 256 * 1024;
 
 // Cloudflare Workers Cache API shape (not bundled in `@cloudflare/workers-types`
 // when targeting the script bundle; defined inline for self-containment).
@@ -57,7 +59,10 @@ function getCacheTimestamp(response: Response): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-export async function handleNip05Lookup(url: URL): Promise<Response> {
+export async function handleNip05Lookup(
+  url: URL,
+  ctx?: { waitUntil(promise: Promise<unknown>): void },
+): Promise<Response> {
   const addressParam = url.searchParams.get("address") ?? url.searchParams.get("addr") ?? url.searchParams.get("nip05");
   const parsed = parseNip05Address(addressParam);
   if (!parsed) {
@@ -91,19 +96,27 @@ export async function handleNip05Lookup(url: URL): Promise<Response> {
     try {
       const { response: res, finalUrl } = await fetchPublicHttpUrl(target, {
         headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(NIP05_FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
         lastError = `NIP-05 lookup failed (${res.status})`;
         continue;
       }
-      const record = await res.json();
+      const bytes = await readBodyWithin(res, NIP05_MAX_RESPONSE_BYTES);
+      if (!bytes) {
+        lastError = "NIP-05 response too large";
+        continue;
+      }
+      const record = JSON.parse(new TextDecoder().decode(bytes));
       const response = jsonResponse({ nip05: normalized, resolvedFrom: finalUrl, record });
       if (cacheStorage && cacheKey) {
         response.headers.set("Cache-Control", `public, max-age=${Math.floor(NIP05_CACHE_MAX_AGE_MS / 1000)}`);
         const now = new Date();
         response.headers.set("Date", now.toUTCString());
         response.headers.set("X-Cache-Timestamp", String(now.getTime()));
-        cacheStorage.default.put(cacheKey, response.clone()).catch(() => {});
+        const write = cacheStorage.default.put(cacheKey, response.clone()).catch(() => {});
+        // Without waitUntil the runtime may drop the write once the response is sent.
+        ctx?.waitUntil(write);
       }
       return response;
     } catch (err) {

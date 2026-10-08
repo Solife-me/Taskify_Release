@@ -21,7 +21,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/cashubtc/cdk-swift.git",
-            exact: "0.18.0"
+            exact: "0.18.1"
         ),
         .package(
             url: "https://github.com/BlockchainCommons/URKit.git",
@@ -62,7 +62,7 @@ let package = Package(
             exclude: [
                 "Info.plist", "TaskifyWatchApp.swift", "TaskifyWatchAppModel.swift",
                 "TaskifyWatchRootView.swift", "TaskifyWatchChatView.swift",
-                "TaskifyWatchIndependentClient.swift",
+                "TaskifyWatchIndependentClient.swift", "PrivacyInfo.xcprivacy",
             ],
             sources: ["TaskifyWatchChatClient.swift", "TaskifyWatchChatStore.swift", "TaskifyWatchAvatarLoader.swift",
                       "TaskifyWatchPhotoLoader.swift", "TaskifyWatchViewCache.swift", "TaskifyWatchMarkdownCache.swift"]

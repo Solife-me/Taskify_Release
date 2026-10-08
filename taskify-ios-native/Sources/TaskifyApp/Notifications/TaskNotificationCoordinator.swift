@@ -589,6 +589,12 @@ private final class NotificationPresentationDelegate: NSObject, UNUserNotificati
             completionHandler()
             return
         }
+        // Task reminders are local notifications; a pushed one cannot complete a task.
+        if case .completeTask = action,
+           response.notification.request.trigger is UNPushNotificationTrigger {
+            completionHandler()
+            return
+        }
 
         Task { @MainActor in
             await TaskNotificationActionRouter.shared.handle(action)

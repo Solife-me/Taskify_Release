@@ -3,6 +3,11 @@ import { loadConfig } from './config.js'
 import { createTaskifyPushServer } from './server.js'
 import { RelayStore } from './store.js'
 
+// Last line of defence: a stray rejection is logged by type only, never allowed to stop the relay.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection', reason?.name ?? typeof reason)
+})
+
 const config = await loadConfig()
 const store = new RelayStore({ dataDirectory: config.dataDirectory })
 await store.load()

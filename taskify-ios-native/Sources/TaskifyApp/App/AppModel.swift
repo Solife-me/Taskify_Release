@@ -6,160 +6,6 @@ import TaskifyCore
 import TaskifyWatchShared
 import WidgetKit
 
-struct BoardTemplateShareResult: Sendable {
-    let board: Board
-    let queuedTaskCount: Int
-    let failedTaskCount: Int
-    let queuedEventCount: Int
-    let failedEventCount: Int
-}
-
-enum BoardTemplateShareError: LocalizedError {
-    case boardUnavailable
-    case unsupportedBoard
-
-    var errorDescription: String? {
-        switch self {
-        case .boardUnavailable:
-            "That board is no longer available."
-        case .unsupportedBoard:
-            "Template sharing currently supports week and list boards."
-        }
-    }
-}
-
-struct SharedTaskSendResult: Sendable {
-    let recipientNpub: String
-    let relayCount: Int
-    let assignment: Bool
-}
-
-enum NostrContactDirectoryError: LocalizedError {
-    case identityUnavailable
-    case invalidPublicKey
-    case cannotAddSelf
-    case noRelays
-    case contactUnavailable
-
-    var errorDescription: String? {
-        switch self {
-        case .identityUnavailable: "Your Nostr identity is unavailable."
-        case .invalidPublicKey: "Enter a valid npub or 64-character public key."
-        case .cannotAddSelf: "Your own Nostr account does not need to be added as a contact."
-        case .noRelays: "No Nostr relays are configured for contact sync."
-        case .contactUnavailable: "That contact is no longer available."
-        }
-    }
-}
-
-enum ProfilePictureUploadError: LocalizedError {
-    case invalidServer
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidServer: "The configured file server URL is invalid."
-        }
-    }
-}
-
-enum SharedTaskSendError: LocalizedError {
-    case taskUnavailable
-    case eventUnavailable
-    case identityUnavailable
-    case invalidRecipient
-    case cannotSendToSelf
-    case noRelays
-
-    var errorDescription: String? {
-        switch self {
-        case .taskUnavailable: "That task is no longer available."
-        case .eventUnavailable: "That event is not available for sharing."
-        case .identityUnavailable: "Your Nostr identity is unavailable."
-        case .invalidRecipient: "Enter a valid npub or 64-character public key."
-        case .cannotSendToSelf: "Choose another Nostr account as the recipient."
-        case .noRelays: "No Nostr relays are configured for delivery."
-        }
-    }
-}
-
-enum StructuredShareSendError: LocalizedError {
-    case contactUnavailable
-    case boardUnavailable
-    case identityUnavailable
-    case invalidRecipient
-    case cannotSendToSelf
-    case noRelays
-
-    var errorDescription: String? {
-        switch self {
-        case .contactUnavailable: "That contact is no longer available."
-        case .boardUnavailable: "That board is no longer available."
-        case .identityUnavailable: "Your Nostr identity is unavailable."
-        case .invalidRecipient: "That conversation has an invalid Nostr public key."
-        case .cannotSendToSelf: "Choose another Nostr account as the recipient."
-        case .noRelays: "No Nostr relays are configured for delivery."
-        }
-    }
-}
-
-enum NostrDirectMessageError: LocalizedError {
-    case identityUnavailable
-    case invalidRecipient
-    case emptyMessage
-    case noRelays
-    case invalidAttachment
-    case invalidGroup
-    case groupUnavailable
-    case emptyGroupName
-    case leftGroup
-
-    var errorDescription: String? {
-        switch self {
-        case .identityUnavailable: "Your Nostr identity is unavailable."
-        case .invalidRecipient: "That conversation has an invalid Nostr public key."
-        case .emptyMessage: "Enter a message before sending."
-        case .noRelays: "No Nostr inbox relays are available for this recipient."
-        case .invalidAttachment: "That encrypted attachment is invalid or incomplete."
-        case .invalidGroup: "Choose at least two contacts. Groups can contain up to 17 people including you."
-        case .groupUnavailable: "That group conversation is no longer available."
-        case .emptyGroupName: "Enter a group name before saving."
-        case .leftGroup: "Rejoin this group before sending a message."
-        }
-    }
-}
-
-/// The account-level relay set, stored per device. Falls back to the built-in defaults until
-/// the user edits it.
-enum AppRelaySettings {
-    private static let key = "taskify.sync.appRelays"
-
-    static var urls: [String] {
-        let stored = UserDefaults.standard.stringArray(forKey: key) ?? []
-        let normalized = TaskifyRelayURL.normalizedList(stored)
-        return normalized.isEmpty ? TaskifyRelayDefaults.urls : normalized
-    }
-
-    static func setURLs(_ urls: [String]) {
-        UserDefaults.standard.set(TaskifyRelayURL.normalizedList(urls), forKey: key)
-    }
-}
-
-/// Relays the user removed from this device's sync list. Device-local: nothing is published and
-/// board relay lists are untouched — the app just stops connecting to, publishing to, and waiting
-/// on these relays.
-enum SyncExcludedRelaySettings {
-    private static let key = "taskify.sync.excludedRelays"
-
-    static var urls: Set<String> {
-        let stored = UserDefaults.standard.stringArray(forKey: key) ?? []
-        return Set(TaskifyRelayURL.normalizedList(stored))
-    }
-
-    static func setURLs(_ urls: Set<String>) {
-        UserDefaults.standard.set(urls.sorted(), forKey: key)
-    }
-}
-
 // @Observable (vs. the old ObservableObject + @Published) makes SwiftUI track which of these
 // properties each view actually reads, so e.g. a relay-status tick no longer re-renders every
 // board and chat view in the app — with 26 frequently-churning properties and every screen
@@ -170,23 +16,19 @@ final class AppModel {
     private static let accountBackupOutboxScope = "__taskify-account-backup__"
     private static let sharedInboxOutboxScope = "__taskify-shared-inbox__"
     private static let contactsOutboxScope = "__taskify-contacts__"
-    private static let directMessagesOutboxScope = "__taskify-direct-messages__"
+    static let directMessagesOutboxScope = "__taskify-direct-messages__"
     private static let nip17PreferencesOutboxScope = "__taskify-nip17-preferences__"
-    private static let dmPerformanceLog = OSLog(
+    static let dmPerformanceLog = OSLog(
         subsystem: "solife.me.Taskify.Native",
         category: .pointsOfInterest
     )
-    private struct GroupGiftWrapDelivery: Sendable {
+    struct GroupGiftWrapDelivery: Sendable {
         let memberPublicKey: String
         let event: NostrEvent
         let relayURLs: [String]
     }
-    private struct GroupRelayResolutionInput: Sendable {
-        let memberPublicKey: String
-        let discoveryRelayURLs: [String]
-    }
     private static let profileOutboxScope = "__taskify-profile__"
-    private(set) var snapshot = TaskifySnapshot.empty {
+    var snapshot = TaskifySnapshot.empty {
         didSet {
             snapshotLookupCache.invalidate(from: oldValue, to: snapshot)
             snapshotRevision &+= 1
@@ -231,6 +73,9 @@ final class AppModel {
     /// When this process last wrote the store, so a newer file can be recognised as someone
     /// else's write rather than an echo of our own.
     private var lastStoreWriteAt = Date.distantPast
+    /// The tasks as this process last read or wrote them: the base for merging what another
+    /// process (the widget, the Add Task and Siri shortcuts) wrote to the shared store since.
+    @ObservationIgnored private var persistedTasks: [TaskItem] = []
     private(set) var syncStatus = "Starting"
     private(set) var syncDetail = "Preparing secure relay connections"
     private(set) var relayStatuses: [TaskRelayStatus] = []
@@ -250,7 +95,7 @@ final class AppModel {
     private(set) var fastingRemindersMode = FastingRemindersSettings.mode
     private(set) var fastingRemindersPerMonth = FastingRemindersSettings.perMonth
     private(set) var fastingRemindersWeekday = FastingRemindersSettings.weekday
-    private(set) var scriptureMemoryState = AppModel.loadScriptureMemoryState()
+    var scriptureMemoryState = AppModel.loadScriptureMemoryState()
     private(set) var scriptureMemoryEnabled = ScriptureMemorySettings.enabled
     private(set) var scriptureMemoryBoardID = ScriptureMemorySettings.boardID
     private(set) var scriptureMemoryFrequency = ScriptureMemorySettings.frequency
@@ -294,7 +139,7 @@ final class AppModel {
     // tracking (they churn constantly during sync).
     @ObservationIgnored private let store: JSONTaskStore
     @ObservationIgnored private let identityStore: KeychainIdentityStore
-    @ObservationIgnored private let syncEngine: TaskSyncEngine
+    @ObservationIgnored let syncEngine: TaskSyncEngine
     @ObservationIgnored private let notificationCoordinator: TaskNotificationCoordinator
     @ObservationIgnored private let snapshotLookupCache = SnapshotLookupCache()
     @ObservationIgnored private var saveTask: Task<Void, Never>?
@@ -310,7 +155,7 @@ final class AppModel {
     @ObservationIgnored private var didStartDeferredServices = false
     @ObservationIgnored private var sharedInboxQueue = NIP17InboxProcessingQueue()
     @ObservationIgnored private var sharedInboxQueueIdentity: String?
-    @ObservationIgnored private var accountBackupBaseline: NostrAppBackupPayload?
+    @ObservationIgnored private(set) var accountBackupBaseline: NostrAppBackupPayload?
     /// Whether this launch has finished looking for the account's synced settings (found or not).
     /// Until then a setting that names a board may simply not have arrived yet.
     @ObservationIgnored private var accountSyncSettled = false
@@ -327,18 +172,18 @@ final class AppModel {
     @ObservationIgnored private var pendingDMPushCategories: Set<DMPushNotificationCategory> = []
     // Keychain reads are slow syscalls; shared-inbox events arrive in bursts during initial
     // sync and each needs the identity to unwrap its gift wrap, so cache it in memory.
-    @ObservationIgnored private var cachedIdentity: NostrIdentity?
+    @ObservationIgnored private(set) var cachedIdentity: NostrIdentity?
     @ObservationIgnored private var ownProfileEventID: String?
     @ObservationIgnored private var ownProfileEventContent: String?
     @ObservationIgnored private var ownProfileLoadTask: Task<Void, Never>?
     /// The one Bible tracker store for the app, so a change synced from another device reaches
     /// every view showing it.
     @ObservationIgnored let bibleTrackerStore = BibleTrackerStore()
-    @ObservationIgnored private var appStateLedger = AppModel.loadAppStateLedger()
-    @ObservationIgnored private var appStateFetchTask: Task<Void, Never>?
-    @ObservationIgnored private var appStatePublishTasks: [String: Task<Void, Never>] = [:]
-    @ObservationIgnored private var lastAppStateFetchAt: Date?
-    @ObservationIgnored private var isApplyingSyncedScriptureMemory = false
+    @ObservationIgnored var appStateLedger = AppModel.loadAppStateLedger()
+    @ObservationIgnored var appStateFetchTask: Task<Void, Never>?
+    @ObservationIgnored var appStatePublishTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored var lastAppStateFetchAt: Date?
+    @ObservationIgnored var isApplyingSyncedScriptureMemory = false
     /// Whether this session's relays have delivered their stored history. Generated tasks
     /// (fasting reminders, full-week recurring instances, the first scripture review) use ids
     /// every device derives the same way; generating one before the relays deliver it would
@@ -1354,7 +1199,7 @@ final class AppModel {
             viewAddress: "",
             eventKey: TaskifyCalendarEventCodec.generateEventKey(),
             inviteToken: "",
-            relayURLs: board.effectiveRelayURLs,
+            relayURLs: board.syncRelayURLs,
             rsvpStatus: .accepted,
             readOnly: false,
             deleted: false
@@ -1539,7 +1384,7 @@ final class AppModel {
 
         let relayURLs = TaskifyRelayURL.normalizedList(
             (event.relayURLs ?? [])
-                + board.effectiveRelayURLs
+                + board.syncRelayURLs
                 + appRelays
                 + sharedInboxRelayURLs
         )
@@ -2208,27 +2053,43 @@ final class AppModel {
         }
     }
 
-    /// Re-reads the store when something outside the app has written to it -- currently the
-    /// widget's complete-task button, which edits the shared file directly.
-    ///
-    /// Without this the app keeps its in-memory snapshot across a backgrounding, so a task
-    /// completed from the widget reappears when the app comes forward, and the app's next save
-    /// writes that stale state back over the widget's. The file's modification date is the signal:
-    /// anything newer than our own last write came from elsewhere.
+    /// Picks up what something outside the app has written to the store -- the widget's
+    /// complete-task button and the Add Task and Siri shortcuts edit the shared file directly.
     func reloadIfChangedExternally() {
-        guard !isLoading else { return }
-        guard let modified = try? FileManager.default.attributesOfItem(
-            atPath: JSONTaskStore.defaultURL.path
-        )[.modificationDate] as? Date else { return }
-        guard modified > lastStoreWriteAt.addingTimeInterval(0.5) else { return }
+        Task { @MainActor in await absorbExternalStoreChanges() }
+    }
 
-        Task { @MainActor in
-            guard let reloaded = try? await store.load() else { return }
-            guard reloaded != snapshot else { return }
-            snapshot = reloaded
-            lastStoreWriteAt = Date()
-            refreshNotifications(requestPermission: false)
-        }
+    /// Merges task changes another process wrote to the store since this process last read or
+    /// wrote it, and publishes them. Without this the app keeps its in-memory snapshot, a
+    /// completion or task added outside the app never reaches the relays, and the app's next
+    /// save writes over it. The file's modification date is the signal: anything newer than our
+    /// own last write came from elsewhere. Only tasks are merged; nothing else writes the rest.
+    private func absorbExternalStoreChanges() async {
+        guard !isLoading,
+              let modified = try? FileManager.default.attributesOfItem(
+                  atPath: JSONTaskStore.defaultURL.path
+              )[.modificationDate] as? Date,
+              modified > lastStoreWriteAt.addingTimeInterval(0.5),
+              let onDisk = try? await store.load() else { return }
+        let merge = TaskifySnapshot.mergingExternalTaskChanges(
+            base: persistedTasks,
+            ours: snapshot.tasks,
+            theirs: onDisk.tasks
+        )
+        persistedTasks = onDisk.tasks
+        lastStoreWriteAt = Date()
+        guard !merge.changedTaskIDs.isEmpty else { return }
+        snapshot.tasks = merge.tasks
+        let liveIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
+        synchronizeTasks(merge.changedTaskIDs.filter(liveIDs.contains))
+        refreshNotifications(requestPermission: false)
+        scheduleSave()
+    }
+
+    /// Records a write of `saved` to the store by this process.
+    private func noteStoreWritten(_ saved: TaskifySnapshot) {
+        lastStoreWriteAt = Date()
+        persistedTasks = saved.tasks
     }
 
     func refreshSyncIfNeeded() {
@@ -2510,7 +2371,7 @@ final class AppModel {
             guard !assignment else { throw SharedTaskSendError.invalidRecipient }
             let identity = try outboundIdentity()
             let envelope = TaskifyShareEnvelope(
-                item: .task(SharedTaskDelivery(task: task, relayURLs: board.effectiveRelayURLs)),
+                item: .task(SharedTaskDelivery(task: task, relayURLs: board.syncRelayURLs)),
                 senderNpub: identity.npub
             )
             try await sendDirectMessage(to: group.groupID, content: envelope.messageContent())
@@ -2529,7 +2390,7 @@ final class AppModel {
             recipientPublicKey: recipientPublicKey.hexString
         )
         let fallbackRelays = TaskifyRelayURL.normalizedList(
-            knownContactRelays + board.effectiveRelayURLs
+            knownContactRelays + board.syncRelayURLs
         )
         guard !fallbackRelays.isEmpty else { throw SharedTaskSendError.noRelays }
         let recipientHex = recipientPublicKey.hexString
@@ -2741,564 +2602,6 @@ final class AppModel {
         )
     }
 
-    /// One rumor's payload before wrapping: its kind, content, and extra tags.
-    private struct DirectMessageRumorDraft: Sendable {
-        let kind: Int
-        let content: String
-        let additionalTags: [[String]]
-    }
-
-    func sendDirectMessage(
-        to recipientValue: String,
-        content: String,
-        replyToEventID: String? = nil
-    ) async throws {
-        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw NostrDirectMessageError.emptyMessage }
-#if DEBUG
-        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] == "1",
-           ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] == "1" {
-            // Exercise local insertion before composer clearing without publishing test data.
-            let eventID = UUID().uuidString
-            if snapshot.ingestDirectMessage(NostrDirectMessage(
-                rumorEventID: eventID, wrapEventID: eventID,
-                peerPublicKey: recipientValue, senderPublicKey: identityPublicKey,
-                content: text, createdAt: currentDirectMessageTimestamp(), isIncoming: false,
-                replyToEventID: replyToEventID
-            )) {
-                scheduleSave()
-            }
-            await Task.yield()
-            return
-        }
-#endif
-        try await publishDirectMessageRumorBatch(
-            to: recipientValue,
-            drafts: [DirectMessageRumorDraft(
-                kind: NIP17GiftWrap.rumorKind,
-                content: text,
-                additionalTags: []
-            )],
-            replyToEventID: replyToEventID,
-            attachmentComment: nil
-        )
-    }
-
-    /// One file per kind 15 rumor (NIP-17 has no multi-file event), sent as a
-    /// single ordered batch with an optional caption kind 14 after the files.
-    func sendDirectMessageAttachments(
-        to recipientValue: String,
-        attachments: [NostrDirectMessageAttachment],
-        replyToEventID: String? = nil,
-        comment: String? = nil
-    ) async throws {
-        guard !attachments.isEmpty,
-              attachments.count <= NostrDirectMessageAttachment.maximumBatchCount else {
-            throw NostrDirectMessageError.invalidAttachment
-        }
-        let drafts = try attachments.map { attachment in
-            guard let validated = NostrDirectMessageAttachment(
-                url: attachment.url,
-                mimeType: attachment.mimeType,
-                filename: attachment.filename,
-                size: attachment.size,
-                width: attachment.width,
-                height: attachment.height,
-                algorithm: attachment.algorithm,
-                keyHex: attachment.keyHex,
-                nonceHex: attachment.nonceHex,
-                sha256: attachment.sha256
-            ) else {
-                throw NostrDirectMessageError.invalidAttachment
-            }
-            return DirectMessageRumorDraft(
-                kind: NostrDirectMessageAttachment.rumorKind,
-                content: validated.url,
-                additionalTags: validated.rumorTags
-            )
-        }
-        try await publishDirectMessageRumorBatch(
-            to: recipientValue,
-            drafts: drafts,
-            replyToEventID: replyToEventID,
-            attachmentComment: comment
-        )
-    }
-
-    private func publishDirectMessageRumorBatch(
-        to recipientValue: String,
-        drafts: [DirectMessageRumorDraft],
-        replyToEventID: String?,
-        attachmentComment: String?
-    ) async throws {
-        guard !drafts.isEmpty else { throw NostrDirectMessageError.emptyMessage }
-        if let group = snapshot.groupConversation(id: recipientValue) {
-            guard !snapshot.hasLeftDirectMessageGroup(group.groupID) else {
-                throw NostrDirectMessageError.leftGroup
-            }
-            try await publishGroupRumors(
-                group: group,
-                drafts: drafts,
-                replyToEventID: replyToEventID,
-                attachmentComment: attachmentComment
-            )
-            return
-        }
-        let sendSignpostID = OSSignpostID(log: Self.dmPerformanceLog)
-        let sendStartedAt = ProcessInfo.processInfo.systemUptime
-        os_signpost(
-            .begin,
-            log: Self.dmPerformanceLog,
-            name: "DM Send",
-            signpostID: sendSignpostID
-        )
-        defer {
-            os_signpost(
-                .end,
-                log: Self.dmPerformanceLog,
-                name: "DM Send",
-                signpostID: sendSignpostID,
-                "total_ms=%.1f",
-                (ProcessInfo.processInfo.systemUptime - sendStartedAt) * 1_000
-            )
-        }
-        let identity = try outboundIdentity()
-        guard let recipientPublicKey = NostrPublicKey.parse(recipientValue) else {
-            throw NostrDirectMessageError.invalidRecipient
-        }
-        let recipientHex = recipientPublicKey.hexString
-        let fallbackRelays = directMessageDiscoveryRelayURLs(recipientPublicKey: recipientHex)
-        guard !fallbackRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
-        let resolutionStartedAt = ProcessInfo.processInfo.systemUptime
-        guard let deliveryPlan = await nip17DeliveryPlan(
-            recipientPublicKey: recipientHex,
-            discoveryRelayURLs: fallbackRelays,
-            identity: identity
-        ) else { throw NostrDirectMessageError.noRelays }
-        os_signpost(
-            .event,
-            log: Self.dmPerformanceLog,
-            name: "DM Relay Resolution",
-            signpostID: sendSignpostID,
-            "duration_ms=%.1f recipient_relays=%d discovery_relays=%d",
-            (ProcessInfo.processInfo.systemUptime - resolutionStartedAt) * 1_000,
-            deliveryPlan.recipientRelayURLs.count,
-            fallbackRelays.count
-        )
-
-        // Strictly increasing timestamps keep a multi-file batch ordered on
-        // every client; a single draft keeps today's exact wire behavior.
-        let replyTag = validNostrEventID(replyToEventID).map { ["e", $0] }
-        let baseCreatedAt = currentDirectMessageTimestamp()
-        let cryptoStartedAt = ProcessInfo.processInfo.systemUptime
-        let batch = try await TaskifyRelayProofOfWork.prepare(relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs) {
-            let rumors = try drafts.enumerated().map { index, draft in
-                var rumorTags = [["p", recipientHex]] + draft.additionalTags
-                if let replyTag { rumorTags.append(replyTag) }
-                return try NIP17Rumor(
-                    publicKey: identity.publicKeyHex,
-                    createdAt: baseCreatedAt + index,
-                    kind: draft.kind,
-                    tags: rumorTags,
-                    content: draft.content
-                )
-            }
-            var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
-            routes[recipientHex] = deliveryPlan.recipientRelayURLs
-            return try NIP17OutgoingMessageBatch(rumors: rumors, attachmentComment: attachmentComment,
-                identity: identity, relayURLsByRecipient: routes)
-        }
-        os_signpost(
-            .event,
-            log: Self.dmPerformanceLog,
-            name: "DM Gift Wrap",
-            signpostID: sendSignpostID,
-            "duration_ms=%.1f",
-            (ProcessInfo.processInfo.systemUptime - cryptoStartedAt) * 1_000
-        )
-        let allDeliveryRelays = TaskifyRelayURL.normalizedList(
-            deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
-        )
-        let enqueueStartedAt = ProcessInfo.processInfo.systemUptime
-        try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: false)
-        let queuedCount = await syncEngine.pendingPublishCount()
-        os_signpost(
-            .event,
-            log: Self.dmPerformanceLog,
-            name: "DM Durable Queue",
-            signpostID: sendSignpostID,
-            "duration_ms=%.1f outbox_entries=%d target_relays=%d",
-            (ProcessInfo.processInfo.systemUptime - enqueueStartedAt) * 1_000,
-            queuedCount,
-            allDeliveryRelays.count
-        )
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: allDeliveryRelays,
-                inboxPublicKey: identity.publicKeyHex,
-                inboxRelayURLs: deliveryPlan.senderRelayURLs
-            )
-        }
-    }
-
-    func sendDirectMessageReaction(
-        to message: NostrDirectMessage,
-        emoji: String
-    ) async throws {
-        let value = emoji.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { throw NostrDirectMessageError.emptyMessage }
-        let identity = try outboundIdentity()
-        if let groupID = message.groupID,
-           let group = snapshot.groupConversation(id: groupID) {
-            guard !snapshot.hasLeftDirectMessageGroup(group.groupID) else {
-                throw NostrDirectMessageError.leftGroup
-            }
-            try await publishGroupReaction(
-                group: group,
-                message: message,
-                emoji: value,
-                identity: identity
-            )
-            return
-        }
-        guard let recipientPublicKey = NostrPublicKey.parse(message.peerPublicKey) else {
-            throw NostrDirectMessageError.invalidRecipient
-        }
-        let recipientHex = recipientPublicKey.hexString
-        let isSelfMessage = recipientHex == identity.publicKeyHex
-        let fallbackRelays = directMessageDiscoveryRelayURLs(recipientPublicKey: recipientHex)
-        guard !fallbackRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
-        guard let deliveryPlan = await nip17DeliveryPlan(
-            recipientPublicKey: recipientHex,
-            discoveryRelayURLs: fallbackRelays,
-            identity: identity
-        ) else { throw NostrDirectMessageError.noRelays }
-
-        let createdAt = nextNostrTimestamp()
-        let wrapped = try await TaskifyRelayProofOfWork.prepare(relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs) {
-            let rumor = try NIP17Rumor(
-                publicKey: identity.publicKeyHex,
-                createdAt: createdAt,
-                kind: 7,
-                tags: [
-                    ["p", recipientHex],
-                    ["e", message.rumorEventID],
-                    ["p", message.senderPublicKey],
-                ],
-                content: value
-            )
-            let recipientWrap = try NIP17GiftWrap.wrap(
-                rumor: rumor,
-                sender: identity,
-                recipientPublicKey: recipientPublicKey
-            )
-            let senderWrap = isSelfMessage
-                ? recipientWrap
-                : try NIP17GiftWrap.wrap(
-                    rumor: rumor,
-                    sender: identity,
-                    recipientPublicKey: identity.publicKey
-                )
-            return (rumor, recipientWrap, senderWrap)
-        }
-        let rumor = wrapped.0
-        let recipientWrap = wrapped.1
-        let senderWrap = wrapped.2
-        let decrypted = NIP17DecryptedRumor(wrapEventID: senderWrap.id, rumor: rumor)
-        guard let localReaction = NostrDirectMessageReaction(
-            decrypted: decrypted,
-            identityPublicKey: identity.publicKeyHex
-        ) else { throw NostrDirectMessageError.invalidRecipient }
-        if snapshot.ingestDirectMessageReaction(localReaction) { scheduleSave() }
-
-        let allDeliveryRelays = TaskifyRelayURL.normalizedList(
-            deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
-        )
-        let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
-        var requests = [TaskSyncRelayPublishRequest(
-            event: recipientWrap,
-            relayURLs: deliveryPlan.recipientRelayURLs,
-            outboxScope: Self.directMessagesOutboxScope,
-            recordID: "\(rumor.id):reaction:recipient",
-            acknowledgementPolicy: .anyRelay,
-            expiresAt: expiresAt
-        )]
-        if !isSelfMessage {
-            requests.append(TaskSyncRelayPublishRequest(
-                event: senderWrap,
-                relayURLs: deliveryPlan.senderRelayURLs,
-                outboxScope: Self.directMessagesOutboxScope,
-                recordID: "\(rumor.id):reaction:sender",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
-            ))
-        }
-        try await syncEngine.enqueueForPublish(requests)
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: allDeliveryRelays,
-                inboxPublicKey: identity.publicKeyHex,
-                inboxRelayURLs: deliveryPlan.senderRelayURLs
-            )
-        }
-    }
-
-    private func publishGroupRumors(
-        group: NostrGroupConversation,
-        drafts: [DirectMessageRumorDraft],
-        replyToEventID: String?,
-        attachmentComment: String?
-    ) async throws {
-        let identity = try outboundIdentity()
-        guard group.memberPublicKeys.contains(identity.publicKeyHex),
-              group.memberPublicKeys.count <= NostrGroupConversation.maximumMemberCount else {
-            throw NostrDirectMessageError.invalidGroup
-        }
-        let baseCreatedAt = currentDirectMessageTimestamp()
-        let replyTag = validNostrEventID(replyToEventID).map { ["e", $0] }
-        let rumors = try drafts.enumerated().map { index, draft in
-            var tags = group.memberPublicKeys.map { ["p", $0] }
-            if !group.name.isEmpty { tags.append(["subject", group.name]) }
-            tags.append(contentsOf: draft.additionalTags)
-            if let replyTag { tags.append(replyTag) }
-            return try NIP17Rumor(
-                publicKey: identity.publicKeyHex,
-                createdAt: baseCreatedAt + index,
-                kind: draft.kind,
-                tags: tags,
-                content: draft.content
-            )
-        }
-        let relayMap = await groupDeliveryRelays(group: group, identity: identity)
-        let recipientRelays = relayMap.values.flatMap { $0 }
-        if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
-        let senderRelays = effectiveNIP17InboxRelayURLs
-        let recipientCount = group.memberPublicKeys.filter {
-            $0 != identity.publicKeyHex
-        }.count
-        guard relayMap.count == recipientCount,
-              !recipientRelays.isEmpty,
-              !senderRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
-
-        let batch = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
-            var routes = relayMap
-            routes[identity.publicKeyHex] = senderRelays
-            return try NIP17OutgoingMessageBatch(rumors: rumors, attachmentComment: attachmentComment,
-                identity: identity, relayURLsByRecipient: routes)
-        }
-        let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
-        try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: true)
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: allRelays,
-                inboxPublicKey: identity.publicKeyHex,
-                inboxRelayURLs: senderRelays
-            )
-        }
-    }
-
-    private func enqueueDirectMessageBatch(
-        _ batch: NIP17OutgoingMessageBatch,
-        identity: NostrIdentity,
-        isGroup: Bool
-    ) async throws {
-        guard identityPublicKey == identity.publicKeyHex else { throw NostrDirectMessageError.identityUnavailable }
-        for message in batch.localMessages {
-            if snapshot.ingestDirectMessage(message) { scheduleSave() }
-        }
-        let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
-        let isSelfMessage = !isGroup && batch.localMessages.first?.peerPublicKey == identity.publicKeyHex
-        let requests = batch.deliveries.map { delivery in
-            let isSender = delivery.recipientPublicKey == identity.publicKeyHex
-            let suffix = isGroup
-                ? "group:\(isSender ? "sender" : delivery.recipientPublicKey)"
-                : (isSender && !isSelfMessage ? "sender" : "recipient")
-            return TaskSyncRelayPublishRequest(
-                event: delivery.event,
-                relayURLs: delivery.relayURLs,
-                outboxScope: Self.directMessagesOutboxScope,
-                recordID: "\(delivery.rumorEventID):\(suffix)",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt,
-                dependsOnEventID: delivery.dependsOnEventID
-            )
-        }
-        do {
-            try await syncEngine.enqueueForPublish(requests)
-        } catch {
-            for message in batch.localMessages {
-                if snapshot.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .failed) {
-                    scheduleSave()
-                }
-            }
-            throw error
-        }
-    }
-
-    private func publishGroupReaction(
-        group: NostrGroupConversation,
-        message: NostrDirectMessage,
-        emoji: String,
-        identity: NostrIdentity
-    ) async throws {
-        guard group.memberPublicKeys.contains(identity.publicKeyHex) else {
-            throw NostrDirectMessageError.invalidGroup
-        }
-        var tags = group.memberPublicKeys.map { ["p", $0] }
-        tags.append(["e", message.rumorEventID])
-        tags.append(["p", message.senderPublicKey])
-        let rumor = try NIP17Rumor(
-            publicKey: identity.publicKeyHex,
-            createdAt: nextNostrTimestamp(),
-            kind: 7,
-            tags: tags,
-            content: emoji
-        )
-        let relayMap = await groupDeliveryRelays(group: group, identity: identity)
-        let recipientRelays = relayMap.values.flatMap { $0 }
-        if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
-        let senderRelays = effectiveNIP17InboxRelayURLs
-        let recipientCount = group.memberPublicKeys.filter {
-            $0 != identity.publicKeyHex
-        }.count
-        guard relayMap.count == recipientCount,
-              !recipientRelays.isEmpty,
-              !senderRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
-        let recipientPlans = group.memberPublicKeys.compactMap {
-            member -> (String, Data, [String])? in
-            guard member != identity.publicKeyHex,
-                  let publicKey = NostrPublicKey.parse(member),
-                  let relays = relayMap[member],
-                  !relays.isEmpty else { return nil }
-            return (member, publicKey, relays)
-        }
-        let wrapped = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
-            let selfWrap = try NIP17GiftWrap.wrap(
-                rumor: rumor,
-                sender: identity,
-                recipientPublicKey: identity.publicKey
-            )
-            let deliveries = try recipientPlans.map { member, publicKey, relays in
-                GroupGiftWrapDelivery(
-                    memberPublicKey: member,
-                    event: try NIP17GiftWrap.wrap(
-                        rumor: rumor,
-                        sender: identity,
-                        recipientPublicKey: publicKey
-                    ),
-                    relayURLs: relays
-                )
-            }
-            return (selfWrap, deliveries)
-        }
-        let selfWrap = wrapped.0
-        guard let localReaction = NostrDirectMessageReaction(
-            decrypted: NIP17DecryptedRumor(wrapEventID: selfWrap.id, rumor: rumor),
-            identityPublicKey: identity.publicKeyHex
-        ) else { throw NostrDirectMessageError.invalidGroup }
-        if snapshot.ingestDirectMessageReaction(localReaction) { scheduleSave() }
-
-        let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
-        var requests = wrapped.1.map { delivery in
-            TaskSyncRelayPublishRequest(
-                event: delivery.event,
-                relayURLs: delivery.relayURLs,
-                outboxScope: Self.directMessagesOutboxScope,
-                recordID: "\(rumor.id):group-reaction:\(delivery.memberPublicKey)",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
-            )
-        }
-        requests.append(TaskSyncRelayPublishRequest(
-            event: selfWrap,
-            relayURLs: senderRelays,
-            outboxScope: Self.directMessagesOutboxScope,
-            recordID: "\(rumor.id):group-reaction:sender",
-            acknowledgementPolicy: .anyRelay,
-            expiresAt: expiresAt
-        ))
-        try await syncEngine.enqueueForPublish(requests)
-
-        let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: allRelays,
-                inboxPublicKey: identity.publicKeyHex,
-                inboxRelayURLs: senderRelays
-            )
-        }
-    }
-
-    private func groupDeliveryRelays(
-        group: NostrGroupConversation,
-        identity: NostrIdentity
-    ) async -> [String: [String]] {
-        let inputs = group.memberPublicKeys.compactMap { member -> GroupRelayResolutionInput? in
-            guard member != identity.publicKeyHex else { return nil }
-            let discoveryRelays = directMessageDiscoveryRelayURLs(
-                recipientPublicKey: member,
-                groupID: group.groupID
-            )
-            guard !discoveryRelays.isEmpty else { return nil }
-            return GroupRelayResolutionInput(
-                memberPublicKey: member,
-                discoveryRelayURLs: discoveryRelays
-            )
-        }
-        let maximumConcurrentResolutions = 4
-        return await withTaskGroup(
-            of: (String, [String])?.self,
-            returning: [String: [String]].self
-        ) { taskGroup in
-            var nextIndex = 0
-            let initialCount = min(maximumConcurrentResolutions, inputs.count)
-            for _ in 0..<initialCount {
-                let input = inputs[nextIndex]
-                nextIndex += 1
-                taskGroup.addTask {
-                    let relays = await NIP17InboxRelayResolver.resolve(
-                        recipientPublicKey: input.memberPublicKey,
-                        discoveryRelayURLs: input.discoveryRelayURLs
-                    )
-                    return relays.isEmpty ? nil : (input.memberPublicKey, relays)
-                }
-            }
-
-            var result: [String: [String]] = [:]
-            while let resolution = await taskGroup.next() {
-                if let (member, relays) = resolution { result[member] = relays }
-                if nextIndex < inputs.count {
-                    let input = inputs[nextIndex]
-                    nextIndex += 1
-                    taskGroup.addTask {
-                        let relays = await NIP17InboxRelayResolver.resolve(
-                            recipientPublicKey: input.memberPublicKey,
-                            discoveryRelayURLs: input.discoveryRelayURLs
-                        )
-                        return relays.isEmpty ? nil : (input.memberPublicKey, relays)
-                    }
-                }
-            }
-            return result
-        }
-    }
-
-    private func validNostrEventID(_ value: String?) -> String? {
-        guard let normalized = value?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased(),
-              normalized.count == 64,
-              (try? Data(hex: normalized))?.count == 32 else { return nil }
-        return normalized
-    }
 
     func refreshContacts() {
         guard !isRefreshingContacts else { return }
@@ -3713,7 +3016,7 @@ final class AppModel {
         return decoded
     }
 
-    private func persistScriptureMemoryState() {
+    func persistScriptureMemoryState() {
         guard let data = try? JSONEncoder().encode(scriptureMemoryState) else { return }
         UserDefaults.standard.set(data, forKey: Self.scriptureMemoryStorageKey)
         if !isApplyingSyncedScriptureMemory {
@@ -4279,7 +3582,7 @@ final class AppModel {
         let inboxPublicKey = identityPublicKey.nilIfEmpty
         let inboxRelays = effectiveNIP17InboxRelayURLs
         let timestamp = nextNostrTimestamp()
-        let boardRelayTargets = board.effectiveRelayURLs
+        let boardRelayTargets = board.syncRelayURLs
         scheduleSave()
         scheduleAccountBackupPublish()
         Task { [syncEngine] in
@@ -4463,7 +3766,7 @@ final class AppModel {
         ).hexString
         let boardTag = BoardCrypto.boardTag(for: board.effectiveNostrBoardID)
         let relayResults = await withTaskGroup(of: (Bool, [NostrEvent]).self) { group in
-            for relayURL in board.effectiveRelayURLs {
+            for relayURL in board.syncRelayURLs {
                 group.addTask {
                     do {
                         return (true, try await NostrRelayHistoryFetcher.authoredBoardEvents(
@@ -4845,7 +4148,7 @@ final class AppModel {
     func watchChatProjection(now: Date = Date()) -> TaskifyWatchChatProjection {
         let identity = identityPublicKey.lowercased()
         let discoveryRelays = TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
         guard identity.count == 64 else {
             return TaskifyWatchChatProjection(
@@ -4953,7 +4256,7 @@ final class AppModel {
             throw KeychainIdentityError.keychain(errSecItemNotFound)
         }
         let discoveryRelays = TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
         let watchContacts = watchContacts(discoveryRelays: discoveryRelays)
         let accountPreference = nip17InboxRelayURLs.isEmpty
@@ -5111,7 +4414,7 @@ final class AppModel {
         lastAccountBackupCheckAt = Date()
         accountBackupMessage = "Checking your linked devices for updates…"
         let relays = TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
         accountBackupSearchTask = Task { [weak self] in
             let candidates = await NostrAccountBackupFinder.findCandidates(
@@ -5198,6 +4501,7 @@ final class AppModel {
         do {
             let loadResult = try await store.loadWithRepairStatus()
             snapshot = loadResult.snapshot
+            persistedTasks = loadResult.snapshot.tasks
             let retentionPruneChanged: Bool
             if let cutoff = chatMessageRetention.cutoffTimestamp() {
                 retentionPruneChanged = snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed
@@ -5207,6 +4511,7 @@ final class AppModel {
             if loadResult.wasRepaired || retentionPruneChanged {
                 do {
                     try await store.save(snapshot)
+                    noteStoreWritten(snapshot)
                 } catch {
                     errorMessage = "Taskify repaired your local data but could not save the repair."
                 }
@@ -5225,7 +4530,7 @@ final class AppModel {
             // fixture before the test's first assertion. Persist the fixture and stamp the write
             // so that reload recognises the file as our own.
             try? await store.save(snapshot)
-            lastStoreWriteAt = Date()
+            noteStoreWritten(snapshot)
         }
 #endif
         applyStartupBoardPreference()
@@ -6694,7 +5999,7 @@ final class AppModel {
         }
     }
 
-    private func nextNostrTimestamp() -> Int {
+    func nextNostrTimestamp() -> Int {
         let now = Int(Date().timeIntervalSince1970)
         lastNostrCreatedAt = max(now, lastNostrCreatedAt + 1)
         return lastNostrCreatedAt
@@ -6703,15 +6008,6 @@ final class AppModel {
     private func nextNostrTimestamp(after timestamp: Int) -> Int {
         lastNostrCreatedAt = max(lastNostrCreatedAt, timestamp)
         return nextNostrTimestamp()
-    }
-
-    /// Direct messages are chronological conversation events, not last-write-wins state. The
-    /// app-wide Nostr clock may be ahead of wall time after processing remote board/task events;
-    /// using it here can make a later reply from another device sort before the message it
-    /// answers. Use the actual send time and let the stable message ordering preserve events
-    /// that share Nostr's one-second timestamp resolution.
-    private func currentDirectMessageTimestamp() -> Int {
-        Int(Date().timeIntervalSince1970)
     }
 
     @ObservationIgnored private var shareRefreshTask: Task<Void, Never>?
@@ -6826,7 +6122,7 @@ final class AppModel {
                         // Persist even an unchanged receipt before consuming it: a
                         // previous save may have failed after its in-memory merge.
                         try await store.save(snapshot)
-                        lastStoreWriteAt = Date()
+                        noteStoreWritten(snapshot)
                         ShareTransferStore.remove(job.id)
                     }
                 }
@@ -6838,7 +6134,7 @@ final class AppModel {
         }
     }
 
-    private func scheduleSave() {
+    func scheduleSave() {
         saveTask?.cancel()
         saveTask = Task { [store, weak self] in
             // Debounce before snapshotting: initial sync calls this once per merged event,
@@ -6846,11 +6142,14 @@ final class AppModel {
             // reading `snapshot` only after) collapses a burst into one save of the final state.
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled, let self else { return }
+            // Never write over a change the widget or a shortcut made since our last write.
+            await self.absorbExternalStoreChanges()
+            guard !Task.isCancelled else { return }
             let snapshotToSave = self.snapshot
             do {
                 try await store.save(snapshotToSave)
                 await MainActor.run {
-                    self.lastStoreWriteAt = Date()
+                    self.noteStoreWritten(snapshotToSave)
                     self.scheduleWidgetReload()
                 }
             } catch {
@@ -6881,9 +6180,12 @@ final class AppModel {
     private func persistImmediately() async {
         saveTask?.cancel()
         saveTask = nil
+        await absorbExternalStoreChanges()
+        saveTask?.cancel()
+        saveTask = nil
         do {
             try await store.save(snapshot)
-            lastStoreWriteAt = Date()
+            noteStoreWritten(snapshot)
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
             errorMessage = "Taskify could not save the latest change."
@@ -6898,9 +6200,12 @@ final class AppModel {
         await taskPublicationTask?.value
         saveTask?.cancel()
         saveTask = nil
+        await absorbExternalStoreChanges()
+        saveTask?.cancel()
+        saveTask = nil
         do {
             try await store.save(snapshot)
-            lastStoreWriteAt = Date()
+            noteStoreWritten(snapshot)
             return true
         } catch {
             errorMessage = "Taskify could not save the latest change."
@@ -6917,13 +6222,13 @@ final class AppModel {
 
     private var nip17DiscoveryRelayURLs: [String] {
         TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
     }
 
     /// Listen on configured fallback relays until an inbox preference is available, so
     /// discovery or publication failures do not prevent accounts without a list receiving DMs.
-    private var effectiveNIP17InboxRelayURLs: [String] {
+    var effectiveNIP17InboxRelayURLs: [String] {
         nip17InboxRelayURLs.isEmpty
             ? TaskifyRelayURL.normalizedList(appRelays)
             : nip17InboxRelayURLs
@@ -6932,7 +6237,7 @@ final class AppModel {
     /// Existing Taskify users predate the native kind-10050 publisher. Preserve their configured
     /// relay choice, but only bootstrap a preference when the account has no signed list already;
     /// never overwrite another NIP-17 client's valid preference during startup.
-    private func ensureNIP17InboxRelayPreference() async {
+    func ensureNIP17InboxRelayPreference() async {
         guard let identity = cachedIdentity else { return }
         let advertised = await NIP17InboxRelayResolver.resolveAdvertised(
             recipientPublicKey: identity.publicKeyHex,
@@ -7042,7 +6347,7 @@ final class AppModel {
         }
     }
 
-    private func nip17DeliveryPlan(
+    func nip17DeliveryPlan(
         recipientPublicKey: String,
         discoveryRelayURLs: [String],
         identity: NostrIdentity
@@ -7060,7 +6365,7 @@ final class AppModel {
         )
     }
 
-    private func outboundIdentity() throws -> NostrIdentity {
+    func outboundIdentity() throws -> NostrIdentity {
         if let cachedIdentity { return cachedIdentity }
         guard let identity = try identityStore.load() else {
             throw NostrDirectMessageError.identityUnavailable
@@ -7072,7 +6377,7 @@ final class AppModel {
     /// Relay discovery for one peer is intentionally scoped to that peer. The previous global
     /// shared-inbox union grew with every contact and conversation, causing a DM to query and
     /// publish to relays that had no relationship to its recipient.
-    private func directMessageDiscoveryRelayURLs(
+    func directMessageDiscoveryRelayURLs(
         recipientPublicKey: String,
         groupID: String? = nil
     ) -> [String] {
@@ -7170,7 +6475,7 @@ final class AppModel {
     /// Relays used for everything that is not board sync: the shared inbox, direct messages,
     /// shared tasks and invites. Rooted on the app relay set, plus whatever relays the people
     /// and shares involved have told us to use.
-    private var sharedInboxRelayURLs: [String] {
+    var sharedInboxRelayURLs: [String] {
         TaskifyRelayURL.normalizedList(
             appRelays
                 + nip17InboxRelayURLs
@@ -7337,7 +6642,7 @@ final class AppModel {
         }
 
         let lookupRelays = TaskifyRelayURL.normalizedList(
-            accountBackupRelayURLs + snapshot.boards.flatMap(\.effectiveRelayURLs)
+            accountBackupRelayURLs + snapshot.boards.flatMap(\.syncRelayURLs)
         )
         let candidates = await NostrAccountBackupFinder.findCandidates(
             publicKey: identity.publicKeyHex,
@@ -7609,306 +6914,6 @@ final class AppModel {
     }
 }
 
-// MARK: - App state sync (Bible tracker, scripture memory, chat state)
-
-extension AppModel {
-    private static let appStateOutboxScope = "__taskify-app-state__"
-    private static let appStateLedgerKey = "taskify.appStateSync.ledger.v1"
-    /// Foreground returns re-check at most this often: one REQ per relay covers all three records.
-    private static let appStateFetchInterval: TimeInterval = 30
-    /// Read markers move whenever a conversation is viewed, so they are coalesced into one
-    /// replaceable event per quiet period instead of one per message.
-    private static let chatStatePublishDelay: Duration = .seconds(15)
-    private static let appStatePublishDelay: Duration = .seconds(2)
-
-    static func loadAppStateLedger() -> AppStateSyncLedger {
-        guard let data = UserDefaults.standard.data(forKey: appStateLedgerKey),
-              let ledger = try? JSONDecoder().decode(AppStateSyncLedger.self, from: data) else {
-            return AppStateSyncLedger()
-        }
-        return ledger
-    }
-
-    private func saveAppStateLedger() {
-        guard let data = try? JSONEncoder().encode(appStateLedger) else { return }
-        UserDefaults.standard.set(data, forKey: Self.appStateLedgerKey)
-    }
-
-    /// A ledger belongs to one account; switching identities starts it over.
-    private func appStateLedgerIdentity() -> NostrIdentity? {
-        guard let identity = cachedIdentity else { return nil }
-        if appStateLedger.publicKey != identity.publicKeyHex {
-            appStateLedger = AppStateSyncLedger(publicKey: identity.publicKeyHex)
-            saveAppStateLedger()
-        }
-        return identity
-    }
-
-    private var appStateRelayURLs: [String] {
-        TaskifyRelayURL.normalizedList(appRelays + (accountBackupBaseline?.defaultRelayURLs ?? []))
-    }
-
-    /// Throttled entry point for app launch and foreground returns.
-    func refreshAppStateSyncIfNeeded() {
-        guard !isLoading,
-              appStateFetchTask == nil,
-              lastAppStateFetchAt.map({ Date().timeIntervalSince($0) > Self.appStateFetchInterval }) ?? true else {
-            return
-        }
-        appStateFetchTask = Task { [weak self] in
-            await self?.fetchAppState()
-            self?.appStateFetchTask = nil
-        }
-    }
-
-    /// Publishes anything still waiting on its debounce, e.g. as the app leaves the foreground,
-    /// so the next device picked up already sees it. Queued publishes survive in the outbox.
-    func flushAppStateSync() {
-        let pending = appStatePublishTasks.keys
-        for dTag in pending {
-            appStatePublishTasks[dTag]?.cancel()
-            appStatePublishTasks[dTag] = Task { [weak self] in
-                await self?.publishAppState(dTag)
-                // A cancelled task was replaced; leave the replacement's slot alone.
-                if !Task.isCancelled { self?.appStatePublishTasks[dTag] = nil }
-            }
-        }
-    }
-
-    func scheduleAppStatePublish(_ dTag: String) {
-        guard !isLoading, cachedIdentity != nil else { return }
-        if dTag == AppStateSyncContract.chatStateDTag {
-            // Cheap check first: most snapshot writes (new messages, pending shares) leave
-            // nothing new to publish. A pending timer is not restarted, bounding the delay.
-            let known = appStateLedger.chat.synced ?? ChatSyncState()
-            guard appStatePublishTasks[dTag] == nil,
-                  known.toPublish(merging: snapshot.chatSyncState, nowSeconds: Int(Date().timeIntervalSince1970)) != nil else {
-                return
-            }
-        } else {
-            appStatePublishTasks[dTag]?.cancel()
-        }
-        let delay = dTag == AppStateSyncContract.chatStateDTag ? Self.chatStatePublishDelay : Self.appStatePublishDelay
-        appStatePublishTasks[dTag] = Task { [weak self] in
-            do { try await Task.sleep(for: delay) } catch { return }
-            guard let self, !Task.isCancelled else { return }
-            await self.publishAppState(dTag)
-            // A cancelled task was replaced; leave the replacement's slot alone.
-            if !Task.isCancelled { self.appStatePublishTasks[dTag] = nil }
-        }
-    }
-
-    private func fetchAppState() async {
-        guard let identity = appStateLedgerIdentity() else { return }
-        let lookupRelays = TaskifyRelayURL.normalizedList(appStateRelayURLs + snapshot.boards.flatMap(\.effectiveRelayURLs))
-        let latest = await AppStateSyncFinder.findLatest(
-            publicKey: identity.publicKeyHex,
-            relayURLs: lookupRelays,
-            fetcher: syncEngine
-        )
-        guard !Task.isCancelled, appStateLedger.publicKey == identity.publicKeyHex else { return }
-        lastAppStateFetchAt = Date()
-        let decoded: [(dTag: String, event: NostrEvent, plaintext: Data)] = await Task.detached(priority: .utility) {
-            latest.values.compactMap { event in
-                (try? AppStateSyncContract.decrypt(event: event, identity: identity)).map { ($0.dTag, event, $0.plaintext) }
-            }
-        }.value
-        for item in decoded {
-            applyAppStateEvent(dTag: item.dTag, event: item.event, plaintext: item.plaintext)
-        }
-        // Nothing synced yet anywhere: seed the relays with what this device has.
-        if latest[AppStateSyncContract.bibleTrackerDTag] == nil,
-           appStateLedger.bibleTracker.synced == nil,
-           bibleTrackerStore.state.hasSyncableContent {
-            scheduleAppStatePublish(AppStateSyncContract.bibleTrackerDTag)
-        }
-        if latest[AppStateSyncContract.scriptureMemoryDTag] == nil,
-           appStateLedger.scriptureMemory.synced == nil,
-           !scriptureMemoryState.entries.isEmpty {
-            scheduleAppStatePublish(AppStateSyncContract.scriptureMemoryDTag)
-        }
-        scheduleAppStatePublish(AppStateSyncContract.chatStateDTag)
-    }
-
-    private func applyAppStateEvent(dTag: String, event: NostrEvent, plaintext: Data) {
-        let decoder = JSONDecoder()
-        switch dTag {
-        case AppStateSyncContract.bibleTrackerDTag:
-            guard !appStateLedger.bibleTracker.isStale(eventID: event.id, createdAt: event.createdAt),
-                  let payload = try? decoder.decode(BibleTrackerSyncPayload.self, from: plaintext),
-                  payload.version == 1 else { return }
-            let incoming = payload.bibleTracker
-            let base = AppStateSyncContract.sharedBase(
-                baseTimestamp: payload.baseTimestamp,
-                localBase: appStateLedger.bibleTracker.synced
-            )
-            let merged = bibleTrackerStore.state.merged(with: incoming, base: base)
-            bibleTrackerStore.applySyncedState(merged)
-            appStateLedger.bibleTracker.record(
-                eventID: event.id,
-                timestamp: max(payload.timestamp, event.createdAt),
-                synced: incoming
-            )
-            saveAppStateLedger()
-            // This device had changes the other one had not seen: send the merge back.
-            if !merged.syncEquivalent(to: incoming) {
-                scheduleAppStatePublish(dTag)
-            }
-        case AppStateSyncContract.scriptureMemoryDTag:
-            guard !appStateLedger.scriptureMemory.isStale(eventID: event.id, createdAt: event.createdAt),
-                  let payload = try? decoder.decode(ScriptureMemorySyncPayload.self, from: plaintext),
-                  payload.version == 1 else { return }
-            let incoming = payload.scriptureMemory
-            let base = AppStateSyncContract.sharedBase(
-                baseTimestamp: payload.baseTimestamp,
-                localBase: appStateLedger.scriptureMemory.synced
-            )
-            let merged = scriptureMemoryState.merged(with: incoming, base: base)
-            appStateLedger.scriptureMemory.record(
-                eventID: event.id,
-                timestamp: max(payload.timestamp, event.createdAt),
-                synced: incoming
-            )
-            saveAppStateLedger()
-            if merged != scriptureMemoryState {
-                isApplyingSyncedScriptureMemory = true
-                scriptureMemoryState = merged
-                persistScriptureMemoryState()
-                isApplyingSyncedScriptureMemory = false
-                // New or reviewed passages can change which review task should exist.
-                _ = reconcileScriptureMemory()
-            }
-            if !scriptureMemoryState.syncEquivalent(to: incoming) {
-                scheduleAppStatePublish(dTag)
-            }
-        case AppStateSyncContract.chatStateDTag:
-            guard !appStateLedger.chat.isStale(eventID: event.id, createdAt: event.createdAt),
-                  let payload = try? decoder.decode(ChatStateSyncPayload.self, from: plaintext),
-                  payload.version == 1 else { return }
-            let incoming = payload.state
-            appStateLedger.chat.record(
-                eventID: event.id,
-                timestamp: max(payload.timestamp, event.createdAt),
-                synced: (appStateLedger.chat.synced ?? ChatSyncState()).merged(with: incoming)
-            )
-            saveAppStateLedger()
-            var updated = snapshot
-            let previousInvites = updated.sharedCalendarInviteItems ?? []
-            let readChanged = updated.applySyncedReadThrough(incoming.readThrough)
-            let responsesChanged = updated.applySyncedInboxResponses(incoming.inboxResponses)
-            if readChanged || responsesChanged {
-                snapshot = updated
-                scheduleSave()
-            }
-            if responsesChanged {
-                materializeSyncedCalendarInvites(previous: previousInvites)
-            }
-        default:
-            return
-        }
-    }
-
-    /// Adds invites another device accepted (or marked maybe) to this device's calendar, as
-    /// accepting here would. Local only: the RSVP already went out from the device that answered.
-    private func materializeSyncedCalendarInvites(previous: [SharedCalendarInviteInboxItem]) {
-        let wasPending = Set(previous.filter { $0.status == .pending }.map(\.id))
-        let accepted = snapshot.sharedCalendarInvites.filter {
-            wasPending.contains($0.id) && ($0.status == .accepted || $0.status == .tentative)
-        }
-        guard !accepted.isEmpty else { return }
-        Task { [weak self] in
-            for item in accepted {
-                guard let self else { return }
-                let relays = TaskifyRelayURL.normalizedList((item.event.relayURLs ?? []) + self.sharedInboxRelayURLs)
-                guard !relays.isEmpty,
-                      let event = try? await TaskifyEventInvitationResolver.resolve(
-                          invite: item.event,
-                          status: item.status,
-                          relayURLs: relays
-                      ) else { continue }
-                var updated = self.snapshot
-                if updated.upsertTaskifyEvent(event) {
-                    self.snapshot = updated
-                    self.scheduleSave()
-                }
-            }
-        }
-    }
-
-    private func publishAppState(_ dTag: String) async {
-        guard let identity = appStateLedgerIdentity() else { return }
-        let relays = appStateRelayURLs
-        guard !relays.isEmpty else { return }
-        // Bible tracker and scripture memory pick up the newest remote copy first when it has not
-        // been checked recently, so this publish carries the other devices' changes too.
-        if dTag != AppStateSyncContract.chatStateDTag,
-           lastAppStateFetchAt.map({ Date().timeIntervalSince($0) > Self.appStateFetchInterval }) ?? true {
-            await fetchAppState()
-            guard !Task.isCancelled else { return }
-        }
-        let createdAt: Int
-        let eventBuilder: @Sendable () throws -> NostrEvent
-        let commit: (NostrEvent) -> Void
-        switch dTag {
-        case AppStateSyncContract.bibleTrackerDTag:
-            let state = bibleTrackerStore.state
-            let entry = appStateLedger.bibleTracker
-            if let synced = entry.synced, synced.syncEquivalent(to: state) { return }
-            createdAt = entry.nextTimestamp()
-            let payload = BibleTrackerSyncPayload(timestamp: createdAt, baseTimestamp: entry.baseTimestamp, bibleTracker: state)
-            eventBuilder = { try AppStateSyncContract.event(dTag: dTag, payload: payload, identity: identity, createdAt: createdAt) }
-            commit = { [weak self] event in
-                self?.appStateLedger.bibleTracker.record(eventID: event.id, timestamp: createdAt, synced: state)
-            }
-        case AppStateSyncContract.scriptureMemoryDTag:
-            let state = scriptureMemoryState
-            let entry = appStateLedger.scriptureMemory
-            if let synced = entry.synced, synced.syncEquivalent(to: state) { return }
-            createdAt = entry.nextTimestamp()
-            let payload = ScriptureMemorySyncPayload(timestamp: createdAt, baseTimestamp: entry.baseTimestamp, scriptureMemory: state)
-            eventBuilder = { try AppStateSyncContract.event(dTag: dTag, payload: payload, identity: identity, createdAt: createdAt) }
-            commit = { [weak self] event in
-                self?.appStateLedger.scriptureMemory.record(eventID: event.id, timestamp: createdAt, synced: state)
-            }
-        case AppStateSyncContract.chatStateDTag:
-            let known = appStateLedger.chat.synced ?? ChatSyncState()
-            createdAt = appStateLedger.chat.nextTimestamp()
-            guard let next = known.toPublish(merging: snapshot.chatSyncState, nowSeconds: createdAt) else { return }
-            let payload = ChatStateSyncPayload(timestamp: createdAt, state: next)
-            eventBuilder = { try AppStateSyncContract.event(dTag: dTag, payload: payload, identity: identity, createdAt: createdAt) }
-            commit = { [weak self] event in
-                self?.appStateLedger.chat.record(eventID: event.id, timestamp: createdAt, synced: next)
-            }
-        default:
-            return
-        }
-        do {
-            let event = try await TaskifyRelayProofOfWork.prepare(relays: relays, operation: eventBuilder)
-            await syncEngine.configure(
-                boards: snapshot.boardsForSync,
-                auxiliaryRelayURLs: TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + relays),
-                inboxPublicKey: identity.publicKeyHex,
-                inboxRelayURLs: effectiveNIP17InboxRelayURLs
-            )
-            try await syncEngine.publish(
-                event,
-                relayURLs: relays,
-                outboxScope: Self.appStateOutboxScope,
-                recordID: dTag
-            )
-            commit(event)
-            saveAppStateLedger()
-        } catch {
-            // Left unrecorded, so the next change or foreground check tries again.
-        }
-    }
-}
-
-private extension BibleTrackerState {
-    var hasSyncableContent: Bool {
-        !progress.isEmpty || !archive.isEmpty || !verses.isEmpty || !completedBooks.isEmpty
-    }
-}
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }

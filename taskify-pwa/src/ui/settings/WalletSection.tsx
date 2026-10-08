@@ -94,7 +94,6 @@ export function WalletSection({
   const [voiceTestInputEnabled, setVoiceTestInputEnabled] = useState<boolean>(
     () => kvStorage.getItem(VOICE_TEST_INPUT_STORAGE_KEY) === "true",
   );
-  const debugConsoleScriptRef = useRef<HTMLScriptElement | null>(null);
   const mintBackupPoolRef = useRef<SessionPool | null>(null);
   const [keysetCounterBusy, setKeysetCounterBusy] = useState<string | null>(null);
   const [p2pkImportVisible, setP2pkImportVisible] = useState(false);
@@ -350,32 +349,19 @@ export function WalletSection({
       return;
     }
     setDebugConsoleState("loading");
-    try {
-      const script = document.createElement("script");
-      script.src = "https://cdn.jsdelivr.net/npm/eruda";
-      script.async = true;
-      script.setAttribute("data-taskify-eruda", "true");
-      script.onload = () => {
-        try {
-          (window as any)?.eruda?.init?.();
-          setDebugConsoleState("active");
-          kvStorage.setItem(DEBUG_CONSOLE_STORAGE_KEY, "true");
-          showToast("Debug console enabled.", 2500);
-        } catch (error: any) {
-          setDebugConsoleState("inactive");
-          setDebugConsoleMessage(error?.message || "Failed to start the debug console.");
-        }
-      };
-      script.onerror = () => {
+    // Bundled at a pinned version and fetched from this origin only when enabled; this page holds
+    // the keys and wallet, so it never loads script from a CDN.
+    import("eruda")
+      .then(({ default: eruda }) => {
+        eruda.init();
+        setDebugConsoleState("active");
+        kvStorage.setItem(DEBUG_CONSOLE_STORAGE_KEY, "true");
+        showToast("Debug console enabled.", 2500);
+      })
+      .catch((error: any) => {
         setDebugConsoleState("inactive");
-        setDebugConsoleMessage("Failed to load the debug console script.");
-      };
-      document.body.appendChild(script);
-      debugConsoleScriptRef.current = script;
-    } catch (error: any) {
-      setDebugConsoleState("inactive");
-      setDebugConsoleMessage(error?.message || "Failed to load the debug console.");
-    }
+        setDebugConsoleMessage(error?.message || "Failed to load the debug console.");
+      });
   }, [debugConsoleState, showToast]);
 
   const disableDebugConsole = useCallback(() => {
@@ -383,18 +369,14 @@ export function WalletSection({
     if (typeof document !== "undefined") {
       const erudaRoot = document.querySelector("#eruda");
       if (erudaRoot) erudaRoot.remove();
-      const script = debugConsoleScriptRef.current;
-      if (script?.parentNode) {
-        script.parentNode.removeChild(script);
-      }
-      debugConsoleScriptRef.current = null;
     }
-    if (typeof window !== "undefined") {
-      try {
-        const eruda = (window as any)?.eruda;
-        eruda?.destroy?.();
-      } catch {}
-    }
+    import("eruda")
+      .then(({ default: eruda }) => {
+        try {
+          eruda.destroy();
+        } catch {}
+      })
+      .catch(() => {});
     kvStorage.removeItem(DEBUG_CONSOLE_STORAGE_KEY);
     setDebugConsoleState("inactive");
     showToast("Debug console disabled.", 2000);

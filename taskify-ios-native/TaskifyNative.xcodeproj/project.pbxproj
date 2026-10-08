@@ -13,6 +13,7 @@
 		R10000000000000000000003 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = R10000000000000000000012 /* TaskifyCore */; };
 		R10000000000000000000004 /* TaskifyNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = R10000000000000000000005 /* TaskifyNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */; };
+		DE03707800A9FDC91E489014 /* IPadKeyboardUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */; };
 		0B64CE2D2E8DC2C381D5DFA2 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */; };
 		0F0D02A663DD9FC10DEA44B1 /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE60E2576148EFF86B5FB8E /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift */; };
 		204177419B8968CC8C904B29 /* ScrollPerformanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */; };
@@ -27,8 +28,12 @@
 		B00000000000000000000104 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */; };
 		B00000000000000000000199 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */; };
 		B00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */; };
+		B00000000000000000009A0F /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */; };
+		B00000000000000000009A11 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A12 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift */; };
+		B00000000000000000009A13 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A14 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift */; };
 		B00000000000000000000106 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */; };
 		B00000000000000000000107 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */; };
+		B00000000000000000009A0B /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */; };
 		B00000000000000000000108 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */; };
 		B00000000000000000000109 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */; };
 		B00000000000000000000110 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000210 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift */; };
@@ -39,10 +44,17 @@
 		B00000000000000000000114 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000214 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentUploadService.swift */; };
 		B00000000000000000000115 /* Sources/TaskifyApp/Features/Upcoming/DeviceCalendarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000215 /* Sources/TaskifyApp/Features/Upcoming/DeviceCalendarStore.swift */; };
 		B00000000000000000000116 /* Sources/TaskifyApp/App/TaskifyBackgroundSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000216 /* Sources/TaskifyApp/App/TaskifyBackgroundSyncCoordinator.swift */; };
+		B00000000000000000009A09 /* Sources/TaskifyApp/App/AppModelSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A0A /* Sources/TaskifyApp/App/AppModelSupport.swift */; };
+		B00000000000000000009A27 /* Sources/TaskifyApp/App/AppModelAppStateSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A28 /* Sources/TaskifyApp/App/AppModelAppStateSync.swift */; };
+		B00000000000000000009A29 /* Sources/TaskifyApp/App/AppModelDirectMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A30 /* Sources/TaskifyApp/App/AppModelDirectMessages.swift */; };
 		B00000000000000000000117 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000218 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift */; };
 		B00000000000000000000118 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000219 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift */; };
 		B00000000000000000000810 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000811 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift */; };
 		B00000000000000000000119 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000221 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift */; };
+		B00000000000000000009A1F /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A20 /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift */; };
+		B00000000000000000009A21 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A22 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift */; };
+		B00000000000000000009A23 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A24 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift */; };
+		B00000000000000000009A25 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A26 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift */; };
 		B0000000000000000000D02 /* DeviceItemsReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000D01 /* DeviceItemsReader.swift */; };
 		B0000000000000000000W18 /* TaskifyWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000W15 /* TaskifyWidgetBundle.swift */; };
 		B0000000000000000000W19 /* TaskifyWidgetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000W16 /* TaskifyWidgetStore.swift */; };
@@ -51,6 +63,13 @@
 		B0000000000000000000W22 /* TaskifyWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B0000000000000000000W01 /* TaskifyWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B00000000000000000000120 /* TaskifyCore in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000601 /* TaskifyCore */; };
 		B00000000000000000000121 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */; };
+		B00000000000000000009A07 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A08 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift */; };
+		B00000000000000000009A0D /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A0E /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift */; };
+		B00000000000000000009A15 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A16 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift */; };
+		B00000000000000000009A17 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A18 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift */; };
+		B00000000000000000009A19 /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A1A /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift */; };
+		B00000000000000000009A1B /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A1C /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift */; };
+		B00000000000000000009A1D /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A1E /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift */; };
 		B00000000000000000009A01 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A02 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift */; };
 		B00000000000000000009A05 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A06 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift */; };
 		B00000000000000000000122 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000223 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift */; };
@@ -98,6 +117,12 @@
 		7F25A594E7354A9F9F7DA94B /* Share TaskifyCore Framework */ = { isa = PBXBuildFile; productRef = 3FB8C1B3F2C50B01217E2C6A; };
 		CAAE24AA05C5D82DE8ACA71C /* Share Embed */ = { isa = PBXBuildFile; fileRef = DE65B8396C47D9F682A045D2; settings = { ATTRIBUTES = ( RemoveHeadersOnCopy, ); }; };
 		6B082B3AA9D859EE3EC6F0A8 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = C9EA85AA65C9D15DB82B6FF7; };
+		455C5314AFCF62850C9317C5 /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 572F1643415F88B9E8772BCB /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy */; };
+		524914867E478BAF6BB5AC6B /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6D3C51C09E63F031A92D2F5F /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy */; };
+		72ABADD2393C3AFA34E502FF /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 388E4A60777F6BE83EB77DB1 /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy */; };
+		483D83CD19D3DBC2DF7B8B31 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A78AD6772993A619159ABA27 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy */; };
+		D59E194044FC1446E2F88BFC /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 0AF9E1AED16CFCC779616790 /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy */; };
+		AAA94B320DB6AFBECAA4A2AD /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 4C6634A18180188058AB8E32 /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -153,6 +178,7 @@
 		57F458985178452A2D282E74 /* ReceiveLightningSheetUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReceiveLightningSheetUITests.swift; sourceTree = "<group>"; };
 		B00000000000000000009A04 /* NWCWalletUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NWCWalletUITests.swift; sourceTree = "<group>"; };
 		58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TimeZonePickerUITests.swift; sourceTree = "<group>"; };
+		126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPadKeyboardUITests.swift; sourceTree = "<group>"; };
 		69AB7FE65898EA9D39EC4DAE /* TaskifyNativeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskifyNativeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8578A541E8A9F26924788981 /* Sources/TaskifyApp/App/StartupViewSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/StartupViewSettings.swift; sourceTree = SOURCE_ROOT; };
 		8A5E0768C8D7B1E2BECC61D8 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
@@ -165,8 +191,12 @@
 		B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A12 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardContentViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A14 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Security/KeychainIdentityStore.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000210 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift; sourceTree = SOURCE_ROOT; };
@@ -177,6 +207,9 @@
 		B00000000000000000000214 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentUploadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskAttachmentUploadService.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000215 /* Sources/TaskifyApp/Features/Upcoming/DeviceCalendarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/DeviceCalendarStore.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000216 /* Sources/TaskifyApp/App/TaskifyBackgroundSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyBackgroundSyncCoordinator.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A0A /* Sources/TaskifyApp/App/AppModelSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppModelSupport.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A28 /* Sources/TaskifyApp/App/AppModelAppStateSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppModelAppStateSync.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A30 /* Sources/TaskifyApp/App/AppModelDirectMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppModelDirectMessages.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000217 /* Sources/TaskifyApp/Resources/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Sources/TaskifyApp/Resources/Info.plist; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000218 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000219 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ContactsView.swift; sourceTree = SOURCE_ROOT; };
@@ -190,7 +223,18 @@
 		B0000000000000000000W04 /* TaskifyWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TaskifyWidgets.entitlements; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000220 /* TaskifyNative.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TaskifyNative.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B00000000000000000000221 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ChatView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A20 /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ChatListViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A22 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A24 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A26 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A08 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A0E /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletComponents.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A16 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A18 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A1A /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A1C /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift; sourceTree = SOURCE_ROOT; };
+		B00000000000000000009A1E /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A02 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A06 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift"; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000223 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift; sourceTree = SOURCE_ROOT; };
@@ -231,6 +275,12 @@
 		41F7374394EF535EDDCF5923 /* Sources/TaskifyApp/Features/Tasks/TaskifyPhotoFile.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskifyPhotoFile.swift; sourceTree = SOURCE_ROOT; };
 		DE65B8396C47D9F682A045D2 /* TaskifyShareExtension.appex */ = { isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TaskifyShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C9EA85AA65C9D15DB82B6FF7 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sources/TaskifyApp/Resources/ThirdPartyNotices.txt; sourceTree = SOURCE_ROOT; };
+		572F1643415F88B9E8772BCB /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		6D3C51C09E63F031A92D2F5F /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		388E4A60777F6BE83EB77DB1 /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		A78AD6772993A619159ABA27 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		0AF9E1AED16CFCC779616790 /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		4C6634A18180188058AB8E32 /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Sources/TaskifyWidgets/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -367,6 +417,9 @@
 				B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */,
 				B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */,
 				B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */,
+				B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */,
+				B00000000000000000009A12 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift */,
+				B00000000000000000009A14 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift */,
 				FF90D06B99BC2A3790D9DC41 /* Sources/TaskifyApp/App/OnboardingSettings.swift */,
 				CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */,
 				B00000000000000000000223 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift */,
@@ -379,6 +432,7 @@
 				A0009C830AAB8965BF019980 /* Sources/TaskifyApp/App/NpubCashSettings.swift */,
 				B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */,
 				B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */,
+				B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */,
 				B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */,
 				B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */,
 				B00000000000000000000210 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift */,
@@ -387,16 +441,36 @@
 				B00000000000000000000211 /* Sources/TaskifyApp/Notifications/TaskNotificationCoordinator.swift */,
 				B00000000000000000000229 /* Sources/TaskifyApp/Notifications/DMPushNotificationCoordinator.swift */,
 				B00000000000000000000212 /* Sources/TaskifyApp/Resources/Assets.xcassets */,
+				572F1643415F88B9E8772BCB /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy */,
+				6D3C51C09E63F031A92D2F5F /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy */,
+				388E4A60777F6BE83EB77DB1 /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy */,
+				A78AD6772993A619159ABA27 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy */,
+				0AF9E1AED16CFCC779616790 /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy */,
+				4C6634A18180188058AB8E32 /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy */,
 				B00000000000000000000213 /* Sources/TaskifyApp/Features/Tasks/TaskMediaView.swift */,
 				B00000000000000000000214 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentUploadService.swift */,
 				B00000000000000000000215 /* Sources/TaskifyApp/Features/Upcoming/DeviceCalendarStore.swift */,
 				B00000000000000000000216 /* Sources/TaskifyApp/App/TaskifyBackgroundSyncCoordinator.swift */,
+				B00000000000000000009A0A /* Sources/TaskifyApp/App/AppModelSupport.swift */,
+				B00000000000000000009A28 /* Sources/TaskifyApp/App/AppModelAppStateSync.swift */,
+				B00000000000000000009A30 /* Sources/TaskifyApp/App/AppModelDirectMessages.swift */,
 				B00000000000000000000217 /* Sources/TaskifyApp/Resources/Info.plist */,
 				B00000000000000000000218 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift */,
 				B00000000000000000000219 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift */,
 				B00000000000000000000221 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift */,
+				B00000000000000000009A20 /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift */,
+				B00000000000000000009A22 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift */,
+				B00000000000000000009A24 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift */,
+				B00000000000000000009A26 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift */,
 				B00000000000000000000811 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift */,
 				B00000000000000000000222 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift */,
+				B00000000000000000009A08 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift */,
+				B00000000000000000009A0E /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift */,
+				B00000000000000000009A16 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift */,
+				B00000000000000000009A18 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift */,
+				B00000000000000000009A1A /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift */,
+				B00000000000000000009A1C /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift */,
+				B00000000000000000009A1E /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift */,
 				B00000000000000000009A02 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift */,
 				B00000000000000000009A06 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift */,
 			);
@@ -443,6 +517,7 @@
 				12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */,
 				DF2D5621648AA754EA642832 /* FirstRunOnboardingUITests.swift */,
 				58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */,
+				126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */,
 				B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */,
 				BB07C0DE0000000000000002 /* ChatComposerUITests.swift */,
 			);
@@ -491,6 +566,7 @@
 			buildPhases = (
 				R1000000000000000000000B /* Sources */,
 				R1000000000000000000000A /* Frameworks */,
+				639D6939CFCD072FFCA46CA6 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -556,6 +632,7 @@
 			buildPhases = (
 				B0000000000000000000W05 /* Sources */,
 				B0000000000000000000W06 /* Frameworks */,
+				331E6B2F48204388D0C9A276 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -680,6 +757,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				455C5314AFCF62850C9317C5 /* Sources/TaskifyApp/Resources/PrivacyInfo.xcprivacy in Resources */,
 				B00000000000000000000112 /* Sources/TaskifyApp/Resources/Assets.xcassets in Resources */,
 				6B082B3AA9D859EE3EC6F0A8 /* ThirdPartyNotices.txt */,
 			);
@@ -689,6 +767,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				524914867E478BAF6BB5AC6B /* Sources/TaskifyWatchApp/PrivacyInfo.xcprivacy in Resources */,
 				A10000000000000000000204 /* Sources/TaskifyApp/Resources/Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -697,10 +776,27 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				72ABADD2393C3AFA34E502FF /* Sources/TaskifyWatchWidgets/PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		8E7BCD585EB4654682959BAA /* Share Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( ); runOnlyForDeploymentPostprocessing = 0; };
+		8E7BCD585EB4654682959BAA /* Share Resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ( 483D83CD19D3DBC2DF7B8B31 /* Sources/TaskifyShareExtension/PrivacyInfo.xcprivacy in Resources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		639D6939CFCD072FFCA46CA6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D59E194044FC1446E2F88BFC /* Sources/TaskifyNotificationService/PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		331E6B2F48204388D0C9A276 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AAA94B320DB6AFBECAA4A2AD /* Sources/TaskifyWidgets/PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
@@ -746,6 +842,7 @@
 				204177419B8968CC8C904B29 /* ScrollPerformanceUITests.swift in Sources */,
 				9731A21014C92A8CB3F1A5EB /* FirstRunOnboardingUITests.swift in Sources */,
 				0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */,
+				DE03707800A9FDC91E489014 /* IPadKeyboardUITests.swift in Sources */,
 				BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */,
 				BB07C0DE0000000000000001 /* ChatComposerUITests.swift in Sources */,
 			);
@@ -769,6 +866,9 @@
 				B00000000000000000000104 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift in Sources */,
 				B00000000000000000000199 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift in Sources */,
 				B00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift in Sources */,
+				B00000000000000000009A0F /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift in Sources */,
+				B00000000000000000009A11 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift in Sources */,
+				B00000000000000000009A13 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift in Sources */,
 				B00000000000000000000122 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift in Sources */,
 				B00000000000000000000123 /* Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift in Sources */,
 				45B0FD54A518483096597A9F /* Sources/TaskifyApp/App/FastingRemindersSettings.swift in Sources */,
@@ -779,6 +879,7 @@
 				796D1AE211EE8CD2720A10F9 /* Sources/TaskifyApp/App/NpubCashSettings.swift in Sources */,
 				B00000000000000000000106 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift in Sources */,
 				B00000000000000000000107 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift in Sources */,
+				B00000000000000000009A0B /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift in Sources */,
 				B00000000000000000000108 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift in Sources */,
 				B00000000000000000000109 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift in Sources */,
 				B00000000000000000000110 /* Sources/TaskifyApp/Features/Tasks/TaskEditorView.swift in Sources */,
@@ -790,11 +891,25 @@
 				B00000000000000000000114 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentUploadService.swift in Sources */,
 				B00000000000000000000115 /* Sources/TaskifyApp/Features/Upcoming/DeviceCalendarStore.swift in Sources */,
 				B00000000000000000000116 /* Sources/TaskifyApp/App/TaskifyBackgroundSyncCoordinator.swift in Sources */,
+				B00000000000000000009A09 /* Sources/TaskifyApp/App/AppModelSupport.swift in Sources */,
+				B00000000000000000009A27 /* Sources/TaskifyApp/App/AppModelAppStateSync.swift in Sources */,
+				B00000000000000000009A29 /* Sources/TaskifyApp/App/AppModelDirectMessages.swift in Sources */,
 				B00000000000000000000117 /* Sources/TaskifyApp/Features/Tasks/TaskShareSheet.swift in Sources */,
 				B00000000000000000000118 /* Sources/TaskifyApp/Features/Contacts/ContactsView.swift in Sources */,
 				B00000000000000000000119 /* Sources/TaskifyApp/Features/Contacts/ChatView.swift in Sources */,
+				B00000000000000000009A1F /* Sources/TaskifyApp/Features/Contacts/ChatListViews.swift in Sources */,
+				B00000000000000000009A21 /* Sources/TaskifyApp/Features/Contacts/ConversationDetailsViews.swift in Sources */,
+				B00000000000000000009A23 /* Sources/TaskifyApp/Features/Contacts/ChatConversationView.swift in Sources */,
+				B00000000000000000009A25 /* Sources/TaskifyApp/Features/Contacts/ChatMessageViews.swift in Sources */,
 				B00000000000000000000810 /* Sources/TaskifyApp/Features/Contacts/ProfileView.swift in Sources */,
 				B00000000000000000000121 /* Sources/TaskifyApp/Features/Wallet/WalletView.swift in Sources */,
+				B00000000000000000009A07 /* Sources/TaskifyApp/Features/Wallet/CashuQRCodeView.swift in Sources */,
+				B00000000000000000009A0D /* Sources/TaskifyApp/Features/Wallet/WalletComponents.swift in Sources */,
+				B00000000000000000009A15 /* Sources/TaskifyApp/Features/Wallet/WalletSettingsViews.swift in Sources */,
+				B00000000000000000009A17 /* Sources/TaskifyApp/Features/Wallet/WalletMintViews.swift in Sources */,
+				B00000000000000000009A19 /* Sources/TaskifyApp/Features/Wallet/WalletReceiveViews.swift in Sources */,
+				B00000000000000000009A1B /* Sources/TaskifyApp/Features/Wallet/WalletSendViews.swift in Sources */,
+				B00000000000000000009A1D /* Sources/TaskifyApp/Features/Wallet/WalletHistoryViews.swift in Sources */,
 				B00000000000000000009A01 /* Sources/TaskifyApp/Features/Wallet/NWCWalletViews.swift in Sources */,
 				B00000000000000000009A05 /* Sources/TaskifyApp/Features/Wallet/WalletViewModel+NWC.swift in Sources */,
 				67DF407096EEB8D0283BC0DC,

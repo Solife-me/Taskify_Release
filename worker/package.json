@@ -4,12 +4,21 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
-    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/*.test.ts"
+    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/*.test.ts",
+    "check": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@noble/curves": "^2.4.0",
     "link-preview-js": "^5.0.0",
     "nostr-tools": "^2.25.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261008.1",
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
   }
 }

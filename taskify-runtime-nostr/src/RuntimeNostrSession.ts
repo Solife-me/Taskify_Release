@@ -1,5 +1,5 @@
 import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus, type NDKFilter, type NDKRelay, type NDKSigner } from "@nostr-dev-kit/ndk";
-import { finalizeEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
+import { finalizeEvent, verifyEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
 import { applyProofOfWork, mineEventTemplate, type ProofOfWorkOptions } from "./ProofOfWork.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
@@ -263,6 +263,17 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
         if (settled) return;
         const raw = (evt.rawEvent?.() as NostrEvent) ?? (evt as unknown as NostrEvent);
         if (!raw?.id || seenIds.has(raw.id)) return;
+        // NDK only samples signatures once a relay looks trustworthy. History reads decide
+        // where messages are sent and whose profile is shown, so every event is checked here as
+        // in SubscriptionManager. The ID is recorded only after the check, so a forged copy
+        // cannot shadow the genuine event arriving from another relay.
+        let signatureValid = false;
+        try {
+          signatureValid = verifyEvent({ id: raw.id, pubkey: raw.pubkey, sig: raw.sig, kind: raw.kind, created_at: raw.created_at, tags: raw.tags, content: raw.content });
+        } catch {
+          signatureValid = false;
+        }
+        if (!signatureValid) return;
         seenIds.add(raw.id);
         collected.push(raw);
         // Reset inactivity timer — settle shortly after events stop arriving

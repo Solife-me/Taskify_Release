@@ -40,11 +40,11 @@ final class NotificationService: UNNotificationServiceExtension {
 
     private func process(_ request: UNNotificationRequest) async {
         do {
-            let event = try await fetchEvent(from: request.content.userInfo)
-            guard !Task.isCancelled else { return }
             guard let identity = try KeychainIdentityStore().load() else {
                 throw CocoaError(.fileReadNoSuchFile)
             }
+            let event = try await fetchEvent(from: request.content.userInfo, identity: identity)
+            guard !Task.isCancelled else { return }
             let decrypted = try NIP17GiftWrap.unwrapRumor(event, recipient: identity)
             let snapshot = try await JSONTaskStore().load()
             guard let presentation = DMPushNotificationPreviewPolicy.presentation(
@@ -90,7 +90,7 @@ final class NotificationService: UNNotificationServiceExtension {
         }
     }
 
-    private func fetchEvent(from userInfo: [AnyHashable: Any]) async throws -> NostrEvent {
+    private func fetchEvent(from userInfo: [AnyHashable: Any], identity: NostrIdentity) async throws -> NostrEvent {
         guard let taskify = userInfo["taskify"] as? [String: Any],
               taskify["type"] as? String == "dm-preview",
               let rawURL = taskify["previewURL"] as? String,
@@ -106,6 +106,17 @@ final class NotificationService: UNNotificationServiceExtension {
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // The relay hands a preview only to its recipient, and only once, so a preview URL that
+        // leaks (it travels through Apple) is no use to anyone else.
+        request.setValue(
+            try DMPushRegistrationClient.authHeader(
+                privateKey: identity.privateKey,
+                url: url,
+                method: "GET",
+                body: Data()
+            ),
+            forHTTPHeaderField: "Authorization"
+        )
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse,
               http.statusCode == 200,
@@ -128,6 +139,16 @@ final class NotificationService: UNNotificationServiceExtension {
         contentHandler = nil
         self.genericAlert = nil
         finishLock.unlock()
-        handler(content ?? genericAlert)
+        handler(content ?? Self.withoutActions(genericAlert))
+    }
+
+    /// The push as received, minus any category or reply, task, or destination keys it carried:
+    /// those are set only after this extension decrypts a preview, so a push cannot choose where a
+    /// Reply goes or which task a button completes.
+    private static func withoutActions(_ alert: UNNotificationContent) -> UNNotificationContent {
+        guard let cleaned = alert.mutableCopy() as? UNMutableNotificationContent else { return alert }
+        cleaned.categoryIdentifier = ""
+        cleaned.userInfo = TaskifyNotificationContract.removingActionKeys(from: alert.userInfo)
+        return cleaned
     }
 }

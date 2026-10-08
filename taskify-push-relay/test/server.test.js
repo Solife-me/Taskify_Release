@@ -6,7 +6,8 @@ import test from 'node:test'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools'
 import WebSocket from 'ws'
 
-import { createTaskifyPushServer } from '../src/server.js'
+import { createHash } from 'node:crypto'
+import { clientAddressKey, createTaskifyPushServer } from '../src/server.js'
 import { RelayStore } from '../src/store.js'
 
 function nextFrame(socket, predicate = () => true) {
@@ -30,7 +31,7 @@ function nextFrame(socket, predicate = () => true) {
   })
 }
 
-async function connectAndAuthenticate(port, secretKey) {
+async function connectAndAuthenticate(port, secretKey, extraTags = []) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}`)
   const challengeFrame = await nextFrame(socket, (frame) => frame[0] === 'AUTH')
   const authEvent = finalizeEvent(
@@ -40,6 +41,7 @@ async function connectAndAuthenticate(port, secretKey) {
       tags: [
         ['relay', 'wss://push.solife.me'],
         ['challenge', challengeFrame[1]],
+        ...extraTags,
       ],
       content: '',
     },
@@ -82,7 +84,7 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   assert.equal(relayInfoResponse.status, 200)
   assert.match(relayInfoResponse.headers.get('content-type'), /^application\/nostr\+json/)
   const relayInfo = await relayInfoResponse.json()
-  assert.deepEqual(relayInfo.supported_nips, [1, 11, 17, 42, 59, 98])
+  assert.deepEqual(relayInfo.supported_nips, [1, 9, 11, 17, 42, 59, 98])
 
   const senderKey = generateSecretKey()
   const recipientKey = generateSecretKey()
@@ -119,6 +121,10 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   assert.equal(previewResponse.status, 200)
   assert.equal(previewResponse.headers.get('cache-control'), 'no-store')
   assert.deepEqual(await previewResponse.json(), JSON.parse(JSON.stringify({ event: giftWrap })))
+  const secondFetch = await fetch(
+    sentPreviews[0].replace('https://push.solife.me', `http://127.0.0.1:${address.port}`),
+  )
+  assert.equal(secondFetch.status, 404, 'a preview URL works once')
 
   const missingPreview = await fetch(
     `http://127.0.0.1:${address.port}/v1/previews/${'x'.repeat(43)}`,
@@ -136,6 +142,100 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   const closed = await nextFrame(senderSocket, (frame) => frame[0] === 'CLOSED' && frame[1] === 'forbidden-inbox')
   assert.match(closed[2], /recipient/i)
   assert.notEqual(senderPubkey, recipientPubkey)
+})
+
+test('kind 5 requests delete only events signed by the deletion author', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory })
+  await store.load()
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me' },
+    store,
+    apnsClient: { async send() { return { status: 200, reason: null } } },
+    logger: { info() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+
+  const authorKey = generateSecretKey()
+  const recipientPubkey = getPublicKey(generateSecretKey())
+  await store.putRegistration(recipientPubkey, 'phone-1', {
+    deviceToken: '12'.repeat(32), environment: 'production',
+  })
+  const socket = await connectAndAuthenticate(address.port, generateSecretKey())
+  t.after(() => socket.close())
+  const giftWrap = finalizeEvent({
+    kind: 1059,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [['p', recipientPubkey]],
+    content: 'opaque',
+  }, authorKey)
+  socket.send(JSON.stringify(['EVENT', giftWrap]))
+  await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === giftWrap.id)
+
+  const impostorDeletion = finalizeEvent({
+    kind: 5, created_at: giftWrap.created_at + 1, tags: [['e', giftWrap.id]], content: '',
+  }, generateSecretKey())
+  socket.send(JSON.stringify(['EVENT', impostorDeletion]))
+  const ignored = await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === impostorDeletion.id)
+  assert.deepEqual(ignored.slice(2), [true, 'deleted: 0 events'])
+  assert.equal(store.eventsFor(recipientPubkey).length, 1)
+
+  const deletion = finalizeEvent({
+    kind: 5, created_at: giftWrap.created_at + 2, tags: [['e', giftWrap.id], ['k', '1059']], content: '',
+  }, authorKey)
+  socket.send(JSON.stringify(['EVENT', deletion]))
+  const removed = await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === deletion.id)
+  assert.deepEqual(removed.slice(2), [true, 'deleted: 1 event'])
+  assert.equal(store.eventsFor(recipientPubkey).length, 0)
+  assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 0)
+  assert.equal(store.state.previews.length, 0)
+})
+
+test('a Snapstr sender alerts only Snapstr devices and a Taskify sender only Taskify devices', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory, minimumPushIntervalSeconds: 0 })
+  await store.load()
+  const sent = []
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me' },
+    store,
+    apnsClient: {
+      async send(registration) {
+        sent.push(registration.installationID)
+        return { status: 200, reason: null }
+      },
+    },
+    logger: { info() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+
+  const recipientPubkey = getPublicKey(generateSecretKey())
+  await store.putRegistration(recipientPubkey, 'taskify-phone', { deviceToken: '11'.repeat(32), environment: 'production' })
+  await store.putRegistration(recipientPubkey, 'snapstr-phone', {
+    deviceToken: '33'.repeat(32), environment: 'production', application: 'snapstr',
+  })
+  const publish = async (socket) => {
+    const wrap = finalizeEvent(
+      { kind: 1059, created_at: Math.floor(Date.now() / 1000), tags: [['p', recipientPubkey]], content: 'opaque' },
+      generateSecretKey(),
+    )
+    socket.send(JSON.stringify(['EVENT', wrap]))
+    const saved = await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === wrap.id)
+    assert.deepEqual(saved.slice(2), [true, 'saved'])
+    await server.processPushJobs()
+  }
+
+  const snapstrSender = await connectAndAuthenticate(address.port, generateSecretKey(), [['client', 'snapstr']])
+  t.after(() => snapstrSender.close())
+  await publish(snapstrSender)
+  assert.deepEqual(sent, ['snapstr-phone'])
+
+  const taskifySender = await connectAndAuthenticate(address.port, generateSecretKey())
+  t.after(() => taskifySender.close())
+  await publish(taskifySender)
+  assert.deepEqual(sent, ['snapstr-phone', 'taskify-phone'])
 })
 
 test('APNs provider-token rejection invalidates the cache and preserves the job for retry', async () => {
@@ -207,6 +307,7 @@ test('history honors per-filter limits, newest-first ordering, and ignores limit
   t.after(() => server.stop())
   const key = generateSecretKey()
   const recipient = getPublicKey(key)
+  await store.putPreference(finalizeEvent({ kind: 10_050, created_at: 1, tags: [['relay', 'wss://push.solife.me']], content: '' }, key))
   const now = Math.floor(Date.now() / 1000)
   const events = [now - 3, now - 2, now - 1, now - 1].map((created_at, index) => finalizeEvent({
     kind: 1059, created_at, tags: [['p', recipient]], content: `opaque-${index}`,
@@ -228,4 +329,227 @@ test('history honors per-filter limits, newest-first ordering, and ignores limit
   const incoming = nextFrame(socket, (frame) => frame[0] === 'EVENT' && frame[2]?.id === live.id)
   socket.send(JSON.stringify(['EVENT', live]))
   assert.equal((await incoming)[2].id, live.id)
+})
+
+async function serverForTest(t, options = {}) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory })
+  await store.load()
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me' },
+    store,
+    apnsClient: { async send() { return { status: 200, reason: null } } },
+    logger: { info() {}, warn() {} },
+    ...options,
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+  return { store, port: address.port }
+}
+
+test('a request target that URL parsing rejects gets 400 and the server keeps running', async (t) => {
+  const { port } = await serverForTest(t)
+  const net = await import('node:net')
+  for (const target of ['//', '///', '//:', '//?x']) {
+    const reply = await new Promise((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write(`GET ${target} HTTP/1.1\r\nHost: push.solife.me\r\nConnection: close\r\n\r\n`)
+      })
+      let data = ''
+      socket.on('data', (chunk) => { data += chunk })
+      socket.on('end', () => resolve(data))
+      socket.on('error', reject)
+    })
+    assert.match(reply, /^HTTP\/1\.1 400 /, `target ${target}`)
+  }
+  const health = await fetch(`http://127.0.0.1:${port}/healthz`)
+  assert.equal(health.status, 200)
+})
+
+test('an unauthenticated socket is refused before its signature is checked', async (t) => {
+  const { port } = await serverForTest(t)
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+  t.after(() => socket.close())
+  await nextFrame(socket, (frame) => frame[0] === 'AUTH')
+  const forged = { ...finalizeEvent({ kind: 1059, created_at: 1, tags: [['p', 'a'.repeat(64)]], content: 'x' }, generateSecretKey()), sig: '00'.repeat(64) }
+  socket.send(JSON.stringify(['EVENT', forged]))
+  const reply = await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === forged.id)
+  assert.equal(reply[2], false)
+  assert.match(reply[3], /^auth-required:/)
+})
+
+test('public inbox-preference queries must name the accounts they want', async (t) => {
+  const { store, port } = await serverForTest(t)
+  const owner = generateSecretKey()
+  const preference = finalizeEvent({ kind: 10_050, created_at: 1_700_000_000, tags: [['relay', 'wss://push.solife.me']], content: '' }, owner)
+  await store.putPreference(preference)
+
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+  t.after(() => socket.close())
+  await nextFrame(socket, (frame) => frame[0] === 'AUTH')
+  socket.send(JSON.stringify(['REQ', 'everyone', { kinds: [10_050] }]))
+  const refused = await nextFrame(socket, (frame) => frame[1] === 'everyone')
+  assert.equal(refused[0], 'CLOSED')
+
+  socket.send(JSON.stringify(['REQ', 'named', { kinds: [10_050], authors: [getPublicKey(owner)] }]))
+  const found = await nextFrame(socket, (frame) => frame[1] === 'named')
+  assert.equal(found[0], 'EVENT')
+  assert.equal(found[2].id, preference.id)
+})
+
+test('gift wraps are stored only for accounts that use this relay', async (t) => {
+  const { store, port } = await serverForTest(t)
+  const sender = await connectAndAuthenticate(port, generateSecretKey())
+  t.after(() => sender.close())
+  const publish = async (event) => {
+    sender.send(JSON.stringify(['EVENT', event]))
+    return nextFrame(sender, (frame) => frame[0] === 'OK' && frame[1] === event.id)
+  }
+  const stranger = getPublicKey(generateSecretKey())
+  const refused = await publish(finalizeEvent({ kind: 1059, created_at: 1, tags: [['p', stranger]], content: 'x' }, generateSecretKey()))
+  assert.equal(refused[2], false)
+  assert.match(refused[3], /^restricted:/)
+  assert.equal(store.eventsFor(stranger).length, 0)
+
+  const userKey = generateSecretKey()
+  await store.putPreference(finalizeEvent({ kind: 10_050, created_at: 1, tags: [['relay', 'wss://push.solife.me']], content: '' }, userKey))
+  const accepted = await publish(finalizeEvent({ kind: 1059, created_at: 1, tags: [['p', getPublicKey(userKey)]], content: 'x' }, generateSecretKey()))
+  assert.deepEqual(accepted.slice(2), [true, 'saved'])
+})
+
+function closed(socket) {
+  return new Promise((resolve) => socket.once('close', (code) => resolve(code)))
+}
+
+test('sockets beyond the process cap are closed straight away', async (t) => {
+  const { port } = await serverForTest(t, { maxSockets: 2 })
+  const open = []
+  for (let index = 0; index < 2; index += 1) {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+    t.after(() => socket.close())
+    await nextFrame(socket, (frame) => frame[0] === 'AUTH')
+    open.push(socket)
+  }
+  const extra = new WebSocket(`ws://127.0.0.1:${port}`)
+  assert.equal(await closed(extra), 1013)
+})
+
+test('a socket that sends too many messages is closed', async (t) => {
+  const { port } = await serverForTest(t, { maxSocketMessagesPerTenSeconds: 5 })
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+  await nextFrame(socket, (frame) => frame[0] === 'AUTH')
+  const done = closed(socket)
+  for (let index = 0; index < 10; index += 1) socket.send(JSON.stringify(['CLOSE', `s${index}`]))
+  assert.equal(await done, 1008)
+})
+
+function nip98(secretKey, url, method = 'GET', body = Buffer.alloc(0)) {
+  const event = finalizeEvent({
+    kind: 27_235,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [['u', url], ['method', method], ['payload', createHash('sha256').update(body).digest('hex')], ['nonce', Math.random().toString(16)]],
+    content: '',
+  }, secretKey)
+  return `Nostr ${Buffer.from(JSON.stringify(event)).toString('base64')}`
+}
+
+async function previewFixture(t, config = {}) {
+  const sentPreviews = []
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory })
+  await store.load()
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me', ...config },
+    store,
+    apnsClient: { async send(_registration, previewURL) { sentPreviews.push(previewURL); return { status: 200, reason: null } } },
+    logger: { info() {}, warn() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+  const recipientKey = generateSecretKey()
+  const recipient = getPublicKey(recipientKey)
+  await store.putRegistration(recipient, 'phone-1', { deviceToken: '12'.repeat(32), environment: 'production' })
+  const wrap = finalizeEvent({ kind: 1059, created_at: Math.floor(Date.now() / 1000), tags: [['p', recipient]], content: 'x' }, generateSecretKey())
+  await store.putGiftWrap(wrap, { notify: true })
+  await server.processPushJobs()
+  const publicURL = sentPreviews[0]
+  const localURL = publicURL.replace('https://push.solife.me', `http://127.0.0.1:${address.port}`)
+  return { recipientKey, publicURL, localURL }
+}
+
+test('a signed preview fetch must come from the recipient', async (t) => {
+  const { recipientKey, publicURL, localURL } = await previewFixture(t)
+  const stranger = await fetch(localURL, { headers: { authorization: nip98(generateSecretKey(), publicURL) } })
+  assert.equal(stranger.status, 404)
+  const recipient = await fetch(localURL, { headers: { authorization: nip98(recipientKey, publicURL) } })
+  assert.equal(recipient.status, 200)
+})
+
+test('unsigned preview fetches are refused once signatures are required', async (t) => {
+  const { recipientKey, publicURL, localURL } = await previewFixture(t, { requireSignedPreviews: true })
+  assert.equal((await fetch(localURL)).status, 401)
+  assert.equal((await fetch(localURL, { headers: { authorization: nip98(recipientKey, publicURL) } })).status, 200)
+})
+
+function openSocket(port, headers = {}) {
+  return new Promise((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}`, { headers })
+    const closed = new Promise((done) => socket.on('close', (code, reason) => done({ code, reason: reason.toString() })))
+    socket.on('error', () => {})
+    socket.once('message', () => resolve({ socket, closed }))
+    socket.once('close', () => resolve({ socket, closed }))
+  })
+}
+
+test('the client address comes from the trusted header, and IPv6 is grouped by /64', () => {
+  const request = (value) => ({ headers: value === undefined ? {} : { 'cf-connecting-ip': value }, socket: { remoteAddress: '10.0.0.9' } })
+  assert.equal(clientAddressKey(request('203.0.113.7'), 'cf-connecting-ip'), '203.0.113.7')
+  assert.equal(clientAddressKey(request('2001:db8:1:2:aaaa::1'), 'cf-connecting-ip'), '2001:db8:1:2::/64')
+  assert.equal(clientAddressKey(request('2001:0db8:0001:0002:ffff:1:2:3'), 'cf-connecting-ip'), '2001:db8:1:2::/64')
+  assert.equal(clientAddressKey(request('2001:db8::7'), 'cf-connecting-ip'), '2001:db8:0:0::/64')
+  // Not an address, absent, or no header configured: the socket's own peer.
+  assert.equal(clientAddressKey(request('not-an-ip'), 'cf-connecting-ip'), '10.0.0.9')
+  assert.equal(clientAddressKey(request(undefined), 'cf-connecting-ip'), '10.0.0.9')
+  assert.equal(clientAddressKey(request('203.0.113.7'), null), '10.0.0.9')
+})
+
+test('one address cannot hold more than its share of sockets', async (t) => {
+  const { port } = await serverForTest(t, {
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me', clientAddressHeader: 'cf-connecting-ip' },
+    maxSocketsPerAddress: 2,
+  })
+  const attacker = { 'cf-connecting-ip': '203.0.113.7' }
+  const held = [await openSocket(port, attacker), await openSocket(port, attacker)]
+  const refused = await openSocket(port, attacker)
+  assert.deepEqual(await refused.closed, { code: 1013, reason: 'too many connections from this address' })
+
+  const other = await openSocket(port, { 'cf-connecting-ip': '198.51.100.4' })
+  assert.equal(other.socket.readyState, WebSocket.OPEN, 'another address still gets in')
+
+  // A closed socket gives its address the slot back.
+  held[0].socket.close()
+  await held[0].closed
+  const again = await openSocket(port, attacker)
+  assert.equal(again.socket.readyState, WebSocket.OPEN)
+  for (const { socket } of [held[1], other, again]) socket.close()
+})
+
+test('without a trusted header there is no per-address socket cap, since every peer is the proxy', async (t) => {
+  const { port } = await serverForTest(t, { maxSocketsPerAddress: 1 })
+  const first = await openSocket(port)
+  const second = await openSocket(port)
+  assert.equal(second.socket.readyState, WebSocket.OPEN)
+  first.socket.close()
+  second.socket.close()
+})
+
+test('a socket that never answers the challenge is closed, an authenticated one is kept', async (t) => {
+  const { port } = await serverForTest(t, { unauthenticatedSocketTimeoutMs: 300 })
+  const idle = await openSocket(port)
+  const secretKey = generateSecretKey()
+  const authed = await connectAndAuthenticate(port, secretKey)
+  assert.deepEqual(await idle.closed, { code: 1008, reason: 'auth-required: authenticate sooner' })
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  assert.equal(authed.readyState, WebSocket.OPEN)
+  authed.close()
 })

@@ -5,21 +5,37 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
+// Board names come from board metadata on relays, which anyone holding a board's ID can publish,
+// and they are written into a script the user's shell runs. Control characters are dropped and
+// every shell gets its own quoting; none of them may leave a quoted literal.
 function readBoardNames(): string[] {
   try {
     const configPath = join(homedir(), ".taskify-cli", "config.json");
     const raw = readFileSync(configPath, "utf-8");
     const cfg = JSON.parse(raw);
-    return (cfg.boards ?? []).map((b: { name: string }) => b.name);
+    return (cfg.boards ?? [])
+      .map((b: { name?: unknown }) => (typeof b.name === "string" ? b.name : ""))
+      .map((name: string) => name.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim())
+      .filter((name: string) => name.length > 0);
   } catch {
     return [];
   }
 }
 
+/** A POSIX single-quoted literal: nothing inside is expanded. Used for bash and zsh. */
+export function posixSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/** A fish single-quoted literal: fish treats only \\ and \' as escapes inside single quotes. */
+export function fishSingleQuote(value: string): string {
+  return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+}
+
 export function zshCompletion(): string {
   const boards = readBoardNames();
   const boardList = boards.length > 0
-    ? boards.map((n) => `'${n.replace(/'/g, "'\\''")}'`).join(" ")
+    ? boards.map(posixSingleQuote).join(" ")
     : "";
   const boardComplete = boardList
     ? `    local boards=(${boardList})\n    _describe 'board' boards`
@@ -302,7 +318,8 @@ try {
       (b.tasks||[]).forEach(t=>{
         if(t.status==='open'){
           const title=(t.title||'').replace(/[:\\n]/g,' ').slice(0,60);
-          process.stdout.write(t.id.slice(0,8)+':'+title+'\\n');
+          const id=String(t.id||'').slice(0,8);
+          if(/^[A-Za-z0-9_-]+$/.test(id)) process.stdout.write(id+':'+title+'\\n');
         }
       });
     }
@@ -319,15 +336,21 @@ _taskify
 
 export function bashCompletion(): string {
   const boards = readBoardNames();
-  const boardList = boards.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(" ");
+  const boardList = boards.map(posixSingleQuote).join(" ");
 
   return `# taskify bash completion
 # Install: taskify completions --shell bash > ~/.bash_completion.d/taskify
 #          source ~/.bash_completion.d/taskify
 
+# Literal prefix matching: compgen -W expands its word list, which would run any command
+# substitution a board member put in a board name.
 _taskify_boards() {
   local boards=(${boardList})
-  COMPREPLY=(\$(compgen -W "\${boards[*]}" -- "\${cur}"))
+  local board
+  COMPREPLY=()
+  for board in "\${boards[@]}"; do
+    [[ "\${board}" == "\${cur}"* ]] && COMPREPLY+=("\${board}")
+  done
 }
 
 _taskify_cached_task_ids() {
@@ -342,12 +365,17 @@ try {
   Object.values(c.boards||{}).forEach(b=>{
     if(now-b.fetchedAt<300000){
       (b.tasks||[]).forEach(t=>{
-        if(t.status==='open') process.stdout.write(t.id.slice(0,8)+'\\n');
+        const id=String(t.id||'').slice(0,8);
+        if(t.status==='open'&&/^[A-Za-z0-9_-]+$/.test(id)) process.stdout.write(id+'\\n');
       });
     }
   });
 }catch(e){}" 2>/dev/null)
-  COMPREPLY=(\$(compgen -W "\${raw}" -- "\${cur}"))
+  local id
+  COMPREPLY=()
+  while IFS= read -r id; do
+    [[ -n "\${id}" && "\${id}" == "\${cur}"* ]] && COMPREPLY+=("\${id}")
+  done <<< "\${raw}"
 }
 
 _taskify() {
@@ -496,7 +524,7 @@ complete -F _taskify taskify
 export function fishCompletion(): string {
   const boards = readBoardNames();
   const boardCompletions = boards
-    .map((n) => `complete -c taskify -n '__taskify_using_board_opt' -a '${n.replace(/'/g, "\\'")}' -d 'Board'`)
+    .map((n) => `complete -c taskify -n '__taskify_using_board_opt' -a ${fishSingleQuote(n)} -d 'Board'`)
     .join("\n");
 
   return `# taskify fish completion

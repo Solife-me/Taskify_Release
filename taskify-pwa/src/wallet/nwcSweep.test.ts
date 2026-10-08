@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import {
   journalHasUnsettledMelts,
   preimageMatchesPaymentHash,
@@ -55,7 +55,7 @@ class FakeNwcWallet implements SweepDestination {
     this.makeInvoiceCalls += 1;
     if (this.failMakeInvoice) throw this.failMakeInvoice;
     const preimage = randomHex();
-    const paymentHash = bytesToHex(sha256(Buffer.from(preimage, "hex")));
+    const paymentHash = bytesToHex(sha256(hexToBytes(preimage)));
     const invoiceAmount = amountSat + this.amountSkew;
     const invoice = `lnfake${invoiceAmount}n1${paymentHash.slice(0, 20)}${randomHex(4)}`;
     this.invoices.set(invoice, { invoice, amountSat: invoiceAmount, paymentHash, preimage, settled: false });
@@ -323,7 +323,7 @@ function makeRng(seed: number) {
 describe("preimage verification", () => {
   test("accepts a matching preimage and rejects others", () => {
     const preimage = randomHex();
-    const hash = bytesToHex(sha256(Buffer.from(preimage, "hex")));
+    const hash = bytesToHex(sha256(hexToBytes(preimage)));
     expect(preimageMatchesPaymentHash(preimage, hash)).toBe(true);
     expect(preimageMatchesPaymentHash(preimage.toUpperCase(), hash)).toBe(true);
     expect(preimageMatchesPaymentHash(randomHex(), hash)).toBe(false);

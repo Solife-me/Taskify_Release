@@ -3,7 +3,8 @@
 ## Before you start
 
 You need an Apple Developer APNs authentication key with Apple Push Notifications enabled for the
-Taskify App ID. Keep the downloaded `.p8` file private; Apple only lets you download it once.
+Taskify and Snapstr App IDs. The same team APNs key can serve both apps. Keep the downloaded `.p8`
+file private; Apple only lets you download it once.
 
 ## Set up the service
 
@@ -13,6 +14,7 @@ Taskify App ID. Keep the downloaded `.p8` file private; Apple only lets you down
    private-key field. Leave the App Bundle ID as `solife.me.Taskify.Native` unless the iOS target is
    signed with a different bundle identifier. Leave the Watch App Bundle ID as
    `solife.me.Taskify.Native.watchkitapp` unless the watchOS target uses a different identifier.
+   Leave the Snapstr App Bundle ID as `app.snapstr.ios` unless that target uses a different identifier.
 3. Open the **NIP-17 Push Relay** interface and expose it through your StartOS HTTPS gateway at
    `push.solife.me`. The same endpoint must be reachable as both `https://push.solife.me` and
    `wss://push.solife.me` with a valid public TLS certificate.
@@ -22,6 +24,8 @@ Taskify App ID. Keep the downloaded `.p8` file private; Apple only lets you down
    the update on an iPhone and paired Apple Watch.
 6. In Taskify Settings, enable **Direct-message push** and choose **New messages**, **Ecash
    payments**, or **Messages & payments**.
+7. In Snapstr Profile settings, enable **Rich notifications**. Snapstr adds the same push relay to
+   its signed inbox preference and registers the device as a Snapstr installation.
 
 When enabled, Taskify registers the device using a signed NIP-98 request and adds
 `wss://push.solife.me` to the user's signed NIP-17 inbox relay preference. Disabling the last device
@@ -56,12 +60,15 @@ as your authenticated account. The lookup handler does not store a lookup histor
 fetched lists, and it does not log lookup details. The Watch checks signatures and keeps its
 own routing cache. Message contents and private keys are never included in these lookups.
 
-The service stores only encrypted NIP-17 gift wraps. It never sends Apple message text, sender
+The service stores only encrypted NIP-59 gift wraps. It never sends Apple message text, sender
 identity, payment data, group metadata, or the selected category. iPhone and Watch receive a
 generic **New Message** alert with a background refresh opportunity. The iPhone alert also carries
 a random preview link that expires after 15 minutes: Taskify's notification extension uses it to
 fetch the encrypted message, decrypts it on the iPhone, and replaces the generic text with the
-sender and a short preview. The Watch decrypts its inbox locally. Because conversation and mute
+sender and a short preview. Snapstr uses the same opaque flow and builds photo, video, or text
+previews on-device. When one Nostr account uses both apps, Snapstr names itself when it signs in
+to this relay, so a snap alerts only Snapstr and a Taskify message alerts only Taskify; the
+service learns which app sent a message, never its contents. The Watch decrypts its inbox locally. Because conversation and mute
 metadata remains encrypted, the service cannot honor block, mute, or category choices; on the
 iPhone those arrivals keep the generic alert instead of showing a preview.
 
@@ -83,5 +90,6 @@ key live in the `main` service volume.
 Taskify can still send messages using fallback relays when the recipient has no published inbox
 list. Usable published lists take precedence, and the gateway uses the targets chosen by the app.
 Delivery is confirmed only when a relay reports acceptance. A rejected message remains pending
-for retry rather than appearing sent. The service does not currently process Nostr deletion
-requests; encrypted messages remain subject to its configured retention limits.
+for retry rather than appearing sent. The service processes signed NIP-09 deletion requests for
+events authored by the same key; encrypted messages otherwise remain subject to its configured
+retention limits.

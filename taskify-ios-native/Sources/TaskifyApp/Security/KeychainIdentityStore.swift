@@ -44,19 +44,11 @@ struct KeychainIdentityStore {
             kSecAttrAccount as String: account,
         ]
         if let sharedAccessGroup { query[kSecAttrAccessGroup as String] = sharedAccessGroup }
-        let attributes: [String: Any] = [
-            kSecValueData as String: identity.privateKey,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess { return }
-        guard updateStatus == errSecItemNotFound else { throw KeychainIdentityError.keychain(updateStatus) }
-
-        var item = query
-        attributes.forEach { item[$0.key] = $0.value }
-        let addStatus = SecItemAdd(item as CFDictionary, nil)
-        guard addStatus == errSecSuccess else { throw KeychainIdentityError.keychain(addStatus) }
+        do {
+            try TaskifyKeychainItem.save(query, value: identity.privateKey)
+        } catch let failure as TaskifyKeychainItem.Failure {
+            throw KeychainIdentityError.keychain(failure.status)
+        }
     }
 
     private func loadPrivateKey() throws -> Data? {
@@ -77,15 +69,13 @@ struct KeychainIdentityStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw KeychainIdentityError.keychain(status) }
-        return result as? Data
+        do {
+            return try TaskifyKeychainItem.load(query)
+        } catch let failure as TaskifyKeychainItem.Failure {
+            throw KeychainIdentityError.keychain(failure.status)
+        }
     }
 }
 
@@ -109,40 +99,30 @@ struct KeychainWalletSeedStore {
         guard CashuWalletService.validateMnemonic(normalized) else {
             throw CashuWalletError.invalidRecoveryPhrase
         }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let attributes: [String: Any] = [
-            kSecValueData as String: Data(normalized.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess { return }
-        guard updateStatus == errSecItemNotFound else { throw KeychainIdentityError.keychain(updateStatus) }
-
-        var item = query
-        attributes.forEach { item[$0.key] = $0.value }
-        let addStatus = SecItemAdd(item as CFDictionary, nil)
-        guard addStatus == errSecSuccess else { throw KeychainIdentityError.keychain(addStatus) }
+        do {
+            try TaskifyKeychainItem.save(itemQuery, value: Data(normalized.utf8))
+        } catch let failure as TaskifyKeychainItem.Failure {
+            throw KeychainIdentityError.keychain(failure.status)
+        }
     }
 
     func load() throws -> String? {
-        let query: [String: Any] = [
+        let data: Data?
+        do {
+            data = try TaskifyKeychainItem.load(itemQuery)
+        } catch let failure as TaskifyKeychainItem.Failure {
+            throw KeychainIdentityError.keychain(failure.status)
+        }
+        guard let data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private var itemQuery: [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw KeychainIdentityError.keychain(status) }
-        guard let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 }
 
@@ -155,44 +135,32 @@ struct KeychainP2PKKeyStore {
     private let account = "cashu-p2pk-recipient-keys-v1"
 
     func load() throws -> CashuP2PKKeyRing {
-        let query: [String: Any] = [
+        let data: Data?
+        do {
+            data = try TaskifyKeychainItem.load(itemQuery)
+        } catch let failure as TaskifyKeychainItem.Failure {
+            throw KeychainIdentityError.keychain(failure.status)
+        }
+        guard let data else { return CashuP2PKKeyRing() }
+        return try JSONDecoder().decode(CashuP2PKKeyRing.self, from: data)
+    }
+
+    private var itemQuery: [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return CashuP2PKKeyRing() }
-        guard status == errSecSuccess,
-              let data = result as? Data else {
-            throw KeychainIdentityError.keychain(status)
-        }
-        return try JSONDecoder().decode(CashuP2PKKeyRing.self, from: data)
     }
 
     func save(_ keyRing: CashuP2PKKeyRing) throws {
         let data = try JSONEncoder().encode(keyRing)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            // Background payment-request redemption runs after the first unlock, so these keys
-            // use the same device-only accessibility class as the wallet seed.
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess { return }
-        guard updateStatus == errSecItemNotFound else {
-            throw KeychainIdentityError.keychain(updateStatus)
+        // Background payment-request redemption runs after the first unlock, so these keys use
+        // the same device-only accessibility class as the wallet seed (the helper's default).
+        do {
+            try TaskifyKeychainItem.save(itemQuery, value: data)
+        } catch let failure as TaskifyKeychainItem.Failure {
+            throw KeychainIdentityError.keychain(failure.status)
         }
-        var item = query
-        attributes.forEach { item[$0.key] = $0.value }
-        let addStatus = SecItemAdd(item as CFDictionary, nil)
-        guard addStatus == errSecSuccess else { throw KeychainIdentityError.keychain(addStatus) }
     }
 }

@@ -10,7 +10,21 @@ import NDK, { NDKPrivateKeySigner, NDKEvent } from "@nostr-dev-kit/ndk";
 import { nip19, getPublicKey } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { normalizeRelayUrls } from "taskify-runtime-nostr";
-import type { NostrEvent } from "nostr-tools";
+import { verifyEvent, type NostrEvent } from "nostr-tools";
+
+/** Signed events only, from a plain copy (see shared/verifiedEvents, which this mirrors). */
+function signedRawEvents(events: Iterable<NDKEvent>): NostrEvent[] {
+  const out: NostrEvent[] = [];
+  for (const event of events) {
+    const raw = (event.rawEvent?.() ?? event) as unknown as NostrEvent;
+    const plain: NostrEvent = {
+      id: raw.id, pubkey: raw.pubkey, created_at: raw.created_at, kind: raw.kind,
+      tags: raw.tags, content: raw.content, sig: raw.sig,
+    };
+    try { if (verifyEvent(plain)) out.push(plain); } catch { /* malformed */ }
+  }
+  return out;
+}
 
 export const BOT_COMMANDS_KIND = 30078;
 export const BOT_COMMANDS_D_TAG = "taskify-bot-commands";
@@ -131,12 +145,12 @@ export async function fetchInboxRelays(
       ndk.fetchEvents({ kinds: [10050], authors: [pubkeyHex], limit: 1 } as any),
       new Promise<Set<NDKEvent>>((r) => setTimeout(() => r(new Set()), timeoutMs)),
     ]).catch(() => new Set<NDKEvent>());
-    let latest: NDKEvent | null = null;
-    for (const ev of events) {
-      if (!latest || (ev.created_at ?? 0) > (latest.created_at ?? 0)) latest = ev;
+    let raw: NostrEvent | undefined;
+    for (const ev of signedRawEvents(events)) {
+      if (ev.kind !== 10050 || ev.pubkey !== pubkeyHex) continue;
+      if (!raw || (ev.created_at ?? 0) > (raw.created_at ?? 0)) raw = ev;
     }
-    if (!latest) return [];
-    const raw = latest.rawEvent?.() as NostrEvent | undefined;
+    if (!raw) return [];
     const inbox: string[] = [];
     for (const tag of ((raw?.tags ?? []) as unknown[] as string[][])) {
       if (Array.isArray(tag) && tag[0] === "relay" && typeof tag[1] === "string" && tag[1].trim()) {
@@ -219,12 +233,11 @@ export async function fetchBotCommands(
     new Promise<Set<NDKEvent>>((r) => setTimeout(() => r(new Set()), timeoutMs)),
   ]).catch(() => new Set<NDKEvent>());
 
-  let latest: NDKEvent | null = null;
-  for (const ev of events) {
-    if (!latest || (ev.created_at ?? 0) > (latest.created_at ?? 0)) latest = ev;
+  let raw: NostrEvent | undefined;
+  for (const ev of signedRawEvents(events)) {
+    if (ev.pubkey !== pubkeyHex) continue;
+    if (!raw || (ev.created_at ?? 0) > (raw.created_at ?? 0)) raw = ev;
   }
-  if (!latest) return { event: null, commands: [] };
-  const raw = latest.rawEvent?.() as NostrEvent | undefined;
   if (!raw) return { event: null, commands: [] };
   return { event: raw, commands: parseBotCommands(raw) ?? [] };
 }
