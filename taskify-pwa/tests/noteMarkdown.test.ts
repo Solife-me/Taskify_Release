@@ -27,6 +27,7 @@ describe("noteBlocks", () => {
     expect(noteBlocks(note)).toEqual([
       { type: "heading", level: 1, content: "Plan" },
       { type: "paragraph", content: "Buy milk\nthen bread" },
+      { type: "spacer", lines: 1 },
       { type: "bullet", depth: 0, content: "one" },
       { type: "bullet", depth: 1, content: "nested" },
       { type: "numbered", depth: 0, number: 1, content: "first" },
@@ -35,6 +36,17 @@ describe("noteBlocks", () => {
       { type: "quote", content: "quoted" },
       { type: "rule" },
     ]);
+  });
+
+  it("keeps skipped rows between blocks only", () => {
+    expect(noteBlocks("\n\nFirst\n\n\n\nSecond\n- item\n \n\n")).toEqual([
+      { type: "paragraph", content: "First" },
+      { type: "spacer", lines: 3 },
+      { type: "paragraph", content: "Second" },
+      { type: "bullet", depth: 0, content: "item" },
+    ]);
+    expect(noteBlocks("```\na\n\nb\n```")).toEqual([{ type: "code", content: "a\n\nb" }]);
+    expect(notePreviewText("One\n\n\nTwo")).toBe("One\nTwo");
   });
 
   it("ignores checklists inside code and hashtags", () => {

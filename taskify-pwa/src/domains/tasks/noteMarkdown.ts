@@ -1,7 +1,8 @@
 // Task notes are Markdown: headings, bullet and numbered lists, GitHub-style checklist items
 // (`- [ ] item`), quotes, fenced code and horizontal rules, with inline bold, italic,
 // strikethrough, code and links. Raw HTML is not interpreted. A single newline is a line break,
-// as notes were plain text before they were Markdown.
+// as notes were plain text before they were Markdown, and each skipped row between blocks is
+// kept as a `spacer`, so a note keeps the spacing it was typed with.
 //
 // Mirrors taskify-ios-native/Sources/TaskifyCore/Models/TaskNoteMarkdown.swift; keep the two in
 // step so a note reads and edits the same on every client. Offsets are UTF-16, as in the
@@ -18,7 +19,9 @@ export type NoteBlock =
   | { type: "checklist"; depth: number; checked: boolean; content: string; line: number }
   | { type: "quote"; content: string }
   | { type: "code"; content: string }
-  | { type: "rule" };
+  | { type: "rule" }
+  /** Blank rows between two blocks; never leading or trailing. */
+  | { type: "spacer"; lines: number };
 
 export type NoteFormat =
   | "bold"
@@ -155,15 +158,21 @@ export function noteBlocks(note: string): NoteBlock[] {
   let quote: string[] = [];
   let code: string[] = [];
   let fence: Fence | null = null;
+  let blankLines = 0;
 
+  const emit = (block: NoteBlock) => {
+    if (blankLines > 0 && blocks.length) blocks.push({ type: "spacer", lines: blankLines });
+    blankLines = 0;
+    blocks.push(block);
+  };
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    blocks.push({ type: "paragraph", content: paragraph.join("\n") });
+    emit({ type: "paragraph", content: paragraph.join("\n") });
     paragraph = [];
   };
   const flushQuote = () => {
     if (!quote.length) return;
-    blocks.push({ type: "quote", content: quote.join("\n") });
+    emit({ type: "quote", content: quote.join("\n") });
     quote = [];
   };
 
@@ -171,7 +180,7 @@ export function noteBlocks(note: string): NoteBlock[] {
     const line = stripCarriageReturn(rawLine);
     if (fence) {
       if (closesFence(line, fence)) {
-        blocks.push({ type: "code", content: code.join("\n") });
+        emit({ type: "code", content: code.join("\n") });
         code = [];
         fence = null;
       } else {
@@ -189,12 +198,13 @@ export function noteBlocks(note: string): NoteBlock[] {
     if (isBlank(line)) {
       flushParagraph();
       flushQuote();
+      blankLines += 1;
       return;
     }
     if (isThematicBreak(line)) {
       flushParagraph();
       flushQuote();
-      blocks.push({ type: "rule" });
+      emit({ type: "rule" });
       return;
     }
     const info = lineInfo(line);
@@ -210,19 +220,19 @@ export function noteBlocks(note: string): NoteBlock[] {
         break;
       case "heading":
         flushParagraph();
-        if (info.content) blocks.push({ type: "heading", level: info.kind.level, content: info.content });
+        if (info.content) emit({ type: "heading", level: info.kind.level, content: info.content });
         break;
       case "bullet":
         flushParagraph();
-        blocks.push({ type: "bullet", depth: info.depth, content: info.content });
+        emit({ type: "bullet", depth: info.depth, content: info.content });
         break;
       case "numbered":
         flushParagraph();
-        blocks.push({ type: "numbered", depth: info.depth, number: info.kind.number, content: info.content });
+        emit({ type: "numbered", depth: info.depth, number: info.kind.number, content: info.content });
         break;
       case "checklist":
         flushParagraph();
-        blocks.push({
+        emit({
           type: "checklist",
           depth: info.depth,
           checked: info.kind.checked,
@@ -233,7 +243,7 @@ export function noteBlocks(note: string): NoteBlock[] {
     }
   });
   // An unclosed fence runs to the end of the note, as in CommonMark.
-  if (fence) blocks.push({ type: "code", content: code.join("\n") });
+  if (fence) emit({ type: "code", content: code.join("\n") });
   flushParagraph();
   flushQuote();
   return blocks;
@@ -319,6 +329,7 @@ export function notePreviewText(note: string): string {
         output.push(block.content);
         break;
       case "rule":
+      case "spacer":
         break;
     }
   }

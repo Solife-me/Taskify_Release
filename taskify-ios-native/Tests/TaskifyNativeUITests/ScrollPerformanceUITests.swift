@@ -1096,10 +1096,13 @@ final class ScrollPerformanceUITests: XCTestCase {
         quickAddField.tap()
         let suffix = String(UUID().uuidString.prefix(6))
         let titles = (1...5).map { "Single \(suffix) \($0)" }
-        for title in titles {
+        for title in titles.dropLast() {
             quickAddField.typeText(title)
             quickAddField.typeText("\n")
         }
+        // The plus button only offers "add and close keyboard" while there is a draft, so the
+        // last title is added with it rather than with Return.
+        quickAddField.typeText(titles[titles.count - 1])
         let addButton = app.buttons.matching(
             NSPredicate(format: "label CONTAINS[c] %@", "and close keyboard")
         ).firstMatch

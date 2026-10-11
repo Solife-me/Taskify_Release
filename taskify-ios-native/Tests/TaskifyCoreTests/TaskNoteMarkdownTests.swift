@@ -13,6 +13,7 @@ private func edit(_ format: TaskNoteFormat, _ text: String, _ location: Int, _ l
     #expect(TaskNoteMarkdown.blocks(note) == [
         .heading(level: 1, content: "Plan"),
         .paragraph("Buy milk\nthen bread"),
+        .spacer(lines: 1),
         .bulletItem(depth: 0, content: "one"),
         .bulletItem(depth: 1, content: "nested"),
         .numberedItem(depth: 0, number: 1, content: "first"),
@@ -21,6 +22,17 @@ private func edit(_ format: TaskNoteFormat, _ text: String, _ location: Int, _ l
         .quote("quoted"),
         .thematicBreak,
     ])
+}
+
+@Test func noteBlocksKeepSkippedRowsBetweenBlocksOnly() {
+    #expect(TaskNoteMarkdown.blocks("\n\nFirst\n\n\n\nSecond\n- item\n \n\n") == [
+        .paragraph("First"),
+        .spacer(lines: 3),
+        .paragraph("Second"),
+        .bulletItem(depth: 0, content: "item"),
+    ])
+    #expect(TaskNoteMarkdown.blocks("```\na\n\nb\n```") == [.code("a\n\nb")])
+    #expect(TaskNoteMarkdown.previewText("One\n\n\nTwo") == "One\nTwo")
 }
 
 @Test func noteBlocksIgnoreChecklistsInsideCodeAndHashtags() {

@@ -739,6 +739,10 @@ struct TaskCardView: View {
         self.allowsDragging = allowsDragging
     }
 
+    /// Centres the title's first line on the 30pt complete button, which is where a one-line
+    /// card had it when the row was centre-aligned.
+    private static let titleLineInset = (30 - UIFont.systemFont(ofSize: 16, weight: .semibold).lineHeight) / 2
+
     private var subtaskProgress: String? {
         guard let subtasks = task.subtasks, !subtasks.isEmpty else { return nil }
         return "\(subtasks.filter(\.completed).count)/\(subtasks.count)"
@@ -804,7 +808,9 @@ struct TaskCardView: View {
         TaskifyPerfMonitor.shared.recordCardBody()
 
         return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 11) {
+            // Top-aligned so the complete button stays beside the title however tall the
+            // card's notes and details make it.
+            HStack(alignment: .top, spacing: 11) {
                 GeometryReader { proxy in
                     Button {
                         if isSelectionMode {
@@ -854,7 +860,7 @@ struct TaskCardView: View {
                             Text(displayNote)
                                 .font(.caption)
                                 .foregroundStyle(TaskifyTheme.secondaryText)
-                                .lineLimit(2)
+                                .lineLimit(5)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -945,6 +951,7 @@ struct TaskCardView: View {
                 // offscreen pass covers glyphs rather than the whole row.
                 .taskifyLegibilityShadow(overPhoto)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, Self.titleLineInset)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())

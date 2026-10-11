@@ -189,7 +189,7 @@ export function TaskMedia({
         <button
           type="button"
           className={`${noteDetailClass}task-card__note-button text-xs text-secondary break-words`}
-          style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "pre-line" }}
+          style={{ display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "pre-line" }}
           onClick={(event) => {
             event.stopPropagation();
             onOpenNote();
@@ -201,7 +201,7 @@ export function TaskMedia({
       ) : (
         <div
           className={`${noteDetailClass}text-xs text-secondary break-words`}
-          style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "pre-line" }}
+          style={{ display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "pre-line" }}
         >
           {autolink(noteText)}
         </div>

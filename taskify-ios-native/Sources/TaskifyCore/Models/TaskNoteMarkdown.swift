@@ -3,7 +3,8 @@ import Foundation
 /// A block of a task note. Notes are Markdown: headings, bullet and numbered lists, GitHub-style
 /// checklist items (`- [ ] item`), quotes, fenced code and horizontal rules, with inline bold,
 /// italic, strikethrough, code and links. Raw HTML is not interpreted. A single newline is a
-/// line break, as notes were plain text before they were Markdown.
+/// line break, as notes were plain text before they were Markdown, and each skipped row
+/// between blocks is kept as a `spacer`, so a note keeps the spacing it was typed with.
 ///
 /// Mirrors `taskify-pwa/src/domains/tasks/noteMarkdown.ts`; keep the two in step so a note
 /// reads and edits the same on every client.
@@ -17,6 +18,8 @@ public enum TaskNoteBlock: Equatable, Sendable {
     case quote(String)
     case code(String)
     case thematicBreak
+    /// Blank rows between two blocks; never leading or trailing.
+    case spacer(lines: Int)
 }
 
 /// A formatting command from the note editor's toolbar, in toolbar order: the commands a
@@ -47,15 +50,23 @@ public enum TaskNoteMarkdown {
         var quote: [String] = []
         var code: [String] = []
         var fence: Fence?
+        var blankLines = 0
 
+        func emit(_ block: TaskNoteBlock) {
+            if blankLines > 0, !blocks.isEmpty {
+                blocks.append(.spacer(lines: blankLines))
+            }
+            blankLines = 0
+            blocks.append(block)
+        }
         func flushParagraph() {
             guard !paragraph.isEmpty else { return }
-            blocks.append(.paragraph(paragraph.joined(separator: "\n")))
+            emit(.paragraph(paragraph.joined(separator: "\n")))
             paragraph.removeAll()
         }
         func flushQuote() {
             guard !quote.isEmpty else { return }
-            blocks.append(.quote(quote.joined(separator: "\n")))
+            emit(.quote(quote.joined(separator: "\n")))
             quote.removeAll()
         }
 
@@ -63,7 +74,7 @@ public enum TaskNoteMarkdown {
             let line = stripCarriageReturn(rawLine)
             if let open = fence {
                 if Fence.closes(line, open) {
-                    blocks.append(.code(code.joined(separator: "\n")))
+                    emit(.code(code.joined(separator: "\n")))
                     code.removeAll()
                     fence = nil
                 } else {
@@ -80,12 +91,13 @@ public enum TaskNoteMarkdown {
             if line.allSatisfy(\.isWhitespace) {
                 flushParagraph()
                 flushQuote()
+                blankLines += 1
                 continue
             }
             if isThematicBreak(line) {
                 flushParagraph()
                 flushQuote()
-                blocks.append(.thematicBreak)
+                emit(.thematicBreak)
                 continue
             }
             let info = LineInfo(line)
@@ -101,17 +113,17 @@ public enum TaskNoteMarkdown {
             case .heading(let level):
                 flushParagraph()
                 if !info.content.isEmpty {
-                    blocks.append(.heading(level: level, content: info.content))
+                    emit(.heading(level: level, content: info.content))
                 }
             case .bullet:
                 flushParagraph()
-                blocks.append(.bulletItem(depth: info.depth, content: info.content))
+                emit(.bulletItem(depth: info.depth, content: info.content))
             case .numbered(let number, _):
                 flushParagraph()
-                blocks.append(.numberedItem(depth: info.depth, number: number, content: info.content))
+                emit(.numberedItem(depth: info.depth, number: number, content: info.content))
             case .checklist(let checked, _):
                 flushParagraph()
-                blocks.append(.checklistItem(
+                emit(.checklistItem(
                     depth: info.depth,
                     checked: checked,
                     content: info.content,
@@ -123,7 +135,7 @@ public enum TaskNoteMarkdown {
         }
         if fence != nil {
             // An unclosed fence runs to the end of the note, as in CommonMark.
-            blocks.append(.code(code.joined(separator: "\n")))
+            emit(.code(code.joined(separator: "\n")))
         }
         flushParagraph()
         flushQuote()
@@ -207,7 +219,7 @@ public enum TaskNoteMarkdown {
                 output.append(indentation(depth) + (checked ? "☑ " : "☐ ") + plainInline(content))
             case .code(let content):
                 output.append(content)
-            case .thematicBreak:
+            case .thematicBreak, .spacer:
                 continue
             }
         }

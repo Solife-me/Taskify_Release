@@ -155,6 +155,16 @@ export function NoteMarkdownView({
         );
       case "rule":
         return <hr key={index} className="note-markdown__rule" />;
+      case "spacer":
+        // One empty row per skipped line, at the body text's line height.
+        return (
+          <div
+            key={index}
+            className="note-markdown__spacer"
+            style={{ height: `${block.lines * 1.45}em` }}
+            aria-hidden="true"
+          />
+        );
     }
   };
 

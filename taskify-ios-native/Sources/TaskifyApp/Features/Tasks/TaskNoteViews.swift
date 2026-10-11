@@ -93,6 +93,11 @@ struct TaskNoteMarkdownView: View {
                 .fill(Color.primary.opacity(0.2))
                 .frame(height: 1)
                 .padding(.vertical, 4)
+        case .spacer(let lines):
+            // One empty row per skipped line, at the body text's line height.
+            Color.clear
+                .frame(height: CGFloat(lines) * fontSize * 1.3)
+                .accessibilityHidden(true)
         }
     }
 
@@ -142,10 +147,13 @@ struct TaskNoteMarkdownView: View {
         }
     }
 
+    /// Gaps between blocks typed on consecutive lines stay tight; a skipped row is a `spacer`
+    /// and supplies its own height.
     private func spacing(between previous: TaskNoteBlock, and block: TaskNoteBlock) -> CGFloat {
+        if case .spacer = previous { return 0 }
+        if case .spacer = block { return 0 }
         if isListItem(previous), isListItem(block) { return 5 }
-        if case .heading = previous { return 6 }
-        return 12
+        return 6
     }
 
     private func isListItem(_ block: TaskNoteBlock) -> Bool {
@@ -225,13 +233,14 @@ struct TaskNoteViewerView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-                ToolbarItem(placement: .primaryAction) {
+                // Edit leading and Done trailing, as on the app's other sheets.
+                ToolbarItem(placement: .navigation) {
                     Button("Edit") { editing = true }
                         .disabled(task == nil)
                         .accessibilityIdentifier("task-note-viewer-edit")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
                 }
             }
         }

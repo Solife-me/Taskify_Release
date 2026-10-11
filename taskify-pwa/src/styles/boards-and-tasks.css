@@ -199,8 +199,10 @@ html.light .task-card[data-state="completed"] {
     0 0 0 1px rgba(12, 24, 63, 0.08);
 }
 
+/* Tight enough that a tall card (five lines of notes) stays a rounded rectangle, not an oval;
+   matches the native task card's 18pt corners. */
 .task-card[data-form="stacked"] {
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-tight);
 }
 
 .task-card__details {
@@ -4455,10 +4457,11 @@ html.light .wallet-modal__unit {
 
 /* Task notes: rendered Markdown, the note viewer and the note editor */
 
+/* Blocks typed on consecutive lines sit close; a skipped row is a spacer with its own height. */
 .note-markdown {
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
+  gap: 0.3rem;
   color: var(--text-primary);
   font-size: 0.95rem;
   line-height: 1.45;
@@ -4473,7 +4476,6 @@ html.light .wallet-modal__unit {
 .note-markdown__heading {
   font-weight: 700;
   line-height: 1.25;
-  margin-top: 0.2rem;
 }
 
 .note-markdown__heading--1 { font-size: 1.35rem; }
@@ -4485,11 +4487,12 @@ html.light .wallet-modal__unit {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
-  margin-top: -0.25rem;
 }
 
-.note-markdown__item:first-child {
-  margin-top: 0;
+/* The flex gap on both sides of a spacer would add to the row it stands for. */
+.note-markdown__spacer {
+  flex: 0 0 auto;
+  margin: -0.3rem 0;
 }
 
 .note-markdown__marker {
