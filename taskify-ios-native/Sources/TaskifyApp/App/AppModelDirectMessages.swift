@@ -1,6 +1,7 @@
 import Foundation
 import os
 import TaskifyCore
+import TaskifyWatchShared
 
 extension AppModel {
     /// One rumor's payload before wrapping: its kind, content, and extra tags.

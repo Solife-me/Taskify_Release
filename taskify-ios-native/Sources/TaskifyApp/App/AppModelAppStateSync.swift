@@ -1,5 +1,6 @@
 import Foundation
 import TaskifyCore
+import TaskifyWatchShared
 
 // MARK: - App state sync (Bible tracker, scripture memory, chat state)
 
@@ -202,7 +203,7 @@ extension AppModel {
 
     /// Adds invites another device accepted (or marked maybe) to this device's calendar, as
     /// accepting here would. Local only: the RSVP already went out from the device that answered.
-    private func materializeSyncedCalendarInvites(previous: [SharedCalendarInviteInboxItem]) {
+    func materializeSyncedCalendarInvites(previous: [SharedCalendarInviteInboxItem]) {
         let wasPending = Set(previous.filter { $0.status == .pending }.map(\.id))
         let accepted = snapshot.sharedCalendarInvites.filter {
             wasPending.contains($0.id) && ($0.status == .accepted || $0.status == .tentative)
