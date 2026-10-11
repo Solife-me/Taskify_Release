@@ -7,7 +7,9 @@ root = Path(__file__).resolve().parents[1]
 shared = root.parent / 'taskify-ios-native/Sources/TaskifyApp'
 paths = sorted((root / 'Sources').rglob('*.swift'))
 paths += [shared / p for p in [
-    'App/AppModel.swift', 'App/FastingRemindersSettings.swift',
+    'App/AppModel.swift', 'App/AppModelAppStateSync.swift',
+    'App/AppModelDirectMessages.swift', 'App/AppModelSupport.swift',
+    'App/FastingRemindersSettings.swift',
     'App/ScriptureMemorySettings.swift', 'App/TaskStreakSettings.swift',
     'App/TaskOrderingSettings.swift', 'App/StartupViewSettings.swift',
     'App/OnboardingSettings.swift', 'App/NpubCashSettings.swift',

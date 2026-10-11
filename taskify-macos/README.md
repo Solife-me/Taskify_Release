@@ -36,7 +36,10 @@ silently until the next Mac build. This session found and fixed several
 runtime types), plus a genuinely missing `AppModel.persistBeforeTermination()`
 that this target's quit path had been calling without an implementation. Run
 the build above after pulling upstream changes to `AppModel.swift` or the other
-shared files, not only after editing Mac-specific sources.
+shared files, not only after editing Mac-specific sources. Moving `AppModel`
+code into a new extension file means adding that file to the whitelist too:
+the `AppModelAppStateSync`, `AppModelDirectMessages` and `AppModelSupport`
+splits broke this target until they were added.
 
 ## Current desktop implementation
 
