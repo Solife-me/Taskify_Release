@@ -17,6 +17,8 @@ import { NostrRelayForwarder, RemoteRelayError, normalizeRelayTargets } from './
 const MAX_HTTP_BODY_BYTES = 256 * 1024
 const INSTALLATION_ID = /^[A-Za-z0-9._:-]{1,128}$/
 const DEVICE_TOKEN = /^[0-9a-fA-F]{32,200}$/
+// FCM registration tokens are case-sensitive and use the base64url alphabet plus ':'.
+const FCM_TOKEN = /^[A-Za-z0-9_:-]{32,4096}$/
 const PUBLIC_KEY = /^[0-9a-f]{64}$/
 const WATCH_PAGE_LIMIT = 200
 const WATCH_FORWARD_CONCURRENCY = 4
@@ -217,6 +219,9 @@ export function createTaskifyPushServer({
   config,
   store,
   apnsClient,
+  // Routes each registration to APNs or FCM; APNs alone when Android push is not configured.
+  pushClient = apnsClient,
+  androidPushEnabled = false,
   relayForwarder = new NostrRelayForwarder(),
   logger = console,
   watchPreferenceTimeoutMs = 5_000,
@@ -334,10 +339,17 @@ export function createTaskifyPushServer({
         return true
       }
       const payload = JSON.parse(body.toString('utf8'))
-      if (!DEVICE_TOKEN.test(payload.deviceToken ?? '')) throw new Error('Invalid APNs device token')
-      if (!['production', 'sandbox'].includes(payload.environment)) throw new Error('Invalid APNs environment')
-      if (payload.platform != null && !['ios', 'watchos'].includes(payload.platform)) {
-        throw new Error('Invalid APNs platform')
+      if (payload.platform === 'android') {
+        if (!androidPushEnabled) throw new Error('Android push is not configured on this relay')
+        if (payload.application !== 'snapstr') throw new Error('Only Snapstr supports Android registrations')
+        if (!FCM_TOKEN.test(payload.deviceToken ?? '')) throw new Error('Invalid FCM registration token')
+        payload.environment = 'production'
+      } else {
+        if (!DEVICE_TOKEN.test(payload.deviceToken ?? '')) throw new Error('Invalid APNs device token')
+        if (!['production', 'sandbox'].includes(payload.environment)) throw new Error('Invalid APNs environment')
+        if (payload.platform != null && !['ios', 'watchos'].includes(payload.platform)) {
+          throw new Error('Invalid APNs platform')
+        }
       }
       if (payload.application != null && !['taskify', 'snapstr'].includes(payload.application)) {
         throw new Error('Invalid application')
@@ -991,13 +1003,13 @@ export function createTaskifyPushServer({
           const previewURL = job.previewToken
             ? new URL(`/v1/previews/${job.previewToken}`, config.publicBaseURL).toString()
             : null
-          const result = await apnsClient.send(registration, previewURL)
+          const result = await pushClient.send(registration, previewURL)
           if (result.status === 200) {
             await store.completePushJob(job.id, { retainPreview: true, delivered: true })
             continue
           }
           if (result.status === 410 || ['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered'].includes(result.reason)) {
-            logger.warn?.('APNs rejected a device registration; removing it', {
+            logger.warn?.('The push service rejected a device registration; removing it', {
               status: result.status,
               reason: result.reason,
               platform: registration.platform ?? 'ios',
@@ -1009,8 +1021,8 @@ export function createTaskifyPushServer({
           if (result.status === 403
               && ['ExpiredProviderToken', 'InvalidProviderToken'].includes(result.reason)
               && job.attempts < 8) {
-            apnsClient.invalidateProviderToken?.()
-            logger.warn?.('APNs provider authentication failed; refreshing and retrying', {
+            pushClient.invalidateProviderToken?.(registration)
+            logger.warn?.('Push service authentication failed; refreshing and retrying', {
               status: result.status,
               reason: result.reason,
               platform: registration.platform ?? 'ios',
@@ -1020,7 +1032,7 @@ export function createTaskifyPushServer({
             continue
           }
           if ([429, 500, 503].includes(result.status) && job.attempts < 8) {
-            logger.warn?.('APNs temporarily rejected a notification; retrying', {
+            logger.warn?.('The push service temporarily rejected a notification; retrying', {
               status: result.status,
               reason: result.reason,
               platform: registration.platform ?? 'ios',
@@ -1029,7 +1041,7 @@ export function createTaskifyPushServer({
             await store.retryPushJob(job.id, { delaySeconds: Math.min(2 ** job.attempts * 5, 15 * 60) })
             continue
           }
-          logger.warn?.('APNs permanently rejected a notification', {
+          logger.warn?.('The push service permanently rejected a notification', {
             status: result.status,
             reason: result.reason,
             platform: registration.platform ?? 'ios',
@@ -1037,7 +1049,7 @@ export function createTaskifyPushServer({
           })
           await store.completePushJob(job.id)
         } catch (error) {
-          logger.warn?.('APNs request failed', {
+          logger.warn?.('Push request failed', {
             error: error?.name ?? 'Error',
             retrying: job.attempts < 8,
             platform: registration.platform ?? 'ios',
@@ -1051,7 +1063,7 @@ export function createTaskifyPushServer({
         }
       }
     })().catch((error) => {
-      logger.error?.('APNs worker failed', { error: error?.name ?? 'Error' })
+      logger.error?.('Push worker failed', { error: error?.name ?? 'Error' })
     }).finally(() => {
       pushWorkerPromise = null
     })

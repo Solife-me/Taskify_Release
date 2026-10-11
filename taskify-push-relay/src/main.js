@@ -1,5 +1,6 @@
 import { APNsClient } from './apns.js'
 import { loadConfig } from './config.js'
+import { FCMClient, PushRouter } from './fcm.js'
 import { createTaskifyPushServer } from './server.js'
 import { RelayStore } from './store.js'
 
@@ -12,7 +13,15 @@ const config = await loadConfig()
 const store = new RelayStore({ dataDirectory: config.dataDirectory })
 await store.load()
 const apnsClient = new APNsClient(config.apns)
-const server = createTaskifyPushServer({ config, store, apnsClient })
+const fcmClient = config.fcm ? new FCMClient(config.fcm) : null
+const pushClient = new PushRouter({ apnsClient, fcmClient })
+const server = createTaskifyPushServer({
+  config,
+  store,
+  apnsClient,
+  pushClient,
+  androidPushEnabled: fcmClient !== null,
+})
 await server.start()
 
 async function shutdown() {
