@@ -55,7 +55,9 @@ splits broke this target until they were added.
   multiple selection and batch actions. A compound board groups each linked
   child board's columns under a heading with that child's name; "Hide Board
   Names in Column Headers" in its board settings can turn that off.
-- Quick entry, task editor, notes, subtasks, priorities, scheduling, recurrence
+- Quick entry, task editor, Markdown notes (rendered in the inspector with tickable
+  checklist items; edited in the shared iOS note editor, `TaskNoteViews.swift`), subtasks,
+  priorities, scheduling, recurrence
   (daily, multi-day weekly, monthly with an interval, or a custom every-N-units
   interval), reminders, encrypted file attachments and task sharing. The task
   inspector's quick-view subtask list can hide completed subtasks (Settings →

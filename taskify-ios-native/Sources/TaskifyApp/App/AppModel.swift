@@ -1533,6 +1533,18 @@ final class AppModel {
         synchronizeTask(taskID)
     }
 
+    @discardableResult
+    func updateTaskNote(taskID: String, note: String, appendingSubtasks subtasks: [TaskSubtask] = []) -> Bool {
+        guard snapshot.updateTaskNote(
+            taskID: taskID,
+            note: note,
+            appendingSubtasks: subtasks,
+            editorPublicKey: identityPublicKey.nilIfEmpty
+        ) else { return false }
+        synchronizeTask(taskID)
+        return true
+    }
+
     /// Bulk counterpart to `toggleCompletion`, for the Boards multi-select action bar. Only marks
     /// *incomplete* tasks done — unlike single-task `toggleCompletion`, a bulk "Complete" action on
     /// a mixed selection shouldn't un-complete tasks that already were, matching the PWA's

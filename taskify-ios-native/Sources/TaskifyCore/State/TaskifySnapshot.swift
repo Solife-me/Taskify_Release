@@ -1310,6 +1310,29 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return true
     }
 
+    /// Replaces a task's note and appends subtasks: what the note viewer's checklist ticks and
+    /// the standalone note editor save. Unlike `updateTask`, leaves everything else as it is.
+    @discardableResult
+    public mutating func updateTaskNote(
+        taskID: String,
+        note: String,
+        appendingSubtasks newSubtasks: [TaskSubtask] = [],
+        editorPublicKey: String? = nil
+    ) -> Bool {
+        guard let taskIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }) else {
+            return false
+        }
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let added = newSubtasks.filter { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard trimmedNote != tasks[taskIndex].note || !added.isEmpty else { return false }
+        tasks[taskIndex].note = trimmedNote
+        if !added.isEmpty {
+            tasks[taskIndex].subtasks = (tasks[taskIndex].subtasks ?? []) + added
+        }
+        tasks[taskIndex].lastEditedBy = editorPublicKey ?? tasks[taskIndex].lastEditedBy
+        return true
+    }
+
     /// Materializes every frequent recurring occurrence in the current week, matching the PWA's
     /// optional "Show full week for recurring tasks" behavior. Stable occurrence IDs and an
     /// all-record duplicate check make this safe to call after launch, edits, and relay merges.

@@ -1,6 +1,8 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { NoteMarkdownView } from "./NoteMarkdown";
+import { NoteEditorModal } from "./NoteModals";
 import { nip19 } from "nostr-tools";
 import { normalizeTaskAssignmentStatus } from "taskify-core";
 
@@ -246,6 +248,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [priority, setPriority] = useState<TaskPriority | 0>(() => normalizeTaskPriority(task.priority) ?? 0);
   const [prioritySheetOpen, setPrioritySheetOpen] = useState(false);
   const [note, setNote] = useState(task.note || "");
+  const [noteEditorOpen, setNoteEditorOpen] = useState(false);
   const [images, setImages] = useState<string[]>(task.images || []);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
   const [documents, setDocuments] = useState<TaskDocument[]>(task.documents || []);
@@ -1809,14 +1812,44 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
               />
             </div>
             <div className="edit-card__detail edit-card__detail--field space-y-2">
-              <textarea
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                onPaste={handlePaste}
-                className="edit-field-textarea"
-                rows={3}
-                placeholder="Notes (optional)"
-              />
+              <div
+                role="button"
+                tabIndex={0}
+                className="note-field-preview"
+                aria-label={note.trim() ? "Edit notes" : "Add notes"}
+                onClick={(event) => {
+                  // A link in the note opens the link, not the editor.
+                  if ((event.target as HTMLElement).closest("a")) return;
+                  setNoteEditorOpen(true);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setNoteEditorOpen(true);
+                  }
+                }}
+              >
+                {note.trim() ? (
+                  <NoteMarkdownView note={note} blockLimit={8} />
+                ) : (
+                  <span className="note-field-preview__placeholder">Notes (optional)</span>
+                )}
+              </div>
+              {noteEditorOpen && (
+                <NoteEditorModal
+                  initialNote={note}
+                  onPaste={handlePaste}
+                  onCancel={() => setNoteEditorOpen(false)}
+                  onSave={(updatedNote, convertedSubtasks) => {
+                    setNote(updatedNote);
+                    if (convertedSubtasks.length) {
+                      setSubtasks((prev) => [...prev, ...convertedSubtasks]);
+                      setSubtasksExpanded(true);
+                    }
+                    setNoteEditorOpen(false);
+                  }}
+                />
+              )}
               <div className="edit-detail-actions">
                 <input
                   ref={documentInputRef}

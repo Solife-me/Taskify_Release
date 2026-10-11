@@ -131,7 +131,7 @@ struct SharedTaskInboxCard: View {
                     .foregroundStyle(TaskifyTheme.secondaryText)
 
                 if let note = item.task.note, !note.isEmpty {
-                    Text(note)
+                    Text(TaskNoteMarkdown.previewText(note))
                         .font(.subheadline)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .lineLimit(3)

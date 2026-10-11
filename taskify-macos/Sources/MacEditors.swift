@@ -20,6 +20,7 @@ struct MacTaskEditor: View {
     @State private var deleteConfirmation = false
     @State private var isDropTargeted = false
     @State private var saveTask: Task<Void, Never>?
+    @State private var editingNote = false
     private var columns: [BoardColumn] { model.board(withID: draft.boardID)?.columns ?? [] }
 
     init(task: TaskItem?, boardID: String) {
@@ -40,7 +41,21 @@ struct MacTaskEditor: View {
             Form {
                 Section("Task") {
                     TextField("Title", text: $draft.title, axis: .vertical).lineLimit(1...4)
-                    TextField("Notes", text: $draft.note, axis: .vertical).lineLimit(3...10)
+                    LabeledContent("Notes") {
+                        Button { editingNote = true } label: {
+                            Group {
+                                if draft.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text("Add notes…").foregroundStyle(.tertiary)
+                                } else {
+                                    TaskNoteMarkdownView(note: draft.note, fontSize: 13, blockLimit: 8, selectable: false)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Edit the note")
+                    }
                     if original == nil {
                         Picker("Board", selection: $draft.boardID) {
                             ForEach(model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }) { Text($0.name).tag($0.id) }
@@ -152,6 +167,12 @@ struct MacTaskEditor: View {
                 }
             }.formStyle(.grouped).disabled(saving)
         }.frame(width: 610, height: 710).interactiveDismissDisabled(saving)
+            .sheet(isPresented: $editingNote) {
+                TaskNoteEditorView(note: draft.note) { note, subtasks in
+                    draft.note = note
+                    if !subtasks.isEmpty { draft.subtasks = (draft.subtasks ?? []) + subtasks }
+                }
+            }
             .onDisappear { attachments.clear() }
             .onAppear { if original == nil { prepareNewBoard() } }
             .onChange(of: draft.boardID) { _, _ in prepareNewBoard() }

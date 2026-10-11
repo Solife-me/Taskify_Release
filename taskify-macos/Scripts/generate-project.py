@@ -18,6 +18,7 @@ paths += [shared / p for p in [
     'Features/Boards/BibleTrackerStore.swift',
     'Features/Upcoming/DeviceCalendarStore.swift',
     'Features/Tasks/TaskAttachmentUploadService.swift',
+    'Features/Tasks/TaskNoteViews.swift',
     'Notifications/TaskNotificationCoordinator.swift',
     'Notifications/DMPushNotificationCoordinator.swift',
 ]]

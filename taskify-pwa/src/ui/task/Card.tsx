@@ -161,6 +161,7 @@ function CardComponent({
   onDragEnd,
   hideCompletedSubtasks,
   onOpenDocument,
+  onOpenNote,
   onDismissInbox,
   isSelectionMode,
   isSelected,
@@ -184,6 +185,8 @@ function CardComponent({
   onDragEnd: () => void;
   hideCompletedSubtasks: boolean;
   onOpenDocument: (task: Task, doc: TaskDocument) => void;
+  /** Opens the note viewer; tapping the title still opens the editor. */
+  onOpenNote?: () => void;
   onDismissInbox?: () => void;
   isSelectionMode?: boolean;
   isSelected?: boolean;
@@ -468,7 +471,12 @@ function CardComponent({
         ) : null}
       </div>
 
-      <TaskMedia task={task} indent onOpenDocument={onOpenDocument} />
+      <TaskMedia
+        task={task}
+        indent
+        onOpenDocument={onOpenDocument}
+        onOpenNote={isSelectionMode ? undefined : onOpenNote}
+      />
 
       {visibleSubtasks.length ? (
         <ul className="task-card__details mt-2 space-y-1.5 text-xs text-secondary">

@@ -28,6 +28,7 @@ struct TaskEditorView: View {
     @State private var selectedColumnID: String
     @State private var subtasks: [TaskSubtask]
     @State private var subtasksExpanded = false
+    @State private var showingNoteEditor = false
     @State private var repeatChoice: RepeatChoice
     @State private var customRepeatCount: Int
     @State private var customRepeatUnit: CustomRepeatUnit
@@ -307,6 +308,15 @@ struct TaskEditorView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Allow Taskify to schedule alarms in iOS Settings, then turn Urgent on again.")
+        }
+        .sheet(isPresented: $showingNoteEditor) {
+            TaskNoteEditorView(note: note) { updatedNote, convertedSubtasks in
+                note = updatedNote
+                if !convertedSubtasks.isEmpty {
+                    subtasks.append(contentsOf: convertedSubtasks)
+                    subtasksExpanded = true
+                }
+            }
         }
         .sheet(isPresented: $showingTimeZonePicker) {
             TimeZonePickerSheet(
@@ -713,8 +723,26 @@ struct TaskEditorView: View {
 
     private var notesAndAttachmentControl: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField("Notes", text: $note, axis: .vertical)
-                .lineLimit(3...8)
+            Button {
+                titleIsFocused = false
+                showingNoteEditor = true
+            } label: {
+                Group {
+                    if note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Notes")
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        TaskNoteMarkdownView(note: note, fontSize: 15, blockLimit: 8, selectable: false)
+                            .foregroundStyle(.primary)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(note.isEmpty ? "Notes" : "Notes: \(TaskNoteMarkdown.previewText(note))")
+            .accessibilityHint("Opens the note editor")
+            .accessibilityIdentifier("task-editor-notes")
 
             HStack {
                 Spacer(minLength: 0)
