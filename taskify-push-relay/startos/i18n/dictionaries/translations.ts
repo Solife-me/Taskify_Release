@@ -23,6 +23,10 @@ const english = {
   19: 'The Watch APNs topic. It must match the signed Taskify Watch app bundle identifier.',
   20: 'Snapstr App Bundle ID',
   21: 'The APNs topic. It must match the signed Snapstr app bundle identifier.',
+  22: 'Configure Android Push',
+  23: 'Store the Firebase service account used to wake Snapstr on Android. Leave blank to turn Android push off.',
+  24: 'Firebase Service Account JSON',
+  25: 'In the Firebase console, open Project settings, Service accounts, and Generate new private key. Paste the complete downloaded JSON file.',
 } satisfies LangDict
 
 export default {

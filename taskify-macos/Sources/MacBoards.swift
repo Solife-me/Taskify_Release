@@ -153,7 +153,7 @@ struct MacTaskCard: View {
                 Text(task.title).font(.body.weight(.medium)).strikethrough(task.completed)
                     .foregroundStyle(task.completed ? .secondary : .primary)
                     .fixedSize(horizontal: false, vertical: true)
-                if !task.note.isEmpty { Text(task.note).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                if !task.note.isEmpty { Text(TaskNoteMarkdown.previewText(task.note)).font(.caption).foregroundStyle(.secondary).lineLimit(5) }
                 HStack(spacing: 9) {
                     if let date = task.dueDate, task.dueDateEnabled {
                         Label(date.formatted(.dateTime.month(.abbreviated).day()), systemImage: "calendar")

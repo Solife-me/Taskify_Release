@@ -729,6 +729,7 @@ struct TaskCardView: View {
     let task: TaskItem
     let allowsDragging: Bool
     @State private var showingEditor = false
+    @State private var showingNoteViewer = false
     @State private var showingTaskShare = false
     @State private var taskShareMode: TaskShareMode = .share
     @State private var confirmingRecurringDeletion = false
@@ -737,6 +738,10 @@ struct TaskCardView: View {
         self.task = task
         self.allowsDragging = allowsDragging
     }
+
+    /// Centres the title's first line on the 30pt complete button, which is where a one-line
+    /// card had it when the row was centre-aligned.
+    private static let titleLineInset = (30 - UIFont.systemFont(ofSize: 16, weight: .semibold).lineHeight) / 2
 
     private var subtaskProgress: String? {
         guard let subtasks = task.subtasks, !subtasks.isEmpty else { return nil }
@@ -803,7 +808,9 @@ struct TaskCardView: View {
         TaskifyPerfMonitor.shared.recordCardBody()
 
         return VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 11) {
+            // Top-aligned so the complete button stays beside the title however tall the
+            // card's notes and details make it.
+            HStack(alignment: .top, spacing: 11) {
                 GeometryReader { proxy in
                     Button {
                         if isSelectionMode {
@@ -833,30 +840,41 @@ struct TaskCardView: View {
                 }
                 .frame(width: 30, height: 30)
 
-                Button {
-                    if isSelectionMode {
-                        selection?.toggle(task.id)
-                    } else {
-                        showingEditor = true
-                    }
-                } label: {
-                    VStack(alignment: .leading, spacing: 3) {
+                // Title and details open the editor; the note opens the note viewer.
+                VStack(alignment: .leading, spacing: 3) {
+                    Button(action: editTapped) {
                         Text(displayTitle)
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(task.completed ? TaskifyTheme.tertiaryText : TaskifyTheme.primaryText)
                             .strikethrough(task.completed)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Edit \(displayTitle)")
 
-                        if !displayNote.isEmpty {
+                    if !displayNote.isEmpty {
+                        Button {
+                            showingNoteViewer = true
+                        } label: {
                             Text(displayNote)
                                 .font(.caption)
                                 .foregroundStyle(TaskifyTheme.secondaryText)
-                                .lineLimit(2)
+                                .lineLimit(5)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Notes for \(displayTitle)")
+                        .accessibilityHint("Opens the full note")
+                        .accessibilityIdentifier("task-card-note")
+                    }
 
-                        if task.priority != nil || (task.dueDateEnabled && task.dueDate != nil) ||
-                            subtaskProgress != nil || task.recurrence != nil || !(task.reminders ?? []).isEmpty ||
-                            !task.sharedTaskAssignees.isEmpty || visibleStreak != nil {
+                    if task.priority != nil || (task.dueDateEnabled && task.dueDate != nil) ||
+                        subtaskProgress != nil || task.recurrence != nil || !(task.reminders ?? []).isEmpty ||
+                        !task.sharedTaskAssignees.isEmpty || visibleStreak != nil {
+                        Button(action: editTapped) {
                             HStack(spacing: 9) {
                                 if let priority = task.priority {
                                     Text(String(repeating: "!", count: priority.rawValue))
@@ -921,17 +939,19 @@ struct TaskCardView: View {
                                     )
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        // The title button already offers "Edit"; one is enough for VoiceOver.
+                        .accessibilityHidden(true)
                     }
-                    // Text only — the media thumbnails stay outside this subtree, so the shadow's
-                    // offscreen pass covers glyphs rather than the whole row.
-                    .taskifyLegibilityShadow(overPhoto)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                // Text only — the media thumbnails stay outside this subtree, so the shadow's
+                // offscreen pass covers glyphs rather than the whole row.
+                .taskifyLegibilityShadow(overPhoto)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel("Edit \(displayTitle)")
+                .padding(.top, Self.titleLineInset)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -1139,11 +1159,25 @@ struct TaskCardView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showingNoteViewer) {
+            TaskNoteViewerView(taskID: task.id)
+                .environment(model)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $showingTaskShare) {
             TaskShareSheet(taskID: task.id, initialMode: taskShareMode)
                 .environment(model)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func editTapped() {
+        if selection?.isActive ?? false {
+            selection?.toggle(task.id)
+        } else {
+            showingEditor = true
         }
     }
 

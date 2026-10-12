@@ -199,8 +199,10 @@ html.light .task-card[data-state="completed"] {
     0 0 0 1px rgba(12, 24, 63, 0.08);
 }
 
+/* Tight enough that a tall card (five lines of notes) stays a rounded rectangle, not an oval;
+   matches the native task card's 18pt corners. */
 .task-card[data-form="stacked"] {
-  border-radius: var(--radius-card);
+  border-radius: var(--radius-tight);
 }
 
 .task-card__details {
@@ -4451,4 +4453,271 @@ html.light .wallet-modal__unit {
     break-after: auto;
     page-break-after: auto;
   }
+}
+
+/* Task notes: rendered Markdown, the note viewer and the note editor */
+
+/* Blocks typed on consecutive lines sit close; a skipped row is a spacer with its own height. */
+.note-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.note-markdown__paragraph {
+  margin: 0;
+  white-space: pre-line;
+}
+
+.note-markdown__heading {
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.note-markdown__heading--1 { font-size: 1.35rem; }
+.note-markdown__heading--2 { font-size: 1.18rem; }
+.note-markdown__heading--3 { font-size: 1.05rem; }
+.note-markdown__heading--4 { font-size: 0.95rem; }
+
+.note-markdown__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+/* The flex gap on both sides of a spacer would add to the row it stands for. */
+.note-markdown__spacer {
+  flex: 0 0 auto;
+  margin: -0.3rem 0;
+}
+
+.note-markdown__marker {
+  flex: 0 0 auto;
+  min-width: 1rem;
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+.note-markdown__marker--number {
+  font-variant-numeric: tabular-nums;
+}
+
+.note-markdown__item-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-line;
+}
+
+.note-markdown__checkbox {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.3rem;
+  height: 1.45rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+}
+
+.note-markdown__item--check.is-checked .note-markdown__item-text {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+}
+
+.note-markdown__quote {
+  margin: 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--accent-border);
+  color: var(--text-secondary);
+  font-style: italic;
+  white-space: pre-line;
+}
+
+.note-markdown__code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 6px;
+  background: var(--surface-highlight);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+}
+
+.note-markdown__pre {
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: 12px;
+  background: var(--surface-highlight);
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.note-markdown__rule {
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--surface-border-strong);
+  margin: 0.2rem 0;
+}
+
+.note-markdown__more {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.note-sheet {
+  height: 100%;
+  min-height: 0;
+}
+
+.note-sheet__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-sheet__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 0.25rem;
+}
+
+.note-sheet__empty {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.note-sheet__convert {
+  align-self: stretch;
+}
+
+.note-sheet__hint {
+  margin: -0.5rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.note-editor__modes {
+  display: flex;
+  padding: 0.15rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--surface-border);
+  background: var(--surface-muted);
+}
+
+.note-editor__mode {
+  flex: 1;
+  padding: 0.35rem 0.75rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.note-editor__mode.is-active {
+  background: var(--surface-highlight);
+  color: var(--text-primary);
+}
+
+.note-toolbar {
+  display: flex;
+  gap: 0.2rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: -0.4rem -0.25rem;
+  padding: 0 0.25rem;
+}
+
+.note-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.note-toolbar__button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: none;
+  color: var(--text-secondary);
+}
+
+.note-toolbar__button:hover {
+  border-color: var(--surface-border-strong);
+  color: var(--text-primary);
+}
+
+.note-toolbar__button svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.note-toolbar__glyph {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.note-editor__textarea {
+  flex: 1 1 auto;
+  min-height: 12rem;
+  width: 100%;
+  resize: none;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-tight);
+  border: 1px solid var(--surface-border-strong);
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.note-editor__textarea:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+.note-field-preview {
+  min-height: 3.5rem;
+  cursor: text;
+  border-radius: 12px;
+}
+
+.note-field-preview:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
+
+.note-field-preview .note-markdown {
+  font-size: 0.95rem;
+}
+
+.note-field-preview__placeholder {
+  color: var(--text-tertiary);
+  font-size: 0.95rem;
+}
+
+/* Matches the plain note preview (text-xs text-secondary), which button resets would undo. */
+.task-card__note-button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--text-secondary);
+  cursor: pointer;
 }

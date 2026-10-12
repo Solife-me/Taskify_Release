@@ -217,7 +217,8 @@ export class RelayStore {
       key,
       pubkey: normalizedPubkey,
       installationID,
-      deviceToken: deviceToken.toLowerCase(),
+      // APNs tokens are hex, compared without case; FCM tokens are case-sensitive.
+      deviceToken: platform === 'android' ? deviceToken : deviceToken.toLowerCase(),
       environment,
       platform,
       application,

@@ -293,7 +293,7 @@ final class ScrollPerformanceUITests: XCTestCase {
         addDetailsButton.tap()
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
 
-        let notes = app.textFields["Notes"]
+        let notes = app.buttons["task-editor-notes"]
         let attachmentMenu = app.buttons["task-editor-attachment-menu"]
         let subtasks = app.descendants(matching: .any)["task-editor-subtasks"]
         let priority = app.descendants(matching: .any)["task-editor-priority"]
@@ -317,6 +317,60 @@ final class ScrollPerformanceUITests: XCTestCase {
             )
         }
         attach(app, name: "task-editor-attachment-menu")
+    }
+
+    func testTaskNotesOpenTheViewerAndTheMarkdownEditor() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+        let addDetailsButton = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
+        ).firstMatch
+        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
+        addDetailsButton.tap()
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+        let titleField = app.textFields["Title"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 2))
+        if !app.keyboards.element.exists { titleField.tap() }
+        titleField.typeText("Groceries")
+
+        // Tapping the notes in the task editor opens the Markdown note editor, whose checklist
+        // button and Return continue a checklist.
+        app.buttons["task-editor-notes"].tap()
+        let noteText = app.textViews["task-note-editor-text"]
+        XCTAssertTrue(noteText.waitForExistence(timeout: 5))
+        if !app.keyboards.element.waitForExistence(timeout: 2) { noteText.tap() }
+        noteText.typeText("Milk")
+        app.buttons["Checklist"].tap()
+        noteText.typeText("\nEggs")
+        XCTAssertEqual(noteText.value as? String, "- [ ] Milk\n- [ ] Eggs")
+        app.buttons["task-note-editor-done"].tap()
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+        app.buttons["Save"].tap()
+
+        // Tapping the note on the card opens the viewer, where checklist items tick in place.
+        let cardNote = app.buttons["task-card-note"]
+        XCTAssertTrue(cardNote.waitForExistence(timeout: 5))
+        cardNote.tap()
+        XCTAssertTrue(app.navigationBars["Groceries"].waitForExistence(timeout: 5))
+        app.buttons["Check Milk"].tap()
+        XCTAssertTrue(app.buttons["Uncheck Milk"].waitForExistence(timeout: 3))
+
+        // Edit opens the note editor; converting moves the checklist into real subtasks.
+        app.buttons["task-note-viewer-edit"].tap()
+        XCTAssertTrue(noteText.waitForExistence(timeout: 5))
+        XCTAssertEqual(noteText.value as? String, "- [x] Milk\n- [ ] Eggs")
+        app.buttons["task-note-convert-checklist"].tap()
+        app.buttons["task-note-editor-done"].tap()
+        XCTAssertTrue(app.navigationBars["Groceries"].waitForExistence(timeout: 5))
+        app.navigationBars["Groceries"].buttons["Done"].tap()
+
+        XCTAssertTrue(app.buttons["Mark Milk incomplete"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Complete Eggs"].exists)
+        XCTAssertFalse(cardNote.exists, "The note was only the checklist, so nothing is left to preview")
     }
 
     func testTaskEditorUsesCompactSchedulingMenusWithoutHourlyRepeat() throws {
@@ -1042,10 +1096,13 @@ final class ScrollPerformanceUITests: XCTestCase {
         quickAddField.tap()
         let suffix = String(UUID().uuidString.prefix(6))
         let titles = (1...5).map { "Single \(suffix) \($0)" }
-        for title in titles {
+        for title in titles.dropLast() {
             quickAddField.typeText(title)
             quickAddField.typeText("\n")
         }
+        // The plus button only offers "add and close keyboard" while there is a draft, so the
+        // last title is added with it rather than with Return.
+        quickAddField.typeText(titles[titles.count - 1])
         let addButton = app.buttons.matching(
             NSPredicate(format: "label CONTAINS[c] %@", "and close keyboard")
         ).firstMatch

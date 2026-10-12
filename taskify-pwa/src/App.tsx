@@ -341,6 +341,9 @@ const EditModal = lazy(() =>
   import("./ui/task/EditModal").then((module) => ({ default: module.EditModal })),
 );
 const EventEditModal = lazy(() => import("./ui/calendar/EventEditModal"));
+const NoteViewerModal = lazy(() =>
+  import("./ui/task/NoteModals").then((module) => ({ default: module.NoteViewerModal })),
+);
 const SettingsModal = lazy(() =>
   import("./ui/board/SettingsModal").then((module) => ({ default: module.SettingsModal })),
 );
@@ -559,6 +562,7 @@ export default function App() {
     ((invite: CalendarInvite, status: CalendarRsvpStatus) => Promise<unknown>) | null
   >(null);
   const [editing, setEditing] = useState<EditingState | null>(null);
+  const [noteViewerTaskId, setNoteViewerTaskId] = useState<string | null>(null);
   useReminderDeepLink({ tasks, calendarEvents, openEditor: setEditing });
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
   const {
@@ -5096,6 +5100,7 @@ export default function App() {
           onDragEnd={handleDragEnd}
           hideCompletedSubtasks={settings.hideCompletedSubtasks}
           onOpenDocument={handleOpenDocument}
+          onOpenNote={() => setNoteViewerTaskId(t.id)}
           onDismissInbox={
             t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
           }
@@ -8830,6 +8835,25 @@ export default function App() {
     );
   }
 
+  /** Saves a note from the note viewer or its editor, appending subtasks converted from it. */
+  function updateTaskNote(taskId: string, note: string, appendedSubtasks: Subtask[] = []) {
+    const trimmed = note.trim();
+    setTasks(prev =>
+      prev.map((t) => {
+        if (t.id !== taskId) return t;
+        if ((t.note || "") === trimmed && !appendedSubtasks.length) return t;
+        const updated: Task = {
+          ...t,
+          note: trimmed || undefined,
+          subtasks: appendedSubtasks.length ? [...(t.subtasks || []), ...appendedSubtasks] : t.subtasks,
+          lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? t.lastEditedBy ?? t.createdBy,
+        };
+        maybePublishTask(updated).catch(() => {});
+        return updated;
+      })
+    );
+  }
+
   completeTaskRef.current = completeTask;
 
   const acceptInboxMessage = (id: string) => completeTask(id, { inboxAction: "accept" });
@@ -11540,7 +11564,7 @@ export default function App() {
           ref={appContentRef}
         >
         {activePage === "boards" && (
-        <div className="relative flex min-h-0 flex-1 flex-col">
+        <div className="board-layout relative flex min-h-0 flex-1 flex-col">
         {/* Board/Completed */}
           {activeView === "bible" ? (
             settings.bibleTrackerEnabled ? (
@@ -11679,6 +11703,7 @@ export default function App() {
                           onDragEnd={handleDragEnd}
                           hideCompletedSubtasks={settings.hideCompletedSubtasks}
                           onOpenDocument={handleOpenDocument}
+                          onOpenNote={() => setNoteViewerTaskId(t.id)}
                           onDismissInbox={
                             t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
                           }
@@ -11933,6 +11958,7 @@ export default function App() {
                           onDragEnd={handleDragEnd}
                           hideCompletedSubtasks={settings.hideCompletedSubtasks}
                           onOpenDocument={handleOpenDocument}
+                          onOpenNote={() => setNoteViewerTaskId(t.id)}
                           onDismissInbox={
                             t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
                           }
@@ -12262,7 +12288,7 @@ export default function App() {
         />
       )}
 
-      <div className="app-tab-switcher">
+      <nav className="app-tab-switcher" aria-label="Primary">
         <div className="app-tab-switcher__pill">
           <div className="relative flex-1 min-w-0">
             <button
@@ -12423,7 +12449,7 @@ export default function App() {
           </button>
 
         </div>
-      </div>
+      </nav>
 
       {sharedTaskCopy && (
         <SharedTaskDestinationSheet
@@ -12621,6 +12647,20 @@ export default function App() {
           />
         </Suspense>
       )}
+
+      {noteViewerTaskId && (() => {
+        const noteTask = tasks.find((t) => t.id === noteViewerTaskId);
+        if (!noteTask) return null;
+        return (
+          <Suspense fallback={null}>
+            <NoteViewerModal
+              task={noteTask}
+              onClose={() => setNoteViewerTaskId(null)}
+              onSaveNote={(note, subtasks) => updateTaskNote(noteTask.id, note, subtasks)}
+            />
+          </Suspense>
+        );
+      })()}
 
       {editing?.type === "event" && (
         <Suspense fallback={null}>

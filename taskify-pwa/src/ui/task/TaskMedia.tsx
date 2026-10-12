@@ -7,6 +7,7 @@ import type { UrlPreviewData } from "../../lib/urlPreview";
 import { extractFirstUrl, isUrlLike } from "../../lib/urlPreview";
 import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } from "./TaskTitle";
 import { DocumentThumbnail } from "./DocumentPreviewModal";
+import { notePreviewText } from "../../domains/tasks/noteMarkdown";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
@@ -145,12 +146,24 @@ export function TaskMedia({
   task,
   indent = false,
   onOpenDocument,
+  onOpenNote,
 }: {
   task: Task;
   indent?: boolean;
   onOpenDocument?: (task: Task, doc: TaskDocument) => void;
+  /** Makes the note preview a button that opens the full note. */
+  onOpenNote?: () => void;
 }) {
-  const noteText = useMemo(() => stripUrlsFromText(task.note), [task.note]);
+  // Line by line, so checklist and list items keep their own lines in the preview.
+  const noteText = useMemo(
+    () =>
+      notePreviewText(task.note || "")
+        .split("\n")
+        .map((line) => stripUrlsFromText(line))
+        .filter(Boolean)
+        .join("\n"),
+    [task.note],
+  );
   const hasImages = Boolean(task.images && task.images.length);
   const documents = useMemo(() => normalizeDocumentList(task.documents), [task.documents]);
   const hasDocuments = Boolean(documents?.length);
@@ -172,14 +185,27 @@ export function TaskMedia({
       {previewSrc && (
         <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
       )}
-      {noteText && (
+      {noteText && (onOpenNote ? (
+        <button
+          type="button"
+          className={`${noteDetailClass}task-card__note-button text-xs text-secondary break-words`}
+          style={{ display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "pre-line" }}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenNote();
+          }}
+          aria-label="Open notes"
+        >
+          {noteText}
+        </button>
+      ) : (
         <div
           className={`${noteDetailClass}text-xs text-secondary break-words`}
-          style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+          style={{ display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical", overflow: "hidden", whiteSpace: "pre-line" }}
         >
           {autolink(noteText)}
         </div>
-      )}
+      ))}
       {hasImages ? (
         <div className="space-y-2">
           {task.images!.map((img, i) => (

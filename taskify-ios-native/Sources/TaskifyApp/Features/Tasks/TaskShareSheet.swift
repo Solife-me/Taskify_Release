@@ -192,7 +192,7 @@ struct TaskShareSheet: View {
                             Text(task.title)
                                 .font(.headline)
                             if !task.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text(task.note)
+                                Text(TaskNoteMarkdown.previewText(task.note))
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(3)

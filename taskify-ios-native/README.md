@@ -52,6 +52,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - Local task completion and PWA-style recurring deletion choices, with synced durable series
   cutoffs that prevent deleted future task/event occurrences from reappearing after relay replay
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks, with PWA-familiar interactive inline checklists on task cards
+- Markdown task notes (`TaskNoteMarkdown` in TaskifyCore, mirrored by the PWA's `noteMarkdown.ts`): tapping a card's note opens a viewer with tickable checklist items; Edit, or tapping the notes in the task editor, opens a Markdown editor with a formatting bar, Write/Preview, list continuation on Return, and conversion of the checklist into subtasks
 - PWA-style completed-task presentation preferences, including a board-scoped newest-first Completed timeline with explicit restore/delete actions, optional in-list completed tasks, optional hiding of finished subtasks, and synced per-board Clear completed controls
 - PWA-style per-weekday startup-board routing with a safe first-visible fallback and automatic cleanup when a destination is archived or deleted
 - PWA-style board-scoped Upcoming timelines for week, list, and compound boards, with future tasks and Taskify events grouped by day and multi-day all-day events repeated across each future date

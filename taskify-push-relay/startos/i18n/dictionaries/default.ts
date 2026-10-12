@@ -23,6 +23,10 @@ const dict = {
   'The Watch APNs topic. It must match the signed Taskify Watch app bundle identifier.': 19,
   'Snapstr App Bundle ID': 20,
   'The APNs topic. It must match the signed Snapstr app bundle identifier.': 21,
+  'Configure Android Push': 22,
+  'Store the Firebase service account used to wake Snapstr on Android. Leave blank to turn Android push off.': 23,
+  'Firebase Service Account JSON': 24,
+  'In the Firebase console, open Project settings, Service accounts, and Generate new private key. Paste the complete downloaded JSON file.': 25,
 } as const
 
 export type I18nKey = keyof typeof dict

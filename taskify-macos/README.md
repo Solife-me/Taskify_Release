@@ -36,7 +36,10 @@ silently until the next Mac build. This session found and fixed several
 runtime types), plus a genuinely missing `AppModel.persistBeforeTermination()`
 that this target's quit path had been calling without an implementation. Run
 the build above after pulling upstream changes to `AppModel.swift` or the other
-shared files, not only after editing Mac-specific sources.
+shared files, not only after editing Mac-specific sources. Moving `AppModel`
+code into a new extension file means adding that file to the whitelist too:
+the `AppModelAppStateSync`, `AppModelDirectMessages` and `AppModelSupport`
+splits broke this target until they were added.
 
 ## Current desktop implementation
 
@@ -52,7 +55,9 @@ shared files, not only after editing Mac-specific sources.
   multiple selection and batch actions. A compound board groups each linked
   child board's columns under a heading with that child's name; "Hide Board
   Names in Column Headers" in its board settings can turn that off.
-- Quick entry, task editor, notes, subtasks, priorities, scheduling, recurrence
+- Quick entry, task editor, Markdown notes (rendered in the inspector with tickable
+  checklist items; edited in the shared iOS note editor, `TaskNoteViews.swift`), subtasks,
+  priorities, scheduling, recurrence
   (daily, multi-day weekly, monthly with an interval, or a custom every-N-units
   interval), reminders, encrypted file attachments and task sharing. The task
   inspector's quick-view subtask list can hide completed subtasks (Settings →

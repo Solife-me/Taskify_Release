@@ -29,7 +29,8 @@ jobs:
       - name: gitleaks
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/gitleaks/gitleaks:v8.30.1 \
-            git --redact --verbose --config /repo/.gitleaks.toml /repo
+            git --redact --verbose --config /repo/.gitleaks.toml \
+            --gitleaks-ignore-path /repo/.gitleaksignore /repo
 
   worker:
     name: Cloudflare Worker

@@ -17,7 +17,7 @@ Taskify is a privacy-first, local-first task manager with Nostr-based sync and a
 
 | Domain | Description | Key Paths |
 |--------|-------------|-----------|
-| **Tasks** | Create, edit, complete tasks with due dates, priorities, notes, subtasks, recurrence | `src/domains/tasks/`, `src/ui/task/` |
+| **Tasks** | Create, edit, complete tasks with due dates, priorities, Markdown notes, subtasks, recurrence | `src/domains/tasks/`, `src/ui/task/` |
 | **Boards** | Week view, list columns, compound boards; per-board encryption | `src/domains/tasks/boardUtils.ts`, `src/ui/board/` |
 | **Upcoming** | Calendar-style view of tasks by date | `src/domains/calendar/` |
 | **Wallet** | Cashu ecash: send, receive, P2PK locks, NWC (NIP-47), Lightning, Address page | `src/wallet/`, `src/mint/`, `src/context/CashuContext.tsx`, `src/ui/wallet/` |
@@ -96,6 +96,8 @@ npm run build        # Production build → taskify-pwa/dist/
 npm run lint         # ESLint
 npm test             # Vitest runner (see Testing section)
 ```
+
+The PWA keeps its touch-first mobile shell on phones and tablets. On a desktop browser (fine pointer, hover support, and a viewport of at least 1024px), it switches to a left navigation rail with a two-pane Upcoming view while preserving the same routes and data.
 
 ### Worker (local)
 

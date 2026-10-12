@@ -80,7 +80,7 @@ struct SharedTaskChatCard: View {
 
                     if let note = item.task.note?.trimmingCharacters(in: .whitespacesAndNewlines),
                        !note.isEmpty {
-                        Text(note)
+                        Text(TaskNoteMarkdown.previewText(note))
                             .font(.subheadline)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                             .lineLimit(4)

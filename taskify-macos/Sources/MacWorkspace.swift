@@ -192,6 +192,7 @@ struct MacWorkspace: View {
 
 struct MacTaskInspector: View {
     @State private var sharing = false
+    @State private var editingNote = false
     let task: TaskItem
     var edit: () -> Void
     @Environment(AppModel.self) private var model
@@ -211,7 +212,7 @@ struct MacTaskInspector: View {
                 Divider()
                 if let date = task.dueDate, task.dueDateEnabled { Label(date.formatted(date: .abbreviated, time: task.dueTimeEnabled ? .shortened : .omitted), systemImage: "calendar") }
                 if let priority = task.priority { Label(String(describing: priority).capitalized, systemImage: "flag") }
-                if !task.note.isEmpty { Text(.init(task.note)).textSelection(.enabled) }
+                notes
                 ForEach(visibleSubtasks) { subtask in
                     Button { model.toggleSubtaskCompletion(taskID: task.id, subtaskID: subtask.id) } label: {
                         Label(subtask.title, systemImage: subtask.completed ? "checkmark.circle.fill" : "circle")
@@ -234,5 +235,36 @@ struct MacTaskInspector: View {
             }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
         }.background(.background)
             .sheet(isPresented: $sharing) { MacTaskShare(task: task) }
+            .sheet(isPresented: $editingNote) {
+                TaskNoteEditorView(note: task.note) { note, subtasks in
+                    model.updateTaskNote(taskID: task.id, note: note, appendingSubtasks: subtasks)
+                }
+            }
+    }
+
+    /// The note, rendered, with tickable checklist items. Clicking it opens the note editor.
+    @ViewBuilder private var notes: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("NOTES").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button(task.note.isEmpty ? "Add Note…" : "Edit Note…") { editingNote = true }.buttonStyle(.link)
+            }
+            if !task.note.isEmpty {
+                TaskNoteMarkdownView(note: task.note, fontSize: 13) { line in
+                    guard let updated = TaskNoteMarkdown.togglingChecklistItem(in: task.note, line: line) else { return }
+                    model.updateTaskNote(taskID: task.id, note: updated)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { editingNote = true }
+                .help("Double-click to edit the note")
+                if TaskNoteMarkdown.hasChecklistItems(task.note) {
+                    TaskNoteConvertChecklistButton(note: task.note) {
+                        let result = TaskNoteMarkdown.extractingChecklist(from: task.note)
+                        model.updateTaskNote(taskID: task.id, note: result.note, appendingSubtasks: result.subtasks)
+                    }
+                }
+            }
+        }
     }
 }

@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises'
 
+import { parseServiceAccount } from './fcm.js'
+
 function required(value, name) {
   if (typeof value !== 'string' || value.trim() === '') throw new Error(`${name} is required`)
   return value.trim()
@@ -44,5 +46,16 @@ export async function loadConfig(environment = process.env) {
     // could otherwise choose its own address.
     clientAddressHeader: environment.CLIENT_ADDRESS_HEADER?.trim() || null,
     apns,
+    // Optional: Android (Snapstr) push through Firebase Cloud Messaging.
+    fcm: await loadFCMConfig(environment, fileConfig),
   }
+}
+
+async function loadFCMConfig(environment, fileConfig) {
+  let value = environment.FCM_SERVICE_ACCOUNT ?? fileConfig.fcmServiceAccount ?? null
+  if (!value && environment.FCM_SERVICE_ACCOUNT_PATH) {
+    value = await readFile(environment.FCM_SERVICE_ACCOUNT_PATH, 'utf8')
+  }
+  if (typeof value === 'string' && value.trim() === '') return null
+  return value ? parseServiceAccount(value) : null
 }

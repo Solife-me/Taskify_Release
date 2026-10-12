@@ -402,7 +402,12 @@ enum TaskCardTextCache {
         }
         let derived = Derived(
             displayTitle: displayTitle,
-            displayNote: TaskContentLinks.removingURLs(from: note),
+            // Line by line, so checklist and list items keep their own lines on the card.
+            displayNote: TaskNoteMarkdown.previewText(note)
+                .components(separatedBy: "\n")
+                .map(TaskContentLinks.removingURLs(from:))
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n"),
             hasLink: TaskContentLinks.firstURL(title: title, note: note) != nil
         )
 

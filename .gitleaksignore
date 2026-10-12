@@ -1,0 +1,15 @@
+# Historical credentials from an accidentally committed SwiftPM/Xcode build cache.
+# These credentials have been revoked/replaced; fingerprints keep the exception scoped to
+# the exact findings in commit 142a4e94 rather than allowing these secret types or paths.
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/cache/SharedSourcesPlugin-state.json:telegram-bot-api-token:70
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/cache/SharedSourcesPlugin-state.json:openai-api-key:54
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/cache/SharedSourcesPlugin-state.json:generic-api-key:44
+
+# Generated swift-secp256k1 source from the same historical build cache. These matches are
+# Swift type/property declarations, not credentials, and are suppressed by exact fingerprint.
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift:generic-api-key:52
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift:generic-api-key:59
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/outputs/swift-secp256k1/P256K/destination/SharedSourcesPlugin/SEC1PrivateKey.swift:generic-api-key:56
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift:generic-api-key:52
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/PKCS8PrivateKey.swift:generic-api-key:59
+142a4e94e289aa5edef4f189dbe5ccd931a895a2:taskify-ios/.build/plugins/outputs/swift-secp256k1/ZKP/destination/SharedSourcesPlugin/SEC1PrivateKey.swift:generic-api-key:56

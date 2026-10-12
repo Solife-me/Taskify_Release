@@ -1,4 +1,7 @@
 import { sdk } from '../sdk'
 import { configureAPNs } from './configureAPNs'
+import { configureFCM } from './configureFCM'
 
-export const actions = sdk.Actions.of().addAction(configureAPNs)
+export const actions = sdk.Actions.of()
+  .addAction(configureAPNs)
+  .addAction(configureFCM)
