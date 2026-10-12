@@ -2,6 +2,14 @@ import { Component, StrictMode, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 
+// Windows often doesn't render backdrop-filter blur, so the frosted sheets there get an opaque
+// surface instead (see boards-and-tasks.css).
+const platform =
+  (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ||
+  navigator.platform ||
+  '';
+if (/^win/i.test(platform)) document.documentElement.classList.add('platform-windows');
+
 const root = createRoot(document.getElementById('root')!);
 
 class RootErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
