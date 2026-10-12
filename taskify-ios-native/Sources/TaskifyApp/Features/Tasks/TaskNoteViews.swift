@@ -23,6 +23,8 @@ struct TaskNoteMarkdownView: View {
     var selectable = true
     var onToggleChecklistItem: ((Int) -> Void)?
     @State private var copiedCode: String?
+    @State private var dataAction: TaskNoteDataAction?
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let allBlocks = TaskNoteMarkdown.blocks(note)
@@ -45,8 +47,37 @@ struct TaskNoteMarkdownView: View {
                 copy(code)
                 return .handled
             }
+            if let action = TaskNoteInline.dataAction(from: url) {
+                dataAction = action
+                return .handled
+            }
             return TaskNoteInline.isSafeLink(url) ? .systemAction : .discarded
         })
+        .confirmationDialog(
+            dataAction?.value ?? "",
+            isPresented: Binding(get: { dataAction != nil }, set: { if !$0 { dataAction = nil } }),
+            titleVisibility: .visible,
+            presenting: dataAction
+        ) { action in
+            switch action {
+            case .phone(let number):
+                if let url = TaskNoteDataAction.url(scheme: "tel", number: number) {
+                    Button("Call") { openURL(url) }
+                }
+                if let url = TaskNoteDataAction.url(scheme: "sms", number: number) {
+                    Button("Send Message") { openURL(url) }
+                }
+                Button("Copy") { copy(number) }
+            case .address(let address):
+                if let url = TaskNoteDataAction.mapsURL(directionsTo: address) {
+                    Button("Get Directions") { openURL(url) }
+                }
+                if let url = TaskNoteDataAction.mapsURL(showing: address) {
+                    Button("Open in Maps") { openURL(url) }
+                }
+                Button("Copy Address") { copy(address) }
+            }
+        }
         .overlay(alignment: .top) {
             if copiedCode != nil {
                 Label("Copied", systemImage: "checkmark")
@@ -67,7 +98,7 @@ struct TaskNoteMarkdownView: View {
         }
     }
 
-    /// Code is tapped to copy, as in chats.
+    /// Code is tapped to copy, as in chats; phone numbers and addresses offer it too.
     private func copy(_ code: String) {
         #if os(iOS)
         UIPasteboard.general.string = code
@@ -174,7 +205,7 @@ struct TaskNoteMarkdownView: View {
     }
 
     private func inlineText(_ markdown: String, font: Font) -> some View {
-        Text(TaskNoteInline.attributed(markdown, codeSize: fontSize - 1.5, codeCopies: selectable))
+        Text(TaskNoteInline.attributed(markdown, codeSize: fontSize - 1.5, interactive: selectable))
             .font(font)
             .fixedSize(horizontal: false, vertical: true)
             .taskNoteTextSelection(selectable)
@@ -206,13 +237,54 @@ struct TaskNoteMarkdownView: View {
     }
 }
 
+/// A phone number or street address tapped in a note, offered as actions like Notes and Messages
+/// do: call, message or copy a number; get directions to, show or copy an address.
+enum TaskNoteDataAction: Equatable {
+    case phone(String)
+    case address(String)
+
+    var value: String {
+        switch self {
+        case .phone(let number): number
+        case .address(let address): address
+        }
+    }
+
+    static func url(scheme: String, number: String) -> URL? {
+        let dialable = number.filter { $0.isNumber || $0 == "+" }
+        guard dialable.contains(where: \.isNumber) else { return nil }
+        return URL(string: "\(scheme):\(dialable)")
+    }
+
+    /// Apple Maps links open the Maps app on iOS and macOS.
+    static func mapsURL(directionsTo address: String) -> URL? {
+        mapsURL(query: [URLQueryItem(name: "daddr", value: address)])
+    }
+
+    static func mapsURL(showing address: String) -> URL? {
+        mapsURL(query: [URLQueryItem(name: "q", value: address)])
+    }
+
+    private static func mapsURL(query: [URLQueryItem]) -> URL? {
+        var components = URLComponents(string: "https://maps.apple.com/")
+        components?.queryItems = query
+        return components?.url
+    }
+}
+
 enum TaskNoteInline {
-    private static let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    private static let dataDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue
+        | NSTextCheckingResult.CheckingType.phoneNumber.rawValue
+        | NSTextCheckingResult.CheckingType.address.rawValue)
     private static let copyScheme = "taskify-note-copy"
+    private static let actionScheme = "taskify-note-action"
 
     /// Inline Markdown as styled text, with bare URLs linked and unsafe link schemes dropped.
-    /// With `codeCopies`, inline code is a link that copies it (see `copiedCode(from:)`).
-    static func attributed(_ markdown: String, codeSize: CGFloat, codeCopies: Bool = false) -> AttributedString {
+    /// When `interactive` (the viewer, not a card preview), inline code is a link that copies it
+    /// (see `copiedCode(from:)`) and phone numbers and addresses are links to their actions
+    /// (see `dataAction(from:)`).
+    static func attributed(_ markdown: String, codeSize: CGFloat, interactive: Bool = false) -> AttributedString {
         var attributed = (try? AttributedString(
             markdown: markdown,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -222,7 +294,7 @@ enum TaskNoteInline {
             if run.inlinePresentationIntent?.contains(.code) == true {
                 attributed[run.range].font = .system(size: codeSize, design: .monospaced)
                 attributed[run.range].backgroundColor = Color.primary.opacity(0.1)
-                if codeCopies {
+                if interactive {
                     attributed[run.range].link = copyURL(for: String(attributed[run.range].characters))
                     attributed[run.range].foregroundColor = .primary
                 }
@@ -234,16 +306,45 @@ enum TaskNoteInline {
         }
 
         let plain = String(attributed.characters)
-        if let detector, plain.contains(":") || plain.contains("www.") {
-            let matches = detector.matches(in: plain, range: NSRange(plain.startIndex..., in: plain))
-            for match in matches {
-                guard let url = match.url, isSafeLink(url),
-                      let range = Range(match.range, in: attributed),
-                      attributed[range].runs.allSatisfy({ $0.link == nil }) else { continue }
-                attributed[range].link = url
+        let detector = interactive ? dataDetector : linkDetector
+        guard let detector, interactive || plain.contains(":") || plain.contains("www.") else { return attributed }
+        for match in detector.matches(in: plain, range: NSRange(plain.startIndex..., in: plain)) {
+            let link: URL?
+            switch match.resultType {
+            case .phoneNumber:
+                link = match.phoneNumber.flatMap { actionURL(host: "phone", value: $0) }
+            case .address:
+                link = (Range(match.range, in: plain)).flatMap { actionURL(host: "address", value: String(plain[$0])) }
+            default:
+                link = match.url.flatMap { isSafeLink($0) ? $0 : nil }
             }
+            guard let link,
+                  let range = Range(match.range, in: attributed),
+                  attributed[range].runs.allSatisfy({ $0.link == nil }) else { continue }
+            attributed[range].link = link
         }
         return attributed
+    }
+
+    private static func actionURL(host: String, value: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = actionScheme
+        components.host = host
+        // A detected address can span lines; it is shown and searched on one.
+        components.queryItems = [URLQueryItem(name: "value", value: value.split(whereSeparator: \.isNewline).joined(separator: " "))]
+        return components.url
+    }
+
+    static func dataAction(from url: URL) -> TaskNoteDataAction? {
+        guard url.scheme?.lowercased() == actionScheme,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let value = components.queryItems?.first(where: { $0.name == "value" })?.value,
+              !value.isEmpty else { return nil }
+        switch components.host {
+        case "phone": return .phone(value)
+        case "address": return .address(value)
+        default: return nil
+        }
     }
 
     static func copyURL(for code: String) -> URL? {

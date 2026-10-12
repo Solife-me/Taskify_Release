@@ -394,6 +394,8 @@ final class ScrollPerformanceUITests: XCTestCase {
         let noteText = app.textViews["task-note-editor-text"]
         XCTAssertTrue(noteText.waitForExistence(timeout: 5))
         if !app.keyboards.element.waitForExistence(timeout: 2) { noteText.tap() }
+        noteText.typeText("Host 727-408-1038\n")
+        noteText.typeText("1 Infinite Loop, Cupertino, CA 95014\n")
         noteText.typeText("Wifi ")
         app.buttons["Code"].tap()
         noteText.typeText("almostheaven")
@@ -411,6 +413,13 @@ final class ScrollPerformanceUITests: XCTestCase {
         let code = app.links["almostheaven"]
         XCTAssertTrue(code.waitForExistence(timeout: 5), "Inline code should be a copy target")
         XCTAssertEqual(code.identifier, "taskify-note-copy://code?value=almostheaven")
+        // Phone numbers and addresses link to their actions (call, message, directions, copy).
+        let phone = app.links.matching(NSPredicate(format: "identifier BEGINSWITH %@", "taskify-note-action://phone")).firstMatch
+        XCTAssertTrue(phone.exists, "Phone numbers should be detected")
+        XCTAssertEqual(phone.label, "727-408-1038")
+        let address = app.links.matching(NSPredicate(format: "identifier BEGINSWITH %@", "taskify-note-action://address")).firstMatch
+        XCTAssertTrue(address.exists, "Addresses should be detected")
+        sleep(300) // TEMP-MANUAL
     }
 
     func testTaskEditorUsesCompactSchedulingMenusWithoutHourlyRepeat() throws {
