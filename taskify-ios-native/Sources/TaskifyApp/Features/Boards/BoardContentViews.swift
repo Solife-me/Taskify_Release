@@ -1090,6 +1090,14 @@ struct TaskCardView: View {
                     Label("Edit", systemImage: "pencil")
                 }
                 Button {
+                    if model.copyTask(task.id) {
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    }
+                } label: {
+                    // Paste into any board's New Task field, here or in the PWA.
+                    Label("Copy Task", systemImage: "doc.on.doc")
+                }
+                Button {
                     taskShareMode = .share
                     showingTaskShare = true
                 } label: {

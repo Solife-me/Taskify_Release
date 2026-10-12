@@ -1105,7 +1105,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         columnID targetColumnID: String,
         beforeTaskID: String? = nil,
         editorPublicKey: String? = nil,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        now: Date = Date()
     ) -> TaskMoveResult? {
         guard let taskIndex = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }),
               let targetBoard = boards.first(where: { $0.id == targetBoardID }),
@@ -1117,7 +1118,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         switch targetBoard.kind {
         case .week:
             targetWeekday = WeekdayColumn(rawValue: targetColumnID)
-            guard targetWeekday != nil, tasks[taskIndex].boardID == targetBoardID else { return nil }
+            guard targetWeekday != nil else { return nil }
         case .list:
             targetWeekday = nil
             guard targetBoard.columns.contains(where: { $0.id == targetColumnID }) else { return nil }
@@ -1146,9 +1147,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 taskCalendar.timeZone = timeZone
             }
             let originalDueDate = movedTask.dueDate
+            // Within a week board the task keeps its week. Arriving from another board, its
+            // date belongs to that board's sense of time (a list task may be due months out),
+            // so it lands on the chosen day of the current week, where the board shows it.
+            let weekAnchor = sourceBoardID == targetBoardID ? (originalDueDate ?? now) : now
             let targetDate = WeekDateResolver.date(
                 for: targetWeekday,
-                inWeekContaining: originalDueDate ?? Date(),
+                inWeekContaining: weekAnchor,
                 calendar: taskCalendar
             )
             if movedTask.dueTimeEnabled, let originalDueDate {

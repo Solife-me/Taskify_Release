@@ -26,6 +26,8 @@ struct TaskEditorView: View {
     @State private var showingUrgentAlarmUnavailable = false
     @State private var priority: TaskPriority?
     @State private var selectedColumnID: String
+    @State private var selectedBoardID: String
+    @State private var copiedTask = false
     @State private var subtasks: [TaskSubtask]
     @State private var subtasksExpanded = false
     @State private var showingNoteEditor = false
@@ -76,6 +78,7 @@ struct TaskEditorView: View {
         _expandedDateTimePicker = State(initialValue: nil)
         _priority = State(initialValue: task.priority)
         _selectedColumnID = State(initialValue: task.columnID ?? "")
+        _selectedBoardID = State(initialValue: task.boardID)
         _subtasks = State(initialValue: task.subtasks ?? [])
         _repeatChoice = State(initialValue: repeatDraft.choice)
         _customRepeatCount = State(initialValue: repeatDraft.count)
@@ -96,8 +99,31 @@ struct TaskEditorView: View {
         return isNewTask ? draftTask : nil
     }
     private var board: Board? { task.flatMap { model.board(withID: $0.boardID) } }
+    /// Where the task will be once saved: its own board unless the Board picker changed it.
+    private var targetBoard: Board? { model.board(withID: selectedBoardID) }
     private var orderedColumns: [BoardColumn] {
-        board?.columns.sorted { $0.order < $1.order } ?? []
+        targetBoard?.columns.sorted { $0.order < $1.order } ?? []
+    }
+    /// Boards a task can live on: week and list boards, including a compound board's lists.
+    private var boardChoices: [Board] {
+        var seen = Set<String>()
+        var choices: [Board] = []
+        for visible in model.visibleBoards {
+            let candidates = visible.kind == .compound
+                ? model.compoundChildBoards(for: visible.id)
+                : [visible]
+            for candidate in candidates where candidate.kind == .week || candidate.kind == .list {
+                if seen.insert(candidate.id).inserted { choices.append(candidate) }
+            }
+        }
+        if let board, seen.insert(board.id).inserted { choices.insert(board, at: 0) }
+        return choices
+    }
+    private var boardSelection: Binding<String> {
+        Binding(
+            get: { selectedBoardID },
+            set: { selectBoard($0) }
+        )
     }
     private var selectedDueTimeZone: TimeZone {
         TimeZone(identifier: dueTimeZone) ?? .current
@@ -165,7 +191,7 @@ struct TaskEditorView: View {
         if dueDateEnabled, repeatChoice == .custom,
            customRepeatUnit == .selectedWeekdays, customWeekdays.isEmpty { return false }
         if repeatEndsBeforeDueDate { return false }
-        if board?.kind == .list, selectedColumnID.isEmpty { return false }
+        if targetBoard?.kind == .list, selectedColumnID.isEmpty { return false }
         return task != nil
     }
 
@@ -478,17 +504,41 @@ struct TaskEditorView: View {
                 schedulingSection
             }
 
-            if board?.kind == .list {
-                Section("List") {
+            Section {
+                if boardChoices.count > 1 {
+                    Picker("Board", selection: boardSelection) {
+                        ForEach(boardChoices) { choice in
+                            Text(choice.name).tag(choice.id)
+                        }
+                    }
+                    .accessibilityIdentifier("task-editor-board")
+                }
+                if targetBoard?.kind == .list {
                     Picker("List", selection: $selectedColumnID) {
                         ForEach(orderedColumns) { column in
                             Text(column.name).tag(column.id)
                         }
                     }
                 }
+            } header: {
+                Text("Location")
+            } footer: {
+                if targetBoard?.kind == .week, selectedBoardID != board?.id {
+                    Text("On a week board the task's date sets its day.")
+                }
             }
 
             if taskID != nil {
+                Section {
+                    Button {
+                        copyEditedTask()
+                    } label: {
+                        Label(copiedTask ? "Copied. Paste into a New Task field" : "Copy Task",
+                              systemImage: copiedTask ? "checkmark" : "doc.on.doc")
+                    }
+                    .disabled(!canSave)
+                    .accessibilityIdentifier("task-editor-copy")
+                }
                 Section {
                     Button("Delete Task", role: .destructive) {
                         if task?.recurrence?.isActive == true {
@@ -499,6 +549,43 @@ struct TaskEditorView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Copies the task as edited, unsaved changes included, as the PWA's Copy Task does.
+    private func copyEditedTask() {
+        guard var copy = task else { return }
+        copy.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.note = note
+        copy.priority = priority
+        copy.subtasks = subtasks.isEmpty ? nil : subtasks
+        copy.dueDateEnabled = dueDateEnabled
+        copy.dueDate = dueDateEnabled ? (dueTimeEnabled ? dueDate : Calendar.current.startOfDay(for: dueDate)) : nil
+        copy.dueTimeEnabled = dueDateEnabled && dueTimeEnabled
+        copy.dueTimeZone = copy.dueTimeEnabled ? dueTimeZone : nil
+        copy.recurrence = makeRecurrence()
+        copy.reminders = reminders.isEmpty ? nil : reminders
+        copy.documents = documents.isEmpty ? nil : documents
+        guard let text = TaskClipboard.string(for: copy) else { return }
+        UIPasteboard.general.string = text
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        copiedTask = true
+    }
+
+    private func selectBoard(_ boardID: String) {
+        guard boardID != selectedBoardID, let destination = model.board(withID: boardID) else { return }
+        selectedBoardID = boardID
+        switch destination.kind {
+        case .list:
+            let columns = destination.columns.sorted { $0.order < $1.order }
+            if !columns.contains(where: { $0.id == selectedColumnID }) {
+                selectedColumnID = columns.first?.id ?? ""
+            }
+        case .week:
+            // A week board files tasks by date, so a task moving onto one needs a date.
+            if !dueDateEnabled { setDueDateEnabled(true) }
+        case .compound, .bible:
+            break
         }
     }
 
@@ -650,9 +737,28 @@ struct TaskEditorView: View {
             normalizedDueDate = nil
         }
 
-        let columnID = board?.kind == .list ? selectedColumnID : task?.columnID
+        let destination = targetBoard
+        var dueCalendar = Calendar.current
+        if dueTimeEnabled, let timeZone = TimeZone(identifier: dueTimeZone) { dueCalendar.timeZone = timeZone }
+        let dayColumnID = WeekdayColumn.containing(normalizedDueDate ?? Date(), calendar: dueCalendar).rawValue
+        let columnID: String?
+        switch destination?.kind {
+        case .list: columnID = selectedColumnID
+        case .week: columnID = destination?.id == task?.boardID ? task?.columnID : dayColumnID
+        default: columnID = task?.columnID
+        }
         let normalizedUrgent = dueDateEnabled && dueTimeEnabled && urgent
         if let taskID {
+            // A new board is a move (source tombstone, target publish); the edits follow on the
+            // destination, where a week board files the task by its date.
+            if let destination, destination.id != task?.boardID,
+               !model.moveTask(
+                   taskID,
+                   toBoardID: destination.id,
+                   columnID: destination.kind == .week ? dayColumnID : (columnID ?? "")
+               ) {
+                return false
+            }
             return model.updateTask(
                 taskID: taskID,
                 title: title,
@@ -677,7 +783,7 @@ struct TaskEditorView: View {
             id: draftTask.id,
             title: title,
             note: note,
-            boardID: draftTask.boardID,
+            boardID: destination?.id ?? draftTask.boardID,
             columnID: columnID,
             dueDate: normalizedDueDate,
             dueDateEnabled: dueDateEnabled,

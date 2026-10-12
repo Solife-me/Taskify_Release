@@ -687,11 +687,6 @@ final class TaskifySnapshotTests: XCTestCase {
             includeCompleted: true
         ).isEmpty)
         XCTAssertEqual(snapshot.compoundChildBoards(for: compound.id).map(\.id), [personal.id, work.id])
-        XCTAssertNil(snapshot.moveTask(
-            taskID: moved.id,
-            toBoardID: "week-default",
-            columnID: WeekdayColumn.monday.rawValue
-        ))
     }
 
     func testRemoteCompoundCreatesHiddenSyncableChildStubs() throws {

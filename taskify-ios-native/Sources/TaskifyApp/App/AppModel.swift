@@ -857,6 +857,7 @@ final class AppModel {
 
     func addQuickTask(title: String, weekday: WeekdayColumn) {
         guard let boardID = selectedBoard?.id else { return }
+        if addPastedTasks(title, boardID: boardID, columnID: weekday.rawValue) { return }
         let dueDate = WeekDateResolver.date(
             for: weekday,
             inWeekContaining: Date(),
@@ -877,6 +878,7 @@ final class AppModel {
 
     func addQuickTask(title: String, columnID: String) {
         guard let board = selectedBoard, board.kind == .list else { return }
+        if addPastedTasks(title, boardID: board.id, columnID: columnID) { return }
         guard let task = snapshot.addTask(
             title: title,
             boardID: board.id,
@@ -893,6 +895,7 @@ final class AppModel {
     func addQuickTask(title: String, boardID: String, columnID: String) {
         guard let board = snapshot.boards.first(where: { $0.id == boardID && $0.kind == .list }),
               board.columns.contains(where: { $0.id == columnID }) else { return }
+        if addPastedTasks(title, boardID: board.id, columnID: columnID) { return }
         guard let task = snapshot.addTask(
             title: title,
             boardID: board.id,
@@ -904,6 +907,42 @@ final class AppModel {
             calendar: weekCalendar
         ) else { return }
         synchronizeTask(task.id)
+    }
+
+    /// Quick add doubles as paste, as in the PWA: task JSON from Copy Task (here or in the PWA)
+    /// becomes the task it describes. False when the text is an ordinary title.
+    private func addPastedTasks(_ text: String, boardID: String, columnID: String) -> Bool {
+        guard let deliveries = TaskClipboard.tasks(in: text) else { return false }
+        let addedIDs = deliveries.compactMap { delivery in
+            snapshot.addPastedTask(
+                delivery,
+                boardID: boardID,
+                columnID: columnID,
+                authorPublicKey: identityPublicKey.nilIfEmpty,
+                newTaskPosition: newTaskPosition,
+                weekStartsOn: weekStart,
+                calendar: weekCalendar
+            )?.id
+        }
+        guard !addedIDs.isEmpty else { return true }
+        synchronizeTasks(addedIDs)
+        if showFullWeekRecurring { ensureFullWeekTaskRecurrences() }
+        refreshNotifications(requestPermission: false)
+        return true
+    }
+
+    /// Puts a task on the clipboard in the JSON the PWA's Copy Task uses, for pasting into any
+    /// board's New Task field on either client.
+    @discardableResult
+    func copyTask(_ taskID: String) -> Bool {
+        guard let task = task(withID: taskID), let text = TaskClipboard.string(for: task) else { return false }
+        #if os(iOS)
+        UIPasteboard.general.string = text
+        return true
+        #else
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.setString(text, forType: .string)
+        #endif
     }
 
     /// Creates a fully configured task in one local transaction, then publishes only the finished
@@ -4686,6 +4725,22 @@ final class AppModel {
             tasks: [],
             selectedBoardID: board.id
         )
+        // A list board holding one task, for moving tasks onto the week board.
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_LIST_BOARD"] == "1" {
+            let list = Board(
+                id: "ui-test-list",
+                name: "UI Test List",
+                kind: .list,
+                columns: [BoardColumn(id: "ui-test-list-todo", name: "To do", order: 0)]
+            )
+            snapshot.boards.append(list)
+            snapshot.tasks.append(TaskItem(
+                id: "ui-test-list-task",
+                boardID: list.id,
+                title: "Move me",
+                columnID: "ui-test-list-todo"
+            ))
+        }
         errorMessage = nil
         return true
     }
