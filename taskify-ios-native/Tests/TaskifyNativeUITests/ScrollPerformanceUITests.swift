@@ -419,7 +419,6 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertEqual(phone.label, "727-408-1038")
         let address = app.links.matching(NSPredicate(format: "identifier BEGINSWITH %@", "taskify-note-action://address")).firstMatch
         XCTAssertTrue(address.exists, "Addresses should be detected")
-        sleep(300) // TEMP-MANUAL
     }
 
     func testTaskEditorUsesCompactSchedulingMenusWithoutHourlyRepeat() throws {
