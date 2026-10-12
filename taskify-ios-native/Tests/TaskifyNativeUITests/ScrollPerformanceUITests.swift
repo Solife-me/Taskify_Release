@@ -337,8 +337,9 @@ final class ScrollPerformanceUITests: XCTestCase {
         if !app.keyboards.element.exists { titleField.tap() }
         titleField.typeText("Groceries")
 
-        // Tapping the notes in the task editor opens the Markdown note editor, whose checklist
-        // button and Return continue a checklist.
+        // Tapping the notes in the task editor opens the note editor, whose checklist button and
+        // Return continue a checklist. It shows formatting, not Markdown, so the saved note is
+        // checked through the viewer.
         app.buttons["task-editor-notes"].tap()
         let noteText = app.textViews["task-note-editor-text"]
         XCTAssertTrue(noteText.waitForExistence(timeout: 5))
@@ -346,7 +347,6 @@ final class ScrollPerformanceUITests: XCTestCase {
         noteText.typeText("Milk")
         app.buttons["Checklist"].tap()
         noteText.typeText("\nEggs")
-        XCTAssertEqual(noteText.value as? String, "- [ ] Milk\n- [ ] Eggs")
         app.buttons["task-note-editor-done"].tap()
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
         app.buttons["Save"].tap()
@@ -356,13 +356,13 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertTrue(cardNote.waitForExistence(timeout: 5))
         cardNote.tap()
         XCTAssertTrue(app.navigationBars["Groceries"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Check Eggs"].exists, "Return should continue the checklist")
         app.buttons["Check Milk"].tap()
         XCTAssertTrue(app.buttons["Uncheck Milk"].waitForExistence(timeout: 3))
 
         // Edit opens the note editor; converting moves the checklist into real subtasks.
         app.buttons["task-note-viewer-edit"].tap()
         XCTAssertTrue(noteText.waitForExistence(timeout: 5))
-        XCTAssertEqual(noteText.value as? String, "- [x] Milk\n- [ ] Eggs")
         app.buttons["task-note-convert-checklist"].tap()
         app.buttons["task-note-editor-done"].tap()
         XCTAssertTrue(app.navigationBars["Groceries"].waitForExistence(timeout: 5))
@@ -371,6 +371,46 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Mark Milk incomplete"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Complete Eggs"].exists)
         XCTAssertFalse(cardNote.exists, "The note was only the checklist, so nothing is left to preview")
+    }
+
+    func testNoteViewerCopiesCodeOnTap() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+        let addDetailsButton = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
+        ).firstMatch
+        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
+        addDetailsButton.tap()
+        let titleField = app.textFields["Title"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 5))
+        if !app.keyboards.element.exists { titleField.tap() }
+        titleField.typeText("Cabin")
+
+        app.buttons["task-editor-notes"].tap()
+        let noteText = app.textViews["task-note-editor-text"]
+        XCTAssertTrue(noteText.waitForExistence(timeout: 5))
+        if !app.keyboards.element.waitForExistence(timeout: 2) { noteText.tap() }
+        noteText.typeText("Wifi ")
+        app.buttons["Code"].tap()
+        noteText.typeText("almostheaven")
+        app.buttons["task-note-editor-done"].tap()
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+        app.buttons["Save"].tap()
+
+        let cardNote = app.buttons["task-card-note"]
+        XCTAssertTrue(cardNote.waitForExistence(timeout: 5))
+        cardNote.tap()
+        XCTAssertTrue(app.navigationBars["Cabin"].waitForExistence(timeout: 5))
+        // Inline code is a link that copies it. XCUITest can't activate a link inside SwiftUI Text
+        // (it reports it with an empty frame and its synthesized taps miss it), so this checks
+        // the copy target; a real tap copies, which was checked against the device pasteboard.
+        let code = app.links["almostheaven"]
+        XCTAssertTrue(code.waitForExistence(timeout: 5), "Inline code should be a copy target")
+        XCTAssertEqual(code.identifier, "taskify-note-copy://code?value=almostheaven")
     }
 
     func testTaskEditorUsesCompactSchedulingMenusWithoutHourlyRepeat() throws {

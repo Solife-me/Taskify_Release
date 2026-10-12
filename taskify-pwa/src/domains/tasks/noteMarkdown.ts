@@ -742,3 +742,305 @@ function prefixLines(text: string, selection: { location: number; length: number
   }
   return edit(updated, blockStart, replacement.length);
 }
+
+// MARK: Rich editor document
+
+// A note as the rich editor holds it: one entry per line, each with a kind and formatted runs,
+// so editing never touches Markdown syntax. Mirrors TaskNoteDocument.swift; keep in step.
+
+export type NoteRun = {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
+  code?: boolean;
+  link?: string;
+};
+
+export type NoteLineKind = "paragraph" | "heading" | "bullet" | "numbered" | "checklist" | "quote" | "code" | "rule";
+
+export type NoteLine = {
+  kind: NoteLineKind;
+  depth: number;
+  /** Heading level, 1–6. */
+  level?: number;
+  /** The number the source gave a numbered item; serialization renumbers each run from it. */
+  number?: number;
+  checked?: boolean;
+  runs: NoteRun[];
+};
+
+export function noteLineText(line: NoteLine): string {
+  return line.runs.map((run) => run.text).join("");
+}
+
+export function noteLinesFromMarkdown(note: string): NoteLine[] {
+  const lines: NoteLine[] = [];
+  let fence: Fence | null = null;
+  for (const rawLine of linesOf(note)) {
+    const line = stripCarriageReturn(rawLine);
+    if (fence) {
+      if (closesFence(line, fence)) fence = null;
+      else lines.push({ kind: "code", depth: 0, runs: line ? [{ text: line }] : [] });
+      continue;
+    }
+    const open = openingFence(line);
+    if (open) {
+      fence = open;
+      continue;
+    }
+    if (isBlank(line)) {
+      lines.push({ kind: "paragraph", depth: 0, runs: [] });
+      continue;
+    }
+    if (isThematicBreak(line)) {
+      lines.push({ kind: "rule", depth: 0, runs: [] });
+      continue;
+    }
+    const info = lineInfo(line);
+    const runs = runsFromInline(info.content);
+    switch (info.kind.kind) {
+      case "plain":
+        lines.push({ kind: "paragraph", depth: 0, runs });
+        break;
+      case "heading":
+        lines.push({ kind: "heading", depth: 0, level: info.kind.level, runs });
+        break;
+      case "bullet":
+        lines.push({ kind: "bullet", depth: info.depth, runs });
+        break;
+      case "numbered":
+        lines.push({ kind: "numbered", depth: info.depth, number: info.kind.number, runs });
+        break;
+      case "checklist":
+        lines.push({ kind: "checklist", depth: info.depth, checked: info.kind.checked, runs });
+        break;
+      case "quote":
+        lines.push({ kind: "quote", depth: 0, runs });
+        break;
+    }
+  }
+  return lines;
+}
+
+/** Inline Markdown as formatted runs. */
+export function runsFromInline(markdown: string): NoteRun[] {
+  const runs: NoteRun[] = [];
+  const walk = (nodes: InlineNode[], marks: Omit<NoteRun, "text">) => {
+    for (const node of nodes) {
+      switch (node.type) {
+        case "text":
+          runs.push({ ...marks, text: node.text });
+          break;
+        case "code":
+          runs.push({ ...marks, code: true, text: node.text });
+          break;
+        case "strong":
+          walk(node.children, { ...marks, bold: true });
+          break;
+        case "em":
+          walk(node.children, { ...marks, italic: true });
+          break;
+        case "del":
+          walk(node.children, { ...marks, strike: true });
+          break;
+        case "link":
+          walk(node.children, { ...marks, link: node.href });
+          break;
+      }
+    }
+  };
+  walk(parseInline(markdown), {});
+  return mergeRuns(runs);
+}
+
+const sameMarks = (a: NoteRun, b: NoteRun) =>
+  !!a.bold === !!b.bold && !!a.italic === !!b.italic && !!a.strike === !!b.strike && !!a.code === !!b.code &&
+  (a.link || "") === (b.link || "");
+
+export function mergeRuns(runs: NoteRun[]): NoteRun[] {
+  const result: NoteRun[] = [];
+  for (const run of runs) {
+    if (!run.text) continue;
+    const last = result[result.length - 1];
+    if (last && sameMarks(last, run) && !run.code) last.text += run.text;
+    else result.push({ ...run });
+  }
+  return result;
+}
+
+export function markdownFromNoteLines(lines: NoteLine[]): string {
+  const output: string[] = [];
+  let previousNumbered: { depth: number; number: number } | null = null;
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    const indent = "  ".repeat(Math.max(0, line.depth));
+    let numbered: { depth: number; number: number } | null = null;
+    switch (line.kind) {
+      case "code": {
+        const block: string[] = [];
+        while (index < lines.length && lines[index].kind === "code") {
+          block.push(noteLineText(lines[index]));
+          index += 1;
+        }
+        const ticks = "`".repeat(Math.max(3, longestRun("`", block.join("\n")) + 1));
+        output.push(ticks, ...block, ticks);
+        previousNumbered = null;
+        continue;
+      }
+      case "rule":
+        output.push("---");
+        break;
+      case "paragraph": {
+        const text = inlineMarkdownFromRuns(line.runs);
+        output.push(text ? escapeBlockSyntax(text) : "");
+        break;
+      }
+      case "heading":
+        output.push(`${"#".repeat(Math.min(Math.max(line.level ?? 1, 1), 6))} ${inlineMarkdownFromRuns(line.runs)}`);
+        break;
+      case "bullet":
+        output.push(`${indent}- ${inlineMarkdownFromRuns(line.runs)}`);
+        break;
+      case "numbered": {
+        const number: number =
+          previousNumbered && previousNumbered.depth === line.depth ? previousNumbered.number + 1 : line.number ?? 1;
+        numbered = { depth: line.depth, number };
+        output.push(`${indent}${number}. ${inlineMarkdownFromRuns(line.runs)}`);
+        break;
+      }
+      case "checklist":
+        output.push(`${indent}${line.checked ? "- [x] " : "- [ ] "}${inlineMarkdownFromRuns(line.runs)}`);
+        break;
+      case "quote":
+        output.push(`> ${inlineMarkdownFromRuns(line.runs)}`);
+        break;
+    }
+    previousNumbered = numbered;
+    index += 1;
+  }
+  return output.join("\n");
+}
+
+type Mark = { kind: "link"; url: string } | { kind: "bold" | "italic" | "strike" | "code" };
+
+const markEquals = (a: Mark, b: Mark) =>
+  a.kind === b.kind && (a.kind !== "link" || (b.kind === "link" && a.url === b.url));
+
+function marksOf(run: NoteRun): Mark[] {
+  const marks: Mark[] = [];
+  if (run.link) marks.push({ kind: "link", url: run.link });
+  if (run.bold) marks.push({ kind: "bold" });
+  if (run.italic) marks.push({ kind: "italic" });
+  if (run.strike) marks.push({ kind: "strike" });
+  if (run.code) marks.push({ kind: "code" });
+  return marks;
+}
+
+const markOpen = (mark: Mark) =>
+  mark.kind === "link" ? "[" : mark.kind === "bold" ? "**" : mark.kind === "italic" ? "*" : mark.kind === "strike" ? "~~" : "`";
+
+const markClose = (mark: Mark) =>
+  mark.kind === "link"
+    ? `](${mark.url.replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29")})`
+    : markOpen(mark);
+
+function longestRun(character: string, text: string): number {
+  let longest = 0;
+  let current = 0;
+  for (const value of text) {
+    current = value === character ? current + 1 : 0;
+    longest = Math.max(longest, current);
+  }
+  return longest;
+}
+
+/**
+ * Formatted runs as inline Markdown. Marks open and close at run boundaries in a fixed nesting
+ * order (link, bold, italic, strikethrough, code), and whitespace is kept outside them, which
+ * Markdown requires for emphasis to close.
+ */
+export function inlineMarkdownFromRuns(runs: NoteRun[]): string {
+  let output = "";
+  const open: Mark[] = [];
+  let pendingSpace = "";
+  for (const run of mergeRuns(runs)) {
+    const text = run.text;
+    if (!/\S/.test(text)) {
+      pendingSpace += text;
+      continue;
+    }
+    const target = marksOf(run);
+    let keep = 0;
+    while (keep < open.length && keep < target.length && markEquals(open[keep], target[keep])) keep += 1;
+    if (keep < open.length) {
+      for (const mark of open.slice(keep).reverse()) output += markClose(mark);
+      open.splice(keep);
+    }
+    output += pendingSpace;
+    pendingSpace = "";
+
+    const leading = /^\s*/.exec(text)?.[0] ?? "";
+    const trailing = /\s*$/.exec(text)?.[0] ?? "";
+    const core = text.slice(leading.length, text.length - trailing.length);
+    output += leading;
+    for (const mark of target.slice(open.length)) {
+      if (mark.kind === "code") {
+        const ticks = "`".repeat(longestRun("`", core) + 1);
+        output += core.startsWith("`") ? `${ticks} ` : ticks;
+      } else {
+        output += markOpen(mark);
+      }
+      open.push(mark);
+    }
+    if (run.code) {
+      // A code span closes with its run: its content can't hold other runs' text.
+      const ticks = "`".repeat(longestRun("`", core) + 1);
+      output += core + (core.endsWith("`") ? ` ${ticks}` : ticks);
+      open.pop();
+    } else {
+      output += escapeInline(core);
+    }
+    pendingSpace = trailing;
+  }
+  for (const mark of open.reverse()) output += markClose(mark);
+  return output + pendingSpace;
+}
+
+const isWordCharacter = (character: string | undefined) =>
+  character !== undefined && /[\p{L}\p{N}]/u.test(character);
+
+/**
+ * Backslash-escapes what would otherwise read as inline syntax. Underscores inside words are
+ * literal already, so `snake_case` stays as typed.
+ */
+export function escapeInline(text: string): string {
+  const characters = [...text];
+  let output = "";
+  characters.forEach((character, index) => {
+    const before = characters[index - 1];
+    const after = characters[index + 1];
+    if ("\\*`[]".includes(character)) output += "\\";
+    else if (character === "_" && (!isWordCharacter(before) || !isWordCharacter(after))) output += "\\";
+    else if (character === "~" && (before === "~" || after === "~")) output += "\\";
+    else if (character === "<" && after !== undefined && /\p{L}/u.test(after)) output += "\\";
+    output += character;
+  });
+  return output;
+}
+
+/**
+ * A paragraph whose text would read as a heading, list item, quote, rule or fence gets the
+ * smallest escape that keeps it a paragraph.
+ */
+export function escapeBlockSyntax(text: string): string {
+  const isBlock = lineInfo(text).kind.kind !== "plain" || isThematicBreak(text) || openingFence(text) !== null;
+  if (!isBlock) return text;
+  const indent = /^[ \t]*/.exec(text)?.[0] ?? "";
+  const body = text.slice(indent.length);
+  const digits = /^\d+/.exec(body)?.[0];
+  // "1. text" stays a paragraph as "1\. text".
+  if (digits) return `${indent}${digits}\\${body.slice(digits.length)}`;
+  return `${indent}\\${body}`;
+}
