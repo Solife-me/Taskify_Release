@@ -4721,3 +4721,18 @@ html.light .wallet-modal__unit {
   color: var(--text-secondary);
   cursor: pointer;
 }
+
+/*
+ * Windows: the frosted sheets depend on backdrop-filter, which often doesn't render there
+ * (graphics acceleration is commonly off on managed laptops), leaving them see-through over
+ * the board. There they get an opaque surface in the glass's own colours; Apple platforms keep
+ * the blur. main.tsx sets the class.
+ */
+html.platform-windows .modal-panel {
+  background: linear-gradient(180deg, #2e3037, #15181f);
+}
+
+html.platform-windows .sheet-panel,
+html.platform-windows .drawer-panel {
+  background: #1f2129;
+}
