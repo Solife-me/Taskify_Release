@@ -115,14 +115,20 @@ final class NIP17InboxLatencyTests: XCTestCase {
                                peerPublicKey: publicKey, senderPublicKey: publicKey, content: content,
                                createdAt: number, isIncoming: incoming, deliveryState: state)
         }
+        let structuredPayment = """
+        {"mint":"https://mint.example","unit":"sat","proofs":[{"amount":1,"secret":"s",\
+        "C":"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","id":"009a1f293253e41e"}]}
+        """
         var snapshot = TaskifySnapshot.empty
         snapshot.directMessages = [
             message(1, content: "Ordinary saved DM"),
-            message(2, content: "Here you go: cashuAeyJ0b2tlbiI6W119fQ"),
+            message(2, content: structuredPayment),
             message(3, content: "Still sending", incoming: false, state: .queued),
             message(4, content: "Confirmed", incoming: false, state: .sent),
+            // Chat-text tokens are left for the user to copy, never redeemed, so nothing replays them.
+            message(5, content: "Here you go: cashuAeyJ0b2tlbiI6W119fQ"),
         ]
-        XCTAssertEqual(snapshot.savedNonPaymentInboxEventIDs(), [event(1).id, event(4).id])
+        XCTAssertEqual(snapshot.savedNonPaymentInboxEventIDs(), [event(1).id, event(4).id, event(5).id])
     }
 }
 

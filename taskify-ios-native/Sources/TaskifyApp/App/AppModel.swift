@@ -5495,7 +5495,8 @@ final class AppModel {
             identityPublicKey: identity.publicKeyHex
         ) else { return }
         if let cutoff = chatMessageRetention.cutoffTimestamp(),
-           directMessage.createdAt < cutoff {
+           directMessage.createdAt < cutoff,
+           !directMessage.holdsReceivedCashuToken {
             return
         }
 
@@ -5508,7 +5509,7 @@ final class AppModel {
         // whichever pipeline runs first claims it; the mint's double-spend protection makes the
         // second attempt a harmless no-op.
         if directMessage.isIncoming,
-           let token = CashuPaymentRequestContract.extractReceivableToken(from: directMessage.content) {
+           let token = CashuPaymentRequestContract.structuredPaymentToken(from: directMessage.content) {
             do {
                 let inboxURL = try CashuIncomingTokenInboxStore.defaultURL()
                 let delivery = CashuIncomingTokenDelivery(

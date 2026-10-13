@@ -65,6 +65,8 @@ import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryList
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { toBufferSource } from "./lib/binary";
 import { useCashu } from "./context/CashuContext";
+import { useWalletEnabled } from "./wallet/walletAvailability";
+import { WalletPhaseOutNotice } from "./ui/wallet/WalletPhaseOutNotice";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
 
@@ -1874,6 +1876,14 @@ export default function App() {
   const [activePage, setActivePage] = useState<
     "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-address" | "chat" | "settings"
   >("boards");
+  const walletEnabled = useWalletEnabled();
+  useEffect(() => {
+    // Closing the wallet out from its own settings leaves nothing to show on its pages.
+    if (walletEnabled) return;
+    if (activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-address") {
+      startTransition(() => setActivePage("boards"));
+    }
+  }, [activePage, walletEnabled]);
   const {
     completeFirstRunOnboarding,
     handleOnboardingEnableNotifications,
@@ -2024,21 +2034,24 @@ export default function App() {
   }, []);
 
   const openWallet = useCallback(() => {
+    if (!walletEnabled) return;
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     prefetchWalletModal();
     startTransition(() => setActivePage("wallet"));
-  }, [prefetchWalletModal, shouldReloadForNavigation]);
+  }, [prefetchWalletModal, shouldReloadForNavigation, walletEnabled]);
   const openWalletBounties = useCallback(() => {
+    if (!walletEnabled) return;
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     startTransition(() => setActivePage("wallet-bounties"));
-  }, [shouldReloadForNavigation]);
+  }, [shouldReloadForNavigation, walletEnabled]);
   const openWalletAddress = useCallback(() => {
+    if (!walletEnabled) return;
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     startTransition(() => setActivePage("wallet-address"));
-  }, [shouldReloadForNavigation]);
+  }, [shouldReloadForNavigation, walletEnabled]);
   const closeWallet = useCallback(() => {
     startTransition(() => setActivePage("boards"));
   }, []);
@@ -2177,14 +2190,15 @@ export default function App() {
     // Do not redirect on startup while onboarding is blocking the app.
     if (isOnboardingActiveRef.current) return;
     const startupView = settings.startupView;
+    if (startupView === "wallet" && !walletEnabled) return;
     if (startupView === "wallet" || startupView === "upcoming" || startupView === "chat") {
       if (startupView === "wallet" || startupView === "chat") {
         prefetchWalletModal();
       }
       startTransition(() => setActivePage(startupView));
     }
-  }, [prefetchWalletModal, settings.startupView]);
-  const { receiveToken } = useCashu();
+  }, [prefetchWalletModal, settings.startupView, walletEnabled]);
+  const { receiveToken, totalBalance: walletTotalBalance } = useCashu();
 
   useEffect(() => {
     if (!settings.completedTab) setView("board");
@@ -12369,6 +12383,7 @@ export default function App() {
             </div>
             <div className="app-tab-switcher__label">Upcoming</div>
           </button>
+          {walletEnabled && (
           <button
             ref={walletButtonRef}
             type="button"
@@ -12399,6 +12414,7 @@ export default function App() {
             </div>
             <div className="app-tab-switcher__label">Wallet</div>
           </button>
+          )}
           <button
             type="button"
             className={`app-tab-switcher__btn pressable${activePage === "chat" ? " app-tab-switcher__btn--active" : ""}`}
@@ -12755,6 +12771,12 @@ export default function App() {
         shareTemplateBusy={shareTemplateBusy}
         shareTemplateStatus={shareTemplateStatus}
         shareableContacts={shareableContacts}
+      />
+
+      <WalletPhaseOutNotice
+        hasBalance={walletEnabled && walletTotalBalance > 0}
+        suppressed={showFirstRunOnboarding}
+        onOpenWallet={openWallet}
       />
 
       <CashuWalletShell

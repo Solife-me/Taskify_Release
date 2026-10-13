@@ -12,6 +12,7 @@ import {
 } from "@cashu/cashu-ts";
 import { getEncodedToken } from "@cashu/cashu-ts";
 import { idbKeyValue } from "../../storage/idbKeyValue";
+import { isPaymentRequestPayment } from "../../wallet/dmEcash";
 import { TASKIFY_STORE_WALLET } from "../../storage/taskifyDb";
 import {
   LS_ECASH_OPEN_REQUESTS,
@@ -952,6 +953,9 @@ export function usePaymentRequestFlow({
       normalizedOverride?: NormalizedIncomingPayment | null,
       senderOverride?: string | null,
     ) => {
+      // Only payment-request payments are claimed. Ecash pasted into a DM stays in the chat,
+      // unredeemed, for the user to copy into another wallet.
+      if (!isPaymentRequestPayment(payload)) return;
       const normalized = normalizedOverride ?? selectIncomingPaymentFromPayload(payload);
       if (!normalized) return;
       const { token: encoded, amount, mint, unit } = normalized;

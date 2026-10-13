@@ -1377,12 +1377,11 @@ struct DirectMessageLinkCard: View {
 }
 
 /// A Cashu token sent as plain chat text rather than through the formal payment-request flow.
-/// Redeeming reuses the wallet's normal receive sheet unchanged — this view only recognizes the
-/// token and offers a shortcut into that review-before-claim flow, never claims funds itself.
+/// The Taskify wallet is being phased out, so these are never redeemed here: the card only
+/// copies the token for the user to redeem in another Cashu wallet.
 struct DirectMessagePaymentCard: View {
-    @EnvironmentObject private var wallet: WalletViewModel
     let token: String
-    @State private var showingReceiveSheet = false
+    @State private var copied = false
 
     private var summary: CashuOfflineTokenSummary? {
         CashuWalletService.offlineTokenSummary(token)
@@ -1390,7 +1389,8 @@ struct DirectMessagePaymentCard: View {
 
     var body: some View {
         Button {
-            showingReceiveSheet = true
+            UIPasteboard.general.string = token
+            copied = true
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "bitcoinsign.circle.fill")
@@ -1403,16 +1403,16 @@ struct DirectMessagePaymentCard: View {
                     Text(summary.map { "\($0.amount.formatted()) sats" } ?? "Cashu token received")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(TaskifyTheme.primaryText)
-                    Text(summary?.memo ?? "Tap to redeem")
+                    Text(copied ? "Copied — paste it into another Cashu wallet" : "Not redeemed")
                         .font(.caption2)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .lineLimit(1)
                 }
 
                 Spacer(minLength: 2)
-                Image(systemName: "arrow.down.circle")
+                Label(copied ? "Copied" : "Copy token", systemImage: copied ? "checkmark" : "doc.on.doc")
                     .font(.caption2.bold())
-                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .foregroundStyle(TaskifyTheme.accent)
             }
             .padding(8)
             .frame(maxWidth: 270, alignment: .leading)
@@ -1423,9 +1423,11 @@ struct DirectMessagePaymentCard: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(summary.map { "Redeem \($0.amount) sat Cashu token" } ?? "Redeem Cashu token")
-        .sheet(isPresented: $showingReceiveSheet) {
-            ReceiveCashuSheet(wallet: wallet, initialToken: token)
+        .accessibilityLabel(summary.map { "Copy \($0.amount) sat Cashu token" } ?? "Copy Cashu token")
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(for: .seconds(2.5))
+            copied = false
         }
     }
 }

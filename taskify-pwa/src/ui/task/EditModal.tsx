@@ -11,6 +11,7 @@ import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
 import { LockToNpubSheet } from "../bounty/LockToNpubSheet";
 import { BountyAttachSheet } from "../bounty/BountyAttachSheet";
+import { useWalletEnabled } from "../../wallet/walletAvailability";
 import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "../recurrence/RecurrencePicker";
 
 // Domain types
@@ -319,6 +320,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [signOverSheetOpen, setSignOverSheetOpen] = useState(false);
   const [lockToSelf, setLockToSelf] = useState(true);
+  const walletEnabled = useWalletEnabled();
   const [bountyExpanded, setBountyExpanded] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
   const prefetchedContactPhotos = useRef<Set<string>>(new Set());
@@ -2729,7 +2731,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
               )}
             </div>
           </section>
-        ) : (
+        ) : walletEnabled ? (
           <button
             type="button"
             className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
@@ -2737,7 +2739,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           >
             Attach bounty
           </button>
-        )}
+        ) : null}
 
         {streakEligible && (
           <section className="edit-card space-y-2">

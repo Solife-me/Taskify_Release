@@ -31,6 +31,7 @@ struct MacWorkspace: View {
     @State private var chatScrollPositions: [String: String] = [:]
     @State private var chatSelection: String?
     @State private var printingChecklist = false
+    @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
 
     private var board: Board? { model.board(withID: destination) }
     private var title: String { board?.name ?? MacDestination(rawValue: destination)?.title ?? "Taskify" }
@@ -41,7 +42,7 @@ struct MacWorkspace: View {
         NavigationSplitView {
             List(selection: Binding<String?>(get: { destination }, set: { if let value = $0 { destination = value } })) {
                 Section("Workspace") {
-                    ForEach(MacDestination.allCases, id: \.rawValue) { item in
+                    ForEach(MacDestination.allCases.filter { $0 != .wallet || walletEnabled }, id: \.rawValue) { item in
                         Label(item.title, systemImage: item.symbol).tag(item.rawValue)
                     }
                 }
@@ -159,8 +160,24 @@ struct MacWorkspace: View {
         }
         .onChange(of: notificationRouter.pendingDestination) { _, value in
             guard let value else { return }
-            destination = value.rawValue
+            if value.rawValue != MacDestination.wallet.rawValue || walletEnabled {
+                destination = value.rawValue
+            }
             _ = notificationRouter.consumeDestination()
+        }
+        .onChange(of: walletEnabled) { _, enabled in
+            // Closing the wallet out from its own settings leaves nothing on its page.
+            if !enabled && destination == MacDestination.wallet.rawValue { destination = "today" }
+        }
+        .onAppear {
+            // A window restored onto the Wallet page of a device that never used the wallet.
+            if destination == MacDestination.wallet.rawValue && !walletEnabled { destination = "today" }
+        }
+        .background {
+            WalletPhaseOutNoticePresenter(
+                suppressed: model.isLoading || model.showsFirstRunOnboarding,
+                openWallet: { destination = MacDestination.wallet.rawValue }
+            )
         }
         .onOpenURL { url in
             guard let link = TaskifyWidgetLink(url: url) else { return }
@@ -182,7 +199,12 @@ struct MacWorkspace: View {
             case .today, .upcoming:
                 MacAgendaView(todayOnly: destination == "today", search: search, selectedTaskID: $selectedTaskID, edit: { editingTask = $0 })
             case .chat: MacChatView(search: search, drafts: $chatDrafts, scrollPositions: $chatScrollPositions, selection: $chatSelection)
-            case .wallet: MacWalletView()
+            case .wallet:
+                if walletEnabled {
+                    MacWalletView()
+                } else {
+                    MacAgendaView(todayOnly: true, search: search, selectedTaskID: $selectedTaskID, edit: { editingTask = $0 })
+                }
             case .inbox: MacInboxView()
             case nil: ContentUnavailableView("Board Unavailable", systemImage: "rectangle.slash", description: Text("Choose another board from the sidebar."))
             }

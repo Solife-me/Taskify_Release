@@ -51,7 +51,7 @@ public enum DMPushNotificationSharedSettings {
 /// whether the event is a conversation or an ecash payment.
 public enum DMPushNotificationPolicy {
     public static func category(forIncomingContent content: String) -> DMPushNotificationCategory {
-        if CashuPaymentRequestContract.extractReceivableToken(from: content) != nil {
+        if CashuPaymentRequestContract.structuredPaymentToken(from: content) != nil {
             return .paymentReceived
         }
         return .message
@@ -98,7 +98,7 @@ public enum DMPushNotificationPreviewPolicy {
             || snapshot.hasLeftDirectMessageGroup(group.groupID) {
             return nil
         }
-        guard CashuPaymentRequestContract.extractReceivableToken(from: rumor.content) == nil else {
+        guard CashuPaymentRequestContract.structuredPaymentToken(from: rumor.content) == nil else {
             return nil
         }
 

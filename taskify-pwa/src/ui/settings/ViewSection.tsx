@@ -6,6 +6,7 @@ import type { Board, Weekday } from "../../domains/tasks/taskTypes";
 import { prepareBackgroundImage, BackgroundImageError } from "../../theme/palette";
 import { useToast } from "../../context/ToastContext";
 import { pillButtonClass, WD_FULL } from "./settingsConstants";
+import { useWalletEnabled } from "../../wallet/walletAvailability";
 
 export function ViewSection({
   settings,
@@ -16,6 +17,7 @@ export function ViewSection({
   setSettings: (s: Partial<Settings>) => void;
   boards: Board[];
 }) {
+  const walletEnabled = useWalletEnabled();
   const { show: showToast } = useToast();
   const [viewExpanded, setViewExpanded] = useState(false);
   const backgroundInputRef = useRef<HTMLInputElement | null>(null);
@@ -265,12 +267,14 @@ export function ViewSection({
               >
                 Upcoming
               </button>
-              <button
-                className={pillButtonClass(settings.startupView === "wallet")}
-                onClick={() => setSettings({ startupView: "wallet" })}
-              >
-                Wallet
-              </button>
+              {walletEnabled && (
+                <button
+                  className={pillButtonClass(settings.startupView === "wallet")}
+                  onClick={() => setSettings({ startupView: "wallet" })}
+                >
+                  Wallet
+                </button>
+              )}
               <button
                 className={pillButtonClass(settings.startupView === "chat")}
                 onClick={() => setSettings({ startupView: "chat" })}

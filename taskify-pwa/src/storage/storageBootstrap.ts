@@ -141,6 +141,13 @@ export async function initializeStorageBoundaries(): Promise<void> {
     ]),
   ]);
 
+  // Decide whether this install keeps the (phasing-out) wallet UI, now that wallet keys are loaded.
+  await import("../wallet/walletAvailability")
+    .then(({ refreshWalletAvailability }) => refreshWalletAvailability())
+    .catch((err) => {
+      console.warn("wallet availability check failed", err);
+    });
+
   // One-time migration from legacy single-blob storage to per-entity rows.
   // Idempotent — only runs when the v3 store is empty AND a legacy blob exists.
   await Promise.all([

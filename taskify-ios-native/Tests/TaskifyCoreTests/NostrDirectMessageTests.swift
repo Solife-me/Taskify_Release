@@ -1077,6 +1077,34 @@ final class NostrDirectMessageTests: XCTestCase {
         )
     }
 
+    /// Received tokens are no longer redeemed in-app, so the chat holds the user's only copy:
+    /// retention must never prune them, while sent tokens and ordinary messages still expire.
+    func testRetentionKeepsReceivedCashuTokens() {
+        let peer = String(repeating: "1", count: 64)
+        let sender = String(repeating: "2", count: 64)
+        let tokenID = String(repeating: "a", count: 64)
+        let sentTokenID = String(repeating: "c", count: 64)
+        let textID = String(repeating: "d", count: 64)
+        var snapshot = TaskifySnapshot.empty
+        XCTAssertTrue(snapshot.ingestDirectMessage(message(
+            rumorID: tokenID, wrapID: String(repeating: "b", count: 64), peer: peer, sender: sender,
+            content: "Here you go: cashuAeyJ0b2tlbiI6W119fQ", createdAt: 50, incoming: true
+        )))
+        XCTAssertTrue(snapshot.ingestDirectMessage(message(
+            rumorID: sentTokenID, wrapID: String(repeating: "e", count: 64), peer: peer, sender: peer,
+            content: "cashuAeyJ0b2tlbiI6W119fQ", createdAt: 50, incoming: false
+        )))
+        XCTAssertTrue(snapshot.ingestDirectMessage(message(
+            rumorID: textID, wrapID: String(repeating: "f", count: 64), peer: peer, sender: sender,
+            content: "Old message", createdAt: 50, incoming: true
+        )))
+
+        let result = snapshot.pruneDirectMessageHistory(olderThan: 100)
+
+        XCTAssertEqual(result.removedMessageCount, 2)
+        XCTAssertEqual(snapshot.directMessageHistory.map(\.rumorEventID), [tokenID])
+    }
+
     func testClearHistorySuppressesRecentRelayReplay() {
         let now = 2_000_000_000
         let peer = String(repeating: "1", count: 64)

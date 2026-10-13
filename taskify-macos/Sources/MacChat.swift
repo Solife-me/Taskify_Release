@@ -538,7 +538,6 @@ private struct MacMessageRow: View {
     var reply: (NostrDirectMessage) -> Void
     var react: (NostrDirectMessage, String) -> Void
     var reportError: (String) -> Void
-    @State private var redeemingToken: String?
     private var envelope: TaskifyShareEnvelope? { TaskifyShareEnvelope.decode(content: message.content) }
     private var paymentToken: String? {
         guard message.isIncoming, message.attachment == nil else { return nil }
@@ -570,9 +569,6 @@ private struct MacMessageRow: View {
                 }
             if message.isIncoming { Spacer(minLength: 60) }
         }
-        .sheet(isPresented: Binding(get: { redeemingToken != nil }, set: { if !$0 { redeemingToken = nil } })) {
-            MacQuickRedeemSheet(token: redeemingToken ?? "")
-        }
     }
 
     @ViewBuilder private var content: some View {
@@ -590,7 +586,7 @@ private struct MacMessageRow: View {
             // it doesn't render twice.
             EmptyView()
         } else if let paymentToken {
-            MacPaymentTokenCard(token: paymentToken) { redeemingToken = paymentToken }
+            MacPaymentTokenCard(token: paymentToken)
         } else {
             Text(.init(message.displayContent)).textSelection(.enabled)
             ForEach(TaskContentLinks.allURLs(in: message.content), id: \.absoluteString) { url in
@@ -600,75 +596,35 @@ private struct MacMessageRow: View {
     }
 }
 
+/// A Cashu token sent as plain chat text. The Taskify wallet is being phased out, so it is never
+/// redeemed here: the card copies the token for the user to redeem in another Cashu wallet.
 private struct MacPaymentTokenCard: View {
     let token: String
-    var redeem: () -> Void
+    @State private var copied = false
     private var summary: CashuOfflineTokenSummary? { CashuWalletService.offlineTokenSummary(token) }
     var body: some View {
-        Button(action: redeem) {
+        Button {
+            macCopySecret(token)
+            copied = true
+        } label: {
             HStack(spacing: 10) {
                 Image(systemName: "bitcoinsign.circle.fill").font(.subheadline.bold()).foregroundStyle(Color.accentColor)
                     .frame(width: 32, height: 32).background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(summary.map { "\($0.amount) sats" } ?? "Cashu token received").font(.caption.weight(.semibold))
-                    Text(summary?.memo.trimmedOrNil ?? "Click to redeem").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(copied ? "Copied — paste it into another Cashu wallet" : "Not redeemed").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "arrow.down.circle").font(.caption2.bold()).foregroundStyle(.secondary)
+                Label(copied ? "Copied" : "Copy Token", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    .font(.caption2.bold()).foregroundStyle(Color.accentColor)
             }.padding(8).frame(maxWidth: 270, alignment: .leading)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         }.buttonStyle(.plain)
-    }
-}
-
-private struct MacQuickRedeemSheet: View {
-    let token: String
-    @EnvironmentObject private var wallet: WalletViewModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var busy = false
-    @State private var error: String?
-    @State private var resultMessage: String?
-    private var summary: CashuOfflineTokenSummary? { CashuWalletService.offlineTokenSummary(token) }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Redeem Ecash").font(.title2.bold())
-            if let resultMessage {
-                Label(resultMessage, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-            } else {
-                if let summary {
-                    Text(wallet.formattedSats(summary.amount)).font(.system(size: 32, weight: .semibold, design: .rounded))
-                    if let memo = summary.memo.trimmedOrNil { Text(memo).foregroundStyle(.secondary) }
-                    Text(summary.mintURL).font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("This token's amount couldn't be read, but you can still try to redeem it.").foregroundStyle(.secondary)
-                }
-                if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                if busy { ProgressView().controlSize(.small) }
+            .task(id: copied) {
+                guard copied else { return }
+                try? await Task.sleep(for: .seconds(2.5))
+                copied = false
             }
-            Spacer()
-            HStack {
-                Spacer()
-                if resultMessage != nil {
-                    Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-                } else {
-                    Button("Cancel", role: .cancel) { dismiss() }.disabled(busy)
-                    Button("Redeem") {
-                        busy = true; error = nil
-                        Task {
-                            defer { busy = false }
-                            do {
-                                switch MacWalletOutcome(receive: try await wallet.submitReceive(token)) {
-                                case .received(let sats): resultMessage = "Received \(wallet.formattedSats(sats))."
-                                case .alreadyReceived: resultMessage = "This token was already received."
-                                case .receiveQueued: resultMessage = "Receive queued. Retry from the Wallet tab if needed."
-                                case .paid, .paymentPending: break
-                                }
-                            } catch { self.error = error.localizedDescription }
-                        }
-                    }.buttonStyle(.borderedProminent).disabled(busy)
-                }
-            }
-        }.padding(26).frame(width: 420, height: 320).interactiveDismissDisabled(busy)
     }
 }
 

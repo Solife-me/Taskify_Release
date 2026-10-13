@@ -96,7 +96,7 @@ function safeParse<T>(raw: string | null, fallback: T): T {
   }
 }
 
-function amountToNumber(value: unknown): number {
+export function amountToNumber(value: unknown): number {
   if (typeof value === "number") return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
   if (typeof value === "bigint") {
     if (value > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;

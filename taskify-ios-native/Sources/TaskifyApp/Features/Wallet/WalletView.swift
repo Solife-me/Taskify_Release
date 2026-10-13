@@ -68,6 +68,78 @@ enum WalletPriceCache {
     }
 }
 
+/// The Taskify wallet is being phased out. Devices that never used it get no wallet UI (the
+/// Wallet tab, the Wallet startup option, pay-contact buttons). A device with any wallet activity
+/// keeps it, so its funds stay reachable. Once enabled it stays enabled on that device; while
+/// disabled, `WalletViewModel` re-checks on every refresh, so funds that arrive later (a restored
+/// seed, a claimed payment) always bring the wallet back. Once every balance has been moved out,
+/// the user can close the wallet out, returning the device to the no-wallet state. Nothing is
+/// deleted, and a closed wallet comes back only if funds reappear. Matches the PWA's
+/// `walletAvailability`.
+enum WalletPhaseOut {
+    /// Read with `@AppStorage` so views can follow it without observing `WalletViewModel`.
+    static let walletEnabledKey = "taskify.wallet.enabled.v1"
+    static let walletClosedKey = "taskify.wallet.closed.v1"
+    static let noticeSeenKey = "taskify.wallet.phaseOutNoticeSeen.v1"
+
+    static var isWalletEnabled: Bool {
+        UserDefaults.standard.bool(forKey: walletEnabledKey)
+    }
+
+    static var isWalletClosed: Bool {
+        UserDefaults.standard.bool(forKey: walletClosedKey)
+    }
+
+    static let noticeTitle = "The Taskify wallet is being phased out"
+    static let noticeMessage = """
+    Dear Taskify User,
+
+    We appreciate you choosing to use our app and are committed to providing the best possible user experience. As a result of this commitment we have decided to phase out the Taskify wallet. Removing the wallet will allow us to spend more time improving the core app experience and can improve the app performance.
+
+    We encourage you to move any remaining funds immediately. If you're looking for another ecash wallet, Minibits and Cashu.me are both great options.
+
+    As always feel free to reach out if you have any questions.
+    """
+}
+
+/// The one-time phase-out notice, shown only while the Taskify wallet holds a balance. It
+/// observes `WalletViewModel` on its own so wallet refreshes don't rebuild the host view.
+struct WalletPhaseOutNoticePresenter: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    @AppStorage(WalletPhaseOut.noticeSeenKey) private var noticeSeen = false
+    @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
+    let suppressed: Bool
+    let openWallet: () -> Void
+
+    private var isPresented: Bool {
+        !noticeSeen && !suppressed && walletEnabled && wallet.phaseOutBalance > 0
+    }
+
+    var body: some View {
+        Color.clear
+            .alert(
+                WalletPhaseOut.noticeTitle,
+                isPresented: Binding(
+                    get: { isPresented },
+                    set: { if !$0 { noticeSeen = true } }
+                )
+            ) {
+                Button("Got it", role: .cancel) { noticeSeen = true }
+                Button("Open Wallet") {
+                    noticeSeen = true
+                    openWallet()
+                }
+            } message: {
+                Text(WalletPhaseOut.noticeMessage)
+            }
+    }
+}
+
+struct WalletCloseOutError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 @MainActor
 final class WalletViewModel: ObservableObject {
     /// Desktop and tablet wallets must not race the phone to redeem shared DMs.
@@ -89,7 +161,9 @@ final class WalletViewModel: ObservableObject {
     private static let lightningPollBaseSeconds: UInt64 = 15
     private static let lightningPollMaximumSeconds: UInt64 = 60
 
-    @Published private(set) var snapshot = CashuWalletSnapshot.empty
+    @Published private(set) var snapshot = CashuWalletSnapshot.empty {
+        didSet { refreshWalletAvailability() }
+    }
     @Published private(set) var isLoading = false
     @Published var isWorking = false
     @Published var errorMessage: String?
@@ -137,6 +211,8 @@ final class WalletViewModel: ObservableObject {
     init() {
         activeMintURL = UserDefaults.standard.string(forKey: activeMintKey) ?? ""
         p2pkKeyRing = (try? KeychainP2PKKeyStore().load()) ?? CashuP2PKKeyRing()
+        // An NWC connection is known before the Cashu database opens.
+        refreshWalletAvailability()
     }
 
     var p2pkKeys: [CashuP2PKKey] { p2pkKeyRing.keys }
@@ -234,6 +310,71 @@ final class WalletViewModel: ObservableObject {
         createdPaymentRequests = await service.savedCreatedPaymentRequests()
         repairActiveMintSelection()
         if isNWCWalletActive { await refreshNWC() }
+    }
+
+    /// Whether this device has held or moved funds with the Taskify wallet, or connected an NWC
+    /// wallet. The seed alone is not activity: it is created the first time the wallet starts.
+    var hasWalletActivity: Bool {
+        walletMode == .nwc
+            || nwcConnected
+            || !nwcWallets.isEmpty
+            || snapshot.available + snapshot.pending + snapshot.reserved > 0
+            || !snapshot.transactions.isEmpty
+            || !snapshot.outgoingTokens.isEmpty
+            || !pendingEcashReceives.isEmpty
+            || !lightningReceiveQuotes.isEmpty
+    }
+
+    /// Ecash this wallet still holds, which the one-time phase-out notice asks the user to move.
+    var phaseOutBalance: UInt64 {
+        snapshot.available + snapshot.pending
+    }
+
+    func refreshWalletAvailability() {
+        guard !WalletPhaseOut.isWalletEnabled else { return }
+        // A closed-out wallet only comes back for funds, not for its past activity.
+        guard WalletPhaseOut.isWalletClosed ? !closeOutBlockers.isEmpty : hasWalletActivity else { return }
+        UserDefaults.standard.set(true, forKey: WalletPhaseOut.walletEnabledKey)
+        UserDefaults.standard.removeObject(forKey: WalletPhaseOut.walletClosedKey)
+    }
+
+    /// What still holds funds on this device. The wallet can't be closed out until each is moved.
+    var closeOutBlockers: [String] {
+        var blockers: [String] = []
+        let balance = snapshot.available + snapshot.pending + snapshot.reserved
+        if balance > 0 { blockers.append("\(formattedSats(balance)) are still in the wallet") }
+        if !pendingEcashReceives.isEmpty {
+            blockers.append("Received ecash is still waiting to be redeemed")
+        }
+        if !incomingTokensAwaitingRedemption.isEmpty || !incomingRequestsAwaitingRedemption.isEmpty {
+            blockers.append("Incoming payments are waiting to be redeemed")
+        }
+        if isMovingToNWC || nwcMigrationJournal.map({ journal in
+            journal.status == .running
+                || journal.sources.contains { $0.status == .inProgress || $0.status == .awaitingSettlement }
+        }) == true {
+            blockers.append("A transfer to your NWC wallet is still settling")
+        }
+        return blockers
+    }
+
+    /// Sats in sent tokens nobody has redeemed yet. Closing out keeps them recoverable by seed.
+    var unclaimedSentTokenSats: UInt64 {
+        snapshot.outgoingTokens
+            .filter { $0.status == .ready || $0.status == .partiallyRedeemed }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    /// Hides the wallet on this device, as on a fresh install. Refuses while anything still holds
+    /// funds. Wallet data and the seed are kept so anything left behind stays recoverable.
+    func closeOutWallet() async throws {
+        await refresh()
+        let blockers = closeOutBlockers
+        guard blockers.isEmpty else {
+            throw WalletCloseOutError(message: blockers.joined(separator: ". "))
+        }
+        UserDefaults.standard.set(true, forKey: WalletPhaseOut.walletClosedKey)
+        UserDefaults.standard.set(false, forKey: WalletPhaseOut.walletEnabledKey)
     }
 
     func appDidBecomeActive() {

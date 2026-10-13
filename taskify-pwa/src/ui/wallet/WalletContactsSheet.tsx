@@ -7,8 +7,10 @@ import {
   VerifiedBadgeIcon,
 } from "./walletModalUi";
 import { contactDisplayLabel } from "../../lib/contacts";
+import { useWalletEnabled } from "../../wallet/walletAvailability";
 
 export function WalletContactsSheet(props) {
+  const walletEnabled = useWalletEnabled();
   const {
     contactsPanelOpen,
     closeContactsTab,
@@ -249,7 +251,7 @@ export function WalletContactsSheet(props) {
             {activeContact &&
               (detailHasLightning || detailCanShare) && (
                 <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
-                  {detailHasLightning && (
+                  {walletEnabled && detailHasLightning && (
                     <button
                       type="button"
                       className="contact-pill pressable"
@@ -261,7 +263,7 @@ export function WalletContactsSheet(props) {
                       Pay lightning
                     </button>
                   )}
-                  {detailCanShare && (
+                  {walletEnabled && detailCanShare && (
                     <button
                       type="button"
                       className="contact-pill pressable"

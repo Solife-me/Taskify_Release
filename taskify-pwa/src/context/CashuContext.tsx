@@ -23,6 +23,7 @@ import { decodeBolt11Amount } from "../wallet/lightning";
 import { getCashuTokenMetadata } from "../wallet/cashuTokenMetadata";
 import { getWalletSeedBytes } from "../wallet/seed";
 import { isNwcWalletMode } from "../wallet/walletMode";
+import { refreshWalletAvailability } from "../wallet/walletAvailability";
 import type { MeltQuoteResponse, MintQuoteResponse } from "../wallet/cashuTypes";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
@@ -303,6 +304,10 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
   const [balanceSnapshot, setBalanceSnapshot] = useState<BalanceSnapshot>(() => calculateBalances());
   const totalBalance = balanceSnapshot.total;
   const pendingBalance = balanceSnapshot.pending;
+  useEffect(() => {
+    // Funds that land on an install without the wallet UI bring the wallet back.
+    if (totalBalance > 0) refreshWalletAvailability();
+  }, [totalBalance]);
   const [proofs, setProofs] = useState<Proof[]>([]);
   const [info, setInfo] = useState<MintInfo | null>(null);
   const derivedWalletPrivkeyRef = useRef<string>(deriveWalletPrivkey(getWalletSeedBytes()));
