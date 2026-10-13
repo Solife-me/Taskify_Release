@@ -1,17 +1,17 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Subtask, Task } from "../../domains/tasks/taskTypes";
 import {
-  applyNoteFormat,
   checklistItemCount,
-  continueNoteList,
   extractChecklist,
+  markdownFromNoteLines,
+  noteLinesFromMarkdown,
   toggleChecklistItem,
-  type NoteEdit,
   type NoteFormat,
 } from "../../domains/tasks/noteMarkdown";
 import { Modal } from "../Modal";
 import { NoteMarkdownView } from "./NoteMarkdown";
+import { NoteRichEditor, type NoteRichEditorHandle } from "./NoteRichEditor";
 
 // Both modals portal to <body>: they open from inside other modals, whose panels use
 // backdrop-filter and would otherwise trap a fixed-position overlay inside them.
@@ -95,6 +95,7 @@ export function NoteViewerModal({
               {note.trim() ? (
                 <NoteMarkdownView
                   note={note}
+                  copyableCode
                   onToggleChecklistItem={(line) => {
                     const updated = toggleChecklistItem(note, line);
                     if (updated !== null) onSaveNote(updated, []);
@@ -198,9 +199,10 @@ const FORMAT_BUTTONS: { format: NoteFormat; label: string; icon: React.ReactNode
 ];
 
 /**
- * A Markdown editor for a task note: a formatting bar, Write and Preview modes, list
- * continuation on Enter, and checklist-to-subtask conversion. `onSave` receives the note and
- * any subtasks converted from its checklist; cancelling discards both.
+ * The note editor: formatted text with the Markdown syntax hidden, as in Apple Notes. Notes are
+ * stored as Markdown; the formatting bar applies formats and checklist items can be converted to
+ * subtasks. `onSave` receives the note and any subtasks converted from its checklist;
+ * cancelling discards both.
  */
 export function NoteEditorModal({
   initialNote,
@@ -211,110 +213,33 @@ export function NoteEditorModal({
   initialNote: string;
   onCancel: () => void;
   onSave: (note: string, subtasks: Subtask[]) => void;
-  onPaste?: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  onPaste?: (event: React.ClipboardEvent<HTMLElement>) => void;
 }) {
-  const [text, setText] = useState(initialNote);
-  const [mode, setMode] = useState<"write" | "preview">("write");
+  const [text, setText] = useState(() => markdownFromNoteLines(noteLinesFromMarkdown(initialNote)));
   const [converted, setConverted] = useState<Subtask[]>([]);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const pendingSelection = useRef<[number, number] | null>(null);
+  const editorRef = useRef<NoteRichEditorHandle>(null);
 
-  useEffect(() => {
-    if (mode !== "write") return;
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.focus({ preventScroll: true });
-    const end = textarea.value.length;
-    textarea.setSelectionRange(end, end);
-  }, [mode]);
-
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    const selection = pendingSelection.current;
-    if (!textarea || !selection) return;
-    pendingSelection.current = null;
-    textarea.setSelectionRange(selection[0], selection[1]);
-  }, [text]);
-
-  /**
-   * Applies an edit as one replacement of the changed span through the browser's own editing
-   * command, so it lands on the textarea's undo stack. Falls back to setting the value.
-   */
-  const applyEdit = useCallback((edit: NoteEdit) => {
-    const textarea = textareaRef.current;
-    if (!textarea) {
-      setText(edit.text);
+  const applyFormat = (format: NoteFormat) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (format !== "link") {
+      editor.apply(format);
       return;
     }
-    const old = textarea.value;
-    let prefix = 0;
-    const limit = Math.min(old.length, edit.text.length);
-    while (prefix < limit && old[prefix] === edit.text[prefix]) prefix += 1;
-    let suffix = 0;
-    while (
-      suffix < old.length - prefix &&
-      suffix < edit.text.length - prefix &&
-      old[old.length - 1 - suffix] === edit.text[edit.text.length - 1 - suffix]
-    ) {
-      suffix += 1;
-    }
-    const replacement = edit.text.slice(prefix, edit.text.length - suffix);
-    textarea.focus({ preventScroll: true });
-    textarea.setSelectionRange(prefix, old.length - suffix);
-    let applied = false;
-    try {
-      applied = replacement
-        ? document.execCommand("insertText", false, replacement)
-        : old.length - suffix > prefix
-          ? document.execCommand("delete", false)
-          : true;
-    } catch {
-      applied = false;
-    }
-    if (applied && textarea.value === edit.text) {
-      textarea.setSelectionRange(edit.selectionStart, edit.selectionEnd);
-      setText(edit.text);
-    } else {
-      pendingSelection.current = [edit.selectionStart, edit.selectionEnd];
-      setText(edit.text);
-    }
-  }, []);
-
-  const applyFormat = useCallback(
-    (format: NoteFormat) => {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-      applyEdit(applyNoteFormat(format, textarea.value, textarea.selectionStart, textarea.selectionEnd));
-    },
-    [applyEdit],
-  );
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.nativeEvent.isComposing) return;
-    const textarea = event.currentTarget;
-    if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
-      const edit = continueNoteList(textarea.value, textarea.selectionStart, textarea.selectionEnd);
-      if (edit) {
-        event.preventDefault();
-        applyEdit(edit);
-      }
-      return;
-    }
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
-      const key = event.key.toLowerCase();
-      if (key === "b" || key === "i") {
-        event.preventDefault();
-        applyFormat(key === "b" ? "bold" : "italic");
-      }
-    }
+    const restore = editor.saveSelection();
+    const url = window.prompt("Add Link", "https://");
+    restore();
+    if (url) editor.applyLink(url);
   };
 
   const convert = () => {
     const result = extractChecklist(text);
     setConverted((previous) => [...previous, ...result.subtasks]);
-    pendingSelection.current = [result.note.length, result.note.length];
-    setText(result.note);
+    editorRef.current?.replaceAll(result.note);
   };
+
+  /** An unchanged note keeps its exact original text rather than its canonical form. */
+  const savedNote = () => (text === markdownFromNoteLines(noteLinesFromMarkdown(initialNote)) ? initialNote : text);
 
   return portal(
     <Modal onClose={onCancel} showClose={false} variant="fullscreen">
@@ -327,7 +252,7 @@ export function NoteEditorModal({
             <button
               type="button"
               className="edit-sheet__action edit-sheet__action--accent"
-              onClick={() => onSave(text, converted)}
+              onClick={() => onSave(savedNote(), converted)}
               aria-label="Save notes"
             >
               <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -337,66 +262,30 @@ export function NoteEditorModal({
           }
         />
 
-        <div className="note-editor__modes" role="tablist" aria-label="Editor mode">
-          {(["write", "preview"] as const).map((value) => (
+        <div className="note-toolbar" role="toolbar" aria-label="Formatting">
+          {FORMAT_BUTTONS.map(({ format, label, icon }) => (
             <button
-              key={value}
+              key={format}
               type="button"
-              role="tab"
-              aria-selected={mode === value}
-              className={`note-editor__mode pressable${mode === value ? " is-active" : ""}`}
-              onClick={() => setMode(value)}
+              className="note-toolbar__button pressable"
+              aria-label={label}
+              title={label}
+              // Keeps focus, and so the selection and the on-screen keyboard, in the text.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => applyFormat(format)}
             >
-              {value === "write" ? "Write" : "Preview"}
+              {icon}
             </button>
           ))}
         </div>
-
-        {mode === "write" ? (
-          <>
-            <div className="note-toolbar" role="toolbar" aria-label="Formatting">
-              {FORMAT_BUTTONS.map(({ format, label, icon }) => (
-                <button
-                  key={format}
-                  type="button"
-                  className="note-toolbar__button pressable"
-                  aria-label={label}
-                  title={label}
-                  // Keeps focus, and so the selection and the on-screen keyboard, in the text.
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => applyFormat(format)}
-                >
-                  {icon}
-                </button>
-              ))}
+        <div className="note-editor__surface">
+          <NoteRichEditor ref={editorRef} initialMarkdown={initialNote} onChange={setText} onPasteImage={onPaste} />
+          {!text && (
+            <div className="note-editor__placeholder" aria-hidden="true">
+              Write your note
             </div>
-            <textarea
-              ref={textareaRef}
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              onKeyDown={handleKeyDown}
-              onPaste={onPaste}
-              className="note-editor__textarea"
-              placeholder="Write notes in Markdown: **bold**, - lists, - [ ] checklists…"
-              aria-label="Notes"
-              spellCheck
-            />
-          </>
-        ) : (
-          <div className="note-sheet__body">
-            {text.trim() ? (
-              <NoteMarkdownView
-                note={text}
-                onToggleChecklistItem={(line) => {
-                  const updated = toggleChecklistItem(text, line);
-                  if (updated !== null) setText(updated);
-                }}
-              />
-            ) : (
-              <p className="note-sheet__empty">Nothing to preview yet.</p>
-            )}
-          </div>
-        )}
+          )}
+        </div>
 
         <ConvertChecklistButton note={text} onConvert={convert} />
         {converted.length > 0 && (

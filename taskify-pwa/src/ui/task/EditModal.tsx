@@ -1222,7 +1222,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     return () => window.clearInterval(interval);
   }, [uploadingDocumentRows]);
 
-  async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+  async function handlePaste(e: React.ClipboardEvent<HTMLElement>) {
     const items = e.clipboardData?.items;
     if (!items) return;
     const imgs = Array.from(items).filter((it) => it.type.startsWith("image/"));
