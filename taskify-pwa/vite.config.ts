@@ -9,6 +9,9 @@ export default defineConfig({
     preserveSymlinks: true,
     dedupe: ["@nostr-dev-kit/ndk", "nostr-tools", "tseep"],
     alias: [
+      // Compile the shared core from source, like our own code: dev and tests see core edits at
+      // once, and no stale build of the linked package can be served or bundled.
+      { find: /^taskify-core$/, replacement: fileURLToPath(new URL("../taskify-core/src/index.ts", import.meta.url)) },
       { find: "@gandlaf21/bc-ur", replacement: "@gandlaf21/bc-ur/dist/lib/es6/index.js" },
       // NDK's emitter, tseep, compiles its dispatch functions with eval, which the CSP blocks.
       { find: /^tseep$/, replacement: fileURLToPath(new URL("./src/lib/eventEmitterShim.ts", import.meta.url)) },
@@ -74,8 +77,6 @@ export default defineConfig({
       "util",
       "events",
     ],
-    // The workspace packages are linked from ../ and rebuilt in place. Pre-bundling would cache a
-    // stale copy, so the dev server would miss new exports until `.vite` is cleared.
-    exclude: ["taskify-core", "taskify-runtime-nostr"],
+    exclude: ["taskify-runtime-nostr"],
   },
 });

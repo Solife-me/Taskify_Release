@@ -118,3 +118,5 @@ export declare function buildCalendarEventInviteEnvelope(payload: Omit<SharedCal
     name?: string;
 }): ShareEnvelope;
 export declare function parseShareEnvelope(raw: string): ShareEnvelope | null;
+/** A shared task sent as an assignment, which the recipient answers rather than just copies. */
+export declare function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean;

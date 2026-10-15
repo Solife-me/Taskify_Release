@@ -444,3 +444,8 @@ export function parseShareEnvelope(raw: string): ShareEnvelope | null {
 
   return null;
 }
+
+/** A shared task sent as an assignment, which the recipient answers rather than just copies. */
+export function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean {
+  return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
+}

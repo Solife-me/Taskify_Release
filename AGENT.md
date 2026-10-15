@@ -195,6 +195,7 @@ npx wrangler dev
 | `src/ui/board/DroppableColumn.test.tsx` | PWA board columns | Drop ordering, multi-selection payloads, empty drops, and keyboard/selection controls |
 | `taskify-cli/tests/command-registration.test.ts` | CLI command composition | Bundled help/arguments plus isolated contact persistence, profile selection, lookup, trust/relay mutations, cache status/clearing, and error exits |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
+| `src/domains/tasks/taskCommands.test.ts` | PWA task commands | Pure `planCompleteTask`: completion fields, next occurrence and streaks, no duplicate occurrence, inbox answers, assignment declines, Scripture Memory scheduling |
 | `src/state/stateStore.test.ts` | PWA app stores | Updates apply immediately and exactly once, listeners fire only on change, safe unsubscribe during notify |
 | `taskify-core/tests/recurrence-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/RecurrenceVectorTests.swift` | Recurring tasks across clients | Both read `taskify-core/fixtures/recurrence-vectors.json`: next due date and occurrence id through DST, time zones, clamped rules and end dates; the shared next-occurrence builder |
 | `taskify-cli/tests/recurring-completion.test.ts` | CLI recurring completion | `done` opens the next occurrence with the shared id, keeps the series, and skips one that already exists |

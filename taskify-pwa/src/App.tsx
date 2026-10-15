@@ -17,7 +17,10 @@ import {
 import { type EventTemplate, nip04, nip19 } from "nostr-tools";
 import {
   addDaysToDateKey,
-  buildNextRecurringTask,
+  BIBLE_BOARD_ID,
+  FASTING_REMINDER_SERIES_ID,
+  isAssignedSharedTask,
+  SCRIPTURE_MEMORY_SERIES_ID,
   DEFAULT_DATE_REMINDER_TIME,
   ISO_DATE_PATTERN,
   MS_PER_DAY,
@@ -38,7 +41,6 @@ import {
   type CalendarEventParticipant,
   type EditingState,
   type InboxItem,
-  type InboxItemStatus,
   type InboxSender,
   type ListColumn,
   type Recurrence,
@@ -132,7 +134,8 @@ import {
   normalizeNostrPubkeyHex,
   normalizeTaskAssignees,
 } from "./domains/tasks/assignmentUtils";
-import { useBoards, useCalendarEvents, useTasks } from "./state/appStores";
+import { tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
+import { planCompleteTask } from "./domains/tasks/taskCommands";
 import {
   reserveTaskMutationTimestamp,
   TaskPublishVersionTracker,
@@ -167,7 +170,6 @@ import type {
   CompleteTaskResult,
   PublishCalendarEventFn,
   PublishTaskFn,
-  ScriptureMemoryUpdate,
 } from "./domains/tasks/taskTypes";
 import { type PushPlatform } from "./domains/push/pushUtils";
 import {
@@ -374,17 +376,11 @@ const MONTH_NAMES = [
   "December",
 ] as const;
 
-function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean {
-  return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
-}
 
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
 const MESSAGES_COLUMN_ID = "messages-shared";
 const SHARE_DM_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
 
-const BIBLE_BOARD_ID = "bible-reading";
-const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
-const FASTING_REMINDER_SERIES_ID = "fasting-reminder";
 
 function normalizeIsoTimestamp(value: unknown): string | undefined {
   if (typeof value !== "string" || !value) return undefined;
@@ -8561,198 +8557,20 @@ export default function App() {
       setSharedTaskDestinationId(null);
       showToast("Task added to your board");
     }
-    let memoryUpdate: ScriptureMemoryUpdate | null = null;
-    let scheduledUpdate: { entryId: string; scheduledAtISO: string } | null = null;
-    const scriptureStateSnapshot = scriptureMemory;
-    const scriptureBaseDays = scriptureMemoryFrequencyOption?.days ?? 1;
-    let inboxAction: { item: InboxItem; action: "accept" | "dismiss" | "decline" | "maybe" } | null = null;
-    let assignmentResponse:
-      | { item: Extract<InboxItem, { type: "task" }>; status: TaskAssigneeStatus }
-      | null = options?.inboxDestination && pending?.type === "task" && isAssignedSharedTask(pending.task)
-        ? { item: pending, status: "accepted" } : null;
-    setTasks(prev => {
-      const cur = prev.find(t => t.id === id);
-      if (!cur) return prev;
-      let working = cur;
-      if (
-        cur.inboxItem &&
-        cur.inboxItem.status !== "accepted" &&
-        cur.inboxItem.status !== "declined" &&
-        cur.inboxItem.status !== "tentative" &&
-        cur.inboxItem.status !== "deleted"
-      ) {
-        const requestedAction = options?.inboxAction;
-        const isTaskAssignment = cur.inboxItem.type === "task" && isAssignedSharedTask(cur.inboxItem.task);
-        const action: "accept" | "dismiss" | "decline" | "maybe" =
-          requestedAction === "accept" || requestedAction === "dismiss" || requestedAction === "decline" || requestedAction === "maybe"
-            ? (isTaskAssignment && requestedAction === "dismiss" ? "decline" : requestedAction)
-            : "accept";
-        const status: InboxItemStatus =
-          action === "accept"
-            ? "accepted"
-            : action === "maybe"
-              ? "tentative"
-              : action === "decline"
-                ? "declined"
-                : "deleted";
-        const inboxItem = { ...cur.inboxItem, status };
-        const statusLine =
-          status === "accepted"
-            ? "Action: Added"
-            : status === "tentative"
-              ? "Action: Maybe"
-              : status === "declined"
-                ? "Action: Declined"
-                : "Action: Dismissed";
-        const noteHasStatus = typeof cur.note === "string" && cur.note.includes("Action:");
-        working = {
-          ...cur,
-          inboxItem,
-          note: noteHasStatus ? cur.note : [cur.note, statusLine].filter(Boolean).join("\n"),
-        };
-        inboxAction = { item: inboxItem, action };
-        if (
-          inboxItem.type === "task" &&
-          isAssignedSharedTask(inboxItem.task) &&
-          (status === "accepted" || status === "declined" || status === "tentative")
-        ) {
-          assignmentResponse = {
-            item: inboxItem,
-            status: status === "accepted" ? "accepted" : status === "tentative" ? "tentative" : "declined",
-          };
-        }
-      }
-      const now = new Date().toISOString();
-      // Count from the series' running streak, not this instance's stored copy: instances
-      // generated ahead of time (full-week mode) carry the streak from when they were made.
-      let newStreak = buildRunningStreakLookup(prev)(working);
-      if (
-        settings.streaksEnabled &&
-        working.recurrence &&
-        isFrequentRecurrence(working.recurrence)
-      ) {
-        // Previously the streak only incremented when completing a task on the
-        // same day it was due. This prevented users from keeping their streak
-        // if they forgot to check the app and completed the task a day later.
-        // Now the streak simply increments whenever the task is completed,
-        // regardless of the current timestamp.
-        newStreak = newStreak + 1;
-      }
-      const nextLongest = mergeLongestStreak(working, newStreak);
-      const toPublish: Task[] = [];
-      const updated = prev.map(t => {
-        if (t.id === id) {
-          const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
-          const done = {
-            ...working,
-            seriesId: working.seriesId || working.id,
-            completed: true,
-            completedAt: now,
-            completedBy: (window as any).nostrPK || undefined,
-            lastEditedBy: editorPubkey || working.lastEditedBy || working.createdBy,
-            updatedAt: now,
-            bountyDeletedAt: undefined,
-            streak: newStreak,
-            longestStreak: nextLongest,
-          };
-          if (working.scriptureMemoryId) {
-            memoryUpdate = {
-              entryId: working.scriptureMemoryId,
-              completedAt: now,
-              stageBefore: typeof working.scriptureMemoryStage === "number" ? working.scriptureMemoryStage : 0,
-            };
-          }
-          toPublish.push(done);
-          return done;
-        }
-        return t;
-      });
-      toPublish.forEach(t => {
-        maybePublishTask(t).catch(() => {});
-      });
-      const scriptureRecurrence =
-        (working.seriesId === SCRIPTURE_MEMORY_SERIES_ID || working.scriptureMemoryId)
-          ? working.recurrence ?? scriptureFrequencyToRecurrence(scriptureBaseDays)
-          : working.recurrence;
-      // A Scripture Memory review is spaced from when it was done, not from a due date it was left
-      // overdue on: one completed in September for July scheduled the next for July again.
-      const isScriptureReview = working.seriesId === SCRIPTURE_MEMORY_SERIES_ID || !!working.scriptureMemoryId;
-      const scheduledFromISO = isScriptureReview
-        ? new Date(Math.max(Date.parse(working.dueISO) || 0, startOfDay(new Date()).getTime())).toISOString()
-        : working.dueISO;
-      const nextTask = scriptureRecurrence
-        ? buildNextRecurringTask(working, {
-            weekStart: settings.weekStart,
-            recurrence: scriptureRecurrence,
-            scheduledFromISO,
-          })
-        : null;
-      const nextISO = nextTask?.dueISO ?? null;
-      if (nextTask && nextISO && scriptureRecurrence) {
-        let shouldClone = true;
-        const seriesId = working.seriesId || working.id;
-        const seriesSeed = working.seriesId ? working : { ...working, seriesId };
-        const nextDateKey = isoDatePart(nextISO, working.dueTimeZone);
-        const exists = updated.some(x =>
-          sameSeries(x, seriesSeed) && taskDateKey(x) === nextDateKey
-        );
-        if (exists) shouldClone = false;
-        if (shouldClone) {
-          // The shared builder gives the occurrence the same id and reset state as every other
-          // client; order and streaks are this board's.
-          let clone: Task = {
-            ...nextTask,
-            lastEditedBy: working.lastEditedBy || working.createdBy,
-            order: nextOrderForBoard(working.boardId, updated, settings.newTaskPosition),
-            streak: newStreak,
-            longestStreak: nextLongest,
-            dueTimeEnabled: typeof working.dueTimeEnabled === 'boolean' ? working.dueTimeEnabled : undefined,
-          };
-          if (working.seriesId === SCRIPTURE_MEMORY_SERIES_ID) {
-            const previewState = memoryUpdate
-              ? markScriptureEntryReviewed(
-                  scriptureStateSnapshot,
-                  memoryUpdate.entryId,
-                  memoryUpdate.completedAt,
-                  memoryUpdate.stageBefore
-                )
-              : scriptureStateSnapshot;
-            const selection = chooseNextScriptureEntry(
-              previewState.entries,
-              scriptureBaseDays,
-              new Date(nextISO)
-            );
-            if (!selection) {
-              shouldClone = false;
-            } else {
-              clone = {
-                ...clone,
-                title: `Review ${formatScriptureReference(selection.entry)}`,
-                scriptureMemoryId: selection.entry.id,
-                scriptureMemoryStage: selection.entry.stage ?? 0,
-                scriptureMemoryPrevReviewISO: selection.entry.lastReviewISO ?? null,
-                scriptureMemoryScheduledAt: now,
-              };
-              scheduledUpdate = { entryId: selection.entry.id, scheduledAtISO: now };
-            }
-          }
-          if (shouldClone) {
-            maybePublishTask(clone).catch(() => {});
-            return [...updated, clone];
-          }
-        }
-      }
-      return updated;
+    const plan = planCompleteTask(tasksStore().get(), id, {
+      now: new Date(),
+      actorPubkey: (window as any).nostrPK || undefined,
+      settings,
+      scripture: { state: scriptureMemory, baseDays: scriptureMemoryFrequencyOption?.days ?? 1 },
+      inboxAction: options?.inboxAction,
+      acceptedIntoBoard: !!options?.inboxDestination,
     });
-    // Snapshot inboxAction into a local const so TS retains the discriminated-
-    // union narrowing through the subsequent .item.type checks. The cast is
-    // safe at runtime: the let was annotated with this exact shape at
-    // declaration, but TS narrows it to `never` here because the assignment
-    // happens inside a setTasks callback and TS's CFA doesn't trust the
-    // mutation across the closure.
-    const acceptedInbox = inboxAction as { item: InboxItem; action: "accept" | "dismiss" | "decline" | "maybe" } | null;
-    if (acceptedInbox && acceptedInbox.action === "accept") {
-      const item = acceptedInbox.item;
+    setTasks(plan.tasks);
+    plan.publish.forEach((task) => {
+      maybePublishTask(task).catch(() => {});
+    });
+    if (plan.inboxAction?.action === "accept") {
+      const item = plan.inboxAction.item;
       if (item.type === "board") {
         addSharedBoardFromInbox({
           boardId: item.boardId,
@@ -8768,40 +8586,32 @@ export default function App() {
         }
       }
     }
-    // Snapshot the let (assigned inside setTasks callback) so TS retains the
-    // union narrowing after the truthiness check.
-    const finalAssignmentResponse = assignmentResponse as { item: Extract<InboxItem, { type: "task" }>; status: TaskAssigneeStatus } | null;
-    if (finalAssignmentResponse) {
-      void sendTaskAssignmentResponse(finalAssignmentResponse.item, finalAssignmentResponse.status).catch((err) => {
+    const reply = plan.assignmentReply;
+    if (reply) {
+      void sendTaskAssignmentResponse(reply.item, reply.status).catch((err) => {
         console.warn("Failed to send task assignment response", err);
       });
-      if (finalAssignmentResponse.status === "tentative") {
+      if (reply.status === "tentative") {
         showToast("Responded: maybe");
-      } else if (finalAssignmentResponse.status === "declined") {
+      } else if (reply.status === "declined") {
         showToast("Responded: declined");
       }
     }
-    const finalScheduledUpdate = scheduledUpdate;
-    // Cast: see the same setState-callback narrowing footgun as inboxAction
-    // above. The let was annotated `ScriptureMemoryUpdate | null` at decl.
-    const memoryUpdateSnapshot = memoryUpdate as ScriptureMemoryUpdate | null;
-    if (finalScheduledUpdate && memoryUpdateSnapshot) {
-      memoryUpdate = { ...memoryUpdateSnapshot, nextScheduled: finalScheduledUpdate };
-    }
+    const memoryUpdate = plan.scriptureReview;
     if (memoryUpdate && !options?.skipScriptureMemoryUpdate) {
       scriptureLastReviewRef.current = memoryUpdate.completedAt;
       setScriptureMemory((prev) => {
         let nextState = markScriptureEntryReviewed(
           prev,
-          memoryUpdate!.entryId,
-          memoryUpdate!.completedAt,
-          memoryUpdate!.stageBefore
+          memoryUpdate.entryId,
+          memoryUpdate.completedAt,
+          memoryUpdate.stageBefore
         );
-        if (memoryUpdate!.nextScheduled) {
+        if (memoryUpdate.nextScheduled) {
           nextState = scheduleScriptureEntry(
             nextState,
-            memoryUpdate!.nextScheduled.entryId,
-            memoryUpdate!.nextScheduled.scheduledAtISO
+            memoryUpdate.nextScheduled.entryId,
+            memoryUpdate.nextScheduled.scheduledAtISO
           );
         }
         return nextState;

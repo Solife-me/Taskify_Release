@@ -287,3 +287,7 @@ export type ListLikeBoard = Extract<Board, {
     kind: "lists" | "compound";
 }>;
 export declare function isListLikeBoard(board: Board | null | undefined): board is ListLikeBoard;
+/** Ids every client gives the built-in Bible features (native `TaskifySnapshot`, `ScriptureMemory`). */
+export declare const BIBLE_BOARD_ID = "bible-reading";
+export declare const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
+export declare const FASTING_REMINDER_SERIES_ID = "fasting-reminder";

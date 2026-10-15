@@ -1,6 +1,6 @@
 // Shared constants and helpers for settings sub-components
 
-export const BIBLE_BOARD_ID = "bible-reading";
+export { BIBLE_BOARD_ID } from "taskify-core";
 export const DEBUG_CONSOLE_STORAGE_KEY = "taskify.debugConsole.enabled";
 export const VOICE_TEST_INPUT_STORAGE_KEY = "taskify.voice.testInput.enabled";
 export const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
