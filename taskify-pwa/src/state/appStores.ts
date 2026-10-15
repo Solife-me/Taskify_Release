@@ -1,6 +1,12 @@
 import { useSyncExternalStore } from "react";
 import { loadStoredCalendarEvents } from "../domains/calendar/storedCalendarEvents";
 import { withBoardOrder } from "../domains/tasks/boardUtils";
+import {
+  RECURRING_SERIES_CUTOFFS_KEY,
+  parseRecurringSeriesCutoffs,
+  serializeRecurringSeriesCutoffs,
+  type RecurringSeriesCutoffs,
+} from "../domains/tasks/recurrenceCutoffs";
 import { loadStoredBoards, loadStoredTasks } from "../domains/tasks/storedTasks";
 import type { Board, CalendarEvent, Task } from "../domains/tasks/taskTypes";
 import {
@@ -9,6 +15,8 @@ import {
   externalCalendarEventEntityStore,
   taskEntityStore,
 } from "../storage/entityStore";
+import { idbKeyValue } from "../storage/idbKeyValue";
+import { TASKIFY_STORE_TASKS } from "../storage/taskifyDb";
 import { createStateStore, type StateStore, type StateUpdater } from "./stateStore";
 
 /**
@@ -19,6 +27,7 @@ import { createStateStore, type StateStore, type StateUpdater } from "./stateSto
 let tasks: StateStore<Task[]> | null = null;
 let boards: StateStore<Board[]> | null = null;
 let calendarEvents: StateStore<CalendarEvent[]> | null = null;
+let recurringCutoffs: StateStore<RecurringSeriesCutoffs> | null = null;
 
 function persistOnChange<T>(store: StateStore<T>, label: string, save: (value: T) => void): StateStore<T> {
   store.subscribe(() => {
@@ -55,6 +64,16 @@ export function calendarEventsStore(): StateStore<CalendarEvent[]> {
   return calendarEvents;
 }
 
+/** Where each recurring series was ended ("delete this and future"), by board and series. */
+export function recurringCutoffsStore(): StateStore<RecurringSeriesCutoffs> {
+  recurringCutoffs ??= persistOnChange(
+    createStateStore(parseRecurringSeriesCutoffs(idbKeyValue.getItem(TASKIFY_STORE_TASKS, RECURRING_SERIES_CUTOFFS_KEY))),
+    "recurring series cutoffs",
+    (next) => idbKeyValue.setItem(TASKIFY_STORE_TASKS, RECURRING_SERIES_CUTOFFS_KEY, serializeRecurringSeriesCutoffs(next)),
+  );
+  return recurringCutoffs;
+}
+
 function useStore<T>(store: StateStore<T>): readonly [T, (update: StateUpdater<T>) => void] {
   return [useSyncExternalStore(store.subscribe, store.get), store.set] as const;
 }
@@ -88,4 +107,5 @@ export function resetAppStoresForTests(): void {
   tasks = null;
   boards = null;
   calendarEvents = null;
+  recurringCutoffs = null;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SCRIPTURE_MEMORY_SERIES_ID } from "taskify-core";
-import { planCompleteTask, type CompleteTaskContext } from "./taskCommands";
+import { planClearCompleted, planCompleteTask, planDeleteTask, planRestoreTask, type CompleteTaskContext } from "./taskCommands";
 import type { Task } from "./taskTypes";
 
 const ACTOR = "a".repeat(64);
@@ -119,5 +119,97 @@ describe("planCompleteTask", () => {
     const next = plan.tasks[1];
     expect(next.scriptureMemoryId).toBe(plan.scriptureReview?.nextScheduled?.entryId);
     expect(next.title).toMatch(/^Review /);
+  });
+});
+
+describe("planDeleteTask", () => {
+  const settings = { showFullWeekRecurring: false, streaksEnabled: true };
+  const base = { now: NOW, actorPubkey: ACTOR, settings };
+
+  it("asks which occurrences to delete for a recurring task", () => {
+    const t = task({ recurrence: { type: "daily" } });
+    expect(planDeleteTask([t], {}, "t1", base)).toEqual({ kind: "ask-scope", task: t });
+  });
+
+  it("removes a one-off task, tombstones it and offers undo", () => {
+    const t = task({});
+    const plan = planDeleteTask([t, task({ id: "t2" })], {}, "t1", base);
+    expect(plan.kind).toBe("applied");
+    if (plan.kind !== "applied") return;
+    expect(plan.tasks.map((x) => x.id)).toEqual(["t2"]);
+    expect(plan.publishDeleted).toEqual([t]);
+    expect(plan.removed).toBe(t);
+  });
+
+  it("archives a bounty to Completed instead of deleting it", () => {
+    const bounty = { id: "b", token: "cashuA", state: "locked", updatedAt: NOW.toISOString() } as Task["bounty"];
+    const plan = planDeleteTask([task({ bounty })], {}, "t1", base);
+    if (plan.kind !== "applied") throw new Error(plan.kind);
+    expect(plan.tasks[0]).toMatchObject({ completed: true, bountyDeletedAt: NOW.toISOString() });
+    expect(plan.publishDeleted).toEqual([]);
+    expect(plan.archivedBounties).toBe(true);
+    expect(plan.removed).toBeNull();
+  });
+
+  it("ends a series from an occurrence on, records the cutoff and keeps earlier ones", () => {
+    const series = { recurrence: { type: "daily" as const }, seriesId: "s1" };
+    const earlier = task({ id: "a", dueISO: "2026-10-14T05:00:00.000Z", completed: true, ...series });
+    const current = task({ id: "b", dueISO: "2026-10-15T05:00:00.000Z", ...series });
+    const later = task({ id: "c", dueISO: "2026-10-16T05:00:00.000Z", ...series });
+    const plan = planDeleteTask([earlier, current, later], {}, "b", { ...base, scope: "future", skipPrompt: true });
+    if (plan.kind !== "applied") throw new Error(plan.kind);
+    expect(plan.tasks.map((x) => x.id)).toEqual(["a"]);
+    expect(plan.publishDeleted.map((x) => x.id)).toEqual(["b", "c"]);
+    expect(Object.keys(plan.cutoffs).length).toBeGreaterThan(0);
+    expect(plan.tasks[0].recurrence?.untilISO).toBeDefined();
+  });
+
+  it("restarts the next occurrence's streak in full-week mode", () => {
+    const series = { recurrence: { type: "daily" as const }, seriesId: "s1" };
+    const plan = planDeleteTask(
+      [task({ id: "a", ...series, streak: 4 }), task({ id: "b", dueISO: "2026-10-16T05:00:00.000Z", ...series, streak: 4 })],
+      {},
+      "a",
+      { ...base, skipPrompt: true, settings: { showFullWeekRecurring: true, streaksEnabled: true } },
+    );
+    if (plan.kind !== "applied") throw new Error(plan.kind);
+    expect(plan.tasks[0]).toMatchObject({ id: "b", streak: 0 });
+    expect(plan.publish.map((x) => x.id)).toEqual(["b"]);
+  });
+});
+
+describe("planRestoreTask", () => {
+  it("reopens at the bottom of its board and takes back one from the streak", () => {
+    const series = { recurrence: { type: "daily" as const }, seriesId: "s1" };
+    const done = task({ id: "a", completed: true, completedAt: "x", completedBy: ACTOR, streak: 3, order: 0, ...series });
+    const next = task({ id: "b", dueISO: "2026-10-16T05:00:00.000Z", streak: 3, order: 5, ...series });
+    const plan = planRestoreTask([done, next], {}, "a", { now: NOW, actorPubkey: ACTOR, settings: { streaksEnabled: true } });
+    expect(plan?.tasks[0]).toMatchObject({ completed: false, completedAt: undefined, streak: 2, order: 6 });
+    expect(plan?.tasks[1].streak).toBe(2);
+    expect(plan?.publish.map((x) => x.id)).toEqual(["a", "b"]);
+  });
+
+  it("returns null for an unknown id", () => {
+    expect(planRestoreTask([], {}, "x", { now: NOW, settings: { streaksEnabled: true } })).toBeNull();
+  });
+});
+
+describe("planClearCompleted", () => {
+  it("removes and tombstones completed tasks in scope only, keeping unclaimed bounties", () => {
+    const bounty = { id: "b", token: "cashuA", state: "locked", updatedAt: NOW.toISOString() } as Task["bounty"];
+    const tasks = [
+      task({ id: "done", completed: true }),
+      task({ id: "open" }),
+      task({ id: "other", boardId: "b2", completed: true }),
+      task({ id: "bounty", completed: true, bounty }),
+    ];
+    const plan = planClearCompleted(tasks, new Set(["b1"]));
+    expect(plan.tasks.map((x) => x.id)).toEqual(["open", "other", "bounty"]);
+    expect(plan.publishDeleted.map((x) => x.id)).toEqual(["done"]);
+  });
+
+  it("returns the same list when nothing is cleared", () => {
+    const tasks = [task({})];
+    expect(planClearCompleted(tasks, new Set(["b1"])).tasks).toBe(tasks);
   });
 });

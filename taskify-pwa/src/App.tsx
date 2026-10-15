@@ -124,7 +124,6 @@ import {
   normalizeTaskBounty,
   ensureXOnlyHex,
   pubkeysEqual,
-  mergeLongestStreak,
   recurringInstanceId,
   dedupeRecurringInstances,
 } from "./domains/tasks/taskUtils";
@@ -134,22 +133,16 @@ import {
   normalizeNostrPubkeyHex,
   normalizeTaskAssignees,
 } from "./domains/tasks/assignmentUtils";
-import { tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
-import { planCompleteTask } from "./domains/tasks/taskCommands";
+import { recurringCutoffsStore, tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
+import { planClearCompleted, planCompleteTask, planDeleteTask, planRestoreTask } from "./domains/tasks/taskCommands";
 import {
   reserveTaskMutationTimestamp,
   TaskPublishVersionTracker,
   taskMovePersistencePlan,
 } from "./domains/tasks/taskMovePersistence";
 import {
-  RECURRING_SERIES_CUTOFFS_KEY,
   applyRecurringSeriesCutoff,
   applyRecurringSeriesCutoffs,
-  capRecurringTaskAt,
-  detachCancelledRecurringTask,
-  parseRecurringSeriesCutoffs,
-  recurringSeriesCutoffBefore,
-  serializeRecurringSeriesCutoffs,
   updateRecurringSeriesCutoff,
 } from "./domains/tasks/recurrenceCutoffs";
 import {
@@ -231,7 +224,6 @@ import { ShareBoardIcon } from "./ui/icons";
 import {
   ensureWeekRecurrencesForCurrentWeek,
   buildRunningStreakLookup,
-  recurringSeriesId,
   tasksInSameSeries,
 } from "./lib/app/weekRecurrenceDomain";
 import { isoForWeekdayLocal } from "./lib/app/weekBoardDate";
@@ -480,24 +472,11 @@ export default function App() {
   const visibleBoards = useMemo(() => boards.filter(b => !b.archived && !b.hidden), [boards]);
 
   const [tasks, setTasks] = useTasks();
-  const recurringSeriesCutoffsRef = useRef(
-    parseRecurringSeriesCutoffs(
-      idbKeyValue.getItem(TASKIFY_STORE_TASKS, RECURRING_SERIES_CUTOFFS_KEY),
-    ),
-  );
   const recordRecurringSeriesCutoff = useCallback((task: Task, cutoffISO: string) => {
-    const current = recurringSeriesCutoffsRef.current;
-    const next = updateRecurringSeriesCutoff(current, task, cutoffISO);
-    if (next === current) return;
-    recurringSeriesCutoffsRef.current = next;
-    idbKeyValue.setItem(
-      TASKIFY_STORE_TASKS,
-      RECURRING_SERIES_CUTOFFS_KEY,
-      serializeRecurringSeriesCutoffs(next),
-    );
+    recurringCutoffsStore().set((current) => updateRecurringSeriesCutoff(current, task, cutoffISO));
   }, []);
   const sanitizeRecurringTasks = useCallback(<TTask extends Task,>(items: TTask[]): TTask[] => (
-    applyRecurringSeriesCutoffs(items, recurringSeriesCutoffsRef.current)
+    applyRecurringSeriesCutoffs(items, recurringCutoffsStore().get())
   ), []);
   const calendarSeriesCutoffsRef = useRef(
     parseCalendarSeriesCutoffs(
@@ -917,7 +896,7 @@ export default function App() {
         if (!firstColumn) return changed ? boundedTasks : prev;
         newTask.columnId = firstColumn.id;
       }
-      const boundedNewTask = applyRecurringSeriesCutoff(newTask, recurringSeriesCutoffsRef.current);
+      const boundedNewTask = applyRecurringSeriesCutoff(newTask, recurringCutoffsStore().get());
       if (!boundedNewTask) return changed ? boundedTasks : prev;
       createdTask = boundedNewTask;
       return [...boundedTasks, boundedNewTask];
@@ -8695,121 +8674,33 @@ export default function App() {
     id: string,
     options?: { skipPrompt?: boolean; scope?: "single" | "future" }
   ) {
-    const currentTasks = tasksRef.current;
-    const t = currentTasks.find(x => x.id === id);
-    if (!t) return;
-    const markRecoverableBountyDelete = (task: Task, deletedAtISO: string): Task => ({
-      ...task,
-      completed: true,
-      completedAt: task.completedAt || deletedAtISO,
-      completedBy: task.completedBy ?? ((window as any).nostrPK || undefined),
-      lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? task.lastEditedBy ?? task.createdBy,
-      hiddenUntilISO: undefined,
-      bountyDeletedAt: deletedAtISO,
+    const plan = planDeleteTask(tasksStore().get(), recurringCutoffsStore().get(), id, {
+      now: new Date(),
+      actorPubkey: (window as any).nostrPK || undefined,
+      settings,
+      scope: options?.scope,
+      skipPrompt: options?.skipPrompt,
     });
-    if (!options?.skipPrompt && t.recurrence) {
-      setRecurringDeleteTask(t);
+    if (plan.kind === "none") return;
+    if (plan.kind === "ask-scope") {
+      setRecurringDeleteTask(plan.task);
       return;
     }
-    if (options?.scope === "future") {
-      const seriesId = recurringSeriesId(t);
-      const seriesSeed = t.seriesId === seriesId ? t : { ...t, seriesId };
-      if (Number.isNaN(Date.parse(t.dueISO))) return;
-      const cutoffKey = isoDatePart(t.dueISO, t.dueTimeZone);
-      const deletedAtISO = new Date().toISOString();
-      const nextUntil = recurringSeriesCutoffBefore(t);
-      if (!nextUntil) return;
-      recordRecurringSeriesCutoff(seriesSeed, nextUntil);
-      const toPublish: Task[] = [];
-      const toDelete: Task[] = [];
-      let changed = false;
-      const nextTasks: Task[] = [];
-      for (const task of currentTasks) {
-        if (!task.recurrence || !sameSeries(task, seriesSeed)) {
-          nextTasks.push(task);
-          continue;
-        }
-        recordRecurringSeriesCutoff(task, nextUntil);
-        if (Number.isNaN(Date.parse(task.dueISO))) {
-          nextTasks.push(task);
-          continue;
-        }
-        const dueKey = isoDatePart(task.dueISO, t.dueTimeZone);
-        if (dueKey >= cutoffKey) {
-          const terminated = capRecurringTaskAt(task, nextUntil);
-          if (task.bounty) {
-            const archived = markRecoverableBountyDelete(terminated, deletedAtISO);
-            nextTasks.push(archived);
-            toPublish.push(archived);
-          } else {
-            toDelete.push(terminated);
-          }
-          changed = true;
-          continue;
-        }
-        // Earlier instances are capped locally but not republished: every client caps the series
-        // from the deleted instances' end date (recordRecurringSeriesCutoff here, native
-        // recordRecurringTaskSeriesCutoff). Republishing them rewrote the series' whole history.
-        const updated = capRecurringTaskAt(task, nextUntil);
-        if (updated !== task) {
-          nextTasks.push(updated);
-          changed = true;
-          continue;
-        }
-        nextTasks.push(task);
-      }
-      if (changed) setTasks(sanitizeRecurringTasks(nextTasks));
-      toPublish.forEach(task => maybePublishTask(task).catch(() => {}));
-      toDelete.forEach(task => publishTaskDeleted(task).catch(() => {}));
-      if (toPublish.some((task) => isRecoverableBountyTask(task))) {
-        showToast("Bounty tasks were moved to Completed. Restore to recover.", 3000);
-      }
-      return;
-    }
-    if (t.bounty) {
-      const deletedAtISO = new Date().toISOString();
-      let updated: Task | null = null;
-      setTasks((prev) =>
-        prev.map((task) => {
-          if (task.id !== id) return task;
-          const recoverable = markRecoverableBountyDelete(task, deletedAtISO);
-          updated = recoverable;
-          return recoverable;
-        }),
+    recurringCutoffsStore().set(plan.cutoffs);
+    setTasks(plan.tasks);
+    plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
+    plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
+    if (plan.archivedBounties) {
+      showToast(
+        options?.scope === "future"
+          ? "Bounty tasks were moved to Completed. Restore to recover."
+          : "Bounty task moved to Completed. Restore to recover.",
+        3000,
       );
-      if (updated) {
-        maybePublishTask(updated).catch(() => {});
-        showToast("Bounty task moved to Completed. Restore to recover.", 3000);
-      }
-      return;
     }
+    const t = plan.removed;
+    if (!t) return;
     setUndoTask(t);
-    setTasks(prev => {
-      const arr = prev.filter(x => x.id !== id);
-      const toPublish: Task[] = [];
-      if (
-        settings.showFullWeekRecurring &&
-        settings.streaksEnabled &&
-        t.recurrence &&
-        isFrequentRecurrence(t.recurrence)
-      ) {
-        const next = arr
-          .filter(x => !x.completed && x.recurrence && sameSeries(x, t) && new Date(x.dueISO) > new Date(t.dueISO))
-          .sort((a, b) => new Date(a.dueISO).getTime() - new Date(b.dueISO).getTime())[0];
-        if (next) {
-          const idx = arr.findIndex(x => x.id === next.id);
-          arr[idx] = {
-            ...next,
-            seriesId: next.seriesId || next.id,
-            streak: 0,
-            longestStreak: mergeLongestStreak(next, 0),
-          };
-          toPublish.push(arr[idx]);
-        }
-      }
-      toPublish.forEach(x => maybePublishTask(x).catch(() => {}));
-      return arr;
-    });
     if (t.scriptureMemoryId) {
       setScriptureMemory((prev) =>
         updateScriptureMemoryState(
@@ -8823,7 +8714,6 @@ export default function App() {
         )
       );
     }
-    publishTaskDeleted(t).catch(() => {});
     setTimeout(() => setUndoTask(null), 5000); // undo duration
   }
   function undoDelete() {
@@ -8843,68 +8733,14 @@ export default function App() {
   }
 
   function restoreTask(id: string) {
-    const t = tasks.find((x) => x.id === id);
-    if (!t) return;
-    const toPublish: Task[] = [];
-    const recurringStreak =
-      !isRecoverableBountyTask(t) &&
-      settings.streaksEnabled &&
-      t.recurrence &&
-      isFrequentRecurrence(t.recurrence) &&
-      typeof t.streak === "number";
-    const newStreak = recurringStreak ? Math.max(0, t.streak! - 1) : t.streak;
-    setTasks(prev => {
-      const bottomOrder =
-        prev.reduce((max, task) => {
-          if (task.id === id) return max;
-          if (task.boardId !== t.boardId) return max;
-          const order = typeof task.order === "number" ? task.order : -1;
-          return Math.max(max, order);
-        }, -1) + 1;
-      const arr = prev.map(x => {
-        if (x.id !== id) return x;
-        const restored: Task = {
-          ...x,
-          completed: false,
-          completedAt: undefined,
-          completedBy: undefined,
-          lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? x.lastEditedBy ?? x.createdBy,
-          updatedAt: new Date().toISOString(),
-          bountyDeletedAt: undefined,
-          hiddenUntilISO: undefined,
-          streak: newStreak,
-          longestStreak: mergeLongestStreak(x, newStreak),
-          order: bottomOrder,
-        };
-        const upd = detachCancelledRecurringTask(restored, recurringSeriesCutoffsRef.current);
-        toPublish.push(upd);
-        return upd;
-      });
-      if (recurringStreak) {
-        const future = arr.filter(
-          x =>
-            x.id !== id &&
-            !x.completed &&
-            x.recurrence &&
-            sameSeries(x, t) &&
-            new Date(x.dueISO) > new Date(t.dueISO)
-        );
-        future.forEach(f => {
-          const idx = arr.findIndex(x => x.id === f.id);
-          const upd = {
-            ...f,
-            seriesId: f.seriesId || f.id,
-            streak: newStreak,
-            longestStreak: mergeLongestStreak(f, newStreak),
-            lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? f.lastEditedBy ?? f.createdBy,
-            updatedAt: new Date().toISOString(),
-          };
-          arr[idx] = upd;
-          toPublish.push(upd);
-        });
-      }
-      return arr;
+    const plan = planRestoreTask(tasksStore().get(), recurringCutoffsStore().get(), id, {
+      now: new Date(),
+      actorPubkey: (window as any).nostrPK || undefined,
+      settings,
     });
+    if (!plan) return;
+    setTasks(plan.tasks);
+    const t = plan.restored;
     if (t.scriptureMemoryId) {
       setScriptureMemory((prev) =>
         updateScriptureMemoryState(
@@ -8924,26 +8760,16 @@ export default function App() {
         )
       );
     }
-    toPublish.forEach(x => maybePublishTask(x).catch(() => {}));
+    plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
   }
   function clearCompleted() {
     if (currentBoard?.kind === "bible" || currentBoard?.clearCompletedDisabled) {
       return;
     }
-    const scope = currentBoard ? new Set(boardScopeIds(currentBoard, boards)) : null;
-    for (const t of tasksForBoard)
-      if (t.completed && !isRecoverableBountyTask(t) && (!t.bounty || t.bounty.state === 'claimed'))
-        publishTaskDeleted(t).catch(() => {});
-    setTasks(prev =>
-      prev.filter(t =>
-        !(
-          scope?.has(t.boardId) &&
-          t.completed &&
-          !isRecoverableBountyTask(t) &&
-          (!t.bounty || t.bounty.state === 'claimed')
-        )
-      )
-    );
+    if (!currentBoard) return;
+    const plan = planClearCompleted(tasksStore().get(), new Set(boardScopeIds(currentBoard, boards)));
+    setTasks(plan.tasks);
+    plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
   }
 
   function postponeTaskOneWeek(id: string) {

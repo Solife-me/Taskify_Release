@@ -7,6 +7,7 @@ import {
   SCRIPTURE_MEMORY_SERIES_ID,
   buildNextRecurringTask,
   buildRunningStreakLookup,
+  recurringSeriesId,
   isAssignedSharedTask,
   isFrequentRecurrence,
   tasksInSameSeries,
@@ -22,9 +23,17 @@ import {
 import { isoDatePart, startOfDay, taskDateKey } from "../dateTime/dateUtils";
 import { normalizeAgentPubkey } from "./assignmentUtils";
 import { nextOrderForBoard } from "./boardUtils";
+import {
+  applyRecurringSeriesCutoffs,
+  capRecurringTaskAt,
+  detachCancelledRecurringTask,
+  recurringSeriesCutoffBefore,
+  updateRecurringSeriesCutoff,
+  type RecurringSeriesCutoffs,
+} from "./recurrenceCutoffs";
 import type { Settings } from "./settingsTypes";
 import type { InboxItem, InboxItemStatus, ScriptureMemoryUpdate, Task, TaskAssigneeStatus } from "./taskTypes";
-import { mergeLongestStreak } from "./taskUtils";
+import { isRecoverableBountyTask, mergeLongestStreak } from "./taskUtils";
 
 export type InboxAction = "accept" | "dismiss" | "decline" | "maybe";
 
@@ -218,4 +227,229 @@ function planNextOccurrence(
     scriptureMemoryScheduledAt: nowISO,
   };
   return { task, scheduled: { entryId: selection.entry.id, scheduledAtISO: nowISO } };
+}
+
+export type TaskEditContext = {
+  now: Date;
+  /** The signed-in user's key as stored on the device. */
+  actorPubkey?: string;
+};
+
+export type DeleteTaskContext = TaskEditContext & {
+  settings: Pick<Settings, "showFullWeekRecurring" | "streaksEnabled">;
+  /** "future" ends a recurring series from this occurrence on; otherwise one task is deleted. */
+  scope?: "single" | "future";
+  /** A recurring task asks which occurrences to delete unless the caller already asked. */
+  skipPrompt?: boolean;
+};
+
+export type DeleteTaskPlan =
+  | { kind: "none" }
+  | { kind: "ask-scope"; task: Task }
+  | {
+      kind: "applied";
+      tasks: Task[];
+      cutoffs: RecurringSeriesCutoffs;
+      publish: Task[];
+      publishDeleted: Task[];
+      /** The task removed outright, which can be undone. */
+      removed: Task | null;
+      /** Bounty tasks are archived to Completed rather than deleted. */
+      archivedBounties: boolean;
+    };
+
+/** A bounty is never deleted outright: it moves to Completed so its ecash stays recoverable. */
+function archiveBountyTask(task: Task, deletedAtISO: string, actorPubkey: string | undefined): Task {
+  return {
+    ...task,
+    completed: true,
+    completedAt: task.completedAt || deletedAtISO,
+    completedBy: task.completedBy ?? (actorPubkey || undefined),
+    lastEditedBy: normalizeAgentPubkey(actorPubkey) ?? task.lastEditedBy ?? task.createdBy,
+    hiddenUntilISO: undefined,
+    bountyDeletedAt: deletedAtISO,
+  };
+}
+
+export function planDeleteTask(
+  tasks: Task[],
+  cutoffs: RecurringSeriesCutoffs,
+  id: string,
+  ctx: DeleteTaskContext,
+): DeleteTaskPlan {
+  const t = tasks.find((task) => task.id === id);
+  if (!t) return { kind: "none" };
+  if (!ctx.skipPrompt && t.recurrence) return { kind: "ask-scope", task: t };
+  const deletedAtISO = ctx.now.toISOString();
+
+  if (ctx.scope === "future") {
+    if (Number.isNaN(Date.parse(t.dueISO))) return { kind: "none" };
+    const nextUntil = recurringSeriesCutoffBefore(t);
+    if (!nextUntil) return { kind: "none" };
+    const seriesId = recurringSeriesId(t);
+    const seriesSeed = t.seriesId === seriesId ? t : { ...t, seriesId };
+    const cutoffKey = isoDatePart(t.dueISO, t.dueTimeZone);
+    let nextCutoffs = updateRecurringSeriesCutoff(cutoffs, seriesSeed, nextUntil);
+    const publish: Task[] = [];
+    const publishDeleted: Task[] = [];
+    const kept: Task[] = [];
+    let changed = false;
+    for (const task of tasks) {
+      if (!task.recurrence || !tasksInSameSeries(task, seriesSeed)) {
+        kept.push(task);
+        continue;
+      }
+      nextCutoffs = updateRecurringSeriesCutoff(nextCutoffs, task, nextUntil);
+      if (Number.isNaN(Date.parse(task.dueISO))) {
+        kept.push(task);
+        continue;
+      }
+      if (isoDatePart(task.dueISO, t.dueTimeZone) >= cutoffKey) {
+        const ended = capRecurringTaskAt(task, nextUntil);
+        if (task.bounty) {
+          const archived = archiveBountyTask(ended, deletedAtISO, ctx.actorPubkey);
+          kept.push(archived);
+          publish.push(archived);
+        } else {
+          publishDeleted.push(ended);
+        }
+        changed = true;
+        continue;
+      }
+      // Earlier occurrences are capped locally but not republished: every client caps the series
+      // from the recorded cutoff (native `recordRecurringTaskSeriesCutoff`). Republishing them
+      // would rewrite the series' whole history.
+      const capped = capRecurringTaskAt(task, nextUntil);
+      if (capped !== task) changed = true;
+      kept.push(capped);
+    }
+    return {
+      kind: "applied",
+      tasks: changed ? applyRecurringSeriesCutoffs(kept, nextCutoffs) : tasks,
+      cutoffs: nextCutoffs,
+      publish,
+      publishDeleted,
+      removed: null,
+      archivedBounties: publish.some((task) => isRecoverableBountyTask(task)),
+    };
+  }
+
+  if (t.bounty) {
+    const archived = archiveBountyTask(t, deletedAtISO, ctx.actorPubkey);
+    return {
+      kind: "applied",
+      tasks: tasks.map((task) => (task.id === id ? archived : task)),
+      cutoffs,
+      publish: [archived],
+      publishDeleted: [],
+      removed: null,
+      archivedBounties: true,
+    };
+  }
+
+  const next = tasks.filter((task) => task.id !== id);
+  const publish: Task[] = [];
+  // Deleting an occurrence breaks the run: in full-week mode the next open occurrence restarts at 0.
+  if (ctx.settings.showFullWeekRecurring && ctx.settings.streaksEnabled && t.recurrence && isFrequentRecurrence(t.recurrence)) {
+    const following = next
+      .filter((x) => !x.completed && x.recurrence && tasksInSameSeries(x, t) && new Date(x.dueISO) > new Date(t.dueISO))
+      .sort((a, b) => new Date(a.dueISO).getTime() - new Date(b.dueISO).getTime())[0];
+    if (following) {
+      const reset: Task = {
+        ...following,
+        seriesId: following.seriesId || following.id,
+        streak: 0,
+        longestStreak: mergeLongestStreak(following, 0),
+      };
+      next[next.findIndex((x) => x.id === following.id)] = reset;
+      publish.push(reset);
+    }
+  }
+  return { kind: "applied", tasks: next, cutoffs, publish, publishDeleted: [t], removed: t, archivedBounties: false };
+}
+
+export type RestoreTaskPlan = { tasks: Task[]; publish: Task[]; restored: Task } | null;
+
+/**
+ * Reopens a completed task at the bottom of its board. Undoing a streaked completion takes the
+ * streak back by one on this occurrence and the open ones after it.
+ */
+export function planRestoreTask(
+  tasks: Task[],
+  cutoffs: RecurringSeriesCutoffs,
+  id: string,
+  ctx: TaskEditContext & { settings: Pick<Settings, "streaksEnabled"> },
+): RestoreTaskPlan {
+  const t = tasks.find((task) => task.id === id);
+  if (!t) return null;
+  const nowISO = ctx.now.toISOString();
+  const editor = (task: Task) => normalizeAgentPubkey(ctx.actorPubkey) ?? task.lastEditedBy ?? task.createdBy;
+  const undoesStreak =
+    !isRecoverableBountyTask(t) &&
+    ctx.settings.streaksEnabled &&
+    !!t.recurrence &&
+    isFrequentRecurrence(t.recurrence) &&
+    typeof t.streak === "number";
+  const streak = undoesStreak ? Math.max(0, (t.streak as number) - 1) : t.streak;
+  const bottomOrder =
+    tasks.reduce((max, task) => {
+      if (task.id === id || task.boardId !== t.boardId) return max;
+      return Math.max(max, typeof task.order === "number" ? task.order : -1);
+    }, -1) + 1;
+  const publish: Task[] = [];
+  const restored = detachCancelledRecurringTask(
+    {
+      ...t,
+      completed: false,
+      completedAt: undefined,
+      completedBy: undefined,
+      lastEditedBy: editor(t),
+      updatedAt: nowISO,
+      bountyDeletedAt: undefined,
+      hiddenUntilISO: undefined,
+      streak,
+      longestStreak: mergeLongestStreak(t, streak),
+      order: bottomOrder,
+    },
+    cutoffs,
+  );
+  publish.push(restored);
+  const next = tasks.map((task) => {
+    if (task.id === id) return restored;
+    if (
+      undoesStreak &&
+      !task.completed &&
+      task.recurrence &&
+      tasksInSameSeries(task, t) &&
+      new Date(task.dueISO) > new Date(t.dueISO)
+    ) {
+      const updated: Task = {
+        ...task,
+        seriesId: task.seriesId || task.id,
+        streak,
+        longestStreak: mergeLongestStreak(task, streak),
+        lastEditedBy: editor(task),
+        updatedAt: nowISO,
+      };
+      publish.push(updated);
+      return updated;
+    }
+    return task;
+  });
+  return { tasks: next, publish, restored: t };
+}
+
+/** Removes completed tasks from a board's scope; recoverable bounties and unclaimed ecash stay. */
+export function planClearCompleted(tasks: Task[], scopeBoardIds: ReadonlySet<string>): { tasks: Task[]; publishDeleted: Task[] } {
+  const publishDeleted: Task[] = [];
+  const next = tasks.filter((task) => {
+    const clear =
+      scopeBoardIds.has(task.boardId) &&
+      !!task.completed &&
+      !isRecoverableBountyTask(task) &&
+      (!task.bounty || task.bounty.state === "claimed");
+    if (clear) publishDeleted.push(task);
+    return !clear;
+  });
+  return { tasks: publishDeleted.length ? next : tasks, publishDeleted };
 }
