@@ -22,7 +22,6 @@ import {
   isAssignedSharedTask,
   DEFAULT_DATE_REMINDER_TIME,
   ISO_DATE_PATTERN,
-  MS_PER_DAY,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   normalizeTaskRecurrence,
@@ -133,7 +132,7 @@ import {
   calendarRecurrenceLimit,
   planCalendarRecurrenceWindow,
 } from "./domains/calendar/calendarRecurrenceWindow";
-import { planMoveCalendarEvents } from "./domains/calendar/calendarCommands";
+import { planDeleteCalendarEvent, planMoveCalendarEvents } from "./domains/calendar/calendarCommands";
 import { planFastingReminders, planScriptureReviewTask } from "./domains/tasks/generatedTasks";
 import {
   planAssignmentResponse,
@@ -225,7 +224,6 @@ import {
 } from "./domains/tasks/boardUtils";
 import {
   isCalendarEventVisibleOnListBoard,
-  calendarEventStartISOForRecurrence,
   startOfWeek,
 } from "./domains/calendar/calendarUtils";
 import { ShareBoardIcon } from "./ui/icons";
@@ -8503,144 +8501,19 @@ export default function App() {
     id: string,
     options?: { skipPrompt?: boolean; scope?: "single" | "future" },
   ) {
-    const existing = calendarEventsRef.current.find((event) => event.id === id);
-    if (!existing) return;
-    if (!options?.skipPrompt && existing.recurrence) {
-      setRecurringDeleteEvent(existing);
+    const plan = planDeleteCalendarEvent(calendarEventsStore().get(), id, options);
+    if (plan.kind === "none") return;
+    if (plan.kind === "ask-scope") {
+      setRecurringDeleteEvent(plan.event);
       return;
     }
-    const seriesId = existing.seriesId || existing.id;
-    const isSeed = !!existing.recurrence && existing.recurrence.type !== "none" && seriesId === existing.id;
-    const startKeyForEvent = (event: CalendarEvent): string | null => {
-      if (event.kind === "date") {
-        return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
-      }
-      const key = isoDatePart(event.startISO, event.startTzid);
-      return ISO_DATE_PATTERN.test(key) ? key : null;
-    };
-
-    if (options?.scope === "future") {
-      const cutoffKey = startKeyForEvent(existing);
-      if (!cutoffKey) return;
-      const cutoffDate = startOfDay(new Date(`${cutoffKey}T00:00:00`));
-      if (Number.isNaN(cutoffDate.getTime())) return;
-      const cutoffTime = cutoffDate.getTime();
-      const nextUntil = new Date(cutoffTime - MS_PER_DAY).toISOString();
-      recordCalendarSeriesCutoff(existing.boardId, seriesId, nextUntil);
-      // The seed carries the new end date to other devices, and every client generates the
-      // series from it, so earlier occurrences are capped locally and not republished. Without
-      // the seed here (a series an older client published occurrence by occurrence), each record
-      // is still republished. Only published occurrences are tombstoned; generated ones are dropped.
-      const hasSeed = calendarEventsRef.current.some(
-        (event) => event.id === seriesId && !!event.recurrence && !event.generated,
-      );
-      // Plan from the current events, then apply and publish. Filling these lists inside a
-      // setState updater only worked when React ran it immediately; with other updates pending
-      // it ran later, after the publish loop had already seen empty lists.
-      const toPublish: CalendarEvent[] = [];
-      const toDelete: CalendarEvent[] = [];
-      const removedIds = new Set<string>();
-      const replacements = new Map<string, CalendarEvent>();
-      for (const event of calendarEventsRef.current) {
-        const eventSeriesId = event.seriesId || event.id;
-        if (!event.recurrence || eventSeriesId !== seriesId) continue;
-        const startKey = startKeyForEvent(event);
-        if (!startKey) continue;
-        if (startKey >= cutoffKey) {
-          deletedCalendarOccurrenceIdsRef.current.add(event.id);
-          removedIds.add(event.id);
-          if (!event.generated) {
-            toDelete.push({
-              ...event,
-              seriesId,
-              recurrence: { ...event.recurrence, untilISO: nextUntil },
-            });
-          }
-          continue;
-        }
-        const untilTime = event.recurrence.untilISO
-          ? startOfDay(new Date(event.recurrence.untilISO)).getTime()
-          : null;
-        if (!untilTime || untilTime > cutoffTime - MS_PER_DAY) {
-          const updated: CalendarEvent = {
-            ...event,
-            seriesId: event.seriesId || seriesId,
-            recurrence: { ...event.recurrence, untilISO: nextUntil },
-          };
-          replacements.set(event.id, updated);
-          const publishes = hasSeed ? event.id === seriesId : !event.generated;
-          if (publishes) toPublish.push(updated);
-        }
-      }
-      if (removedIds.size || replacements.size) {
-        setCalendarEvents((prev) => prev
-          .filter((event) => !removedIds.has(event.id))
-          .map((event) => replacements.get(event.id) ?? event));
-      }
-
-      toPublish.forEach((event) => maybePublishCalendarEvent(event).catch(() => {}));
-      toDelete.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
-      return;
+    if (plan.cutoff) {
+      recordCalendarSeriesCutoff(plan.cutoff.boardId, plan.cutoff.seriesId, plan.cutoff.untilISO);
     }
-
-    // "This occurrence only" passes no scope.
-    if (isSeed) {
-      advanceCalendarSeriesSeed(existing);
-      return;
-    }
-
-    // Deleted on its own, an occurrence becomes a published exception so every device drops it.
-    deletedCalendarOccurrenceIdsRef.current.add(existing.id);
-    setCalendarEvents((prev) => prev.filter((event) => event.id !== id));
-    publishCalendarEventDeleted({ ...existing, generated: undefined }).catch(() => {});
-  }
-
-  /**
-   * Deleting only a series' first occurrence moves the seed to its next occurrence. The seed is
-   * what every client generates the series from, so tombstoning it would end the series.
-   * Matches native `advanceTaskifyEventSeed`.
-   */
-  function advanceCalendarSeriesSeed(seed: CalendarEvent) {
-    const rule = seed.recurrence;
-    const startISO = calendarEventStartISOForRecurrence(seed);
-    const timeZone = seed.kind === "time" ? normalizeTimeZone(seed.startTzid) ?? undefined : "UTC";
-    const nextISO = rule && startISO ? nextOccurrence(startISO, rule, seed.kind === "time", timeZone) : null;
-    if (!rule || !nextISO) {
-      // No later occurrence: the series is only this one.
-      setCalendarEvents((prev) => prev.filter((event) => event.id !== seed.id && !(event.generated && event.seriesId === seed.id)));
-      publishCalendarEventDeleted(seed).catch(() => {});
-      return;
-    }
-    let moved: CalendarEvent;
-    if (seed.kind === "time") {
-      const durationMs = seed.endISO ? Math.max(0, Date.parse(seed.endISO) - Date.parse(seed.startISO)) : 0;
-      moved = {
-        ...seed,
-        startISO: nextISO,
-        ...(durationMs ? { endISO: new Date(Date.parse(nextISO) + durationMs).toISOString() } : {}),
-      };
-    } else {
-      const startDate = isoDatePart(nextISO, "UTC");
-      const startParts = parseDateKey(seed.startDate);
-      const endParts = seed.endDate && isDateKey(seed.endDate) ? parseDateKey(seed.endDate) : null;
-      const spanDays = startParts && endParts
-        ? Math.round((Date.UTC(endParts.year, endParts.month - 1, endParts.day) - Date.UTC(startParts.year, startParts.month - 1, startParts.day)) / MS_PER_DAY)
-        : 0;
-      moved = {
-        ...seed,
-        startDate,
-        ...(spanDays > 0 ? { endDate: addDaysToDateKey(startDate, spanDays) } : { endDate: undefined }),
-      } as CalendarEvent;
-    }
-    const nextId = calendarRecurrenceInstanceId(seed.id, nextISO, rule, timeZone);
-    const stood = calendarEventsRef.current.find((event) => event.id === nextId);
-    deletedCalendarOccurrenceIdsRef.current.add(nextId);
-    setCalendarEvents((prev) => prev
-      .filter((event) => event.id !== nextId)
-      .map((event) => (event.id === seed.id ? moved : event)));
-    maybePublishCalendarEvent(moved).catch(() => {});
-    // The occurrence the seed now stands for: tombstoned only if it was ever published.
-    if (stood && !stood.generated) publishCalendarEventDeleted(stood).catch(() => {});
+    plan.deletedOccurrenceIds.forEach((eventId) => deletedCalendarOccurrenceIdsRef.current.add(eventId));
+    setCalendarEvents(plan.events);
+    plan.publish.forEach((event) => maybePublishCalendarEvent(event).catch(() => {}));
+    plan.publishDeleted.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
   }
 
   const parseCalendarAddressForKind = (coord: string, kind: number): { kind: number; pubkey: string; d: string } | null => {
