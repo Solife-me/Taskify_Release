@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { SCRIPTURE_MEMORY_SERIES_ID } from "taskify-core";
-import { planClearCompleted, planCompleteTask, planDeleteTask, planRestoreTask, type CompleteTaskContext } from "./taskCommands";
+import {
+  planClearCompleted,
+  planCompleteTask,
+  planDeleteTask,
+  planPostponeTask,
+  planRestoreTask,
+  planSaveTask,
+  planToggleSubtask,
+  type CompleteTaskContext,
+} from "./taskCommands";
 import type { Task } from "./taskTypes";
 
 const ACTOR = "a".repeat(64);
@@ -211,5 +220,67 @@ describe("planClearCompleted", () => {
   it("returns the same list when nothing is cleared", () => {
     const tasks = [task({})];
     expect(planClearCompleted(tasks, new Set(["b1"])).tasks).toBe(tasks);
+  });
+});
+
+describe("planSaveTask", () => {
+  const ctx = { now: NOW, actorPubkey: ACTOR, settings: { newTaskPosition: "bottom" as const, streaksEnabled: true } };
+
+  it("adds a new task at the end of its board with authors and a timestamp", () => {
+    const plan = planSaveTask([task({ id: "a", order: 3 })], task({ id: "new", order: undefined }), ctx);
+    expect(plan.tasks.map((t) => t.id)).toEqual(["a", "new"]);
+    expect(plan.saved).toMatchObject({ order: 4, createdBy: ACTOR, lastEditedBy: ACTOR, updatedAt: NOW.toISOString() });
+    expect(plan.previousAssignees).toBeNull();
+  });
+
+  it("keeps the original author and returns the previous assignees", () => {
+    const assignees = [{ pubkey: "b".repeat(64), status: "pending" as const }];
+    const before = task({ createdBy: "c".repeat(64), assignees });
+    const plan = planSaveTask([before], { ...before, title: "Renamed", createdBy: undefined }, ctx);
+    expect(plan.saved).toMatchObject({ title: "Renamed", createdBy: "c".repeat(64), lastEditedBy: ACTOR });
+    expect(plan.previousAssignees).toBe(assignees);
+  });
+
+  it("keeps the new board's order when a moved series occurrence also restarts its streak", () => {
+    const before = task({ recurrence: { type: "daily" }, streak: 5, order: 0 });
+    const plan = planSaveTask(
+      [before, task({ id: "x", boardId: "b2", order: 7 })],
+      { ...before, boardId: "b2", dueISO: "2026-10-20T05:00:00.000Z" },
+      ctx,
+    );
+    expect(plan.saved).toMatchObject({ boardId: "b2", order: 8, streak: 0, seriesId: "t1" });
+  });
+
+  it("drops the series id when recurrence is removed", () => {
+    const before = task({ recurrence: { type: "daily" }, seriesId: "t1" });
+    const plan = planSaveTask([before], { ...before, recurrence: undefined }, ctx);
+    expect(plan.saved.seriesId).toBeUndefined();
+  });
+});
+
+describe("planPostponeTask and planToggleSubtask", () => {
+  it("moves the due date a week later and hides the task until then", () => {
+    const plan = planPostponeTask([task({ dueISO: "2026-10-15T05:00:00.000Z" })], [{ id: "b1", name: "L", kind: "lists", columns: [] } as never], "t1", {
+      now: NOW,
+      actorPubkey: ACTOR,
+      settings: { weekStart: 0 },
+    });
+    const due = new Date(plan!.updated.dueISO);
+    const original = new Date("2026-10-15T05:00:00.000Z");
+    expect(Math.round((due.getTime() - new Date(original.getFullYear(), original.getMonth(), original.getDate()).getTime()) / 86_400_000)).toBe(7);
+    expect(plan!.updated.dueDateEnabled).toBe(true);
+    expect(plan!.updated.hiddenUntilISO).toBe(plan!.updated.dueISO);
+  });
+
+  it("toggles one subtask and records the editor", () => {
+    const plan = planToggleSubtask(
+      [task({ subtasks: [{ id: "s1", title: "A" }, { id: "s2", title: "B", completed: true }] })],
+      "t1",
+      "s1",
+      { now: NOW, actorPubkey: ACTOR },
+    );
+    expect(plan!.updated.subtasks).toEqual([{ id: "s1", title: "A", completed: true }, { id: "s2", title: "B", completed: true }]);
+    expect(plan!.updated.lastEditedBy).toBe(ACTOR);
+    expect(planToggleSubtask([], "x", "s", { now: NOW })).toBeNull();
   });
 });

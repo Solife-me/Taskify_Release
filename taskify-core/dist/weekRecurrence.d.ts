@@ -42,7 +42,6 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
     isoDatePart: (iso: string, timeZone?: string) => string;
     taskDateKey: (task: TTask) => string;
     nextOrderForBoard: (boardId: string, tasks: TTask[], position: "top" | "bottom") => number;
-    maybePublishTask: (task: TTask) => Promise<unknown> | void;
     now?: () => number;
     /**
      * False while a shared board's initial relay sync is still running. Instances are only
@@ -56,7 +55,14 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
      */
     isDeletedOccurrence?: (boardId: string, taskId: string) => boolean;
 };
-export declare function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike>(options: EnsureWeekRecurrencesOptions<TTask>): TTask[];
+/**
+ * Full-week mode: adds this week's occurrences of daily and weekly series. Returns the new list
+ * (the same array when nothing changed) and the occurrences it created, which the caller publishes.
+ */
+export declare function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike>(options: EnsureWeekRecurrencesOptions<TTask>): {
+    tasks: TTask[];
+    generated: TTask[];
+};
 type StreakTaskLike = {
     id: string;
     seriesId?: string;

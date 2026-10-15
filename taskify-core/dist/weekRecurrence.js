@@ -55,9 +55,14 @@ export function tasksInSameSeries(a, b) {
         !!b.recurrence &&
         recurrenceSeriesFingerprint(a.recurrence) === recurrenceSeriesFingerprint(b.recurrence));
 }
+/**
+ * Full-week mode: adds this week's occurrences of daily and weekly series. Returns the new list
+ * (the same array when nothing changed) and the occurrences it created, which the caller publishes.
+ */
 export function ensureWeekRecurrencesForCurrentWeek(options) {
-    const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, maybePublishTask, now = () => Date.now(), canGenerateForBoard = () => true, isDeletedOccurrence = () => false, } = options;
+    const { tasks, sources, weekStart, newTaskPosition, dedupeRecurringInstances, isFrequentRecurrence, nextOccurrence, startOfWeek, recurringInstanceId, isoDatePart, taskDateKey, nextOrderForBoard, now = () => Date.now(), canGenerateForBoard = () => true, isDeletedOccurrence = () => false, } = options;
     const sow = startOfWeek(new Date(), weekStart).getTime();
+    const generated = [];
     const out = dedupeRecurringInstances(tasks);
     let changed = out !== tasks;
     const src = sources ?? out;
@@ -112,10 +117,7 @@ export function ensureWeekRecurrencesForCurrentWeek(options) {
                         dueTimeEnabled: typeof task.dueTimeEnabled === "boolean" ? task.dueTimeEnabled : undefined,
                         reminders: Array.isArray(task.reminders) ? [...task.reminders] : undefined,
                     };
-                    const publishTaskResult = maybePublishTask(clone);
-                    if (publishTaskResult && typeof publishTaskResult.catch === "function") {
-                        publishTaskResult.catch(() => { });
-                    }
+                    generated.push(clone);
                     out.push(clone);
                     changed = true;
                 }
@@ -124,7 +126,7 @@ export function ensureWeekRecurrencesForCurrentWeek(options) {
             nextISO = nextOccurrence(nextISO, task.recurrence, !!task.dueTimeEnabled, task.dueTimeZone);
         }
     }
-    return changed ? out : tasks;
+    return { tasks: changed ? out : tasks, generated };
 }
 /**
  * Streaks are carried from one instance of a recurring series to the next. An open instance's

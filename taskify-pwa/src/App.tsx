@@ -134,7 +134,15 @@ import {
   normalizeTaskAssignees,
 } from "./domains/tasks/assignmentUtils";
 import { recurringCutoffsStore, tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
-import { planClearCompleted, planCompleteTask, planDeleteTask, planRestoreTask } from "./domains/tasks/taskCommands";
+import {
+  planClearCompleted,
+  planCompleteTask,
+  planDeleteTask,
+  planPostponeTask,
+  planRestoreTask,
+  planSaveTask,
+  planToggleSubtask,
+} from "./domains/tasks/taskCommands";
 import {
   reserveTaskMutationTimestamp,
   TaskPublishVersionTracker,
@@ -204,7 +212,6 @@ import {
   withBoardOrder,
   nextOccurrence,
   boardScopeIds,
-  hiddenUntilForBoard,
   isVisibleNow,
   applyHiddenForCalendarEvent,
   nextOrderForCalendarBoard,
@@ -225,7 +232,7 @@ import {
   ensureWeekRecurrencesForCurrentWeek,
   buildRunningStreakLookup,
   tasksInSameSeries,
-} from "./lib/app/weekRecurrenceDomain";
+} from "taskify-core";
 import { isoForWeekdayLocal } from "./lib/app/weekBoardDate";
 import {
   TASKIFY_CALENDAR_EVENT_KIND,
@@ -1076,7 +1083,7 @@ export default function App() {
 
   useEffect(() => {
     if (!settings.showFullWeekRecurring) return;
-    setTasks(prev => ensureWeekRecurrences(prev));
+    setTasks(ensureWeekRecurrences(tasksStore().get()));
     // Re-run as each shared board finishes its initial sync.
   }, [settings.showFullWeekRecurring, settings.weekStart, pendingNostrInitialSyncByBoardTag]);
 
@@ -7134,10 +7141,14 @@ export default function App() {
     return tasksInSameSeries(a, b);
   }
 
+  /**
+   * Full-week mode: adds this week's occurrences of frequent series to `arr` and publishes them.
+   * Call it on the current list (`tasksStore().get()`), never inside a `setTasks` updater.
+   */
   function ensureWeekRecurrences(arr: Task[], sources?: Task[]): Task[] {
     const boundedTasks = sanitizeRecurringTasks(arr);
     const boundedSources = sources ? sanitizeRecurringTasks(sources) : undefined;
-    const ensured = ensureWeekRecurrencesForCurrentWeek({
+    const { tasks: ensured, generated } = ensureWeekRecurrencesForCurrentWeek({
       tasks: boundedTasks,
       sources: boundedSources,
       weekStart: settings.weekStart,
@@ -7150,7 +7161,6 @@ export default function App() {
       isoDatePart,
       taskDateKey,
       nextOrderForBoard,
-      maybePublishTask,
       canGenerateForBoard: isBoardReadyForGeneratedTasks,
       isDeletedOccurrence: (boardId, taskId) => {
         const board = findBoardByCompoundChildId(boards, boardId);
@@ -7158,6 +7168,7 @@ export default function App() {
         return !!nostrBoardId && !!tombstonesRef.current.get(boardTag(nostrBoardId))?.has(taskId);
       },
     });
+    generated.forEach((task) => maybePublishTask(task).catch(() => {}));
     return sanitizeRecurringTasks(ensured);
   }
   const ensureWeekRecurrencesRef = useRef(ensureWeekRecurrences);
@@ -8183,13 +8194,12 @@ export default function App() {
       }
 
       if (createdTasks.length) {
-        setTasks((prev) => {
-          let next = [...prev, ...createdTasks];
-          if (settings.showFullWeekRecurring && recurringSeeds.length) {
-            next = ensureWeekRecurrences(next, recurringSeeds);
-          }
-          return next;
-        });
+        const withImported = [...tasksStore().get(), ...createdTasks];
+        setTasks(
+          settings.showFullWeekRecurring && recurringSeeds.length
+            ? ensureWeekRecurrences(withImported, recurringSeeds)
+            : withImported,
+        );
       }
 
       if (createdEvents.length) {
@@ -8450,12 +8460,12 @@ export default function App() {
         nextTask.seriesId = nextTask.seriesId || nextTask.id;
       }
       applyHiddenForFuture(nextTask, settings.weekStart, targetBoard.kind);
-      setTasks((prev) => {
-        const updated = [...prev, nextTask];
-        return settings.showFullWeekRecurring && nextTask.recurrence
-          ? ensureWeekRecurrencesRef.current(updated, [nextTask])
-          : updated;
-      });
+      const withShared = [...tasksStore().get(), nextTask];
+      setTasks(
+        settings.showFullWeekRecurring && nextTask.recurrence
+          ? ensureWeekRecurrencesRef.current(withShared, [nextTask])
+          : withShared,
+      );
       maybePublishTaskRef.current?.(nextTask).catch(() => {});
       return nextTask;
     },
@@ -8600,22 +8610,15 @@ export default function App() {
   }
 
   function toggleSubtask(taskId: string, subId: string) {
-    setTasks(prev =>
-      prev.map((t) => {
-        if (t.id !== taskId) return t;
-        const subs = (t.subtasks || []).map((s) =>
-          s.id === subId ? { ...s, completed: !s.completed } : s
-        );
-        const updated: Task = {
-          ...t,
-          subtasks: subs,
-          lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? t.lastEditedBy ?? t.createdBy,
-        };
-        maybePublishTask(updated).catch(() => {});
-        return updated;
-      })
-    );
+    const plan = planToggleSubtask(tasksStore().get(), taskId, subId, {
+      now: new Date(),
+      actorPubkey: (window as any).nostrPK || undefined,
+    });
+    if (!plan) return;
+    setTasks(plan.tasks);
+    maybePublishTask(plan.updated).catch(() => {});
   }
+
 
   /** Saves a note from the note viewer or its editor, appending subtasks converted from it. */
   function updateTaskNote(taskId: string, note: string, appendedSubtasks: Subtask[] = []) {
@@ -8773,26 +8776,15 @@ export default function App() {
   }
 
   function postponeTaskOneWeek(id: string) {
-    let updated: Task | undefined;
-    setTasks(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      const nextDue = startOfDay(new Date(t.dueISO));
-      nextDue.setDate(nextDue.getDate() + 7);
-      const boardKind = boards.find((board) => board.id === t.boardId)?.kind ?? "week";
-      const hiddenUntilISO = hiddenUntilForBoard(nextDue.toISOString(), boardKind, settings.weekStart);
-      updated = {
-        ...t,
-        dueISO: nextDue.toISOString(),
-        dueDateEnabled: true,
-        lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? t.lastEditedBy ?? t.createdBy,
-        hiddenUntilISO,
-      };
-      return updated!;
-    }));
-    if (updated) {
-      maybePublishTask(updated).catch(() => {});
-      showToast('Task moved to next week');
-    }
+    const plan = planPostponeTask(tasksStore().get(), boards, id, {
+      now: new Date(),
+      actorPubkey: (window as any).nostrPK || undefined,
+      settings,
+    });
+    if (!plan) return;
+    setTasks(plan.tasks);
+    maybePublishTask(plan.updated).catch(() => {});
+    showToast('Task moved to next week');
   }
 
   async function revealBounty(id: string) {
@@ -8941,86 +8933,20 @@ export default function App() {
   }
 
   async function saveEdit(updated: Task) {
-    let editedTask: Task | null = null;
-    let previousAssignees: TaskAssignee[] | null = null;
-    setTasks(prev => {
-      let found = false;
-      const arr = prev.map(t => {
-        if (t.id !== updated.id) return t;
-        found = true;
-        previousAssignees = Array.isArray(t.assignees) ? t.assignees : null;
-        let next = updated;
-        if (t.boardId !== updated.boardId) {
-          next = {
-            ...next,
-            order: nextOrderForBoard(updated.boardId, prev, settings.newTaskPosition),
-          };
-        }
-        if (
-          settings.streaksEnabled &&
-          t.recurrence &&
-          isFrequentRecurrence(t.recurrence) &&
-          !t.completed
-        ) {
-          const prevDue = startOfDay(new Date(t.dueISO));
-          const newDue = startOfDay(new Date(updated.dueISO));
-          if (newDue.getTime() > prevDue.getTime()) {
-            next = { ...updated, streak: 0 };
-          }
-        }
-        if (next.recurrence) next = { ...next, seriesId: next.seriesId || next.id };
-        else next = { ...next, seriesId: undefined };
-        const normalizedCreatedBy = normalizeAgentPubkey(next.createdBy || t.createdBy || nostrPK) ?? undefined;
-        const normalizedLastEditedBy =
-          normalizeAgentPubkey(next.lastEditedBy || nostrPK || normalizedCreatedBy)
-          ?? normalizedCreatedBy;
-        next = {
-          ...next,
-          ...(normalizedCreatedBy ? { createdBy: normalizedCreatedBy } : {}),
-          ...(normalizedLastEditedBy ? { lastEditedBy: normalizedLastEditedBy } : {}),
-          updatedAt: new Date().toISOString(),
-        };
-        const normalizedNext = normalizeTaskBounty(next);
-        editedTask = normalizedNext;
-        return normalizedNext;
-      });
-      if (!found) {
-        let next = updated;
-        if (next.recurrence) next = { ...next, seriesId: next.seriesId || next.id };
-        else next = { ...next, seriesId: undefined };
-        const normalizedCreatedBy = normalizeAgentPubkey(next.createdBy || nostrPK) ?? undefined;
-        const normalizedLastEditedBy =
-          normalizeAgentPubkey(next.lastEditedBy || nostrPK || normalizedCreatedBy)
-          ?? normalizedCreatedBy;
-        next = {
-          ...next,
-          ...(normalizedCreatedBy ? { createdBy: normalizedCreatedBy } : {}),
-          ...(normalizedLastEditedBy ? { lastEditedBy: normalizedLastEditedBy } : {}),
-          updatedAt: new Date().toISOString(),
-        };
-        if (typeof next.order !== "number") {
-          next = {
-            ...next,
-            order: nextOrderForBoard(next.boardId, arr, settings.newTaskPosition),
-          };
-        }
-        const normalizedNext = normalizeTaskBounty(next);
-        editedTask = normalizedNext;
-        const withNew = [...arr, normalizedNext];
-        return settings.showFullWeekRecurring && editedTask?.recurrence
-          ? ensureWeekRecurrences(withNew, [editedTask])
-          : withNew;
-      }
-      return settings.showFullWeekRecurring && editedTask?.recurrence
-        ? ensureWeekRecurrences(arr, [editedTask])
-        : arr;
+    const plan = planSaveTask(tasksStore().get(), updated, {
+      now: new Date(),
+      actorPubkey: nostrPK || undefined,
+      settings,
     });
-    if (editedTask) {
-      await maybePublishTask(editedTask);
-      void maybeSendTaskAssignments(editedTask, { previousAssignees }).catch((err) => {
-        console.warn("Failed to send task assignments", err);
-      });
-    }
+    setTasks(
+      settings.showFullWeekRecurring && plan.saved.recurrence
+        ? ensureWeekRecurrences(plan.tasks, [plan.saved])
+        : plan.tasks,
+    );
+    await maybePublishTask(plan.saved);
+    void maybeSendTaskAssignments(plan.saved, { previousAssignees: plan.previousAssignees }).catch((err) => {
+      console.warn("Failed to send task assignments", err);
+    });
     setEditing(null);
   }
 

@@ -22,7 +22,7 @@ import {
 } from "../scripture/scriptureUtils";
 import { isoDatePart, startOfDay, taskDateKey } from "../dateTime/dateUtils";
 import { normalizeAgentPubkey } from "./assignmentUtils";
-import { nextOrderForBoard } from "./boardUtils";
+import { hiddenUntilForBoard, nextOrderForBoard } from "./boardUtils";
 import {
   applyRecurringSeriesCutoffs,
   capRecurringTaskAt,
@@ -32,8 +32,8 @@ import {
   type RecurringSeriesCutoffs,
 } from "./recurrenceCutoffs";
 import type { Settings } from "./settingsTypes";
-import type { InboxItem, InboxItemStatus, ScriptureMemoryUpdate, Task, TaskAssigneeStatus } from "./taskTypes";
-import { isRecoverableBountyTask, mergeLongestStreak } from "./taskUtils";
+import type { Board, InboxItem, InboxItemStatus, ScriptureMemoryUpdate, Task, TaskAssignee, TaskAssigneeStatus } from "./taskTypes";
+import { isRecoverableBountyTask, mergeLongestStreak, normalizeTaskBounty } from "./taskUtils";
 
 export type InboxAction = "accept" | "dismiss" | "decline" | "maybe";
 
@@ -452,4 +452,108 @@ export function planClearCompleted(tasks: Task[], scopeBoardIds: ReadonlySet<str
     return !clear;
   });
   return { tasks: publishDeleted.length ? next : tasks, publishDeleted };
+}
+
+export type SaveTaskPlan = {
+  tasks: Task[];
+  saved: Task;
+  /** The assignees before the edit, so only newly added people are sent the assignment. */
+  previousAssignees: TaskAssignee[] | null;
+};
+
+/**
+ * Saves an edited or new task. Moving it to another board puts it at that board's end; moving a
+ * frequent series' open occurrence later restarts its streak. Authorship is normalized to hex keys.
+ */
+export function planSaveTask(
+  tasks: Task[],
+  edited: Task,
+  ctx: TaskEditContext & { settings: Pick<Settings, "newTaskPosition" | "streaksEnabled"> },
+): SaveTaskPlan {
+  const nowISO = ctx.now.toISOString();
+  const withSeries = (task: Task): Task =>
+    task.recurrence ? { ...task, seriesId: task.seriesId || task.id } : { ...task, seriesId: undefined };
+  const withAuthors = (task: Task, previousCreatedBy?: string): Task => {
+    const createdBy = normalizeAgentPubkey(task.createdBy || previousCreatedBy || ctx.actorPubkey) ?? undefined;
+    const lastEditedBy = normalizeAgentPubkey(task.lastEditedBy || ctx.actorPubkey || createdBy) ?? createdBy;
+    return {
+      ...task,
+      ...(createdBy ? { createdBy } : {}),
+      ...(lastEditedBy ? { lastEditedBy } : {}),
+      updatedAt: nowISO,
+    };
+  };
+
+  const index = tasks.findIndex((task) => task.id === edited.id);
+  if (index < 0) {
+    let next = withAuthors(withSeries(edited));
+    if (typeof next.order !== "number") {
+      next = { ...next, order: nextOrderForBoard(next.boardId, tasks, ctx.settings.newTaskPosition) };
+    }
+    const saved = normalizeTaskBounty(next);
+    return { tasks: [...tasks, saved], saved, previousAssignees: null };
+  }
+
+  const before = tasks[index];
+  let next = edited;
+  if (before.boardId !== edited.boardId) {
+    next = { ...next, order: nextOrderForBoard(edited.boardId, tasks, ctx.settings.newTaskPosition) };
+  }
+  if (ctx.settings.streaksEnabled && before.recurrence && isFrequentRecurrence(before.recurrence) && !before.completed) {
+    if (startOfDay(new Date(edited.dueISO)).getTime() > startOfDay(new Date(before.dueISO)).getTime()) {
+      next = { ...next, streak: 0 };
+    }
+  }
+  const saved = normalizeTaskBounty(withAuthors(withSeries(next), before.createdBy));
+  const nextTasks = tasks.slice();
+  nextTasks[index] = saved;
+  return {
+    tasks: nextTasks,
+    saved,
+    previousAssignees: Array.isArray(before.assignees) ? before.assignees : null,
+  };
+}
+
+/** Moves a task's due date a week later, hiding it until then on its board. */
+export function planPostponeTask(
+  tasks: Task[],
+  boards: Board[],
+  id: string,
+  ctx: TaskEditContext & { settings: Pick<Settings, "weekStart"> },
+): { tasks: Task[]; updated: Task } | null {
+  const index = tasks.findIndex((task) => task.id === id);
+  if (index < 0) return null;
+  const t = tasks[index];
+  const nextDue = startOfDay(new Date(t.dueISO));
+  nextDue.setDate(nextDue.getDate() + 7);
+  const boardKind = boards.find((board) => board.id === t.boardId)?.kind ?? "week";
+  const updated: Task = {
+    ...t,
+    dueISO: nextDue.toISOString(),
+    dueDateEnabled: true,
+    lastEditedBy: normalizeAgentPubkey(ctx.actorPubkey) ?? t.lastEditedBy ?? t.createdBy,
+    hiddenUntilISO: hiddenUntilForBoard(nextDue.toISOString(), boardKind, ctx.settings.weekStart),
+  };
+  const next = tasks.slice();
+  next[index] = updated;
+  return { tasks: next, updated };
+}
+
+export function planToggleSubtask(
+  tasks: Task[],
+  taskId: string,
+  subtaskId: string,
+  ctx: TaskEditContext,
+): { tasks: Task[]; updated: Task } | null {
+  const index = tasks.findIndex((task) => task.id === taskId);
+  if (index < 0) return null;
+  const t = tasks[index];
+  const updated: Task = {
+    ...t,
+    subtasks: (t.subtasks || []).map((sub) => (sub.id === subtaskId ? { ...sub, completed: !sub.completed } : sub)),
+    lastEditedBy: normalizeAgentPubkey(ctx.actorPubkey) ?? t.lastEditedBy ?? t.createdBy,
+  };
+  const next = tasks.slice();
+  next[index] = updated;
+  return { tasks: next, updated };
 }

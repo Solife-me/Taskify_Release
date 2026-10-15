@@ -116,13 +116,13 @@ test("ensureWeekRecurrencesForCurrentWeek creates clone for current week", () =>
     isoDatePart: (iso) => iso.slice(0, 10),
     taskDateKey: (t) => t.dueISO.slice(0, 10),
     nextOrderForBoard: () => 10,
-    maybePublishTask: () => {},
     now: () => 123,
   });
 
-  assert.equal(out.length, 2);
-  assert.equal(out[1].seriesId, "t1");
-  assert.equal(out[1].createdAt, 123);
+  assert.equal(out.tasks.length, 2);
+  assert.equal(out.tasks[1].seriesId, "t1");
+  assert.equal(out.tasks[1].createdAt, 123);
+  assert.deepEqual(out.generated, [out.tasks[1]], "the created occurrence is returned for the caller to publish");
 });
 
 test("ensureWeekRecurrencesForCurrentWeek never recreates an occurrence deleted on the board", () => {
@@ -133,7 +133,6 @@ test("ensureWeekRecurrencesForCurrentWeek never recreates an occurrence deleted 
     dueISO: "2026-03-05T00:00:00.000Z",
     recurrence: { type: "weekly" },
   } as SeriesTaskLike;
-  const published: string[] = [];
   const options = {
     weekStart: 0,
     newTaskPosition: "bottom" as const,
@@ -145,7 +144,6 @@ test("ensureWeekRecurrencesForCurrentWeek never recreates an occurrence deleted 
     isoDatePart: (iso: string) => iso.slice(0, 10),
     taskDateKey: (t: SeriesTaskLike) => t.dueISO.slice(0, 10),
     nextOrderForBoard: () => 10,
-    maybePublishTask: (clone: SeriesTaskLike) => { published.push(clone.id); },
   };
 
   // The deleted occurrence is no longer in the list; only the board's deletion record knows it.
@@ -154,11 +152,11 @@ test("ensureWeekRecurrencesForCurrentWeek never recreates an occurrence deleted 
     tasks: [task],
     isDeletedOccurrence: (boardId, taskId) => boardId === "b1" && taskId === "t1:2026-03-12T00:00:00.000Z",
   });
-  assert.equal(deleted.length, 1);
-  assert.deepEqual(published, []);
+  assert.equal(deleted.tasks.length, 1);
+  assert.deepEqual(deleted.generated, []);
 
   const kept = ensureWeekRecurrencesForCurrentWeek({ ...options, tasks: [task] });
-  assert.equal(kept.length, 2, "Without a deletion the occurrence is created as before");
+  assert.equal(kept.tasks.length, 2, "Without a deletion the occurrence is created as before");
 });
 
 test("ensureWeekRecurrencesForCurrentWeek stops when recurrence does not advance", () => {
@@ -186,10 +184,9 @@ test("ensureWeekRecurrencesForCurrentWeek stops when recurrence does not advance
     isoDatePart: (iso) => iso.slice(0, 10),
     taskDateKey: (t) => t.dueISO.slice(0, 10),
     nextOrderForBoard: () => 10,
-    maybePublishTask: () => {},
   });
 
-  assert.equal(out.length, 1);
+  assert.equal(out.tasks.length, 1);
   assert.equal(calls, 1);
 });
 
@@ -203,7 +200,6 @@ test("ensureWeekRecurrencesForCurrentWeek waits for a board that hasn't synced y
     dueISO: "2026-03-05T00:00:00.000Z",
     recurrence: { type: "weekly" },
   } as SeriesTaskLike;
-  const published: string[] = [];
   const options = {
     tasks: [task],
     weekStart: 0,
@@ -216,15 +212,14 @@ test("ensureWeekRecurrencesForCurrentWeek waits for a board that hasn't synced y
     isoDatePart: (iso: string) => iso.slice(0, 10),
     taskDateKey: (t: SeriesTaskLike) => t.dueISO.slice(0, 10),
     nextOrderForBoard: () => 10,
-    maybePublishTask: (t: SeriesTaskLike) => { published.push(t.id); },
     now: () => 123,
   };
   const waiting = ensureWeekRecurrencesForCurrentWeek({ ...options, canGenerateForBoard: () => false });
-  assert.equal(waiting.length, 1);
-  assert.deepEqual(published, []);
+  assert.equal(waiting.tasks.length, 1);
+  assert.deepEqual(waiting.generated, []);
   const ready = ensureWeekRecurrencesForCurrentWeek({ ...options, canGenerateForBoard: (id: string) => id === "b1" });
-  assert.equal(ready.length, 2);
-  assert.equal(published.length, 1);
+  assert.equal(ready.tasks.length, 2);
+  assert.equal(ready.generated.length, 1);
 });
 
 test("runningSeriesStreak reads an open instance's streak from the latest completed earlier one", async () => {
