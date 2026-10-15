@@ -16,7 +16,6 @@ import {
 } from "./lib/upcomingRows";
 import { type EventTemplate, nip04, nip19 } from "nostr-tools";
 import {
-  addDaysToDateKey,
   BIBLE_BOARD_ID,
   FASTING_REMINDER_SERIES_ID,
   isAssignedSharedTask,
@@ -128,11 +127,13 @@ import {
 } from "./domains/tasks/assignmentUtils";
 import { calendarEventsStore, recurringCutoffsStore, tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
 import {
-  calendarRecurrenceInstanceId,
-  calendarRecurrenceLimit,
   planCalendarRecurrenceWindow,
 } from "./domains/calendar/calendarRecurrenceWindow";
-import { planDeleteCalendarEvent, planMoveCalendarEvents } from "./domains/calendar/calendarCommands";
+import {
+  planDeleteCalendarEvent,
+  planMoveCalendarEvents,
+  planSaveCalendarEvent,
+} from "./domains/calendar/calendarCommands";
 import { planFastingReminders, planScriptureReviewTask } from "./domains/tasks/generatedTasks";
 import {
   planAssignmentResponse,
@@ -9265,15 +9266,15 @@ export default function App() {
 
   function saveCalendarEdit(updated: CalendarEvent) {
     const original = editing;
-    const prior = calendarEventsRef.current.find((event) => event.id === updated.id) ?? null;
-    const priorParticipants = prior?.participants ?? [];
-    const priorPublishBoardId = prior?.originBoardId ?? prior?.boardId;
-    const publishBoardId = updated.originBoardId ?? updated.boardId;
-    const forceInviteAll = !!prior && (priorPublishBoardId !== publishBoardId || prior.kind !== updated.kind);
-    const boardForUpdate = boards.find((b) => b.id === publishBoardId) ?? null;
-    const shouldSendInvites = (updated.participants?.length ?? 0) > 0;
+    const plan = planSaveCalendarEvent(calendarEventsStore().get(), updated, {
+      now: new Date(),
+      actorPubkey: nostrPK || undefined,
+      boards,
+      settings,
+    });
+    const boardForUpdate = boards.find((board) => board.id === plan.publishBoardId) ?? null;
     let inviteBoard = boardForUpdate;
-    if (shouldSendInvites && boardForUpdate && !boardForUpdate.nostr?.boardId) {
+    if (plan.shouldSendInvites && boardForUpdate && !boardForUpdate.nostr?.boardId) {
       const relayFallback = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
       const relays = Array.from(new Set(relayFallback.map((relay) => relay.trim()).filter(Boolean)));
       if (relays.length) {
@@ -9285,197 +9286,19 @@ export default function App() {
         showToast("Sharing enabled for this board to send invites.", 3000);
       }
     }
-    let publishBatch: CalendarEvent[] = [];
-    const prunedDeletes: CalendarEvent[] = [];
-    // Computed from the current events, then set. Filling publishBatch inside a setState updater
-    // only worked when React ran it immediately; with other updates pending (the recurrence
-    // window runs on every calendar change) it ran later and the edit was never published.
-    const nextCalendarEvents = ((prev: CalendarEvent[]): CalendarEvent[] => {
-      const existing = prev.find((event) => event.id === updated.id) ?? null;
-      // Edited on its own, a generated occurrence becomes an exception and is published.
-      let next: CalendarEvent = { ...updated, generated: undefined };
-
-      if (existing && existing.boardId !== updated.boardId) {
-        next = {
-          ...next,
-          order: nextOrderForCalendarBoard(updated.boardId, prev, settings.newTaskPosition),
-        };
-      } else if (typeof next.order !== "number") {
-        next = {
-          ...next,
-          order: nextOrderForCalendarBoard(updated.boardId, prev, settings.newTaskPosition),
-        };
-      }
-
-      if (next.recurrence && next.recurrence.type !== "none") {
-        next = { ...next, seriesId: next.seriesId || next.id };
-      } else {
-        next = { ...next, recurrence: undefined, seriesId: undefined };
-      }
-      const nextCreatedBy = normalizeAgentPubkey(next.createdBy || existing?.createdBy || nostrPK) ?? undefined;
-      const nextLastEditedBy = normalizeAgentPubkey(next.lastEditedBy || nostrPK || nextCreatedBy) ?? nextCreatedBy;
-      next = {
-        ...next,
-        ...(nextCreatedBy ? { createdBy: nextCreatedBy } : {}),
-        ...(nextLastEditedBy ? { lastEditedBy: nextLastEditedBy } : {}),
-      };
-      const visibilityBoard = boards.find((b) => b.id === next.boardId) ?? boardForUpdate ?? null;
-      next = applyHiddenForCalendarEvent(next, settings.weekStart, visibilityBoard?.kind ?? "week");
-
-      const idx = prev.findIndex((event) => event.id === next.id);
-      let nextState = idx >= 0
-        ? prev.map((event) => (event.id === next.id ? next : event))
-        : [...prev, next];
-
-      publishBatch = [next];
-
-      const shouldGenerate =
-        next.recurrence &&
-        next.recurrence.type !== "none" &&
-        (next.seriesId || next.id) === next.id;
-
-      if (!shouldGenerate) {
-        return nextState;
-      }
-
-      const seriesId = next.seriesId || next.id;
-      const rule = next.recurrence!;
-      const timeZone = next.kind === "time" ? normalizeTimeZone(next.startTzid) ?? undefined : "UTC";
-      const baseStartISO = next.kind === "time"
-        ? next.startISO
-        : isoFromDateTime(next.startDate, "00:00", "UTC");
-
-      const limitKey = rule.untilISO ? isoDatePart(rule.untilISO, timeZone) : null;
-      if (limitKey && ISO_DATE_PATTERN.test(limitKey)) {
-        const startKeyForSeriesEvent = (event: CalendarEvent): string | null => {
-          if (!event.recurrence) return null;
-          const eventSeriesId = event.seriesId || event.id;
-          if (eventSeriesId !== seriesId) return null;
-          if (event.kind === "date") {
-            return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
-          }
-          const dateKey = isoDatePart(event.startISO, timeZone);
-          return ISO_DATE_PATTERN.test(dateKey) ? dateKey : null;
-        };
-
-        const pruned: CalendarEvent[] = [];
-        for (const event of nextState) {
-          if (event.id === next.id) {
-            pruned.push(event);
-            continue;
-          }
-          const startKey = startKeyForSeriesEvent(event);
-          if (!startKey) {
-            pruned.push(event);
-            continue;
-          }
-          if (startKey > limitKey) {
-            prunedDeletes.push(event);
-            continue;
-          }
-          pruned.push(event);
-        }
-        nextState = pruned;
-      }
-
-      const existingIds = new Set(nextState.map((event) => event.id));
-      const durationMs = (() => {
-        if (next.kind !== "time") return 0;
-        if (!next.endISO) return 0;
-        const start = Date.parse(next.startISO);
-        const end = Date.parse(next.endISO);
-        if (Number.isNaN(start) || Number.isNaN(end)) return 0;
-        return Math.max(0, end - start);
-      })();
-
-      const durationDays = (() => {
-        if (next.kind !== "date") return 1;
-        const endDate = next.endDate && isDateKey(next.endDate) ? next.endDate : next.startDate;
-        const startParts = parseDateKey(next.startDate);
-        const endParts = parseDateKey(endDate);
-        if (!startParts || !endParts) return 1;
-        const startUtc = Date.UTC(startParts.year, startParts.month - 1, startParts.day);
-        const endUtc = Date.UTC(endParts.year, endParts.month - 1, endParts.day);
-        if (!Number.isFinite(startUtc) || !Number.isFinite(endUtc) || endUtc < startUtc) return 1;
-        return Math.round((endUtc - startUtc) / 86400000) + 1;
-      })();
-
-      let cursorISO = baseStartISO;
-      const maxInstances = Math.max(1, calendarRecurrenceLimit(rule));
-      const generated: CalendarEvent[] = [];
-
-      for (let i = 1; i < maxInstances; i++) {
-        const nextISO = nextOccurrence(cursorISO, rule, next.kind === "time", timeZone);
-        if (!nextISO) break;
-        cursorISO = nextISO;
-        const id = calendarRecurrenceInstanceId(seriesId, nextISO, rule, timeZone);
-        if (existingIds.has(id)) continue;
-
-        const nextOrder = nextOrderForCalendarBoard(next.boardId, nextState, settings.newTaskPosition);
-        const instanceBase: CalendarEventBase = {
-          ...(next as any),
-          id,
-          order: nextOrder,
-          seriesId,
-          recurrence: rule,
-          eventKey: undefined,
-          inviteTokens: undefined,
-          canonicalAddress: undefined,
-          viewAddress: undefined,
-          inviteToken: undefined,
-          inviteRelays: undefined,
-          generated: true,
-        };
-
-        const instance: CalendarEvent = next.kind === "time"
-          ? {
-              ...instanceBase,
-              kind: "time",
-              startISO: nextISO,
-              ...(durationMs ? { endISO: new Date(Date.parse(nextISO) + durationMs).toISOString() } : {}),
-              ...(normalizeTimeZone(next.startTzid) ? { startTzid: next.startTzid } : {}),
-              ...(normalizeTimeZone(next.endTzid) ? { endTzid: next.endTzid } : {}),
-            }
-          : (() => {
-              const startDate = isoDatePart(nextISO, "UTC");
-              const endDate = durationDays > 1 ? addDaysToDateKey(startDate, durationDays - 1) : null;
-              return {
-                ...instanceBase,
-                kind: "date",
-                startDate,
-                ...(endDate ? { endDate } : {}),
-              } as CalendarEvent;
-            })();
-
-        const normalizedInstance = applyHiddenForCalendarEvent(
-          instance,
-          settings.weekStart,
-          visibilityBoard?.kind ?? "week",
-        );
-        existingIds.add(id);
-        generated.push(normalizedInstance);
-        nextState = [...nextState, normalizedInstance];
-      }
-
-      if (generated.length) {
-        publishBatch = [next, ...generated];
-      }
-
-      return nextState;
-    })(calendarEventsRef.current);
-    setCalendarEvents(nextCalendarEvents);
+    setCalendarEvents(plan.events);
 
     try {
-      publishBatch.forEach((event) => {
+      plan.publish.forEach((event) => {
         maybePublishCalendarEventRef.current?.(event, inviteBoard ?? undefined).catch(() => {});
       });
     } catch {}
-    prunedDeletes.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
+    plan.publishDeleted.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
 
     try {
       maybeSendCalendarEventInvites(updated, {
-        previousParticipants: priorParticipants,
-        forceAll: forceInviteAll,
+        previousParticipants: plan.previousParticipants,
+        forceAll: plan.forceInviteAll,
         board: inviteBoard ?? undefined,
       }).catch(() => {});
     } catch {}

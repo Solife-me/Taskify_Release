@@ -382,7 +382,7 @@ per step.
 | --- | --- | --- | --- |
 | C2-1 | Approve | 2026-10-15 | Planned (after C2-3 stage 2) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
-| C2-3 | Approve all stages | 2026-10-15 | Stage 2 done; stage 1 calendar delete/move commands done, remaining mutations in progress (see Checkpoint) |
+| C2-3 | Approve all stages | 2026-10-15 | Stage 2 done; stage 1 calendar move/delete/save commands done, invites and RSVP remain (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
 | C2-6 | Approve | 2026-10-15 | Planned |
@@ -413,8 +413,8 @@ tests, and `taskify-core` 132 tests.
   and fasting reminders.
 - **Calendar window planner** (`domains/calendar/calendarRecurrenceWindow.ts`).
 - **Calendar commands** (`domains/calendar/calendarCommands.ts`): selection moves between boards
-  and list columns, recurring-series cutoffs, single-occurrence deletion and seed advancement all
-  return explicit state and publish plans.
+  and list columns, recurring-series cutoffs, single-occurrence deletion, seed advancement and
+  edits (including local recurrence-window refresh) all return explicit state and publish plans.
 - **Fixed along the way:**
   - updaters that deferred or double-ran publishes;
   - a lost board `order` on save;
@@ -434,8 +434,8 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 **Remaining, in order**
 
 1. **Finish stage 1 (calendar).**
-   - Turn `saveCalendarEdit`, `addAcceptedInviteToCalendar` and `publishCalendarRsvp` into tested
-     commands in `domains/calendar/calendarCommands.ts`.
+   - Turn `addAcceptedInviteToCalendar` and `publishCalendarRsvp` into tested commands in
+     `domains/calendar/calendarCommands.ts`.
    - Remove the re-export shim `src/lib/app/weekBoardDate.ts` (import from `taskify-core`).
 2. **C2-1, routes and history.**
    - A small typed router over the History API: pages as paths, open overlays as history entries

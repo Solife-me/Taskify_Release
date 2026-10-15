@@ -3,9 +3,12 @@
  * They never touch React, storage or the network.
  */
 import { addDaysToDateKey, ISO_DATE_PATTERN, MS_PER_DAY, nextOccurrence } from "taskify-core";
-import { isoDatePart, normalizeTimeZone, parseDateKey, startOfDay } from "../dateTime/dateUtils";
-import type { CalendarEvent } from "../tasks/taskTypes";
-import { calendarRecurrenceInstanceId } from "./calendarRecurrenceWindow";
+import { isoDatePart, isoFromDateTime, normalizeTimeZone, parseDateKey, startOfDay } from "../dateTime/dateUtils";
+import { normalizeAgentPubkey } from "../tasks/assignmentUtils";
+import { applyHiddenForCalendarEvent, nextOrderForCalendarBoard } from "../tasks/boardUtils";
+import type { Settings } from "../tasks/settingsTypes";
+import type { Board, CalendarEvent, CalendarEventBase, CalendarEventParticipant } from "../tasks/taskTypes";
+import { calendarRecurrenceInstanceId, calendarRecurrenceLimit } from "./calendarRecurrenceWindow";
 import { calendarEventDateKey, calendarEventStartISOForRecurrence } from "./calendarUtils";
 
 export type CalendarEventPlan = {
@@ -24,6 +27,21 @@ export type CalendarDeletePlan =
   | { kind: "none" }
   | { kind: "ask-scope"; event: CalendarEvent }
   | AppliedCalendarDeletePlan;
+
+export type SaveCalendarEventContext = {
+  now: Date;
+  actorPubkey?: string;
+  boards: Board[];
+  settings: Pick<Settings, "newTaskPosition" | "weekStart">;
+};
+
+export type SaveCalendarEventPlan = CalendarEventPlan & {
+  saved: CalendarEvent;
+  previousParticipants: CalendarEventParticipant[];
+  forceInviteAll: boolean;
+  publishBoardId: string;
+  shouldSendInvites: boolean;
+};
 
 function appliedDeletePlan(
   events: CalendarEvent[],
@@ -203,4 +221,182 @@ export function planAdvanceCalendarSeriesSeed(
     publishDeleted: stood && !stood.generated ? [stood] : [],
     deletedOccurrenceIds: [nextId],
   });
+}
+
+/**
+ * Saves an event, normalizes its authorship and recurrence identity, and refreshes a seed's local
+ * recurrence window. Generated occurrences remain publish intents for fidelity; the publisher
+ * ignores them because every client derives them locally.
+ */
+export function planSaveCalendarEvent(
+  events: CalendarEvent[],
+  updated: CalendarEvent,
+  ctx: SaveCalendarEventContext,
+): SaveCalendarEventPlan {
+  const prior = events.find((event) => event.id === updated.id) ?? null;
+  const previousParticipants = prior?.participants ?? [];
+  const priorPublishBoardId = prior?.originBoardId ?? prior?.boardId;
+  const publishBoardId = updated.originBoardId ?? updated.boardId;
+  const forceInviteAll = !!prior && (priorPublishBoardId !== publishBoardId || prior.kind !== updated.kind);
+  const boardForUpdate = ctx.boards.find((board) => board.id === publishBoardId) ?? null;
+
+  // Edited on its own, a generated occurrence becomes an exception and is published.
+  let next: CalendarEvent = { ...updated, generated: undefined };
+  if (prior && prior.boardId !== updated.boardId) {
+    next = {
+      ...next,
+      order: nextOrderForCalendarBoard(updated.boardId, events, ctx.settings.newTaskPosition),
+    };
+  } else if (typeof next.order !== "number") {
+    next = {
+      ...next,
+      order: nextOrderForCalendarBoard(updated.boardId, events, ctx.settings.newTaskPosition),
+    };
+  }
+
+  if (next.recurrence && next.recurrence.type !== "none") {
+    next = { ...next, seriesId: next.seriesId || next.id };
+  } else {
+    next = { ...next, recurrence: undefined, seriesId: undefined };
+  }
+  const nextCreatedBy = normalizeAgentPubkey(next.createdBy || prior?.createdBy || ctx.actorPubkey) ?? undefined;
+  const nextLastEditedBy = normalizeAgentPubkey(next.lastEditedBy || ctx.actorPubkey || nextCreatedBy) ?? nextCreatedBy;
+  next = {
+    ...next,
+    ...(nextCreatedBy ? { createdBy: nextCreatedBy } : {}),
+    ...(nextLastEditedBy ? { lastEditedBy: nextLastEditedBy } : {}),
+  };
+  const visibilityBoard = ctx.boards.find((board) => board.id === next.boardId) ?? boardForUpdate ?? null;
+  next = applyHiddenForCalendarEvent(next, ctx.settings.weekStart, visibilityBoard?.kind ?? "week", ctx.now);
+
+  const index = events.findIndex((event) => event.id === next.id);
+  let nextState = index >= 0
+    ? events.map((event) => (event.id === next.id ? next : event))
+    : [...events, next];
+  const publish: CalendarEvent[] = [next];
+  const publishDeleted: CalendarEvent[] = [];
+  const shouldGenerate =
+    next.recurrence
+    && next.recurrence.type !== "none"
+    && (next.seriesId || next.id) === next.id;
+
+  if (shouldGenerate) {
+    const seriesId = next.seriesId || next.id;
+    const rule = next.recurrence!;
+    const timeZone = next.kind === "time" ? normalizeTimeZone(next.startTzid) ?? undefined : "UTC";
+    const baseStartISO = next.kind === "time"
+      ? next.startISO
+      : isoFromDateTime(next.startDate, "00:00", "UTC");
+    const limitKey = rule.untilISO ? isoDatePart(rule.untilISO, timeZone) : null;
+    if (limitKey && ISO_DATE_PATTERN.test(limitKey)) {
+      const startKeyForSeriesEvent = (event: CalendarEvent): string | null => {
+        if (!event.recurrence || (event.seriesId || event.id) !== seriesId) return null;
+        if (event.kind === "date") {
+          return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : null;
+        }
+        const dateKey = isoDatePart(event.startISO, timeZone);
+        return ISO_DATE_PATTERN.test(dateKey) ? dateKey : null;
+      };
+      const pruned: CalendarEvent[] = [];
+      for (const event of nextState) {
+        if (event.id === next.id) {
+          pruned.push(event);
+          continue;
+        }
+        const startKey = startKeyForSeriesEvent(event);
+        if (!startKey || startKey <= limitKey) {
+          pruned.push(event);
+          continue;
+        }
+        publishDeleted.push(event);
+      }
+      nextState = pruned;
+    }
+
+    const existingIds = new Set(nextState.map((event) => event.id));
+    const durationMs = (() => {
+      if (next.kind !== "time" || !next.endISO) return 0;
+      const start = Date.parse(next.startISO);
+      const end = Date.parse(next.endISO);
+      if (Number.isNaN(start) || Number.isNaN(end)) return 0;
+      return Math.max(0, end - start);
+    })();
+    const durationDays = (() => {
+      if (next.kind !== "date") return 1;
+      const endDate = next.endDate && ISO_DATE_PATTERN.test(next.endDate) ? next.endDate : next.startDate;
+      const startParts = parseDateKey(next.startDate);
+      const endParts = parseDateKey(endDate);
+      if (!startParts || !endParts) return 1;
+      const startUtc = Date.UTC(startParts.year, startParts.month - 1, startParts.day);
+      const endUtc = Date.UTC(endParts.year, endParts.month - 1, endParts.day);
+      if (!Number.isFinite(startUtc) || !Number.isFinite(endUtc) || endUtc < startUtc) return 1;
+      return Math.round((endUtc - startUtc) / MS_PER_DAY) + 1;
+    })();
+    let cursorISO = baseStartISO;
+    const maxInstances = Math.max(1, calendarRecurrenceLimit(rule));
+    const generated: CalendarEvent[] = [];
+    for (let i = 1; i < maxInstances; i += 1) {
+      const occurrenceISO = nextOccurrence(cursorISO, rule, next.kind === "time", timeZone);
+      if (!occurrenceISO) break;
+      cursorISO = occurrenceISO;
+      const id = calendarRecurrenceInstanceId(seriesId, occurrenceISO, rule, timeZone);
+      if (existingIds.has(id)) continue;
+
+      const nextOrder = nextOrderForCalendarBoard(next.boardId, nextState, ctx.settings.newTaskPosition);
+      const instanceBase: CalendarEventBase = {
+        ...(next as CalendarEventBase),
+        id,
+        order: nextOrder,
+        seriesId,
+        recurrence: rule,
+        eventKey: undefined,
+        inviteTokens: undefined,
+        canonicalAddress: undefined,
+        viewAddress: undefined,
+        inviteToken: undefined,
+        inviteRelays: undefined,
+        generated: true,
+      };
+      const instance: CalendarEvent = next.kind === "time"
+        ? {
+            ...instanceBase,
+            kind: "time",
+            startISO: occurrenceISO,
+            ...(durationMs ? { endISO: new Date(Date.parse(occurrenceISO) + durationMs).toISOString() } : {}),
+            ...(normalizeTimeZone(next.startTzid) ? { startTzid: next.startTzid } : {}),
+            ...(normalizeTimeZone(next.endTzid) ? { endTzid: next.endTzid } : {}),
+          }
+        : (() => {
+            const startDate = isoDatePart(occurrenceISO, "UTC");
+            const endDate = durationDays > 1 ? addDaysToDateKey(startDate, durationDays - 1) : null;
+            return {
+              ...instanceBase,
+              kind: "date",
+              startDate,
+              ...(endDate ? { endDate } : {}),
+            } as CalendarEvent;
+          })();
+      const normalizedInstance = applyHiddenForCalendarEvent(
+        instance,
+        ctx.settings.weekStart,
+        visibilityBoard?.kind ?? "week",
+        ctx.now,
+      );
+      existingIds.add(id);
+      generated.push(normalizedInstance);
+      nextState = [...nextState, normalizedInstance];
+    }
+    publish.push(...generated);
+  }
+
+  return {
+    events: nextState,
+    saved: next,
+    publish,
+    publishDeleted,
+    previousParticipants,
+    forceInviteAll,
+    publishBoardId,
+    shouldSendInvites: (updated.participants?.length ?? 0) > 0,
+  };
 }

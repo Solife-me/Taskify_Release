@@ -219,6 +219,7 @@ function hiddenUntilForCalendarEvent(
   event: CalendarEvent,
   boardKind: Board["kind"],
   weekStart: Weekday,
+  now = new Date(),
 ): string | undefined {
   if (boardKind !== "lists" && boardKind !== "compound") return undefined;
   const dateKey = calendarEventDateKey(event);
@@ -228,15 +229,20 @@ function hiddenUntilForCalendarEvent(
   const eventDate = new Date(parsed.year, parsed.month - 1, parsed.day);
   if (Number.isNaN(eventDate.getTime())) return undefined;
   const eventWeekStart = startOfWeek(eventDate, weekStart);
-  const currentWeekStart = startOfWeek(new Date(), weekStart);
+  const currentWeekStart = startOfWeek(now, weekStart);
   if (eventWeekStart.getTime() > currentWeekStart.getTime()) {
     return eventWeekStart.toISOString();
   }
   return undefined;
 }
 
-export function applyHiddenForCalendarEvent(event: CalendarEvent, weekStart: Weekday, boardKind: Board["kind"]): CalendarEvent {
-  const hiddenUntilISO = hiddenUntilForCalendarEvent(event, boardKind, weekStart);
+export function applyHiddenForCalendarEvent(
+  event: CalendarEvent,
+  weekStart: Weekday,
+  boardKind: Board["kind"],
+  now = new Date(),
+): CalendarEvent {
+  const hiddenUntilISO = hiddenUntilForCalendarEvent(event, boardKind, weekStart, now);
   if (hiddenUntilISO) {
     if (event.hiddenUntilISO === hiddenUntilISO) return event;
     return { ...event, hiddenUntilISO };
