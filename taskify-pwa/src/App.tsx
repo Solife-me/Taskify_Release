@@ -138,6 +138,9 @@ import {
   planClearCompleted,
   planCompleteTask,
   planDeleteTask,
+  planMoveTask,
+  planMoveTaskToBoard,
+  planMoveTasksToColumn,
   planPostponeTask,
   planRestoreTask,
   planSaveTask,
@@ -146,7 +149,6 @@ import {
 import {
   reserveTaskMutationTimestamp,
   TaskPublishVersionTracker,
-  taskMovePersistencePlan,
 } from "./domains/tasks/taskMovePersistence";
 import {
   applyRecurringSeriesCutoff,
@@ -289,7 +291,6 @@ import { WalletAddressView } from "./ui/wallet/WalletAddressView";
 import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
 import { useNostrChatStateSync } from "./nostr/useNostrChatStateSync";
 import { PublishFingerprints } from "./domains/nostr/publishFingerprints";
-import { hasSyncedTaskChange } from "./domains/tasks/taskSyncChanges";
 import {
   applyInboxResponsesToCalendarInvites,
   applyInboxResponsesToTasks,
@@ -10281,135 +10282,17 @@ export default function App() {
       }
       markTaskRelayPublishPending(id, pendingBoard);
     }
-    setTasks(prev => {
-      const arr = [...prev];
-      const fromIdx = arr.findIndex(t => t.id === id);
-      if (fromIdx < 0) return prev;
-      const task = arr[fromIdx];
-      const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
-
-      const updated: Task = {
-        ...task,
-        lastEditedBy: editorPubkey || task.lastEditedBy || task.createdBy,
-      };
-      const prevDue = startOfDay(new Date(task.dueISO));
-      const taskTimeZone = normalizeTimeZone(task.dueTimeZone) ?? undefined;
-      const originalTime = task.dueTimeEnabled ? isoTimePart(task.dueISO, taskTimeZone) : "";
-      const baseWeekday = Number.isNaN(prevDue.getTime()) ? undefined : prevDue;
-      const sourceBoardId = task.boardId;
-      let targetBoardId = sourceBoardId;
-      if (target.type === "day") {
-        updated.column = "day";
-        updated.columnId = undefined;
-        updated.dueISO = isoForWeekday(target.day, {
-          base: baseWeekday,
-          weekStart: settings.weekStart,
-        });
-        updated.dueDateEnabled = true;
-      } else {
-        if (!isListLikeBoard(currentBoard)) return prev;
-        const source = listColumnSources.get(target.columnId);
-        if (!source) return prev;
-        updated.column = undefined;
-        updated.columnId = source.columnId;
-        updated.boardId = source.boardId;
-        targetBoardId = source.boardId;
-      }
-      if (originalTime) {
-        const nextDatePart = isoDatePart(updated.dueISO);
-        const withTime = isoFromDateTime(nextDatePart, originalTime, taskTimeZone);
-        if (withTime) updated.dueISO = withTime;
-      }
-      const newDue = startOfDay(new Date(updated.dueISO));
-      if (
-        settings.streaksEnabled &&
-        task.recurrence &&
-        isFrequentRecurrence(task.recurrence) &&
-        !task.completed &&
-        newDue.getTime() > prevDue.getTime()
-      ) {
-        updated.streak = 0;
-      }
-      // reveal if user manually places it
-      updated.hiddenUntilISO = undefined;
-
-      // un-complete only if it doesn't have a pending bounty
-      if (updated.completed && (!updated.bounty || updated.bounty.state === "claimed")) {
-        updated.completed = false;
-        updated.completedAt = undefined;
-        updated.completedBy = undefined;
-      }
-
-      // remove original
-      arr.splice(fromIdx, 1);
-
-      const sortByOrder = (list: Task[]) =>
-        [...list].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-      const publishSet = new Set<Task>();
-
-      // rebalance source board (if moving across boards) using visible order
-      if (sourceBoardId !== targetBoardId) {
-        const sourceOrdered = sortByOrder(arr.filter((t) => t.boardId === sourceBoardId));
-        sourceOrdered.forEach((t, index) => {
-          if ((t.order ?? 0) !== index) {
-            const idx = arr.findIndex((x) => x.id === t.id);
-            if (idx >= 0) {
-              // Order is device-local (not in the published payload): no publish.
-              arr[idx] = { ...t, order: index };
-            }
-          }
-        });
-      }
-
-      // compute insertion relative to the board's sorted order
-      const targetOrdered = sortByOrder(
-        arr.filter((t) => t.boardId === targetBoardId && t.id !== updated.id)
-      );
-      const beforeIdx = typeof beforeId === "string"
-        ? targetOrdered.findIndex((t) => t.id === beforeId)
-        : -1;
-      const insertIdx = beforeIdx >= 0 ? beforeIdx : targetOrdered.length;
-      targetOrdered.splice(insertIdx, 0, updated);
-
-      // recompute order for the target board in the sorted sequence
-      targetOrdered.forEach((t, index) => {
-        const nextOrder = index;
-        if (t.id === updated.id) {
-          updated.order = nextOrder;
-          return;
-        }
-        if ((t.order ?? 0) !== nextOrder) {
-          const idx = arr.findIndex((x) => x.id === t.id);
-          if (idx >= 0) {
-            // Order is device-local (not in the published payload): no publish.
-            arr[idx] = { ...t, order: nextOrder };
-          }
-        }
-      });
-
-      // ensure the moved task is present in the array
-      const existingIdx = arr.findIndex((t) => t.id === updated.id);
-      if (existingIdx >= 0) {
-        arr[existingIdx] = updated;
-      } else {
-        arr.push(updated);
-      }
-      const persistencePlan = taskMovePersistencePlan(task, updated);
-      // A reorder within the same list changes nothing other devices see.
-      if (persistencePlan.sourceToDelete || hasSyncedTaskChange(task, updated)) {
-        publishSet.add(persistencePlan.targetToPublish);
-      }
-
-      try {
-        if (persistencePlan.sourceToDelete) {
-          publishTaskDeleted(persistencePlan.sourceToDelete).catch(() => {});
-        }
-        publishSet.forEach((t) => { maybePublishTask(t).catch(() => {}); });
-      } catch {}
-
-      return arr;
+    const plan = planMoveTask(tasksStore().get(), id, target, beforeId, {
+      now: new Date(),
+      actorPubkey: (window as any).nostrPK || undefined,
+      settings,
+      currentBoard,
+      listColumnSources,
     });
+    if (!plan) return;
+    setTasks(plan.tasks);
+    plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
+    plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
   }
 
   const completeSelectedItems = useCallback(() => {
@@ -10430,95 +10313,15 @@ export default function App() {
   }, [deleteCalendarEvent, deleteTask, exitSelectionMode, selectedCount, selectedEvents, selectedTasks, showToast]);
 
   function moveTaskToBoard(id: string, boardId: string) {
-    setTasks(prev => {
-      const arr = [...prev];
-      const fromIdx = arr.findIndex(t => t.id === id);
-      if (fromIdx < 0) return prev;
-      const task = arr[fromIdx];
-      const targetBoard = boards.find(b => b.id === boardId);
-      if (!targetBoard || targetBoard.kind === "bible") return prev;
-      const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
-
-      // remove from source
-      arr.splice(fromIdx, 1);
-
-      const sortByOrder = (list: Task[]) =>
-        [...list].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-      const publishSet = new Set<Task>();
-
-      // recompute order for source board using the visible ordering
-      const sourceOrdered = sortByOrder(arr.filter((t) => t.boardId === task.boardId));
-      sourceOrdered.forEach((t, index) => {
-        if ((t.order ?? 0) !== index) {
-          const idx = arr.findIndex((x) => x.id === t.id);
-          if (idx >= 0) {
-            // Order is device-local (not in the published payload): no publish.
-            arr[idx] = { ...t, order: index };
-          }
-        }
-      });
-
-      let destinationBoardId = boardId;
-      const updated: Task = {
-        ...task,
-        boardId,
-        lastEditedBy: editorPubkey || task.lastEditedBy || task.createdBy,
-      };
-      if (targetBoard.kind === "week") {
-        updated.column = "day";
-        updated.columnId = undefined;
-      } else if (targetBoard.kind === "compound") {
-        const childBoard = targetBoard.children
-          .map((childId) => boards.find((b) => b.id === childId))
-          .find((b): b is Extract<Board, { kind: "lists" }> => !!b && b.kind === "lists");
-        if (!childBoard || !childBoard.columns.length) return prev;
-        destinationBoardId = childBoard.id;
-        updated.boardId = childBoard.id;
-        updated.column = undefined;
-        updated.columnId = childBoard.columns[0]?.id;
-        updated.dueISO = isoForWeekday(0);
-      } else {
-        updated.column = undefined;
-        updated.columnId = targetBoard.columns[0]?.id;
-        updated.dueISO = isoForWeekday(0);
-      }
-
-      arr.push(updated);
-
-      const targetBoardId = targetBoard.kind === "compound" ? destinationBoardId : boardId;
-      const targetOrdered = sortByOrder(arr.filter((t) => t.boardId === targetBoardId));
-      targetOrdered.forEach((t, index) => {
-        const nextOrder = index;
-        if (t.id === updated.id) {
-          updated.order = nextOrder;
-          return;
-        }
-        if ((t.order ?? 0) !== nextOrder) {
-          const idx = arr.findIndex((x) => x.id === t.id);
-          if (idx >= 0) {
-            // Order is device-local (not in the published payload): no publish.
-            arr[idx] = { ...t, order: nextOrder };
-          }
-        }
-      });
-
-      const updatedIdx = arr.findIndex((t) => t.id === updated.id);
-      if (updatedIdx >= 0) arr[updatedIdx] = updated;
-      const persistencePlan = taskMovePersistencePlan(task, updated);
-      // A reorder within the same list changes nothing other devices see.
-      if (persistencePlan.sourceToDelete || hasSyncedTaskChange(task, updated)) {
-        publishSet.add(persistencePlan.targetToPublish);
-      }
-
-      try {
-        if (persistencePlan.sourceToDelete) {
-          publishTaskDeleted(persistencePlan.sourceToDelete).catch(() => {});
-        }
-        publishSet.forEach((t) => { maybePublishTask(t).catch(() => {}); });
-      } catch {}
-
-      return arr;
+    const plan = planMoveTaskToBoard(tasksStore().get(), boards, id, boardId, {
+      now: new Date(),
+      actorPubkey: (window as any).nostrPK || undefined,
+      settings,
     });
+    if (!plan) return;
+    setTasks(plan.tasks);
+    plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
+    plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
   }
 
   const moveSelectedTasksToBoard = useCallback((boardId: string) => {
@@ -10546,30 +10349,17 @@ export default function App() {
     if (!selectedTasks.length && !selectedEvents.length) return;
     const board = boards.find((b) => b.id === boardId);
     const col = board && board.kind === "lists" ? board.columns.find((c) => c.id === columnId) : null;
-    const editorPubkey = normalizeAgentPubkey((window as any).nostrPK) ?? undefined;
     if (selectedTasks.length) {
-      selectedTasks.forEach((task) => {
-        setTasks((prev) => {
-          const idx = prev.findIndex((t) => t.id === task.id);
-          if (idx < 0) return prev;
-          const copy = [...prev];
-          const source = copy[idx];
-          const updated: Task = {
-            ...source,
-            boardId,
-            column: undefined,
-            columnId,
-            lastEditedBy: editorPubkey || source.lastEditedBy || source.createdBy,
-          };
-          copy[idx] = updated;
-          const persistencePlan = taskMovePersistencePlan(source, updated);
-          if (persistencePlan.sourceToDelete) {
-            publishTaskDeleted(persistencePlan.sourceToDelete).catch(() => {});
-          }
-          maybePublishTask(persistencePlan.targetToPublish).catch(() => {});
-          return copy;
-        });
-      });
+      const plan = planMoveTasksToColumn(
+        tasksStore().get(),
+        selectedTasks.map((task) => task.id),
+        boardId,
+        columnId,
+        { now: new Date(), actorPubkey: (window as any).nostrPK || undefined, settings },
+      );
+      setTasks(plan.tasks);
+      plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
+      plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
     }
     if (selectedEvents.length) {
       setCalendarEvents((prev) => prev.map((ev) => {
@@ -10588,7 +10378,7 @@ export default function App() {
     setSelectionMoveSheetOpen(false);
     setSelectionMoveStep("board");
     setSelectionMoveBoardId(null);
-	  }, [boards, exitSelectionMode, maybePublishCalendarEvent, maybePublishTask, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, showToast]);
+	  }, [boards, exitSelectionMode, maybePublishCalendarEvent, maybePublishTask, selectedEvents, selectedItemIdSet, selectedTasks, setCalendarEvents, setTasks, settings, showToast]);
 
   const selectionMoveTargets = useMemo(() => (
     boards.filter((board) => board.kind !== "bible" && !board.archived && !board.hidden).map((board) => ({

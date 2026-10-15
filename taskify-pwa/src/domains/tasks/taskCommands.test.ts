@@ -4,6 +4,9 @@ import {
   planClearCompleted,
   planCompleteTask,
   planDeleteTask,
+  planMoveTask,
+  planMoveTaskToBoard,
+  planMoveTasksToColumn,
   planPostponeTask,
   planRestoreTask,
   planSaveTask,
@@ -282,5 +285,101 @@ describe("planPostponeTask and planToggleSubtask", () => {
     expect(plan!.updated.subtasks).toEqual([{ id: "s1", title: "A", completed: true }, { id: "s2", title: "B", completed: true }]);
     expect(plan!.updated.lastEditedBy).toBe(ACTOR);
     expect(planToggleSubtask([], "x", "s", { now: NOW })).toBeNull();
+  });
+});
+
+describe("planMoveTask", () => {
+  const lists = { id: "b1", name: "Lists", kind: "lists", columns: [{ id: "c1", name: "A" }, { id: "c2", name: "B" }] } as never;
+  const sources = new Map([
+    ["c1", { boardId: "b1", columnId: "c1" }],
+    ["c2", { boardId: "b1", columnId: "c2" }],
+    ["x1", { boardId: "b2", columnId: "x1" }],
+  ]);
+  const ctx = {
+    now: NOW,
+    actorPubkey: ACTOR,
+    settings: { weekStart: 0 as const, streaksEnabled: true },
+    currentBoard: lists,
+    listColumnSources: sources,
+  };
+
+  it("reorders within a list without publishing", () => {
+    const tasks = [
+      task({ id: "a", columnId: "c1", order: 0 }),
+      task({ id: "b", columnId: "c1", order: 1 }),
+      task({ id: "c", columnId: "c1", order: 2 }),
+    ];
+    const plan = planMoveTask(tasks, "c", { type: "list", columnId: "c1" }, "a", ctx)!;
+    const order = Object.fromEntries(plan.tasks.map((t) => [t.id, t.order]));
+    expect(order).toEqual({ c: 0, a: 1, b: 2 });
+    expect(plan.publish).toEqual([]);
+    expect(plan.publishDeleted).toEqual([]);
+  });
+
+  it("publishes a column change and reopens a completed task", () => {
+    const plan = planMoveTask(
+      [task({ id: "a", columnId: "c1", completed: true, completedAt: "x", hiddenUntilISO: "y" })],
+      "a",
+      { type: "list", columnId: "c2" },
+      undefined,
+      ctx,
+    )!;
+    expect(plan.tasks[0]).toMatchObject({ columnId: "c2", completed: false, completedAt: undefined, hiddenUntilISO: undefined });
+    expect(plan.publish.map((t) => t.id)).toEqual(["a"]);
+  });
+
+  it("moving to another board of a compound board deletes the old board's copy", () => {
+    const plan = planMoveTask([task({ id: "a", columnId: "c1" })], "a", { type: "list", columnId: "x1" }, undefined, ctx)!;
+    expect(plan.tasks[0]).toMatchObject({ boardId: "b2", columnId: "x1", order: 0 });
+    expect(plan.publishDeleted.map((t) => t.boardId)).toEqual(["b1"]);
+    expect(plan.publish.map((t) => t.boardId)).toEqual(["b2"]);
+  });
+
+  it("keeps the time of day when dropped on another weekday", () => {
+    const timed = task({ id: "a", dueISO: "2026-10-15T14:30:00.000Z", dueTimeEnabled: true, dueTimeZone: "America/Chicago" });
+    const plan = planMoveTask([timed], "a", { type: "day", day: 5 }, undefined, { ...ctx, currentBoard: undefined })!;
+    const moved = plan.tasks[0];
+    expect(new Date(moved.dueISO).toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "2-digit", minute: "2-digit" })).toBe("09:30 AM");
+    expect(moved.column).toBe("day");
+  });
+
+  it("ignores a drop onto itself and list targets off list boards", () => {
+    expect(planMoveTask([task({})], "t1", { type: "list", columnId: "c1" }, "t1", ctx)).toBeNull();
+    expect(planMoveTask([task({})], "t1", { type: "list", columnId: "c1" }, undefined, { ...ctx, currentBoard: undefined })).toBeNull();
+  });
+});
+
+describe("planMoveTaskToBoard", () => {
+  const boards = [
+    { id: "b1", name: "Week", kind: "week" },
+    { id: "b2", name: "Lists", kind: "lists", columns: [{ id: "c1", name: "A" }] },
+  ] as never[];
+
+  it("lands at the bottom or top of the target board per the setting", () => {
+    const tasks = [task({ id: "a", boardId: "b1", order: 0 }), task({ id: "x", boardId: "b2", columnId: "c1", order: 0 }), task({ id: "y", boardId: "b2", columnId: "c1", order: 1 })];
+    const bottom = planMoveTaskToBoard(tasks, boards, "a", "b2", { now: NOW, settings: { newTaskPosition: "bottom" } })!;
+    expect(bottom.tasks.find((t) => t.id === "a")).toMatchObject({ boardId: "b2", columnId: "c1", order: 2 });
+    const top = planMoveTaskToBoard(tasks, boards, "a", "b2", { now: NOW, settings: { newTaskPosition: "top" } })!;
+    expect(top.tasks.find((t) => t.id === "a")?.order).toBe(0);
+    expect(top.tasks.find((t) => t.id === "x")?.order).toBe(1);
+    expect(top.publishDeleted.map((t) => t.boardId)).toEqual(["b1"]);
+  });
+});
+
+describe("planMoveTasksToColumn", () => {
+  it("moves the selection into one column in order and publishes each once", () => {
+    const tasks = [
+      task({ id: "a", boardId: "b1", order: 0 }),
+      task({ id: "b", boardId: "b1", order: 1 }),
+      task({ id: "z", boardId: "b2", columnId: "c1", order: 0 }),
+    ];
+    const plan = planMoveTasksToColumn(tasks, ["a", "b"], "b2", "c1", { now: NOW, settings: { newTaskPosition: "bottom" } });
+    const target = plan.tasks.filter((t) => t.boardId === "b2").sort((x, y) => (x.order ?? 0) - (y.order ?? 0));
+    expect(target.map((t) => t.id)).toEqual(["z", "a", "b"]);
+    expect(plan.publish.map((t) => t.id).sort()).toEqual(["a", "b"]);
+    expect(plan.publishDeleted.map((t) => t.id).sort()).toEqual(["a", "b"]);
+    const topPlan = planMoveTasksToColumn(tasks, ["a", "b"], "b2", "c1", { now: NOW, settings: { newTaskPosition: "top" } });
+    const topOrder = topPlan.tasks.filter((t) => t.boardId === "b2").sort((x, y) => (x.order ?? 0) - (y.order ?? 0));
+    expect(topOrder.map((t) => t.id)).toEqual(["a", "b", "z"]);
   });
 });

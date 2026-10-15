@@ -5,6 +5,8 @@
  */
 import {
   SCRIPTURE_MEMORY_SERIES_ID,
+  isoForWeekdayLocal,
+  isListLikeBoard,
   buildNextRecurringTask,
   buildRunningStreakLookup,
   recurringSeriesId,
@@ -20,7 +22,7 @@ import {
   markScriptureEntryReviewed,
   scriptureFrequencyToRecurrence,
 } from "../scripture/scriptureUtils";
-import { isoDatePart, startOfDay, taskDateKey } from "../dateTime/dateUtils";
+import { isoDatePart, isoFromDateTime, isoTimePart, normalizeTimeZone, startOfDay, taskDateKey } from "../dateTime/dateUtils";
 import { normalizeAgentPubkey } from "./assignmentUtils";
 import { hiddenUntilForBoard, nextOrderForBoard } from "./boardUtils";
 import {
@@ -33,6 +35,8 @@ import {
 } from "./recurrenceCutoffs";
 import type { Settings } from "./settingsTypes";
 import type { Board, InboxItem, InboxItemStatus, ScriptureMemoryUpdate, Task, TaskAssignee, TaskAssigneeStatus } from "./taskTypes";
+import { taskMovePersistencePlan } from "./taskMovePersistence";
+import { hasSyncedTaskChange } from "./taskSyncChanges";
 import { isRecoverableBountyTask, mergeLongestStreak, normalizeTaskBounty } from "./taskUtils";
 
 export type InboxAction = "accept" | "dismiss" | "decline" | "maybe";
@@ -556,4 +560,189 @@ export function planToggleSubtask(
   const next = tasks.slice();
   next[index] = updated;
   return { tasks: next, updated };
+}
+
+export type MoveTaskPlan = { tasks: Task[]; publish: Task[]; publishDeleted: Task[] };
+
+const byOrder = (list: Task[]) => [...list].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+/**
+ * Places `moved` on its board before `beforeId` (or at the end) and renumbers the source and target
+ * boards in their visible order. Order is device-local, so renumbered neighbours are not published.
+ * The task is published (and its old board's copy deleted) only when other devices would see a
+ * change.
+ */
+function placeMovedTask(tasks: Task[], original: Task, moved: Task, beforeId?: string): MoveTaskPlan {
+  const arr = tasks.filter((t) => t.id !== original.id);
+  const renumber = (boardId: string, insert?: { task: Task; beforeId?: string }) => {
+    const ordered = byOrder(arr.filter((t) => t.boardId === boardId));
+    if (insert) {
+      const beforeIdx = insert.beforeId ? ordered.findIndex((t) => t.id === insert.beforeId) : -1;
+      ordered.splice(beforeIdx >= 0 ? beforeIdx : ordered.length, 0, insert.task);
+    }
+    ordered.forEach((t, index) => {
+      if (t === insert?.task) {
+        insert.task.order = index;
+        return;
+      }
+      if ((t.order ?? 0) !== index) {
+        const idx = arr.findIndex((x) => x.id === t.id);
+        if (idx >= 0) arr[idx] = { ...t, order: index };
+      }
+    });
+  };
+  if (original.boardId !== moved.boardId) renumber(original.boardId);
+  renumber(moved.boardId, { task: moved, beforeId });
+  arr.push(moved);
+
+  const persistence = taskMovePersistencePlan(original, moved);
+  // A reorder within the same list changes nothing other devices see.
+  const changed = !!persistence.sourceToDelete || hasSyncedTaskChange(original, moved);
+  return {
+    tasks: arr,
+    publish: changed ? [persistence.targetToPublish as Task] : [],
+    publishDeleted: persistence.sourceToDelete ? [persistence.sourceToDelete as Task] : [],
+  };
+}
+
+export type MoveTarget = { type: "day"; day: Weekday } | { type: "list"; columnId: string };
+
+/**
+ * Drag and drop: moves a task to a weekday (week boards) or a list column, possibly on another
+ * board of a compound board, keeping its time of day. Placing a task reveals it and reopens it
+ * unless it holds an unclaimed bounty; moving an open series occurrence later restarts its streak.
+ */
+export function planMoveTask(
+  tasks: Task[],
+  id: string,
+  target: MoveTarget,
+  beforeId: string | undefined,
+  ctx: TaskEditContext & {
+    settings: Pick<Settings, "weekStart" | "streaksEnabled">;
+    currentBoard: Board | undefined;
+    listColumnSources: ReadonlyMap<string, { boardId: string; columnId: string }>;
+  },
+): MoveTaskPlan | null {
+  if (beforeId && beforeId === id) return null;
+  const task = tasks.find((t) => t.id === id);
+  if (!task) return null;
+  const moved: Task = {
+    ...task,
+    lastEditedBy: normalizeAgentPubkey(ctx.actorPubkey) || task.lastEditedBy || task.createdBy,
+  };
+  const prevDue = startOfDay(new Date(task.dueISO));
+  const timeZone = normalizeTimeZone(task.dueTimeZone) ?? undefined;
+  const originalTime = task.dueTimeEnabled ? isoTimePart(task.dueISO, timeZone) : "";
+  if (target.type === "day") {
+    moved.column = "day";
+    moved.columnId = undefined;
+    moved.dueISO = isoForWeekdayLocal(target.day, {
+      base: Number.isNaN(prevDue.getTime()) ? undefined : prevDue,
+      weekStart: ctx.settings.weekStart,
+    });
+    moved.dueDateEnabled = true;
+  } else {
+    if (!isListLikeBoard(ctx.currentBoard)) return null;
+    const source = ctx.listColumnSources.get(target.columnId);
+    if (!source) return null;
+    moved.column = undefined;
+    moved.columnId = source.columnId;
+    moved.boardId = source.boardId;
+  }
+  if (originalTime) {
+    const withTime = isoFromDateTime(isoDatePart(moved.dueISO), originalTime, timeZone);
+    if (withTime) moved.dueISO = withTime;
+  }
+  if (
+    ctx.settings.streaksEnabled &&
+    task.recurrence &&
+    isFrequentRecurrence(task.recurrence) &&
+    !task.completed &&
+    startOfDay(new Date(moved.dueISO)).getTime() > prevDue.getTime()
+  ) {
+    moved.streak = 0;
+  }
+  moved.hiddenUntilISO = undefined;
+  if (moved.completed && (!moved.bounty || moved.bounty.state === "claimed")) {
+    moved.completed = false;
+    moved.completedAt = undefined;
+    moved.completedBy = undefined;
+  }
+  return placeMovedTask(tasks, task, moved, beforeId);
+}
+
+/**
+ * Moves a task to another board: the day column of a week board, or the first list of a list
+ * board (for a compound board, of its first list child), due this week's first day. It lands at
+ * the top or bottom of the board, per the new-task position setting, as an edit's board move does.
+ */
+export function planMoveTaskToBoard(
+  tasks: Task[],
+  boards: Board[],
+  id: string,
+  boardId: string,
+  ctx: TaskEditContext & { settings: Pick<Settings, "newTaskPosition"> },
+): MoveTaskPlan | null {
+  const task = tasks.find((t) => t.id === id);
+  const targetBoard = boards.find((b) => b.id === boardId);
+  if (!task || !targetBoard || targetBoard.kind === "bible") return null;
+  const moved: Task = {
+    ...task,
+    boardId,
+    lastEditedBy: normalizeAgentPubkey(ctx.actorPubkey) || task.lastEditedBy || task.createdBy,
+  };
+  if (targetBoard.kind === "week") {
+    moved.column = "day";
+    moved.columnId = undefined;
+  } else {
+    let listBoard: Extract<Board, { kind: "lists" }> | undefined;
+    if (targetBoard.kind === "compound") {
+      listBoard = targetBoard.children
+        .map((childId) => boards.find((b) => b.id === childId))
+        .find((b): b is Extract<Board, { kind: "lists" }> => !!b && b.kind === "lists");
+      if (!listBoard || !listBoard.columns.length) return null;
+      moved.boardId = listBoard.id;
+    } else {
+      listBoard = targetBoard as Extract<Board, { kind: "lists" }>;
+    }
+    moved.column = undefined;
+    moved.columnId = listBoard.columns[0]?.id;
+    moved.dueISO = isoForWeekdayLocal(0, { base: ctx.now });
+  }
+  const first = ctx.settings.newTaskPosition === "top"
+    ? byOrder(tasks.filter((t) => t.boardId === moved.boardId && t.id !== id))[0]
+    : undefined;
+  return placeMovedTask(tasks, task, moved, first?.id);
+}
+
+/** Moves several tasks into one list column, in the order given, landing per the new-task position. */
+export function planMoveTasksToColumn(
+  tasks: Task[],
+  ids: readonly string[],
+  boardId: string,
+  columnId: string,
+  ctx: TaskEditContext & { settings: Pick<Settings, "newTaskPosition"> },
+): MoveTaskPlan {
+  let current = tasks;
+  const publish = new Map<string, Task>();
+  const publishDeleted: Task[] = [];
+  const top = ctx.settings.newTaskPosition === "top";
+  // Inserted at the top in reverse, so the selection keeps its order there too.
+  for (const id of top ? [...ids].reverse() : ids) {
+    const task = current.find((t) => t.id === id);
+    if (!task) continue;
+    const moved: Task = {
+      ...task,
+      boardId,
+      column: undefined,
+      columnId,
+      lastEditedBy: normalizeAgentPubkey(ctx.actorPubkey) || task.lastEditedBy || task.createdBy,
+    };
+    const first = top ? byOrder(current.filter((t) => t.boardId === boardId && t.id !== id))[0] : undefined;
+    const plan = placeMovedTask(current, task, moved, first?.id);
+    current = plan.tasks;
+    plan.publish.forEach((t) => publish.set(t.id, t));
+    publishDeleted.push(...plan.publishDeleted);
+  }
+  return { tasks: current, publish: [...publish.values()], publishDeleted };
 }
