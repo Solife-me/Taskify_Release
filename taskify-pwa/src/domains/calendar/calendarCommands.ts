@@ -2,7 +2,15 @@
  * Calendar commands take current state and return the next state plus work for the caller.
  * They never touch React, storage or the network.
  */
-import { addDaysToDateKey, ISO_DATE_PATTERN, MS_PER_DAY, nextOccurrence } from "taskify-core";
+import {
+  addDaysToDateKey,
+  ISO_DATE_PATTERN,
+  MS_PER_DAY,
+  nextOccurrence,
+  type CalendarRsvpStatus,
+  type CalendarViewPayload,
+  type TaskDocument,
+} from "taskify-core";
 import { isoDatePart, isoFromDateTime, normalizeTimeZone, parseDateKey, startOfDay } from "../dateTime/dateUtils";
 import { normalizeAgentPubkey } from "../tasks/assignmentUtils";
 import { applyHiddenForCalendarEvent, nextOrderForCalendarBoard } from "../tasks/boardUtils";
@@ -42,6 +50,48 @@ export type SaveCalendarEventPlan = CalendarEventPlan & {
   publishBoardId: string;
   shouldSendInvites: boolean;
 };
+
+export type AcceptedCalendarInvite = {
+  eventId: string;
+  canonical: string;
+  view: string;
+  eventKey: string;
+  inviteToken: string;
+  title?: string;
+  start?: string;
+  end?: string;
+  relays?: string[];
+  sender?: { pubkey: string };
+};
+
+export type ResolvedCalendarInviteView = Omit<CalendarViewPayload, "documents"> & {
+  documents?: TaskDocument[];
+};
+
+export type AcceptedInviteContext = {
+  now: Date;
+  boards: Board[];
+  destinationBoardId: string;
+  settings: Pick<Settings, "newTaskPosition" | "weekStart">;
+  status: CalendarRsvpStatus;
+  viewEventId: string;
+  originBoardId: string | null;
+  boardPubkey?: string;
+  viewPayload: ResolvedCalendarInviteView | null;
+};
+
+export type AcceptedInviteFailure =
+  | "unsupported-status"
+  | "missing-board"
+  | "missing-board-pubkey"
+  | "deleted"
+  | "mismatched-view"
+  | "unparseable";
+
+export type AcceptedInvitePlan =
+  | { kind: "applied"; events: CalendarEvent[]; event: CalendarEvent }
+  | { kind: "unchanged"; events: CalendarEvent[]; event: CalendarEvent }
+  | { kind: "invalid"; events: CalendarEvent[]; reason: AcceptedInviteFailure };
 
 function appliedDeletePlan(
   events: CalendarEvent[],
@@ -399,4 +449,227 @@ export function planSaveCalendarEvent(
     publishBoardId,
     shouldSendInvites: (updated.participants?.length ?? 0) > 0,
   };
+}
+
+/** Chooses the same local board priority used when an accepted invite first materializes. */
+export function selectAcceptedInviteDestination(boards: Board[]): Board | null {
+  const eligible = boards.filter(
+    (board) => !board.archived && !board.hidden && board.kind !== "bible" && board.kind !== "compound",
+  );
+  return eligible.find((board) => board.id === "week-default" && board.kind === "week")
+    ?? eligible.find((board) => board.kind === "week")
+    ?? eligible.find((board) => board.kind === "lists")
+    ?? eligible[0]
+    ?? boards.find((board) => !board.archived && !board.hidden)
+    ?? boards[0]
+    ?? null;
+}
+
+/** Returns an invite already materialized with the same secrets, so no relay lookup is needed. */
+export function findReusableAcceptedInvite(
+  events: CalendarEvent[],
+  invite: AcceptedCalendarInvite,
+): CalendarEvent | null {
+  const existing = events.find(
+    (event) => event.id === invite.eventId && event.viewAddress === invite.view,
+  );
+  if (!existing) return null;
+  const hasInviteRelays = !!invite.relays?.length;
+  const existingHasRelays = !!existing.inviteRelays?.length;
+  if (
+    existing.eventKey === invite.eventKey
+    && existing.inviteToken === invite.inviteToken
+    && (!hasInviteRelays || existingHasRelays)
+  ) {
+    return existing;
+  }
+  return null;
+}
+
+/** Materializes a decoded accepted invite or refreshes the secrets on its existing local copy. */
+export function planAddAcceptedInviteToCalendar(
+  events: CalendarEvent[],
+  invite: AcceptedCalendarInvite,
+  ctx: AcceptedInviteContext,
+): AcceptedInvitePlan {
+  if (ctx.status !== "accepted" && ctx.status !== "tentative") {
+    return { kind: "invalid", events, reason: "unsupported-status" };
+  }
+  const destinationBoard = ctx.boards.find((board) => board.id === ctx.destinationBoardId);
+  if (!destinationBoard) return { kind: "invalid", events, reason: "missing-board" };
+
+  const existingMatch = events.find(
+    (event) => event.id === invite.eventId && event.viewAddress === invite.view,
+  ) ?? null;
+  const isExternal = !ctx.originBoardId;
+  const readOnly = isExternal;
+  if (isExternal && !ctx.boardPubkey) {
+    return { kind: "invalid", events, reason: "missing-board-pubkey" };
+  }
+  if (ctx.viewPayload?.deleted) return { kind: "invalid", events, reason: "deleted" };
+  const resolvedEventId = ctx.viewPayload?.eventId || ctx.viewEventId || invite.eventId;
+  if (ctx.viewPayload && ctx.viewPayload.eventId !== ctx.viewEventId) {
+    return { kind: "invalid", events, reason: "mismatched-view" };
+  }
+
+  const order = nextOrderForCalendarBoard(destinationBoard.id, events, ctx.settings.newTaskPosition);
+  const columnId =
+    destinationBoard.kind === "lists" && destinationBoard.columns.length
+      ? destinationBoard.columns[0].id
+      : undefined;
+  const inviteRelays = invite.relays?.length ? invite.relays : existingMatch?.inviteRelays;
+  const tokenPatch = {
+    ...(ctx.originBoardId ? { originBoardId: ctx.originBoardId } : {}),
+    ...(readOnly ? { readOnly: true } : {}),
+    ...(isExternal ? { external: true, boardPubkey: ctx.boardPubkey, rsvpStatus: ctx.status } : {}),
+    eventKey: invite.eventKey,
+    viewAddress: invite.view,
+    canonicalAddress: invite.canonical,
+    inviteToken: invite.inviteToken,
+    inviteRelays,
+  };
+  const inviteCreatedBy =
+    normalizeAgentPubkey(ctx.viewPayload?.createdBy)
+    ?? normalizeAgentPubkey(invite.sender?.pubkey)
+    ?? normalizeAgentPubkey(ctx.boardPubkey)
+    ?? undefined;
+  const inviteLastEditedBy = normalizeAgentPubkey(ctx.viewPayload?.lastEditedBy) ?? inviteCreatedBy;
+
+  const updateExistingTokens = (): CalendarEvent[] => {
+    if (!existingMatch) return events;
+    const index = events.findIndex(
+      (event) => event.id === existingMatch.id && event.viewAddress === invite.view,
+    );
+    if (index < 0) return events;
+    const existing = events[index];
+    const updated: CalendarEvent = {
+      ...existing,
+      ...tokenPatch,
+      ...(readOnly ? { readOnly: true } : { readOnly: existing.readOnly }),
+    } as CalendarEvent;
+    const next = events.slice();
+    next[index] = updated;
+    return next;
+  };
+
+  const toCommon = (details: {
+    title?: string;
+    summary?: string;
+    description?: string;
+    documents?: TaskDocument[];
+    image?: string;
+    locations?: string[];
+    geohash?: string;
+    hashtags?: string[];
+    references?: string[];
+  }): Omit<CalendarEventBase, "kind" | "startDate" | "endDate" | "startISO" | "endISO"> => ({
+    id: resolvedEventId,
+    boardId: destinationBoard.id,
+    ...(inviteCreatedBy ? { createdBy: inviteCreatedBy } : {}),
+    ...(inviteLastEditedBy ? { lastEditedBy: inviteLastEditedBy } : {}),
+    columnId,
+    order,
+    title: details.title || invite.title || "Untitled",
+    summary: details.summary,
+    description: details.description || "",
+    documents: details.documents?.length ? details.documents : undefined,
+    image: details.image,
+    locations: details.locations?.length ? details.locations : undefined,
+    geohash: details.geohash,
+    hashtags: details.hashtags?.length ? details.hashtags : undefined,
+    references: details.references?.length ? details.references : undefined,
+    ...tokenPatch,
+  });
+
+  let nextEvent: CalendarEvent | null = null;
+  if (ctx.viewPayload) {
+    if (ctx.viewPayload.kind === "date") {
+      const startDate = ctx.viewPayload.startDate || "";
+      if (ISO_DATE_PATTERN.test(startDate)) {
+        const rawEnd = ctx.viewPayload.endDate || "";
+        const endDate = rawEnd && ISO_DATE_PATTERN.test(rawEnd) && rawEnd >= startDate ? rawEnd : undefined;
+        nextEvent = {
+          ...toCommon(ctx.viewPayload),
+          kind: "date",
+          startDate,
+          ...(endDate ? { endDate } : {}),
+        };
+      }
+    } else {
+      const startISO = typeof ctx.viewPayload.startISO === "string" ? ctx.viewPayload.startISO.trim() : "";
+      const startMs = startISO ? Date.parse(startISO) : NaN;
+      if (startISO && !Number.isNaN(startMs)) {
+        const endISO = typeof ctx.viewPayload.endISO === "string" ? ctx.viewPayload.endISO.trim() : "";
+        const normalizedEnd = endISO && Date.parse(endISO) > startMs ? endISO : undefined;
+        const startTzid = normalizeTimeZone(ctx.viewPayload.startTzid) ?? undefined;
+        const endTzid = normalizeTimeZone(ctx.viewPayload.endTzid) ?? undefined;
+        nextEvent = {
+          ...toCommon(ctx.viewPayload),
+          kind: "time",
+          startISO,
+          ...(normalizedEnd ? { endISO: normalizedEnd } : {}),
+          ...(startTzid ? { startTzid } : {}),
+          ...(endTzid ? { endTzid } : {}),
+        };
+      }
+    }
+  } else if (existingMatch) {
+    return { kind: "applied", events: updateExistingTokens(), event: existingMatch };
+  } else {
+    const startRaw = invite.start?.trim() || "";
+    if (ISO_DATE_PATTERN.test(startRaw)) {
+      const endRaw = invite.end?.trim() || "";
+      const endDate = endRaw && ISO_DATE_PATTERN.test(endRaw) && endRaw >= startRaw ? endRaw : undefined;
+      nextEvent = {
+        ...toCommon({ title: invite.title }),
+        kind: "date",
+        startDate: startRaw,
+        ...(endDate ? { endDate } : {}),
+      };
+    } else {
+      const startMs = startRaw ? Date.parse(startRaw) : NaN;
+      if (startRaw && !Number.isNaN(startMs)) {
+        const endRaw = invite.end?.trim() || "";
+        const endMs = endRaw ? Date.parse(endRaw) : NaN;
+        const endISO = !Number.isNaN(endMs) && endMs > startMs ? new Date(endMs).toISOString() : undefined;
+        nextEvent = {
+          ...toCommon({ title: invite.title }),
+          kind: "time",
+          startISO: new Date(startMs).toISOString(),
+          ...(endISO ? { endISO } : {}),
+        };
+      }
+    }
+  }
+
+  if (!nextEvent) {
+    if (existingMatch) return { kind: "unchanged", events, event: existingMatch };
+    return { kind: "invalid", events, reason: "unparseable" };
+  }
+
+  const normalizedEvent = applyHiddenForCalendarEvent(
+    nextEvent,
+    ctx.settings.weekStart,
+    destinationBoard.kind,
+    ctx.now,
+  );
+  const index = events.findIndex(
+    (event) => event.id === normalizedEvent.id && event.viewAddress === invite.view,
+  );
+  if (index < 0) {
+    return { kind: "applied", events: [...events, normalizedEvent], event: normalizedEvent };
+  }
+  const existing = events[index];
+  const merged: CalendarEvent = {
+    ...normalizedEvent,
+    ...(Array.isArray(existing.reminders) && existing.reminders.length ? { reminders: existing.reminders } : {}),
+    ...(existing.reminderTime ? { reminderTime: existing.reminderTime } : {}),
+    ...(existing.recurrence ? { recurrence: existing.recurrence } : {}),
+    ...(existing.seriesId ? { seriesId: existing.seriesId } : {}),
+    ...(existing.hiddenUntilISO ? { hiddenUntilISO: existing.hiddenUntilISO } : {}),
+    ...(typeof existing.order === "number" && typeof normalizedEvent.order !== "number" ? { order: existing.order } : {}),
+  } as CalendarEvent;
+  const next = events.slice();
+  next[index] = merged;
+  return { kind: "applied", events: next, event: normalizedEvent };
 }

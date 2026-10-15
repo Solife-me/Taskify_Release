@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Board, CalendarEvent } from "../tasks/taskTypes";
 import {
+  findReusableAcceptedInvite,
   planAdvanceCalendarSeriesSeed,
+  planAddAcceptedInviteToCalendar,
   planDeleteCalendarEvent,
   planMoveCalendarEvents,
   planSaveCalendarEvent,
+  selectAcceptedInviteDestination,
+  type AcceptedCalendarInvite,
+  type AcceptedInviteContext,
   type SaveCalendarEventContext,
 } from "./calendarCommands";
 
@@ -17,6 +22,35 @@ function saveContext(overrides: Partial<SaveCalendarEventContext> = {}): SaveCal
     actorPubkey: ACTOR,
     boards: [{ id: "board-1", name: "Week", kind: "week" }],
     settings: { newTaskPosition: "bottom", weekStart: 0 },
+    ...overrides,
+  };
+}
+
+function invite(overrides: Partial<AcceptedCalendarInvite> = {}): AcceptedCalendarInvite {
+  return {
+    eventId: "event-1",
+    canonical: `31922:${"b".repeat(64)}:event-1`,
+    view: `31923:${"b".repeat(64)}:event-1`,
+    eventKey: "event-key",
+    inviteToken: "invite-token",
+    title: "Invited event",
+    start: "2026-10-15",
+    sender: { pubkey: "c".repeat(64) },
+    ...overrides,
+  };
+}
+
+function inviteContext(overrides: Partial<AcceptedInviteContext> = {}): AcceptedInviteContext {
+  return {
+    now: NOW,
+    boards: [{ id: "board-1", name: "Week", kind: "week" }],
+    destinationBoardId: "board-1",
+    settings: { newTaskPosition: "bottom", weekStart: 0 },
+    status: "accepted",
+    viewEventId: "event-1",
+    originBoardId: null,
+    boardPubkey: "b".repeat(64),
+    viewPayload: null,
     ...overrides,
   };
 }
@@ -356,5 +390,152 @@ describe("planSaveCalendarEvent", () => {
     expect(plan.events).toEqual([plan.saved]);
     expect(plan.publish).toEqual([plan.saved]);
     expect(plan.saved.generated).toBeUndefined();
+  });
+});
+
+describe("accepted calendar invite commands", () => {
+  it("chooses the default week board ahead of other visible boards", () => {
+    const boards: Board[] = [
+      { id: "lists", name: "Lists", kind: "lists", columns: [] },
+      { id: "week-other", name: "Other week", kind: "week" },
+      { id: "week-default", name: "This week", kind: "week" },
+    ];
+    expect(selectAcceptedInviteDestination(boards)?.id).toBe("week-default");
+  });
+
+  it("reuses an existing copy when its secrets and relay metadata are current", () => {
+    const incoming = invite({ relays: ["wss://relay.example"] });
+    const existing = event({
+      eventKey: incoming.eventKey,
+      inviteToken: incoming.inviteToken,
+      inviteRelays: incoming.relays,
+      viewAddress: incoming.view,
+    });
+    expect(findReusableAcceptedInvite([existing], incoming)).toBe(existing);
+    expect(findReusableAcceptedInvite([existing], { ...incoming, eventKey: "new-key" })).toBeNull();
+  });
+
+  it("materializes a decoded external date invite on the first list column", () => {
+    const creator = "d".repeat(64);
+    const boards: Board[] = [
+      { id: "board-1", name: "Lists", kind: "lists", columns: [{ id: "inbox", name: "Inbox" }] },
+    ];
+    const prior = event({ id: "prior", order: 4 });
+    const incoming = invite({ relays: ["wss://relay.example"] });
+    const plan = planAddAcceptedInviteToCalendar(
+      [prior],
+      incoming,
+      inviteContext({
+        boards,
+        viewPayload: {
+          v: 1,
+          eventId: "event-1",
+          kind: "date",
+          title: "Decoded title",
+          description: "Details",
+          startDate: "2026-10-20",
+          endDate: "2026-10-21",
+          createdBy: creator,
+        },
+      }),
+    );
+    if (plan.kind !== "applied") throw new Error(plan.kind);
+
+    expect(plan.events).toHaveLength(2);
+    expect(plan.event).toMatchObject({
+      id: "event-1",
+      boardId: "board-1",
+      columnId: "inbox",
+      order: 5,
+      kind: "date",
+      title: "Decoded title",
+      description: "Details",
+      startDate: "2026-10-20",
+      endDate: "2026-10-21",
+      createdBy: creator,
+      lastEditedBy: creator,
+      external: true,
+      readOnly: true,
+      boardPubkey: "b".repeat(64),
+      rsvpStatus: "accepted",
+      eventKey: incoming.eventKey,
+      inviteToken: incoming.inviteToken,
+      inviteRelays: incoming.relays,
+    });
+  });
+
+  it("materializes an internal timed invite without external read-only flags", () => {
+    const plan = planAddAcceptedInviteToCalendar(
+      [],
+      invite(),
+      inviteContext({
+        originBoardId: "shared-board",
+        boardPubkey: undefined,
+        status: "tentative",
+        viewPayload: {
+          v: 1,
+          eventId: "event-1",
+          kind: "time",
+          startISO: "2026-10-15T14:00:00.000Z",
+          endISO: "2026-10-15T15:00:00.000Z",
+          startTzid: "America/Chicago",
+        },
+      }),
+    );
+    if (plan.kind !== "applied") throw new Error(plan.kind);
+
+    expect(plan.event).toMatchObject({
+      kind: "time",
+      startISO: "2026-10-15T14:00:00.000Z",
+      endISO: "2026-10-15T15:00:00.000Z",
+      startTzid: "America/Chicago",
+      originBoardId: "shared-board",
+    });
+    expect(plan.event.external).toBeUndefined();
+    expect(plan.event.readOnly).toBeUndefined();
+    expect(plan.event.rsvpStatus).toBeUndefined();
+  });
+
+  it("refreshes tokens on an existing fallback copy without replacing local fields", () => {
+    const incoming = invite({ eventKey: "new-key", inviteToken: "new-token", relays: ["wss://new"] });
+    const existing = event({
+      viewAddress: incoming.view,
+      eventKey: "old-key",
+      inviteToken: "old-token",
+      reminders: ["0h"],
+      reminderTime: "09:00",
+      external: true,
+      readOnly: true,
+      boardPubkey: "b".repeat(64),
+    });
+
+    const plan = planAddAcceptedInviteToCalendar([existing], incoming, inviteContext());
+    if (plan.kind !== "applied") throw new Error(plan.kind);
+
+    expect(plan.event).toBe(existing);
+    expect(plan.events[0]).toMatchObject({
+      eventKey: "new-key",
+      inviteToken: "new-token",
+      inviteRelays: ["wss://new"],
+      reminders: ["0h"],
+      reminderTime: "09:00",
+      readOnly: true,
+    });
+  });
+
+  it("rejects a view payload for a different event", () => {
+    const plan = planAddAcceptedInviteToCalendar(
+      [],
+      invite(),
+      inviteContext({
+        viewPayload: {
+          v: 1,
+          eventId: "different",
+          kind: "date",
+          startDate: "2026-10-15",
+        },
+      }),
+    );
+    expect(plan).toMatchObject({ kind: "invalid", reason: "mismatched-view" });
   });
 });

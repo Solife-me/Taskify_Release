@@ -130,9 +130,13 @@ import {
   planCalendarRecurrenceWindow,
 } from "./domains/calendar/calendarRecurrenceWindow";
 import {
+  findReusableAcceptedInvite,
+  planAddAcceptedInviteToCalendar,
   planDeleteCalendarEvent,
   planMoveCalendarEvents,
   planSaveCalendarEvent,
+  selectAcceptedInviteDestination,
+  type ResolvedCalendarInviteView,
 } from "./domains/calendar/calendarCommands";
 import { planFastingReminders, planScriptureReviewTask } from "./domains/tasks/generatedTasks";
 import {
@@ -8542,31 +8546,11 @@ export default function App() {
       if (status !== "accepted" && status !== "tentative") return null;
       const viewCoord = parseCalendarAddressForKind(invite.view, TASKIFY_CALENDAR_VIEW_KIND);
       if (!viewCoord) return null;
-      const existingMatch = calendarEventsRef.current.find(
-        (event) => event.id === invite.eventId && event.viewAddress === invite.view,
-      );
-      const hasInviteRelays = !!invite.relays?.length;
-      const existingHasRelays = !!existingMatch?.inviteRelays?.length;
-      if (
-        existingMatch
-        && existingMatch.eventKey === invite.eventKey
-        && existingMatch.inviteToken === invite.inviteToken
-        && (!hasInviteRelays || existingHasRelays)
-      ) {
-        return existingMatch ?? null;
-      }
+      const currentEvents = calendarEventsStore().get();
+      const reusable = findReusableAcceptedInvite(currentEvents, invite);
+      if (reusable) return reusable;
 
-      const eligibleBoards = boards.filter(
-        (board) => !board.archived && !board.hidden && board.kind !== "bible" && board.kind !== "compound",
-      );
-      const defaultBoard =
-        eligibleBoards.find((board) => board.id === "week-default" && board.kind === "week")
-        ?? eligibleBoards.find((board) => board.kind === "week")
-        ?? eligibleBoards.find((board) => board.kind === "lists")
-        ?? eligibleBoards[0]
-        ?? boards.find((board) => !board.archived && !board.hidden)
-        ?? boards[0]
-        ?? null;
+      const defaultBoard = selectAcceptedInviteDestination(boards);
       if (!defaultBoard) return null;
 
       const relayList = relaysOrDefaults(invite.relays, defaultRelays, inboxRelays);
@@ -8621,215 +8605,48 @@ export default function App() {
 
       const originBoardId = await resolveOriginBoardId();
       const isExternal = !originBoardId;
-      const readOnly = isExternal;
       if (isExternal && !boardPubkey) {
         showToast("Invite event data was incomplete.");
         return null;
       }
-      const order = nextOrderForCalendarBoard(defaultBoard.id, calendarEventsRef.current, settings.newTaskPosition);
-      const columnId =
-        defaultBoard.kind === "lists" && defaultBoard.columns.length ? defaultBoard.columns[0].id : undefined;
 
-      let viewPayload: ReturnType<typeof parseCalendarViewPayload> | null = null;
+      let viewPayload: ResolvedCalendarInviteView | null = null;
       if (viewEvent) {
         try {
           const raw = await decryptCalendarPayloadWithEventKey(viewEvent.content, invite.eventKey);
-          viewPayload = parseCalendarViewPayload(raw);
+          const parsed = parseCalendarViewPayload(raw);
+          if (parsed) {
+            const documents = normalizeDocumentList(parsed.documents);
+            viewPayload = {
+              ...parsed,
+              documents: documents?.map(ensureDocumentPreview),
+            };
+          }
         } catch (err) {
           console.warn("Failed to decrypt invite view", err);
         }
       }
-      if (viewPayload?.deleted) {
-        showToast("This event was deleted.");
-        return null;
-      }
-
-      const resolvedEventId = viewPayload?.eventId || viewCoord.d || invite.eventId;
-      if (viewPayload && viewPayload.eventId !== viewCoord.d) {
-        showToast("Invite event data was incomplete.");
-        return null;
-      }
-
-      const inviteRelays = invite.relays?.length ? invite.relays : existingMatch?.inviteRelays;
-      const tokenPatch = {
-        ...(originBoardId ? { originBoardId } : {}),
-        ...(readOnly ? { readOnly: true } : {}),
-        ...(isExternal ? { external: true, boardPubkey, rsvpStatus: status } : {}),
-        eventKey: invite.eventKey,
-        viewAddress: invite.view,
-        canonicalAddress: invite.canonical,
-        inviteToken: invite.inviteToken,
-        inviteRelays,
-      };
-      const inviteCreatedBy =
-        normalizeAgentPubkey(viewPayload?.createdBy)
-        ?? normalizeAgentPubkey(invite.sender?.pubkey)
-        ?? normalizeAgentPubkey(boardPubkey)
-        ?? undefined;
-      const inviteLastEditedBy =
-        normalizeAgentPubkey(viewPayload?.lastEditedBy)
-        ?? inviteCreatedBy;
-
-      const updateExistingTokens = () => {
-        if (!existingMatch) return;
-        setCalendarEvents((prev) => {
-          const idx = prev.findIndex((event) => event.id === existingMatch.id && event.viewAddress === invite.view);
-          if (idx < 0) return prev;
-          const existing = prev[idx];
-          const updated: CalendarEvent = {
-            ...existing,
-            ...tokenPatch,
-            ...(readOnly ? { readOnly: true } : { readOnly: existing.readOnly }),
-          } as CalendarEvent;
-          const copy = prev.slice();
-          copy[idx] = updated;
-          return copy;
-        });
-      };
-
-      const toCommon = (details: {
-        title?: string;
-        summary?: string;
-        description?: string;
-        documents?: unknown[];
-        image?: string;
-        locations?: string[];
-        geohash?: string;
-        hashtags?: string[];
-        references?: string[];
-      }): Omit<CalendarEventBase, "kind" | "startDate" | "endDate" | "startISO" | "endISO"> => {
-        const parsedDocuments = normalizeDocumentList(details.documents);
-        return {
-          id: resolvedEventId,
-          boardId: defaultBoard.id,
-          ...(inviteCreatedBy ? { createdBy: inviteCreatedBy } : {}),
-          ...(inviteLastEditedBy ? { lastEditedBy: inviteLastEditedBy } : {}),
-          columnId,
-          order,
-          title: details.title || invite.title || "Untitled",
-          summary: details.summary,
-          description: details.description || "",
-          documents: parsedDocuments ? parsedDocuments.map(ensureDocumentPreview) : undefined,
-          image: details.image,
-          locations: details.locations?.length ? details.locations : undefined,
-          geohash: details.geohash,
-          hashtags: details.hashtags?.length ? details.hashtags : undefined,
-          references: details.references?.length ? details.references : undefined,
-          ...tokenPatch,
-        };
-      };
-
-      const nextEvent: CalendarEvent | null = (() => {
-        if (viewPayload) {
-          if (viewPayload.kind === "date") {
-            const startDate = viewPayload.startDate || "";
-            if (!isDateKey(startDate)) return null;
-            const endDate = (() => {
-              const rawEnd = viewPayload.endDate || "";
-              if (!rawEnd || !isDateKey(rawEnd)) return undefined;
-              return rawEnd >= startDate ? rawEnd : undefined;
-            })();
-            return {
-              ...toCommon({
-                title: viewPayload.title,
-                summary: viewPayload.summary,
-                description: viewPayload.description,
-                documents: viewPayload.documents,
-                image: viewPayload.image,
-                locations: viewPayload.locations,
-                geohash: viewPayload.geohash,
-                hashtags: viewPayload.hashtags,
-                references: viewPayload.references,
-              }),
-              kind: "date",
-              startDate,
-              ...(endDate ? { endDate } : {}),
-            };
-          }
-          const startISO = typeof viewPayload.startISO === "string" ? viewPayload.startISO.trim() : "";
-          if (!startISO) return null;
-          const startMs = Date.parse(startISO);
-          if (Number.isNaN(startMs)) return null;
-          const endISO = typeof viewPayload.endISO === "string" ? viewPayload.endISO.trim() : "";
-          const normalizedEnd = endISO && Date.parse(endISO) > startMs ? endISO : undefined;
-          const startTzid = normalizeTimeZone(viewPayload.startTzid) ?? undefined;
-          const endTzid = normalizeTimeZone(viewPayload.endTzid) ?? undefined;
-          return {
-            ...toCommon({
-                title: viewPayload.title,
-                summary: viewPayload.summary,
-                description: viewPayload.description,
-                documents: viewPayload.documents,
-                image: viewPayload.image,
-                locations: viewPayload.locations,
-                geohash: viewPayload.geohash,
-                hashtags: viewPayload.hashtags,
-                references: viewPayload.references,
-            }),
-            kind: "time",
-            startISO,
-            ...(normalizedEnd ? { endISO: normalizedEnd } : {}),
-            ...(startTzid ? { startTzid } : {}),
-            ...(endTzid ? { endTzid } : {}),
-          };
-        }
-        if (existingMatch) {
-          updateExistingTokens();
-          return existingMatch ?? null;
-        }
-        const startRaw = invite.start?.trim() || "";
-        if (isDateKey(startRaw)) {
-          const endRaw = invite.end?.trim() || "";
-          const endDate = endRaw && isDateKey(endRaw) && endRaw >= startRaw ? endRaw : undefined;
-          return {
-            ...toCommon({ title: invite.title }),
-            kind: "date",
-            startDate: startRaw,
-            ...(endDate ? { endDate } : {}),
-          };
-        }
-        const startMs = startRaw ? Date.parse(startRaw) : NaN;
-        if (!startRaw || Number.isNaN(startMs)) {
-          updateExistingTokens();
-          return existingMatch ?? null;
-        }
-        const endRaw = invite.end?.trim() || "";
-        const endMs = endRaw ? Date.parse(endRaw) : NaN;
-        const endISO = !Number.isNaN(endMs) && endMs > startMs ? new Date(endMs).toISOString() : undefined;
-        return {
-          ...toCommon({ title: invite.title }),
-          kind: "time",
-          startISO: new Date(startMs).toISOString(),
-          ...(endISO ? { endISO } : {}),
-        };
-      })();
-
-      if (!nextEvent) {
-        if (!existingMatch) {
-          showToast("Invite event could not be parsed.");
-        }
-        return existingMatch ?? null;
-      }
-
-      const normalizedEvent = applyHiddenForCalendarEvent(nextEvent, settings.weekStart, defaultBoard.kind);
-      setCalendarEvents((prev) => {
-        const idx = prev.findIndex((event) => event.id === normalizedEvent.id && event.viewAddress === invite.view);
-        if (idx < 0) return [...prev, normalizedEvent];
-        const existing = prev[idx];
-        const merged: CalendarEvent = {
-          ...normalizedEvent,
-          ...(Array.isArray(existing.reminders) && existing.reminders.length ? { reminders: existing.reminders } : {}),
-          ...(existing.reminderTime ? { reminderTime: existing.reminderTime } : {}),
-          ...(existing.recurrence ? { recurrence: existing.recurrence } : {}),
-          ...(existing.seriesId ? { seriesId: existing.seriesId } : {}),
-          ...(existing.hiddenUntilISO ? { hiddenUntilISO: existing.hiddenUntilISO } : {}),
-          ...(typeof existing.order === "number" && typeof normalizedEvent.order !== "number" ? { order: existing.order } : {}),
-        } as CalendarEvent;
-        const copy = prev.slice();
-        copy[idx] = merged;
-        return copy;
+      const plan = planAddAcceptedInviteToCalendar(calendarEventsStore().get(), invite, {
+        now: new Date(),
+        boards,
+        destinationBoardId: defaultBoard.id,
+        settings,
+        status,
+        viewEventId: viewCoord.d,
+        originBoardId,
+        boardPubkey,
+        viewPayload,
       });
-      return normalizedEvent;
+      if (plan.kind === "invalid") {
+        if (plan.reason === "deleted") showToast("This event was deleted.");
+        if (plan.reason === "missing-board-pubkey" || plan.reason === "mismatched-view") {
+          showToast("Invite event data was incomplete.");
+        }
+        if (plan.reason === "unparseable") showToast("Invite event could not be parsed.");
+        return null;
+      }
+      if (plan.kind === "applied") setCalendarEvents(plan.events);
+      return plan.event;
     },
     [boards, defaultRelays, inboxRelays, pool, setCalendarEvents, settings.newTaskPosition, settings.weekStart, showToast],
   );
