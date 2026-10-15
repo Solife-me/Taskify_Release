@@ -132,7 +132,7 @@ import {
   normalizeNostrPubkeyHex,
   normalizeTaskAssignees,
 } from "./domains/tasks/assignmentUtils";
-import { useBoards, useTasks } from "./domains/tasks/taskHooks";
+import { useBoards, useCalendarEvents, useTasks } from "./state/appStores";
 import {
   reserveTaskMutationTimestamp,
   TaskPublishVersionTracker,
@@ -149,7 +149,6 @@ import {
   serializeRecurringSeriesCutoffs,
   updateRecurringSeriesCutoff,
 } from "./domains/tasks/recurrenceCutoffs";
-import { useCalendarEvents } from "./domains/calendar/calendarHook";
 import {
   CALENDAR_SERIES_CUTOFFS_KEY,
   applyCalendarSeriesCutoff,
@@ -1129,11 +1128,7 @@ export default function App() {
     markNostrTaskSyncPending,
     pendingNostrCalendarEventIds,
     pendingNostrTaskIds,
-  } = useTaskPersistence({
-    boards,
-    calendarEvents,
-    tasks,
-  });
+  } = useTaskPersistence();
   type NostrIndex = {
     boardMeta: Map<string, number>; // nostrBoardId -> created_at
     taskClock: Map<string, Map<string, number>>; // nostrBoardId -> (taskId -> created_at)

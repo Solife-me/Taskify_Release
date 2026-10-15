@@ -20,6 +20,8 @@ Constraints carried through every chunk:
   client (PWA, iOS, Watch, macOS, CLI). Wire-format changes need parity tests on both sides.
 - **The Taskify wallet is being phased out** (`cd9e02f6`). Wallet work is limited to
   simplification, removal and safe close-out; no new wallet features.
+- **Long-term best practice over quick fixes** (maintainer, 2026-10-15). Proposals lead with
+  the durable design and state its cost. A smaller step is offered only as a stage toward it.
 - **Language fit.** Each chunk also asks whether code should move to another language, such as
   Rust compiled for Swift (UniFFI) and the web (WASM). The bar is a measurable gain: one
   implementation replacing two drifting ones, CPU-bound work, or memory safety around parsing
@@ -42,7 +44,7 @@ Constraints carried through every chunk:
 | # | Chunk | Scope | Status |
 | --- | --- | --- | --- |
 | 1 | Shared domain core and contract drift | `taskify-core`, and where clients re-implement it | Done |
-| 2 | PWA app shell | `App.tsx` (12.8k lines), navigation, onboarding, settings | Pending |
+| 2 | PWA app shell | `App.tsx` (12.8k lines), navigation, onboarding, settings | Implementing |
 | 3 | PWA boards, tasks, Upcoming, calendar | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar` | Pending |
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Pending |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `lib/`, `agent/`, `components/` | Pending |
@@ -201,3 +203,189 @@ Verification: core 132/132, CLI 202/202 plus type check, PWA lint (the one exist
 | C1-4 | Approve | 2026-10-15 | Done |
 | C1-5 | Approve, after committing the CLI relay work | 2026-10-15 | Relay work committed in `555ecafd`; done |
 | C1-6 | — | — | Logged after the maintainer asked for language-port review; revisit in chunk 7 |
+
+---
+
+## Chunk 2 — PWA app shell
+
+The shell is everything around the features: entry and bootstrap (`main.tsx`), the `App`
+component, navigation between pages and overlays, first run, settings, error handling and
+startup cost.
+
+What the review found:
+
+- **`App.tsx` is 12,828 lines, and `App` is one component of about 12,300.** It holds 35
+  `useState`, 56 `useRef`, 30 `useEffect` and 185 `useMemo`/`useCallback` hooks. It covers tasks,
+  boards, calendar invites, the Bible tracker, printing, push, import, voice, task moves, Nostr
+  publishing and about 1,700 lines of JSX. Every state change re-runs all of it, and none of its
+  task mutations can be tested without rendering the app.
+- **There is no navigation model.** The current page and view live in `useState`, and the app
+  never writes to `history`, apart from removing a reminder's query string. In an installed PWA
+  on Android, the system Back gesture closes Taskify instead of the open sheet. In a desktop
+  browser, Back leaves the site. No board, task or settings page can be linked to, so reminders,
+  shared boards and push each carry their own one-off deep-link handling. The Worker has no SPA
+  fallback (`wrangler.toml` `[assets]`), so path URLs would 404 today.
+- **Overlays are not accessible.** `ui/Modal.tsx` has no dialog role, no `aria-modal`, no Escape,
+  no focus trap or focus restore, and the background stays interactive. 26 other sheets are
+  built by hand.
+- **The user's identity is a global, and signing needs the raw key.** The user's public key
+  travels through `window.nostrPK` (24 places), and `readNostrIdentity` is called 42 times. The
+  secret key is read in 35 files. There is no NIP-07 (browser extension) or NIP-46 (remote
+  signer) support, so signing in always means pasting an nsec into a web page.
+- **First run starts with key management.** The first screen offers "Sign in with nsec", "Create
+  new login" and "Restore from backup" before the user has seen a task. It then asks for
+  notification permission before any reminder exists.
+- **About 614 KB gzipped of JavaScript loads before first render** (42 files). Roughly a third
+  serves features most users never open. The Cashu SDK (140 KB) and the wallet, NWC and P2PK
+  providers (about 31 KB) load for everyone, though the wallet is hidden for new users. QR tools
+  (24 KB) and spreadsheet import (10 KB) are on the startup path. Node `process`/`Buffer`
+  polyfills load at boot for a wallet dependency. Nothing in CI stops this growing.
+- **One error boundary for the whole app.** A crash in any sheet replaces everything with a fixed
+  light-themed message: no reload button, nothing to copy for a bug report.
+- **No keyboard layer on desktop.** The macOS app has ⌘N, ⌘1–5 and ⌘↩; the PWA in a desktop
+  browser has none.
+- **Settings is one long modal** of seven stacked sections, with no index, no search and no way
+  to link to a section.
+- **Language fit:** nothing here. The shell is UI and orchestration, not CPU-bound or parsing
+  code, so a port would add a boundary and gain nothing.
+
+### C2-1 — URL routes with history, shared route vocabulary with iOS (UX, interop)
+
+- **User:** Every PWA user. Android and desktop users most: Back works as they expect.
+- **Proposal:** A typed route table, with pages as paths and overlays as history entries:
+  - Pages: `/boards/:boardId`, `/upcoming`, `/chat/:conversation?`, `/settings/:section?`.
+  - Overlays: an open task, event, note or sheet pushes an entry, so Back closes it.
+  - Reminder, push, shared-board and quick-add deep links all resolve through this one parser.
+
+  The vocabulary matches iOS's existing `taskify://` links (`upcoming`, `boards`, `task`,
+  `event`, `quick-add`). Parsing and formatting live in `taskify-core`, with vectors shared with
+  `TaskifyWidgetLink`, so one link opens the same place on every client. Later, Universal Links on
+  `taskify.solife.me` can carry those paths to the iOS and macOS apps.
+- **Build choice:** A small in-house router (~200 lines over the History API). The route set is
+  small, and overlays-as-entries needs custom handling a library would not provide. The cost is
+  owning it, with tests.
+- **Also needs:** `not_found_handling = "single-page-application"` on the Worker's assets and a
+  navigation fallback in the service worker.
+- **Effort:** M–L, staged: router and pages first, then overlays. **Risk:** medium; navigation
+  touches every surface. Covered by router unit tests and a Back-behaviour test per overlay type.
+
+### C2-2 — One accessible overlay primitive (UX, accessibility, simplification)
+
+- **User:** Everyone; screen-reader and keyboard users above all.
+- **Proposal:** Replace `Modal` and the 26 hand-built sheets with one `Overlay` built on native
+  `<dialog>` with `showModal()`. That gives focus trapping, an inert background, Escape and the top
+  layer for free. Add labelling and focus restore on top. It presents as a bottom sheet on phones
+  and a centred dialog on desktop, and it registers with C2-1 so Back closes it. Migrate one
+  sheet at a time.
+- **Effort:** M (primitive) plus S per sheet. **Risk:** low per sheet. **Depends on:** C2-1 for
+  Back.
+
+### C2-3 — Take `App.tsx` apart: a store, domain services and feature modules (architecture, performance)
+
+- **User:** Indirectly everyone: fewer regressions, faster interaction on large boards. Directly,
+  every future change.
+- **Proposal:** The durable shape, in stages:
+  1. **Pure task mutations.** `completeTask`, `deleteTask`, `moveTask`, `postponeTaskOneWeek`,
+     `saveEdit` and the calendar equivalents become pure functions in `domains/tasks`. Each takes
+     state and returns the next state plus publish intents, and gets unit tests. Where clients
+     must agree, they move to `taskify-core`, as recurrence did in chunk 1. iOS's
+     `TaskifySnapshot` already models mutations this way.
+  2. **An entity store outside React.** Tasks, boards and events live in a store read through
+     `useSyncExternalStore` with selectors. A component re-renders only when its slice changes.
+     The existing per-entity IndexedDB store backs it.
+  3. **A publish service.** Nostr publishing, retry and the optimistic clock leave the component
+     and consume publish intents from stage 1.
+  4. **Feature modules.** Boards, Upcoming, Bible, Print, Import and Voice become lazily loaded
+     features. `App` keeps only layout and routing.
+- Re-render savings are measured with the React Profiler before and after stage 2, not assumed.
+- **Effort:** L, over several sessions, one stage per commit. Each stage ships with the test
+  suite green. **Risk:** medium; stage 1 is low-risk and makes the rest safe.
+
+### C2-4 — An identity and signer layer, with NIP-07 and NIP-46 sign-in (security, architecture) — Explore recommended
+
+- **User:** People who already use Nostr and do not want to paste a secret key into a website.
+  Indirectly everyone, since key handling moves into one place.
+- **Proposal:** Replace `window.nostrPK` and the 42 direct reads with an `IdentityProvider`. It
+  exposes the public key and a `Signer` interface (sign, NIP-44 encrypt/decrypt) with three
+  implementations: local key (today), NIP-07 browser extension, and NIP-46 remote signer
+  (bunker/Nostr Connect). No wire format changes.
+- **Why Explore:** A remote signer pays a round trip per decryption. DM history and the private
+  contact list decrypt many items at sign-in, so the approach (batching, a delegated session key,
+  or local-key-only for some features) needs measuring first. The identity layer itself is worth
+  doing either way and can go first.
+- **Effort:** identity layer M; signers L. **Risk:** medium.
+
+### C2-5 — First run that starts with tasks, not keys (UX)
+
+- **User:** New users, mostly arriving from a shared link.
+- **Proposal:**
+  - The primary action becomes "Start using Taskify": it creates the key silently and opens a
+    starter board.
+  - "I already use Taskify" groups sign-in, restore and (with C2-4) signer apps.
+  - Key backup is asked for once the user has something to lose, after a few tasks or on the
+    second day, with an "Unsaved key" reminder in settings until it's done.
+  - Notification permission is asked the first time the user sets a reminder. Today it's asked
+    during onboarding.
+  - iOS onboarding gets the same order (chunk 9), so both clients teach the same model.
+- **Effort:** M. **Risk:** low. The existing gating tests in `onboardingGating.test.ts` extend to
+  the new order.
+
+### C2-6 — A startup budget enforced in CI (performance)
+
+- **User:** Everyone; most noticeable on mid-range Android phones on mobile data.
+- **Proposal:**
+  - Load the wallet providers, Cashu SDK, QR tools and spreadsheet import only when used: the
+    wallet only on devices where it's active (`walletAvailability` already knows), and move the
+    `process`/`Buffer` polyfills into that chunk.
+  - Add a CI check that measures the startup graph, as in this review, and fails above a budget,
+    so it cannot quietly grow back.
+  - Expected: roughly 600 KB down to about 400 KB gzipped, with C2-3 stage 4 taking it further.
+  - Pairs with chunk 6, which removes wallet code rather than deferring it.
+- **Effort:** M. **Risk:** low–medium. Wallet holders must still see their funds after a lazy
+  load; that gets a test.
+
+### C2-7 — Recoverable errors per surface (resilience)
+
+- **User:** Anyone who hits a bug: they lose one sheet, not the app.
+- **Proposal:** An error boundary per page and per overlay. Each fallback is themed and offers
+  Reload and "Copy diagnostics" (app version, route, error, no user content). The root fallback
+  gets the same treatment.
+- **Effort:** S. **Risk:** low.
+
+### C2-8 — A keyboard command layer matching the Mac app (desktop UX, parity)
+
+- **User:** Desktop browser users on Windows and Linux.
+- **Proposal:** One registry of named commands (new task, search, switch view, close, complete)
+  with bindings. ⌘/Ctrl+N, ⌘/Ctrl+1–5 and ⌘/Ctrl+↩ match the macOS app; "/" focuses search; Esc
+  closes. Shortcuts show in tooltips and a help sheet. A command palette can come later on the
+  same registry.
+- **Effort:** M. **Risk:** low. **Depends on:** C2-1, so view commands are route changes.
+
+### C2-9 — Settings as a routed page with an index (UX)
+
+- **User:** Everyone who looks for a setting; the push prompt and backup reminders link straight to
+  their section.
+- **Proposal:** `/settings` shows an index of sections, and `/settings/<section>` shows one
+  section. It's two columns on desktop, drill-down on phones. Section order and names match iOS
+  settings, so instructions work on both. Search can follow once sections are separate.
+- **Effort:** M. **Risk:** low. **Depends on:** C2-1.
+
+### Order of work
+
+C2-3 stage 1 → C2-3 stage 2 → C2-1 → C2-6 → C2-3 stages 3–4 → C2-4 (identity layer, then the
+signer measurement) → C2-5. Everything touches `App.tsx`, so the work is sequential, one commit
+per step.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C2-1 | Approve | 2026-10-15 | Planned (after C2-3 stage 2) |
+| C2-2 | Not selected (declined) | 2026-10-15 | — |
+| C2-3 | Approve all stages | 2026-10-15 | In progress: stage 1 |
+| C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
+| C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
+| C2-6 | Approve | 2026-10-15 | Planned |
+| C2-7 | Not selected (declined) | 2026-10-15 | — |
+| C2-8 | Not selected (declined) | 2026-10-15 | — |
+| C2-9 | Not selected (declined) | 2026-10-15 | — |

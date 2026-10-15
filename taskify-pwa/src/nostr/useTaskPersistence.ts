@@ -1,17 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { NostrOutboxMutation } from "taskify-runtime-nostr";
-import type { Board, CalendarEvent, Task } from "../domains/tasks/taskTypes";
 import {
   TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_VIEW_KIND,
 } from "../lib/privateCalendar";
-import {
-  boardEntityStore,
-  calendarEventEntityStore,
-  externalCalendarEventEntityStore,
-  taskEntityStore,
-} from "../storage/entityStore";
-import { withBoardOrder } from "../domains/tasks/boardUtils";
+
+
 import { nostrOutboxStore } from "./NostrOutboxStore";
 
 const TASKIFY_TASK_EVENT_KIND = 30301;
@@ -41,59 +35,11 @@ const emptyOutboxItemSyncSnapshot = (): OutboxItemSyncSnapshot => ({
   rowCalendarEventIds: new Set<string>(),
 });
 
-type UseTaskPersistenceParams = {
-  boards: Board[];
-  calendarEvents: CalendarEvent[];
-  tasks: Task[];
-};
-
-export function useTaskPersistence({
-  boards,
-  calendarEvents,
-  tasks,
-}: UseTaskPersistenceParams) {
-  const boardsFirstRun = useRef(true);
-  useEffect(() => {
-    const orderedBoards = withBoardOrder(boards);
-    if (boardsFirstRun.current) {
-      boardsFirstRun.current = false;
-      if (shouldBackfillPersistedBoardOrder(orderedBoards)) {
-        boardEntityStore.syncWith(orderedBoards);
-      }
-      return;
-    }
-    boardEntityStore.syncWith(orderedBoards);
-  }, [boards]);
-
-  const tasksFirstRun = useRef(true);
-  useEffect(() => {
-    if (tasksFirstRun.current) {
-      tasksFirstRun.current = false;
-      return;
-    }
-    try {
-      taskEntityStore.syncWith(tasks);
-    } catch (err) {
-      console.error("Failed to save tasks", err);
-    }
-  }, [tasks]);
-
-  const eventsFirstRun = useRef(true);
-  useEffect(() => {
-    if (eventsFirstRun.current) {
-      eventsFirstRun.current = false;
-      return;
-    }
-    try {
-      const boardEvents = calendarEvents.filter((event) => !event.external);
-      const externalEvents = calendarEvents.filter((event) => event.external);
-      calendarEventEntityStore.syncWith(boardEvents);
-      externalCalendarEventEntityStore.syncWith(externalEvents);
-    } catch (err) {
-      console.error("Failed to save calendar events", err);
-    }
-  }, [calendarEvents]);
-
+/**
+ * Tracks which tasks and calendar events still have unacknowledged Nostr publishes. Saving the
+ * entities themselves happens in `state/appStores`.
+ */
+export function useTaskPersistence() {
   const [pendingNostrItemSync, setPendingNostrItemSync] = useState<PendingNostrItemSync>(() => emptyPendingNostrItemSync());
   const optimisticTaskIdsRef = useRef<Set<string>>(new Set());
   const optimisticCalendarEventIdsRef = useRef<Set<string>>(new Set());
@@ -234,15 +180,4 @@ function buildPendingNostrItemSync(rows: NostrOutboxMutation[]): OutboxItemSyncS
 function tagValue(tags: string[][], name: string): string | null {
   const value = tags.find((tag) => tag[0] === name)?.[1];
   return typeof value === "string" && value.trim() ? value : null;
-}
-
-function shouldBackfillPersistedBoardOrder(boards: Board[]): boolean {
-  if (boardEntityStore.size() === 0) return false;
-  const stored = boardEntityStore.getAll() as Board[];
-  if (stored.length !== boards.length) return false;
-  const storedById = new Map(stored.map((board) => [board.id, board]));
-  return boards.some((board) => {
-    const persisted = storedById.get(board.id);
-    return !!persisted && persisted.order !== board.order;
-  });
 }

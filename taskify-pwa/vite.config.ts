@@ -74,6 +74,8 @@ export default defineConfig({
       "util",
       "events",
     ],
-    exclude: ["taskify-runtime-nostr"],
+    // The workspace packages are linked from ../ and rebuilt in place. Pre-bundling would cache a
+    // stale copy, so the dev server would miss new exports until `.vite` is cleared.
+    exclude: ["taskify-core", "taskify-runtime-nostr"],
   },
 });
