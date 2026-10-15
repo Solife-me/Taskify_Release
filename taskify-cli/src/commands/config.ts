@@ -5,6 +5,9 @@ import { resolveBoardReference } from "taskify-core";
 import { loadConfig,redactConfig,saveConfig } from "../config.js";
 import type { createNostrRuntime } from "../nostrRuntime.js";
 import { formatAvailableColumns,resolveBoardColumn } from "../shared/columnResolution.js";
+import { MAX_PROOF_OF_WORK_DIFFICULTY } from "taskify-runtime-nostr";
+import { parsePowDifficulty } from "../shared/relaySettings.js";
+import { normalizeRelayInput } from "./relay.js";
 
 export function registerConfigCommands(program: Command, initRuntime: typeof createNostrRuntime, checkRelay: (url: string) => Promise<boolean>): void {
   // ---- config ----
@@ -32,12 +35,36 @@ export function registerConfigCommands(program: Command, initRuntime: typeof cre
     .command("relay <url>")
     .description("Add a relay URL")
     .action(async (url: string) => {
+      const normalized = normalizeRelayInput(url);
+      if (!normalized) {
+        console.error(chalk.red(`Not a relay URL: ${url} (expected wss://… or ws://…)`));
+        process.exit(1);
+      }
       const config = await loadConfig(program.opts().profile as string | undefined);
-      if (!config.relays.includes(url)) {
-        config.relays.push(url);
+      if (!config.relays.some((relay) => normalizeRelayInput(relay) === normalized)) {
+        config.relays.push(normalized);
       }
       await saveConfig(config);
       console.log(chalk.green("✓ Relay added"));
+      process.exit(0);
+    });
+
+  configSet
+    .command("pow <difficulty>")
+    .description(`Mine NIP-13 proof of work of at least this difficulty into every write (0-${MAX_PROOF_OF_WORK_DIFFICULTY}; 0 = only what relays require)`)
+    .action(async (raw: string) => {
+      const difficulty = parsePowDifficulty(raw);
+      if (difficulty === null) {
+        console.error(chalk.red(`Invalid difficulty: "${raw}". Use a whole number from 0 to ${MAX_PROOF_OF_WORK_DIFFICULTY}.`));
+        process.exit(1);
+      }
+      const config = await loadConfig(program.opts().profile as string | undefined);
+      config.powDifficulty = difficulty || undefined;
+      await saveConfig(config);
+      console.log(chalk.green(difficulty
+        ? `✓ Writes will carry at least difficulty ${difficulty} proof of work`
+        : "✓ Proof of work only where relays require it"));
+      if (difficulty >= 22) console.log(chalk.dim("  High difficulties can take a minute or more to mine per write."));
       process.exit(0);
     });
 
@@ -125,8 +152,8 @@ export function registerConfigCommands(program: Command, initRuntime: typeof cre
       console.log(JSON.stringify(display, null, 2));
 
       console.log("\nChecking relays...");
-      for (const relay of config.relays) {
-        const ok = await checkRelay(relay);
+      const results = await Promise.all(config.relays.map(async (relay) => ({ relay, ok: await checkRelay(relay) })));
+      for (const { relay, ok } of results) {
         if (ok) {
           console.log(chalk.green(`✓ ${relay}`) + chalk.dim("  (connected)"));
         } else {

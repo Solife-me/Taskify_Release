@@ -1,4 +1,4 @@
-import { configureRelayAccess, prepareStandaloneEvent } from "taskify-runtime-nostr";
+import { configureRelayAccess, publishStandaloneEvent } from "taskify-runtime-nostr";
 /**
  * profileMeta.ts — kind:0 profile metadata publish/fetch for Taskify CLI.
  * Ported from taskify-pwa/src/nostr/ProfilePublisher.ts
@@ -138,8 +138,7 @@ export async function publishProfile(
   profileEvent.content = JSON.stringify(content);
   profileEvent.tags = [];
   profileEvent.created_at = Math.floor(Date.now() / 1000);
-  await prepareStandaloneEvent(profileEvent, relayList);
-  await profileEvent.publish();
+  await publishStandaloneEvent(profileEvent, relayList);
 
   const raw = profileEvent.rawEvent?.() as NostrEvent ?? (profileEvent as unknown as NostrEvent);
   if (!raw?.id) throw new Error("Failed to publish profile — no event id returned.");
@@ -153,8 +152,7 @@ export async function publishProfile(
       deleteEvent.content = opts?.reason ?? "superseded profile metadata";
       deleteEvent.tags = [["e", previous.id], ["k", "0"]];
       deleteEvent.created_at = Math.floor(Date.now() / 1000);
-      await prepareStandaloneEvent(deleteEvent, relayList);
-      await deleteEvent.publish();
+      await publishStandaloneEvent(deleteEvent, relayList);
       deletedIds.push(previous.id);
     } catch {
       // Non-fatal — deletion is best-effort

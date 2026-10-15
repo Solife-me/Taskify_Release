@@ -25,9 +25,15 @@ import { registerTaskMutationsCommands } from "./commands/taskMutations.js";
 import { registerTaskQueriesCommands } from "./commands/taskQueries.js";
 import { registerTransferCommands } from "./commands/transfer.js";
 import { registerTrustCommands } from "./commands/trust.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, onConfigLoaded } from "./config.js";
 import { runOnboarding } from "./onboarding.js";
 import { checkRelay } from "./relayDiagnostics.js";
+import { applyCliRelaySettings } from "./shared/relaySettings.js";
+
+// Every relay client in a run follows the selected profile: its NIP-13 floor, native-speed
+// mining and the persistent relay-info cache (NIP-11 limits, learned PoW targets).
+onConfigLoaded(applyCliRelaySettings);
+applyCliRelaySettings({});
 
 const require = createRequire(import.meta.url);
 const { version } = require("../package.json");

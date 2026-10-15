@@ -3,6 +3,7 @@ import type NDK from "@nostr-dev-kit/ndk";
 import type { EventTemplate, NostrEvent } from "nostr-tools";
 import { EventCache } from "./EventCache.js";
 import { type NostrOutboxStore } from "./NostrOutbox.js";
+import { type ProofOfWorkOptions } from "./ProofOfWork.js";
 import { RelayPublishBudget } from "./RelayPublishBudget.js";
 export type RelayResolver = (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
 export type PublishOptions = {
@@ -30,6 +31,10 @@ export type PublishCoordinatorOptions = {
     retryMaxMs?: number;
     signal?: AbortSignal;
     resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
+    /** Mining settings (hasher, timeout) used when a publish needs proof of work. */
+    proofOfWork?: Omit<ProofOfWorkOptions, "signal">;
+    /** Called when a relay refuses an event for too little proof of work and names its target. */
+    onProofOfWorkRequired?: (relayUrl: string, difficulty: number) => void;
     /**
      * Per-relay pacing and rate-limit backoff. Applies when an outbox store is configured (a
      * paced relay must stay queued somewhere); pass `false` to disable.
@@ -48,6 +53,8 @@ export declare class PublishCoordinator {
     private readonly retryMaxMs;
     private readonly signal?;
     private readonly resolveProofOfWorkDifficulty?;
+    private readonly proofOfWork?;
+    private readonly onProofOfWorkRequired?;
     private activeOutboxIds;
     private outboxLocks;
     private retryTimers;

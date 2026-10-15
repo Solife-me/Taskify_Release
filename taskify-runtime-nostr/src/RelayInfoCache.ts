@@ -46,7 +46,10 @@ type RelayInfoCacheOptions = {
   storage?: RelayInfoStorage;
   storageKey?: string;
   maxEntries?: number;
+  learnedPowTtlMs?: number;
 };
+
+type LearnedProofOfWork = { difficulty: number; learnedAt: number };
 
 const DEFAULT_LIMIT = 500;
 const DEFAULT_MAX_LIMIT = 5000;
@@ -56,6 +59,9 @@ const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_FAILURE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_CACHE_ENTRIES = 64;
 const DEFAULT_STORAGE_KEY = "relay-info-cache";
+// A relay's `pow:` rejection is remembered for a week, so later writes are mined to its real
+// requirement even when its NIP-11 document doesn't advertise one.
+const DEFAULT_LEARNED_POW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function normalizeRelayCacheKey(relayUrl: string): string | null {
   try {
@@ -110,6 +116,8 @@ export class RelayInfoCache {
   private readonly storage?: RelayInfoStorage;
   private readonly storageKey: string;
   private readonly maxEntries: number;
+  private readonly learnedPow = new Map<string, LearnedProofOfWork>();
+  private readonly learnedPowTtlMs: number;
 
   constructor(options: RelayInfoCacheOptions = {}) {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
@@ -117,6 +125,7 @@ export class RelayInfoCache {
     this.storage = options.storage;
     this.storageKey = options.storageKey ?? DEFAULT_STORAGE_KEY;
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_CACHE_ENTRIES;
+    this.learnedPowTtlMs = options.learnedPowTtlMs ?? DEFAULT_LEARNED_POW_TTL_MS;
     this.restore();
   }
 
@@ -164,6 +173,9 @@ export class RelayInfoCache {
         minPowDifficulty = Math.max(minPowDifficulty, sanitizeProofOfWorkDifficulty(lim.min_pow_difficulty));
       }
     }
+    for (const url of relayUrls) {
+      minPowDifficulty = Math.max(minPowDifficulty, this.learnedProofOfWork(url));
+    }
 
     return {
       maxLimit: maxLimit ?? DEFAULT_MAX_LIMIT,
@@ -209,6 +221,29 @@ export class RelayInfoCache {
     return promise;
   }
 
+  /** Records the difficulty a relay demanded in a `pow:` rejection; it never lowers a known requirement. */
+  recordProofOfWorkRequirement(relayUrl: string, difficulty: number): void {
+    const key = normalizeRelayCacheKey(relayUrl);
+    const value = sanitizeProofOfWorkDifficulty(difficulty);
+    if (!key || !value) return;
+    if (this.learnedProofOfWork(relayUrl) >= value) return;
+    this.learnedPow.set(key, { difficulty: value, learnedAt: Date.now() });
+    this.persist();
+  }
+
+  /** The difficulty learned from this relay's rejections, or 0. */
+  learnedProofOfWork(relayUrl: string): number {
+    const key = normalizeRelayCacheKey(relayUrl);
+    if (!key) return 0;
+    const learned = this.learnedPow.get(key);
+    if (!learned) return 0;
+    if (Date.now() - learned.learnedAt > this.learnedPowTtlMs) {
+      this.learnedPow.delete(key);
+      return 0;
+    }
+    return learned.difficulty;
+  }
+
   needsRefresh(relayUrl: string): boolean {
     const key = normalizeRelayCacheKey(relayUrl);
     if (!key) return false;
@@ -236,6 +271,11 @@ export class RelayInfoCache {
   }
 
   private restore(): void {
+    this.restoreRelayInfo();
+    this.restoreLearnedProofOfWork();
+  }
+
+  private restoreRelayInfo(): void {
     if (!this.storage) return;
     try {
       const raw = this.storage.getItem(this.storageKey);
@@ -252,6 +292,23 @@ export class RelayInfoCache {
     }
   }
 
+  private restoreLearnedProofOfWork(): void {
+    if (!this.storage) return;
+    try {
+      const raw = this.storage.getItem(`${this.storageKey}:pow`);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, LearnedProofOfWork>;
+      if (!parsed || typeof parsed !== "object") return;
+      for (const [key, value] of Object.entries(parsed)) {
+        const difficulty = sanitizeProofOfWorkDifficulty(value?.difficulty);
+        const learnedAt = Number(value?.learnedAt);
+        if (difficulty && Number.isFinite(learnedAt)) this.learnedPow.set(key, { difficulty, learnedAt });
+      }
+    } catch {
+      // noop
+    }
+  }
+
   private persist(): void {
     if (!this.storage) return;
     try {
@@ -260,6 +317,12 @@ export class RelayInfoCache {
       const payload: Record<string, CachedRelayInfo> = {};
       entries.slice(0, this.maxEntries).forEach(([key, value]) => (payload[key] = value));
       this.storage.setItem(this.storageKey, JSON.stringify(payload));
+      const learned: Record<string, LearnedProofOfWork> = {};
+      const now = Date.now();
+      for (const [key, value] of this.learnedPow) {
+        if (now - value.learnedAt <= this.learnedPowTtlMs) learned[key] = value;
+      }
+      this.storage.setItem(`${this.storageKey}:pow`, JSON.stringify(learned));
     } catch {
       // noop
     }

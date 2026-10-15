@@ -14,7 +14,7 @@ import {
   type NostrOutboxMutation,
   type NostrOutboxStore,
 } from "./NostrOutbox.js";
-import { applyProofOfWork } from "./ProofOfWork.js";
+import { applyProofOfWork, countLeadingZeroBits, parseProofOfWorkRejection, type ProofOfWorkOptions } from "./ProofOfWork.js";
 import { FIRST_PARTY_RELAYS, RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 
@@ -70,6 +70,10 @@ export type PublishCoordinatorOptions = {
   retryMaxMs?: number;
   signal?: AbortSignal;
   resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
+  /** Mining settings (hasher, timeout) used when a publish needs proof of work. */
+  proofOfWork?: Omit<ProofOfWorkOptions, "signal">;
+  /** Called when a relay refuses an event for too little proof of work and names its target. */
+  onProofOfWorkRequired?: (relayUrl: string, difficulty: number) => void;
   /**
    * Per-relay pacing and rate-limit backoff. Applies when an outbox store is configured (a
    * paced relay must stay queued somewhere); pass `false` to disable.
@@ -109,6 +113,8 @@ export class PublishCoordinator {
   private readonly retryMaxMs: number;
   private readonly signal?: AbortSignal;
   private readonly resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
+  private readonly proofOfWork?: Omit<ProofOfWorkOptions, "signal">;
+  private readonly onProofOfWorkRequired?: (relayUrl: string, difficulty: number) => void;
   private activeOutboxIds = new Set<string>();
   private outboxLocks = new Map<string, Promise<unknown>>();
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -123,6 +129,8 @@ export class PublishCoordinator {
     this.retryBaseMs = options?.retryBaseMs ?? 2_000;
     this.retryMaxMs = options?.retryMaxMs ?? 5 * 60_000;
     this.resolveProofOfWorkDifficulty = options?.resolveProofOfWorkDifficulty;
+    this.proofOfWork = options?.proofOfWork;
+    this.onProofOfWorkRequired = options?.onProofOfWorkRequired;
     this.signal = options?.signal;
     this.publishBudget = options?.publishBudget === false || !options?.outboxStore
       ? null
@@ -203,6 +211,16 @@ export class PublishCoordinator {
         case "terminal":
           refused.push(url);
           break;
+        case "pow": {
+          // This signed event can never satisfy the relay; hold it back and let the caller
+          // re-mine. A named target is remembered so later events are mined to it up front.
+          refused.push(url);
+          const required = parseProofOfWorkRejection(errorToMessageText(relayError));
+          const id = event.id || "";
+          const achieved = /^[0-9a-f]{64}$/i.test(id) ? countLeadingZeroBits(id) : 0;
+          if (required != null && required > achieved) this.onProofOfWorkRequired?.(url, required);
+          break;
+        }
         case "superseded":
           break;
         default:
@@ -549,7 +567,7 @@ export class PublishCoordinator {
 
     if (!event.created_at) event.created_at = Math.floor(Date.now() / 1000);
     if (proofOfWorkDifficulty > 0) {
-      await applyProofOfWork(event, signer, proofOfWorkDifficulty, { signal: this.signal });
+      await applyProofOfWork(event, signer, proofOfWorkDifficulty, { ...this.proofOfWork, signal: this.signal });
     } else if (!event.sig) {
       await event.sign(signer);
     }

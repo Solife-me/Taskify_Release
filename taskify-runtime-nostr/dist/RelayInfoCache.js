@@ -6,6 +6,9 @@ const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_FAILURE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_CACHE_ENTRIES = 64;
 const DEFAULT_STORAGE_KEY = "relay-info-cache";
+// A relay's `pow:` rejection is remembered for a week, so later writes are mined to its real
+// requirement even when its NIP-11 document doesn't advertise one.
+const DEFAULT_LEARNED_POW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export function normalizeRelayCacheKey(relayUrl) {
     try {
         const url = new URL(relayUrl.trim());
@@ -59,12 +62,15 @@ export class RelayInfoCache {
     storage;
     storageKey;
     maxEntries;
+    learnedPow = new Map();
+    learnedPowTtlMs;
     constructor(options = {}) {
         this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
         this.failureTtlMs = options.failureTtlMs ?? DEFAULT_FAILURE_TTL_MS;
         this.storage = options.storage;
         this.storageKey = options.storageKey ?? DEFAULT_STORAGE_KEY;
         this.maxEntries = options.maxEntries ?? DEFAULT_MAX_CACHE_ENTRIES;
+        this.learnedPowTtlMs = options.learnedPowTtlMs ?? DEFAULT_LEARNED_POW_TTL_MS;
         this.restore();
     }
     isExpired(entry) {
@@ -115,6 +121,9 @@ export class RelayInfoCache {
                 minPowDifficulty = Math.max(minPowDifficulty, sanitizeProofOfWorkDifficulty(lim.min_pow_difficulty));
             }
         }
+        for (const url of relayUrls) {
+            minPowDifficulty = Math.max(minPowDifficulty, this.learnedProofOfWork(url));
+        }
         return {
             maxLimit: maxLimit ?? DEFAULT_MAX_LIMIT,
             maxMessageLength,
@@ -159,6 +168,31 @@ export class RelayInfoCache {
         this.inFlight.set(key, promise);
         return promise;
     }
+    /** Records the difficulty a relay demanded in a `pow:` rejection; it never lowers a known requirement. */
+    recordProofOfWorkRequirement(relayUrl, difficulty) {
+        const key = normalizeRelayCacheKey(relayUrl);
+        const value = sanitizeProofOfWorkDifficulty(difficulty);
+        if (!key || !value)
+            return;
+        if (this.learnedProofOfWork(relayUrl) >= value)
+            return;
+        this.learnedPow.set(key, { difficulty: value, learnedAt: Date.now() });
+        this.persist();
+    }
+    /** The difficulty learned from this relay's rejections, or 0. */
+    learnedProofOfWork(relayUrl) {
+        const key = normalizeRelayCacheKey(relayUrl);
+        if (!key)
+            return 0;
+        const learned = this.learnedPow.get(key);
+        if (!learned)
+            return 0;
+        if (Date.now() - learned.learnedAt > this.learnedPowTtlMs) {
+            this.learnedPow.delete(key);
+            return 0;
+        }
+        return learned.difficulty;
+    }
     needsRefresh(relayUrl) {
         const key = normalizeRelayCacheKey(relayUrl);
         if (!key)
@@ -186,6 +220,10 @@ export class RelayInfoCache {
         return { fetchedAt: Date.now(), info: { ...info, limitation: normalizedLimit }, limitation: normalizedLimit };
     }
     restore() {
+        this.restoreRelayInfo();
+        this.restoreLearnedProofOfWork();
+    }
+    restoreRelayInfo() {
         if (!this.storage)
             return;
         try {
@@ -207,6 +245,27 @@ export class RelayInfoCache {
             // noop
         }
     }
+    restoreLearnedProofOfWork() {
+        if (!this.storage)
+            return;
+        try {
+            const raw = this.storage.getItem(`${this.storageKey}:pow`);
+            if (!raw)
+                return;
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== "object")
+                return;
+            for (const [key, value] of Object.entries(parsed)) {
+                const difficulty = sanitizeProofOfWorkDifficulty(value?.difficulty);
+                const learnedAt = Number(value?.learnedAt);
+                if (difficulty && Number.isFinite(learnedAt))
+                    this.learnedPow.set(key, { difficulty, learnedAt });
+            }
+        }
+        catch {
+            // noop
+        }
+    }
     persist() {
         if (!this.storage)
             return;
@@ -217,6 +276,13 @@ export class RelayInfoCache {
             const payload = {};
             entries.slice(0, this.maxEntries).forEach(([key, value]) => (payload[key] = value));
             this.storage.setItem(this.storageKey, JSON.stringify(payload));
+            const learned = {};
+            const now = Date.now();
+            for (const [key, value] of this.learnedPow) {
+                if (now - value.learnedAt <= this.learnedPowTtlMs)
+                    learned[key] = value;
+            }
+            this.storage.setItem(`${this.storageKey}:pow`, JSON.stringify(learned));
         }
         catch {
             // noop

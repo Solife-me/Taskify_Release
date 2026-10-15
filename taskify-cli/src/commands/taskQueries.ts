@@ -153,8 +153,9 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
               process.exit(1);
             }
           }
-        } else if (boardEntry) {
-          // Option D: interactive selector
+        } else if (boardEntry && process.stdin.isTTY) {
+          // Option D: interactive selector (a script or pipe gets the whole board instead of a
+          // prompt it can't answer)
           // Ensure columns are available
           let columns = boardEntry.columns;
           const syncedAt = boardEntry.syncedAt ?? 0;

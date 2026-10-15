@@ -1,4 +1,4 @@
-import { configureRelayAccess, prepareStandaloneEvent } from "taskify-runtime-nostr";
+import { configureRelayAccess, publishStandaloneEvent } from "taskify-runtime-nostr";
 /**
  * botCommands.ts — NIP-51 bot commands list (kind 30078, d-tag
  * "taskify-bot-commands") publish/fetch for Taskify CLI.
@@ -201,8 +201,7 @@ export async function publishBotCommands(
   event.content = "";
   event.tags = tags;
   event.created_at = Math.floor(Date.now() / 1000);
-  await prepareStandaloneEvent(event, relayList);
-  await event.publish();
+  await publishStandaloneEvent(event, relayList);
 
   const raw = event.rawEvent?.() as NostrEvent ?? (event as unknown as NostrEvent);
   if (!raw?.id) throw new Error("Failed to publish bot commands — no event id returned.");

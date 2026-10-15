@@ -11,6 +11,7 @@ import {
 createCliNostrSession,
 FileNostrOutboxStore
 } from "../shared/nodeRuntimeSession.js";
+import { cliProofOfWorkSettings, cliRelayInfoCache } from "../shared/relaySettings.js";
 import { fetchShareInboxNip17 } from "../shared/shareTransport.js";
 import type { CommandContext,CoreErrorDetails } from "./context.js";
 
@@ -108,7 +109,11 @@ export function registerDiscoveryCommands(program: Command, context: Pick<Comman
       const config = await loadConfig(program.opts().profile as string | undefined);
       let session: ReturnType<typeof createCliNostrSession>["session"] | null = null;
       try {
-        const transport = createCliNostrSession(config, { verbose: Boolean(program.opts().verbose) });
+        const transport = createCliNostrSession(config, {
+          verbose: Boolean(program.opts().verbose),
+          relayInfoCache: cliRelayInfoCache(),
+          proofOfWork: cliProofOfWorkSettings(),
+        });
         if (!transport.secretKeyHex) {
           throw new CliCommandError("CONFIG_INVALID", "No valid nsec is configured for the active profile.");
         }
@@ -221,10 +226,17 @@ export function registerDiscoveryCommands(program: Command, context: Pick<Comman
           defaultCheck = { ok: false, message: error instanceof Error ? error.message : String(error) };
         }
 
-        const transport = createCliNostrSession(config, { verbose: Boolean(program.opts().verbose) });
+        const transport = createCliNostrSession(config, {
+          verbose: Boolean(program.opts().verbose),
+          relayInfoCache: cliRelayInfoCache(),
+          proofOfWork: cliProofOfWorkSettings(),
+        });
         session = transport.session;
         await session.init(transport.relays);
+        // Relays that challenge on connect get their NIP-42 AUTH answered within a moment.
+        await new Promise((resolve) => setTimeout(resolve, 750));
         const relays = session.relayStatuses();
+        const authRefused = relays.filter((relay) => relay.auth?.state === "failed" || relay.auth?.state === "no-key");
         const queuedWrites = (await new FileNostrOutboxStore().listPending()).length;
         const checks = {
           identity: { ok: Boolean(identity), npub: identity?.npub ?? null },
@@ -237,6 +249,12 @@ export function registerDiscoveryCommands(program: Command, context: Pick<Comman
             entries: relays,
           },
           outbox: { ok: queuedWrites === 0, queuedWrites },
+          // NIP-42 / NIP-13: relays this profile can't authenticate to, and those that need PoW.
+          relayAccess: {
+            ok: authRefused.length === 0,
+            authRefused: authRefused.map((relay) => ({ url: relay.url, reason: relay.auth?.reason ?? relay.auth?.state ?? null })),
+            proofOfWork: relays.filter((relay) => relay.minPowDifficulty > 0).map((relay) => ({ url: relay.url, difficulty: relay.minPowDifficulty })),
+          },
         };
         const healthy = checks.identity.ok && checks.catalog.ok && checks.defaultLocation.ok && checks.relays.ok;
         if (!useHumanOutput(opts)) {
@@ -248,6 +266,9 @@ export function registerDiscoveryCommands(program: Command, context: Pick<Comman
           console.log(`${checks.defaultLocation.ok ? "✓" : "✗"} default (${checks.defaultLocation.message})`);
           console.log(`${checks.relays.ok ? "✓" : "✗"} relays (${checks.relays.connected}/${checks.relays.total} connected)`);
           console.log(`${checks.outbox.ok ? "✓" : "!"} outbox (${queuedWrites} queued)`);
+          const access = checks.relayAccess;
+          const powNote = access.proofOfWork.length ? `, PoW on ${access.proofOfWork.length}` : "";
+          console.log(`${access.ok ? "✓" : "!"} relay access (${access.authRefused.length ? `auth refused by ${access.authRefused.map((relay) => relay.url).join(", ")}` : "auth ok"}${powNote})`);
         }
         if (!healthy) process.exitCode = 1;
       } catch (error) {

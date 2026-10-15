@@ -226,7 +226,8 @@ taskify board overview --json | jq '.overview'
 
 ```bash
 taskify board list         # boards with IDs
-taskify relay status       # check relay connectivity
+taskify relay status       # check relay connectivity, NIP-42 auth and NIP-13 PoW
+taskify relay info <url>   # a relay's auth / proof-of-work requirements
 taskify cache clear        # wipe local cache (forces cold re-fetch on next list)
 taskify board defaults --json  # verify your profile's default board+list
 ```

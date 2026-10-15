@@ -240,12 +240,13 @@ _taskify_relay() {
         'list:Show configured relays with live check'
         'add:Add a relay URL to config'
         'remove:Remove a relay URL from config'
+        'info:Show NIP-11 details, auth and PoW requirements'
       )
       _describe 'relay subcommand' subcommands
       ;;
     args)
       case $words[1] in
-        add|remove)
+        add|remove|info)
           _arguments '1:relay url:'
           ;;
       esac
@@ -390,7 +391,7 @@ _taskify() {
 
   local commands="board boards list show search add done reopen update reorder delete subtask remind relay cache trust config completions"
   local board_subcmds="list join leave sync columns"
-  local relay_subcmds="status list add remove"
+  local relay_subcmds="status list add remove info"
   local cache_subcmds="clear status"
   local trust_subcmds="add remove list"
 
@@ -610,6 +611,7 @@ complete -c taskify -f -n '__taskify_subcommand_is relay' -a status  -d 'Show ND
 complete -c taskify -f -n '__taskify_subcommand_is relay' -a list    -d 'Show configured relays'
 complete -c taskify -f -n '__taskify_subcommand_is relay' -a add     -d 'Add a relay URL'
 complete -c taskify -f -n '__taskify_subcommand_is relay' -a remove  -d 'Remove a relay URL'
+complete -c taskify -f -n '__taskify_subcommand_is relay' -a info    -d 'Show relay auth and PoW requirements'
 
 # cache subcommands
 complete -c taskify -f -n '__taskify_subcommand_is cache' -a clear   -d 'Delete the task cache'

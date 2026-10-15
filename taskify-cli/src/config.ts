@@ -63,6 +63,8 @@ export type ProfileConfig = {
   contacts?: Contact[];
   fileStorageServer?: string;
   encryptedFileStorageServer?: string;
+  /** NIP-13 difficulty mined into every write, on top of what relays require (0 or unset: only theirs). */
+  powDifficulty?: number;
   agent?: {
     apiKey?: string;
     baseUrl?: string;   // default: https://api.openai.com/v1
@@ -222,6 +224,13 @@ async function writeStoredConfig(stored: StoredConfig): Promise<void> {
   }
 }
 
+const configLoadedListeners: Array<(profile: ProfileConfig) => void> = [];
+
+/** Runs `listener` with the selected profile whenever a command loads its config. */
+export function onConfigLoaded(listener: (profile: ProfileConfig) => void): void {
+  configLoadedListeners.push(listener);
+}
+
 export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
   let stored: StoredConfig;
 
@@ -278,6 +287,8 @@ export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
     process.stderr.write("\x1b[2m(using TASKIFY_NSEC from env)\x1b[0m\n");
   }
 
+  for (const listener of configLoadedListeners) listener(merged);
+
   return {
     ...merged,
     activeProfile: stored.activeProfile,
@@ -305,6 +316,7 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     contacts: cfg.contacts,
     fileStorageServer: cfg.fileStorageServer,
     encryptedFileStorageServer: cfg.encryptedFileStorageServer,
+    ...(cfg.powDifficulty ? { powDifficulty: cfg.powDifficulty } : {}),
     agent: cfg.agent,
   };
   const stored: StoredConfig = {

@@ -1,4 +1,4 @@
-import { configureRelayAccess, prepareStandaloneEvent } from "taskify-runtime-nostr";
+import { configureRelayAccess, publishStandaloneEvent } from "taskify-runtime-nostr";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { nip19, getPublicKey } from "nostr-tools";
@@ -256,8 +256,7 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
           syncEvent.kind = NIP51_CONTACTS_KIND;
           syncEvent.content = await encryptNip51PrivateItems(buildNip51PrivateItems(contacts), keys);
           syncEvent.tags = [["d", NIP51_PRIVATE_CONTACTS_D_TAG]];
-          await prepareStandaloneEvent(syncEvent, config.relays);
-          await syncEvent.publish();
+          await publishStandaloneEvent(syncEvent, config.relays);
           console.log(chalk.green(`✓ Published ${contacts.length} encrypted private contacts to relay`));
         }
         config.contacts = contacts;

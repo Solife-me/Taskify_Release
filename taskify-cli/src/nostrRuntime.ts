@@ -1,7 +1,7 @@
 import { type NDKEvent } from "@nostr-dev-kit/ndk";
 import { sanitizeRemote } from "./shared/displaySafe.js";
 import { getPublicKey, nip19 } from "nostr-tools";
-import { boardTagHash, collectRuntimeRelayUrls, deriveBoardKeyPair } from "taskify-runtime-nostr";
+import { boardTagHash, collectRuntimeRelayUrls, deriveBoardKeyPair, type RelayRuntimeStatus } from "taskify-runtime-nostr";
 import type { ReminderPreset, Recurrence, Subtask, TaskAssignee } from "./shared/taskTypes.js";
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.js";
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
@@ -39,6 +39,7 @@ import {
   buildCalendarViewEnvelope,
 } from "./shared/calendarEnvelope.js";
 import { createCliNostrSession } from "./shared/nodeRuntimeSession.js";
+import { cliProofOfWorkSettings, cliRelayInfoCache } from "./shared/relaySettings.js";
 import { MAX_CONCURRENT_BOARD_FETCHES, mapWithConcurrency } from "./shared/concurrency.js";
 
 function nowISO(): string {
@@ -304,7 +305,7 @@ export type NostrRuntime = {
   getLocalReminders(taskId: string): ReminderPreset[];
   getAgentSecurityConfig(): Promise<AgentSecurityConfig>;
   setAgentSecurityConfig(cfg: AgentSecurityConfig): Promise<AgentSecurityConfig>;
-  getRelayStatus(): Promise<{ url: string; connected: boolean }[]>;
+  getRelayStatus(): Promise<RelayRuntimeStatus[]>;
 };
 
 // ---- Event parsing ----
@@ -495,7 +496,10 @@ async function parseDecryptedCalendarEventUnsafe(
 
 export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
   const runtimeRelays = collectRuntimeRelayUrls(config.relays, config.boards);
-  const { session } = createCliNostrSession(config);
+  const { session } = createCliNostrSession(config, {
+    relayInfoCache: cliRelayInfoCache(),
+    proofOfWork: cliProofOfWorkSettings(),
+  });
 
   let connected = false;
 
@@ -612,8 +616,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       ["col", colId],
       ["status", status],
     ];
-    await session.prepareNDKEvent(event, signer, boardRelays(boardId));
-    await session.publishRaw(event.rawEvent(), { relayUrls: boardRelays(boardId) });
+    await session.publishSigned(event, signer, boardRelays(boardId));
     return event;
   }
 
@@ -645,9 +648,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       ["status", status],
       ["entity", "event"],
     ];
-    await session.prepareNDKEvent(event, boardKeys.signer, boardRelays(boardId));
     try {
-      await session.publishRaw(event.rawEvent(), { relayUrls: boardRelays(boardId) });
+      await session.publishSigned(event, boardKeys.signer, boardRelays(boardId));
       const viewEvent = session.createEvent();
       viewEvent.kind = TASKIFY_CALENDAR_VIEW_KIND;
       viewEvent.created_at = event.created_at;
@@ -656,8 +658,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ["d", calEventId],
         ["a", calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, calEventId)],
       ];
-      await session.prepareNDKEvent(viewEvent, boardKeys.signer, boardRelays(boardId));
-      await session.publishRaw(viewEvent.rawEvent(), { relayUrls: boardRelays(boardId) });
+      await session.publishSigned(viewEvent, boardKeys.signer, boardRelays(boardId));
     } catch (err) {
       throw err;
     }
@@ -695,8 +696,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       ...(board.children ?? []).map((child): string[] => ["ch", child]),
       ...(board.sortMode ? [["sort", board.sortMode, board.sortDirection ?? "asc"]] : []),
     ];
-    await session.prepareNDKEvent(event, signer, board.relays?.length ? board.relays : config.relays);
-    await session.publishRaw(event.rawEvent(), { relayUrls: board.relays?.length ? board.relays : config.relays });
+    await session.publishSigned(event, signer, board.relays?.length ? board.relays : config.relays);
   }
 
   return {
@@ -1605,9 +1605,11 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       return secCfg;
     },
 
-    async getRelayStatus(): Promise<{ url: string; connected: boolean }[]> {
+    async getRelayStatus(): Promise<RelayRuntimeStatus[]> {
       await ensureConnected();
-      return session.relayStatuses().map(({ url, connected }) => ({ url, connected }));
+      // Relays that challenge on connect get their AUTH answered within a moment.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      return session.relayStatuses();
     },
 
     async createBoard(input: {
