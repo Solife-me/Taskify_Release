@@ -238,9 +238,9 @@ import { ShareBoardIcon } from "./ui/icons";
 import {
   ensureWeekRecurrencesForCurrentWeek,
   buildRunningStreakLookup,
+  isoForWeekdayLocal,
   tasksInSameSeries,
 } from "taskify-core";
-import { isoForWeekdayLocal } from "./lib/app/weekBoardDate";
 import {
   TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_VIEW_KIND,

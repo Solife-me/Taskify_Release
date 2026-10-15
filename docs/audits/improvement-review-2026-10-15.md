@@ -382,7 +382,7 @@ per step.
 | --- | --- | --- | --- |
 | C2-1 | Approve | 2026-10-15 | Planned (after C2-3 stage 2) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
-| C2-3 | Approve all stages | 2026-10-15 | Stages 1–2 done except removal of the obsolete week-date shim (see Checkpoint) |
+| C2-3 | Approve all stages | 2026-10-15 | Stages 1–2 done; stages 3–4 remain (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
 | C2-6 | Approve | 2026-10-15 | Planned |
@@ -392,9 +392,9 @@ per step.
 
 ### Checkpoint — October 15, 2026 (handoff)
 
-Committed on `Beta` (not pushed): `f2737649` through `365c781c`. The suites were green at
-`365c781c`: PWA lint (one existing warning in `StoredTokensSheet.tsx`), `tsc -b`, 436 Vitest
-tests, and `taskify-core` 132 tests.
+Committed on `Beta` (not pushed), from `f2737649` through the stage-1 cleanup described below.
+The suites are green after stage 1: PWA lint (one existing warning in
+`StoredTokensSheet.tsx`), `tsc -b`, and 460 Vitest tests. The last core run remains 132 tests.
 
 **Done**
 
@@ -412,12 +412,14 @@ tests, and `taskify-core` 132 tests.
 - **Generated-task planners** (`domains/tasks/generatedTasks.ts`): the Scripture Memory review task
   and fasting reminders.
 - **Calendar window planner** (`domains/calendar/calendarRecurrenceWindow.ts`).
-- **Calendar commands** (`domains/calendar/calendarCommands.ts`): selection moves between boards
+- **Calendar commands** (`domains/calendar/calendarCommands.ts`, 24 tests): selection moves between boards
   and list columns, recurring-series cutoffs, single-occurrence deletion, seed advancement and
   edits (including local recurrence-window refresh) all return explicit state and publish plans.
   Accepted invites use a two-phase flow: relay/decryption I/O in `App`, then a tested pure
   materialization plan. RSVP validation, wire payload/tags and post-publish local state are also
   planned before `App` performs encryption and relay publication.
+- **C2-3 stage 1 complete.** The last `lib/app/weekBoardDate.ts` re-export shim is gone; its
+  consumers import the shared implementation directly from `taskify-core`.
 - **Fixed along the way:**
   - updaters that deferred or double-ran publishes;
   - a lost board `order` on save;
@@ -436,9 +438,7 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 
 **Remaining, in order**
 
-1. **Finish stage 1 (calendar).**
-   - Remove the re-export shim `src/lib/app/weekBoardDate.ts` (import from `taskify-core`).
-2. **C2-1, routes and history.**
+1. **C2-1, routes and history.**
    - A small typed router over the History API: pages as paths, open overlays as history entries
      so Back closes them.
    - Link vocabulary shared with iOS's `taskify://` links (`TaskifyWidgetLink.swift`: upcoming,
@@ -446,22 +446,22 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
      Node and Swift tests read.
    - Add `not_found_handling = "single-page-application"` to `wrangler.toml` `[assets]` and a
      service-worker navigation fallback.
-3. **C2-6, startup budget.**
+2. **C2-6, startup budget.**
    - Load the wallet providers, Cashu SDK, QR tools and spreadsheet import only where used; move
      the `process`/`Buffer` polyfills into the wallet chunk.
    - Add a CI check measuring the startup JS graph (about 614 KB gzipped at the start of chunk 2)
      against a budget.
-4. **C2-3 stage 3.** Move Nostr publishing, retry and the optimistic clock (`maybePublishTask`,
+3. **C2-3 stage 3.** Move Nostr publishing, retry and the optimistic clock (`maybePublishTask`,
    `publishTaskDeleted`, `applyTaskEvent` and the calendar equivalents) out of `App` into a
    publish service that consumes the commands' publish lists.
-5. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
+4. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
    modules; `App` keeps layout and routing.
-6. **C2-4, the identity layer.**
+5. **C2-4, the identity layer.**
    - Replace `window.nostrPK` (about 24 places) and the 42 `readNostrIdentity` calls with an
      `IdentityProvider` exposing the public key and a `Signer` (sign, NIP-44).
    - Then measure the NIP-46 round-trip cost for DM/contact decryption before building signers.
-7. **C2-5, first run that starts with tasks.**
-8. **Chunk 3 onward,** per the chunk plan.
+6. **C2-5, first run that starts with tasks.**
+7. **Chunk 3 onward,** per the chunk plan.
 
 **Logged for later chunks**
 

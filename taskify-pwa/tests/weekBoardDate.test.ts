@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { isoForWeekdayLocal } from "../src/lib/app/weekBoardDate.ts";
+import { isoForWeekdayLocal } from "taskify-core";
 
 process.env.TZ = "America/Chicago";
 
