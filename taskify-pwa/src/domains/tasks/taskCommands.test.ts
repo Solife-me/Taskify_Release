@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SCRIPTURE_MEMORY_SERIES_ID } from "taskify-core";
 import {
+  planAssignmentResponse,
   planClearCompleted,
   planCompleteTask,
   planDeleteTask,
@@ -11,6 +12,7 @@ import {
   planRestoreTask,
   planSaveTask,
   planToggleSubtask,
+  planUpdateTaskNote,
   type CompleteTaskContext,
 } from "./taskCommands";
 import type { Task } from "./taskTypes";
@@ -381,5 +383,22 @@ describe("planMoveTasksToColumn", () => {
     const topPlan = planMoveTasksToColumn(tasks, ["a", "b"], "b2", "c1", { now: NOW, settings: { newTaskPosition: "top" } });
     const topOrder = topPlan.tasks.filter((t) => t.boardId === "b2").sort((x, y) => (x.order ?? 0) - (y.order ?? 0));
     expect(topOrder.map((t) => t.id)).toEqual(["a", "b", "z"]);
+  });
+});
+
+describe("planUpdateTaskNote and planAssignmentResponse", () => {
+  it("saves a trimmed note with new subtasks, and skips no-op edits", () => {
+    const plan = planUpdateTaskNote([task({ note: "old" })], "t1", "  new  ", [{ id: "s", title: "Step" }], { now: NOW, actorPubkey: ACTOR });
+    expect(plan!.updated).toMatchObject({ note: "new", subtasks: [{ id: "s", title: "Step" }], lastEditedBy: ACTOR });
+    expect(planUpdateTaskNote([task({ note: "same" })], "t1", "same ", [], { now: NOW })).toBeNull();
+  });
+
+  it("records an assignee's answer attributed to them, once", () => {
+    const responder = "d".repeat(64);
+    const t = task({ assignees: [{ pubkey: responder, status: "pending" }] });
+    const plan = planAssignmentResponse([t], "t1", responder, "accepted", 1000);
+    expect(plan!.updated.assignees?.[0].status).toBe("accepted");
+    expect(plan!.updated.lastEditedBy).toBe(responder);
+    expect(planAssignmentResponse(plan!.tasks, "t1", responder, "accepted", 1000)).toBeNull();
   });
 });

@@ -23,7 +23,7 @@ import {
   scriptureFrequencyToRecurrence,
 } from "../scripture/scriptureUtils";
 import { isoDatePart, isoFromDateTime, isoTimePart, normalizeTimeZone, startOfDay, taskDateKey } from "../dateTime/dateUtils";
-import { normalizeAgentPubkey } from "./assignmentUtils";
+import { mergeTaskAssigneeResponse, normalizeAgentPubkey } from "./assignmentUtils";
 import { hiddenUntilForBoard, nextOrderForBoard } from "./boardUtils";
 import {
   applyRecurringSeriesCutoffs,
@@ -34,7 +34,7 @@ import {
   type RecurringSeriesCutoffs,
 } from "./recurrenceCutoffs";
 import type { Settings } from "./settingsTypes";
-import type { Board, InboxItem, InboxItemStatus, ScriptureMemoryUpdate, Task, TaskAssignee, TaskAssigneeStatus } from "./taskTypes";
+import type { Board, Subtask, InboxItem, InboxItemStatus, ScriptureMemoryUpdate, Task, TaskAssignee, TaskAssigneeStatus } from "./taskTypes";
 import { taskMovePersistencePlan } from "./taskMovePersistence";
 import { hasSyncedTaskChange } from "./taskSyncChanges";
 import { isRecoverableBountyTask, mergeLongestStreak, normalizeTaskBounty } from "./taskUtils";
@@ -745,4 +745,47 @@ export function planMoveTasksToColumn(
     publishDeleted.push(...plan.publishDeleted);
   }
   return { tasks: current, publish: [...publish.values()], publishDeleted };
+}
+
+/** Saves a note edited in place, with any checklist items the editor turned into subtasks. */
+export function planUpdateTaskNote(
+  tasks: Task[],
+  taskId: string,
+  note: string,
+  appendedSubtasks: Subtask[],
+  ctx: TaskEditContext,
+): { tasks: Task[]; updated: Task } | null {
+  const index = tasks.findIndex((task) => task.id === taskId);
+  if (index < 0) return null;
+  const t = tasks[index];
+  const trimmed = note.trim();
+  if ((t.note || "") === trimmed && !appendedSubtasks.length) return null;
+  const updated: Task = {
+    ...t,
+    note: trimmed || undefined,
+    subtasks: appendedSubtasks.length ? [...(t.subtasks || []), ...appendedSubtasks] : t.subtasks,
+    lastEditedBy: normalizeAgentPubkey(ctx.actorPubkey) ?? t.lastEditedBy ?? t.createdBy,
+  };
+  const next = tasks.slice();
+  next[index] = updated;
+  return { tasks: next, updated };
+}
+
+/** Records an assignee's answer on the assigned task, attributed to them. */
+export function planAssignmentResponse(
+  tasks: Task[],
+  taskId: string,
+  responderPubkey: string,
+  status: TaskAssigneeStatus,
+  respondedAtMs: number,
+): { tasks: Task[]; updated: Task } | null {
+  const index = tasks.findIndex((task) => task.id === taskId);
+  if (index < 0) return null;
+  const t = tasks[index];
+  const assignees = mergeTaskAssigneeResponse(t.assignees, responderPubkey, status, respondedAtMs);
+  if (assignees === t.assignees) return null;
+  const updated: Task = { ...t, assignees, lastEditedBy: responderPubkey };
+  const next = tasks.slice();
+  next[index] = updated;
+  return { tasks: next, updated };
 }

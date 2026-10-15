@@ -135,6 +135,7 @@ import {
 } from "./domains/tasks/assignmentUtils";
 import { recurringCutoffsStore, tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
 import {
+  planAssignmentResponse,
   planClearCompleted,
   planCompleteTask,
   planDeleteTask,
@@ -145,6 +146,7 @@ import {
   planRestoreTask,
   planSaveTask,
   planToggleSubtask,
+  planUpdateTaskNote,
 } from "./domains/tasks/taskCommands";
 import {
   reserveTaskMutationTimestamp,
@@ -1625,25 +1627,10 @@ export default function App() {
       if (!status) return;
       const parsedRespondedAt = item.respondedAt ? Date.parse(item.respondedAt) : Number.NaN;
       const respondedAtMs = Number.isFinite(parsedRespondedAt) ? parsedRespondedAt : Date.now();
-      const toPublish: Task[] = [];
-      setTasks((prev) =>
-        prev.map((task) => {
-          if (task.id !== taskId) return task;
-          const nextAssignees = mergeTaskAssigneeResponse(task.assignees, responderPubkey, status, respondedAtMs);
-          if (nextAssignees === task.assignees) return task;
-          const updated: Task = {
-            ...task,
-            assignees: nextAssignees,
-            lastEditedBy: responderPubkey,
-          };
-          toPublish.push(updated);
-          return updated;
-        }),
-      );
-      if (toPublish.length > 0) {
-        toPublish.forEach((task) => {
-          maybePublishTaskRef.current?.(task).catch(() => {});
-        });
+      const plan = planAssignmentResponse(tasksStore().get(), taskId, responderPubkey, status, respondedAtMs);
+      if (plan) {
+        setTasks(plan.tasks);
+        maybePublishTaskRef.current?.(plan.updated).catch(() => {});
         const senderLabel = formatSenderLabel(sender);
         const statusLabel = status === "accepted" ? "accepted" : status === "tentative" ? "maybe" : "declined";
         showToast(`${senderLabel} responded: ${statusLabel}`);
@@ -8623,22 +8610,15 @@ export default function App() {
 
   /** Saves a note from the note viewer or its editor, appending subtasks converted from it. */
   function updateTaskNote(taskId: string, note: string, appendedSubtasks: Subtask[] = []) {
-    const trimmed = note.trim();
-    setTasks(prev =>
-      prev.map((t) => {
-        if (t.id !== taskId) return t;
-        if ((t.note || "") === trimmed && !appendedSubtasks.length) return t;
-        const updated: Task = {
-          ...t,
-          note: trimmed || undefined,
-          subtasks: appendedSubtasks.length ? [...(t.subtasks || []), ...appendedSubtasks] : t.subtasks,
-          lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? t.lastEditedBy ?? t.createdBy,
-        };
-        maybePublishTask(updated).catch(() => {});
-        return updated;
-      })
-    );
+    const plan = planUpdateTaskNote(tasksStore().get(), taskId, note, appendedSubtasks, {
+      now: new Date(),
+      actorPubkey: (window as any).nostrPK || undefined,
+    });
+    if (!plan) return;
+    setTasks(plan.tasks);
+    maybePublishTask(plan.updated).catch(() => {});
   }
+
 
   completeTaskRef.current = completeTask;
 
