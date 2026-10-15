@@ -20,7 +20,6 @@ import {
   BIBLE_BOARD_ID,
   FASTING_REMINDER_SERIES_ID,
   isAssignedSharedTask,
-  SCRIPTURE_MEMORY_SERIES_ID,
   DEFAULT_DATE_REMINDER_TIME,
   ISO_DATE_PATTERN,
   MS_PER_DAY,
@@ -95,9 +94,6 @@ import {
   formatScriptureReference,
   formatDueInLabel,
   computeScriptureStats,
-  scriptureFrequencyToRecurrence,
-  recurrencesEqual,
-  chooseNextScriptureEntry,
 } from "./domains/scripture/scriptureUtils";
 import {
   useBibleTracker,
@@ -106,8 +102,6 @@ import {
 import {
   buildUsHolidayCalendarEvents,
   isUsHolidayCalendarEvent,
-  fastingReminderDueTimesForMonth,
-  fastingReminderTaskId,
   fastingReminderTargetBoard,
 } from "./domains/calendar/holidayUtils";
 import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
@@ -134,6 +128,7 @@ import {
   normalizeTaskAssignees,
 } from "./domains/tasks/assignmentUtils";
 import { recurringCutoffsStore, tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
+import { planFastingReminders, planScriptureReviewTask } from "./domains/tasks/generatedTasks";
 import {
   planAssignmentResponse,
   planClearCompleted,
@@ -153,7 +148,6 @@ import {
   TaskPublishVersionTracker,
 } from "./domains/tasks/taskMovePersistence";
 import {
-  applyRecurringSeriesCutoff,
   applyRecurringSeriesCutoffs,
   updateRecurringSeriesCutoff,
 } from "./domains/tasks/recurrenceCutoffs";
@@ -185,7 +179,6 @@ import {
   isoDatePart,
   isoFromDateTime,
   isoTimePart,
-  monthKeyFromYearMonth,
   normalizeTimeZone,
   parseDateKey,
   parseTimeValue,
@@ -221,7 +214,6 @@ import {
   nextOrderForCalendarBoard,
   nextOrderForBoard,
   isFrequentRecurrence,
-  hiddenUntilForNext,
   applyHiddenForFuture,
   findBoardByCompoundChildId,
 } from "./domains/tasks/boardUtils";
@@ -718,6 +710,7 @@ export default function App() {
     return completedNostrInitialSyncRef.current.has(boardTag(nostrBoardId));
   }, []);
   const maybePublishTaskRef = useRef<PublishTaskFn | null>(null);
+  const publishTaskDeletedRef = useRef<((task: Task) => Promise<void>) | null>(null);
   const maybePublishCalendarEventRef = useRef<PublishCalendarEventFn | null>(null);
   const publishBoardMetadataRef = useRef<((board: Board) => Promise<void>) | null>(null);
   const boardMetadataFingerprintsRef = useRef(new PublishFingerprints());
@@ -811,110 +804,20 @@ export default function App() {
     if (!targetBoard) return;
     if (!isBoardReadyForGeneratedTasks(targetBoard.id)) return;
     if (targetBoard.kind === "lists" && (!targetBoard.columns || targetBoard.columns.length === 0)) return;
-    const baseDays = scriptureMemoryFrequencyOption?.days ?? 1;
-    const recurrence = scriptureFrequencyToRecurrence(baseDays);
-    const selection = chooseNextScriptureEntry(scriptureMemory.entries, baseDays, new Date());
-    if (!selection) return;
     const now = new Date();
-    const nowISO = now.toISOString();
-    const dueDays = Number.isFinite(selection.stats.dueInDays) && selection.stats.dueInDays > 0
-      ? Math.ceil(selection.stats.dueInDays)
-      : 0;
-    const dueDate = startOfDay(new Date(now.getTime() + dueDays * MS_PER_DAY));
-    const dueISO = dueDate.toISOString();
-    let hiddenUntilISO: string | undefined;
-    if (startOfDay(dueDate).getTime() > startOfDay(now).getTime()) {
-      const candidate = hiddenUntilForNext(dueISO, recurrence, settings.weekStart);
-      if (candidate) {
-        const candidateMidnight = startOfDay(new Date(candidate)).getTime();
-        const todayMidnight = startOfDay(now).getTime();
-        if (candidateMidnight > todayMidnight) hiddenUntilISO = candidate;
-      }
-    }
-    let createdTask: Task | null = null;
-    setTasks((prev) => {
-      let changed = false;
-      const nextTasks = prev.map((task) => {
-        const isScriptureTask = task.seriesId === SCRIPTURE_MEMORY_SERIES_ID || task.scriptureMemoryId;
-        if (!isScriptureTask) return task;
-        let updated = task;
-        if (updated.seriesId !== SCRIPTURE_MEMORY_SERIES_ID) {
-          updated = { ...updated, seriesId: SCRIPTURE_MEMORY_SERIES_ID };
-          changed = true;
-        }
-        if (!recurrencesEqual(updated.recurrence, recurrence)) {
-          updated = { ...updated, recurrence };
-          changed = true;
-        }
-        if (updated.boardId !== targetBoard.id) {
-          updated = { ...updated, boardId: targetBoard.id };
-          if (targetBoard.kind === "week") {
-            updated = { ...updated, column: "day" as const };
-          } else if (targetBoard.kind === "lists") {
-            const firstColumn = targetBoard.columns?.[0];
-            if (firstColumn) {
-              updated = { ...updated, columnId: firstColumn.id };
-            }
-          }
-          changed = true;
-        } else if (targetBoard.kind === "lists") {
-          const firstColumn = targetBoard.columns?.[0];
-          if (firstColumn && updated.columnId !== firstColumn.id && !targetBoard.columns?.some((col) => col.id === updated.columnId)) {
-            updated = { ...updated, columnId: firstColumn.id };
-            changed = true;
-          }
-        }
-        return updated;
-      });
-      const boundedTasks = sanitizeRecurringTasks(nextTasks);
-      if (boundedTasks !== nextTasks) changed = true;
-      const hasActive = boundedTasks.some((task) => !task.completed && task.seriesId === SCRIPTURE_MEMORY_SERIES_ID);
-      if (hasActive) {
-        return changed ? boundedTasks : prev;
-      }
-      const order = nextOrderForBoard(targetBoard.id, boundedTasks, settings.newTaskPosition);
-      if (targetBoard.kind === "lists" && (!targetBoard.columns || targetBoard.columns.length === 0)) {
-        return changed ? boundedTasks : prev;
-      }
-      // A date-derived id, like every later occurrence in the series: two devices that each
-      // find no active review task (say, one whose passages synced before its tasks did)
-      // create the same task instead of duplicates.
-      const newTaskId = recurringInstanceId(SCRIPTURE_MEMORY_SERIES_ID, dueISO, recurrence);
-      if (boundedTasks.some((task) => task.id === newTaskId)) {
-        return changed ? boundedTasks : prev;
-      }
-      const newTask: Task = {
-        id: newTaskId,
-        boardId: targetBoard.id,
-        title: `Review ${formatScriptureReference(selection.entry)}`,
-        createdAt: Date.now(),
-        dueISO,
-        completed: false,
-        order,
-        recurrence,
-        seriesId: SCRIPTURE_MEMORY_SERIES_ID,
-        scriptureMemoryId: selection.entry.id,
-        scriptureMemoryStage: selection.entry.stage ?? 0,
-        scriptureMemoryPrevReviewISO: selection.entry.lastReviewISO ?? null,
-        scriptureMemoryScheduledAt: nowISO,
-        ...(hiddenUntilISO ? { hiddenUntilISO } : {}),
-      };
-      if (targetBoard.kind === "week") {
-        newTask.column = "day";
-      } else if (targetBoard.kind === "lists") {
-        const firstColumn = targetBoard.columns?.[0];
-        if (!firstColumn) return changed ? boundedTasks : prev;
-        newTask.columnId = firstColumn.id;
-      }
-      const boundedNewTask = applyRecurringSeriesCutoff(newTask, recurringCutoffsStore().get());
-      if (!boundedNewTask) return changed ? boundedTasks : prev;
-      createdTask = boundedNewTask;
-      return [...boundedTasks, boundedNewTask];
+    const plan = planScriptureReviewTask(tasksStore().get(), recurringCutoffsStore().get(), {
+      targetBoard,
+      entries: scriptureMemory.entries,
+      baseDays: scriptureMemoryFrequencyOption?.days ?? 1,
+      now,
+      settings,
     });
-    if (createdTask) {
-      const publishPromise = maybePublishTaskRef.current?.(createdTask);
-      publishPromise?.catch(() => {});
-      setScriptureMemory((prev) => scheduleScriptureEntry(prev, selection.entry.id, nowISO));
+    if (!plan) return;
+    setTasks(plan.tasks);
+    if (plan.created && plan.scheduledEntryId) {
+      maybePublishTaskRef.current?.(plan.created)?.catch(() => {});
+      const scheduledEntryId = plan.scheduledEntryId;
+      setScriptureMemory((prev) => scheduleScriptureEntry(prev, scheduledEntryId, now.toISOString()));
     }
   }, [
     settings.scriptureMemoryEnabled,
@@ -935,140 +838,19 @@ export default function App() {
     // Follows the board that already holds reminders, so every device uses the same one.
     const targetBoard = fastingReminderTargetBoard(boards, tasksRef.current, FASTING_REMINDER_SERIES_ID);
 
-    if (!settings.fastingRemindersEnabled) {
-      setTasks((prev) => {
-        const next = prev.filter((task) => !(task.seriesId === FASTING_REMINDER_SERIES_ID && !task.completed));
-        return next.length === prev.length ? prev : next;
-      });
-      return;
-    }
-    if (!targetBoard) return;
     // Every shared board's history must be in first: reminders another device made may be on any
     // of them, and they decide where reminders live.
-    if (boards.some((b) => b.nostr?.boardId && !isBoardReadyForGeneratedTasks(b.id))) return;
-
-    const now = new Date();
-    const months = Array.from({ length: 2 }, (_, i) => {
-      const anchor = new Date(now.getFullYear(), now.getMonth() + i, 1);
-      const year = anchor.getFullYear();
-      const monthIndex = anchor.getMonth();
-      return { year, monthIndex, key: monthKeyFromYearMonth(year, monthIndex) };
-    });
-    const windowMonthKeys = new Set(months.map((m) => m.key));
-    const desiredDueTimes = new Set<number>();
-    months.forEach((m) => {
-      const times = fastingReminderDueTimesForMonth(m.year, m.monthIndex, {
-        mode: settings.fastingRemindersMode,
-        weekday: settings.fastingRemindersWeekday,
-        perMonth: settings.fastingRemindersPerMonth,
-        seed: settings.fastingRemindersRandomSeed,
-      });
-      times.forEach((time) => desiredDueTimes.add(time));
-    });
-
-    const createdTasks: Task[] = [];
-    setTasks((prev) => {
-      const todayMidnight = startOfDay(new Date()).getTime();
-      let changed = false;
-      const nextTasks: Task[] = [];
-      const existingDueTimes = new Set<number>();
-
-      for (const task of prev) {
-        if (task.seriesId !== FASTING_REMINDER_SERIES_ID) {
-          nextTasks.push(task);
-          continue;
-        }
-        if (task.completed) {
-          nextTasks.push(task);
-          continue;
-        }
-
-        const dueDate = new Date(task.dueISO);
-        const dueMidnight = startOfDay(dueDate);
-        const dueTime = dueMidnight.getTime();
-        if (!Number.isFinite(dueTime) || Number.isNaN(dueTime)) {
-          nextTasks.push(task);
-          continue;
-        }
-
-        const dueMonthKey = monthKeyFromYearMonth(dueDate.getFullYear(), dueDate.getMonth());
-        const managedMonth = windowMonthKeys.has(dueMonthKey);
-        const isInFuture = dueTime >= todayMidnight;
-        const isDesired = desiredDueTimes.has(dueTime);
-
-        if (managedMonth && isInFuture && !isDesired) {
-          changed = true;
-          continue;
-        }
-
-        if (isInFuture && isDesired) {
-          existingDueTimes.add(dueTime);
-        }
-
-        let updated = task;
-        if (updated.boardId !== targetBoard.id) {
-          updated = { ...updated, boardId: targetBoard.id };
-          changed = true;
-        }
-        if (targetBoard.kind === "week") {
-          if (updated.column !== "day") {
-            updated = { ...updated, column: "day" };
-            changed = true;
-          }
-        } else if (targetBoard.kind === "lists") {
-          const firstColumn = targetBoard.columns?.[0];
-          if (firstColumn && updated.columnId !== firstColumn.id) {
-            updated = { ...updated, columnId: firstColumn.id };
-            changed = true;
-          }
-        }
-
-        nextTasks.push(updated);
-      }
-
-      const toCreate = Array.from(desiredDueTimes)
-        .filter((time) => time >= todayMidnight && !existingDueTimes.has(time))
-        .sort((a, b) => a - b);
-      const existingIds = new Set(prev.map((task) => task.id));
-      for (const dueTime of toCreate) {
-        // Date-derived, like native: devices generating the same reminder make one task.
-        const reminderId = fastingReminderTaskId(FASTING_REMINDER_SERIES_ID, dueTime);
-        if (existingIds.has(reminderId)) continue;
-        const dueISO = new Date(dueTime).toISOString();
-        const order = nextOrderForBoard(targetBoard.id, nextTasks, settings.newTaskPosition);
-        const newTask: Task = {
-          id: reminderId,
-          boardId: targetBoard.id,
-          title: "Fasting",
-          note: "Fasting reminder",
-          createdAt: Date.now(),
-          dueISO,
-          completed: false,
-          order,
-          seriesId: FASTING_REMINDER_SERIES_ID,
-        };
-        if (targetBoard.kind === "week") {
-          newTask.column = "day";
-        } else if (targetBoard.kind === "lists") {
-          const firstColumn = targetBoard.columns?.[0];
-          if (!firstColumn) continue;
-          newTask.columnId = firstColumn.id;
-        }
-        applyHiddenForFuture(newTask, settings.weekStart, targetBoard.kind);
-        createdTasks.push(newTask);
-        nextTasks.push(newTask);
-        changed = true;
-      }
-
-      return changed ? nextTasks : prev;
-    });
-
-    if (createdTasks.length) {
-      createdTasks.forEach((task) => {
-        const publishPromise = maybePublishTaskRef.current?.(task, targetBoard);
-        publishPromise?.catch(() => {});
-      });
+    if (
+      settings.fastingRemindersEnabled &&
+      (!targetBoard || boards.some((b) => b.nostr?.boardId && !isBoardReadyForGeneratedTasks(b.id)))
+    ) {
+      return;
     }
+    const plan = planFastingReminders(tasksStore().get(), { targetBoard: targetBoard ?? undefined, now: new Date(), settings });
+    if (!plan) return;
+    setTasks(plan.tasks);
+    plan.publish.forEach((task) => maybePublishTaskRef.current?.(task, targetBoard ?? undefined)?.catch(() => {}));
+    plan.publishDeleted.forEach((task) => publishTaskDeletedRef.current?.(task)?.catch(() => {}));
   }, [
     boards,
     settings.fastingRemindersEnabled,
@@ -5728,6 +5510,7 @@ export default function App() {
   }
 
   maybePublishTaskRef.current = maybePublishTask;
+  publishTaskDeletedRef.current = publishTaskDeleted;
 
   const isDateKey = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value);
   const resolveCalendarEventPublishBoard = (event: CalendarEvent, boardOverride?: Board): Board | null => {
