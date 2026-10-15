@@ -382,10 +382,89 @@ per step.
 | --- | --- | --- | --- |
 | C2-1 | Approve | 2026-10-15 | Planned (after C2-3 stage 2) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
-| C2-3 | Approve all stages | 2026-10-15 | In progress: stage 1 |
+| C2-3 | Approve all stages | 2026-10-15 | Stage 2 done; stage 1 nearly done (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
 | C2-6 | Approve | 2026-10-15 | Planned |
 | C2-7 | Not selected (declined) | 2026-10-15 | — |
 | C2-8 | Not selected (declined) | 2026-10-15 | — |
 | C2-9 | Not selected (declined) | 2026-10-15 | — |
+
+### Checkpoint — October 15, 2026 (handoff)
+
+Committed on `Beta` (not pushed): `f2737649` through `365c781c`. The suites were green at
+`365c781c`: PWA lint (one existing warning in `StoredTokensSheet.tsx`), `tsc -b`, 436 Vitest
+tests, and `taskify-core` 132 tests.
+
+**Done**
+
+- **C2-3 stage 2, the store.**
+  - `src/state/stateStore.ts` is a synchronous store. `src/state/appStores.ts` holds the tasks,
+    boards, calendar events and recurring-series cutoffs stores, each saving its own changes.
+  - `useTasks`/`useBoards`/`useCalendarEvents` keep the `[value, set]` shape.
+  - Read current state with `tasksStore().get()`, never from a closure.
+  - The old `useState` initializers are loaders: `domains/tasks/storedTasks.ts` and
+    `domains/calendar/storedCalendarEvents.ts`.
+- **C2-3 stage 1, task commands** (`domains/tasks/taskCommands.ts`, 36 tests):
+  - complete, delete (with series cutoffs and bounties), restore, clear completed, save, postpone,
+    toggle subtask, note edit and assignment reply;
+  - moves: drag/drop, to a board, and a selection to a column.
+- **Generated-task planners** (`domains/tasks/generatedTasks.ts`): the Scripture Memory review task
+  and fasting reminders.
+- **Calendar window planner** (`domains/calendar/calendarRecurrenceWindow.ts`).
+- **Fixed along the way:**
+  - updaters that deferred or double-ran publishes;
+  - a lost board `order` on save;
+  - moves landing at arbitrary positions, which now follow the new-task position setting;
+  - fasting reminders not deleted on other devices;
+  - the recurring-event window deleting the user's edited occurrences.
+- **Infrastructure:**
+  - The PWA compiles `taskify-core` from source (Vite alias), so no stale build is served.
+  - `ensureWeekRecurrencesForCurrentWeek` returns `{ tasks, generated }`.
+  - The built-in Bible ids and `isAssignedSharedTask` are in core.
+
+**The pattern to follow:** a command takes current state plus a context (`now`,
+`actorPubkey`, the settings it needs) and returns the next state plus what to publish. `App`
+reads the store, calls the command, calls `set`, then publishes. Nothing publishes or records
+follow-up work inside a `set(prev => …)` updater. Bugs get a failing test first.
+
+**Remaining, in order**
+
+1. **Finish stage 1 (calendar).**
+   - Move the event halves of `moveSelectedTasksToBoard` and `moveSelectedTasksToColumn` in
+     `App.tsx` into a command. They still publish inside `setCalendarEvents` updaters.
+   - Then turn `deleteCalendarEvent`, `advanceCalendarSeriesSeed`, `saveCalendarEdit`,
+     `addAcceptedInviteToCalendar` and `publishCalendarRsvp` into tested commands in a
+     `domains/calendar/calendarCommands.ts`.
+   - Remove the re-export shim `src/lib/app/weekBoardDate.ts` (import from `taskify-core`).
+2. **C2-1, routes and history.**
+   - A small typed router over the History API: pages as paths, open overlays as history entries
+     so Back closes them.
+   - Link vocabulary shared with iOS's `taskify://` links (`TaskifyWidgetLink.swift`: upcoming,
+     boards, task, event, quick-add). Parse/format lives in `taskify-core`, with vectors that both
+     Node and Swift tests read.
+   - Add `not_found_handling = "single-page-application"` to `wrangler.toml` `[assets]` and a
+     service-worker navigation fallback.
+3. **C2-6, startup budget.**
+   - Load the wallet providers, Cashu SDK, QR tools and spreadsheet import only where used; move
+     the `process`/`Buffer` polyfills into the wallet chunk.
+   - Add a CI check measuring the startup JS graph (about 614 KB gzipped at the start of chunk 2)
+     against a budget.
+4. **C2-3 stage 3.** Move Nostr publishing, retry and the optimistic clock (`maybePublishTask`,
+   `publishTaskDeleted`, `applyTaskEvent` and the calendar equivalents) out of `App` into a
+   publish service that consumes the commands' publish lists.
+5. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
+   modules; `App` keeps layout and routing.
+6. **C2-4, the identity layer.**
+   - Replace `window.nostrPK` (about 24 places) and the 42 `readNostrIdentity` calls with an
+     `IdentityProvider` exposing the public key and a `Signer` (sign, NIP-44).
+   - Then measure the NIP-46 round-trip cost for DM/contact decryption before building signers.
+7. **C2-5, first run that starts with tasks.**
+8. **Chunk 3 onward,** per the chunk plan.
+
+**Logged for later chunks**
+
+- Chunk 4: Scripture Memory review tasks whose series fields get normalized are not republished.
+  Republishing would send every past review on a frequency change, so it needs a deliberate rule.
+- Chunk 4: `maybePublishTask` mutates `task._nostrAt` on objects held in state.
+- Chunk 12: the CLI's runtime tests assert on source text; build a fake-session harness.
