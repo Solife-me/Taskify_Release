@@ -1,3 +1,4 @@
+import { contactInitials as avatarInitials } from "taskify-core";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QrScannerLib from "qr-scanner";
 import { QRCodeCanvas } from "qrcode.react";
@@ -43,18 +44,7 @@ export type GroupAvatarMember = {
   picture?: string;
 };
 
-export function avatarInitials(value: string): string {
-  const parts = (value || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  const cp = parts[0].codePointAt(0) ?? 0;
-  const isEmoji =
-    (cp >= 0x2600 && cp <= 0x27bf) ||
-    (cp >= 0x1f300 && cp <= 0x1faff) ||
-    (cp >= 0x1f900 && cp <= 0x1f9ff);
-  if (isEmoji) return [...parts[0]][0] ?? "?";
-  if (parts.length === 1) return [...parts[0]].slice(0, 2).join("").toUpperCase();
-  return `${[...parts[0]][0] ?? ""}${[...parts[parts.length - 1]][0] ?? ""}`.toUpperCase();
-}
+export { contactInitials as avatarInitials } from "taskify-core";
 
 export function GroupAvatar({
   members,

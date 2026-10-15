@@ -1,3 +1,4 @@
+import { parseTimeValue } from "./dateTime.js";
 export const DEFAULT_DATE_REMINDER_TIME = "09:00";
 export const TIMED_REMINDER_PRESETS = [
     { id: "0h", label: "At due/start time", badge: "0h", minutes: 0 },
@@ -26,19 +27,6 @@ export function clampCustomReminderMinutes(value) {
     if (!Number.isFinite(value))
         return 0;
     return Math.max(MIN_CUSTOM_REMINDER_MINUTES, Math.min(MAX_CUSTOM_REMINDER_MINUTES, Math.round(value)));
-}
-function parseTimeValue(value) {
-    if (typeof value !== "string" || !value.includes(":"))
-        return null;
-    const [hourRaw, minuteRaw] = value.split(":");
-    const hour = Number.parseInt(hourRaw ?? "", 10);
-    const minute = Number.parseInt(minuteRaw ?? "", 10);
-    if (!Number.isFinite(hour) || !Number.isFinite(minute))
-        return null;
-    return {
-        hour: Math.min(23, Math.max(0, hour)),
-        minute: Math.min(59, Math.max(0, minute)),
-    };
 }
 export function normalizeReminderTime(value) {
     if (typeof value !== "string")

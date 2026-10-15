@@ -1,10 +1,6 @@
-export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+import { startOfDay } from "./dateTime.js";
 
-function startOfDayLocal(date: Date): Date {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
+export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 function addDaysLocal(date: Date, days: number): Date {
   const next = new Date(date);
@@ -13,12 +9,12 @@ function addDaysLocal(date: Date, days: number): Date {
 }
 
 export function startOfWeekLocal(date: Date, weekStart: Weekday): Date {
-  const sd = startOfDayLocal(date);
+  const sd = startOfDay(date);
   const current = sd.getDay() as Weekday;
   const ws = weekStart === 1 || weekStart === 6 ? weekStart : 0;
   let diff = current - ws;
   if (diff < 0) diff += 7;
-  return startOfDayLocal(addDaysLocal(sd, -diff));
+  return startOfDay(addDaysLocal(sd, -diff));
 }
 
 export function isoForWeekdayLocal(
@@ -29,6 +25,6 @@ export function isoForWeekdayLocal(
   const anchor = startOfWeekLocal(base, weekStart);
   const anchorDay = anchor.getDay() as Weekday;
   const offset = ((target - anchorDay) % 7 + 7) % 7;
-  const day = startOfDayLocal(addDaysLocal(anchor, offset));
+  const day = startOfDay(addDaysLocal(anchor, offset));
   return day.toISOString();
 }

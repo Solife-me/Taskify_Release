@@ -1,5 +1,6 @@
 import React, { useMemo, useCallback } from "react";
 import type { CalendarEvent } from "../../domains/tasks/taskTypes";
+import { ISO_DATE_PATTERN } from "taskify-core";
 import { normalizeTimeZone } from "../../domains/dateTime/dateUtils";
 import { isoDatePart } from "../../domains/dateTime/dateUtils";
 import { toNpub } from "../../lib/nostr";
@@ -45,7 +46,6 @@ export function isEventCardDragEnabled(isSelectionMode?: boolean, isDraggable?: 
   return Boolean(isDraggable) && !isSelectionMode;
 }
 
-const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export function getDraggedEventId(dataTransfer: DataTransfer | null | undefined) {
   if (!dataTransfer) return null;

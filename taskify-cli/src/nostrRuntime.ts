@@ -41,6 +41,7 @@ import {
 import { createCliNostrSession } from "./shared/nodeRuntimeSession.js";
 import { cliProofOfWorkSettings, cliRelayInfoCache } from "./shared/relaySettings.js";
 import { MAX_CONCURRENT_BOARD_FETCHES, mapWithConcurrency } from "./shared/concurrency.js";
+import { nextRecurringTaskPayload } from "./shared/recurringCompletion.js";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -212,6 +213,8 @@ export type FullTaskRecord = {
   deleted?: boolean;
   /** Signed relay event id for deterministic equal-timestamp replacement. */
   nostrEventId?: string;
+  /** Set by `setTaskStatus` when completing a recurring task opened its next occurrence. */
+  nextOccurrence?: { id: string; dueISO: string };
 };
 
 export type ExtendedCreateInput = AgentTaskCreateInput & {
@@ -1410,15 +1413,39 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : existing.updatedAt,
         nostrEventId: published.id,
       };
+      // Completing a recurring task opens its next occurrence, as the PWA and iOS do. The id is
+      // derived from the series and date, so a copy another device already made is left alone.
+      let nextRecord: FullTaskRecord | null = null;
+      const next = completed && !existing.completed ? nextRecurringTaskPayload(taskId, rawPayload) : null;
+      if (next) {
+        const existingNext = await pickLatestParsedEvent(
+          await fetchBoardEvents(entry.id, next.taskId),
+          (evt) => parseDecryptedEvent(evt, entry.id, entry.name),
+        );
+        if (!existingNext || existingNext.parsed.deleted) {
+          const nextPayload = { ...next.payload, lastEditedBy: userPubkey };
+          const nextEvent = await publishTaskEvent(
+            entry.id,
+            next.taskId,
+            nextPayload,
+            "open",
+            colId,
+            existingNext?.event.created_at,
+          );
+          const parsedNext = await parseDecryptedEvent(nextEvent, entry.id, entry.name);
+          if (parsedNext) nextRecord = { ...parsedNext, nostrEventId: nextEvent.id };
+        }
+      }
       // Update cache
       const cache = readCache();
       const bc = cache.boards[entry.id];
       if (bc) {
-        bc.tasks = bc.tasks.filter((t) => t.id !== taskId);
+        bc.tasks = bc.tasks.filter((t) => t.id !== taskId && t.id !== nextRecord?.id);
         bc.tasks.push(recordToCache(updated));
+        if (nextRecord) bc.tasks.push(recordToCache(nextRecord));
         writeCache(cache);
       }
-      return updated;
+      return nextRecord ? { ...updated, nextOccurrence: { id: nextRecord.id, dueISO: nextRecord.dueISO } } : updated;
     },
 
     async deleteTask(taskId: string, boardId: string): Promise<FullTaskRecord | null> {

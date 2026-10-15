@@ -6,18 +6,21 @@ import type { Contact } from "./contacts";
 import { normalizeNostrPubkey } from "./nostr";
 import { SessionPool } from "../nostr/SessionPool";
 
-export const NIP51_CONTACTS_KIND = 30000;
-export const NIP51_CONTACTS_D_TAG = "Chat-Friends";
+import {
+  buildNip51PrivateItems as buildNip51PrivateItemsCore,
+  extractNip51PrivateContacts as extractNip51PrivateContactsCore,
+  normalizeNip51PrivateItems,
+  NIP51_CONTACTS_KIND,
+  NIP51_PRIVATE_CONTACTS_D_TAG,
+  type Nip51PrivateContact,
+} from "taskify-core";
+
+export { NIP51_CONTACTS_KIND, NIP51_PRIVATE_CONTACTS_D_TAG as NIP51_CONTACTS_D_TAG };
+export type { Nip51PrivateContact };
 
 export type Nip51ContactKeys = {
   privateKeyHex: string;
   publicKeyHex: string;
-};
-
-export type Nip51PrivateContact = {
-  pubkey: string;
-  relayHint?: string;
-  petname?: string;
 };
 
 function ensureNip44V2() {
@@ -37,58 +40,8 @@ function normalizeToRawPubkeyHex(value: string | null | undefined): string | nul
   return normalized.slice(-64).toLowerCase();
 }
 
-function selectRelayHint(relays: Contact["relays"]): string | null {
-  if (!Array.isArray(relays)) return null;
-  const relay = relays.find((entry) => typeof entry === "string" && entry.trim().length > 0);
-  return relay ? relay.trim() : null;
-}
-
-function selectPetname(contact: Contact): string | null {
-  const name = (contact.name || "").trim();
-  if (name) return name;
-  const displayName = (contact.displayName || "").trim();
-  if (displayName) return displayName;
-  const username = (contact.username || "").trim();
-  return username || null;
-}
-
 export function buildNip51PrivateItems(contacts: Contact[]): string[][] {
-  const seen = new Set<string>();
-  const items: string[][] = [];
-
-  (Array.isArray(contacts) ? contacts : []).forEach((contact) => {
-    const pubkey = normalizeToRawPubkeyHex(contact.npub || "");
-    if (!pubkey) return;
-    if (seen.has(pubkey)) return;
-    seen.add(pubkey);
-    const relayHint = selectRelayHint(contact.relays);
-    const petname = selectPetname(contact);
-    const tag: string[] = ["p", pubkey];
-    if (relayHint || petname) {
-      tag.push(relayHint || "");
-    }
-    if (petname) {
-      if (!relayHint) {
-        tag.push("");
-      }
-      tag.push(petname);
-    }
-    items.push(tag);
-  });
-
-  return items;
-}
-
-function normalizePrivateItems(raw: unknown): string[][] {
-  if (!Array.isArray(raw)) {
-    throw new Error("Invalid NIP-51 contacts payload.");
-  }
-  const normalized: string[][] = [];
-  raw.forEach((entry) => {
-    if (!Array.isArray(entry)) return;
-    normalized.push(entry.map((value) => (typeof value === "string" ? value : "")));
-  });
-  return normalized;
+  return buildNip51PrivateItemsCore(contacts, normalizeToRawPubkeyHex);
 }
 
 export async function encryptNip51PrivateItems(items: string[][], keys: Nip51ContactKeys): Promise<string> {
@@ -103,29 +56,11 @@ export async function decryptNip51PrivateItems(content: string, keys: Nip51Conta
   if (!trimmed) return [];
   const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(keys.privateKeyHex), keys.publicKeyHex);
   const plaintext = await nip44v2.decrypt(trimmed, conversationKey);
-  return normalizePrivateItems(JSON.parse(plaintext));
+  return normalizeNip51PrivateItems(JSON.parse(plaintext));
 }
 
 export function extractNip51PrivateContacts(items: string[][]): Nip51PrivateContact[] {
-  const contacts: Nip51PrivateContact[] = [];
-  const seen = new Set<string>();
-
-  (Array.isArray(items) ? items : []).forEach((tag) => {
-    if (!Array.isArray(tag) || tag[0] !== "p") return;
-    const pubkey = normalizeToRawPubkeyHex(tag[1]);
-    if (!pubkey) return;
-    if (seen.has(pubkey)) return;
-    seen.add(pubkey);
-    const relayHint = typeof tag[2] === "string" ? tag[2].trim() : "";
-    const petname = typeof tag[3] === "string" ? tag[3].trim() : "";
-    contacts.push({
-      pubkey,
-      relayHint: relayHint || undefined,
-      petname: petname || undefined,
-    });
-  });
-
-  return contacts;
+  return extractNip51PrivateContactsCore(items, normalizeToRawPubkeyHex);
 }
 
 export async function buildNip51PrivateContactsEvent(
@@ -142,7 +77,7 @@ export async function buildNip51PrivateContactsEvent(
     if (tag[0] === "d") return;
     tags.push(tag);
   });
-  tags.unshift(["d", NIP51_CONTACTS_D_TAG]);
+  tags.unshift(["d", NIP51_PRIVATE_CONTACTS_D_TAG]);
   return {
     kind: NIP51_CONTACTS_KIND,
     content,
@@ -185,7 +120,7 @@ export async function fetchLatestPrivateContactsList(
   const event = await pool.get(relays, {
     kinds: [NIP51_CONTACTS_KIND],
     authors: [pubkey],
-    "#d": [NIP51_CONTACTS_D_TAG],
+    "#d": [NIP51_PRIVATE_CONTACTS_D_TAG],
   });
   if (!event) return { event: null, contacts: [] };
   const items = await decryptNip51PrivateItems(event.content, keys);

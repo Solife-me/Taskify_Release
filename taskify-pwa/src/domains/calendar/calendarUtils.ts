@@ -3,7 +3,7 @@
 import type { CalendarEvent, Board } from "../tasks/taskTypes";
 import { ISO_DATE_PATTERN, MS_PER_DAY } from "../appTypes";
 import type { Weekday } from "../appTypes";
-import { isoDatePart, parseDateKey, formatDateKeyLocal, isoFromDateTime, startOfDay } from "../dateTime/dateUtils";
+import { isoDatePart, parseDateKey, formatDateKeyLocal, isoFromDateTime } from "../dateTime/dateUtils";
 
 // ---- Special calendar constants ----
 
@@ -14,14 +14,8 @@ export const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
 
 // ---- Week helpers ----
 
-export function startOfWeek(d: Date, weekStart: Weekday): Date {
-  const sd = startOfDay(d);
-  const current = sd.getDay() as Weekday;
-  const ws = (weekStart === 1 || weekStart === 6) ? weekStart : 0; // only Mon(1)/Sat(6)/Sun(0)
-  let diff = current - ws;
-  if (diff < 0) diff += 7;
-  return new Date(sd.getTime() - diff * 86400000);
-}
+export { startOfWeekLocal as startOfWeek } from "taskify-core";
+import { startOfWeekLocal as startOfWeek } from "taskify-core";
 
 // ---- Calendar event date/time utilities ----
 

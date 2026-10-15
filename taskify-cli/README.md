@@ -107,7 +107,7 @@ The CLI never silently picks among multiple boards or lists. Compound boards can
 | `show <taskId>` | Fetch one task; scans configured boards if no location is supplied | `--in`, `--human` |
 | `search <query>` | Search title/note across boards or within one location | `--in`, `--mine`, `--human` |
 | `update <taskId>` | Update fields or move a task | `--in`, `--title`, `--due`, `--priority`, `--note`, `--column` |
-| `done <taskId>` | Mark a task complete | `--in`, `--title`, `--due` |
+| `done <taskId>` | Mark a task complete; a recurring task opens its next occurrence (returned as `nextOccurrence`) | `--in`, `--title`, `--due` |
 | `reopen <taskId>` | Reopen a task | `--in`, `--title`, `--due` |
 | `delete <taskId>` | Delete a task | `--in`, `--force` |
 

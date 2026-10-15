@@ -1,0 +1,219 @@
+{
+  "description": "Task recurrence: the next due instant and occurrence id every client must compute. Read by taskify-core (Node) and TaskifyCoreTests (Swift). Times are UTC; days are counted in timeZone.",
+  "vectors": [
+    {
+      "name": "daily, date-only, across US spring-forward",
+      "currentISO": "2026-03-07T06:00:00.000Z",
+      "rule": {
+        "type": "daily"
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-03-08T06:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-03-08"
+    },
+    {
+      "name": "daily, date-only, day after spring-forward",
+      "currentISO": "2026-03-08T06:00:00.000Z",
+      "rule": {
+        "type": "daily"
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-03-09T05:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-03-09"
+    },
+    {
+      "name": "daily at 09:30 keeps wall-clock time across spring-forward",
+      "currentISO": "2026-03-07T15:30:00.000Z",
+      "rule": {
+        "type": "daily"
+      },
+      "dueTimeEnabled": true,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-03-08T14:30:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-03-08"
+    },
+    {
+      "name": "daily at 23:30 keeps wall-clock time across fall-back",
+      "currentISO": "2026-10-24T22:30:00.000Z",
+      "rule": {
+        "type": "daily"
+      },
+      "dueTimeEnabled": true,
+      "timeZone": "Europe/London",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-10-25T23:30:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-10-25"
+    },
+    {
+      "name": "weekly Mon/Wed/Fri from Friday goes to Monday",
+      "currentISO": "2026-10-16T04:00:00.000Z",
+      "rule": {
+        "type": "weekly",
+        "days": [
+          1,
+          3,
+          5
+        ]
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/New_York",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-10-19T04:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-10-19"
+    },
+    {
+      "name": "weekly Sunday only from Sunday goes a week ahead",
+      "currentISO": "2026-10-18T00:00:00.000Z",
+      "rule": {
+        "type": "weekly",
+        "days": [
+          0
+        ]
+      },
+      "dueTimeEnabled": true,
+      "timeZone": "Asia/Tokyo",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-10-25T00:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-10-25"
+    },
+    {
+      "name": "weekly with no days ends",
+      "currentISO": "2026-10-16T04:00:00.000Z",
+      "rule": {
+        "type": "weekly",
+        "days": []
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/New_York",
+      "seriesId": "series-1",
+      "expectedNextISO": null,
+      "expectedInstanceId": null
+    },
+    {
+      "name": "every 2 days",
+      "currentISO": "2026-10-15T05:00:00.000Z",
+      "rule": {
+        "type": "every",
+        "n": 2,
+        "unit": "day"
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-10-17T05:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-10-17"
+    },
+    {
+      "name": "every 2 weeks at 18:00",
+      "currentISO": "2026-10-15T12:30:00.000Z",
+      "rule": {
+        "type": "every",
+        "n": 2,
+        "unit": "week"
+      },
+      "dueTimeEnabled": true,
+      "timeZone": "Asia/Kolkata",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-10-29T12:30:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-10-29"
+    },
+    {
+      "name": "every 3 hours crosses midnight; id carries UTC time",
+      "currentISO": "2026-10-15T22:00:00.000Z",
+      "rule": {
+        "type": "every",
+        "n": 3,
+        "unit": "hour"
+      },
+      "dueTimeEnabled": true,
+      "timeZone": "America/Los_Angeles",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-10-16T01:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-10-15T01:00"
+    },
+    {
+      "name": "every 0 days is read as every 1 day",
+      "currentISO": "2026-10-15T05:00:00.000Z",
+      "rule": {
+        "type": "every",
+        "n": 0,
+        "unit": "day"
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-10-16T05:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-10-16"
+    },
+    {
+      "name": "monthly on the 31st clamps to the 28th",
+      "currentISO": "2026-01-31T06:00:00.000Z",
+      "rule": {
+        "type": "monthlyDay",
+        "day": 31
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-02-28T06:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-02-28"
+    },
+    {
+      "name": "every 2 months on the 15th at 08:00",
+      "currentISO": "2026-11-15T07:00:00.000Z",
+      "rule": {
+        "type": "monthlyDay",
+        "day": 15,
+        "interval": 2
+      },
+      "dueTimeEnabled": true,
+      "timeZone": "Europe/Berlin",
+      "seriesId": "series-1",
+      "expectedNextISO": "2027-01-15T07:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2027-01-15"
+    },
+    {
+      "name": "until date stops the series",
+      "currentISO": "2026-10-15T05:00:00.000Z",
+      "rule": {
+        "type": "daily",
+        "untilISO": "2026-10-15T05:00:00.000Z"
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": null,
+      "expectedInstanceId": null
+    },
+    {
+      "name": "until date on the next day still allows it",
+      "currentISO": "2026-10-15T05:00:00.000Z",
+      "rule": {
+        "type": "daily",
+        "untilISO": "2026-10-16T05:00:00.000Z"
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": "2026-10-16T05:00:00.000Z",
+      "expectedInstanceId": "recurrence:series-1:2026-10-16"
+    },
+    {
+      "name": "none never recurs",
+      "currentISO": "2026-10-15T05:00:00.000Z",
+      "rule": {
+        "type": "none"
+      },
+      "dueTimeEnabled": false,
+      "timeZone": "America/Chicago",
+      "seriesId": "series-1",
+      "expectedNextISO": null,
+      "expectedInstanceId": null
+    }
+  ]
+}

@@ -44,9 +44,10 @@ export function normalizeTaskTimeZone(value) {
     }
 }
 export function normalizeTaskPriority(value) {
+    const inRange = (n) => n === 1 || n === 2 || n === 3;
     if (typeof value === "number" && Number.isFinite(value)) {
         const rounded = Math.round(value);
-        if (rounded >= 1 && rounded <= 3)
+        if (inRange(rounded))
             return rounded;
     }
     if (typeof value === "string") {
@@ -54,7 +55,7 @@ export function normalizeTaskPriority(value) {
         if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!")
             return trimmed.length;
         const parsed = Number.parseInt(trimmed, 10);
-        if (parsed >= 1 && parsed <= 3)
+        if (inRange(parsed))
             return parsed;
     }
     return undefined;

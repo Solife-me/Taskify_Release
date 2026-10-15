@@ -2,8 +2,8 @@ import { configureRelayAccess, publishStandaloneEvent } from "taskify-runtime-no
 /**
  * botCommands.ts — NIP-51 bot commands list (kind 30078, d-tag
  * "taskify-bot-commands") publish/fetch for Taskify CLI.
- * Contract: docs/reference/bot-command-lists.md. Mirrors
- * taskify-pwa/src/lib/botCommands.ts (parity by convention, not shared code).
+ * Contract: docs/reference/bot-command-lists.md. Parsing and validation are shared with
+ * the PWA through taskify-core; this file only fetches and publishes.
  */
 
 import NDK, { NDKPrivateKeySigner, NDKEvent } from "@nostr-dev-kit/ndk";
@@ -11,6 +11,13 @@ import { nip19, getPublicKey } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { normalizeRelayUrls } from "taskify-runtime-nostr";
 import { verifyEvent, type NostrEvent } from "nostr-tools";
+import {
+  BOT_COMMANDS_D_TAG,
+  BOT_COMMANDS_KIND,
+  buildBotCommandsTags,
+  parseBotCommands,
+  type BotCommand,
+} from "taskify-core";
 
 /** Signed events only, from a plain copy (see shared/verifiedEvents, which this mirrors). */
 function signedRawEvents(events: Iterable<NDKEvent>): NostrEvent[] {
@@ -26,103 +33,16 @@ function signedRawEvents(events: Iterable<NDKEvent>): NostrEvent[] {
   return out;
 }
 
-export const BOT_COMMANDS_KIND = 30078;
-export const BOT_COMMANDS_D_TAG = "taskify-bot-commands";
-
-export type BotCommand = {
-  name: string;
-  description: string;
-};
-
-const BOT_COMMAND_NAME_PATTERN = /^[a-z0-9_]{1,32}$/;
-export const BOT_COMMAND_DESCRIPTION_MAX_LENGTH = 100;
-export const BOT_COMMANDS_MAX_COUNT = 100;
-
-function firstTagValue(event: NostrEvent, name: string): string | null {
-  for (const tag of (event.tags || []) as unknown[] as string[][]) {
-    if (Array.isArray(tag) && tag[0] === name && typeof tag[1] === "string") {
-      return tag[1];
-    }
-  }
-  return null;
-}
-
-/**
- * Strict recognition: an event is a bot commands list only when it is
- * kind 30078 with the exact "taskify-bot-commands" d-tag and carries at
- * least one valid `command` tag. Any other NIP-51 list is ignored.
- */
-export function parseBotCommands(event: NostrEvent): BotCommand[] | null {
-  if (!event || event.kind !== BOT_COMMANDS_KIND) return null;
-  if (firstTagValue(event, "d") !== BOT_COMMANDS_D_TAG) return null;
-
-  const commands: BotCommand[] = [];
-  const seen = new Set<string>();
-  for (const tag of (event.tags || []) as unknown[] as string[][]) {
-    if (!Array.isArray(tag) || tag[0] !== "command") continue;
-    const name = typeof tag[1] === "string" ? tag[1].trim().toLowerCase() : "";
-    if (!BOT_COMMAND_NAME_PATTERN.test(name)) continue;
-    const description = typeof tag[2] === "string"
-      ? tag[2].replace(/[\r\n]+/g, " ").trim().slice(0, BOT_COMMAND_DESCRIPTION_MAX_LENGTH)
-      : "";
-    if (seen.has(name)) continue;
-    seen.add(name);
-    commands.push({ name, description });
-    if (commands.length >= BOT_COMMANDS_MAX_COUNT) break;
-  }
-  return commands.length ? commands : null;
-}
-
-export class BotCommandsValidationError extends Error {}
-
-/**
- * Validates commands destined for publication. Beyond the wire format this
- * enforces the contract's privacy rules: the published list must contain
- * only command names and short descriptions — no keys, no user identifiers.
- */
-export function validateBotCommandsDraft(commands: unknown): BotCommand[] {
-  if (!Array.isArray(commands)) {
-    throw new BotCommandsValidationError("Commands must be a JSON array.");
-  }
-  if (!commands.length) {
-    throw new BotCommandsValidationError("At least one command is required.");
-  }
-  if (commands.length > BOT_COMMANDS_MAX_COUNT) {
-    throw new BotCommandsValidationError(`At most ${BOT_COMMANDS_MAX_COUNT} commands are allowed.`);
-  }
-  const seen = new Set<string>();
-  return commands.map((raw) => {
-    if (!raw || typeof raw !== "object") {
-      throw new BotCommandsValidationError("Each command must be an object with name and description.");
-    }
-    const entry = raw as Record<string, unknown>;
-    const name = typeof entry.name === "string" ? entry.name.trim().toLowerCase() : "";
-    if (!BOT_COMMAND_NAME_PATTERN.test(name)) {
-      throw new BotCommandsValidationError(
-        `Invalid command name '${name || "(missing)"}': use 1-32 lowercase letters, digits, or underscores (no leading slash).`,
-      );
-    }
-    if (seen.has(name)) {
-      throw new BotCommandsValidationError(`Duplicate command name: ${name}`);
-    }
-    seen.add(name);
-
-    const description = typeof entry.description === "string"
-      ? entry.description.replace(/[\r\n]+/g, " ").trim().slice(0, BOT_COMMAND_DESCRIPTION_MAX_LENGTH)
-      : "";
-    if (!description) {
-      throw new BotCommandsValidationError(`Command "${name}" needs a short description.`);
-    }
-    for (const value of [name, description]) {
-      if (/nsec1|npub1|hex\.|nprofile1|naddr1/i.test(value)) {
-        throw new BotCommandsValidationError(
-          `Command "${name}" contains a Nostr key or identifier — the published list must not contain user data (see docs/reference/bot-command-lists.md).`,
-        );
-      }
-    }
-    return { name, description };
-  });
-}
+export {
+  BOT_COMMAND_DESCRIPTION_MAX_LENGTH,
+  BOT_COMMANDS_D_TAG,
+  BOT_COMMANDS_KIND,
+  BOT_COMMANDS_MAX_COUNT,
+  BotCommandsValidationError,
+  parseBotCommands,
+  validateBotCommandsDraft,
+  type BotCommand,
+} from "taskify-core";
 
 async function connectNdk(relayList: string[]): Promise<NDK> {
   const ndk = new NDK({ explicitRelayUrls: relayList });
@@ -189,12 +109,7 @@ export async function publishBotCommands(
   configureRelayAccess(ndk, bytesToHex(sk));
   await Promise.race([ndk.connect(), new Promise<void>((r) => setTimeout(r, 3_000))]);
 
-  const tags: string[][] = [
-    ["d", BOT_COMMANDS_D_TAG],
-    ...commands.map((command) => ["command", command.name, command.description]),
-    ["alt", `Taskify bot commands (${commands.length})`],
-    ["client", "taskify-cli"],
-  ];
+  const tags = buildBotCommandsTags(commands, "taskify-cli");
 
   const event = new NDKEvent(ndk);
   event.kind = BOT_COMMANDS_KIND;

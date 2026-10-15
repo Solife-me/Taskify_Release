@@ -85,7 +85,7 @@ taskify list [--a|--all] [--board <name|id>] [--status open|done|any] [--column 
 taskify add <title> [--board <name>] [--due YYYY-MM-DD] [--priority 1|2|3] [--note <text>] [--column <name>]
 taskify show <taskId> [--board <name>] [--json]
 taskify update <taskId> --board <name> [--title <t>] [--due <d>] [--priority <p>] [--note <n>] [--column <name>]
-taskify done <taskId> [--board <name>]
+taskify done <taskId> [--board <name>]   # recurring tasks open their next occurrence (`nextOccurrence` in JSON)
 taskify reopen <taskId> [--board <name>]
 taskify delete <taskId> --board <name>
 taskify search <query> [--board <name>]

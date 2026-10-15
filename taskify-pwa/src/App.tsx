@@ -16,7 +16,10 @@ import {
 } from "./lib/upcomingRows";
 import { type EventTemplate, nip04, nip19 } from "nostr-tools";
 import {
+  addDaysToDateKey,
+  buildNextRecurringTask,
   DEFAULT_DATE_REMINDER_TIME,
+  ISO_DATE_PATTERN,
   MS_PER_DAY,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
@@ -170,7 +173,6 @@ import type {
 import { type PushPlatform } from "./domains/push/pushUtils";
 import {
   daysInCalendarMonth,
-  formatDateKeyFromParts,
   formatDateKeyLocal,
   formatTimeLabel,
   formatUpcomingDayLabel,
@@ -452,7 +454,6 @@ const LS_TASK_TOMBSTONES = "taskify_task_tombstones_v1";
 // matters for protecting against stale relay re-creates.
 const TASK_TOMBSTONES_PER_BOARD_MAX = 500;
 /* ================= Date helpers ================= */
-const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const isoForWeekday = isoForWeekdayLocal;
 
@@ -5764,14 +5765,6 @@ export default function App() {
   maybePublishTaskRef.current = maybePublishTask;
 
   const isDateKey = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value);
-  const addDaysToDateKey = (dateKey: string, delta: number): string | null => {
-    const parsed = parseDateKey(dateKey);
-    if (!parsed) return null;
-    const base = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
-    if (Number.isNaN(base.getTime())) return null;
-    base.setUTCDate(base.getUTCDate() + delta);
-    return formatDateKeyFromParts(base.getUTCFullYear(), base.getUTCMonth() + 1, base.getUTCDate());
-  };
   const resolveCalendarEventPublishBoard = (event: CalendarEvent, boardOverride?: Board): Board | null => {
     const targetId = event.originBoardId ?? event.boardId;
     if (boardOverride && boardOverride.id === targetId) return boardOverride;
@@ -8692,10 +8685,15 @@ export default function App() {
       const scheduledFromISO = isScriptureReview
         ? new Date(Math.max(Date.parse(working.dueISO) || 0, startOfDay(new Date()).getTime())).toISOString()
         : working.dueISO;
-      const nextISO = scriptureRecurrence
-        ? nextOccurrence(scheduledFromISO, scriptureRecurrence, !!working.dueTimeEnabled, working.dueTimeZone)
+      const nextTask = scriptureRecurrence
+        ? buildNextRecurringTask(working, {
+            weekStart: settings.weekStart,
+            recurrence: scriptureRecurrence,
+            scheduledFromISO,
+          })
         : null;
-      if (nextISO && scriptureRecurrence) {
+      const nextISO = nextTask?.dueISO ?? null;
+      if (nextTask && nextISO && scriptureRecurrence) {
         let shouldClone = true;
         const seriesId = working.seriesId || working.id;
         const seriesSeed = working.seriesId ? working : { ...working, seriesId };
@@ -8705,30 +8703,16 @@ export default function App() {
         );
         if (exists) shouldClone = false;
         if (shouldClone) {
-          const nextOrder = nextOrderForBoard(working.boardId, updated, settings.newTaskPosition);
-          const cloneId = recurringInstanceId(seriesId, nextISO, scriptureRecurrence, working.dueTimeZone);
+          // The shared builder gives the occurrence the same id and reset state as every other
+          // client; order and streaks are this board's.
           let clone: Task = {
-            ...working,
-            id: cloneId,
-            seriesId,
-            createdAt: Date.now(),
-            completed: false,
-            completedAt: undefined,
-            completedBy: undefined,
+            ...nextTask,
             lastEditedBy: working.lastEditedBy || working.createdBy,
-            bountyDeletedAt: undefined,
-            dueISO: nextISO,
-            hiddenUntilISO: hiddenUntilForNext(nextISO, scriptureRecurrence, settings.weekStart),
-            order: nextOrder,
+            order: nextOrderForBoard(working.boardId, updated, settings.newTaskPosition),
             streak: newStreak,
             longestStreak: nextLongest,
-            subtasks: working.subtasks?.map(s => ({ ...s, completed: false })),
             dueTimeEnabled: typeof working.dueTimeEnabled === 'boolean' ? working.dueTimeEnabled : undefined,
-            reminders: Array.isArray(working.reminders) ? [...working.reminders] : undefined,
           };
-          if (!clone.recurrence || !recurrencesEqual(clone.recurrence, scriptureRecurrence)) {
-            clone = { ...clone, recurrence: scriptureRecurrence };
-          }
           if (working.seriesId === SCRIPTURE_MEMORY_SERIES_ID) {
             const previewState = memoryUpdate
               ? markScriptureEntryReviewed(

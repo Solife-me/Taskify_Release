@@ -2,19 +2,23 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip19, nip44 } from "nostr-tools";
 import type { Contact } from "../config.js";
 
-export const NIP51_CONTACTS_KIND = 30000;
-export const NIP51_PRIVATE_CONTACTS_D_TAG = "Chat-Friends";
-export const NIP51_LEGACY_CONTACTS_D_TAG = "taskify-contacts";
+import {
+  buildNip51PrivateItems as buildNip51PrivateItemsCore,
+  extractNip51PrivateContacts as extractNip51PrivateContactsCore,
+  normalizeNip51PrivateItems,
+  type Nip51PrivateContact,
+} from "taskify-core";
+
+export {
+  NIP51_CONTACTS_KIND,
+  NIP51_LEGACY_CONTACTS_D_TAG,
+  NIP51_PRIVATE_CONTACTS_D_TAG,
+  type Nip51PrivateContact,
+} from "taskify-core";
 
 export type Nip51ContactKeys = {
   privateKeyHex: string;
   publicKeyHex: string;
-};
-
-export type Nip51PrivateContact = {
-  pubkey: string;
-  relayHint?: string;
-  petname?: string;
 };
 
 function ensureNip44V2() {
@@ -24,7 +28,7 @@ function ensureNip44V2() {
   return nip44.v2;
 }
 
-function normalizePubkeyHex(value: string | undefined): string | null {
+function normalizePubkeyHex(value: string | null | undefined): string | null {
   const trimmed = (value ?? "").trim();
   if (/^[0-9a-f]{64}$/i.test(trimmed)) return trimmed.toLowerCase();
   if (/^(02|03)[0-9a-f]{64}$/i.test(trimmed)) return trimmed.slice(-64).toLowerCase();
@@ -41,42 +45,8 @@ function normalizePubkeyHex(value: string | undefined): string | null {
   return null;
 }
 
-function selectRelayHint(contact: Contact): string | undefined {
-  const relay = contact.relays?.find((entry) => typeof entry === "string" && entry.trim());
-  return relay?.trim() || undefined;
-}
-
-function selectPetname(contact: Contact): string | undefined {
-  return contact.name?.trim()
-    || contact.displayName?.trim()
-    || contact.username?.trim()
-    || undefined;
-}
-
 export function buildNip51PrivateItems(contacts: Contact[]): string[][] {
-  const seen = new Set<string>();
-  const items: string[][] = [];
-  for (const contact of contacts) {
-    const pubkey = normalizePubkeyHex(contact.pubkey) ?? normalizePubkeyHex(contact.npub);
-    if (!pubkey || seen.has(pubkey)) continue;
-    seen.add(pubkey);
-    const relayHint = selectRelayHint(contact);
-    const petname = selectPetname(contact);
-    const tag = ["p", pubkey];
-    if (relayHint || petname) tag.push(relayHint ?? "");
-    if (petname) tag.push(petname);
-    items.push(tag);
-  }
-  return items;
-}
-
-function normalizePrivateItems(raw: unknown): string[][] {
-  if (!Array.isArray(raw)) throw new Error("Invalid NIP-51 contacts payload.");
-  return raw.flatMap((entry) => (
-    Array.isArray(entry)
-      ? [entry.map((value) => (typeof value === "string" ? value : ""))]
-      : []
-  ));
+  return buildNip51PrivateItemsCore(contacts, normalizePubkeyHex);
 }
 
 export async function encryptNip51PrivateItems(
@@ -103,22 +73,11 @@ export async function decryptNip51PrivateItems(
     keys.publicKeyHex,
   );
   const plaintext = await Promise.resolve(nip44v2.decrypt(trimmed, conversationKey));
-  return normalizePrivateItems(JSON.parse(plaintext));
+  return normalizeNip51PrivateItems(JSON.parse(plaintext));
 }
 
 export function extractNip51PrivateContacts(items: string[][]): Nip51PrivateContact[] {
-  const seen = new Set<string>();
-  const contacts: Nip51PrivateContact[] = [];
-  for (const tag of items) {
-    if (!Array.isArray(tag) || tag[0] !== "p") continue;
-    const pubkey = normalizePubkeyHex(tag[1]);
-    if (!pubkey || seen.has(pubkey)) continue;
-    seen.add(pubkey);
-    const relayHint = typeof tag[2] === "string" && tag[2].trim() ? tag[2].trim() : undefined;
-    const petname = typeof tag[3] === "string" && tag[3].trim() ? tag[3].trim() : undefined;
-    contacts.push({ pubkey, relayHint, petname });
-  }
-  return contacts;
+  return extractNip51PrivateContactsCore(items, normalizePubkeyHex);
 }
 
 export function mergeNip51PrivateContacts(

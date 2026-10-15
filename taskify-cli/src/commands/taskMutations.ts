@@ -304,6 +304,9 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
           writeAgentJson(agentSuccess("task.done", { task, location }, { profile: config.selectedProfile }));
         } else {
           console.log(chalk.green(`✓ Marked done: ${task.title}`));
+          if (task.nextOccurrence) {
+            console.log(chalk.dim(`  Next: ${task.nextOccurrence.dueISO.slice(0, 10)} (${task.nextOccurrence.id})`));
+          }
         }
       } catch (err) {
         exitCode = writeCoreFailure("task.done", err, human);

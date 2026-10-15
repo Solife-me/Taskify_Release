@@ -1683,7 +1683,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         task.lastEditedBy ?? task.createdBy
     }
 
-    private static func recurringInstanceID(
+    static func recurringInstanceID(
         seriesID: String,
         dueDate: Date,
         recurrence: TaskRecurrence,

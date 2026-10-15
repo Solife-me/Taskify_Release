@@ -1,3 +1,4 @@
+import { contactInitials } from "taskify-core";
 import { useState, useCallback, useEffect, useMemo } from "react";
 import type { Contact } from "../../lib/contacts";
 import { contactPrimaryName } from "../../lib/contacts";
@@ -34,21 +35,7 @@ function contactVerifiedNip05(contact: Contact, cache: Record<string, Nip05Check
   return entry.nip05 || null;
 }
 
-function startsWithEmoji(str: string): boolean {
-  const cp = str.codePointAt(0);
-  if (cp === undefined) return false;
-  return (cp >= 0x2600 && cp <= 0x27bf) || (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f900 && cp <= 0x1f9ff);
-}
 
-function contactInitials(value: string): string {
-  const parts = value.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (startsWithEmoji(parts[0])) return [...parts[0]][0] ?? "?";
-  if (parts.length >= 2) {
-    return `${[...parts[0]][0] ?? ""}${[...parts[parts.length - 1]][0] ?? ""}`.toUpperCase();
-  }
-  return [...parts[0]].slice(0, 2).join("").toUpperCase();
-}
 
 function LockToNpubSheet({
   open,

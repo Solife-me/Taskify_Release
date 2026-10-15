@@ -167,6 +167,8 @@ npx wrangler dev
 
 - Test runners are package-specific: `taskify-core` uses Node's built-in `--test`, while
   `taskify-pwa` uses Vitest through `npm test`.
+- Behaviour every client must compute identically belongs in `taskify-core`, with input/expected
+  vectors in `taskify-core/fixtures/` that both the Node tests and `TaskifyCoreTests` read.
 - No monorepo build tool — each JavaScript package has its own manifest and lockfile.
 - Shared package builds clean and regenerate tracked `dist/` output; include regenerated files with source changes. See `README.md` for package test commands.
 - PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via `[assets]` binding.
@@ -192,6 +194,9 @@ npx wrangler dev
 | `src/ui/board/DroppableColumn.test.tsx` | PWA board columns | Drop ordering, multi-selection payloads, empty drops, and keyboard/selection controls |
 | `taskify-cli/tests/command-registration.test.ts` | CLI command composition | Bundled help/arguments plus isolated contact persistence, profile selection, lookup, trust/relay mutations, cache status/clearing, and error exits |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
+| `taskify-core/tests/recurrence-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/RecurrenceVectorTests.swift` | Recurring tasks across clients | Both read `taskify-core/fixtures/recurrence-vectors.json`: next due date and occurrence id through DST, time zones, clamped rules and end dates; the shared next-occurrence builder |
+| `taskify-cli/tests/recurring-completion.test.ts` | CLI recurring completion | `done` opens the next occurrence with the shared id, keeps the series, and skips one that already exists |
+| `taskify-core/tests/wire-lists-core.test.ts`, `src/lib/nip51Contacts.test.ts` | Bot command and private contact lists | Strict bot-command parsing and draft validation; NIP-51 petnames at index 3, with the late form older PWA builds wrote still read |
 | `taskify-core/tests/app-state-sync-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/AppStateSyncTests.swift` | Cross-device app state sync | Three-way Bible tracker/scripture merges with PWA↔native parity, chat-state merge/prune, event round trip; see `docs/reference/app-state-sync.md` |
 | `src/nostr/useNostrChatStateSync.test.tsx`, `src/domains/inbox/inboxResponseSync.test.ts` | PWA chat state sync | Coalesced publishing, echo suppression, remote read markers and shared-item and calendar-invite responses |
 | `src/nostr/boardVerifyUnseen.test.tsx` | PWA board sync | Re-verification of tasks missing from a board's initial sync is applied, and ignored after teardown |
