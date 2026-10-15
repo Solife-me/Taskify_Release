@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { Proof } from "@cashu/cashu-ts";
-import { useNwc } from "../../context/NwcContext";
+import { useNwc } from "../../context/walletContexts";
 import type { MintConnection } from "../../mint/MintSession";
 import {
   PENDING_TOKENS_CHANGED_EVENT,

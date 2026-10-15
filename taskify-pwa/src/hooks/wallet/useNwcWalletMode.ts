@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { useNwc } from "../../context/NwcContext";
+import { useNwc } from "../../context/walletContexts";
 import { useWalletMode } from "../../wallet/walletMode";
 import { decodeBolt11Amount } from "../../wallet/lightning";
 import type { HistoryEntryInput, HistoryItem } from "../../wallet/walletHistoryTypes";

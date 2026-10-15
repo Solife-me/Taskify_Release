@@ -173,6 +173,10 @@ npx wrangler dev
 - No monorepo build tool — each JavaScript package has its own manifest and lockfile.
 - Shared package builds clean and regenerate tracked `dist/` output; include regenerated files with source changes. See `README.md` for package test commands.
 - PWA build output (`taskify-pwa/dist/`) is served by the Cloudflare Worker via `[assets]` binding.
+- PWA startup JavaScript has a budget: `npm run check:startup` after a build (CI runs it). Everything
+  `main.tsx` imports counts; optional features load lazily from `App`. The wallet's providers run in
+  a lazily mounted `WalletRuntime`; import wallet hooks from `context/walletContexts`, never from
+  the provider modules.
 - Wrangler config (`wrangler.toml`) is at repo root; it references paths relative to root.
 
 ---
@@ -201,6 +205,7 @@ npx wrangler dev
 | `src/domains/calendar/calendarCommands.test.ts` | PWA calendar commands | Pure plans for event moves, recurring-series deletion/seed advancement, edits, invite materialization and RSVP publication/local state |
 | `src/state/stateStore.test.ts` | PWA app stores | Updates apply immediately and exactly once, listeners fire only on change, safe unsubscribe during notify |
 | `src/routing/appRouter.test.ts` | PWA routes and browser history | Typed page/entity/sheet routes, legacy reminder links, canonical paths, page Back navigation, overlay close-via-Back, and direct-link close fallback |
+| `src/context/walletContexts.test.tsx` | Lazy wallet runtime | Unavailable wallet without the runtime, published values outside it, nearest provider inside it |
 | `src/routing/useOverlayHistory.test.tsx`, `src/routing/useReminderTaps.test.tsx` | PWA overlays and deep links | Back closes the top overlay then the one beneath; UI close unwinds history in one step; editor switches replace their entry; links open their task once synced and close to the page; stale sheets in a reloaded URL are dismissed; reminder taps open their task or event |
 | `taskify-core/tests/recurrence-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/RecurrenceVectorTests.swift` | Recurring tasks across clients | Both read `taskify-core/fixtures/recurrence-vectors.json`: next due date and occurrence id through DST, time zones, clamped rules and end dates; the shared next-occurrence builder |
 | `taskify-core/tests/taskify-links-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/TaskifyWidgetLinkTests.swift` | Cross-client links | Both read `taskify-core/fixtures/taskify-link-vectors.json`: the upcoming, boards, task, event and quick-add app-link grammar; core also round-trips their canonical web paths |

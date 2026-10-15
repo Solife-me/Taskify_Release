@@ -113,7 +113,7 @@ import { encryptEcashTokenForRecipient, hexToBytes } from "../../domains/nostr/n
 import { appendWalletHistoryEntry } from "../../domains/backup/backupUtils";
 
 // Context hooks
-import { useCashu } from "../../context/CashuContext";
+import { useCashu } from "../../context/walletContexts";
 import { useToast } from "../../context/ToastContext";
 
 // UI components

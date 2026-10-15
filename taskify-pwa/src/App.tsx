@@ -70,7 +70,7 @@ import { type PrintPaperSize } from "./components/printPaper";
 import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { toBufferSource } from "./lib/binary";
-import { useCashu } from "./context/CashuContext";
+import { useCashu } from "./context/walletContexts";
 import { useWalletEnabled } from "./wallet/walletAvailability";
 import { WalletPhaseOutNotice } from "./ui/wallet/WalletPhaseOutNotice";
 import { idbKeyValue } from "./storage/idbKeyValue";
@@ -291,10 +291,7 @@ import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
 import { useSelectionMode } from "./ui/selection/useSelectionMode";
 import { useBoardViewScrollState } from "./ui/board/useBoardViewScrollState";
 import { BoardUpcomingView, CompletedBoardView } from "./ui/board/BoardSecondaryViews";
-import { ShareBoardDialogs } from "./ui/board/ShareBoardDialogs";
 import { useShareBoardState } from "./ui/board/useShareBoardState";
-import { WalletBountiesView } from "./ui/wallet/WalletBountiesView";
-import { WalletAddressView } from "./ui/wallet/WalletAddressView";
 import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
 import { useNostrChatStateSync } from "./nostr/useNostrChatStateSync";
 import { PublishFingerprints } from "./domains/nostr/publishFingerprints";
@@ -353,6 +350,12 @@ const EditModal = lazy(() =>
   import("./ui/task/EditModal").then((module) => ({ default: module.EditModal })),
 );
 const EventEditModal = lazy(() => import("./ui/calendar/EventEditModal"));
+/** The wallet's providers and the Cashu SDK: only where the wallet is enabled (see walletContexts). */
+const WalletRuntime = lazy(() => import("./wallet/WalletRuntime"));
+// Opened on demand: kept out of startup (scripts/startup-budget.mjs).
+const ShareBoardDialogs = lazy(() => import("./ui/board/ShareBoardDialogs").then((m) => ({ default: m.ShareBoardDialogs })));
+const WalletBountiesView = lazy(() => import("./ui/wallet/WalletBountiesView").then((m) => ({ default: m.WalletBountiesView })));
+const WalletAddressView = lazy(() => import("./ui/wallet/WalletAddressView").then((m) => ({ default: m.WalletAddressView })));
 const NoteViewerModal = lazy(() =>
   import("./ui/task/NoteModals").then((module) => ({ default: module.NoteViewerModal })),
 );
@@ -9609,6 +9612,11 @@ export default function App() {
 
   return (
     <div className="min-h-screen text-primary">
+      {walletEnabled && (
+        <Suspense fallback={null}>
+          <WalletRuntime />
+        </Suspense>
+      )}
       <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "wallet-address" || activePage === "settings") && (
           <header className="app-header">
@@ -10667,24 +10675,28 @@ export default function App() {
         </>
       )}
       {activePage === "wallet-bounties" && (
-        <WalletBountiesView
-          fundedBountyTasks={fundedBountyTasks}
-          pinnedBountyTasks={pinnedBountyTasks}
-          openBountyTasks={openBountyTasks}
-          boardMap={boardMap}
-          toNpub={toNpub}
-          setEditing={setEditing}
-          addTaskToBountyList={addTaskToBountyList}
-          removeTaskFromBountyList={removeTaskFromBountyList}
-          walletDenominationDisplay={settings.walletDenominationDisplay}
-        />
+        <Suspense fallback={null}>
+          <WalletBountiesView
+            fundedBountyTasks={fundedBountyTasks}
+            pinnedBountyTasks={pinnedBountyTasks}
+            openBountyTasks={openBountyTasks}
+            boardMap={boardMap}
+            toNpub={toNpub}
+            setEditing={setEditing}
+            addTaskToBountyList={addTaskToBountyList}
+            removeTaskFromBountyList={removeTaskFromBountyList}
+            walletDenominationDisplay={settings.walletDenominationDisplay}
+          />
+        </Suspense>
       )}
       {activePage === "wallet-address" && (
-        <WalletAddressView
-          settings={settings}
-          setSettings={setSettings}
-          defaultRelays={defaultRelays}
-        />
+        <Suspense fallback={null}>
+          <WalletAddressView
+            settings={settings}
+            setSettings={setSettings}
+            defaultRelays={defaultRelays}
+          />
+        </Suspense>
       )}
       {activePage === "settings" && (
         <Suspense fallback={null}>
@@ -11175,33 +11187,37 @@ export default function App() {
         </Suspense>
       )}
 
-      <ShareBoardDialogs
-        closeShareBoard={closeShareBoard}
-        enableBoardSharing={enableBoardSharing}
-        handleOpenBoardPrint={handleOpenBoardPrint}
-        handleOpenBoardScan={handleOpenBoardScan}
-        handleShareBoardToContact={handleShareBoardToContact}
-        setShareBoardMode={setShareBoardMode}
-        setShareContactPickerOpen={setShareContactPickerOpen}
-        setShareContactStatus={setShareContactStatus}
-        setShareModeInfoOpen={setShareModeInfoOpen}
-        setShareTemplateStatus={setShareTemplateStatus}
-        shareBoardDisplayName={shareBoardDisplayName}
-        shareBoardId={shareBoardId}
-        shareBoardModalOpen={shareBoardModalOpen}
-        shareBoardMode={shareBoardMode}
-        shareBoardQrPayload={shareBoardQrPayload}
-        shareBoardTarget={shareBoardTarget}
-        shareContactBusy={shareContactBusy}
-        shareContactPickerOpen={shareContactPickerOpen}
-        shareContactStatus={shareContactStatus}
-        shareModeInfoButtonRef={shareModeInfoButtonRef}
-        shareModeInfoOpen={shareModeInfoOpen}
-        shareModeInfoRef={shareModeInfoRef}
-        shareTemplateBusy={shareTemplateBusy}
-        shareTemplateStatus={shareTemplateStatus}
-        shareableContacts={shareableContacts}
-      />
+      {shareBoardModalOpen && (
+        <Suspense fallback={null}>
+          <ShareBoardDialogs
+            closeShareBoard={closeShareBoard}
+            enableBoardSharing={enableBoardSharing}
+            handleOpenBoardPrint={handleOpenBoardPrint}
+            handleOpenBoardScan={handleOpenBoardScan}
+            handleShareBoardToContact={handleShareBoardToContact}
+            setShareBoardMode={setShareBoardMode}
+            setShareContactPickerOpen={setShareContactPickerOpen}
+            setShareContactStatus={setShareContactStatus}
+            setShareModeInfoOpen={setShareModeInfoOpen}
+            setShareTemplateStatus={setShareTemplateStatus}
+            shareBoardDisplayName={shareBoardDisplayName}
+            shareBoardId={shareBoardId}
+            shareBoardModalOpen={shareBoardModalOpen}
+            shareBoardMode={shareBoardMode}
+            shareBoardQrPayload={shareBoardQrPayload}
+            shareBoardTarget={shareBoardTarget}
+            shareContactBusy={shareContactBusy}
+            shareContactPickerOpen={shareContactPickerOpen}
+            shareContactStatus={shareContactStatus}
+            shareModeInfoButtonRef={shareModeInfoButtonRef}
+            shareModeInfoOpen={shareModeInfoOpen}
+            shareModeInfoRef={shareModeInfoRef}
+            shareTemplateBusy={shareTemplateBusy}
+            shareTemplateStatus={shareTemplateStatus}
+            shareableContacts={shareableContacts}
+          />
+        </Suspense>
+      )}
 
       <WalletPhaseOutNotice
         hasBalance={walletEnabled && walletTotalBalance > 0}

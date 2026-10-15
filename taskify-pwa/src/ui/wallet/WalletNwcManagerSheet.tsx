@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ActionSheet } from "../../components/ActionSheet";
-import { useNwc } from "../../context/NwcContext";
+import { useNwc } from "../../context/walletContexts";
 import { isValidLightningAddress } from "../../hooks/wallet/useNwcWalletMode";
 import { setWalletMode, type WalletMode } from "../../wallet/walletMode";
 

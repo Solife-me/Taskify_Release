@@ -108,19 +108,15 @@ async function bootstrapApp(): Promise<void> {
     await storagePromise;
   }
 
+  // Everything imported here is startup code (scripts/startup-budget.mjs counts it): optional
+  // features, the wallet included, load lazily from App instead.
   const [
     { default: App },
-    { CashuProvider },
-    { NwcProvider },
     { ToastProvider },
-    { P2PKProvider },
     { StorageFailureBanner },
   ] = await Promise.all([
     import('./App.tsx'),
-    import('./context/CashuContext'),
-    import('./context/NwcContext.tsx'),
     import('./context/ToastContext.tsx'),
-    import('./context/P2PKContext.tsx'),
     import('./storage/StorageFailureBanner.tsx'),
   ]);
 
@@ -129,13 +125,7 @@ async function bootstrapApp(): Promise<void> {
       <RootErrorBoundary>
         <ToastProvider>
           <StorageFailureBanner />
-          <NwcProvider>
-            <P2PKProvider>
-              <CashuProvider>
-                <App />
-              </CashuProvider>
-            </P2PKProvider>
-          </NwcProvider>
+          <App />
         </ToastProvider>
       </RootErrorBoundary>
     </StrictMode>,

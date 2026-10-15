@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MeltProofsResponse, Proof, ProofState } from "@cashu/cashu-ts";
 import { getDecodedToken, getEncodedToken } from "@cashu/cashu-ts";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -17,7 +17,7 @@ import {
   type PendingTokenEntry,
 } from "../wallet/storage";
 import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
-import { useP2PK } from "./P2PKContext";
+import { CashuContext, useP2PK } from "./walletContexts";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
 import { decodeBolt11Amount } from "../wallet/lightning";
 import { getCashuTokenMetadata } from "../wallet/cashuTokenMetadata";
@@ -56,7 +56,7 @@ type BalanceSnapshot = {
   pending: number;
 };
 
-type CashuContextType = {
+export type CashuContextType = {
   ready: boolean;
   mintUrl: string;
   setMintUrl: (url: string) => Promise<void>;
@@ -118,10 +118,7 @@ type CashuContextType = {
   refreshTotalBalance: () => void;
 };
 
-const globalCtxKey = "__TASKIFY_CASHU_CONTEXT__";
-const globalObj: any = typeof globalThis !== "undefined" ? (globalThis as any) : {};
-const CashuContext: React.Context<CashuContextType | null> =
-  globalObj[globalCtxKey] ?? (globalObj[globalCtxKey] = createContext<CashuContextType | null>(null));
+
 
 function isLikelyOfflineError(error: unknown): boolean {
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -1336,10 +1333,4 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
   ]);
 
   return <CashuContext.Provider value={value}>{children}</CashuContext.Provider>;
-}
-
-export function useCashu() {
-  const ctx = useContext(CashuContext);
-  if (!ctx) throw new Error("useCashu must be used within CashuProvider");
-  return ctx;
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Settings } from "../../domains/tasks/settingsTypes";
-import { useCashu } from "../../context/CashuContext";
-import { useNwc } from "../../context/NwcContext";
+import { useCashu } from "../../context/walletContexts";
+import { useNwc } from "../../context/walletContexts";
 import { useWalletMode } from "../../wallet/walletMode";
 import { useToast } from "../../context/ToastContext";
 import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";

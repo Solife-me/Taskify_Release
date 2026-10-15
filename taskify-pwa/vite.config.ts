@@ -26,41 +26,41 @@ export default defineConfig({
     global: "globalThis",
   },
   build: {
-    rollupOptions: {
+    // Read by scripts/startup-budget.mjs; public/.assetsignore keeps it off the server.
+    manifest: true,
+    rolldownOptions: {
       output: {
-        manualChunks(id) {
-          if (!id.includes("node_modules")) return undefined;
-          if (
-            id.includes("@cashu/cashu-ts") ||
-            id.includes("@cashu/crypto") ||
-            id.includes("@gandlaf21/bc-ur") ||
-            id.includes("bech32") ||
-            id.includes("cborg")
-          ) {
-            return "cashu-sdk";
-          }
-          if (
-            id.includes("@nostr-dev-kit/ndk") ||
-            id.includes("nostr-tools") ||
-            id.includes("tseep") ||
-            id.includes("light-bolt11-decoder") ||
-            id.includes("typescript-lru-cache")
-          ) {
-            return "nostr-sdk";
-          }
-          if (id.includes("@noble/") || id.includes("@scure/")) {
-            return "crypto-primitives";
-          }
-          if (id.includes("qr-scanner") || id.includes("qrcode.react")) {
-            return "qr-tools";
-          }
-          // pdfjs-dist is left to the default splitting. As a manual chunk it received the
-          // bundler's dynamic-import helper, so every lazy import (the entry's included) pulled
-          // the whole PDF library into startup.
-          if (id.includes("xlsx")) {
-            return "spreadsheet-tools";
-          }
-          return undefined;
+        // Named vendor chunks, claimed highest priority first. A group also takes its modules'
+        // dependencies, so shared foundations (React, the Nostr SDK) must be claimed before the
+        // optional libraries that depend on them; otherwise React landed in the QR chunk and
+        // every first visit downloaded the QR scanner. pdfjs-dist is left to default splitting.
+        codeSplitting: {
+          groups: [
+            // Vite's lazy-chunk loader: claimed first, or the first group with a lazy import
+            // (qr-scanner, pdfjs) takes it and becomes part of startup.
+            { name: "vite-preload", test: /vite[\\/]preload-helper/, priority: 100 },
+            // Node polyfills main.tsx installs at boot; inside the Cashu group they made every first
+            // visit download the whole Cashu SDK for Buffer.
+            {
+              name: "node-polyfills",
+              test: /[\\/]node_modules[\\/](buffer|base64-js|ieee754|process|events|util|inherits|stream-browserify|readable-stream|safe-buffer|string_decoder)[\\/]/,
+              priority: 90,
+            },
+            { name: "react-vendor", test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 50 },
+            { name: "crypto-primitives", test: /[\\/]node_modules[\\/]@(noble|scure)[\\/]/, priority: 40 },
+            {
+              name: "nostr-sdk",
+              test: /[\\/]node_modules[\\/](@nostr-dev-kit[\\/]ndk|nostr-tools|tseep|light-bolt11-decoder|typescript-lru-cache)[\\/]/,
+              priority: 30,
+            },
+            {
+              name: "cashu-sdk",
+              test: /[\\/]node_modules[\\/](@cashu[\\/](cashu-ts|crypto)|@gandlaf21[\\/]bc-ur|bech32|cborg)[\\/]/,
+              priority: 20,
+            },
+            { name: "qr-tools", test: /[\\/]node_modules[\\/](qr-scanner|qrcode\.react)[\\/]/, priority: 10 },
+            { name: "spreadsheet-tools", test: /[\\/]node_modules[\\/][^\\/]*xlsx[^\\/]*[\\/]/, priority: 10 },
+          ],
         },
       },
     },

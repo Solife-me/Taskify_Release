@@ -130,5 +130,8 @@ jobs:
         working-directory: taskify-pwa
       - run: npm run build
         working-directory: taskify-pwa
+      # Fails when the JavaScript loaded before first render grows past its budget.
+      - run: npm run check:startup
+        working-directory: taskify-pwa
       - run: npm audit --omit=dev --audit-level=high
         working-directory: taskify-pwa

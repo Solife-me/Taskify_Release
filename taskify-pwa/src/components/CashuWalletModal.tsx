@@ -12,8 +12,8 @@ import {
   type Proof,
 } from "@cashu/cashu-ts";
 import { nip19, nip44 } from "nostr-tools";
-import { useCashu } from "../context/CashuContext";
-import { useNwc } from "../context/NwcContext";
+import { useCashu } from "../context/walletContexts";
+import { useNwc } from "../context/walletContexts";
 import { setWalletMode, useWalletMode } from "../wallet/walletMode";
 import { useWalletEnabled } from "../wallet/walletAvailability";
 import { isPaymentRequestPayment } from "../wallet/dmEcash";
@@ -22,7 +22,8 @@ import { useNwcSweeps } from "../hooks/wallet/useNwcSweeps";
 import { NwcWalletModeSheet } from "../ui/wallet/NwcWalletModeSheet";
 import { StoredTokensSheet } from "../ui/wallet/StoredTokensSheet";
 import { useToast } from "../context/ToastContext";
-import { useP2PK, type P2PKKey } from "../context/P2PKContext";
+import { useP2PK } from "../context/walletContexts";
+import type { P2PKKey } from "../context/P2PKContext";
 import { EcashGlyph } from "./EcashGlyph";
 import {
   Nut16Collector,

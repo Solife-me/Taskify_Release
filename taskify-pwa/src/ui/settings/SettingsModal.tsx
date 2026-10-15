@@ -21,7 +21,7 @@ import {
 import { appendWalletHistoryEntry } from "../../domains/backup/backupUtils";
 import type { Settings, PushPlatform } from "../../domains/tasks/settingsTypes";
 import type { Board, Task } from "../../domains/tasks/taskTypes";
-import { useCashu } from "../../context/CashuContext";
+import { useCashu } from "../../context/walletContexts";
 import { useToast } from "../../context/ToastContext";
 import { ActionSheet } from "../../components/ActionSheet";
 import { Modal } from "../Modal";

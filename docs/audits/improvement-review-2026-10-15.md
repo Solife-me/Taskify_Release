@@ -385,7 +385,7 @@ per step.
 | C2-3 | Approve all stages | 2026-10-15 | Stages 1–2 done; stages 3–4 remain (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
-| C2-6 | Approve | 2026-10-15 | Planned |
+| C2-6 | Approve | 2026-10-15 | Done: 604 → 458 KB gzipped startup, CI budget 470 KB |
 | C2-7 | Not selected (declined) | 2026-10-15 | — |
 | C2-8 | Not selected (declined) | 2026-10-15 | — |
 | C2-9 | Not selected (declined) | 2026-10-15 | — |
@@ -458,6 +458,26 @@ The suites are green after the page-router step: PWA lint (one existing warning 
   - Known gap: a `quick-add` link (from the iOS widget vocabulary) only selects its board; the
     PWA has no quick-add surface to open yet.
 
+- **C2-6 startup budget (done).** Startup JavaScript fell from 604 KB to 458 KB gzipped (−24%),
+  and CI now fails above 470 KB (`npm run check:startup`, from Vite's manifest: everything
+  `main.tsx` imports counts).
+  - Chunking moved from the deprecated `manualChunks` to prioritized `codeSplitting` groups. Three
+    hidden costs went away: React had been bundled into the QR chunk, Vite's lazy-chunk loader
+    into the QR chunk, and the `Buffer`/`process` polyfills into the Cashu chunk. So every visit
+    downloaded the QR scanner and the whole Cashu SDK.
+  - The wallet providers run in a lazily mounted `WalletRuntime`, beside `App` rather than around
+    it, and only where the wallet is enabled. Hooks come from `context/walletContexts`, which
+    returns an unavailable wallet elsewhere. The share-board dialogs and the two wallet pages
+    load on demand.
+  - Verified in the dev server: no runtime and no wallet pages on a no-wallet device; with the
+    wallet enabled the runtime publishes a ready wallet and the wallet page renders.
+  - **Next lever (chunks 5–6):** chat lives inside `CashuWalletModal` (`CashuWalletShell` hosts
+    it), so the modal and the Cashu SDK still load after startup on every device that opens
+    chat. Moving chat out of the wallet modal removes that, and it is also the main step in the
+    wallet phase-out.
+  - Not moved: the `Buffer`/`process` polyfills (10 KB) stay at boot until every library that
+    needs them is known.
+
 **The pattern to follow:** a command takes current state plus a context (`now`,
 `actorPubkey`, the settings it needs) and returns the next state plus what to publish. `App`
 reads the store, calls the command, calls `set`, then publishes. Nothing publishes or records
@@ -465,22 +485,17 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 
 **Remaining, in order**
 
-1. **C2-6, startup budget.**
-   - Load the wallet providers, Cashu SDK, QR tools and spreadsheet import only where used; move
-     the `process`/`Buffer` polyfills into the wallet chunk.
-   - Add a CI check measuring the startup JS graph (about 614 KB gzipped at the start of chunk 2)
-     against a budget.
-2. **C2-3 stage 3.** Move Nostr publishing, retry and the optimistic clock (`maybePublishTask`,
+1. **C2-3 stage 3.** Move Nostr publishing, retry and the optimistic clock (`maybePublishTask`,
    `publishTaskDeleted`, `applyTaskEvent` and the calendar equivalents) out of `App` into a
    publish service that consumes the commands' publish lists.
-3. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
+2. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
    modules; `App` keeps layout and routing.
-4. **C2-4, the identity layer.**
+3. **C2-4, the identity layer.**
    - Replace `window.nostrPK` (about 24 places) and the 42 `readNostrIdentity` calls with an
      `IdentityProvider` exposing the public key and a `Signer` (sign, NIP-44).
    - Then measure the NIP-46 round-trip cost for DM/contact decryption before building signers.
-5. **C2-5, first run that starts with tasks.**
-6. **Chunk 3 onward,** per the chunk plan.
+4. **C2-5, first run that starts with tasks.**
+5. **Chunk 3 onward,** per the chunk plan.
 
 **Logged for later chunks**
 
