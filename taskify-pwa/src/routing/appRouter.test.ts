@@ -93,3 +93,52 @@ test("Back closes a pushed overlay and direct overlay close stays in the app", a
   expect(window.location.pathname).toBe("/boards/b1");
   expect(directRouter.getSnapshot().overlay).toBeUndefined();
 });
+
+test("closing an editor and the sheet over it in one action is one history step", async () => {
+  window.history.replaceState(null, "", "/boards/b1");
+  const router = new AppHistoryRouter(window);
+  const unsubscribe = router.subscribe(() => {});
+  const editor = router.openOverlay({ kind: "task", id: "t1", boardId: "b1" });
+  const sheet = router.openOverlay({ kind: "sheet", sheet: "recurring-task-delete" });
+  expect(sheet).toBe(editor + 1);
+
+  router.closeOverlayEntry(sheet);
+  router.closeOverlayEntry(editor);
+  await vi.waitFor(() => expect(router.getSnapshot()).toEqual({ page: "boards", boardId: "b1" }));
+  expect(router.getEntryId()).toBe(editor - 1);
+  unsubscribe();
+});
+
+test("closing only the sheet returns to the editor beneath it", async () => {
+  window.history.replaceState(null, "", "/boards/b1");
+  const router = new AppHistoryRouter(window);
+  const unsubscribe = router.subscribe(() => {});
+  const editor = router.openOverlay({ kind: "task", id: "t1", boardId: "b1" });
+  const sheet = router.openOverlay({ kind: "sheet", sheet: "recurring-task-delete" });
+  router.closeOverlayEntry(sheet);
+  await vi.waitFor(() => expect(router.getEntryId()).toBe(editor));
+  expect(router.getSnapshot().overlay).toEqual({ kind: "task", id: "t1", boardId: "b1" });
+  unsubscribe();
+});
+
+test("an overlay opened from a link closes to its page without leaving the app", async () => {
+  window.history.replaceState(null, "", "/task/t9?board=b1");
+  const router = new AppHistoryRouter(window);
+  const unsubscribe = router.subscribe(() => {});
+  router.closeOverlayEntry(router.getEntryId());
+  await vi.waitFor(() => expect(router.getSnapshot().overlay).toBeUndefined());
+  expect(window.location.pathname).toBe("/boards/b1");
+
+  // With a sheet opened over the linked task, closing both goes back once, then replaces.
+  window.history.replaceState(null, "", "/task/t9?board=b1");
+  const linked = new AppHistoryRouter(window);
+  const unsubscribeLinked = linked.subscribe(() => {});
+  const root = linked.getEntryId();
+  linked.openOverlay({ kind: "sheet", sheet: "recurring-task-delete" });
+  linked.closeOverlayEntry(root + 1);
+  linked.closeOverlayEntry(root);
+  await vi.waitFor(() => expect(linked.getSnapshot()).toEqual({ page: "boards", boardId: "b1" }));
+  expect(window.location.pathname).toBe("/boards/b1");
+  unsubscribe();
+  unsubscribeLinked();
+});

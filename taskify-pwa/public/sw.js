@@ -12,7 +12,7 @@ self.addEventListener('activate', (event) => {
 });
 
 const CACHE_PREFIX = 'taskify-cache-';
-const CACHE = `${CACHE_PREFIX}v8`;
+const CACHE = `${CACHE_PREFIX}v9`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
 const CACHE_TIMESTAMP_HEADER = 'x-taskify-sw-cached-at';
 const MAX_CACHE_ENTRIES = 160;
@@ -47,10 +47,14 @@ self.addEventListener('fetch', (event) => {
   // resources that need offline behavior.
   if (!shouldHandleCachedRequest(event.request)) return;
 
+  // Every page URL (/boards/<id>, /upcoming, /task/<id>…) serves the same app shell, so
+  // navigations share one cache entry: any route opens offline, and the shell is stored once.
+  const cacheKey = isAppShellNavigation(event.request) ? appShellRequest() : event.request;
+
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
-      const cached = await matchFreshCachedResponse(cache, event.request);
+      const cached = await matchFreshCachedResponse(cache, cacheKey);
       const cachedForCompare = cached ? cached.clone() : null;
 
       // Vite content-hashed assets are immutable: a new deployment produces a
@@ -64,7 +68,7 @@ self.addEventListener('fetch', (event) => {
       // This keeps startup snappy while still refreshing cached HTML when network is available.
       if (isDocumentRequest(event.request)) {
         if (cached) {
-          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForCompare)
+          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForCompare, cacheKey)
             .then((response) => response || cached)
             .catch(() => cached);
           const timeoutFallback = wait(700).then(() => cached);
@@ -73,7 +77,7 @@ self.addEventListener('fetch', (event) => {
           return winner;
         }
         try {
-          const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForCompare);
+          const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForCompare, cacheKey);
           if (networkResponse) return networkResponse;
         } catch {}
         return new Response(null, { status: 504, statusText: 'Gateway Timeout' });
@@ -110,7 +114,7 @@ function isCacheableResponse(request, response) {
   return shouldHandleCachedRequest(request);
 }
 
-async function fetchAndUpdateCache(cache, request, cachedResponse) {
+async function fetchAndUpdateCache(cache, request, cachedResponse, cacheKey = request) {
   try {
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok) {
@@ -118,7 +122,7 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
       if (isCacheableResponse(request, networkResponse)) {
         let cacheError = null;
         try {
-          await putStampedResponse(cache, request, networkResponse);
+          await putStampedResponse(cache, cacheKey, networkResponse);
           cacheUpdated = true;
         } catch (err) {
           cacheError = err;
@@ -126,7 +130,7 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
           if (message && message.toLowerCase().includes('quotaexceeded')) {
             try {
               await evictOldestCacheEntries(cache, Math.max(1, Math.ceil((await cache.keys()).length / 4)));
-              await putStampedResponse(cache, request, networkResponse);
+              await putStampedResponse(cache, cacheKey, networkResponse);
               cacheUpdated = true;
               cacheError = null;
             } catch (retryErr) {
@@ -244,6 +248,19 @@ async function evictOldestCacheEntries(cache, count, knownKeys) {
     cacheAccessTimes.delete(request.url);
     await cache.delete(request);
   }));
+}
+
+function appShellRequest() {
+  return new Request(new URL('/', self.location.origin).href);
+}
+
+/** A same-origin page navigation, which the server answers with the app shell. */
+function isAppShellNavigation(request) {
+  try {
+    return request.mode === 'navigate' && new URL(request.url).origin === self.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 function isDocumentRequest(request) {

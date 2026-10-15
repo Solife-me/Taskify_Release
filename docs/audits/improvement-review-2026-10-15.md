@@ -380,7 +380,7 @@ per step.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C2-1 | Approve | 2026-10-15 | In progress: shared link contract and typed page History router landed; overlay wiring and fallbacks remain |
+| C2-1 | Approve | 2026-10-15 | Done (quick-add surface is a known gap) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
 | C2-3 | Approve all stages | 2026-10-15 | Stages 1–2 done; stages 3–4 remain (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
@@ -439,6 +439,24 @@ The suites are green after the page-router step: PWA lint (one existing warning 
   Settings and compatibility-wallet paths; `AppHistoryRouter` owns `pushState`, `replaceState`
   and `popstate`. Tab and board navigation now create real history entries, a URL-selected board
   wins over the startup preference, and an explicit URL is not replaced by `startupView`.
+- **C2-1 overlays and fallbacks (done).**
+  - `useOverlayHistory` binds the task/event editor, the note viewer and all 16 sheets to history
+    entries: Back (and Android's system Back) closes the top one, closing in the UI unwinds its
+    entry, and stacked overlays close in order. The router coalesces closes into one history
+    step and claims entries that have UI, so a closing editor is never reopened from its own URL.
+  - `useRouteOverlayOpener` is now the only deep-link path: task, event and note URLs open once
+    the item has synced; sheet and quick-add entries left by a reload are dismissed.
+    `useReminderDeepLink` is replaced by `useReminderTaps`, which turns an open-app reminder tap
+    into a router entry. A cold link with no in-app entry beneath closes to its page rather
+    than leaving Taskify.
+  - `wrangler.toml` serves `index.html` for navigations to unknown paths
+    (`not_found_handling = "single-page-application"`; every Worker route is a fetched `/api/`
+    path). The service worker caches one app shell for every navigation (cache `v9`), so any
+    route opens offline and the shell is stored once rather than per URL.
+  - Verified in the dev server: board URL selection, editor URL and entry, Back, UI close, and a
+    cold `/task/<id>` link.
+  - Known gap: a `quick-add` link (from the iOS widget vocabulary) only selects its board; the
+    PWA has no quick-add surface to open yet.
 
 **The pattern to follow:** a command takes current state plus a context (`now`,
 `actorPubkey`, the settings it needs) and returns the next state plus what to publish. `App`
@@ -447,27 +465,22 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 
 **Remaining, in order**
 
-1. **C2-1, routes and history.**
-   - Wire task, event, note and sheet state to the router's tested overlay entries so Back closes
-     the visible overlay.
-   - Add `not_found_handling = "single-page-application"` to `wrangler.toml` `[assets]` and a
-     service-worker navigation fallback.
-2. **C2-6, startup budget.**
+1. **C2-6, startup budget.**
    - Load the wallet providers, Cashu SDK, QR tools and spreadsheet import only where used; move
      the `process`/`Buffer` polyfills into the wallet chunk.
    - Add a CI check measuring the startup JS graph (about 614 KB gzipped at the start of chunk 2)
      against a budget.
-3. **C2-3 stage 3.** Move Nostr publishing, retry and the optimistic clock (`maybePublishTask`,
+2. **C2-3 stage 3.** Move Nostr publishing, retry and the optimistic clock (`maybePublishTask`,
    `publishTaskDeleted`, `applyTaskEvent` and the calendar equivalents) out of `App` into a
    publish service that consumes the commands' publish lists.
-4. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
+3. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
    modules; `App` keeps layout and routing.
-5. **C2-4, the identity layer.**
+4. **C2-4, the identity layer.**
    - Replace `window.nostrPK` (about 24 places) and the 42 `readNostrIdentity` calls with an
      `IdentityProvider` exposing the public key and a `Signer` (sign, NIP-44).
    - Then measure the NIP-46 round-trip cost for DM/contact decryption before building signers.
-6. **C2-5, first run that starts with tasks.**
-7. **Chunk 3 onward,** per the chunk plan.
+5. **C2-5, first run that starts with tasks.**
+6. **Chunk 3 onward,** per the chunk plan.
 
 **Logged for later chunks**
 

@@ -6,7 +6,9 @@ import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
 import { withTimeout } from "./lib/withTimeout";
 import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
 import { useAppRouter } from "./routing/appRouter";
-import { routeForPage, type ActivePage } from "./routing/appRoute";
+import { routeForPage, type ActivePage, type AppOverlayRoute, type AppSheetRoute } from "./routing/appRoute";
+import { useOverlayHistory, useRouteOverlayOpener } from "./routing/useOverlayHistory";
+import { useReminderTaps } from "./routing/useReminderTaps";
 import { DroppableColumn } from "./ui/board/DroppableColumn";
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -288,7 +290,6 @@ import { useNostrSubscriptions, type CalendarViewSubscriptionTarget, type Subscr
 import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
 import { useSelectionMode } from "./ui/selection/useSelectionMode";
 import { useBoardViewScrollState } from "./ui/board/useBoardViewScrollState";
-import { useReminderDeepLink } from "./hooks/useReminderDeepLink";
 import { BoardUpcomingView, CompletedBoardView } from "./ui/board/BoardSecondaryViews";
 import { ShareBoardDialogs } from "./ui/board/ShareBoardDialogs";
 import { useShareBoardState } from "./ui/board/useShareBoardState";
@@ -574,7 +575,6 @@ export default function App() {
   >(null);
   const [editing, setEditing] = useState<EditingState | null>(null);
   const [noteViewerTaskId, setNoteViewerTaskId] = useState<string | null>(null);
-  useReminderDeepLink({ tasks, calendarEvents, openEditor: setEditing });
   const calendarViewClockRef = useRef<Map<string, number>>(new Map());
   const {
     closeShareBoard,
@@ -9483,6 +9483,70 @@ export default function App() {
     applyCalendarEvent,
     fullHistorySyncNonce: boardHistoryResyncNonce,
   });
+
+  /* ---------- History: Back closes what is open; links open what they name ---------- */
+  useReminderTaps(appRouter);
+  const sheetOverlay = (open: boolean, sheet: AppSheetRoute): AppOverlayRoute | null =>
+    open ? { kind: "sheet", sheet } : null;
+  const editorOverlay = useMemo<AppOverlayRoute | null>(() => {
+    if (!editing) return null;
+    return editing.type === "task"
+      ? { kind: "task", id: editing.task.id, boardId: editing.task.boardId }
+      : { kind: "event", id: editing.event.id, boardId: editing.event.boardId };
+  }, [editing]);
+  useOverlayHistory(appRouter, appRoute, editorOverlay, () => setEditing(null));
+  useOverlayHistory(
+    appRouter,
+    appRoute,
+    noteViewerTaskId ? { kind: "note", taskId: noteViewerTaskId } : null,
+    () => setNoteViewerTaskId(null),
+  );
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(addBoardOpen, "add-board"), closeAddBoard);
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(shareBoardModalOpen, "share-board"), closeShareBoard);
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(selectionMoveSheetOpen, "selection-move"), () => {
+    setSelectionMoveSheetOpen(false);
+    setSelectionMoveStep("board");
+    setSelectionMoveBoardId(null);
+  });
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(boardSortSheetOpen, "board-sort"), () => setBoardSortSheetOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(upcomingSortSheetOpen, "upcoming-sort"), () => setUpcomingSortSheetOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(upcomingViewSheetOpen, "upcoming-view"), () => setUpcomingViewSheetOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(upcomingFilterOpen, "upcoming-filter"), () => setUpcomingFilterOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(biblePrintOpen, "bible-print"), () => setBiblePrintOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(boardPrintOpen, "board-print"), () => setBoardPrintOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(bibleScanOpen, "bible-scan"), () => setBibleScanOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(boardScanOpen, "board-scan"), () => setBoardScanOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(!!previewDocument, "document-preview"), () => {
+    setPreviewDocument(null);
+    setPreviewDocumentBoardId(undefined);
+  });
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(!!recurringDeleteTask, "recurring-task-delete"), () => setRecurringDeleteTask(null));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(!!recurringDeleteEvent, "recurring-event-delete"), () => setRecurringDeleteEvent(null));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(!!sharedTaskDestinationId, "shared-task-destination"), () => setSharedTaskDestinationId(null));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(!!sharedTaskCopy, "shared-task-copy"), () => setSharedTaskCopy(null));
+  const routeOverlayData = useMemo(() => ({ tasks, calendarEvents }), [tasks, calendarEvents]);
+  useRouteOverlayOpener(appRouter, appRoute, (overlay) => {
+    // Something is already open (Forward onto another entry): leave it rather than fight it.
+    if (editing || noteViewerTaskId) return true;
+    if (overlay.kind === "task") {
+      const task = tasksStore().get().find((candidate) => candidate.id === overlay.id);
+      if (!task) return false;
+      setEditing({ type: "task", originalType: "task", originalId: task.id, task });
+      return true;
+    }
+    if (overlay.kind === "event") {
+      const event = calendarEventsStore().get().find((candidate) => candidate.id === overlay.id);
+      if (!event) return false;
+      setEditing({ type: "event", originalType: "event", originalId: event.id, event });
+      return true;
+    }
+    if (overlay.kind === "note") {
+      if (!tasksStore().get().some((candidate) => candidate.id === overlay.taskId)) return false;
+      setNoteViewerTaskId(overlay.taskId);
+      return true;
+    }
+    return true;
+  }, routeOverlayData);
 
   const activeView =
     !settings.completedTab && (view === "completed" || view === "board-upcoming") ? "board" : view;

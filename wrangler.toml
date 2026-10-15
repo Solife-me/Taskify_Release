@@ -12,6 +12,10 @@ command = "bash -lc 'if [ -f ../scripts/install-worker-deps.mjs ]; then node ../
 [assets]
 directory = "taskify-pwa/dist"
 binding = "ASSETS"
+# App pages are client-side routes (/boards/<id>, /upcoming, /task/<id>…): a navigation to a
+# path with no file gets index.html. Worker routes are all under /api/ and are fetched, not
+# navigated to, so they still reach the Worker.
+not_found_handling = "single-page-application"
 
 [triggers]
 crons = ["*/1 * * * *"]

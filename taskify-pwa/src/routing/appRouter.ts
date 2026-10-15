@@ -44,6 +44,14 @@ export class AppHistoryRouter {
   private parentEntryId?: number;
   private listeners = new Set<() => void>();
   private listening = false;
+  /** Each history entry this router has seen, and the in-app entry it was pushed from (if any). */
+  private entryParents = new Map<number, number | undefined>();
+  /** The lowest overlay entry asked to close this tick; closes are coalesced into one step. */
+  private pendingClose: number | null = null;
+  /** An overlay opened from a link is closed by replacing it with its page once Back reaches it. */
+  private replaceOverlayAt: number | null = null;
+  /** Overlay entries with UI bound to them (see `useOverlayHistory`). */
+  private claimed = new Set<number>();
 
   constructor(private readonly browserWindow: Window) {
     const existing = storedRoute(browserWindow.history.state);
@@ -51,6 +59,7 @@ export class AppHistoryRouter {
     this.current = existing?.route ?? parsed ?? { page: "boards" };
     this.entryId = existing?.entryId ?? 1;
     this.parentEntryId = existing?.parentEntryId;
+    this.entryParents.set(this.entryId, this.parentEntryId);
     this.initialRouteWasExplicit = browserWindow.location.pathname !== "/"
       || Boolean(browserWindow.location.search);
 
@@ -60,6 +69,9 @@ export class AppHistoryRouter {
   }
 
   getSnapshot = (): AppRoute => this.current;
+
+  /** The current history entry; entries count up as the user moves forward in the app. */
+  getEntryId = (): number => this.entryId;
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -90,8 +102,35 @@ export class AppHistoryRouter {
     this.commit(route, nextEntryId, parentEntryId);
   }
 
-  openOverlay(overlay: AppOverlayRoute, options?: { replace?: boolean }): void {
+  /** Marks an overlay entry as shown by some UI, so route-driven opening leaves it alone. */
+  claimEntry(entryId: number): void {
+    this.claimed.add(entryId);
+  }
+
+  releaseEntry(entryId: number): void {
+    this.claimed.delete(entryId);
+  }
+
+  isEntryClaimed(entryId: number): boolean {
+    return this.claimed.has(entryId);
+  }
+
+  /** Opens an overlay over the current page as a new history entry; returns that entry. */
+  openOverlay(overlay: AppOverlayRoute, options?: { replace?: boolean }): number {
     this.navigate({ ...this.current, overlay } as AppRoute, options);
+    return this.entryId;
+  }
+
+  /**
+   * Closes the overlay at `entryId` and any opened on top of it. Closes made in the same tick
+   * (an editor and the sheet over it) become one history step, so Back never overshoots. An
+   * overlay opened from a link has no in-app entry beneath it, so its URL is replaced with its
+   * page instead of leaving Taskify.
+   */
+  closeOverlayEntry(entryId: number): void {
+    if (entryId > this.entryId) return;
+    this.pendingClose = this.pendingClose === null ? entryId : Math.min(this.pendingClose, entryId);
+    queueMicrotask(this.flushClose);
   }
 
   closeOverlay(): void {
@@ -100,6 +139,26 @@ export class AppHistoryRouter {
       this.browserWindow.history.back();
       return;
     }
+    this.replaceWithPage();
+  }
+
+  private flushClose = (): void => {
+    const target = this.pendingClose;
+    this.pendingClose = null;
+    if (target === null || target > this.entryId || !this.current.overlay) return;
+    const pushedFromApp = this.entryParents.get(target) !== undefined;
+    const steps = pushedFromApp ? this.entryId - target + 1 : this.entryId - target;
+    if (!pushedFromApp) {
+      if (steps === 0) {
+        this.replaceWithPage();
+        return;
+      }
+      this.replaceOverlayAt = target;
+    }
+    this.browserWindow.history.go(-steps);
+  };
+
+  private replaceWithPage(): void {
     const { overlay: _overlay, ...page } = this.current;
     this.navigate(page as AppRoute, { replace: true });
   }
@@ -113,6 +172,10 @@ export class AppHistoryRouter {
       this.write("replace", route, entryId, parentEntryId, this.browserWindow.location.href);
     }
     this.commit(route, entryId, parentEntryId);
+    if (this.replaceOverlayAt !== null && entryId <= this.replaceOverlayAt) {
+      this.replaceOverlayAt = null;
+      if (this.current.overlay) this.replaceWithPage();
+    }
   };
 
   private write(
@@ -134,6 +197,7 @@ export class AppHistoryRouter {
   }
 
   private commit(route: AppRoute, entryId: number, parentEntryId: number | undefined): void {
+    this.entryParents.set(entryId, parentEntryId);
     this.current = route;
     this.entryId = entryId;
     this.parentEntryId = parentEntryId;
