@@ -380,7 +380,7 @@ per step.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C2-1 | Approve | 2026-10-15 | In progress: shared app/web link contract and cross-client vectors landed; PWA history remains |
+| C2-1 | Approve | 2026-10-15 | In progress: shared link contract and typed page History router landed; overlay wiring and fallbacks remain |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
 | C2-3 | Approve all stages | 2026-10-15 | Stages 1–2 done; stages 3–4 remain (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
@@ -393,8 +393,8 @@ per step.
 ### Checkpoint — October 15, 2026 (handoff)
 
 Committed on `Beta` (not pushed), from `f2737649` through the stage-1 cleanup described below.
-The suites are green after stage 1: PWA lint (one existing warning in
-`StoredTokensSheet.tsx`), `tsc -b`, and 460 Vitest tests. Core is at 142 tests; Swift
+The suites are green after the page-router step: PWA lint (one existing warning in
+`StoredTokensSheet.tsx`), `tsc -b`, and 471 Vitest tests. Core is at 142 tests; Swift
 `TaskifyCoreTests` passes 789 tests with 12 integration tests skipped.
 
 **Done**
@@ -435,6 +435,10 @@ The suites are green after stage 1: PWA lint (one existing warning in
   existing native destinations as `taskify://` URLs and canonical web paths. Node and Swift read
   `fixtures/taskify-link-vectors.json`, including the native contract's intentional empty
   `board=` field when a task link has no board context.
+- **C2-1 typed page router:** `src/routing/appRoute.ts` owns canonical board, Upcoming, Chat,
+  Settings and compatibility-wallet paths; `AppHistoryRouter` owns `pushState`, `replaceState`
+  and `popstate`. Tab and board navigation now create real history entries, a URL-selected board
+  wins over the startup preference, and an explicit URL is not replaced by `startupView`.
 
 **The pattern to follow:** a command takes current state plus a context (`now`,
 `actorPubkey`, the settings it needs) and returns the next state plus what to publish. `App`
@@ -444,8 +448,8 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 **Remaining, in order**
 
 1. **C2-1, routes and history.**
-   - A small typed router over the History API: pages as paths, open overlays as history entries
-     so Back closes them.
+   - Wire task, event, note and sheet state to the router's tested overlay entries so Back closes
+     the visible overlay.
    - Add `not_found_handling = "single-page-application"` to `wrangler.toml` `[assets]` and a
      service-worker navigation fallback.
 2. **C2-6, startup budget.**

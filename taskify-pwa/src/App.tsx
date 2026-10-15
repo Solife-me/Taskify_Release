@@ -5,6 +5,8 @@ import { useReminderSync } from "./domains/push/useReminderSync";
 import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
 import { withTimeout } from "./lib/withTimeout";
 import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
+import { useAppRouter } from "./routing/appRouter";
+import { routeForPage, type ActivePage } from "./routing/appRoute";
 import { DroppableColumn } from "./ui/board/DroppableColumn";
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -482,6 +484,26 @@ export default function App() {
   const currentBoard = boards.find(b => b.id === currentBoardId);
   const isListBoard = currentBoard?.kind === "lists";
   const visibleBoards = useMemo(() => boards.filter(b => !b.archived && !b.hidden), [boards]);
+  const { route: appRoute, router: appRouter } = useAppRouter();
+  const activePage = appRoute.page;
+  const setActivePage = useCallback<React.Dispatch<React.SetStateAction<ActivePage>>>((nextPage) => {
+    const resolved = typeof nextPage === "function" ? nextPage(activePage) : nextPage;
+    appRouter.navigate(routeForPage(resolved, currentBoardId));
+  }, [activePage, appRouter, currentBoardId]);
+
+  useEffect(() => {
+    if (appRoute.page !== "boards" || !appRoute.boardId) return;
+    const requested = boards.find(
+      (board) => board.id === appRoute.boardId || board.nostr?.boardId === appRoute.boardId,
+    );
+    if (!requested || requested.id === currentBoardId) return;
+    setCurrentBoardIdState(requested.id);
+  }, [appRoute, boards, currentBoardId, setCurrentBoardIdState]);
+
+  useEffect(() => {
+    if (appRoute.page !== "boards" || appRoute.overlay || appRoute.boardId || !currentBoardId) return;
+    appRouter.navigate({ page: "boards", boardId: currentBoardId }, { replace: true });
+  }, [appRoute, appRouter, currentBoardId]);
 
   const [tasks, setTasks] = useTasks();
   const recordRecurringSeriesCutoff = useCallback((task: Task, cutoffISO: string) => {
@@ -1631,17 +1653,14 @@ export default function App() {
 
   // header view
   const [view, setView] = useState<"board" | "completed" | "board-upcoming" | "bible">("board");
-  const [activePage, setActivePage] = useState<
-    "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-address" | "chat" | "settings"
-  >("boards");
   const walletEnabled = useWalletEnabled();
   useEffect(() => {
     // Closing the wallet out from its own settings leaves nothing to show on its pages.
     if (walletEnabled) return;
     if (activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-address") {
-      startTransition(() => setActivePage("boards"));
+      startTransition(() => appRouter.navigate(routeForPage("boards", currentBoardId), { replace: true }));
     }
-  }, [activePage, walletEnabled]);
+  }, [activePage, appRouter, currentBoardId, walletEnabled]);
   const {
     completeFirstRunOnboarding,
     handleOnboardingEnableNotifications,
@@ -1771,8 +1790,9 @@ export default function App() {
     (id: string) => {
       if (shouldReloadForNavigation()) return;
       setCurrentBoardIdState(id);
+      if (activePage === "boards") appRouter.navigate({ page: "boards", boardId: id });
     },
-    [shouldReloadForNavigation],
+    [activePage, appRouter, setCurrentBoardIdState, shouldReloadForNavigation],
   );
 
   const openSettings = useCallback(() => {
@@ -1947,6 +1967,7 @@ export default function App() {
     startupViewHandledRef.current = true;
     // Do not redirect on startup while onboarding is blocking the app.
     if (isOnboardingActiveRef.current) return;
+    if (appRouter.initialRouteWasExplicit) return;
     const startupView = settings.startupView;
     if (startupView === "wallet" && !walletEnabled) return;
     if (startupView === "wallet" || startupView === "upcoming" || startupView === "chat") {
@@ -1955,7 +1976,7 @@ export default function App() {
       }
       startTransition(() => setActivePage(startupView));
     }
-  }, [prefetchWalletModal, settings.startupView, walletEnabled]);
+  }, [appRouter, prefetchWalletModal, setActivePage, settings.startupView, walletEnabled]);
   const { receiveToken, totalBalance: walletTotalBalance } = useCashu();
 
   useEffect(() => {
