@@ -3,6 +3,70 @@ import XCTest
 @testable import TaskifyCore
 
 final class TaskifyWidgetLinkTests: XCTestCase {
+    private struct VectorFile: Decodable {
+        let vectors: [Vector]
+        let invalidAppURLs: [String]
+    }
+
+    private struct Vector: Decodable {
+        struct Destination: Decodable {
+            let kind: String
+            let id: String?
+            let boardId: String?
+            let columnId: String?
+        }
+
+        let name: String
+        let destination: Destination
+        let appURL: String
+    }
+
+    private static let vectorsURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent() // TaskifyCoreTests
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // taskify-ios-native
+        .deletingLastPathComponent() // repository root
+        .appendingPathComponent("taskify-core/fixtures/taskify-link-vectors.json")
+
+    private static func link(for destination: Vector.Destination) throws -> TaskifyWidgetLink {
+        switch destination.kind {
+        case "upcoming":
+            return .upcoming
+        case "boards":
+            return .boards
+        case "task":
+            return .task(
+                id: try XCTUnwrap(destination.id),
+                boardID: destination.boardId ?? ""
+            )
+        case "event":
+            return .event(
+                id: try XCTUnwrap(destination.id),
+                boardID: destination.boardId ?? ""
+            )
+        case "quick-add":
+            return .quickAdd(boardID: destination.boardId, columnID: destination.columnId)
+        default:
+            throw XCTSkip("Unknown shared link kind \(destination.kind)")
+        }
+    }
+
+    func testMatchesSharedLinkVectors() throws {
+        let data = try Data(contentsOf: Self.vectorsURL)
+        let fixture = try JSONDecoder().decode(VectorFile.self, from: data)
+        XCTAssertFalse(fixture.vectors.isEmpty)
+
+        for vector in fixture.vectors {
+            let expected = try Self.link(for: vector.destination)
+            XCTAssertEqual(expected.url.absoluteString, vector.appURL, vector.name)
+            XCTAssertEqual(TaskifyWidgetLink(url: try XCTUnwrap(URL(string: vector.appURL))), expected, vector.name)
+        }
+
+        for raw in fixture.invalidAppURLs {
+            XCTAssertNil(TaskifyWidgetLink(url: try XCTUnwrap(URL(string: raw))), raw)
+        }
+    }
+
     /// The widget builds these and the app parses them. A disagreement is silent -- the app just
     /// ignores the URL and nothing happens, which is how the Control Center button ended up dead.
     func testEveryLinkRoundTrips() {

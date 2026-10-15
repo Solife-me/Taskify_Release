@@ -24,3 +24,4 @@ export * from "./locationContracts.js";
 export * from "./appStateSync.js";
 export * from "./botCommands.js";
 export * from "./nip51Contacts.js";
+export * from "./taskifyLinks.js";

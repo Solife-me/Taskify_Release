@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "vectors": [
+    {
+      "name": "upcoming",
+      "destination": { "kind": "upcoming" },
+      "appURL": "taskify://upcoming",
+      "webPath": "/upcoming"
+    },
+    {
+      "name": "boards",
+      "destination": { "kind": "boards" },
+      "appURL": "taskify://boards",
+      "webPath": "/boards"
+    },
+    {
+      "name": "task with board context",
+      "destination": { "kind": "task", "id": "task-1", "boardId": "board-1" },
+      "appURL": "taskify://task?id=task-1&board=board-1",
+      "webPath": "/task/task-1?board=board-1"
+    },
+    {
+      "name": "task without board context",
+      "destination": { "kind": "task", "id": "task-2", "boardId": "" },
+      "appURL": "taskify://task?id=task-2&board=",
+      "webPath": "/task/task-2"
+    },
+    {
+      "name": "event with board context",
+      "destination": { "kind": "event", "id": "event-1", "boardId": "board-1" },
+      "appURL": "taskify://event?id=event-1&board=board-1",
+      "webPath": "/event/event-1?board=board-1"
+    },
+    {
+      "name": "quick add with a list destination",
+      "destination": { "kind": "quick-add", "boardId": "board-1", "columnId": "column-1" },
+      "appURL": "taskify://quick-add?board=board-1&column=column-1",
+      "webPath": "/quick-add?board=board-1&column=column-1"
+    },
+    {
+      "name": "quick add without a destination",
+      "destination": { "kind": "quick-add" },
+      "appURL": "taskify://quick-add",
+      "webPath": "/quick-add"
+    }
+  ],
+  "invalidAppURLs": [
+    "https://example.com/upcoming",
+    "taskify://unknown",
+    "taskify://task",
+    "taskify://task?board=board-1",
+    "taskify://event"
+  ],
+  "invalidWebPaths": [
+    "/",
+    "/unknown",
+    "/task",
+    "/task/",
+    "/event",
+    "/task/%E0%A4%A"
+  ]
+}
