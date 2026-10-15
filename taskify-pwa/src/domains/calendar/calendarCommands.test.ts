@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Board, CalendarEvent } from "../tasks/taskTypes";
 import {
+  buildCalendarRsvpEventTemplate,
   findReusableAcceptedInvite,
   planAdvanceCalendarSeriesSeed,
   planAddAcceptedInviteToCalendar,
+  planApplyPublishedCalendarRsvp,
+  planCalendarRsvpPublication,
   planDeleteCalendarEvent,
   planMoveCalendarEvents,
   planSaveCalendarEvent,
@@ -537,5 +540,125 @@ describe("accepted calendar invite commands", () => {
       }),
     );
     expect(plan).toMatchObject({ kind: "invalid", reason: "mismatched-view" });
+  });
+});
+
+describe("calendar RSVP commands", () => {
+  it("normalizes relays, canonical address, tags and payload", () => {
+    const attendee = "a".repeat(64);
+    const organizer = "B".repeat(64);
+    const plan = planCalendarRsvpPublication({
+      canonical: `30310:${organizer}:event:part`,
+      eventId: "event:part",
+      inviteToken: "  token  ",
+      relays: [" wss://one.example ", "wss://one.example", "", "wss://two.example"],
+      status: "tentative",
+      attendeePubkey: attendee,
+      hasSigner: true,
+      fb: "busy",
+      note: "Running late",
+    });
+    if (plan.kind !== "ready") throw new Error(plan.error);
+
+    expect(plan.relayList).toEqual(["wss://one.example", "wss://two.example"]);
+    expect(plan.recipientPubkey).toBe(organizer.toLowerCase());
+    expect(plan.canonicalAddress).toBe(`30310:${organizer.toLowerCase()}:event:part`);
+    expect(plan.rsvpId).toBe(`event:part:${attendee}`);
+    expect(plan.tags).toEqual([
+      ["d", `event:part:${attendee}`],
+      ["a", `30310:${organizer.toLowerCase()}:event:part`],
+    ]);
+    expect(plan.payload).toEqual({
+      v: 1,
+      eventId: "event:part",
+      status: "tentative",
+      inviteToken: "token",
+      fb: "busy",
+      note: "Running late",
+    });
+
+    expect(buildCalendarRsvpEventTemplate(plan, "ciphertext", 123)).toEqual({
+      kind: 30312,
+      tags: plan.tags,
+      content: "ciphertext",
+      created_at: 123,
+    });
+  });
+
+  it("uses a board-derived fallback token and preserves validation order", () => {
+    const base = {
+      canonical: `30310:${"b".repeat(64)}:event-1`,
+      eventId: "event-1",
+      inviteToken: "",
+      relays: ["wss://relay.example"],
+      status: "accepted" as const,
+      attendeePubkey: "a".repeat(64),
+      hasSigner: true,
+    };
+    const ready = planCalendarRsvpPublication({ ...base, fallbackInviteToken: "derived" });
+    expect(ready.kind === "ready" ? ready.payload.inviteToken : null).toBe("derived");
+    expect(planCalendarRsvpPublication({ ...base, relays: [] })).toEqual({
+      kind: "invalid",
+      error: "No relays configured for RSVP.",
+    });
+    expect(planCalendarRsvpPublication({ ...base, hasSigner: false })).toEqual({
+      kind: "invalid",
+      error: "Connect a Nostr key to RSVP.",
+    });
+    expect(planCalendarRsvpPublication({ ...base, canonical: "bad" })).toEqual({
+      kind: "invalid",
+      error: "Invalid calendar event address.",
+    });
+    expect(planCalendarRsvpPublication(base)).toEqual({
+      kind: "invalid",
+      error: "Missing invite token for RSVP.",
+    });
+  });
+
+  it("updates matching external copies, keeps newer state and prepares the active record", () => {
+    const canonicalAddress = `30310:${"b".repeat(64)}:event-1`;
+    const matching = event({
+      external: true,
+      readOnly: true,
+      boardPubkey: "b".repeat(64),
+      canonicalAddress,
+      rsvpStatus: "tentative",
+      rsvpCreatedAt: 10,
+      rsvpFb: "busy",
+    });
+    const newer = event({
+      id: "event-1",
+      boardId: "board-2",
+      external: true,
+      readOnly: true,
+      boardPubkey: "b".repeat(64),
+      canonicalAddress,
+      rsvpStatus: "tentative",
+      rsvpCreatedAt: 30,
+    });
+    const internal = event({ id: "event-1", canonicalAddress });
+
+    const plan = planApplyPublishedCalendarRsvp([matching, newer, internal], {
+      canonicalAddress,
+      eventId: "event-1",
+      attendeePubkey: ACTOR,
+      createdAt: 20,
+      status: "accepted",
+      originalInviteToken: null,
+    });
+
+    expect(plan.events[0]).toMatchObject({
+      rsvpStatus: "accepted",
+      rsvpCreatedAt: 20,
+      rsvpFb: undefined,
+    });
+    expect(plan.events[1]).toBe(newer);
+    expect(plan.events[2]).toBe(internal);
+    expect(plan.record).toEqual({
+      eventId: "event-1",
+      authorPubkey: ACTOR,
+      createdAt: 20,
+      status: "accepted",
+    });
   });
 });

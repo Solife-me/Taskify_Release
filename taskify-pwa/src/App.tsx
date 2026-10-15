@@ -130,8 +130,11 @@ import {
   planCalendarRecurrenceWindow,
 } from "./domains/calendar/calendarRecurrenceWindow";
 import {
+  buildCalendarRsvpEventTemplate,
   findReusableAcceptedInvite,
   planAddAcceptedInviteToCalendar,
+  planApplyPublishedCalendarRsvp,
+  planCalendarRsvpPublication,
   planDeleteCalendarEvent,
   planMoveCalendarEvents,
   planSaveCalendarEvent,
@@ -241,7 +244,6 @@ import { isoForWeekdayLocal } from "./lib/app/weekBoardDate";
 import {
   TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_VIEW_KIND,
-  TASKIFY_CALENDAR_RSVP_KIND,
   calendarAddress,
   parseCalendarAddress,
   generateEventKey,
@@ -8660,58 +8662,45 @@ export default function App() {
     status: CalendarRsvpStatus,
     options?: { fb?: CalendarRsvpFb; note?: string; boardId?: string },
   ): Promise<void> {
-    const relayList = Array.from(new Set((relays || []).map((relay) => relay.trim()).filter(Boolean)));
-    if (!relayList.length) throw new Error("No relays configured for RSVP.");
-    if (!nostrSkHex || !nostrPK) throw new Error("Connect a Nostr key to RSVP.");
-    const parsedCoord = parseCalendarAddressForKind(canonical, TASKIFY_CALENDAR_EVENT_KIND);
-    if (!parsedCoord) throw new Error("Invalid calendar event address.");
-    const canonicalAddr = calendarAddress(parsedCoord.kind, parsedCoord.pubkey, parsedCoord.d);
-    let resolvedToken = typeof inviteToken === "string" ? inviteToken.trim() : "";
-    if (!resolvedToken && options?.boardId) {
-      resolvedToken = deriveBoardRsvpToken(options.boardId, nostrPK);
-    }
-    if (!resolvedToken) throw new Error("Missing invite token for RSVP.");
-    const rsvpId = `${eventId}:${nostrPK}`;
-    const payload = {
-      v: 1,
+    const fallbackInviteToken = options?.boardId && nostrPK
+      ? deriveBoardRsvpToken(options.boardId, nostrPK)
+      : undefined;
+    const publication = planCalendarRsvpPublication({
+      canonical,
       eventId,
+      inviteToken,
+      fallbackInviteToken,
+      relays,
       status,
-      inviteToken: resolvedToken,
-      ...(options?.fb ? { fb: options.fb } : {}),
-      ...(options?.note ? { note: options.note } : {}),
-    };
-    const content = await encryptCalendarRsvpPayload(payload, nostrSkHex, parsedCoord.pubkey);
-    const template: EventTemplate = {
-      kind: TASKIFY_CALENDAR_RSVP_KIND,
-      tags: [["d", rsvpId], ["a", canonicalAddr]],
-      content,
-      created_at: Math.floor(Date.now() / 1000),
-    };
-    const { createdAt } = await nostrPublish(relayList, template, { returnEvent: true });
-    setCalendarEvents((prev) => {
-      let changed = false;
-      const next = prev.map((event) => {
-        if (!event.external) return event;
-        if (event.id !== eventId || event.canonicalAddress !== canonicalAddr) return event;
-        if (event.rsvpCreatedAt && event.rsvpCreatedAt > createdAt) return event;
-        changed = true;
-        return {
-          ...event,
-          rsvpStatus: status,
-          rsvpCreatedAt: createdAt,
-          ...(options?.fb ? { rsvpFb: options.fb } : { rsvpFb: undefined }),
-        };
-      });
-      return changed ? next : prev;
+      attendeePubkey: nostrPK || undefined,
+      hasSigner: !!nostrSkHex,
+      fb: options?.fb,
+      note: options?.note,
     });
-    recordActiveEventRsvp(canonicalAddr, {
+    if (publication.kind === "invalid") throw new Error(publication.error);
+
+    const content = await encryptCalendarRsvpPayload(
+      publication.payload,
+      nostrSkHex,
+      publication.recipientPubkey,
+    );
+    const template: EventTemplate = buildCalendarRsvpEventTemplate(
+      publication,
+      content,
+      Math.floor(Date.now() / 1000),
+    );
+    const { createdAt } = await nostrPublish(publication.relayList, template, { returnEvent: true });
+    const applied = planApplyPublishedCalendarRsvp(calendarEventsStore().get(), {
+      canonicalAddress: publication.canonicalAddress,
       eventId,
-      authorPubkey: nostrPK,
+      attendeePubkey: nostrPK,
       createdAt,
       status,
-      ...(options?.fb ? { fb: options.fb } : {}),
-      ...(typeof inviteToken === "string" ? { inviteToken } : {}),
+      fb: options?.fb,
+      originalInviteToken: inviteToken,
     });
+    setCalendarEvents(applied.events);
+    recordActiveEventRsvp(publication.canonicalAddress, applied.record);
   }
 
   async function handleCalendarInviteRsvp(invite: CalendarInvite, status: CalendarRsvpStatus): Promise<void> {

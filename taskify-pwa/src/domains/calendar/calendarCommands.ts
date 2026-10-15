@@ -6,7 +6,12 @@ import {
   addDaysToDateKey,
   ISO_DATE_PATTERN,
   MS_PER_DAY,
+  TASKIFY_CALENDAR_EVENT_KIND,
+  TASKIFY_CALENDAR_RSVP_KIND,
+  calendarAddress,
   nextOccurrence,
+  parseCalendarAddress,
+  type CalendarRsvpFb,
   type CalendarRsvpStatus,
   type CalendarViewPayload,
   type TaskDocument,
@@ -92,6 +97,47 @@ export type AcceptedInvitePlan =
   | { kind: "applied"; events: CalendarEvent[]; event: CalendarEvent }
   | { kind: "unchanged"; events: CalendarEvent[]; event: CalendarEvent }
   | { kind: "invalid"; events: CalendarEvent[]; reason: AcceptedInviteFailure };
+
+export type CalendarRsvpPublicationInput = {
+  canonical: string;
+  eventId: string;
+  inviteToken: string | null | undefined;
+  fallbackInviteToken?: string;
+  relays: string[];
+  status: CalendarRsvpStatus;
+  attendeePubkey?: string;
+  hasSigner: boolean;
+  fb?: CalendarRsvpFb;
+  note?: string;
+};
+
+export type CalendarRsvpPublicationPlan =
+  | { kind: "invalid"; error: string }
+  | {
+      kind: "ready";
+      relayList: string[];
+      recipientPubkey: string;
+      canonicalAddress: string;
+      rsvpId: string;
+      tags: string[][];
+      payload: {
+        v: 1;
+        eventId: string;
+        status: CalendarRsvpStatus;
+        inviteToken: string;
+        fb?: CalendarRsvpFb;
+        note?: string;
+      };
+    };
+
+export type CalendarRsvpRecord = {
+  eventId: string;
+  authorPubkey: string;
+  createdAt: number;
+  status: CalendarRsvpStatus;
+  fb?: CalendarRsvpFb;
+  inviteToken?: string;
+};
 
 function appliedDeletePlan(
   events: CalendarEvent[],
@@ -672,4 +718,96 @@ export function planAddAcceptedInviteToCalendar(
   const next = events.slice();
   next[index] = merged;
   return { kind: "applied", events: next, event: normalizedEvent };
+}
+
+/** Validates and normalizes everything needed to encrypt and publish an RSVP event. */
+export function planCalendarRsvpPublication(
+  input: CalendarRsvpPublicationInput,
+): CalendarRsvpPublicationPlan {
+  const relayList = Array.from(new Set((input.relays || []).map((relay) => relay.trim()).filter(Boolean)));
+  if (!relayList.length) return { kind: "invalid", error: "No relays configured for RSVP." };
+  if (!input.hasSigner || !input.attendeePubkey) {
+    return { kind: "invalid", error: "Connect a Nostr key to RSVP." };
+  }
+  const parsed = parseCalendarAddress(input.canonical);
+  if (!parsed || parsed.kind !== TASKIFY_CALENDAR_EVENT_KIND) {
+    return { kind: "invalid", error: "Invalid calendar event address." };
+  }
+  const canonicalAddress = calendarAddress(parsed.kind, parsed.pubkey, parsed.d);
+  const inviteToken =
+    (typeof input.inviteToken === "string" ? input.inviteToken.trim() : "")
+    || (input.fallbackInviteToken?.trim() ?? "");
+  if (!inviteToken) return { kind: "invalid", error: "Missing invite token for RSVP." };
+  const rsvpId = `${input.eventId}:${input.attendeePubkey}`;
+  return {
+    kind: "ready",
+    relayList,
+    recipientPubkey: parsed.pubkey,
+    canonicalAddress,
+    rsvpId,
+    tags: [["d", rsvpId], ["a", canonicalAddress]],
+    payload: {
+      v: 1,
+      eventId: input.eventId,
+      status: input.status,
+      inviteToken,
+      ...(input.fb ? { fb: input.fb } : {}),
+      ...(input.note ? { note: input.note } : {}),
+    },
+  };
+}
+
+/** Builds the signed-event template after asynchronous encryption has produced the content. */
+export function buildCalendarRsvpEventTemplate(
+  plan: Extract<CalendarRsvpPublicationPlan, { kind: "ready" }>,
+  content: string,
+  createdAt: number,
+): { kind: number; tags: string[][]; content: string; created_at: number } {
+  return {
+    kind: TASKIFY_CALENDAR_RSVP_KIND,
+    tags: plan.tags,
+    content,
+    created_at: createdAt,
+  };
+}
+
+/** Applies a successful RSVP publish to matching external events and prepares the active-view record. */
+export function planApplyPublishedCalendarRsvp(
+  events: CalendarEvent[],
+  input: {
+    canonicalAddress: string;
+    eventId: string;
+    attendeePubkey: string;
+    createdAt: number;
+    status: CalendarRsvpStatus;
+    fb?: CalendarRsvpFb;
+    originalInviteToken: string | null | undefined;
+  },
+): { events: CalendarEvent[]; record: CalendarRsvpRecord } {
+  let changed = false;
+  const next = events.map((event) => {
+    if (!event.external) return event;
+    if (event.id !== input.eventId || event.canonicalAddress !== input.canonicalAddress) return event;
+    if (event.rsvpCreatedAt && event.rsvpCreatedAt > input.createdAt) return event;
+    changed = true;
+    return {
+      ...event,
+      rsvpStatus: input.status,
+      rsvpCreatedAt: input.createdAt,
+      ...(input.fb ? { rsvpFb: input.fb } : { rsvpFb: undefined }),
+    } as CalendarEvent;
+  });
+  return {
+    events: changed ? next : events,
+    record: {
+      eventId: input.eventId,
+      authorPubkey: input.attendeePubkey,
+      createdAt: input.createdAt,
+      status: input.status,
+      ...(input.fb ? { fb: input.fb } : {}),
+      ...(typeof input.originalInviteToken === "string"
+        ? { inviteToken: input.originalInviteToken }
+        : {}),
+    },
+  };
 }
