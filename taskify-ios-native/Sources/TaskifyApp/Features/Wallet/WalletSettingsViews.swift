@@ -34,6 +34,7 @@ struct WalletSettingsSheet: View {
                     settingsRow("Backup & Recovery", detail: "Protect the built-in wallet", icon: "key.viewfinder") { showingRecovery = true }
                     settingsRow("Currency", detail: model.walletConversionEnabled ? "Sats and USD" : "Sats only", icon: "bitcoinsign.circle") { showingCurrency = true }
                     settingsRow("Recipient Keys", detail: "P2PK-locked eCash", icon: "lock.keyhole") { showingRecipientKeys = true }
+                    WalletCloseOutCard(wallet: wallet) { dismiss() }
                 }
                 .padding(20)
             }
@@ -74,6 +75,78 @@ struct WalletSettingsSheet: View {
             .taskifyGlass(cornerRadius: 20)
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Lets a user who has moved everything out return this device to the no-wallet state.
+private struct WalletCloseOutCard: View {
+    @ObservedObject var wallet: WalletViewModel
+    var onClosed: () -> Void
+    @State private var confirming = false
+    @State private var isClosing = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        let blockers = wallet.closeOutBlockers
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Close Out Wallet").font(.headline).foregroundStyle(TaskifyTheme.primaryText)
+            Text("The Taskify wallet is being phased out. Once all your funds have been moved out, close it to remove the wallet from Taskify on this device.")
+                .font(.caption)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            if !blockers.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Move these first:").font(.caption.weight(.semibold))
+                    ForEach(blockers, id: \.self) { blocker in
+                        Label(blocker, systemImage: "exclamationmark.circle").font(.caption)
+                    }
+                }
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            if let errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+            }
+            Button(role: .destructive) {
+                confirming = true
+            } label: {
+                if isClosing {
+                    ProgressView()
+                } else {
+                    Text("Close Out Wallet")
+                }
+            }
+            .disabled(!blockers.isEmpty || isClosing)
+        }
+        .padding(17)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .taskifyGlass(cornerRadius: 20)
+        .confirmationDialog("Close out the Taskify wallet?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("Close Wallet", role: .destructive) {
+                isClosing = true
+                errorMessage = nil
+                Task {
+                    defer { isClosing = false }
+                    do {
+                        try await wallet.closeOutWallet()
+                        onClosed()
+                    } catch {
+                        errorMessage = error.localizedDescription
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(closeOutMessage)
+        }
+    }
+
+    private var closeOutMessage: String {
+        var lines: [String] = []
+        let unclaimed = wallet.unclaimedSentTokenSats
+        if unclaimed > 0 {
+            lines.append("\(wallet.formattedSats(unclaimed)) are in tokens you sent that haven't been redeemed yet. If they're never claimed, you can recover them by restoring your seed phrase in another Cashu wallet.")
+        }
+        lines.append("Your seed phrase stays on this device. The wallet comes back automatically if funds ever arrive here again.")
+        return lines.joined(separator: "\n\n")
     }
 }
 

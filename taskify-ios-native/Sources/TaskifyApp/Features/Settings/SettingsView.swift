@@ -72,6 +72,8 @@ struct SettingsView: View {
     private var backgroundIsBlurred = false
     @AppStorage(TaskifyAppearanceSettings.revisionKey)
     private var appearanceRevision = ""
+    @AppStorage(WalletPhaseOut.walletEnabledKey)
+    private var walletEnabled = false
 
     init(watchSetupRequestID: Binding<UUID?> = .constant(nil)) {
         _watchSetupRequestID = watchSetupRequestID
@@ -1974,7 +1976,7 @@ struct SettingsView: View {
                     set: { model.setStartupTab($0) }
                 )
             ) {
-                ForEach(StartupTab.allCases, id: \.self) { tab in
+                ForEach(StartupTab.allCases.filter { $0 != .wallet || walletEnabled }, id: \.self) { tab in
                     Text(tab.title).tag(tab)
                 }
             }

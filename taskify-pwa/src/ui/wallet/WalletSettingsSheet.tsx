@@ -1,4 +1,6 @@
+import { useMemo, useState } from "react";
 import type { Settings } from "../../domains/tasks/settingsTypes";
+import { checkWalletCloseOut, closeOutWallet } from "../../wallet/walletAvailability";
 import { ActionSheet } from "../../components/ActionSheet";
 import { WalletSection } from "../settings/WalletSection";
 
@@ -50,7 +52,77 @@ export function WalletSettingsSheet({
           onResetWalletTokenTracking={onResetWalletTokenTracking}
           initiallyExpanded
         />
+        {open && <WalletCloseOutSection onClosed={onClose} />}
       </div>
     </ActionSheet>
+  );
+}
+
+/** Lets a user who has moved everything out return this device to the no-wallet state. */
+function WalletCloseOutSection({ onClosed }: { onClosed: () => void }) {
+  const check = useMemo(() => checkWalletCloseOut(), []);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState("");
+  const canClose = check.blockers.length === 0;
+
+  return (
+    <section className="wallet-section space-y-2 text-sm">
+      <div className="font-semibold text-primary">Close out wallet</div>
+      <p className="text-xs text-secondary">
+        The Taskify wallet is being phased out. Once all your funds have been moved out, close it to remove the
+        wallet from Taskify on this device.
+      </p>
+      {!canClose && (
+        <div className="space-y-1 text-xs text-secondary">
+          <div>Move these first:</div>
+          <ul className="list-disc pl-5">
+            {check.blockers.map((blocker) => (
+              <li key={blocker}>{blocker}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {canClose && confirming && (
+        <div className="space-y-2 text-xs text-secondary">
+          {check.unclaimedSentSat > 0 && (
+            <p>
+              {check.unclaimedSentSat.toLocaleString()} sats are in tokens you sent that haven&apos;t been redeemed yet. If
+              they&apos;re never claimed, you can recover them by restoring your seed phrase in another Cashu wallet.
+            </p>
+          )}
+          <p>
+            Your seed phrase stays on this device. The wallet comes back automatically if funds ever arrive here
+            again.
+          </p>
+        </div>
+      )}
+      {error && <div className="text-xs text-rose-500">{error}</div>}
+      <div className="flex gap-2">
+        {confirming && (
+          <button type="button" className="ghost-button button-sm pressable" onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+        )}
+        <button
+          type="button"
+          className="ghost-button button-sm pressable text-rose-500"
+          disabled={!canClose}
+          onClick={() => {
+            if (!confirming) {
+              setConfirming(true);
+              return;
+            }
+            try {
+              closeOutWallet();
+              onClosed();
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          }}
+        >
+          {confirming ? "Close wallet" : "Close out wallet"}
+        </button>
+      </div>
+    </section>
   );
 }

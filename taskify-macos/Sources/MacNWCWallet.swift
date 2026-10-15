@@ -557,8 +557,9 @@ struct MacWalletSettingsView: View {
                     }
                 }.padding(8)
             }
+            MacWalletCloseOut { dismiss() }
         }
-        .padding(26).frame(width: 560, height: 600)
+        .padding(26).frame(width: 560, height: 720)
         .sheet(item: $destination) { destination in
             switch destination {
             case .wallets: MacWalletManagerView()
@@ -779,5 +780,59 @@ struct MacWalletHistoryView: View {
             do { nwcTransactions = try await wallet.nwcTransactions(); if nwcTransactions.isEmpty { message = "No transactions yet." } }
             catch { message = "This wallet didn't share its history." }
         }
+    }
+}
+
+/// Lets a user who has moved everything out return this Mac to the no-wallet state.
+private struct MacWalletCloseOut: View {
+    @EnvironmentObject private var wallet: WalletViewModel
+    var onClosed: () -> Void
+    @State private var confirming = false
+    @State private var closing = false
+    @State private var error: String?
+
+    var body: some View {
+        let blockers = wallet.closeOutBlockers
+        GroupBox("Close Out Wallet") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("The Taskify wallet is being phased out. Once all your funds have been moved out, close it to remove the wallet from Taskify on this Mac.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !blockers.isEmpty {
+                    Text("Move these first:").font(.caption.weight(.semibold))
+                    ForEach(blockers, id: \.self) { Label($0, systemImage: "exclamationmark.circle").font(.caption) }
+                }
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                Button("Close Out Wallet…", role: .destructive) { confirming = true }
+                    .disabled(!blockers.isEmpty || closing)
+            }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .confirmationDialog("Close out the Taskify wallet?", isPresented: $confirming) {
+            Button("Close Wallet", role: .destructive) {
+                closing = true
+                error = nil
+                Task {
+                    defer { closing = false }
+                    do {
+                        try await wallet.closeOutWallet()
+                        onClosed()
+                    } catch {
+                        self.error = error.localizedDescription
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(message)
+        }
+    }
+
+    private var message: String {
+        var lines: [String] = []
+        let unclaimed = wallet.unclaimedSentTokenSats
+        if unclaimed > 0 {
+            lines.append("\(wallet.formattedSats(unclaimed)) are in tokens you sent that haven't been redeemed yet. If they're never claimed, you can recover them by restoring your seed phrase in another Cashu wallet.")
+        }
+        lines.append("Your seed phrase stays on this Mac. The wallet comes back automatically if funds ever arrive here again.")
+        return lines.joined(separator: "\n\n")
     }
 }

@@ -279,6 +279,14 @@ public enum CashuPaymentRequestContract {
         if let token = firstTokenSubstring(in: content) {
             return token
         }
+        return structuredPaymentToken(from: content)
+    }
+
+    /// The token carried by a structured `{mint, proofs}` payment payload (a NUT-18 payment or a
+    /// Lightning-address forward), or nil for anything else. These are the only DM payments the
+    /// app still redeems automatically: a cashuA/cashuB token pasted into chat text is left
+    /// unredeemed while the Taskify wallet is phased out, and the chat offers to copy it instead.
+    public static func structuredPaymentToken(from content: String) -> String? {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let data = trimmed.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),

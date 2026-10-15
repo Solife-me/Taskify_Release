@@ -15,6 +15,7 @@ final class NWCWalletUITests: XCTestCase {
     func testConnectSwitchReceiveSendAndSwitchBack() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_WALLET"] = "enabled"
         app.launch()
 
         let walletTab = app.buttons["Wallet"].firstMatch

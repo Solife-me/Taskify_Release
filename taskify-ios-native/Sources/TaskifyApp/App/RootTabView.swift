@@ -14,6 +14,12 @@ enum AppTab: String, CaseIterable, Identifiable {
         rawValue.capitalized
     }
 
+    /// The tabs this device shows. The Wallet tab only appears where the wallet was used
+    /// (see `WalletPhaseOut`).
+    static func visible(walletEnabled: Bool) -> [AppTab] {
+        allCases.filter { $0 != .wallet || walletEnabled }
+    }
+
     var icon: String {
         switch self {
         case .boards: "square.grid.2x2"
@@ -40,15 +46,21 @@ struct RootTabView: View {
     /// Reading the revision here — rather than the raw appearance flag in each card — is what makes
     /// `taskifyOverPhoto` update the moment a background is chosen or cleared in Settings.
     @AppStorage(TaskifyAppearanceSettings.revisionKey) private var appearanceRevision = ""
+    @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
 
     init() {
 #if DEBUG
+        // Wallet UI tests run on fresh installs, which otherwise get no wallet.
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_WALLET"] == "enabled" {
+            UserDefaults.standard.set(true, forKey: WalletPhaseOut.walletEnabledKey)
+        }
         let requestedTab = ProcessInfo.processInfo.environment["TASKIFY_INITIAL_TAB"]
             .flatMap(AppTab.init(rawValue:))
-        _selectedTab = State(initialValue: requestedTab ?? StartupViewSettings.tab.appTab)
+        let initialTab = requestedTab ?? StartupViewSettings.tab.appTab
 #else
-        _selectedTab = State(initialValue: StartupViewSettings.tab.appTab)
+        let initialTab = StartupViewSettings.tab.appTab
 #endif
+        _selectedTab = State(initialValue: initialTab == .wallet && !WalletPhaseOut.isWalletEnabled ? .boards : initialTab)
     }
 
     var body: some View {
@@ -86,6 +98,10 @@ struct RootTabView: View {
                 pendingWatchSetupRequestID = requestID
                 selectedTab = .settings
             }
+            .onChange(of: walletEnabled) { _, enabled in
+                // Closing the wallet out from its own settings leaves nothing on its tab.
+                if !enabled && selectedTab == .wallet { selectedTab = .boards }
+            }
             .onChange(of: notificationNavigationRouter.pendingDestination) { _, destination in
                 guard destination != nil else { return }
                 routePendingNotificationDestination()
@@ -109,7 +125,7 @@ struct RootTabView: View {
         case .chat:
             selectedTab = .chat
         case .wallet:
-            selectedTab = .wallet
+            if walletEnabled { selectedTab = .wallet }
         }
     }
 
@@ -154,7 +170,10 @@ struct RootTabView: View {
                 } else {
                     legacyContent
                         .safeAreaInset(edge: .bottom, spacing: 8) {
-                            MaterialGlassTabBar(selectedTab: $selectedTab)
+                            MaterialGlassTabBar(
+                                selectedTab: $selectedTab,
+                                tabs: AppTab.visible(walletEnabled: walletEnabled)
+                            )
                                 .padding(.horizontal, 14)
                         }
                 }
@@ -206,6 +225,12 @@ struct RootTabView: View {
         .overlay(alignment: .top) {
             WalletStatusToast()
         }
+        .background {
+            WalletPhaseOutNoticePresenter(
+                suppressed: model.isLoading || model.showsFirstRunOnboarding,
+                openWallet: { selectedTab = .wallet }
+            )
+        }
         .overlay(alignment: .bottomLeading) {
             TaskifyPerfOverlay()
                 .padding(.leading, 8)
@@ -225,7 +250,7 @@ struct RootTabView: View {
 
     private var tabletNavigation: some View {
         NavigationSplitView {
-            List(AppTab.allCases, selection: Binding<AppTab?>(
+            List(AppTab.visible(walletEnabled: walletEnabled), selection: Binding<AppTab?>(
                 get: { selectedTab },
                 set: { if let tab = $0 { selectedTab = tab } }
             )) { tab in
@@ -250,7 +275,14 @@ struct RootTabView: View {
         case .upcoming:
             UpcomingView()
         case .wallet:
-            walletView
+            if walletEnabled {
+                walletView
+            } else {
+                BoardsView(
+                    focusQuickAdd: $pendingQuickAdd,
+                    quickAddColumnID: $pendingQuickAddColumnID
+                )
+            }
         case .chat:
             ContactsView()
         case .settings:
@@ -272,9 +304,11 @@ struct RootTabView: View {
                 UpcomingView()
                     .taskifyTabBackdrop(isActive: selectedTab == .upcoming)
             }
-            Tab(AppTab.wallet.title, systemImage: AppTab.wallet.icon, value: .wallet) {
-                walletView
-                    .taskifyTabBackdrop(isActive: selectedTab == .wallet)
+            if walletEnabled {
+                Tab(AppTab.wallet.title, systemImage: AppTab.wallet.icon, value: .wallet) {
+                    walletView
+                        .taskifyTabBackdrop(isActive: selectedTab == .wallet)
+                }
             }
             Tab(AppTab.chat.title, systemImage: AppTab.chat.icon, value: .chat) {
                 ContactsView()
@@ -334,12 +368,13 @@ private struct WalletStatusToast: View {
 
 private struct MaterialGlassTabBar: View {
     @Binding var selectedTab: AppTab
+    let tabs: [AppTab]
 
     @Namespace private var selectionNamespace
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(AppTab.allCases) { tab in
+            ForEach(tabs) { tab in
                 Button {
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
                         selectedTab = tab
@@ -451,6 +486,7 @@ extension FocusedValues {
 /// Keyboard shortcuts for an iPad with a hardware keyboard; holding Command lists them.
 struct TaskifyKeyboardCommands: Commands {
     @FocusedValue(\.taskifyNavigator) private var navigator
+    @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -459,7 +495,7 @@ struct TaskifyKeyboardCommands: Commands {
                 .disabled(navigator == nil)
         }
         CommandMenu("Go") {
-            ForEach(Array(AppTab.allCases.enumerated()), id: \.element) { index, tab in
+            ForEach(Array(AppTab.visible(walletEnabled: walletEnabled).enumerated()), id: \.element) { index, tab in
                 Button(tab.title) { navigator?.select(tab) }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
                     .disabled(navigator == nil)
@@ -467,3 +503,4 @@ struct TaskifyKeyboardCommands: Commands {
         }
     }
 }
+

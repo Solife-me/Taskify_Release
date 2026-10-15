@@ -15,6 +15,8 @@ import { nip19, nip44 } from "nostr-tools";
 import { useCashu } from "../context/CashuContext";
 import { useNwc } from "../context/NwcContext";
 import { setWalletMode, useWalletMode } from "../wallet/walletMode";
+import { useWalletEnabled } from "../wallet/walletAvailability";
+import { isPaymentRequestPayment } from "../wallet/dmEcash";
 import { useNwcWalletMode } from "../hooks/wallet/useNwcWalletMode";
 import { useNwcSweeps } from "../hooks/wallet/useNwcSweeps";
 import { NwcWalletModeSheet } from "../ui/wallet/NwcWalletModeSheet";
@@ -340,6 +342,7 @@ export default function CashuWalletModal({
   const [scannedContact, setScannedContact] = useState<Contact | null>(null);
   const [sharedContactPreview, setSharedContactPreview] = useState<SharedContactPreview | null>(null);
   const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
+  const walletEnabled = useWalletEnabled();
   const isContactsPage = page === "contacts";
   const isChatPage = page === "chat";
   const {
@@ -6152,12 +6155,23 @@ export default function CashuWalletModal({
                                 : null;
                           const fiatLabel =
                             walletConversionEnabled && fiatValue != null ? formatUsdAmount(fiatValue) : null;
+                          // Ecash pasted into a DM is no longer redeemed; the user copies it instead.
+                          const unredeemedDmToken =
+                            msg.isIncoming &&
+                            !historyEntry &&
+                            !!paymentDetailValue &&
+                            !isPaymentRequestPayment(
+                              tryParseJson<PaymentRequestPayload>(msg.attachment?.raw ?? null) ??
+                                tryParseJson<PaymentRequestPayload>(msg.content),
+                            );
                           const statusInfo = historyEntry
                             ? deriveHistoryStatus(historyEntry)
-                            : {
-                                label: msg.isIncoming ? "Received" : "Paid",
-                                tone: (msg.isIncoming ? "success" : undefined) as "success" | undefined,
-                              };
+                            : unredeemedDmToken
+                              ? { label: "Not redeemed", tone: undefined as "success" | undefined }
+                              : {
+                                  label: msg.isIncoming ? "Received" : "Paid",
+                                  tone: (msg.isIncoming ? "success" : undefined) as "success" | undefined,
+                                };
                           const detailKind =
                             historyEntry?.detailKind ||
                             (paymentDetailValue && isCashuTokenDetail(paymentDetailValue, "token") ? "token" : undefined);
@@ -6209,6 +6223,7 @@ export default function CashuWalletModal({
                             detailIsToken,
                             copyLabel,
                             pendingAction,
+                            unredeemedDmToken,
                             summary:
                               historyEntry?.summary ||
                               msg.attachment?.detail ||
@@ -6528,6 +6543,17 @@ export default function CashuWalletModal({
                                         )}
                                       </div>
                                     </button>
+                                    {paymentState?.unredeemedDmToken && (
+                                      <div className="wallet-message__card-actions">
+                                        <button
+                                          type="button"
+                                          className="ghost-button button-xs pressable"
+                                          onClick={() => void copyMessageValue(paymentState.detailValue, "Token")}
+                                        >
+                                          Copy token
+                                        </button>
+                                      </div>
+                                    )}
                                     {expanded && paymentState && (
                                       <div className="wallet-history__details">
                                         {paymentState.detailLabel && paymentState.detailValue && (
@@ -7275,6 +7301,8 @@ export default function CashuWalletModal({
                           </span>
                           <span className="chat-compose-tray__action-label">Contact</span>
                         </button>
+                        {walletEnabled && (
+                        <>
                         <button type="button" className="chat-compose-tray__action pressable" onClick={handleOpenChatEcash}>
                           <span className="chat-compose-tray__action-icon" aria-hidden="true">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
@@ -7293,6 +7321,8 @@ export default function CashuWalletModal({
                           </span>
                           <span className="chat-compose-tray__action-label">Lightning</span>
                         </button>
+                        </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -7975,7 +8005,7 @@ export default function CashuWalletModal({
 
                         {activeContact && (detailHasLightning || detailCanShare) && (
                           <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
-                            {detailHasLightning && (
+                            {walletEnabled && detailHasLightning && (
                               <button
                                 type="button"
                                 className="contact-pill pressable"
@@ -7987,7 +8017,7 @@ export default function CashuWalletModal({
                                 Pay lightning
                               </button>
                             )}
-                            {detailCanShare && (
+                            {walletEnabled && detailCanShare && (
                               <button
                                 type="button"
                                 className="contact-pill pressable"
@@ -9315,7 +9345,7 @@ export default function CashuWalletModal({
                 (contactHasLightning(scannedContact) ||
                   scannedContactCanShare) && (
                 <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
-                  {contactHasLightning(scannedContact) && (
+                  {walletEnabled && contactHasLightning(scannedContact) && (
                     <button
                       type="button"
                       className="contact-pill pressable"
@@ -9327,7 +9357,7 @@ export default function CashuWalletModal({
                       Pay lightning
                     </button>
                   )}
-                  {scannedContactCanShare && (
+                  {walletEnabled && scannedContactCanShare && (
                     <button
                       type="button"
                       className="contact-pill pressable"
@@ -9443,7 +9473,7 @@ export default function CashuWalletModal({
 
               {(contactHasLightning(sharedContactPreviewContact) || sharedContactPreviewCanShare) && (
                 <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
-                  {contactHasLightning(sharedContactPreviewContact) && (
+                  {walletEnabled && contactHasLightning(sharedContactPreviewContact) && (
                     <button
                       type="button"
                       className="contact-pill pressable"
@@ -9455,7 +9485,7 @@ export default function CashuWalletModal({
                       Pay lightning
                     </button>
                   )}
-                  {sharedContactPreviewCanShare && (
+                  {walletEnabled && sharedContactPreviewCanShare && (
                     <button
                       type="button"
                       className="contact-pill pressable"

@@ -649,8 +649,10 @@ public extension TaskifySnapshot {
     @discardableResult
     mutating func pruneDirectMessageHistory(olderThan cutoff: Int) -> DirectMessageHistoryPruneResult {
         let messages = directMessages ?? []
-        let keptMessages = messages.filter { $0.createdAt >= cutoff }
-        let removedMessages = messages.filter { $0.createdAt < cutoff }
+        // A received token is never redeemed in-app while the wallet is phased out, so the chat
+        // is the user's only copy of it: retention never prunes those messages.
+        let keptMessages = messages.filter { $0.createdAt >= cutoff || $0.holdsReceivedCashuToken }
+        let removedMessages = messages.filter { $0.createdAt < cutoff && !$0.holdsReceivedCashuToken }
         let removedEventIDs = Set(
             removedMessages.flatMap { [$0.rumorEventID, $0.wrapEventID] }
         )
@@ -1280,4 +1282,12 @@ private extension Dictionary {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+public extension NostrDirectMessage {
+    /// An incoming message carrying a Cashu token in its text. The app no longer redeems these,
+    /// so the message itself is where the user's funds live until they copy the token out.
+    var holdsReceivedCashuToken: Bool {
+        isIncoming && CashuPaymentRequestContract.firstTokenSubstring(in: content) != nil
+    }
 }

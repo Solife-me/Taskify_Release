@@ -534,6 +534,24 @@ final class CashuWalletTests: XCTestCase {
         XCTAssertNil(CashuPaymentRequestContract.extractReceivableToken(from: #"{"v":1,"kind":"taskify-share"}"#))
     }
 
+    /// Only structured payment payloads are still redeemed automatically; a token pasted into
+    /// chat text (including a Lightning-address forward) is left for the user to copy.
+    func testStructuredPaymentTokenIgnoresTokensInChatText() {
+        let bareProofPayload = """
+        {"mint":"https://mint.example","unit":"sat","proofs":[{
+            "amount":1,
+            "secret":"test-secret",
+            "C":"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "id":"009a1f293253e41e"
+        }]}
+        """
+        XCTAssertNotNil(CashuPaymentRequestContract.structuredPaymentToken(from: bareProofPayload))
+        XCTAssertNil(CashuPaymentRequestContract.structuredPaymentToken(
+            from: "nostr:npub1abc sent you 21 SAT from me@solife.me!\ncashuAeyJ0b2tlbiI6W119fQ"
+        ))
+        XCTAssertNil(CashuPaymentRequestContract.structuredPaymentToken(from: "Thanks for lunch!"))
+    }
+
     func testFirstTokenSubstringExtractsCashuTokenEmbeddedInChatText() {
         XCTAssertEqual(
             CashuPaymentRequestContract.firstTokenSubstring(

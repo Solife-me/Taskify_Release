@@ -63,7 +63,7 @@ public extension TaskifySnapshot {
         var result = Set((directMessages ?? []).compactMap { message -> String? in
             guard message.isIncoming || message.deliveryState == .sent,
                   CashuPaymentRequestContract.paymentPayloadJSON(from: message.content) == nil,
-                  CashuPaymentRequestContract.extractReceivableToken(from: message.content) == nil else {
+                  CashuPaymentRequestContract.structuredPaymentToken(from: message.content) == nil else {
                 return nil
             }
             return message.wrapEventID
