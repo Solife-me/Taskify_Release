@@ -382,7 +382,7 @@ per step.
 | --- | --- | --- | --- |
 | C2-1 | Approve | 2026-10-15 | Planned (after C2-3 stage 2) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
-| C2-3 | Approve all stages | 2026-10-15 | Stage 2 done; stage 1 nearly done (see Checkpoint) |
+| C2-3 | Approve all stages | 2026-10-15 | Stage 2 done; stage 1 calendar moves done, remaining mutations in progress (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
 | C2-6 | Approve | 2026-10-15 | Planned |
@@ -412,6 +412,8 @@ tests, and `taskify-core` 132 tests.
 - **Generated-task planners** (`domains/tasks/generatedTasks.ts`): the Scripture Memory review task
   and fasting reminders.
 - **Calendar window planner** (`domains/calendar/calendarRecurrenceWindow.ts`).
+- **Calendar move planner** (`domains/calendar/calendarCommands.ts`): selection moves between
+  boards and list columns return explicit publish and source-cleanup lists.
 - **Fixed along the way:**
   - updaters that deferred or double-ran publishes;
   - a lost board `order` on save;
@@ -431,8 +433,6 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 **Remaining, in order**
 
 1. **Finish stage 1 (calendar).**
-   - Move the event halves of `moveSelectedTasksToBoard` and `moveSelectedTasksToColumn` in
-     `App.tsx` into a command. They still publish inside `setCalendarEvents` updaters.
    - Then turn `deleteCalendarEvent`, `advanceCalendarSeriesSeed`, `saveCalendarEdit`,
      `addAcceptedInviteToCalendar` and `publishCalendarRsvp` into tested commands in a
      `domains/calendar/calendarCommands.ts`.

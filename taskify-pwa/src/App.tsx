@@ -133,6 +133,7 @@ import {
   calendarRecurrenceLimit,
   planCalendarRecurrenceWindow,
 } from "./domains/calendar/calendarRecurrenceWindow";
+import { planMoveCalendarEvents } from "./domains/calendar/calendarCommands";
 import { planFastingReminders, planScriptureReviewTask } from "./domains/tasks/generatedTasks";
 import {
   planAssignmentResponse,
@@ -9845,13 +9846,10 @@ export default function App() {
     if (!selectedTasks.length && !selectedEvents.length) return;
     selectedTasks.forEach((task) => moveTaskToBoard(task.id, boardId));
     if (selectedEvents.length) {
-      setCalendarEvents((prev) => prev.map((ev) => {
-        if (!selectedItemIdSet.has(ev.id)) return ev;
-        if (ev.boardId !== boardId) publishCalendarEventDeleted(ev).catch(() => {});
-        const updated: CalendarEvent = { ...ev, boardId, originBoardId: undefined, columnId: undefined };
-        maybePublishCalendarEvent(updated).catch(() => {});
-        return updated;
-      }));
+      const plan = planMoveCalendarEvents(calendarEventsStore().get(), selectedItemIdSet, boardId);
+      setCalendarEvents(plan.events);
+      plan.publishDeleted.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
+      plan.publish.forEach((event) => maybePublishCalendarEvent(event).catch(() => {}));
     }
     const boardName = boards.find((board) => board.id === boardId)?.name || "board";
     const totalMoved = selectedTasks.length + selectedEvents.length;
@@ -9879,13 +9877,10 @@ export default function App() {
       plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
     }
     if (selectedEvents.length) {
-      setCalendarEvents((prev) => prev.map((ev) => {
-        if (!selectedItemIdSet.has(ev.id)) return ev;
-        if (ev.boardId !== boardId) publishCalendarEventDeleted(ev).catch(() => {});
-        const updated: CalendarEvent = { ...ev, boardId, originBoardId: undefined, columnId };
-        maybePublishCalendarEvent(updated).catch(() => {});
-        return updated;
-      }));
+      const plan = planMoveCalendarEvents(calendarEventsStore().get(), selectedItemIdSet, boardId, columnId);
+      setCalendarEvents(plan.events);
+      plan.publishDeleted.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
+      plan.publish.forEach((event) => maybePublishCalendarEvent(event).catch(() => {}));
     }
     const boardName = board?.name || "board";
     const colName = col?.name || "list";
