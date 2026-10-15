@@ -197,6 +197,7 @@ npx wrangler dev
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
 | `src/domains/tasks/taskCommands.test.ts` | PWA task commands | Pure plans for complete, delete (incl. series cutoffs, bounties), restore, clear, save, postpone, subtasks, notes, assignment replies and moves (reorder, columns, compound boards, time of day, board position) |
 | `src/domains/tasks/generatedTasks.test.ts` | Generated tasks | Fasting reminders created, moved and deleted like native, stable on rerun; one Scripture Memory review task with a date-derived id |
+| `src/domains/calendar/calendarRecurrenceWindow.test.ts` | Recurring event window | Local generation of the window, stable on rerun, orphan cleanup, deleted occurrences skipped, edited occurrences never trimmed |
 | `src/state/stateStore.test.ts` | PWA app stores | Updates apply immediately and exactly once, listeners fire only on change, safe unsubscribe during notify |
 | `taskify-core/tests/recurrence-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/RecurrenceVectorTests.swift` | Recurring tasks across clients | Both read `taskify-core/fixtures/recurrence-vectors.json`: next due date and occurrence id through DST, time zones, clamped rules and end dates; the shared next-occurrence builder |
 | `taskify-cli/tests/recurring-completion.test.ts` | CLI recurring completion | `done` opens the next occurrence with the shared id, keeps the series, and skips one that already exists |

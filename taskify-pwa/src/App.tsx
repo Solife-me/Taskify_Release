@@ -127,7 +127,12 @@ import {
   normalizeNostrPubkeyHex,
   normalizeTaskAssignees,
 } from "./domains/tasks/assignmentUtils";
-import { recurringCutoffsStore, tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
+import { calendarEventsStore, recurringCutoffsStore, tasksStore, useBoards, useCalendarEvents, useTasks } from "./state/appStores";
+import {
+  calendarRecurrenceInstanceId,
+  calendarRecurrenceLimit,
+  planCalendarRecurrenceWindow,
+} from "./domains/calendar/calendarRecurrenceWindow";
 import { planFastingReminders, planScriptureReviewTask } from "./domains/tasks/generatedTasks";
 import {
   planAssignmentResponse,
@@ -218,7 +223,6 @@ import {
   findBoardByCompoundChildId,
 } from "./domains/tasks/boardUtils";
 import {
-  calendarEventEndMs,
   isCalendarEventVisibleOnListBoard,
   calendarEventStartISOForRecurrence,
   startOfWeek,
@@ -6946,241 +6950,14 @@ export default function App() {
   ensureWeekRecurrencesRef.current = ensureWeekRecurrences;
 
   const ensureCalendarRecurrenceWindow = useCallback(() => {
-    const toPublish: CalendarEvent[] = [];
-    const toDelete: CalendarEvent[] = [];
-
-    setCalendarEvents((prev) => {
-      let changed = false;
-      const next = prev.slice();
-      const existingIds = new Set(next.map((event) => event.id));
-      const seriesMap = new Map<string, { seed: CalendarEvent; events: CalendarEvent[] }>();
-
-      for (let i = 0; i < next.length; i++) {
-        let ev = next[i];
-        if (!ev.recurrence || ev.recurrence.type === "none") continue;
-        const seriesId = ev.seriesId || ev.id;
-        if (!ev.seriesId) {
-          ev = { ...ev, seriesId };
-          next[i] = ev;
-          changed = true;
-        }
-        const group = seriesMap.get(seriesId) ?? { seed: ev, events: [] };
-        group.events.push(ev);
-        if (ev.id === seriesId) {
-          group.seed = ev;
-        }
-        seriesMap.set(seriesId, group);
-      }
-
-      const nowMs = Date.now();
-
-      for (const [seriesId, group] of seriesMap) {
-        const seed = group.seed;
-        // Generated occurrences whose seed is gone have nothing to generate them; they were never
-        // published, so they are simply dropped.
-        if (seed.id !== seriesId || seed.generated) {
-          const orphaned = group.events.filter((event) => event.generated);
-          if (orphaned.length) {
-            const orphanIds = new Set(orphaned.map((event) => event.id));
-            for (let index = next.length - 1; index >= 0; index -= 1) {
-              if (orphanIds.has(next[index].id)) {
-                existingIds.delete(next[index].id);
-                next.splice(index, 1);
-              }
-            }
-            changed = true;
-          }
-          continue;
-        }
-        const rule = seed.recurrence;
-        if (!rule || rule.type === "none") continue;
-        if (seed.readOnly) continue;
-        // Tombstones for this board must be applied first, or a deleted occurrence regenerates.
-        if (!isBoardReadyForGeneratedTasks(seed.boardId)) continue;
-        const limit = calendarRecurrenceLimit(rule);
-        if (limit <= 0) continue;
-
-        const boardKind = boards.find((b) => b.id === seed.boardId)?.kind ?? "week";
-        const timeZone = seed.kind === "time" ? normalizeTimeZone(seed.startTzid) ?? undefined : "UTC";
-        const baseStartISO = calendarEventStartISOForRecurrence(seed);
-        if (!baseStartISO) continue;
-
-        const durationMs = (() => {
-          if (seed.kind !== "time") return 0;
-          if (!seed.endISO) return 0;
-          const start = Date.parse(seed.startISO);
-          const end = Date.parse(seed.endISO);
-          if (Number.isNaN(start) || Number.isNaN(end)) return 0;
-          return Math.max(0, end - start);
-        })();
-
-        const durationDays = (() => {
-          if (seed.kind !== "date") return 1;
-          const endDate = seed.endDate && isDateKey(seed.endDate) ? seed.endDate : seed.startDate;
-          const startParts = parseDateKey(seed.startDate);
-          const endParts = parseDateKey(endDate);
-          if (!startParts || !endParts) return 1;
-          const startUtc = Date.UTC(startParts.year, startParts.month - 1, startParts.day);
-          const endUtc = Date.UTC(endParts.year, endParts.month - 1, endParts.day);
-          if (!Number.isFinite(startUtc) || !Number.isFinite(endUtc) || endUtc < startUtc) return 1;
-          return Math.round((endUtc - startUtc) / MS_PER_DAY) + 1;
-        })();
-
-        const buildOccurrence = (id: string, occurrenceISO: string, order: number | undefined): CalendarEvent => {
-          const instanceBase: CalendarEventBase = {
-            ...(seed as any),
-            id,
-            order,
-            seriesId,
-            recurrence: rule,
-            generated: true,
-          };
-          const instance: CalendarEvent = seed.kind === "time"
-            ? {
-                ...instanceBase,
-                kind: "time",
-                startISO: occurrenceISO,
-                ...(durationMs ? { endISO: new Date(Date.parse(occurrenceISO) + durationMs).toISOString() } : {}),
-                ...(normalizeTimeZone(seed.startTzid) ? { startTzid: seed.startTzid } : {}),
-                ...(normalizeTimeZone(seed.endTzid) ? { endTzid: seed.endTzid } : {}),
-              }
-            : (() => {
-                const startDate = isoDatePart(occurrenceISO, "UTC");
-                const endDate = durationDays > 1 ? addDaysToDateKey(startDate, durationDays - 1) : null;
-                return {
-                  ...instanceBase,
-                  kind: "date",
-                  startDate,
-                  ...(endDate ? { endDate } : {}),
-                } as CalendarEvent;
-              })();
-          return applyHiddenForCalendarEvent(instance, settings.weekStart, boardKind);
-        };
-
-        // Bring generated occurrences in line with the seed, which may have been edited on
-        // another device, and drop any the seed no longer schedules. Published occurrences
-        // (exceptions, or ones an older client published) are left to their owner.
-        const generatedInSeries = next.filter((event) => event.generated && (event.seriesId || event.id) === seriesId);
-        if (generatedInSeries.length) {
-          const lastMs = Math.max(...generatedInSeries.map((event) => {
-            const iso = calendarEventStartISOForRecurrence(event);
-            return iso ? Date.parse(iso) : 0;
-          }));
-          const scheduled = new Map<string, string>();
-          let scheduleCursor = baseStartISO;
-          for (let step = 0; step < 10_000; step += 1) {
-            const occurrenceISO = nextOccurrence(scheduleCursor, rule, seed.kind === "time", timeZone);
-            if (!occurrenceISO) break;
-            scheduleCursor = occurrenceISO;
-            scheduled.set(calendarRecurrenceInstanceId(seriesId, occurrenceISO, rule, timeZone), occurrenceISO);
-            if (Date.parse(occurrenceISO) >= lastMs) break;
-          }
-          for (const event of generatedInSeries) {
-            const index = next.findIndex((candidate) => candidate.id === event.id);
-            if (index < 0) continue;
-            const occurrenceISO = scheduled.get(event.id);
-            if (!occurrenceISO) {
-              existingIds.delete(event.id);
-              next.splice(index, 1);
-              changed = true;
-              continue;
-            }
-            const refreshed = buildOccurrence(event.id, occurrenceISO, event.order);
-            if (JSON.stringify(refreshed) !== JSON.stringify(event)) {
-              next[index] = refreshed;
-              changed = true;
-            }
-          }
-          group.events = group.events.filter((event) => existingIds.has(event.id));
-        }
-
-        let seriesEvents = group.events
-          .filter((event) => existingIds.has(event.id))
-          .map((event) => {
-            const startISO = calendarEventStartISOForRecurrence(event);
-            const startMs = startISO ? Date.parse(startISO) : NaN;
-            const endMs = calendarEventEndMs(event);
-            return { event, startISO, startMs, endMs };
-          })
-          .filter((item) => item.startISO && Number.isFinite(item.startMs) && item.endMs !== null);
-
-        if (!seriesEvents.length) continue;
-
-        const sortedFuture = seriesEvents
-          .filter((item) => (item.endMs ?? 0) >= nowMs)
-          .sort((a, b) => a.startMs - b.startMs);
-
-        let futureCount = sortedFuture.length;
-
-        if (futureCount > limit) {
-          const extras = sortedFuture.slice(limit);
-          for (const extra of extras) {
-            const idx = next.findIndex((event) => event.id === extra.event.id);
-            if (idx < 0) continue;
-            toDelete.push(next[idx]);
-            next.splice(idx, 1);
-            existingIds.delete(extra.event.id);
-            changed = true;
-          }
-          futureCount = Math.min(futureCount, limit);
-          seriesEvents = seriesEvents.filter((item) => existingIds.has(item.event.id));
-        }
-
-        if (futureCount >= limit) continue;
-
-        const latest = seriesEvents.reduce((acc, item) => (item.startMs > acc.startMs ? item : acc), seriesEvents[0]);
-        let cursorISO = latest.startISO || baseStartISO;
-        let guard = 0;
-        const maxGuard = Math.max(32, limit * 24);
-
-        while (futureCount < limit && guard++ < maxGuard) {
-          const nextISO = nextOccurrence(cursorISO, rule, seed.kind === "time", timeZone);
-          if (!nextISO) break;
-          cursorISO = nextISO;
-          const id = calendarRecurrenceInstanceId(seriesId, nextISO, rule, timeZone);
-          if (deletedCalendarOccurrenceIdsRef.current.has(id)) continue;
-          if (existingIds.has(id)) {
-            const existing = next.find((event) => event.id === id);
-            if (existing) {
-              const endMs = calendarEventEndMs(existing);
-              if (endMs != null && endMs >= nowMs) futureCount += 1;
-            }
-            continue;
-          }
-
-          const nextOrder = nextOrderForCalendarBoard(seed.boardId, next, settings.newTaskPosition);
-          const instance = buildOccurrence(id, nextISO, nextOrder);
-
-          const instanceEndMs = calendarEventEndMs(instance);
-          if (instanceEndMs != null && instanceEndMs < nowMs) {
-            continue;
-          }
-
-          const normalized = instance;
-          next.push(normalized);
-          existingIds.add(id);
-          toPublish.push(normalized);
-          changed = true;
-
-          if (instanceEndMs != null && instanceEndMs >= nowMs) {
-            futureCount += 1;
-          }
-        }
-      }
-
-      return changed ? next : prev;
+    const next = planCalendarRecurrenceWindow(calendarEventsStore().get(), {
+      boards,
+      now: new Date(),
+      settings: { weekStart: settings.weekStart, newTaskPosition: settings.newTaskPosition },
+      deletedOccurrenceIds: deletedCalendarOccurrenceIdsRef.current,
+      canGenerateForBoard: isBoardReadyForGeneratedTasks,
     });
-
-    if (toPublish.length) {
-      toPublish.forEach((event) => {
-        maybePublishCalendarEventRef.current?.(event).catch(() => {});
-      });
-    }
-    if (toDelete.length) {
-      toDelete.forEach((event) => {
-        publishCalendarEventDeletedRef.current?.(event).catch(() => {});
-      });
-    }
+    if (next) setCalendarEvents(next);
   }, [boards, isBoardReadyForGeneratedTasks, setCalendarEvents, settings.newTaskPosition, settings.weekStart]);
 
   useEffect(() => {
@@ -8713,29 +8490,6 @@ export default function App() {
     });
     setEditing(null);
   }
-
-  const calendarRecurrenceInstanceId = (seriesId: string, startISO: string, rule: Recurrence, timeZone?: string): string =>
-    recurringInstanceId(seriesId, startISO, rule, timeZone).replace(/:/g, "_");
-
-  const calendarRecurrenceLimit = (rule: Recurrence): number => {
-    switch (rule.type) {
-      case "weekly":
-        return 52;
-      case "monthlyDay": {
-        const interval = Math.max(1, rule.interval ?? 1);
-        return interval >= 12 ? 5 : 18;
-      }
-      case "every": {
-        if (rule.unit === "week") return 52;
-        if (rule.unit === "day") return 24;
-        return 24;
-      }
-      case "daily":
-        return 24;
-      default:
-        return 0;
-    }
-  };
 
   function deleteTaskSilently(id: string) {
     const task = tasksRef.current.find((t) => t.id === id);
