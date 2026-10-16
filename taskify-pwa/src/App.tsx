@@ -313,6 +313,7 @@ import { BoardPublisher } from "./nostr/boardPublisher";
 import { sameDocumentList, sameStringList } from "./nostr/boardWire";
 import { mergeInviteTokens } from "./nostr/calendarWire";
 import { mergeIncomingTask, parseTaskEvent } from "./nostr/taskEventMerge";
+import { mergeIncomingCalendarEvent, parseCalendarEvent } from "./nostr/calendarEventMerge";
 import { useNostrIdentity } from "./nostr/useNostrIdentity";
 import {
   normalizeNostrRelayList as normalizeRelayList,
@@ -1515,9 +1516,9 @@ export default function App() {
         const payloadLastEditedBy = normalizeAgentPubkey(payload.lastEditedBy) ?? payloadCreatedBy;
         let updated: CalendarEvent | null = null;
         if (payload.kind === "date") {
-          if (!payload.startDate || !isDateKey(payload.startDate)) return prev;
+          if (!payload.startDate || !ISO_DATE_PATTERN.test(payload.startDate)) return prev;
           const endDate =
-            payload.endDate && isDateKey(payload.endDate) && payload.endDate >= payload.startDate
+            payload.endDate && ISO_DATE_PATTERN.test(payload.endDate) && payload.endDate >= payload.startDate
               ? payload.endDate
               : undefined;
           updated = {
@@ -5249,7 +5250,6 @@ export default function App() {
   maybePublishTaskRef.current = maybePublishTask;
   publishTaskDeletedRef.current = publishTaskDeleted;
 
-  const isDateKey = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value);
   async function publishCalendarEventDeleted(event: CalendarEvent) {
     await publisher.publishCalendarEventDeleted(event);
   }
@@ -8269,9 +8269,6 @@ export default function App() {
       return;
     }
     if (ev.pubkey !== boardKeys.pk) return;
-    const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
-    if (!ledger.acceptCalendarEvent(bTag, eventId, createdAt)) return;
-
     let payload: ReturnType<typeof parseCalendarCanonicalPayload> | null = null;
     try {
       const raw = await decryptCalendarPayloadForBoard(ev.content, boardKeys.skHex, boardKeys.pk);
@@ -8281,6 +8278,9 @@ export default function App() {
       return;
     }
     if (!payload || payload.eventId !== eventId) return;
+    // Recorded only once the version is readable, so an unreadable copy cannot block a good one.
+    const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
+    if (!ledger.acceptCalendarEvent(bTag, eventId, createdAt)) return;
     if (payload.deleted) {
       deletedCalendarOccurrenceIdsRef.current.add(eventId);
       if (payload.recurrence?.untilISO && payload.seriesId) {
@@ -8292,81 +8292,17 @@ export default function App() {
       return;
     }
 
-    const colTag = tagValue(ev, "col");
-    const orderRaw = tagValue(ev, "order");
-    const order = orderRaw && Number.isFinite(Number(orderRaw)) ? Number(orderRaw) : undefined;
-    const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, eventId);
-    const viewAddr = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, boardKeys.pk, eventId);
-
-    const parsedDocuments = normalizeDocumentList(payload.documents);
-    const payloadCreatedBy = normalizeAgentPubkey(payload.createdBy);
-    const payloadLastEditedBy = normalizeAgentPubkey(payload.lastEditedBy) ?? payloadCreatedBy;
-    const toCommon = (): Omit<CalendarEventBase, "kind" | "startDate" | "endDate" | "startISO" | "endISO"> => ({
-      id: eventId,
-      boardId: lb.id,
-      ...(payloadCreatedBy ? { createdBy: payloadCreatedBy } : {}),
-      ...(payloadLastEditedBy ? { lastEditedBy: payloadLastEditedBy } : {}),
-      columnId: (() => {
-        if (!isListLikeBoard(lb)) return undefined;
-        const col = colTag || "";
-        return col ? col : (lb.kind === "lists" ? lb.columns[0]?.id : undefined);
-      })(),
-      order,
-      title: payload.title || "Untitled",
-      summary: payload.summary,
-      description: payload.description || "",
-      documents: parsedDocuments ? parsedDocuments.map(ensureDocumentPreview) : undefined,
-      image: payload.image,
-      locations: payload.locations?.length ? payload.locations : undefined,
-      geohash: payload.geohash,
-      participants: payload.participants?.length
-        ? payload.participants.map((p) => ({
-            pubkey: p.pubkey,
-            relay: p.relay,
-            role: p.role,
-          }))
-        : undefined,
-      hashtags: payload.hashtags?.length ? payload.hashtags : undefined,
-      references: payload.references?.length ? payload.references : undefined,
-      eventKey: payload.eventKey,
-      inviteTokens: payload.inviteTokens,
-      recurrence: payload.recurrence,
-      seriesId: payload.seriesId,
-      canonicalAddress: canonicalAddr,
-      viewAddress: viewAddr,
-    });
-
-    const nextEvent: CalendarEvent | null = (() => {
-      if (payload.kind === "date") {
-        if (!payload.startDate || !isDateKey(payload.startDate)) return null;
-        const startDate = payload.startDate;
-        const endDate = payload.endDate && isDateKey(payload.endDate) && payload.endDate >= startDate
-          ? payload.endDate
-          : undefined;
-        return {
-          ...toCommon(),
-          kind: "date",
-          startDate,
-          ...(endDate ? { endDate } : {}),
-        };
-      }
-      if (payload.kind !== "time") return null;
-      const startISO = payload.startISO || "";
-      const startMs = Date.parse(startISO);
-      if (!startISO || Number.isNaN(startMs)) return null;
-      const endISO = payload.endISO && Date.parse(payload.endISO) > startMs ? payload.endISO : undefined;
-      const startTzid = normalizeTimeZone(payload.startTzid) ?? undefined;
-      const endTzid = normalizeTimeZone(payload.endTzid) ?? undefined;
-      return {
-        ...toCommon(),
-        kind: "time",
-        startISO,
-        ...(endISO ? { endISO } : {}),
-        ...(startTzid ? { startTzid } : {}),
-        ...(endTzid ? { endTzid } : {}),
-      };
-    })();
-
+    const nextEvent = parseCalendarEvent(
+      payload,
+      {
+        eventId,
+        column: tagValue(ev, "col"),
+        order: tagValue(ev, "order"),
+        canonicalAddress: calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, eventId),
+        viewAddress: calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, boardKeys.pk, eventId),
+      },
+      lb,
+    );
     if (!nextEvent) return;
 
     setCalendarEvents((prev) => {
@@ -8379,21 +8315,10 @@ export default function App() {
         return filtered.length === prev.length ? prev : filtered;
       }
       const idx = prev.findIndex((existing) => existing.id === boundedEvent.id);
-      const existing = idx >= 0 ? prev[idx] : null;
-      let merged: CalendarEvent = {
-        ...boundedEvent,
-        ...(existing?.createdBy && !boundedEvent.createdBy ? { createdBy: existing.createdBy } : {}),
-        ...(existing?.lastEditedBy && !boundedEvent.lastEditedBy ? { lastEditedBy: existing.lastEditedBy } : {}),
-        ...(Array.isArray(existing?.reminders) && existing.reminders.length ? { reminders: existing.reminders } : {}),
-        ...(existing?.reminderTime ? { reminderTime: existing.reminderTime } : {}),
-        ...(!boundedEvent.recurrence && existing?.recurrence ? { recurrence: existing.recurrence } : {}),
-        ...(!boundedEvent.seriesId && existing?.seriesId ? { seriesId: existing.seriesId } : {}),
-        ...(existing?.hiddenUntilISO ? { hiddenUntilISO: existing.hiddenUntilISO } : {}),
-        ...(typeof existing?.order === "number" && typeof boundedEvent.order !== "number" ? { order: existing.order } : {}),
-      } as CalendarEvent;
-      if (!existing) {
-        merged = applyHiddenForCalendarEvent(merged, settings.weekStart, lb.kind);
-      }
+      const merged = mergeIncomingCalendarEvent(idx >= 0 ? prev[idx] : null, boundedEvent, {
+        weekStart: settings.weekStart,
+        boardKind: lb.kind,
+      });
       if (idx >= 0) {
         const copy = prev.slice();
         copy[idx] = merged;

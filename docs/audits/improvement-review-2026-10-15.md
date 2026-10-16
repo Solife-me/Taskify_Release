@@ -382,7 +382,7 @@ per step.
 | --- | --- | --- | --- |
 | C2-1 | Approve | 2026-10-15 | Done (quick-add surface is a known gap) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
-| C2-3 | Approve all stages | 2026-10-15 | Stages 1–2 done; stages 3–4 remain (see Checkpoint) |
+| C2-3 | Approve all stages | 2026-10-15 | Stages 1–3 done; stage 4 remains (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
 | C2-6 | Approve | 2026-10-15 | Done: 604 → 458 KB gzipped startup, CI budget 470 KB |
@@ -478,6 +478,23 @@ The suites are green after the page-router step: PWA lint (one existing warning 
   - Not moved: the `Buffer`/`process` polyfills (10 KB) stay at boot until every library that
     needs them is known.
 
+- **C2-3 stage 3, the publish service (done).** Nostr sync state and publishing left `App`
+  (12,828 lines at the start of chunk 2, 10,393 now):
+  - `nostr/boardSyncLedger.ts` owns the clocks, in-flight publishes and deletion tombstones.
+  - `nostr/boardPublisher.ts` publishes board metadata, tasks and calendar events, with keys,
+    crypto, relays and storage injected.
+  - The wire format is pure and tested: `boardWire.ts` and `calendarWire.ts` (writers),
+    `taskEventMerge.ts` and `calendarEventMerge.ts` (readers), with writer-to-reader
+    round-trip tests.
+  - Fixed along the way:
+    - a failed key derivation or upload left a task marked as publishing;
+    - the initial-sync batch skipped the bounty authorization check;
+    - calendar versions were recorded before decryption, so an unreadable copy could block a
+      good one.
+  - Logged for chunk 4: initial-sync batch entries take `order` from the batch, so a flush may
+    reset a task's local position; `BoardPublisher` still sets `_nostrAt` on the task object
+    passed in.
+
 **The pattern to follow:** a command takes current state plus a context (`now`,
 `actorPubkey`, the settings it needs) and returns the next state plus what to publish. `App`
 reads the store, calls the command, calls `set`, then publishes. Nothing publishes or records
@@ -485,17 +502,14 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 
 **Remaining, in order**
 
-1. **C2-3 stage 3.** Move Nostr publishing, retry and the optimistic clock (`maybePublishTask`,
-   `publishTaskDeleted`, `applyTaskEvent` and the calendar equivalents) out of `App` into a
-   publish service that consumes the commands' publish lists.
-2. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
+1. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
    modules; `App` keeps layout and routing.
-3. **C2-4, the identity layer.**
+2. **C2-4, the identity layer.**
    - Replace `window.nostrPK` (about 24 places) and the 42 `readNostrIdentity` calls with an
      `IdentityProvider` exposing the public key and a `Signer` (sign, NIP-44).
    - Then measure the NIP-46 round-trip cost for DM/contact decryption before building signers.
-4. **C2-5, first run that starts with tasks.**
-5. **Chunk 3 onward,** per the chunk plan.
+3. **C2-5, first run that starts with tasks.**
+4. **Chunk 3 onward,** per the chunk plan.
 
 **Logged for later chunks**
 
