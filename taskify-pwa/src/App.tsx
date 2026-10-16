@@ -25,10 +25,7 @@ import {
   isAssignedSharedTask,
   DEFAULT_DATE_REMINDER_TIME,
   ISO_DATE_PATTERN,
-  normalizeCalendarDeleteMutationPayload,
-  normalizeCalendarMutationPayload,
   normalizeTaskRecurrence,
-  calendarRecurrenceSyncFields,
   compressedToRawHex,
   isExternalCalendarEvent,
   isListLikeBoard,
@@ -249,8 +246,6 @@ import {
   TASKIFY_CALENDAR_VIEW_KIND,
   calendarAddress,
   parseCalendarAddress,
-  generateEventKey,
-  generateInviteToken,
   encryptCalendarPayloadForBoard,
   decryptCalendarPayloadForBoard,
   encryptCalendarPayloadWithEventKey,
@@ -316,6 +311,7 @@ import { useTaskPersistence } from "./nostr/useTaskPersistence";
 import { BoardSyncLedger } from "./nostr/boardSyncLedger";
 import { BoardPublisher } from "./nostr/boardPublisher";
 import { sameDocumentList, sameStringList } from "./nostr/boardWire";
+import { mergeInviteTokens } from "./nostr/calendarWire";
 import { useNostrIdentity } from "./nostr/useNostrIdentity";
 import {
   normalizeNostrRelayList as normalizeRelayList,
@@ -5100,6 +5096,8 @@ export default function App() {
     boardTag,
     deriveBoardKeys: deriveBoardNostrKeys,
     encrypt: encryptToBoard,
+    encryptCalendarForBoard: encryptCalendarPayloadForBoard,
+    encryptCalendarForInvitees: encryptCalendarPayloadWithEventKey,
     publish: (relays, template, options) => publisherLatestRef.current.nostrPublish(relays, template, options),
     prepareAttachments: (params) => publisherLatestRef.current.prepareAttachmentsForPublish(params),
     storedTaskAt: (taskId, board) =>
@@ -5126,6 +5124,27 @@ export default function App() {
             changed = true;
           }
           return changed ? next : current;
+        }),
+      );
+    },
+    onEventPending: markNostrCalendarEventSyncPending,
+    onEventSettled: clearOptimisticNostrCalendarEventSyncPending,
+    onEventSecretsMerged: (updated) => {
+      setCalendarEvents((prev) => prev.map((ev) => (ev.id === updated.id ? updated : ev)));
+    },
+    onEventAttachmentsUploaded: (original, published, prepared) => {
+      // Swap in the uploaded copies unless the attachments were edited meanwhile.
+      setCalendarEvents((prev) =>
+        prev.map((current) => {
+          if (current.id !== original.id) return current;
+          let next: CalendarEvent = current;
+          if (prepared.image !== null && current.image === original.image) {
+            next = { ...next, image: published.image };
+          }
+          if (prepared.documents !== null && sameDocumentList(current.documents, original.documents)) {
+            next = { ...next, documents: published.documents };
+          }
+          return next;
         }),
       );
     },
@@ -5218,15 +5237,6 @@ export default function App() {
     return { images: nextImages, image: nextImage, documents: nextDocuments };
   }
 
-  const calendarEventWithPreparedAttachments = (
-    event: CalendarEvent,
-    prepared: { image: string | null; documents: any[] | null },
-  ): CalendarEvent => ({
-    ...event,
-    ...(prepared.image === null ? {} : { image: prepared.image || undefined }),
-    ...(prepared.documents === null ? {} : { documents: prepared.documents.length ? prepared.documents as TaskDocument[] : undefined }),
-  });
-
   async function maybePublishTask(
     t: Task,
     boardOverride?: Board,
@@ -5239,281 +5249,8 @@ export default function App() {
   publishTaskDeletedRef.current = publishTaskDeleted;
 
   const isDateKey = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value);
-  const resolveCalendarEventPublishBoard = (event: CalendarEvent, boardOverride?: Board): Board | null => {
-    const targetId = event.originBoardId ?? event.boardId;
-    if (boardOverride && boardOverride.id === targetId) return boardOverride;
-    return boards.find((x) => x.id === targetId) ?? null;
-  };
-
-  const normalizeInvitePubkeys = (event: CalendarEvent, extraPubkeys?: string[]) => {
-    const normalized: string[] = [];
-    const seen = new Set<string>();
-    (event.participants ?? []).forEach((participant) => {
-      const pubkey = normalizeNostrPubkeyHex(participant.pubkey);
-      if (!pubkey || seen.has(pubkey)) return;
-      seen.add(pubkey);
-      normalized.push(pubkey);
-    });
-    (extraPubkeys ?? []).forEach((candidate) => {
-      const pubkey = normalizeNostrPubkeyHex(candidate);
-      if (!pubkey || seen.has(pubkey)) return;
-      seen.add(pubkey);
-      normalized.push(pubkey);
-    });
-    return normalized;
-  };
-
-  const mergeInviteTokens = (event: CalendarEvent, extraPubkeys?: string[]) => {
-    const eventKey = event.eventKey || generateEventKey();
-    const existing = event.inviteTokens ?? {};
-    const recipients = normalizeInvitePubkeys(event, extraPubkeys);
-    const nextTokens: Record<string, string> = {};
-    recipients.forEach((pubkey) => {
-      nextTokens[pubkey] = existing[pubkey] || generateInviteToken();
-    });
-    const existingKeys = Object.keys(existing);
-    const nextKeys = Object.keys(nextTokens);
-    let changed = eventKey !== event.eventKey || existingKeys.length !== nextKeys.length;
-    if (!changed) {
-      for (const key of nextKeys) {
-        if (existing[key] !== nextTokens[key]) {
-          changed = true;
-          break;
-        }
-      }
-    }
-    return {
-      eventKey,
-      inviteTokens: nextKeys.length ? nextTokens : undefined,
-      changed,
-    };
-  };
-
-  const buildCanonicalCalendarPayload = async (
-    event: CalendarEvent,
-    options?: {
-      deleted?: boolean;
-      boardId?: string;
-      preparedAttachments?: { image: string | null; documents: any[] | null };
-    },
-  ) => {
-    const eventKey = event.eventKey || generateEventKey();
-    const deleted = !!options?.deleted;
-    const createdBy = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
-    const lastEditedBy = normalizeAgentPubkey(event.lastEditedBy || nostrPK || createdBy) ?? createdBy;
-    const base: any = {
-      v: 1,
-      eventId: event.id,
-      eventKey,
-      ...(deleted ? { deleted: true } : {}),
-    };
-    if (createdBy) base.createdBy = createdBy;
-    if (lastEditedBy) base.lastEditedBy = lastEditedBy;
-    Object.assign(base, calendarRecurrenceSyncFields(event));
-    const normalized = deleted
-      ? normalizeCalendarDeleteMutationPayload(
-          {
-            title: event.title || "Untitled",
-            kind: event.kind,
-            startDate: event.kind === "date" ? event.startDate : undefined,
-            endDate: event.kind === "date" ? event.endDate : undefined,
-            startISO: event.kind === "time" ? event.startISO : undefined,
-            endISO: event.kind === "time" ? event.endISO : undefined,
-            startTzid: event.kind === "time" ? event.startTzid : undefined,
-            endTzid: event.kind === "time" ? event.endTzid : undefined,
-            description: event.description,
-          },
-          Date.now(),
-        )
-      : normalizeCalendarMutationPayload(
-          {
-            title: event.title || "Untitled",
-            kind: event.kind,
-            startDate: event.kind === "date" ? event.startDate : undefined,
-            endDate: event.kind === "date" ? event.endDate : undefined,
-            startISO: event.kind === "time" ? event.startISO : undefined,
-            endISO: event.kind === "time" ? event.endISO : undefined,
-            startTzid: event.kind === "time" ? event.startTzid : undefined,
-            endTzid: event.kind === "time" ? event.endTzid : undefined,
-            description: event.description,
-          },
-          Date.now(),
-        );
-    if (!normalized) return null;
-    if (deleted) return base;
-
-    base.kind = normalized.kind;
-    base.title = normalized.title || "Untitled";
-    if (event.summary) base.summary = event.summary;
-    if (event.description) base.description = event.description;
-    if (event.documents?.length) {
-      const documents = options?.preparedAttachments?.documents ?? event.documents;
-      if (documents?.length) base.documents = documents;
-    }
-    const preparedImage = options?.preparedAttachments?.image;
-    const publishImage = preparedImage === null || typeof preparedImage === "undefined" ? event.image : preparedImage;
-    if (publishImage) base.image = publishImage;
-    if (event.locations?.length) base.locations = event.locations;
-    if (event.geohash) base.geohash = event.geohash;
-    if (event.participants?.length) base.participants = event.participants;
-    if (event.hashtags?.length) base.hashtags = event.hashtags;
-    if (event.references?.length) base.references = event.references;
-    if (event.inviteTokens && Object.keys(event.inviteTokens).length) base.inviteTokens = event.inviteTokens;
-
-    if (normalized.kind === "date") {
-      if (!normalized.startDate) return null;
-      base.startDate = normalized.startDate;
-      if (normalized.endDate) base.endDate = normalized.endDate;
-      return base;
-    }
-
-    if (!normalized.startISO) return null;
-    base.startISO = normalized.startISO;
-    if (normalized.endISO) base.endISO = normalized.endISO;
-    if (normalized.startTzid) base.startTzid = normalized.startTzid;
-    if (normalized.endTzid) base.endTzid = normalized.endTzid;
-    return base;
-  };
-
-  const buildViewCalendarPayload = async (
-    event: CalendarEvent,
-    options?: {
-      deleted?: boolean;
-      boardId?: string;
-      preparedAttachments?: { image: string | null; documents: any[] | null };
-    },
-  ) => {
-    const deleted = !!options?.deleted;
-    const createdBy = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
-    const lastEditedBy = normalizeAgentPubkey(event.lastEditedBy || nostrPK || createdBy) ?? createdBy;
-    const base: any = {
-      v: 1,
-      eventId: event.id,
-      ...(deleted ? { deleted: true } : {}),
-    };
-    if (createdBy) base.createdBy = createdBy;
-    if (lastEditedBy) base.lastEditedBy = lastEditedBy;
-    Object.assign(base, calendarRecurrenceSyncFields(event));
-    const normalized = deleted
-      ? normalizeCalendarDeleteMutationPayload(
-          {
-            title: event.title || "Untitled",
-            kind: event.kind,
-            startDate: event.kind === "date" ? event.startDate : undefined,
-            endDate: event.kind === "date" ? event.endDate : undefined,
-            startISO: event.kind === "time" ? event.startISO : undefined,
-            endISO: event.kind === "time" ? event.endISO : undefined,
-            startTzid: event.kind === "time" ? event.startTzid : undefined,
-            endTzid: event.kind === "time" ? event.endTzid : undefined,
-            description: event.description,
-          },
-          Date.now(),
-        )
-      : normalizeCalendarMutationPayload(
-          {
-            title: event.title || "Untitled",
-            kind: event.kind,
-            startDate: event.kind === "date" ? event.startDate : undefined,
-            endDate: event.kind === "date" ? event.endDate : undefined,
-            startISO: event.kind === "time" ? event.startISO : undefined,
-            endISO: event.kind === "time" ? event.endISO : undefined,
-            startTzid: event.kind === "time" ? event.startTzid : undefined,
-            endTzid: event.kind === "time" ? event.endTzid : undefined,
-            description: event.description,
-          },
-          Date.now(),
-        );
-    if (!normalized) return null;
-    if (deleted) return base;
-
-    base.kind = normalized.kind;
-    base.title = normalized.title || "Untitled";
-    if (event.summary) base.summary = event.summary;
-    if (event.description) base.description = event.description;
-    if (event.documents?.length) {
-      const documents = options?.preparedAttachments?.documents ?? event.documents;
-      if (documents?.length) base.documents = documents;
-    }
-    const preparedImage = options?.preparedAttachments?.image;
-    const publishImage = preparedImage === null || typeof preparedImage === "undefined" ? event.image : preparedImage;
-    if (publishImage) base.image = publishImage;
-    if (event.locations?.length) base.locations = event.locations;
-    if (event.geohash) base.geohash = event.geohash;
-    if (event.hashtags?.length) base.hashtags = event.hashtags;
-    if (event.references?.length) base.references = event.references;
-
-    if (normalized.kind === "date") {
-      if (!normalized.startDate) return null;
-      base.startDate = normalized.startDate;
-      if (normalized.endDate) base.endDate = normalized.endDate;
-      return base;
-    }
-
-    if (!normalized.startISO) return null;
-    base.startISO = normalized.startISO;
-    if (normalized.endISO) base.endISO = normalized.endISO;
-    if (normalized.startTzid) base.startTzid = normalized.startTzid;
-    if (normalized.endTzid) base.endTzid = normalized.endTzid;
-    return base;
-  };
-
   async function publishCalendarEventDeleted(event: CalendarEvent) {
-    // A generated occurrence was never published, so there is nothing to tombstone.
-    if (event.readOnly || event.generated) return;
-    const creator = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
-    const editor = normalizeAgentPubkey(event.lastEditedBy || nostrPK || creator) ?? creator;
-    const eventForPublish: CalendarEvent = {
-      ...event,
-      ...(creator ? { createdBy: creator } : {}),
-      ...(editor ? { lastEditedBy: editor } : {}),
-    };
-    const b = resolveCalendarEventPublishBoard(event);
-    if (!b || !isShared(b) || !b.nostr) return;
-    const relays = getBoardRelays(b);
-    const boardId = b.nostr.boardId;
-    const boardKeys = await deriveBoardNostrKeys(boardId);
-    const bTag = boardTag(boardId);
-    markNostrCalendarEventSyncPending(event.id);
-    ledger.markEventPending(bTag, event.id);
-    try {
-      await publishBoardMetadataForItem(b);
-      const { eventKey, inviteTokens, changed } = mergeInviteTokens(eventForPublish);
-      const updatedEvent = changed ? { ...eventForPublish, eventKey, inviteTokens } : eventForPublish;
-      if (changed) {
-        setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
-      }
-      const canonicalPayload = await buildCanonicalCalendarPayload(updatedEvent, { deleted: true, boardId });
-      const viewPayload = await buildViewCalendarPayload(updatedEvent, { deleted: true, boardId });
-      if (!canonicalPayload || !viewPayload) return;
-      const canonicalContent = await encryptCalendarPayloadForBoard(
-        canonicalPayload,
-        boardKeys.skHex,
-        boardKeys.pk,
-      );
-      const canonicalTags: string[][] = [["d", event.id], ["b", bTag]];
-      if (updatedEvent.columnId) canonicalTags.push(["col", updatedEvent.columnId]);
-      if (typeof updatedEvent.order === "number" && Number.isFinite(updatedEvent.order)) {
-        canonicalTags.push(["order", String(updatedEvent.order)]);
-      }
-      const createdAt = await nostrPublish(relays, {
-        kind: TASKIFY_CALENDAR_EVENT_KIND,
-        tags: canonicalTags,
-        content: canonicalContent,
-        created_at: Math.floor(Date.now() / 1000),
-      }, { sk: boardKeys.sk });
-      const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, eventForPublish.id);
-      const viewContent = await encryptCalendarPayloadWithEventKey(viewPayload, eventKey);
-      await nostrPublish(relays, {
-        kind: TASKIFY_CALENDAR_VIEW_KIND,
-        tags: [["d", event.id], ["a", canonicalAddr]],
-        content: viewContent,
-        created_at: Math.floor(Date.now() / 1000),
-      }, { sk: boardKeys.sk });
-      ledger.noteEvent(bTag, eventForPublish.id, createdAt);
-    } finally {
-      ledger.settleEvent(bTag, event.id);
-      clearOptimisticNostrCalendarEventSyncPending(event.id);
-    }
+    await publisher.publishCalendarEventDeleted(event);
   }
   publishCalendarEventDeletedRef.current = publishCalendarEventDeleted;
 
@@ -5522,98 +5259,7 @@ export default function App() {
     boardOverride?: Board,
     options?: { skipBoardMetadata?: boolean; republish?: boolean },
   ) {
-    // Generated occurrences are never published: every client generates them from the seed.
-    if (event.readOnly || event.generated) return;
-    const creator = normalizeAgentPubkey(event.createdBy || nostrPK) ?? undefined;
-    const editor = normalizeAgentPubkey(event.lastEditedBy || nostrPK || creator) ?? creator;
-    const eventForPublish: CalendarEvent = {
-      ...event,
-      ...(creator ? { createdBy: creator } : {}),
-      ...(editor ? { lastEditedBy: editor } : {}),
-    };
-    const b = resolveCalendarEventPublishBoard(event, boardOverride);
-    if (!b || !isShared(b) || !b.nostr) return;
-    const relays = getBoardRelays(b);
-    const boardId = b.nostr.boardId;
-    const boardKeys = await deriveBoardNostrKeys(boardId);
-    const bTag = boardTag(boardId);
-    markNostrCalendarEventSyncPending(event.id);
-    ledger.markEventPending(bTag, event.id);
-    try {
-      if (!options?.skipBoardMetadata) {
-        await publishBoardMetadataForItem(b);
-      }
-
-      const mergedSecrets = mergeInviteTokens(eventForPublish);
-      const updatedEvent = mergedSecrets.changed
-        ? { ...eventForPublish, eventKey: mergedSecrets.eventKey, inviteTokens: mergedSecrets.inviteTokens }
-        : eventForPublish;
-      if (mergedSecrets.changed) {
-        setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));
-      }
-
-      const preparedAttachments = await prepareAttachmentsForPublish({
-        boardId,
-        documents: updatedEvent.documents,
-        image: updatedEvent.image,
-      });
-      const eventWithPreparedAttachments = calendarEventWithPreparedAttachments(updatedEvent, preparedAttachments);
-
-      const canonicalPayload = await buildCanonicalCalendarPayload(eventWithPreparedAttachments, { boardId, preparedAttachments });
-      if (!canonicalPayload) return;
-      const viewPayload = await buildViewCalendarPayload(eventWithPreparedAttachments, { boardId, preparedAttachments });
-      if (!viewPayload) return;
-      const canonicalContent = await encryptCalendarPayloadForBoard(
-        canonicalPayload,
-        boardKeys.skHex,
-        boardKeys.pk,
-      );
-      const colTag = b.kind === "week" ? "day" : (updatedEvent.columnId || "");
-      const canonicalTags: string[][] = [["d", updatedEvent.id], ["b", bTag]];
-      if (colTag) canonicalTags.push(["col", colTag]);
-      if (typeof updatedEvent.order === "number" && Number.isFinite(updatedEvent.order)) {
-        canonicalTags.push(["order", String(updatedEvent.order)]);
-      }
-      const createdAt = await nostrPublish(relays, {
-        kind: TASKIFY_CALENDAR_EVENT_KIND,
-        tags: canonicalTags,
-        content: canonicalContent,
-        created_at: Math.floor(Date.now() / 1000),
-      }, { sk: boardKeys.sk, republish: options?.republish });
-      const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, updatedEvent.id);
-      const viewContent = await encryptCalendarPayloadWithEventKey(viewPayload, mergedSecrets.eventKey);
-      await nostrPublish(relays, {
-        kind: TASKIFY_CALENDAR_VIEW_KIND,
-        tags: [["d", updatedEvent.id], ["a", canonicalAddr]],
-        content: viewContent,
-        created_at: Math.floor(Date.now() / 1000),
-      }, { sk: boardKeys.sk, republish: options?.republish });
-      ledger.noteEvent(bTag, updatedEvent.id, createdAt);
-      if (
-        eventWithPreparedAttachments.image !== updatedEvent.image ||
-        !sameDocumentList(eventWithPreparedAttachments.documents, updatedEvent.documents)
-      ) {
-        setCalendarEvents((prev) =>
-          prev.map((current) => {
-            if (current.id !== updatedEvent.id) return current;
-            let changed = false;
-            let next: CalendarEvent = current;
-            if (preparedAttachments.image !== null && current.image === updatedEvent.image) {
-              next = { ...next, image: eventWithPreparedAttachments.image };
-              changed = true;
-            }
-            if (preparedAttachments.documents !== null && sameDocumentList(current.documents, updatedEvent.documents)) {
-              next = { ...next, documents: eventWithPreparedAttachments.documents };
-              changed = true;
-            }
-            return changed ? next : current;
-          }),
-        );
-      }
-    } finally {
-      ledger.settleEvent(bTag, event.id);
-      clearOptimisticNostrCalendarEventSyncPending(event.id);
-    }
+    await publisher.publishCalendarEvent(event, boardOverride, options);
   }
 
   maybePublishCalendarEventRef.current = maybePublishCalendarEvent;

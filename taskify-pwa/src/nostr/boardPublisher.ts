@@ -6,10 +6,16 @@
  * items. Keys, crypto, relays and storage are injected, so all of this is tested without a
  * network.
  */
-import { findBoardByCompoundChildId } from "taskify-core";
+import {
+  TASKIFY_CALENDAR_EVENT_KIND,
+  TASKIFY_CALENDAR_VIEW_KIND,
+  calendarAddress,
+  findBoardByCompoundChildId,
+} from "taskify-core";
 import type { TaskPublishVersionTracker } from "../domains/tasks/taskMovePersistence";
 import type { TaskDocument } from "taskify-core";
-import type { Board, Task } from "../domains/tasks/taskTypes";
+import type { Board, CalendarEvent, Task } from "../domains/tasks/taskTypes";
+import { normalizeAgentPubkey } from "../domains/tasks/assignmentUtils";
 import type { BoardSyncLedger } from "./boardSyncLedger";
 import {
   BOARD_METADATA_KIND,
@@ -23,6 +29,13 @@ import {
   taskWithPreparedAttachments,
   type PreparedAttachments,
 } from "./boardWire";
+import {
+  calendarEventPayload,
+  calendarEventTags,
+  calendarEventWithPreparedAttachments,
+  mergeInviteTokens,
+  type PreparedEventAttachments,
+} from "./calendarWire";
 
 export type EventTemplate = { kind: number; tags: string[][]; content: string; created_at: number };
 
@@ -35,8 +48,11 @@ export type BoardPublisherDeps = {
   /** The signed-in user's key as stored on the device, for authorship. */
   actorPubkey: () => string | null | undefined;
   boardTag: (nostrBoardId: string) => string;
-  deriveBoardKeys: (nostrBoardId: string) => Promise<{ sk: Uint8Array | string }>;
+  deriveBoardKeys: (nostrBoardId: string) => Promise<{ sk: Uint8Array | string; skHex: string; pk: string }>;
   encrypt: (nostrBoardId: string, plaintext: string) => Promise<string>;
+  /** Calendar copies: the canonical one to the board's key, the view one with the event key. */
+  encryptCalendarForBoard: (payload: Record<string, unknown>, boardSkHex: string, boardPk: string) => Promise<string>;
+  encryptCalendarForInvitees: (payload: Record<string, unknown>, eventKey: string) => Promise<string>;
   /** Sends a signed event; resolves to the `created_at` the relays hold. */
   publish: (
     relays: string[],
@@ -44,7 +60,12 @@ export type BoardPublisherDeps = {
     options: { sk: Uint8Array | string; republish?: boolean },
   ) => Promise<number>;
   /** Encrypts and uploads attachments for a shared board; `null` fields mean nothing changed. */
-  prepareAttachments: (params: { images?: string[]; documents?: TaskDocument[]; boardId: string }) => Promise<PreparedAttachments>;
+  prepareAttachments: (params: {
+    images?: string[];
+    image?: string;
+    documents?: TaskDocument[];
+    boardId: string;
+  }) => Promise<PreparedAttachments & PreparedEventAttachments>;
   /** The version time stored with a task locally (`_nostrAt`), so a reserve moves past it. */
   storedTaskAt: (taskId: string, board: Board) => number;
   /** Equality cache so unchanged board metadata is not re-sent with every task. */
@@ -53,6 +74,11 @@ export type BoardPublisherDeps = {
   onTaskSettled: (taskId: string) => void;
   /** Called after publishing when uploads replaced a task's local attachments. */
   onAttachmentsUploaded: (original: Task, published: Task, prepared: PreparedAttachments) => void;
+  onEventPending: (eventId: string) => void;
+  onEventSettled: (eventId: string) => void;
+  /** The event gained an event key or invite tokens; store them before they are published. */
+  onEventSecretsMerged: (event: CalendarEvent) => void;
+  onEventAttachmentsUploaded: (original: CalendarEvent, published: CalendarEvent, prepared: PreparedEventAttachments) => void;
   now?: () => number;
 };
 
@@ -209,6 +235,133 @@ export class BoardPublisher {
         ledger.settleTask(tag, task.id);
         this.deps.onTaskSettled(task.id);
       }
+    }
+  }
+
+  // ---- Calendar events ----
+
+  private calendarBoardFor(event: CalendarEvent, override?: Board): (Board & { nostr: { boardId: string } }) | null {
+    const targetId = event.originBoardId ?? event.boardId;
+    const board = override && override.id === targetId ? override : this.deps.boards().find((b) => b.id === targetId);
+    return board?.nostr?.boardId ? (board as Board & { nostr: { boardId: string } }) : null;
+  }
+
+  private withAuthors(event: CalendarEvent): CalendarEvent {
+    const actor = this.deps.actorPubkey();
+    const creator = normalizeAgentPubkey(event.createdBy || actor) ?? undefined;
+    const editor = normalizeAgentPubkey(event.lastEditedBy || actor || creator) ?? creator;
+    return { ...event, ...(creator ? { createdBy: creator } : {}), ...(editor ? { lastEditedBy: editor } : {}) };
+  }
+
+  /** The event key and invite tokens it is published with, stored locally first when new. */
+  private withInviteSecrets(event: CalendarEvent): { event: CalendarEvent; eventKey: string } {
+    const merged = mergeInviteTokens(event);
+    if (!merged.changed) return { event, eventKey: merged.eventKey };
+    const updated = { ...event, eventKey: merged.eventKey, inviteTokens: merged.inviteTokens };
+    this.deps.onEventSecretsMerged(updated);
+    return { event: updated, eventKey: merged.eventKey };
+  }
+
+  private async sendCalendarCopies(
+    board: Board & { nostr: { boardId: string } },
+    keys: { sk: Uint8Array | string; skHex: string; pk: string },
+    event: CalendarEvent,
+    eventKey: string,
+    payloads: { board: Record<string, unknown>; invitees: Record<string, unknown> },
+    republish?: boolean,
+  ): Promise<number> {
+    const relays = this.deps.relaysFor(board);
+    const tag = this.deps.boardTag(board.nostr.boardId);
+    const createdAt = await this.deps.publish(
+      relays,
+      {
+        kind: TASKIFY_CALENDAR_EVENT_KIND,
+        tags: calendarEventTags(event, board, tag),
+        content: await this.deps.encryptCalendarForBoard(payloads.board, keys.skHex, keys.pk),
+        created_at: this.nowSeconds(),
+      },
+      { sk: keys.sk, republish },
+    );
+    await this.deps.publish(
+      relays,
+      {
+        kind: TASKIFY_CALENDAR_VIEW_KIND,
+        tags: [["d", event.id], ["a", calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, keys.pk, event.id)]],
+        content: await this.deps.encryptCalendarForInvitees(payloads.invitees, eventKey),
+        created_at: this.nowSeconds(),
+      },
+      { sk: keys.sk, republish },
+    );
+    return createdAt;
+  }
+
+  /** Publishes both copies of a calendar event. Generated occurrences are never published. */
+  async publishCalendarEvent(event: CalendarEvent, boardOverride?: Board, options?: PublishTaskOptions): Promise<void> {
+    if (event.readOnly || event.generated) return;
+    const board = this.calendarBoardFor(event, boardOverride);
+    if (!board) return;
+    const nostrBoardId = board.nostr.boardId;
+    const keys = await this.deps.deriveBoardKeys(nostrBoardId);
+    const tag = this.deps.boardTag(nostrBoardId);
+    this.deps.onEventPending(event.id);
+    this.deps.ledger.markEventPending(tag, event.id);
+    try {
+      if (!options?.skipBoardMetadata) await this.publishBoardMetadataForItem(board);
+      const { event: withSecrets, eventKey } = this.withInviteSecrets(this.withAuthors(event));
+      const prepared = await this.deps.prepareAttachments({
+        boardId: nostrBoardId,
+        documents: withSecrets.documents,
+        image: withSecrets.image,
+      });
+      const published = calendarEventWithPreparedAttachments(withSecrets, prepared);
+      const actorPubkey = this.deps.actorPubkey();
+      const boardPayload = calendarEventPayload(published, { audience: "board", actorPubkey, preparedAttachments: prepared });
+      const inviteePayload = calendarEventPayload(published, { audience: "invitees", actorPubkey, preparedAttachments: prepared });
+      if (!boardPayload || !inviteePayload) return;
+      const createdAt = await this.sendCalendarCopies(
+        board,
+        keys,
+        withSecrets,
+        eventKey,
+        { board: boardPayload, invitees: inviteePayload },
+        options?.republish,
+      );
+      this.deps.ledger.noteEvent(tag, withSecrets.id, createdAt);
+      if (published.image !== withSecrets.image || !sameDocumentList(published.documents, withSecrets.documents)) {
+        this.deps.onEventAttachmentsUploaded(withSecrets, published, prepared);
+      }
+    } finally {
+      this.deps.ledger.settleEvent(tag, event.id);
+      this.deps.onEventSettled(event.id);
+    }
+  }
+
+  /** Publishes both copies as deleted, so every device and invitee drops the event. */
+  async publishCalendarEventDeleted(event: CalendarEvent): Promise<void> {
+    // A generated occurrence was never published, so there is nothing to tombstone.
+    if (event.readOnly || event.generated) return;
+    const board = this.calendarBoardFor(event);
+    if (!board) return;
+    const nostrBoardId = board.nostr.boardId;
+    const keys = await this.deps.deriveBoardKeys(nostrBoardId);
+    const tag = this.deps.boardTag(nostrBoardId);
+    this.deps.onEventPending(event.id);
+    this.deps.ledger.markEventPending(tag, event.id);
+    try {
+      await this.publishBoardMetadataForItem(board);
+      const { event: withSecrets, eventKey } = this.withInviteSecrets(this.withAuthors(event));
+      const actorPubkey = this.deps.actorPubkey();
+      const boardPayload = calendarEventPayload(withSecrets, { audience: "board", deleted: true, actorPubkey });
+      const inviteePayload = calendarEventPayload(withSecrets, { audience: "invitees", deleted: true, actorPubkey });
+      if (!boardPayload || !inviteePayload) return;
+      const createdAt = await this.sendCalendarCopies(board, keys, withSecrets, eventKey, {
+        board: boardPayload,
+        invitees: inviteePayload,
+      });
+      this.deps.ledger.noteEvent(tag, withSecrets.id, createdAt);
+    } finally {
+      this.deps.ledger.settleEvent(tag, event.id);
+      this.deps.onEventSettled(event.id);
     }
   }
 }

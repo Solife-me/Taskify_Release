@@ -4,6 +4,8 @@ import type { Board, Task } from "../domains/tasks/taskTypes";
 import { BoardPublisher, type BoardPublisherDeps, type EventTemplate } from "./boardPublisher";
 import { BoardSyncLedger } from "./boardSyncLedger";
 import { boardMetadataEvent, taskEventBody, taskEventTags } from "./boardWire";
+import { calendarEventPayload } from "./calendarWire";
+import type { CalendarEvent } from "../domains/tasks/taskTypes";
 
 const shared: Board = { id: "local-1", name: "Team", kind: "lists", columns: [{ id: "c1", name: "Todo" }], nostr: { boardId: "nb1", relays: ["wss://r"] } } as Board;
 const ACTOR = "a".repeat(64);
@@ -19,13 +21,15 @@ function setup(overrides: Partial<BoardPublisherDeps> = {}) {
     relaysFor: (board) => board.nostr?.relays ?? [],
     actorPubkey: () => ACTOR,
     boardTag: (id) => `tag:${id}`,
-    deriveBoardKeys: async () => ({ sk: "sk" }),
+    deriveBoardKeys: async () => ({ sk: "sk", skHex: "skhex", pk: "b".repeat(64) }),
     encrypt: async (_id, plaintext) => `enc(${plaintext})`,
+    encryptCalendarForBoard: async (payload) => `board(${JSON.stringify(payload)})`,
+    encryptCalendarForInvitees: async (payload, eventKey) => `view:${eventKey}(${JSON.stringify(payload)})`,
     publish: async (relays, template) => {
       sent.push({ relays, template });
       return template.created_at;
     },
-    prepareAttachments: async () => ({ images: null, documents: null }),
+    prepareAttachments: async () => ({ images: null, image: null, documents: null }),
     storedTaskAt: () => 0,
     metadataFingerprints: {
       isUnchanged: (key, value) => fingerprints.get(key) === JSON.stringify(value),
@@ -34,6 +38,10 @@ function setup(overrides: Partial<BoardPublisherDeps> = {}) {
     onTaskPending: vi.fn(),
     onTaskSettled: vi.fn(),
     onAttachmentsUploaded: vi.fn(),
+    onEventPending: vi.fn(),
+    onEventSettled: vi.fn(),
+    onEventSecretsMerged: vi.fn(),
+    onEventAttachmentsUploaded: vi.fn(),
     now: () => 1_000_000,
     ...overrides,
   };
@@ -100,7 +108,7 @@ describe("BoardPublisher", () => {
     const { publisher, ledger, sent } = setup({
       deriveBoardKeys: async () => {
         expect(ledger.isTombstoned("tag:nb1", "t1")).toBe(true);
-        return { sk: "sk" };
+        return { sk: "sk", skHex: "skhex", pk: "b".repeat(64) };
       },
     });
     await publisher.publishTaskDeleted(task());
@@ -123,6 +131,57 @@ describe("BoardPublisher", () => {
     const { publisher, sent } = setup({ boards: () => [{ ...shared, nostr: undefined } as Board] });
     await publisher.publishTask(task());
     await publisher.publishTaskDeleted(task());
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("calendar publishing", () => {
+  const invitee = "c".repeat(64);
+  const event = (overrides: Partial<CalendarEvent> = {}): CalendarEvent =>
+    ({
+      id: "e1",
+      boardId: "local-1",
+      title: "Review",
+      kind: "date",
+      startDate: "2026-10-20",
+      eventKey: "k1",
+      participants: [{ pubkey: invitee }],
+      inviteTokens: { [invitee]: "tok" },
+      ...overrides,
+    }) as CalendarEvent;
+
+  it("keeps the event key, participants and invite tokens out of the invitees' copy", () => {
+    const board = calendarEventPayload(event(), { audience: "board", actorPubkey: ACTOR });
+    const invitees = calendarEventPayload(event(), { audience: "invitees", actorPubkey: ACTOR });
+    expect(board).toMatchObject({ v: 1, eventId: "e1", eventKey: "k1", participants: [{ pubkey: invitee }], inviteTokens: { [invitee]: "tok" } });
+    expect(invitees).toMatchObject({ v: 1, eventId: "e1", title: "Review", startDate: "2026-10-20" });
+    for (const secret of ["eventKey", "participants", "inviteTokens"]) expect(invitees).not.toHaveProperty(secret);
+    expect(calendarEventPayload(event(), { audience: "board", deleted: true })).not.toHaveProperty("title");
+  });
+
+  it("publishes the board copy then the view copy, and records the board copy's time", async () => {
+    const { publisher, sent, ledger, deps } = setup();
+    await publisher.publishCalendarEvent(event(), undefined, { skipBoardMetadata: true });
+    expect(sent.map((entry) => entry.template.kind)).toEqual([30310, 30311]);
+    expect(sent[0].template.tags).toEqual([["d", "e1"], ["b", "tag:nb1"]]);
+    expect(sent[1].template.content.startsWith("view:k1(")).toBe(true);
+    expect(ledger.eventAt("tag:nb1", "e1")).toBe(sent[0].template.created_at);
+    expect(deps.onEventSecretsMerged).not.toHaveBeenCalled();
+    expect(deps.onEventSettled).toHaveBeenCalledWith("e1");
+  });
+
+  it("stores a newly made event key before publishing with it", async () => {
+    const { publisher, sent, deps } = setup();
+    await publisher.publishCalendarEvent(event({ eventKey: undefined }), undefined, { skipBoardMetadata: true });
+    const stored = (deps.onEventSecretsMerged as ReturnType<typeof vi.fn>).mock.calls[0][0] as CalendarEvent;
+    expect(stored.eventKey).toBeTruthy();
+    expect(sent[1].template.content.startsWith(`view:${stored.eventKey}(`)).toBe(true);
+  });
+
+  it("never publishes generated occurrences or read-only events", async () => {
+    const { publisher, sent } = setup();
+    await publisher.publishCalendarEvent(event({ generated: true }));
+    await publisher.publishCalendarEventDeleted(event({ readOnly: true }));
     expect(sent).toEqual([]);
   });
 });
