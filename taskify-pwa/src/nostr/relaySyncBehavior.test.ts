@@ -297,7 +297,7 @@ test("local edit protected from stale relay copy when taskClock has advanced", (
 //
 // Setup mirrors the production wiring:
 //   1. App reload — local IDB tasks do not contain the deleted task.
-//   2. nostrIdxRef.taskClock is seeded from LS_TASK_TOMBSTONES at startup.
+//   2. BoardSyncLedger seeds its task clock from LS_TASK_TOMBSTONES at startup.
 //   3. Subscription returns the OLD pre-deletion CREATE event from the relay.
 test("persistent tombstone (loaded into taskClock) blocks resurrection on reload", () => {
   // Local IDB has NO task — deletion was applied before reload.

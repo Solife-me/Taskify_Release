@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { expect, test, vi } from 'vitest';
 import { useBoardSync } from './useBoardSync';
 import { boardTag } from '../boardCrypto';
+import { BoardSyncLedger } from "./boardSyncLedger";
 
 vi.mock('./NostrSession', () => ({ NostrSession: { init: () => new Promise(() => {}) } }));
 vi.mock('../storage/idbKeyValue', () => ({ idbKeyValue: { setItem: vi.fn() } }));
@@ -28,9 +29,9 @@ test.each(['relay', 'aggregate', 'timeout'])('%s completion waits for decrypted 
     setTasks: (update: any) => { tasks = update(tasks); },
     pool: { setRelays() {}, subscribe(_r: any, _f: any, event: any, eose: any) { onEvent = event; onEose = eose; return () => {}; } },
     getBoardRelays: () => [relay],
-    nostrIdxRef: { current: { taskClock: new Map(), boardMeta: new Map(), calendarClock: new Map() } },
+    ledger: new BoardSyncLedger({ load: () => null, save: () => {} }),
     boardSyncCursorsRef: { current: {} }, relayBatchRef: batches, pendingRelaysByBoardRef: pending,
-    seenBoardTasksRef: { current: new Map() }, pendingNostrTasksRef: { current: new Set() },
+    seenBoardTasksRef: { current: new Map() },
     completedNostrInitialSyncRef: { current: new Set() }, setPendingNostrInitialSyncByBoardTag() {},
     markNostrBoardInitialSyncComplete: complete, tagValue: () => 'task',
     applyBoardEvent: async () => {}, applyCalendarEvent: async () => {},

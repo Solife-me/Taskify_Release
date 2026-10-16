@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import type { BoardSyncLedger } from "./boardSyncLedger";
 import type { NDKKind } from "@nostr-dev-kit/ndk";
 import { recoverRelayHistory } from "taskify-runtime-nostr";
 import { NostrSession } from "./NostrSession";
@@ -25,11 +26,6 @@ type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
 
 export type BoardSyncTask = Task & { _nostrAt?: number };
 export type BoardSyncRelayBatchEntry = BoardSyncTask | { _deleted: true; _nostrAt: number };
-export type BoardSyncNostrIndex = {
-  boardMeta: Map<string, number>;
-  taskClock: Map<string, Map<string, number>>;
-  calendarClock: Map<string, Map<string, number>>;
-};
 export type BoardSyncNostrEvent = {
   id: string;
   kind: number;
@@ -58,12 +54,12 @@ type UseBoardSyncParams = {
   sanitizeTasks?: (tasks: BoardSyncTask[]) => BoardSyncTask[];
   pool: BoardSyncNostrPool;
   getBoardRelays: (board: Board) => string[];
-  nostrIdxRef: MutableRef<BoardSyncNostrIndex>;
+  /** Version clocks and in-flight publishes for every shared board. */
+  ledger: Pick<BoardSyncLedger, "taskAt" | "isTaskPending">;
   boardSyncCursorsRef: MutableRef<Record<string, number>>;
   relayBatchRef: MutableRef<Map<string, Map<string, Map<string, BoardSyncRelayBatchEntry>>>>;
   pendingRelaysByBoardRef: MutableRef<Map<string, Set<string>>>;
   seenBoardTasksRef: MutableRef<Map<string, Set<string>>>;
-  pendingNostrTasksRef: MutableRef<Set<string>>;
   completedNostrInitialSyncRef: MutableRef<Set<string>>;
   setPendingNostrInitialSyncByBoardTag: StateSetter<Record<string, true>>;
   markNostrBoardInitialSyncComplete: (bTag: string) => void;
@@ -182,12 +178,11 @@ export function useBoardSync({
   sanitizeTasks,
   pool,
   getBoardRelays,
-  nostrIdxRef,
+  ledger,
   boardSyncCursorsRef,
   relayBatchRef,
   pendingRelaysByBoardRef,
   seenBoardTasksRef,
-  pendingNostrTasksRef,
   completedNostrInitialSyncRef,
   setPendingNostrInitialSyncByBoardTag,
   markNostrBoardInitialSyncComplete,
@@ -228,7 +223,6 @@ export function useBoardSync({
   const flushRelayBatch = useCallback(
     (bTag: string, relayBatch: Map<string, BoardSyncRelayBatchEntry>) => {
       if (!relayBatch.size) return;
-      const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
       setTasks((prev) => {
         const merged = new Map<string, BoardSyncTask>(
           prev.map((task) => [`${task.boardId}::${task.id}`, task]),
@@ -236,9 +230,9 @@ export function useBoardSync({
         for (const [key, entry] of relayBatch) {
           const taskId = key.split("::")[1] ?? "";
           const incomingNostrAt =
-            "_deleted" in entry ? entry._nostrAt : entry._nostrAt ?? bTagClock?.get(taskId) ?? 0;
+            "_deleted" in entry ? entry._nostrAt : entry._nostrAt ?? ledger.taskAt(bTag, taskId);
           const existingTask = merged.get(key);
-          const existingNostrAt = Math.max(existingTask?._nostrAt ?? 0, bTagClock?.get(taskId) ?? 0);
+          const existingNostrAt = Math.max(existingTask?._nostrAt ?? 0, ledger.taskAt(bTag, taskId));
           if (incomingNostrAt < existingNostrAt) continue;
           if ("_deleted" in entry) merged.delete(key);
           else merged.set(key, entry);
@@ -247,7 +241,7 @@ export function useBoardSync({
         return sanitizeTasks ? sanitizeTasks(deduped) : deduped;
       });
     },
-    [nostrIdxRef, sanitizeTasks, setTasks],
+    [ledger, sanitizeTasks, setTasks],
   );
 
   const verifyUnseenTasks = useCallback(
@@ -274,7 +268,7 @@ export function useBoardSync({
           if (task.completed) return false;
           if (typeof task._nostrAt !== "number" || task._nostrAt <= 0) return false;
           if (seenIds.has(task.id)) return false;
-          if (pendingNostrTasksRef.current.has(`${bTag}::${task.id}`)) return false;
+          if (ledger.isTaskPending(bTag, task.id)) return false;
           if (nowSecs - task._nostrAt < verifyRecentGraceSecs) return false;
           return true;
         })
@@ -310,7 +304,7 @@ export function useBoardSync({
       applyTaskEvent,
       boardsRef,
       enqueueForBoard,
-      pendingNostrTasksRef,
+      ledger,
       pool,
       seenBoardTasksRef,
       tasksRef,

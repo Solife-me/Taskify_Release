@@ -161,7 +161,6 @@ import {
   planUpdateTaskNote,
 } from "./domains/tasks/taskCommands";
 import {
-  reserveTaskMutationTimestamp,
   TaskPublishVersionTracker,
 } from "./domains/tasks/taskMovePersistence";
 import {
@@ -314,6 +313,7 @@ import { UpdateToast } from "./ui/app/UpdateToast";
 import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
 import { InlineTaskOverlays } from "./ui/task/InlineTaskOverlays";
 import { useTaskPersistence } from "./nostr/useTaskPersistence";
+import { BoardSyncLedger } from "./nostr/boardSyncLedger";
 import { useNostrIdentity } from "./nostr/useNostrIdentity";
 import {
   normalizeNostrRelayList as normalizeRelayList,
@@ -931,113 +931,25 @@ export default function App() {
     pendingNostrCalendarEventIds,
     pendingNostrTaskIds,
   } = useTaskPersistence();
-  type NostrIndex = {
-    boardMeta: Map<string, number>; // nostrBoardId -> created_at
-    taskClock: Map<string, Map<string, number>>; // nostrBoardId -> (taskId -> created_at)
-    calendarClock: Map<string, Map<string, number>>; // nostrBoardId -> (calendarEventId -> created_at)
-  };
-  const nostrIdxRef = useRef<NostrIndex>(((): NostrIndex => {
-    const idx: NostrIndex = { boardMeta: new Map(), taskClock: new Map(), calendarClock: new Map() };
-    // Seed taskClock from persisted deletion tombstones. This ensures a stale
-    // CREATE event from a slow relay cannot resurrect a task we previously
-    // deleted, even after a page reload (in-session protection sits in
-    // tombstonesRef / publishTaskDeleted; this is the post-reload fallback).
-    try {
-      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES);
-      if (raw) {
-        const parsed = JSON.parse(raw) as Record<string, Record<string, number>>;
-        if (parsed && typeof parsed === "object") {
-          for (const [bTag, entries] of Object.entries(parsed)) {
-            if (!entries || typeof entries !== "object") continue;
-            const m = new Map<string, number>();
-            for (const [taskId, at] of Object.entries(entries)) {
-              if (typeof at === "number" && at > 0) m.set(taskId, at);
-            }
-            if (m.size) idx.taskClock.set(bTag, m);
-          }
-        }
-      }
-    } catch {
-      // ignore — tombstone loss only weakens reload protection, not correctness in-session
-    }
-    return idx;
-  })());
-  // In-memory mirror of persisted tombstones. Kept separately from taskClock
-  // because taskClock also accumulates entries for live tasks during sync,
-  // which we don't want to persist (would grow unbounded).
-  const tombstonesRef = useRef<Map<string, Map<string, number>>>(((): Map<string, Map<string, number>> => {
-    const out = new Map<string, Map<string, number>>();
-    try {
-      const raw = idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES);
-      if (!raw) return out;
-      const parsed = JSON.parse(raw) as Record<string, Record<string, number>>;
-      if (!parsed || typeof parsed !== "object") return out;
-      for (const [bTag, entries] of Object.entries(parsed)) {
-        if (!entries || typeof entries !== "object") continue;
-        const m = new Map<string, number>();
-        for (const [taskId, at] of Object.entries(entries)) {
-          if (typeof at === "number" && at > 0) m.set(taskId, at);
-        }
-        if (m.size) out.set(bTag, m);
-      }
-    } catch {
-      // ignore
-    }
-    return out;
-  })());
-  const tombstonesPersistScheduledRef = useRef(false);
-  const flushTombstonesPersist = useCallback(() => {
-    try {
-      const obj: Record<string, Record<string, number>> = {};
-      for (const [tag, entries] of tombstonesRef.current) {
-        if (!entries.size) continue;
-        const sub: Record<string, number> = {};
-        for (const [tid, ts] of entries) sub[tid] = ts;
-        obj[tag] = sub;
-      }
-      idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES, JSON.stringify(obj));
-    } catch (err) {
-      console.warn("[tombstones] failed to persist", err);
-    }
-  }, []);
-  const recordTaskTombstone = useCallback((bTag: string, taskId: string, at: number) => {
-    if (!bTag || !taskId || !Number.isFinite(at) || at <= 0) return;
-    let m = tombstonesRef.current.get(bTag);
-    if (!m) { m = new Map(); tombstonesRef.current.set(bTag, m); }
-    const existing = m.get(taskId);
-    if (existing !== undefined && existing >= at) return; // already have a newer or equal tombstone
-    m.set(taskId, at);
-    // Cap per-board entries by keeping the most recent N by timestamp. Trimmed in steps: deletions
-    // from other devices arrive by the thousand on a first sync, and a sort per entry adds up.
-    if (m.size > TASK_TOMBSTONES_PER_BOARD_MAX + 100) {
-      const trimmed = new Map(
-        Array.from(m.entries())
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, TASK_TOMBSTONES_PER_BOARD_MAX),
-      );
-      tombstonesRef.current.set(bTag, trimmed);
-    }
-    // Coalesce same-tick writes (e.g., bulk "clear completed") into one IDB
-    // write via a microtask. The in-memory map is updated synchronously, so
-    // any code path that reads tombstonesRef in this tick still sees the new
-    // entry. The IDB write happens at the end of the current microtask queue.
-    if (!tombstonesPersistScheduledRef.current) {
-      tombstonesPersistScheduledRef.current = true;
-      Promise.resolve().then(() => {
-        tombstonesPersistScheduledRef.current = false;
-        flushTombstonesPersist();
-      });
-    }
-  }, [flushTombstonesPersist]);
-  const clearTaskTombstone = useCallback((bTag: string, taskId: string) => {
-    const entries = tombstonesRef.current.get(bTag);
-    if (!entries?.delete(taskId)) return;
-    if (entries.size === 0) tombstonesRef.current.delete(bTag);
-    flushTombstonesPersist();
-  }, [flushTombstonesPersist]);
-  const pendingNostrTasksRef = useRef<Set<string>>(new Set());
+  // Clocks, in-flight publishes and deletion tombstones for every shared board (see BoardSyncLedger).
+  const ledgerRef = useRef<BoardSyncLedger | null>(null);
+  ledgerRef.current ??= new BoardSyncLedger(
+    {
+      load: () => idbKeyValue.getItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES),
+      save: (serialized) => idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_TASK_TOMBSTONES, serialized),
+    },
+    TASK_TOMBSTONES_PER_BOARD_MAX,
+  );
+  const ledger = ledgerRef.current;
+  const recordTaskTombstone = useCallback(
+    (bTag: string, taskId: string, at: number) => ledger.recordTombstone(bTag, taskId, at),
+    [ledger],
+  );
+  const clearTaskTombstone = useCallback(
+    (bTag: string, taskId: string) => ledger.clearTombstone(bTag, taskId),
+    [ledger],
+  );
   const taskPublishVersionsRef = useRef(new TaskPublishVersionTracker());
-  const pendingNostrCalendarRef = useRef<Set<string>>(new Set());
   const seenBoardTasksRef = useRef<Map<string, Set<string>>>(new Map());
   // Set of bTags where all relays have fired EOSE — used to determine live vs batch mode.
   const [boardHistoryResyncNonce, setBoardHistoryResyncNonce] = useState(0);
@@ -5176,18 +5088,11 @@ export default function App() {
   function markTaskRelayPublishPending(taskId: string, board: Board | null | undefined): number | null {
     if (!taskId || !board?.nostr?.boardId) return null;
     const bTag = boardTag(board.nostr.boardId);
-    if (!nostrIdxRef.current.taskClock.has(bTag)) {
-      nostrIdxRef.current.taskClock.set(bTag, new Map());
-    }
-    const taskClock = nostrIdxRef.current.taskClock.get(bTag)!;
     const persistedTaskAt = tasksRef.current.find((task) => (
       task.id === taskId &&
       (task.boardId === board.id || task.boardId === board.nostr?.boardId)
     ))?._nostrAt ?? 0;
-    const current = Math.max(taskClock.get(taskId) ?? 0, persistedTaskAt);
-    const optimisticAt = reserveTaskMutationTimestamp(Math.floor(Date.now() / 1000), current);
-    taskClock.set(taskId, optimisticAt);
-    pendingNostrTasksRef.current.add(`${bTag}::${taskId}`);
+    const optimisticAt = ledger.reserveTaskPublish(bTag, taskId, persistedTaskAt, Math.floor(Date.now() / 1000));
     markNostrTaskSyncPending(taskId);
     return optimisticAt;
   }
@@ -5225,7 +5130,7 @@ export default function App() {
       content,
       created_at: Math.floor(Date.now() / 1000),
     }, { sk: boardKeys.sk });
-    nostrIdxRef.current.boardMeta.set(idTag, createdAt);
+    ledger.noteBoardMeta(idTag, createdAt);
     boardMetadataFingerprintsRef.current.record(idTag, fingerprint);
   }
   publishBoardMetadataRef.current = publishBoardMetadata;
@@ -5324,18 +5229,14 @@ export default function App() {
       // The tombstone replaces the task at its address on every relay and every client reads it.
       // A NIP-09 deletion on top doubled each delete, and made strfry refuse the tombstone
       // ("deleted:") when it arrived first. Matches native.
-      if (!nostrIdxRef.current.taskClock.has(bTag)) {
-        nostrIdxRef.current.taskClock.set(bTag, new Map());
-      }
-      const taskClock = nostrIdxRef.current.taskClock.get(bTag)!;
-      taskClock.set(t.id, Math.max(taskClock.get(t.id) ?? 0, createdAt));
+      ledger.noteTask(bTag, t.id, createdAt);
       // Bump the tombstone to the actual relay-confirmed timestamp so any
       // post-reload comparisons use the same clock value the relay will
       // report when it round-trips this deletion.
       recordTaskTombstone(bTag, t.id, createdAt);
     } finally {
       if (taskPublishVersionsRef.current.finish(pendingKey, publishVersion)) {
-        pendingNostrTasksRef.current.delete(pendingKey);
+        ledger.settleTask(bTag, t.id);
         clearOptimisticNostrTaskSyncPending(t.id);
       }
     }
@@ -5510,12 +5411,7 @@ export default function App() {
         created_at: optimisticAt,
       }, { sk: boardKeys.sk, republish: options?.republish });
       // Update local task clock so immediate refreshes don't revert state
-      if (!nostrIdxRef.current.taskClock.has(bTag)) {
-        nostrIdxRef.current.taskClock.set(bTag, new Map());
-      }
-      const taskClock = nostrIdxRef.current.taskClock.get(bTag)!;
-      const confirmedAt = Math.max(taskClock.get(t.id) ?? 0, createdAt);
-      taskClock.set(t.id, confirmedAt);
+      const confirmedAt = ledger.noteTask(bTag, t.id, createdAt);
       t._nostrAt = Math.max(t._nostrAt ?? 0, confirmedAt);
       if (!sameStringList(taskForPublish.images, t.images) || !sameDocumentList(taskForPublish.documents, t.documents)) {
         setTasks((prev) =>
@@ -5537,7 +5433,7 @@ export default function App() {
       }
     } finally {
       if (taskPublishVersionsRef.current.finish(pendingKey, publishVersion)) {
-        pendingNostrTasksRef.current.delete(pendingKey);
+        ledger.settleTask(bTag, t.id);
         clearOptimisticNostrTaskSyncPending(t.id);
       }
     }
@@ -5781,9 +5677,8 @@ export default function App() {
     const boardId = b.nostr.boardId;
     const boardKeys = await deriveBoardNostrKeys(boardId);
     const bTag = boardTag(boardId);
-    const pendingKey = `${bTag}::${event.id}`;
     markNostrCalendarEventSyncPending(event.id);
-    pendingNostrCalendarRef.current.add(pendingKey);
+    ledger.markEventPending(bTag, event.id);
     try {
       await publishBoardMetadataForItem(b);
       const { eventKey, inviteTokens, changed } = mergeInviteTokens(eventForPublish);
@@ -5818,12 +5713,9 @@ export default function App() {
         content: viewContent,
         created_at: Math.floor(Date.now() / 1000),
       }, { sk: boardKeys.sk });
-      if (!nostrIdxRef.current.calendarClock.has(bTag)) {
-        nostrIdxRef.current.calendarClock.set(bTag, new Map());
-      }
-      nostrIdxRef.current.calendarClock.get(bTag)!.set(eventForPublish.id, createdAt);
+      ledger.noteEvent(bTag, eventForPublish.id, createdAt);
     } finally {
-      pendingNostrCalendarRef.current.delete(pendingKey);
+      ledger.settleEvent(bTag, event.id);
       clearOptimisticNostrCalendarEventSyncPending(event.id);
     }
   }
@@ -5849,9 +5741,8 @@ export default function App() {
     const boardId = b.nostr.boardId;
     const boardKeys = await deriveBoardNostrKeys(boardId);
     const bTag = boardTag(boardId);
-    const pendingKey = `${bTag}::${event.id}`;
     markNostrCalendarEventSyncPending(event.id);
-    pendingNostrCalendarRef.current.add(pendingKey);
+    ledger.markEventPending(bTag, event.id);
     try {
       if (!options?.skipBoardMetadata) {
         await publishBoardMetadataForItem(b);
@@ -5901,10 +5792,7 @@ export default function App() {
         content: viewContent,
         created_at: Math.floor(Date.now() / 1000),
       }, { sk: boardKeys.sk, republish: options?.republish });
-      if (!nostrIdxRef.current.calendarClock.has(bTag)) {
-        nostrIdxRef.current.calendarClock.set(bTag, new Map());
-      }
-      nostrIdxRef.current.calendarClock.get(bTag)!.set(updatedEvent.id, createdAt);
+      ledger.noteEvent(bTag, updatedEvent.id, createdAt);
       if (
         eventWithPreparedAttachments.image !== updatedEvent.image ||
         !sameDocumentList(eventWithPreparedAttachments.documents, updatedEvent.documents)
@@ -5927,7 +5815,7 @@ export default function App() {
         );
       }
     } finally {
-      pendingNostrCalendarRef.current.delete(pendingKey);
+      ledger.settleEvent(bTag, event.id);
       clearOptimisticNostrCalendarEventSyncPending(event.id);
     }
   }
@@ -6162,10 +6050,7 @@ export default function App() {
     } catch {
       return;
     }
-    const last = nostrIdxRef.current.boardMeta.get(d) || 0;
-    if (ev.created_at < last) return;
-    // Accept events with the same timestamp to avoid missing updates
-    nostrIdxRef.current.boardMeta.set(d, ev.created_at);
+    if (!ledger.acceptBoardMeta(d, ev.created_at)) return;
     const kindTag = tagValue(ev, "k");
     const name = tagValue(ev, "name");
     setBoards((prev) => {
@@ -6336,15 +6221,8 @@ export default function App() {
     } catch {
       return;
     }
-    if (!nostrIdxRef.current.taskClock.has(bTag)) nostrIdxRef.current.taskClock.set(bTag, new Map());
-    const m = nostrIdxRef.current.taskClock.get(bTag)!;
-    const last = m.get(taskId) || 0;
-    const pendingKey = `${bTag}::${taskId}`;
-    const isPending = pendingNostrTasksRef.current.has(pendingKey);
-    if (ev.created_at < last) return;
-    if (ev.created_at === last && isPending) return;
-    // Accept equal timestamps so rapid consecutive updates still apply
-    m.set(taskId, ev.created_at);
+    // Newer wins; as new wins too (rapid consecutive updates), unless a local publish is pending.
+    if (!ledger.acceptTaskEvent(bTag, taskId, ev.created_at)) return;
     // Advance the in-memory cursor for this board so we know the high-water mark.
     // Key by bTag (SHA256 of nostrBoardId) — must match the lookup in the
     // subscription setup where it.id = boardTag(b.nostr!.boardId) = bTag.
@@ -6354,8 +6232,7 @@ export default function App() {
       const prev = boardSyncCursorsRef.current[bTag] ?? 0;
       if (ev.created_at > prev) {
         boardSyncCursorsRef.current = { ...boardSyncCursorsRef.current, [bTag]: ev.created_at };
-        const clock = nostrIdxRef.current.taskClock.get(bTag);
-        if (clock && clock.size % 100 === 0) {
+        if (ledger.taskCount(bTag) % 100 === 0) {
           try {
             idbKeyValue.setItem(TASKIFY_STORE_TASKS, LS_BOARD_SYNC_CURSORS, JSON.stringify(boardSyncCursorsRef.current));
           } catch { /* non-fatal */ }
@@ -6494,10 +6371,7 @@ export default function App() {
     // here represents a genuinely newer state — applying them in arrival order
     // (newest clock wins) produces the correct final state without flicker.
     const liveUpdater = (prev: Task[]) => {
-      const currentClock = nostrIdxRef.current.taskClock.get(bTag)?.get(taskId) || 0;
-      const stillPending = pendingNostrTasksRef.current.has(pendingKey);
-      if (ev.created_at < currentClock) return prev;
-      if (ev.created_at === currentClock && stillPending) return prev;
+      if (!ledger.isTaskEventCurrent(bTag, taskId, ev.created_at)) return prev;
       return ((prev: Task[]) => {
       const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
@@ -6514,7 +6388,7 @@ export default function App() {
         // Prefer the bounty with the latest updatedAt; fallback to event created_at
         const oldT = Date.parse(normalizedOld.updatedAt || '') || 0;
         const incT = Date.parse(normalizedIncoming.updatedAt || '') || 0;
-        const incNewer = incT > oldT || (incT === oldT && ev.created_at > (nostrIdxRef.current.taskClock.get(bTag)?.get(taskId) || 0));
+        const incNewer = incT > oldT || (incT === oldT && ev.created_at > ledger.taskAt(bTag, taskId));
 
         // Different ids: pick the newer one
         if (normalizedOld.id !== normalizedIncoming.id) return incNewer ? normalizedIncoming : normalizedOld;
@@ -6970,7 +6844,7 @@ export default function App() {
       isDeletedOccurrence: (boardId, taskId) => {
         const board = findBoardByCompoundChildId(boards, boardId);
         const nostrBoardId = board?.nostr?.boardId;
-        return !!nostrBoardId && !!tombstonesRef.current.get(boardTag(nostrBoardId))?.has(taskId);
+        return !!nostrBoardId && ledger.isTombstoned(boardTag(nostrBoardId), taskId);
       },
     });
     generated.forEach((task) => maybePublishTask(task).catch(() => {}));
@@ -9155,15 +9029,8 @@ export default function App() {
       return;
     }
     if (ev.pubkey !== boardKeys.pk) return;
-    if (!nostrIdxRef.current.calendarClock.has(bTag)) nostrIdxRef.current.calendarClock.set(bTag, new Map());
-    const m = nostrIdxRef.current.calendarClock.get(bTag)!;
-    const last = m.get(eventId) || 0;
-    const pendingKey = `${bTag}::${eventId}`;
-    const isPending = pendingNostrCalendarRef.current.has(pendingKey);
     const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
-    if (createdAt < last) return;
-    if (createdAt === last && isPending) return;
-    m.set(eventId, createdAt);
+    if (!ledger.acceptCalendarEvent(bTag, eventId, createdAt)) return;
 
     let payload: ReturnType<typeof parseCalendarCanonicalPayload> | null = null;
     try {
@@ -9471,12 +9338,11 @@ export default function App() {
     sanitizeTasks: sanitizeRecurringTasks,
     pool,
     getBoardRelays,
-    nostrIdxRef,
+    ledger,
     boardSyncCursorsRef,
     relayBatchRef,
     pendingRelaysByBoardRef,
     seenBoardTasksRef,
-    pendingNostrTasksRef,
     completedNostrInitialSyncRef,
     setPendingNostrInitialSyncByBoardTag,
     markNostrBoardInitialSyncComplete,

@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { expect, test, vi } from 'vitest';
 import { useBoardSync } from './useBoardSync';
 import { boardTag } from '../boardCrypto';
+import { BoardSyncLedger } from "./boardSyncLedger";
 
 vi.mock('./NostrSession', () => ({ NostrSession: { init: () => new Promise(() => {}) } }));
 vi.mock('../storage/idbKeyValue', () => ({ idbKeyValue: { setItem: vi.fn() } }));
@@ -27,9 +28,9 @@ async function renderAndStartVerify(extraTasks: any[] = []) {
     setTasks: () => {},
     pool: { setRelays() {}, subscribe(_r: any, filters: any[], onEvent: any, onEose: any) { subscriptions.push({ filters, onEvent, onEose }); return () => {}; } },
     getBoardRelays: () => [relay],
-    nostrIdxRef: { current: { taskClock: new Map(), boardMeta: new Map(), calendarClock: new Map() } },
+    ledger: new BoardSyncLedger({ load: () => null, save: () => {} }),
     boardSyncCursorsRef: { current: {} }, relayBatchRef: { current: new Map() }, pendingRelaysByBoardRef: { current: new Map() },
-    seenBoardTasksRef: { current: new Map() }, pendingNostrTasksRef: { current: new Set() },
+    seenBoardTasksRef: { current: new Map() },
     completedNostrInitialSyncRef: { current: new Set() }, setPendingNostrInitialSyncByBoardTag() {},
     markNostrBoardInitialSyncComplete: vi.fn(), tagValue: () => 'task',
     applyBoardEvent: async () => {}, applyCalendarEvent: async () => {}, applyTaskEvent,
