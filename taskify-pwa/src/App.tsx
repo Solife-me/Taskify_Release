@@ -312,6 +312,7 @@ import { BoardSyncLedger } from "./nostr/boardSyncLedger";
 import { BoardPublisher } from "./nostr/boardPublisher";
 import { sameDocumentList, sameStringList } from "./nostr/boardWire";
 import { mergeInviteTokens } from "./nostr/calendarWire";
+import { mergeIncomingTask, parseTaskEvent } from "./nostr/taskEventMerge";
 import { useNostrIdentity } from "./nostr/useNostrIdentity";
 import {
   normalizeNostrRelayList as normalizeRelayList,
@@ -5683,62 +5684,13 @@ export default function App() {
     }
 
     const status = tagValue(ev, "status");
-    const col = tagValue(ev, "col");
-    const eventCreatedAt = typeof ev.created_at === "number" ? ev.created_at * 1000 : undefined;
-    const hasDueTimeField = Object.prototype.hasOwnProperty.call(payload, 'dueTimeEnabled');
-    const incomingDueTime = hasDueTimeField
-      ? (payload.dueTimeEnabled === null ? undefined : typeof payload.dueTimeEnabled === 'boolean' ? payload.dueTimeEnabled : undefined)
-      : undefined;
-    const hasDueTimeZoneField = Object.prototype.hasOwnProperty.call(payload, 'dueTimeZone');
-    const incomingDueTimeZone = hasDueTimeZoneField
-      ? (typeof payload.dueTimeZone === "string" ? normalizeTimeZone(payload.dueTimeZone) ?? undefined : undefined)
-      : undefined;
-    const hasDueDateField = Object.prototype.hasOwnProperty.call(payload, 'dueDateEnabled');
-    const incomingDueDateEnabled = hasDueDateField
-      ? (payload.dueDateEnabled === null ? undefined : typeof payload.dueDateEnabled === 'boolean' ? payload.dueDateEnabled : undefined)
-      : undefined;
-    const hasPriorityField = Object.prototype.hasOwnProperty.call(payload, 'priority');
-    const incomingPriority = hasPriorityField
-      ? (payload.priority === null ? undefined : normalizeTaskPriority(payload.priority))
-      : undefined;
-    const hasAssigneesField = Object.prototype.hasOwnProperty.call(payload, "assignees");
-    const incomingAssignees: TaskAssignee[] | null | undefined = hasAssigneesField
-      ? (payload.assignees === null ? null : normalizeTaskAssignees(payload.assignees))
-      : undefined;
-    const incomingCreatedAt = normalizeTaskCreatedAt(payload.createdAt) ?? eventCreatedAt;
-    const incomingCreatedBy = normalizeAgentPubkey(payload.createdBy);
-    const incomingLastEditedBy = normalizeAgentPubkey(payload.lastEditedBy) ?? incomingCreatedBy;
-    // Reminders remain device-local, so ignore any reminder payloads from shared updates.
-      const base: Task = {
-        id: taskId,
-        boardId: lb.id,
-        ...(incomingCreatedBy ? { createdBy: incomingCreatedBy } : {}),
-        ...(incomingLastEditedBy ? { lastEditedBy: incomingLastEditedBy } : {}),
-        createdAt: incomingCreatedAt,
-        title: payload.title || "Untitled",
-        note: payload.note || "",
-      dueISO: payload.dueISO || isoForToday(),
-      completed: status === "done",
-      completedAt: payload.completedAt,
-      completedBy: payload.completedBy,
-      recurrence: normalizeTaskRecurrence(payload.recurrence) as Recurrence | undefined,
-      hiddenUntilISO: payload.hiddenUntilISO,
-      streak: typeof payload.streak === 'number' ? payload.streak : undefined,
-      longestStreak: typeof payload.longestStreak === 'number' ? payload.longestStreak : undefined,
-      seriesId: payload.seriesId,
-      subtasks: Array.isArray(payload.subtasks) ? payload.subtasks : undefined,
-    };
-    if (hasPriorityField) base.priority = incomingPriority;
-    if (hasDueDateField) base.dueDateEnabled = incomingDueDateEnabled;
-    if (hasDueTimeField) base.dueTimeEnabled = incomingDueTime;
-    if (hasDueTimeZoneField) base.dueTimeZone = incomingDueTimeZone;
-    if (lb.kind === "week") {
-      base.column = "day";
-      if (col === "bounties") {
-        base.bountyLists = [PINNED_BOUNTY_LIST_KEY];
-      }
-    }
-    else if (lb.kind === "lists") base.columnId = col || (lb.columns[0]?.id || "");
+    const incoming = parseTaskEvent(
+      payload,
+      { taskId, status, column: tagValue(ev, "col"), createdAt: ev.created_at },
+      lb,
+      new Date(),
+    );
+    const { base } = incoming;
     if (base.recurrence?.untilISO && !Number.isNaN(Date.parse(base.recurrence.untilISO))) {
       const seriesEndKey = isoDatePart(base.recurrence.untilISO, base.dueTimeZone);
       const occurrenceKey = isoDatePart(base.dueISO, base.dueTimeZone);
@@ -5767,40 +5719,16 @@ export default function App() {
       if (status === "deleted") {
         batchMap.set(taskKey, { _deleted: true, _nostrAt: ev.created_at });
       } else {
-        // For merge fields that need prev (bounty, order, images, etc.),
-        // use what's already in this relay's batch, falling back to base.
+        // Merged over what this relay already batched for the task.
         const existing = batchMap.get(taskKey);
-        const cur = existing && !('_deleted' in existing) ? existing as Task : undefined;
-        const incomingB: Task["bounty"] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'bounty') ? payload.bounty : undefined;
-        const incomingImgs: string[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'images') ? payload.images : undefined;
-        const imgs = incomingImgs === undefined ? cur?.images : incomingImgs === null ? undefined : incomingImgs;
-        let docs: TaskDocument[] | undefined = cur?.documents;
-        if (Object.prototype.hasOwnProperty.call(payload, 'documents')) {
-          const rawDocs = (payload as any).documents;
-          docs = rawDocs === null ? undefined : (normalizeDocumentList(rawDocs)?.map(ensureDocumentPreview) ?? undefined);
-        }
-        const incomingStreak: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'streak') ? payload.streak : undefined;
-        const st = incomingStreak === undefined ? cur?.streak : incomingStreak === null ? undefined : incomingStreak;
-        const incomingLongest: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'longestStreak') ? payload.longestStreak : undefined;
-        const longest = incomingLongest === undefined ? cur?.longestStreak : incomingLongest === null ? undefined : incomingLongest;
-        const incomingSubs: Subtask[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'subtasks') ? payload.subtasks : undefined;
-        const subs = incomingSubs === undefined ? cur?.subtasks : incomingSubs === null ? undefined : incomingSubs;
-        const mergedAssignees = incomingAssignees === undefined ? cur?.assignees : incomingAssignees === null ? undefined : incomingAssignees;
-        const normalizedIncoming = incomingB === null ? undefined : normalizeBounty(incomingB);
-        batchMap.set(taskKey, {
-          ...(cur ?? {}),
-          ...base,
+        const cur = existing && !("_deleted" in existing) ? (existing as Task) : undefined;
+        batchMap.set(taskKey, mergeIncomingTask(cur, incoming, {
+          nostrAt: ev.created_at,
           order: cur?.order ?? 0,
-          createdAt: cur?.createdAt ?? base.createdAt ?? Date.now(),
-          images: imgs,
-          documents: docs,
-          bounty: normalizedIncoming ?? cur?.bounty,
-          streak: st,
-          longestStreak: longest,
-          subtasks: subs,
-          assignees: mergedAssignees,
-          _nostrAt: ev.created_at,
-        } as Task);
+          now: Date.now(),
+          eventPubkey: ev.pubkey,
+          incomingIsNewerOnTie: ev.created_at > ledger.taskAt(bTag, taskId),
+        }));
       }
       return; // ← do NOT call setTasks; flush happens at relay EOSE
     }
@@ -5814,155 +5742,25 @@ export default function App() {
     // (newest clock wins) produces the correct final state without flicker.
     const liveUpdater = (prev: Task[]) => {
       if (!ledger.isTaskEventCurrent(bTag, taskId, ev.created_at)) return prev;
-      return ((prev: Task[]) => {
-      const idx = prev.findIndex(x => x.id === taskId && x.boardId === lb.id);
+      const idx = prev.findIndex((x) => x.id === taskId && x.boardId === lb.id);
       if (status === "deleted") {
         if (idx < 0) return prev;
         return dedupeRecurringInstances(prev.filter((_, i) => i !== idx));
       }
-      // Improved bounty merge with clocks and auth; incoming may be null (explicit removal)
-      const mergeBounty = (oldB?: Task["bounty"], incoming?: Task["bounty"] | null) => {
-        if (incoming === null) return undefined; // explicit removal
-        const normalizedIncoming = normalizeBounty(incoming);
-        const normalizedOld = oldB ? normalizeBounty(oldB) : undefined;
-        if (!normalizedIncoming) return normalizedOld;
-        if (!normalizedOld) return normalizedIncoming;
-        // Prefer the bounty with the latest updatedAt; fallback to event created_at
-        const oldT = Date.parse(normalizedOld.updatedAt || '') || 0;
-        const incT = Date.parse(normalizedIncoming.updatedAt || '') || 0;
-        const incNewer = incT > oldT || (incT === oldT && ev.created_at > ledger.taskAt(bTag, taskId));
-
-        // Different ids: pick the newer one
-        if (normalizedOld.id !== normalizedIncoming.id) return incNewer ? normalizedIncoming : normalizedOld;
-
-        const next = { ...normalizedOld } as NonNullable<Task["bounty"]>;
-        // accept token/content updates if incoming is newer
-        if (incNewer) {
-          if (typeof normalizedIncoming.amount === 'number') next.amount = normalizedIncoming.amount;
-          next.mint = normalizedIncoming.mint ?? next.mint;
-          next.lock = normalizedIncoming.lock ?? next.lock;
-          // Only overwrite token if sender/owner published or token becomes visible
-          if (normalizedIncoming.token) next.token = normalizedIncoming.token;
-          const hasEncField = Object.prototype.hasOwnProperty.call(incoming, 'enc');
-          if (hasEncField) {
-            next.enc = (incoming as any).enc ?? undefined;
-          } else if (normalizedIncoming.token && !normalizedIncoming.enc) {
-            next.enc = undefined;
-          }
-          if (normalizedIncoming.receiver) next.receiver = normalizedIncoming.receiver;
-          next.updatedAt = normalizedIncoming.updatedAt || next.updatedAt;
-        }
-        // Auth for state transitions (allow owner or sender to unlock; owner or sender to revoke; anyone to mark claimed)
-        if (normalizedIncoming.state && normalizedIncoming.state !== normalizedOld.state) {
-          const isOwner = !!(normalizedOld.owner && ev.pubkey === normalizedOld.owner);
-          const isSender = !!(normalizedOld.sender && ev.pubkey === normalizedOld.sender);
-          const isReceiver = !!(normalizedOld.receiver && ev.pubkey === normalizedOld.receiver);
-          if (normalizedIncoming.state === 'unlocked' && (isOwner || isSender || isReceiver)) next.state = 'unlocked';
-          if (normalizedIncoming.state === 'revoked' && (isOwner || isSender)) next.state = 'revoked';
-          if (normalizedIncoming.state === 'claimed') next.state = 'claimed';
-        }
-        return normalizeBounty(next);
-      };
-
-      if (idx >= 0) {
-        const copy = prev.slice();
-        const current = prev[idx];
-        // Determine incoming bounty raw (preserve explicit null removal)
-        const incomingB: Task["bounty"] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'bounty') ? payload.bounty : undefined;
-        // Determine incoming images raw (allow explicit null removal)
-        const incomingImgs: string[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'images') ? payload.images : undefined;
-        const mergedImages = incomingImgs === undefined ? current.images : incomingImgs === null ? undefined : incomingImgs;
-        let mergedDocuments: TaskDocument[] | undefined = current.documents;
-        if (Object.prototype.hasOwnProperty.call(payload, 'documents')) {
-          const rawDocs = (payload as any).documents;
-          if (rawDocs === null) {
-            mergedDocuments = undefined;
-          } else {
-            const normalizedDocs = normalizeDocumentList(rawDocs);
-            mergedDocuments = normalizedDocs ? normalizedDocs.map(ensureDocumentPreview) : undefined;
-          }
-        }
-        const newOrder =
-          typeof current.order === "number"
-            ? current.order
-            : nextOrderForBoard(base.boardId, prev, settings.newTaskPosition);
-        const newCreatedAt =
-          typeof current.createdAt === "number"
-            ? current.createdAt
-            : base.createdAt ?? Date.now();
-        const incomingStreak: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'streak') ? payload.streak : undefined;
-        const newStreak = incomingStreak === undefined ? current.streak : incomingStreak === null ? undefined : incomingStreak;
-        const incomingLongest: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'longestStreak') ? payload.longestStreak : undefined;
-        const newLongest = incomingLongest === undefined
-          ? current.longestStreak
-          : incomingLongest === null
-            ? undefined
-            : incomingLongest;
-        const incomingSubs: Subtask[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'subtasks') ? payload.subtasks : undefined;
-        const mergedSubs = incomingSubs === undefined ? current.subtasks : incomingSubs === null ? undefined : incomingSubs;
-        const mergedAssignees =
-          incomingAssignees === undefined
-            ? current.assignees
-            : incomingAssignees === null
-              ? undefined
-              : incomingAssignees;
-        copy[idx] = {
-          ...current,
-          ...base,
-          order: newOrder,
-          createdAt: newCreatedAt,
-          images: mergedImages,
-          documents: mergedDocuments,
-          bounty: mergeBounty(current.bounty, incomingB as any),
-          streak: newStreak,
-          longestStreak: newLongest,
-          subtasks: mergedSubs,
-          assignees: mergedAssignees,
-          _nostrAt: ev.created_at,
-        };
-        return dedupeRecurringInstances(copy);
-      } else {
-        const incomingB: Task["bounty"] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'bounty') ? payload.bounty : undefined;
-        const incomingImgs: string[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'images') ? payload.images : undefined;
-        const imgs = incomingImgs === null ? undefined : Array.isArray(incomingImgs) ? incomingImgs : undefined;
-        let docs: TaskDocument[] | undefined;
-        if (Object.prototype.hasOwnProperty.call(payload, 'documents')) {
-          const rawDocs = (payload as any).documents;
-          if (rawDocs === null) {
-            docs = undefined;
-          } else {
-            const normalizedDocs = normalizeDocumentList(rawDocs);
-            docs = normalizedDocs ? normalizedDocs.map(ensureDocumentPreview) : undefined;
-          }
-        }
-        const incomingStreak: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'streak') ? payload.streak : undefined;
-        const st = incomingStreak === null ? undefined : typeof incomingStreak === 'number' ? incomingStreak : undefined;
-        const incomingLongest: number | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'longestStreak') ? payload.longestStreak : undefined;
-        const longest = incomingLongest === null ? undefined : typeof incomingLongest === 'number' ? incomingLongest : undefined;
-        const incomingSubs: Subtask[] | null | undefined = Object.prototype.hasOwnProperty.call(payload, 'subtasks') ? payload.subtasks : undefined;
-        const subs = incomingSubs === null ? undefined : Array.isArray(incomingSubs) ? incomingSubs : undefined;
-        const assignees = incomingAssignees === null ? undefined : incomingAssignees;
-        const newOrder = nextOrderForBoard(base.boardId, prev, settings.newTaskPosition);
-        const newCreatedAt = base.createdAt ?? Date.now();
-        const normalizedIncoming = incomingB === null ? undefined : normalizeBounty(incomingB);
-        return dedupeRecurringInstances([
-          ...prev,
-          {
-            ...base,
-            order: newOrder,
-            createdAt: newCreatedAt,
-            images: imgs,
-            documents: docs,
-            bounty: normalizedIncoming,
-            streak: st,
-            longestStreak: longest,
-            subtasks: subs,
-            assignees,
-            _nostrAt: ev.created_at,
-          },
-        ]);
-      }
-    })(prev);
+      const current = idx >= 0 ? prev[idx] : undefined;
+      const merged = mergeIncomingTask(current, incoming, {
+        nostrAt: ev.created_at,
+        order: typeof current?.order === "number"
+          ? current.order
+          : nextOrderForBoard(base.boardId, prev, settings.newTaskPosition),
+        now: Date.now(),
+        eventPubkey: ev.pubkey,
+        incomingIsNewerOnTie: ev.created_at > ledger.taskAt(bTag, taskId),
+      });
+      if (idx < 0) return dedupeRecurringInstances([...prev, merged]);
+      const copy = prev.slice();
+      copy[idx] = merged;
+      return dedupeRecurringInstances(copy);
     };
 
     // Enqueue liveUpdater into the micro-batch coalescer
