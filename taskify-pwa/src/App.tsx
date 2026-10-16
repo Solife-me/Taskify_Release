@@ -314,6 +314,8 @@ import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
 import { InlineTaskOverlays } from "./ui/task/InlineTaskOverlays";
 import { useTaskPersistence } from "./nostr/useTaskPersistence";
 import { BoardSyncLedger } from "./nostr/boardSyncLedger";
+import { BoardPublisher } from "./nostr/boardPublisher";
+import { sameDocumentList, sameStringList } from "./nostr/boardWire";
 import { useNostrIdentity } from "./nostr/useNostrIdentity";
 import {
   normalizeNostrRelayList as normalizeRelayList,
@@ -5085,161 +5087,66 @@ export default function App() {
       .filter(Boolean);
     return boardSyncRelays(candidate.length ? candidate : fallback);
   }, [defaultRelays]);
+  // Shared-board publishing lives in BoardPublisher; these names remain for App's callers.
+  const publisherLatestRef = useRef({ getBoardRelays, nostrPK, nostrPublish, prepareAttachmentsForPublish });
+  publisherLatestRef.current = { getBoardRelays, nostrPK, nostrPublish, prepareAttachmentsForPublish };
+  const publisherRef = useRef<BoardPublisher | null>(null);
+  publisherRef.current ??= new BoardPublisher({
+    ledger,
+    versions: taskPublishVersionsRef.current,
+    boards: () => boardsRef.current,
+    relaysFor: (board) => publisherLatestRef.current.getBoardRelays(board),
+    actorPubkey: () => publisherLatestRef.current.nostrPK,
+    boardTag,
+    deriveBoardKeys: deriveBoardNostrKeys,
+    encrypt: encryptToBoard,
+    publish: (relays, template, options) => publisherLatestRef.current.nostrPublish(relays, template, options),
+    prepareAttachments: (params) => publisherLatestRef.current.prepareAttachmentsForPublish(params),
+    storedTaskAt: (taskId, board) =>
+      tasksRef.current.find((task) => (
+        task.id === taskId &&
+        (task.boardId === board.id || task.boardId === board.nostr?.boardId)
+      ))?._nostrAt ?? 0,
+    metadataFingerprints: boardMetadataFingerprintsRef.current,
+    onTaskPending: markNostrTaskSyncPending,
+    onTaskSettled: clearOptimisticNostrTaskSyncPending,
+    onAttachmentsUploaded: (original, published, prepared) => {
+      // Swap in the uploaded copies unless the attachments were edited meanwhile.
+      setTasks((prev) =>
+        prev.map((current) => {
+          if (current.id !== original.id || current.boardId !== original.boardId) return current;
+          let changed = false;
+          const next: Task = { ...current };
+          if (prepared.images !== null && sameStringList(current.images, original.images)) {
+            next.images = published.images;
+            changed = true;
+          }
+          if (prepared.documents !== null && sameDocumentList(current.documents, original.documents)) {
+            next.documents = published.documents;
+            changed = true;
+          }
+          return changed ? next : current;
+        }),
+      );
+    },
+  });
+  const publisher = publisherRef.current;
   function markTaskRelayPublishPending(taskId: string, board: Board | null | undefined): number | null {
-    if (!taskId || !board?.nostr?.boardId) return null;
-    const bTag = boardTag(board.nostr.boardId);
-    const persistedTaskAt = tasksRef.current.find((task) => (
-      task.id === taskId &&
-      (task.boardId === board.id || task.boardId === board.nostr?.boardId)
-    ))?._nostrAt ?? 0;
-    const optimisticAt = ledger.reserveTaskPublish(bTag, taskId, persistedTaskAt, Math.floor(Date.now() / 1000));
-    markNostrTaskSyncPending(taskId);
-    return optimisticAt;
+    return publisher.reserveTaskPublish(taskId, board);
   }
   async function publishBoardMetadata(board: Board) {
-    if (!board.nostr?.boardId) return;
-    const relays = getBoardRelays(board);
-    const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
-    const idTag = boardTag(board.nostr.boardId);
-    const tags: string[][] = [["d", idTag],["b", idTag],["k", board.kind],["name", board.name]];
-    const payload: any = { clearCompletedDisabled: !!board.clearCompletedDisabled };
-    if (board.kind === "lists") {
-      payload.columns = board.columns;
-      payload.listIndex = !!board.indexCardEnabled;
-    } else if (board.kind === "compound") {
-      const childBoardIds = board.children
-        .map((childId) => {
-          const child = findBoardByCompoundChildId(boardsRef.current, childId);
-          const canonicalId = child?.nostr?.boardId || child?.id || childId;
-          return typeof canonicalId === "string" ? canonicalId : "";
-        })
-        .filter((childId) => !!childId);
-      payload.children = childBoardIds;
-      payload.listIndex = !!board.indexCardEnabled;
-      payload.hideBoardNames = !!board.hideChildBoardNames;
-    }
-    // Task and calendar publishes call this too, to make sure the board exists on its relays.
-    // Unchanged metadata needn't go out again.
-    const fingerprint = { relays, tags, payload };
-    if (boardMetadataFingerprintsRef.current.isUnchanged(idTag, fingerprint)) return;
-    const raw = JSON.stringify(payload);
-    const content = await encryptToBoard(board.nostr.boardId, raw);
-    const createdAt = await nostrPublish(relays, {
-      kind: 30300,
-      tags,
-      content,
-      created_at: Math.floor(Date.now() / 1000),
-    }, { sk: boardKeys.sk });
-    ledger.noteBoardMeta(idTag, createdAt);
-    boardMetadataFingerprintsRef.current.record(idTag, fingerprint);
+    await publisher.publishBoardMetadata(board);
   }
   publishBoardMetadataRef.current = publishBoardMetadata;
   async function publishBoardMetadataSnapshot(board: Board, boardId: string, relays: string[]) {
-    if (!boardId || !relays.length) return;
-    const boardKeys = await deriveBoardNostrKeys(boardId);
-    const idTag = boardTag(boardId);
-    const tags: string[][] = [["d", idTag], ["b", idTag], ["k", board.kind], ["name", board.name]];
-    const payload: any = { clearCompletedDisabled: !!board.clearCompletedDisabled };
-    if (board.kind === "lists") {
-      payload.columns = board.columns;
-      payload.listIndex = !!board.indexCardEnabled;
-    } else if (board.kind === "compound") {
-      const childBoardIds = board.children
-        .map((childId) => {
-          const child = findBoardByCompoundChildId(boardsRef.current, childId);
-          const canonicalId = child?.nostr?.boardId || child?.id || childId;
-          return typeof canonicalId === "string" ? canonicalId : "";
-        })
-        .filter((childId) => !!childId);
-      payload.children = childBoardIds;
-      payload.listIndex = !!board.indexCardEnabled;
-      payload.hideBoardNames = !!board.hideChildBoardNames;
-    }
-    const raw = JSON.stringify(payload);
-    const content = await encryptToBoard(boardId, raw);
-    await nostrPublish(relays, {
-      kind: 30300,
-      tags,
-      content,
-      created_at: Math.floor(Date.now() / 1000),
-    }, { sk: boardKeys.sk });
+    await publisher.publishBoardMetadataAs(board, boardId, relays);
   }
   publishBoardMetadataSnapshotRef.current = publishBoardMetadataSnapshot;
-  /**
-   * Board metadata ahead of a task or calendar publish. The metadata is durably queued even when
-   * no relay accepts it right away (offline, or every relay down), and that throw used to skip
-   * the item's own publish, so the change was never queued at all. The item always proceeds.
-   */
   async function publishBoardMetadataForItem(board: Board) {
-    try {
-      await publishBoardMetadata(board);
-    } catch (error) {
-      console.warn("[nostr] board metadata not yet delivered; it stays queued", error);
-    }
+    await publisher.publishBoardMetadataForItem(board);
   }
   async function publishTaskDeleted(t: Task) {
-    const b = findBoardByCompoundChildId(boards, t.boardId);
-    if (!b || !isShared(b) || !b.nostr) return;
-    const relays = getBoardRelays(b);
-    const boardId = b.nostr.boardId;
-    const bTag = boardTag(boardId);
-    const pendingKey = `${bTag}::${t.id}`;
-    const publishVersion = taskPublishVersionsRef.current.reserve(pendingKey);
-    // Protect against stale relay events re-creating the task while the
-    // deletion publish is in-flight.
-    const optimisticAt = markTaskRelayPublishPending(t.id, b) ?? Math.floor(Date.now() / 1000);
-    // Persist a tombstone NOW — before any await — so a reload between this
-    // point and a successful relay publish still keeps the deletion sticky.
-    // Without this, a failed/in-flight publish followed by reload would let
-    // the original CREATE event from the relay re-add the task on next sync.
-    recordTaskTombstone(bTag, t.id, optimisticAt);
-    try {
-      const boardKeys = await deriveBoardNostrKeys(boardId);
-      if (!taskPublishVersionsRef.current.isCurrent(pendingKey, publishVersion)) return;
-      await publishBoardMetadataForItem(b);
-      const colTag = (b.kind === "week") ? "day" : (t.columnId || "");
-      const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status","deleted"]];
-      const raw = JSON.stringify({
-        title: t.title,
-        priority: t.priority ?? null,
-        note: t.note || "",
-        dueISO: t.dueISO,
-        dueDateEnabled: t.dueDateEnabled,
-        dueTimeEnabled: t.dueTimeEnabled,
-        dueTimeZone: t.dueTimeZone,
-        completedAt: t.completedAt,
-        recurrence: t.recurrence,
-        hiddenUntilISO: t.hiddenUntilISO,
-        streak: t.streak,
-        longestStreak: t.longestStreak,
-        subtasks: t.subtasks,
-        assignees: t.assignees,
-        seriesId: t.seriesId,
-        documents: t.documents,
-        inboxItem: t.inboxItem ?? null,
-      });
-      const content = await encryptToBoard(boardId, raw);
-      if (!taskPublishVersionsRef.current.isCurrent(pendingKey, publishVersion)) return;
-      const createdAt = await nostrPublish(relays, {
-        kind: 30301,
-        tags,
-        content,
-        created_at: optimisticAt,
-      }, { sk: boardKeys.sk });
-      // The tombstone replaces the task at its address on every relay and every client reads it.
-      // A NIP-09 deletion on top doubled each delete, and made strfry refuse the tombstone
-      // ("deleted:") when it arrived first. Matches native.
-      ledger.noteTask(bTag, t.id, createdAt);
-      // Bump the tombstone to the actual relay-confirmed timestamp so any
-      // post-reload comparisons use the same clock value the relay will
-      // report when it round-trips this deletion.
-      recordTaskTombstone(bTag, t.id, createdAt);
-    } finally {
-      if (taskPublishVersionsRef.current.finish(pendingKey, publishVersion)) {
-        ledger.settleTask(bTag, t.id);
-        clearOptimisticNostrTaskSyncPending(t.id);
-      }
-    }
+    await publisher.publishTaskDeleted(t);
   }
   // Ensure all images and documents for a shared board are stored remotely (encrypted).
   // Images still as data URLs are encrypted and uploaded to the file server.
@@ -5311,24 +5218,6 @@ export default function App() {
     return { images: nextImages, image: nextImage, documents: nextDocuments };
   }
 
-  const sameStringList = (a?: string[], b?: string[]) => {
-    const aa = a ?? [];
-    const bb = b ?? [];
-    if (aa.length !== bb.length) return false;
-    return aa.every((value, index) => value === bb[index]);
-  };
-
-  const sameDocumentList = (a?: TaskDocument[], b?: TaskDocument[]) => JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
-
-  const taskWithPreparedAttachments = (
-    task: Task,
-    prepared: { images: string[] | null; documents: any[] | null },
-  ): Task => ({
-    ...task,
-    ...(prepared.images === null ? {} : { images: prepared.images.length ? prepared.images : undefined }),
-    ...(prepared.documents === null ? {} : { documents: prepared.documents.length ? prepared.documents as TaskDocument[] : undefined }),
-  });
-
   const calendarEventWithPreparedAttachments = (
     event: CalendarEvent,
     prepared: { image: string | null; documents: any[] | null },
@@ -5343,100 +5232,7 @@ export default function App() {
     boardOverride?: Board,
     options?: { skipBoardMetadata?: boolean; republish?: boolean }
   ) {
-    const b = boardOverride || findBoardByCompoundChildId(boards, t.boardId);
-    if (!b || !isShared(b) || !b.nostr) return;
-    const relays = getBoardRelays(b);
-    const boardId = b.nostr.boardId;
-    const bTag = boardTag(boardId);
-    const pendingKey = `${bTag}::${t.id}`;
-    const publishVersion = taskPublishVersionsRef.current.reserve(pendingKey);
-    // Protect optimistic state: advance the task clock and mark pending BEFORE
-    // any async work so relay events arriving while the publish is in-flight
-    // are rejected by the clock check in applyTaskEvent / flushRelayBatch.
-    const optimisticAt = markTaskRelayPublishPending(t.id, b) ?? Math.floor(Date.now() / 1000);
-    t._nostrAt = optimisticAt;
-    const boardKeys = await deriveBoardNostrKeys(boardId);
-    const status = t.completed ? "done" : "open";
-    const colTag = (b.kind === "week") ? "day" : (t.columnId || "");
-    const tags: string[][] = [["d", t.id],["b", bTag],["col", String(colTag)],["status", status]];
-    const normalizedBounty = normalizeBounty(t.bounty);
-    const createdBy = normalizeAgentPubkey(t.createdBy) ?? undefined;
-    const lastEditedBy = normalizeAgentPubkey(t.lastEditedBy || nostrPK || t.createdBy) ?? createdBy;
-    const body: any = {
-      title: t.title,
-      priority: t.priority ?? null,
-      note: t.note || "",
-      dueISO: t.dueISO,
-      completedAt: t.completedAt,
-      completedBy: t.completedBy,
-      recurrence: t.recurrence,
-      hiddenUntilISO: t.hiddenUntilISO,
-      createdBy,
-      lastEditedBy,
-      createdAt: t.createdAt ?? null,
-      streak: t.streak,
-      longestStreak: t.longestStreak,
-      seriesId: t.seriesId,
-    };
-    body.dueDateEnabled = typeof t.dueDateEnabled === "boolean" ? t.dueDateEnabled : null;
-    body.dueTimeEnabled = typeof t.dueTimeEnabled === 'boolean' ? t.dueTimeEnabled : null;
-    body.dueTimeZone = typeof t.dueTimeZone === "string" ? t.dueTimeZone : null;
-    // Reminders are device-specific and should not be published to shared boards.
-    // Include explicit nulls to signal removals when undefined.
-    // Attachments are encrypted+uploaded to the file server before publishing.
-    const preparedAttachments = await prepareAttachmentsForPublish({
-      images: t.images,
-      documents: t.documents,
-      boardId,
-    });
-    const taskForPublish = taskWithPreparedAttachments(t, preparedAttachments);
-    body.images = preparedAttachments.images;
-    body.documents = preparedAttachments.documents;
-    body.bounty = (typeof t.bounty === 'undefined') ? null : (normalizedBounty ?? null);
-    body.subtasks = (typeof t.subtasks === 'undefined') ? null : t.subtasks;
-    body.assignees = (typeof t.assignees === "undefined") ? null : t.assignees;
-    body.inboxItem = typeof t.inboxItem === "undefined" ? null : t.inboxItem ?? null;
-    try {
-      if (!taskPublishVersionsRef.current.isCurrent(pendingKey, publishVersion)) return;
-      if (!options?.skipBoardMetadata) {
-        await publishBoardMetadataForItem(b);
-      }
-      const raw = JSON.stringify(body);
-      const content = await encryptToBoard(boardId, raw);
-      if (!taskPublishVersionsRef.current.isCurrent(pendingKey, publishVersion)) return;
-      const createdAt = await nostrPublish(relays, {
-        kind: 30301,
-        tags,
-        content,
-        created_at: optimisticAt,
-      }, { sk: boardKeys.sk, republish: options?.republish });
-      // Update local task clock so immediate refreshes don't revert state
-      const confirmedAt = ledger.noteTask(bTag, t.id, createdAt);
-      t._nostrAt = Math.max(t._nostrAt ?? 0, confirmedAt);
-      if (!sameStringList(taskForPublish.images, t.images) || !sameDocumentList(taskForPublish.documents, t.documents)) {
-        setTasks((prev) =>
-          prev.map((current) => {
-            if (current.id !== t.id || current.boardId !== t.boardId) return current;
-            let changed = false;
-            const next: Task = { ...current };
-            if (preparedAttachments.images !== null && sameStringList(current.images, t.images)) {
-              next.images = taskForPublish.images;
-              changed = true;
-            }
-            if (preparedAttachments.documents !== null && sameDocumentList(current.documents, t.documents)) {
-              next.documents = taskForPublish.documents;
-              changed = true;
-            }
-            return changed ? next : current;
-          }),
-        );
-      }
-    } finally {
-      if (taskPublishVersionsRef.current.finish(pendingKey, publishVersion)) {
-        ledger.settleTask(bTag, t.id);
-        clearOptimisticNostrTaskSyncPending(t.id);
-      }
-    }
+    await publisher.publishTask(t, boardOverride, options);
   }
 
   maybePublishTaskRef.current = maybePublishTask;
