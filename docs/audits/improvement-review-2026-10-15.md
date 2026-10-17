@@ -709,8 +709,10 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     - Production build verification is enforced by `check:startup`: opening Chat's static chunk
       graph may not include the wallet modal/runtime, Cashu SDK or payment-support chunks. After
       this integration startup is 451.1 KB gzipped (470 KB budget), and the Chat graph passes.
-    - Page splitting has started: the conversation list/search/profile entry is now
-      `chat/views/ChatThreadsView.tsx`, reading the same runtime context without a prop matrix.
+    - Page splitting has started: the conversation list/search/profile entry is
+      `chat/views/ChatThreadsView.tsx`; group info, member list, group-name editing and both
+      new-group steps are `chat/views/ChatGroupViews.tsx`. Each reads the same runtime context
+      without a prop matrix, and the original branches were moved without behaviour changes.
     - Regression caught before this step was committed: removing Chat's automatic payment action
       also removed the still-live wallet's opt-in payment handler because both consume the same
       DM hook. The handler is now an optional bridge: wallet passes it, Chat does not. A focused
@@ -719,8 +721,8 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       that branch. The wallet therefore still duplicates Chat's hooks while its own page is open;
       removing that dead branch and making its contact picker consume the runtime is next.
   - **Remaining, in order:**
-    1. Finish splitting `ChatPage` into per-view components (conversation, new message, group
-       info/members/name and new group); the threads view is done.
+    1. Finish splitting `ChatPage` into per-view components. Threads and all group surfaces are
+       done; the conversation, new-message/contact surfaces and shared action sheets remain.
     2. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
        contact picker for payments reads contacts from the chat runtime (one contacts syncer).
     3. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
