@@ -5,6 +5,7 @@ import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "
 import { LS_LIGHTNING_CONTACTS, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
 import { LS_NOSTR_RELAYS } from "../../nostrKeys";
 import { revealLocalSecretKey } from "../../identity/identity";
+import { markKeySaved } from "../../onboarding/keyBackup";
 import {
   taskEntityStore,
   boardEntityStore,
@@ -103,6 +104,8 @@ export function BackupSection({
     a.download = "taskify-backup.json";
     a.click();
     URL.revokeObjectURL(url);
+    // The file includes the key, so it counts as saving it.
+    if (data.nostrSk) markKeySaved();
   }
 
   const applyBackupData = useCallback(async (data: Partial<TaskifyBackupPayload>) => {

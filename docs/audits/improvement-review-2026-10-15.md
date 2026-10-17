@@ -383,8 +383,8 @@ per step.
 | C2-1 | Approve | 2026-10-15 | Done (quick-add surface is a known gap) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
 | C2-3 | Approve all stages | 2026-10-15 | Stages 1–3 done; stage 4 remains (see Checkpoint) |
-| C2-4 | Approve identity layer; explore signers | 2026-10-15 | Identity layer done; signer findings below |
-| C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
+| C2-4 | Approve identity layer; explore signers | 2026-10-15 | Identity layer done; signer findings below. 2026-10-16: maintainer wants NIP-07 and NIP-46 support built later (sequence below) |
+| C2-5 | Approve, after C2-4 | 2026-10-15 | Done (PWA); iOS parity in chunk 9 |
 | C2-6 | Approve | 2026-10-15 | Done: 604 → 458 KB gzipped startup, CI budget 470 KB |
 | C2-7 | Not selected (declined) | 2026-10-15 | — |
 | C2-8 | Not selected (declined) | 2026-10-15 | — |
@@ -495,6 +495,22 @@ The suites are green after the page-router step: PWA lint (one existing warning 
     reset a task's local position; `BoardPublisher` still sets `_nostrAt` on the task object
     passed in.
 
+- **C2-5, first run that starts with tasks (done, PWA).**
+  - First run is "Start using Taskify" (makes the key quietly and opens the board) or "I already
+    use Taskify" (sign in with an nsec, or restore a backup file). Signer apps join that page
+    with NIP-07/NIP-46. Onboarding no longer asks for notifications or creates a wallet seed
+    (the wallet makes its seed on first use).
+  - The rules are pure and tested in `onboarding/firstRunRules.ts`; `onboarding/keyBackup.ts`
+    keeps whether the key is saved. The backup reminder appears once a key made on this device
+    has 3 tasks or is a day old; "Not now" waits 3 days. It replaces the separate key-migration
+    notice. A key the user brought (sign-in, restore) is never nagged about.
+  - Copying the nsec anywhere, or downloading a backup (which includes the key), records the
+    key as saved. Settings shows "Unsaved key" until then, and says so when copying fails.
+  - Notifications are offered the first time an item gains a reminder, when push is available
+    and off; declining is remembered and Settings can still turn them on.
+  - The mirror-logic `onboardingGating.test.ts` is replaced by tests of the real rules.
+  - Not verifiable in the dev pane: the notification offer itself (push isn't configured in
+    the dev build and the pane denies permission); its rule is unit-tested.
 - **C2-4, identity layer (done) and the signer exploration.**
   - `src/identity/` is the single source of the user's identity: a public key plus a
     `NostrSigner` (sign, NIP-44, NIP-04). `LocalKeySigner` wraps the browser-held key.
@@ -554,8 +570,16 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 
 1. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
    modules; `App` keeps layout and routing.
-2. **C2-5, first run that starts with tasks.**
-3. **Chunk 3 onward,** per the chunk plan.
+2. **Chunk 3 onward,** per the chunk plan.
+
+**Signer support (approved by the maintainer 2026-10-16, to build later):**
+
+1. Unified gift-wrap ingestion (chunk 5): one pipeline that unwraps each wrap once, plus a
+   per-device store of unwrapped messages.
+2. Move the first five rows of the C2-4 table (messaging, contacts, sync, attachments) onto
+   `NostrSigner`.
+3. NIP-07 browser-extension sign-in.
+4. NIP-46 remote signers, with progressive background history on first sign-in.
 
 **Logged for later chunks**
 

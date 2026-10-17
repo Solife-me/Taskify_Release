@@ -29,7 +29,6 @@ type AppModalStackProps = {
   boardPrintPortal: HTMLDivElement | null;
   boardScanOpen: boolean;
   closeAddBoard: () => void;
-  completeFirstRunOnboarding: () => void;
   createBoardFromName: (name: string, type: "lists" | "compound", shared?: boolean) => string | null;
   deleteCalendarEvent: (id: string, options?: any) => void;
   deleteTask: (id: string, options?: any) => void;
@@ -40,15 +39,12 @@ type AppModalStackProps = {
   handleDownloadDocument: (doc: TaskDocument) => void;
   handleExportBiblePdf: () => void;
   handleExportBoardPdf: () => void;
-  handleOnboardingEnableNotifications: () => Promise<void>;
-  handleOnboardingGenerateNewKey: () => { nsec: string } | null;
+  handleOnboardingStart: () => boolean;
   handleOnboardingRestoreFromBackupFile: (file: File) => Promise<void>;
   handleOnboardingUseExistingKey: (value: string) => boolean;
   handlePrintBibleWindow: () => void;
   handlePrintBoardWindow: () => void;
   joinSharedBoard: (nostrId: string, name?: string, relayCsv?: string) => void;
-  onboardingPushConfigured: boolean;
-  onboardingPushSupported: boolean;
   previewDocument: TaskDocument | null;
   previewDocumentBoardId: string | undefined;
   recurringDeleteEvent: CalendarEvent | null;
@@ -81,7 +77,6 @@ export function AppModalStack({
   boardPrintPortal,
   boardScanOpen,
   closeAddBoard,
-  completeFirstRunOnboarding,
   createBoardFromName,
   deleteCalendarEvent,
   deleteTask,
@@ -92,15 +87,12 @@ export function AppModalStack({
   handleDownloadDocument,
   handleExportBiblePdf,
   handleExportBoardPdf,
-  handleOnboardingEnableNotifications,
-  handleOnboardingGenerateNewKey,
   handleOnboardingRestoreFromBackupFile,
+  handleOnboardingStart,
   handleOnboardingUseExistingKey,
   handlePrintBibleWindow,
   handlePrintBoardWindow,
   joinSharedBoard,
-  onboardingPushConfigured,
-  onboardingPushSupported,
   previewDocument,
   previewDocumentBoardId,
   recurringDeleteEvent,
@@ -269,13 +261,9 @@ export function AppModalStack({
       {showFirstRunOnboarding && (
         <Modal onClose={() => {}} title="Welcome to Taskify" showClose={false}>
           <FirstRunOnboarding
-            pushSupported={onboardingPushSupported}
-            pushConfigured={onboardingPushConfigured}
+            onStart={handleOnboardingStart}
             onUseExistingKey={handleOnboardingUseExistingKey}
-            onGenerateNewKey={handleOnboardingGenerateNewKey}
             onRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
-            onEnableNotifications={handleOnboardingEnableNotifications}
-            onComplete={completeFirstRunOnboarding}
           />
         </Modal>
       )}

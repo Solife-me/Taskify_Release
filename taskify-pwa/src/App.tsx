@@ -320,6 +320,8 @@ import {
   useNostrAppBackupSync,
 } from "./nostr/useNostrAppBackupSync";
 import { useFirstRunOnboarding } from "./onboarding/useFirstRunOnboarding";
+import { KeyBackupBanner } from "./onboarding/KeyBackupBanner";
+import { ReminderNotificationOffer, useReminderNotificationOffer } from "./onboarding/ReminderNotificationOffer";
 import { useClipboardWriteToast } from "./hooks/useClipboardWriteToast";
 import { useBiblePrintPaperSize, usePrintPortal } from "./hooks/usePrintState";
 import { useRuntimeConfig } from "./hooks/useRuntimeConfig";
@@ -912,8 +914,6 @@ export default function App() {
 
   const {
     applyCustomNostrKey,
-    copyNsecAndDismiss,
-    dismissSkBackupNotice,
     nostrPK,
     nostrPublish,
     nostrPublishRef,
@@ -922,7 +922,6 @@ export default function App() {
     pool,
     rotateNostrKey,
     setCustomNostrKey,
-    showSkBackupNotice,
   } = useNostrIdentity({ defaultRelays });
   const {
     clearOptimisticNostrCalendarEventSyncPending,
@@ -1578,24 +1577,16 @@ export default function App() {
     }
   }, [activePage, appRouter, currentBoardId, walletEnabled]);
   const {
-    completeFirstRunOnboarding,
-    handleOnboardingEnableNotifications,
-    handleOnboardingGenerateNewKey,
     handleOnboardingRestoreFromBackupFile,
+    handleOnboardingStart,
     handleOnboardingUseExistingKey,
     isOnboardingActiveRef,
-    onboardingPushConfigured,
-    onboardingPushSupported,
     showFirstRunOnboarding,
   } = useFirstRunOnboarding({
     activePage,
     applyCustomNostrKey,
-    enablePushNotifications,
-    pushPlatform: settings.pushNotifications?.platform,
     rotateNostrKey,
     setActivePage,
-    vapidPublicKey,
-    workerBaseUrl,
   });
   useEffect(() => {
     if (currentBoard?.kind === "bible") {
@@ -7618,7 +7609,15 @@ export default function App() {
     }
   }
 
+  const reminderNotificationOffer = useReminderNotificationOffer({
+    pushEnabled: !!settings.pushNotifications?.enabled,
+    pushConfigured: !!workerBaseUrl && !!vapidPublicKey,
+    pushPlatform: settings.pushNotifications?.platform === "android" ? "android" : "ios",
+    enablePush: enablePushNotifications,
+  });
+
   async function saveEdit(updated: Task) {
+    const previous = tasksStore().get().find((task) => task.id === updated.id);
     const plan = planSaveTask(tasksStore().get(), updated, {
       now: new Date(),
       actorPubkey: nostrPK || undefined,
@@ -7629,6 +7628,7 @@ export default function App() {
         ? ensureWeekRecurrences(plan.tasks, [plan.saved])
         : plan.tasks,
     );
+    reminderNotificationOffer.noteReminderSave(!!previous && taskHasReminders(previous), taskHasReminders(plan.saved));
     await maybePublishTask(plan.saved);
     void maybeSendTaskAssignments(plan.saved, { previousAssignees: plan.previousAssignees }).catch((err) => {
       console.warn("Failed to send task assignments", err);
@@ -8211,6 +8211,7 @@ export default function App() {
 
   function saveCalendarEdit(updated: CalendarEvent) {
     const original = editing;
+    const previous = calendarEventsStore().get().find((event) => event.id === updated.id);
     const plan = planSaveCalendarEvent(calendarEventsStore().get(), updated, {
       now: new Date(),
       actorPubkey: nostrPK || undefined,
@@ -8232,6 +8233,10 @@ export default function App() {
       }
     }
     setCalendarEvents(plan.events);
+    reminderNotificationOffer.noteReminderSave(
+      !!previous && calendarEventHasReminders(previous),
+      calendarEventHasReminders(updated),
+    );
 
     try {
       plan.publish.forEach((event) => {
@@ -9021,24 +9026,8 @@ export default function App() {
           </header>
         )}
 
-        {showSkBackupNotice && (
-          <div className="sk-backup-banner" role="alert">
-            <div className="sk-backup-banner__body">
-              <span className="sk-backup-banner__dot" aria-hidden="true" />
-              <span>
-                Your Nostr key is now encrypted on this device. Save your <strong>nsec</strong> somewhere safe so you can recover your account if this device is lost.
-              </span>
-            </div>
-            <div className="sk-backup-banner__actions">
-              <button type="button" className="sk-backup-banner__primary pressable" onClick={copyNsecAndDismiss}>
-                Copy nsec
-              </button>
-              <button type="button" className="sk-backup-banner__secondary pressable" onClick={dismissSkBackupNotice}>
-                Got it
-              </button>
-            </div>
-          </div>
-        )}
+        {!showFirstRunOnboarding && <KeyBackupBanner taskCount={tasks.length} />}
+        <ReminderNotificationOffer offer={reminderNotificationOffer.offer} />
 
         {/* Animation overlay for fly effects (coins, etc.) */}
         <div ref={flyLayerRef} className="pointer-events-none fixed inset-0 z-[9999]" />
@@ -10047,7 +10036,6 @@ export default function App() {
             boardPrintPortal={boardPrintPortal}
             boardScanOpen={boardScanOpen}
             closeAddBoard={closeAddBoard}
-            completeFirstRunOnboarding={completeFirstRunOnboarding}
             createBoardFromName={createBoardFromName}
             deleteCalendarEvent={deleteCalendarEvent}
             deleteTask={deleteTask}
@@ -10058,15 +10046,12 @@ export default function App() {
             handleDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
             handleExportBiblePdf={handleExportBiblePdf}
             handleExportBoardPdf={handleExportBoardPdf}
-            handleOnboardingEnableNotifications={handleOnboardingEnableNotifications}
-            handleOnboardingGenerateNewKey={handleOnboardingGenerateNewKey}
+            handleOnboardingStart={handleOnboardingStart}
             handleOnboardingRestoreFromBackupFile={handleOnboardingRestoreFromBackupFile}
             handleOnboardingUseExistingKey={handleOnboardingUseExistingKey}
             handlePrintBibleWindow={handlePrintBibleWindow}
             handlePrintBoardWindow={handlePrintBoardWindow}
             joinSharedBoard={joinSharedBoard}
-            onboardingPushConfigured={onboardingPushConfigured}
-            onboardingPushSupported={onboardingPushSupported}
             previewDocument={previewDocument}
             previewDocumentBoardId={previewDocumentBoardId}
             recurringDeleteEvent={recurringDeleteEvent}

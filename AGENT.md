@@ -15,7 +15,7 @@ Taskify_Release/
 │   │   ├── nostr/        # Nostr session layer: NDK, relay health, startup stability
 │   │   ├── mint/         # Cashu mint connections and session management
 │   │   ├── wallet/       # Cashu wallet ops: swap, p2pk, NWC, lightning, seed
-│   │   ├── onboarding/   # Welcome/login gating and onboarding flow
+│   │   ├── onboarding/   # First run, key-backup reminder, reminder-notification offer (rules in firstRunRules.ts)
 │   │   ├── components/   # Shared React components
 │   │   ├── context/      # React context providers
 │   │   ├── identity/     # The user's Nostr identity: public key and signer; raw key only via revealLocalSecretKey
@@ -204,6 +204,7 @@ npx wrangler dev
 | `src/domains/tasks/generatedTasks.test.ts` | Generated tasks | Fasting reminders created, moved and deleted like native, stable on rerun; one Scripture Memory review task with a date-derived id |
 | `src/domains/calendar/calendarRecurrenceWindow.test.ts` | Recurring event window | Local generation of the window, stable on rerun, orphan cleanup, deleted occurrences skipped, edited occurrences never trimmed |
 | `src/domains/calendar/calendarCommands.test.ts` | PWA calendar commands | Pure plans for event moves, recurring-series deletion/seed advancement, edits, invite materialization and RSVP publication/local state |
+| `src/onboarding/firstRunRules.test.ts`, `src/onboarding/keyBackup.test.ts` | First run and key backup | First run only without an identity; backup asked once a key made here has 3 tasks or is a day old, never for a key the user brought or saved, snooze then ask again, migration notice merged; notifications offered once when an item first gets a reminder |
 | `src/identity/identity.test.ts` | Identity and signer | Local signer signs verifiable events and round-trips NIP-44/NIP-04; stored key loaded (also when asked before the key store loads); adopt, reveal only via the named accessor, sign out; invalid keys refused |
 | `src/state/stateStore.test.ts` | PWA app stores | Updates apply immediately and exactly once, listeners fire only on change, safe unsubscribe during notify |
 | `src/routing/appRouter.test.ts` | PWA routes and browser history | Typed page/entity/sheet routes, legacy reminder links, canonical paths, page Back navigation, overlay close-via-Back, and direct-link close fallback |
@@ -234,9 +235,8 @@ npx wrangler dev
 | `taskify-macos/Tests/MacPresentationTests.swift` | Mac presentation | DST-aware task placement, list draft preservation, pending wallet outcomes, recovery consent, payment-request mint-selection fallback, and recurrence-builder day/interval math |
 | `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, and authenticated WebSocket delivery |
 
-Additional PWA regression tests include `src/nostr/startupStability.test.ts` and
-`src/onboarding/onboardingGating.test.ts`; both are present in this checkout and
-are discovered by Vitest.
+Additional PWA regression tests include `src/nostr/startupStability.test.ts`, which is
+present in this checkout and discovered by Vitest.
 
 ### Current Gaps (see `docs/plans/engineering-roadmap.md` for plan)
 

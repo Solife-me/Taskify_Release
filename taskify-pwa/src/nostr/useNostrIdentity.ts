@@ -3,11 +3,8 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { generateSecretKey, nip19, type EventTemplate } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
-import {
-  acknowledgeBackupNotice as nostrSkAcknowledgeBackupNotice,
-  isBackupNoticePending as nostrSkBackupNoticePending,
-} from "../lib/nostrSkStore";
 import { adoptLocalSecretKey, revealLocalSecretKey, useIdentity } from "../identity/identity";
+import { markKeyBroughtByUser, markKeyCreatedHere } from "../onboarding/keyBackup";
 import {
   createNostrPool,
   NOSTR_MIN_EVENT_INTERVAL_MS,
@@ -84,22 +81,10 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
     });
   }, [defaultRelays]);
 
-  const [showSkBackupNotice, setShowSkBackupNotice] = useState(() => nostrSkBackupNoticePending());
-  const dismissSkBackupNotice = useCallback(() => {
-    nostrSkAcknowledgeBackupNotice();
-    setShowSkBackupNotice(false);
-  }, []);
-  const copyNsecAndDismiss = useCallback(async () => {
-    try {
-      const sk = revealLocalSecretKey();
-      if (sk) await navigator.clipboard?.writeText(toNsec(sk));
-    } catch {}
-    dismissSkBackupNotice();
-  }, [dismissSkBackupNotice]);
-
   const rotateNostrKey = useCallback(() => {
     const skHex = bytesToHex(generateSecretKey());
     void adoptLocalSecretKey(skHex);
+    markKeyCreatedHere();
     return toNsec(skHex);
   }, []);
 
@@ -110,6 +95,7 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
       return false;
     }
     void adoptLocalSecretKey(normalized);
+    markKeyBroughtByUser();
     return true;
   }, []);
 
@@ -175,8 +161,6 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
 
   return {
     applyCustomNostrKey,
-    copyNsecAndDismiss,
-    dismissSkBackupNotice,
     nostrPK,
     nostrPublish,
     nostrPublishRef,
@@ -185,6 +169,5 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
     pool,
     rotateNostrKey,
     setCustomNostrKey,
-    showSkBackupNotice,
   };
 }

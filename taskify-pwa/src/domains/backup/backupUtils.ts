@@ -12,6 +12,7 @@ import {
 } from "../storageKeys";
 import { LS_NOSTR_RELAYS, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../../nostrKeys";
 import { adoptLocalSecretKey } from "../../identity/identity";
+import { markKeyBroughtByUser } from "../../onboarding/keyBackup";
 import {
   taskEntityStore,
   boardEntityStore,
@@ -140,6 +141,8 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
     adoptLocalSecretKey(data.nostrSk).catch((err) => console.warn("Backup has an unreadable Nostr key", err));
+    // The backup file holds the key, so the user has a copy.
+    markKeyBroughtByUser();
     notifyNostrKeyUpdated();
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
