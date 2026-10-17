@@ -625,7 +625,19 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
   (stage 4 step 2) are the first version of this API.
 - **Order.** The Boards module (next in stage 4) is built on these regions instead of more
   ad-hoc slots, so the board page is moved once and the layout redesign follows directly.
-- **Proposed direction, to confirm with the maintainer when C3-1 starts:**
+- **Maintainer requirements (2026-10-17):**
+  - The side navigation wastes space as it is; putting the boards in the rail makes that space
+    useful. (Confirms the rail-with-boards direction.)
+  - Boards with many lists must be easy to scroll sideways with an ordinary mouse, which has no
+    sideways wheel.
+  - Overall: a polished desktop experience that is beautiful and makes good use of the space,
+    yet still feels like the same app as the mobile PWA (same components, colors and
+    interactions; only the arrangement changes).
+- **Sideways scrolling, planned:** the vertical wheel scrolls the board sideways when the pointer
+  is over the board itself and not over a list that can still scroll; dragging empty board
+  space pans; edge arrow buttons appear when lists are hidden off either side; keyboard
+  shortcuts move between lists. Week boards should fit all seven days, so they rarely need it.
+- **Proposed direction (rail with boards confirmed; the rest to confirm when C3-1 starts):**
   - A rail that holds the board list (switch boards in one click), Upcoming, Chat and Settings.
   - A week board that fits seven days at ≥1280 px.
   - Upcoming with the month calendar and the day list side by side.
