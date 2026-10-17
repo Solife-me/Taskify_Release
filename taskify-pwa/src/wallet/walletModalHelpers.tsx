@@ -10,7 +10,7 @@ import {
   LS_CONTACT_PROFILE_CACHE,
   LS_PROFILE_METADATA_CACHE,
 } from "../localStorageKeys";
-import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../identity/identity";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
 import {
@@ -701,7 +701,7 @@ export type NostrIdentityInfo = {
 export const EMPTY_NOSTR_IDENTITY_INFO: NostrIdentityInfo = { identity: null, reason: null };
 
 export function readStoredNostrIdentity(): NostrIdentityInfo {
-  const raw = nostrSkSync().trim();
+  const raw = (revealLocalSecretKey() ?? "").trim();
   if (!raw) {
     return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
   }

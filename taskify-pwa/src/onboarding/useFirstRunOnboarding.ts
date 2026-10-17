@@ -8,7 +8,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
+import { currentIdentity } from "../identity/identity";
 import { kvStorage } from "../storage/kvStorage";
 import {
   applyBackupDataToStorage,
@@ -49,14 +49,8 @@ export function useFirstRunOnboarding({
   workerBaseUrl,
 }: UseFirstRunOnboardingParams) {
   const isOnboardingActiveRef = useRef(false);
-  const onboardingNeedsKeySelection = useMemo(() => {
-    try {
-      const raw = nostrSkSync().trim();
-      return !/^[0-9a-fA-F]{64}$/.test(raw);
-    } catch {
-      return true;
-    }
-  }, []);
+  // Asked once at startup: a device without an identity chooses or creates one first.
+  const onboardingNeedsKeySelection = useMemo(() => !currentIdentity(), []);
   const [showFirstRunOnboarding, setShowFirstRunOnboarding] = useState(() => {
     if (!onboardingNeedsKeySelection) return false;
     try {

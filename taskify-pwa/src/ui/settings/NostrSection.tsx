@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useMemo } from "react";
 import { nip19 } from "nostr-tools";
-import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../../identity/identity";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import { FileServersSection } from "./FileServersSection";
 import { toNsec } from "../../domains/nostr/nostrKeyUtils";
@@ -62,7 +62,7 @@ export function NostrSection({
           className="ghost-button button-sm pressable"
           onClick={async ()=>{
             try {
-              const sk = nostrSkSync();
+              const sk = (revealLocalSecretKey() ?? "");
               if (!sk) return;
               await navigator.clipboard?.writeText(toNsec(sk));
             } catch {}
@@ -121,7 +121,7 @@ export function NostrSection({
                 className="ghost-button button-sm pressable"
                 onClick={async ()=>{
                   try {
-                    const sk = nostrSkSync();
+                    const sk = (revealLocalSecretKey() ?? "");
                     if (!sk) return;
                     await navigator.clipboard?.writeText(toNsec(sk));
                   } catch {}

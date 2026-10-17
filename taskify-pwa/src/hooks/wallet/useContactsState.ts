@@ -11,7 +11,7 @@ import {
   LS_CONTACT_NIP05_CACHE,
   LS_PROFILE_METADATA_CACHE,
 } from "../../localStorageKeys";
-import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../../identity/identity";
 import {
   loadContactsFromStorage,
   normalizeContact,
@@ -92,7 +92,7 @@ const PROFILE_SHARE_CACHE_KEY = "taskify.profileSharePayload.v1";
 // ─── Private helpers ─────────────────────────────────────────────────────────
 
 function readStoredNostrIdentity(): NostrIdentityInfo {
-  const raw = nostrSkSync().trim();
+  const raw = (revealLocalSecretKey() ?? "").trim();
   if (!raw) {
     return { identity: null, reason: "Add your Taskify Nostr key in Settings → Nostr." };
   }

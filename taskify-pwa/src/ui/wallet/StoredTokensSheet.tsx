@@ -46,7 +46,7 @@ export function StoredTokensSheet({
   useEffect(() => {
     if (open) onCheck();
     if (!open) setConfirmDeleteId(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [open]);
 
   const sweepable = useMemo(

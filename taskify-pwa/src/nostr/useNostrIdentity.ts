@@ -5,7 +5,6 @@ import { generateSecretKey, nip19, type EventTemplate } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import {
   acknowledgeBackupNotice as nostrSkAcknowledgeBackupNotice,
-  getSkSync as nostrSkSync,
   isBackupNoticePending as nostrSkBackupNoticePending,
 } from "../lib/nostrSkStore";
 import { adoptLocalSecretKey, revealLocalSecretKey, useIdentity } from "../identity/identity";
@@ -92,7 +91,7 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
   }, []);
   const copyNsecAndDismiss = useCallback(async () => {
     try {
-      const sk = nostrSkSync();
+      const sk = revealLocalSecretKey();
       if (sk) await navigator.clipboard?.writeText(toNsec(sk));
     } catch {}
     dismissSkBackupNotice();

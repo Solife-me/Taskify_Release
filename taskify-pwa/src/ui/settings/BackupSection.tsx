@@ -4,7 +4,7 @@ import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "../../storage/taskifyDb";
 import { LS_LIGHTNING_CONTACTS, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
 import { LS_NOSTR_RELAYS } from "../../nostrKeys";
-import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../../identity/identity";
 import {
   taskEntityStore,
   boardEntityStore,
@@ -82,7 +82,7 @@ export function BackupSection({
       defaultRelays: JSON.parse(kvStorage.getItem(LS_NOSTR_RELAYS) || "[]"),
       contacts: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_LIGHTNING_CONTACTS) || "[]"),
       contactsSyncMeta: JSON.parse(idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META) || "{}"),
-      nostrSk: nostrSkSync(),
+      nostrSk: (revealLocalSecretKey() ?? ""),
       cashu: {
         proofs: loadProofStore(),
         activeMint: getActiveMint(),

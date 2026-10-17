@@ -4,7 +4,7 @@ import { useCashu } from "../../context/walletContexts";
 import { useNwc } from "../../context/walletContexts";
 import { useWalletMode } from "../../wallet/walletMode";
 import { useToast } from "../../context/ToastContext";
-import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../../identity/identity";
 import { getMintList, normalizeMintUrl } from "../../wallet/storage";
 import {
   claimSolifeCustomAddress,
@@ -141,7 +141,7 @@ export function WalletAddressView({
     try {
       const nextConfig = await fetchSolifeConfig();
       setConfig(nextConfig);
-      const storedSk = nostrSkSync();
+      const storedSk = (revealLocalSecretKey() ?? "");
       if (!storedSk) {
         setAccount(null);
         setStatus("error");
@@ -194,7 +194,7 @@ export function WalletAddressView({
         setMessage("Select a custom Solife address before changing its payment mint.");
         return;
       }
-      const storedSk = nostrSkSync();
+      const storedSk = (revealLocalSecretKey() ?? "");
       if (!storedSk) {
         setStatus("error");
         setMessage("Add your Taskify Nostr key in Settings -> Nostr before changing your Solife mint.");
@@ -246,7 +246,7 @@ export function WalletAddressView({
       setPurchaseMessage("Handle must be 2-32 characters using lowercase letters, numbers, _ or -.");
       return;
     }
-    const storedSk = nostrSkSync();
+    const storedSk = (revealLocalSecretKey() ?? "");
     if (!storedSk) {
       setPurchaseStatus("error");
       setPurchaseMessage("Add your Taskify Nostr key in Settings -> Nostr before claiming a Solife address.");
@@ -361,7 +361,7 @@ export function WalletAddressView({
 
   const handleSetForward = useCallback(async (connectionOverride?: string) => {
     if (!activeSolifeAddressRecord) return;
-    const storedSk = nostrSkSync();
+    const storedSk = (revealLocalSecretKey() ?? "");
     if (!storedSk) {
       setForwardStatus("error");
       setForwardMessage("Add your Taskify Nostr key in Settings -> Nostr first.");
@@ -386,7 +386,7 @@ export function WalletAddressView({
 
   const handleClearForward = useCallback(async () => {
     if (!activeSolifeAddressRecord) return;
-    const storedSk = nostrSkSync();
+    const storedSk = (revealLocalSecretKey() ?? "");
     if (!storedSk) return;
     setForwardStatus("saving");
     setForwardMessage("");

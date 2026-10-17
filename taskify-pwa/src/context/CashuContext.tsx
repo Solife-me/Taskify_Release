@@ -16,7 +16,7 @@ import {
   setActiveMint as persistActiveMint,
   type PendingTokenEntry,
 } from "../wallet/storage";
-import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../identity/identity";
 import { CashuContext, useP2PK } from "./walletContexts";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
 import { decodeBolt11Amount } from "../wallet/lightning";
@@ -379,7 +379,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         }
       }
       try {
-        const raw = nostrSkSync();
+        const raw = (revealLocalSecretKey() ?? "");
         const trimmed = raw.trim();
         if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
           const derived = deriveCompressedPubkeyFromSecret(trimmed);

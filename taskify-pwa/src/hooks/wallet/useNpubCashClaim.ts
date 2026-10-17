@@ -5,7 +5,7 @@ import {
   claimPendingEcashFromNpubCash,
   deriveNpubCashIdentity,
 } from "../../wallet/npubCash";
-import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../../identity/identity";
 import { amountFromCashuToken } from "../../wallet/cashuProofHelpers";
 import {
   deriveSpentHistoryTokenStateFromToken,
@@ -52,7 +52,7 @@ export function useNpubCashClaim(opts: UseNpubCashClaimOptions) {
       if (!npubCashLightningAddressEnabled) return;
       if (npubCashClaimingRef.current) return;
       const auto = options?.auto === true;
-      const storedSk = nostrSkSync();
+      const storedSk = (revealLocalSecretKey() ?? "");
       if (!storedSk) {
         setNpubCashIdentity(null);
         const message = "Add your Taskify Nostr key in Settings → Nostr to use npub.cash.";

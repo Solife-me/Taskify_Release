@@ -31,7 +31,7 @@ import {
 import { decodeBolt11Amount } from "../wallet/lightning";
 
 
-import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../identity/identity";
 import { LS_NOSTR_RELAYS } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
 import { type GroupChat } from "../lib/groupChatState";
@@ -799,7 +799,7 @@ export default function CashuWalletModal({
       return selectedSolifeLightningAddress;
     }
     if (npubCashIdentity?.address) return npubCashIdentity.address;
-    const storedSk = nostrSkSync();
+    const storedSk = (revealLocalSecretKey() ?? "");
     if (!storedSk) return "";
     try {
       const domain = solifeLightningAddressEnabled ? SOLIFE_LIGHTNING_ADDRESS_DOMAIN : "npub.cash";
@@ -2119,7 +2119,7 @@ export default function CashuWalletModal({
       setNpubCashIdentityError(null);
       return;
     }
-    const storedSk = nostrSkSync();
+    const storedSk = (revealLocalSecretKey() ?? "");
     const providerDomain = solifeLightningAddressEnabled ? SOLIFE_LIGHTNING_ADDRESS_DOMAIN : "npub.cash";
     if (!storedSk) {
       setNpubCashIdentity(null);
