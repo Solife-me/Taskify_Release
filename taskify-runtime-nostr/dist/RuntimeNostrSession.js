@@ -1,6 +1,6 @@
 import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus } from "@nostr-dev-kit/ndk";
 import { finalizeEvent, verifyEvent } from "nostr-tools";
-import { applyProofOfWork, countLeadingZeroBits, mineEventTemplate } from "./ProofOfWork.js";
+import { applyProofOfWork, countLeadingZeroBits, mineEventTemplate, mineEventTemplateFor } from "./ProofOfWork.js";
 import { createRelayAuthPolicy } from "./RelayAuth.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager } from "./SubscriptionManager.js";
@@ -203,7 +203,28 @@ export class RuntimeNostrSession {
         const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
         if (difficulty > 0)
             this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
-        return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, { ...this.miningOptions(), ...options, signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal }), secretKey);
+        return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, this.preparedMiningOptions(options)), secretKey);
+    }
+    /**
+     * `prepareEvent` for a key held elsewhere: mines proof of work for `signer.pubkey` where the
+     * relays ask for it, then has the signer sign the finished template.
+     */
+    async prepareEventWith(template, signer, relayUrls, options) {
+        const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
+        if (difficulty > 0)
+            this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
+        const mined = await mineEventTemplateFor(template, signer.pubkey, difficulty, this.preparedMiningOptions(options));
+        const signed = await signer.sign(mined);
+        if (signed.pubkey !== signer.pubkey || !verifyEvent(signed))
+            throw new Error("The signer returned an invalid event.");
+        return signed;
+    }
+    preparedMiningOptions(options) {
+        return {
+            ...this.miningOptions(),
+            ...options,
+            signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal,
+        };
     }
     /**
      * Signs (mining NIP-13 proof of work where relays ask for it) and publishes an event. When a

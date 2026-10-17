@@ -1,10 +1,20 @@
 import NDK, { NDKEvent, NDKKind, NDKPrivateKeySigner, type NDKRelay } from "@nostr-dev-kit/ndk";
+import type { EventTemplate, NostrEvent } from "nostr-tools";
 import { normalizeRelayUrls } from "./relayUrls.js";
 
 type AuthState = { challenge: string; authedAt: number; pending?: boolean; authed?: boolean };
 
+/** The account's signer, for keys held outside this process (an extension or a remote signer). */
+export type RelayAuthAccountSigner = {
+  pubkey: string;
+  sign: (template: EventTemplate) => Promise<NostrEvent>;
+};
+
 type RelayAuthOptions = {
-  loadSecretKeyHex: () => string | null;
+  /** The account's secret key, for clients that hold it. */
+  loadSecretKeyHex?: () => string | null;
+  /** Preferred when set: the account's signer, or null while signed out. */
+  loadAccountSigner?: () => RelayAuthAccountSigner | null;
   /**
    * Answer challenges with a throwaway key when no account key is available, so relays that
    * gate reads behind NIP-42 still serve signed-out clients. Off by default.
@@ -25,6 +35,7 @@ export class RelayAuthManager {
   private readonly authPerConnection = new Map<string, AuthState>();
   private readonly outcomes = new Map<string, RelayAuthOutcome>();
   private readonly loadSecretKeyHex: () => string | null;
+  private readonly loadAccountSigner?: () => RelayAuthAccountSigner | null;
   private readonly allowEphemeralKey: boolean;
   private ephemeralSigner: NDKPrivateKeySigner | null = null;
   /** AUTH events signed with the throwaway key, so their outcome can say so. */
@@ -32,7 +43,8 @@ export class RelayAuthManager {
 
   constructor(ndk: NDK, options: RelayAuthOptions) {
     this.ndk = ndk;
-    this.loadSecretKeyHex = options.loadSecretKeyHex;
+    this.loadSecretKeyHex = options.loadSecretKeyHex ?? (() => null);
+    this.loadAccountSigner = options.loadAccountSigner;
     this.allowEphemeralKey = Boolean(options.allowEphemeralKey);
   }
 
@@ -54,6 +66,17 @@ export class RelayAuthManager {
   }
 
   async buildAuthEvent(relayUrl: string, challenge: string): Promise<NDKEvent | null> {
+    const tags = [["relay", relayUrl], ["challenge", challenge]];
+    const account = this.loadAccountSigner?.();
+    if (account) {
+      const signed = await account.sign({
+        kind: NDKKind.ClientAuth,
+        tags,
+        content: "",
+        created_at: Math.floor(Date.now() / 1000),
+      });
+      return new NDKEvent(this.ndk, signed);
+    }
     const loaded = this.loadSigner();
     if (!loaded) {
       this.outcomes.set(this.outcomeKey(relayUrl), { state: "no-key", at: Date.now() });

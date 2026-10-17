@@ -142,6 +142,16 @@ export async function mineEventTemplate(
   return mine(template, getPublicKey(secretKey), difficulty, options);
 }
 
+/** Mines for a public key whose secret is held elsewhere (an extension or a remote signer). */
+export async function mineEventTemplateFor(
+  template: EventTemplate,
+  pubkey: string,
+  difficulty: number,
+  options?: ProofOfWorkOptions,
+): Promise<EventTemplate> {
+  return mine(template, pubkey, difficulty, options);
+}
+
 /** Signed events are immutable: callers must prepare proof of work before signing. */
 export async function applyProofOfWork(event: NDKEvent, signer: NDKSigner | undefined, difficulty: number, options?: ProofOfWorkOptions): Promise<void> {
   if (difficulty === 0) return;

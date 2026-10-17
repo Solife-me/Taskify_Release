@@ -55,3 +55,31 @@ test('without a key the policy declines and records why', async () => {
   assert.equal(connectivity._status, 5);
   assert.equal(auth.outcome('wss://k.example/')?.state, 'no-key');
 });
+
+test('an account signer answers AUTH without the secret key being handed over', async () => {
+  const { finalizeEvent, getPublicKey, verifyEvent } = await import('nostr-tools');
+  const secret = new Uint8Array(32).fill(3);
+  const pubkey = getPublicKey(secret);
+  const signed: unknown[] = [];
+  const auth = new RelayAuthManager({} as NDK, {
+    loadAccountSigner: () => ({
+      pubkey,
+      sign: async (template) => {
+        signed.push(template);
+        return finalizeEvent(template, secret);
+      },
+    }),
+  });
+  const event = await auth.buildAuthEvent('wss://auth.example/', 'abc');
+  assert.ok(event);
+  assert.equal(signed.length, 1);
+  assert.equal(event.pubkey, pubkey);
+  assert.deepEqual(event.tags, [['relay', 'wss://auth.example/'], ['challenge', 'abc']]);
+  assert.ok(verifyEvent(event.rawEvent() as never));
+});
+
+test('a signed-out account signer falls back to the configured key or nothing', async () => {
+  const auth = new RelayAuthManager({} as NDK, { loadAccountSigner: () => null });
+  assert.equal(await auth.buildAuthEvent('wss://auth.example/', 'abc'), null);
+  assert.equal(auth.outcome('wss://auth.example/')?.state, 'no-key');
+});

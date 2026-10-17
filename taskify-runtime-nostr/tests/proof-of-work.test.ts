@@ -52,3 +52,13 @@ test('mining replaces an existing nonce tag rather than adding a second', async 
   assert.equal(mined.tags.filter(t => t[0] === 'nonce').length, 1);
   assert.equal(mined.tags.find(t => t[0] === 'nonce')?.[2], '6');
 });
+
+test('mining for a public key alone meets the target for the key that later signs', async () => {
+  const { mineEventTemplateFor, countLeadingZeroBits } = await import('../dist/ProofOfWork.js');
+  const { finalizeEvent, getPublicKey } = await import('nostr-tools');
+  const secret = new Uint8Array(32).fill(5);
+  const mined = await mineEventTemplateFor({ kind: 1, tags: [], content: 'x', created_at: 1 }, getPublicKey(secret), 8);
+  const event = finalizeEvent(mined, secret);
+  assert.ok(countLeadingZeroBits(event.id) >= 8);
+  assert.deepEqual(mined.tags.find((tag: string[]) => tag[0] === 'nonce')?.[2], '8');
+});

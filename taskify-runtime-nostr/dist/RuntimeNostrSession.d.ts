@@ -122,6 +122,15 @@ export declare class RuntimeNostrSession<TWalletClient = unknown> {
     prepareNDKEvent(event: NDKEvent, signer: NDKSigner, relayUrls: string[]): Promise<void>;
     prepareEvent(template: EventTemplate, secretKey: Uint8Array, relayUrls: string[], options?: ProofOfWorkOptions): Promise<NostrEvent>;
     /**
+     * `prepareEvent` for a key held elsewhere: mines proof of work for `signer.pubkey` where the
+     * relays ask for it, then has the signer sign the finished template.
+     */
+    prepareEventWith(template: EventTemplate, signer: {
+        pubkey: string;
+        sign: (template: EventTemplate) => Promise<NostrEvent>;
+    }, relayUrls: string[], options?: ProofOfWorkOptions): Promise<NostrEvent>;
+    private preparedMiningOptions;
+    /**
      * Signs (mining NIP-13 proof of work where relays ask for it) and publishes an event. When a
      * relay refuses it for too little work and names its target, the event is mined again to that
      * target and resent once: replaceable events go to every relay with a newer timestamp so the

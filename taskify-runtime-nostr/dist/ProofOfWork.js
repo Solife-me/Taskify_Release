@@ -119,6 +119,10 @@ async function mine(template, pubkey, difficulty, options = {}) {
 export async function mineEventTemplate(template, secretKey, difficulty, options) {
     return mine(template, getPublicKey(secretKey), difficulty, options);
 }
+/** Mines for a public key whose secret is held elsewhere (an extension or a remote signer). */
+export async function mineEventTemplateFor(template, pubkey, difficulty, options) {
+    return mine(template, pubkey, difficulty, options);
+}
 /** Signed events are immutable: callers must prepare proof of work before signing. */
 export async function applyProofOfWork(event, signer, difficulty, options) {
     if (difficulty === 0)

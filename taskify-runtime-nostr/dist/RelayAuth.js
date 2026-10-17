@@ -5,13 +5,15 @@ export class RelayAuthManager {
     authPerConnection = new Map();
     outcomes = new Map();
     loadSecretKeyHex;
+    loadAccountSigner;
     allowEphemeralKey;
     ephemeralSigner = null;
     /** AUTH events signed with the throwaway key, so their outcome can say so. */
     ephemeralAuthEvents = new Set();
     constructor(ndk, options) {
         this.ndk = ndk;
-        this.loadSecretKeyHex = options.loadSecretKeyHex;
+        this.loadSecretKeyHex = options.loadSecretKeyHex ?? (() => null);
+        this.loadAccountSigner = options.loadAccountSigner;
         this.allowEphemeralKey = Boolean(options.allowEphemeralKey);
     }
     connectionKey(relay) {
@@ -31,6 +33,17 @@ export class RelayAuthManager {
         return { signer: this.ephemeralSigner, ephemeral: true };
     }
     async buildAuthEvent(relayUrl, challenge) {
+        const tags = [["relay", relayUrl], ["challenge", challenge]];
+        const account = this.loadAccountSigner?.();
+        if (account) {
+            const signed = await account.sign({
+                kind: NDKKind.ClientAuth,
+                tags,
+                content: "",
+                created_at: Math.floor(Date.now() / 1000),
+            });
+            return new NDKEvent(this.ndk, signed);
+        }
         const loaded = this.loadSigner();
         if (!loaded) {
             this.outcomes.set(this.outcomeKey(relayUrl), { state: "no-key", at: Date.now() });

@@ -26,5 +26,7 @@ export declare function committedProofOfWorkDifficulty(tags: string[][]): number
 export declare function parseProofOfWorkRejection(message: string | null | undefined): number | null;
 /** Mine before finalizeEvent, and before retaining any references to the event ID. */
 export declare function mineEventTemplate(template: EventTemplate, secretKey: Uint8Array, difficulty: number, options?: ProofOfWorkOptions): Promise<EventTemplate>;
+/** Mines for a public key whose secret is held elsewhere (an extension or a remote signer). */
+export declare function mineEventTemplateFor(template: EventTemplate, pubkey: string, difficulty: number, options?: ProofOfWorkOptions): Promise<EventTemplate>;
 /** Signed events are immutable: callers must prepare proof of work before signing. */
 export declare function applyProofOfWork(event: NDKEvent, signer: NDKSigner | undefined, difficulty: number, options?: ProofOfWorkOptions): Promise<void>;

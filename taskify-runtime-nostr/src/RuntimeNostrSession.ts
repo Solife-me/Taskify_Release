@@ -1,6 +1,6 @@
 import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus, type NDKFilter, type NDKRelay, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { finalizeEvent, verifyEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
-import { applyProofOfWork, countLeadingZeroBits, mineEventTemplate, type ProofOfWorkHashFactory, type ProofOfWorkOptions } from "./ProofOfWork.js";
+import { applyProofOfWork, countLeadingZeroBits, mineEventTemplate, mineEventTemplateFor, type ProofOfWorkHashFactory, type ProofOfWorkOptions } from "./ProofOfWork.js";
 import { createRelayAuthPolicy, type RelayAuthOutcome } from "./RelayAuth.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
@@ -280,7 +280,33 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   async prepareEvent(template: EventTemplate, secretKey: Uint8Array, relayUrls: string[], options?: ProofOfWorkOptions): Promise<NostrEvent> {
     const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
     if (difficulty > 0) this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
-    return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, { ...this.miningOptions(), ...options, signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal }), secretKey);
+    return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, this.preparedMiningOptions(options)), secretKey);
+  }
+
+  /**
+   * `prepareEvent` for a key held elsewhere: mines proof of work for `signer.pubkey` where the
+   * relays ask for it, then has the signer sign the finished template.
+   */
+  async prepareEventWith(
+    template: EventTemplate,
+    signer: { pubkey: string; sign: (template: EventTemplate) => Promise<NostrEvent> },
+    relayUrls: string[],
+    options?: ProofOfWorkOptions,
+  ): Promise<NostrEvent> {
+    const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
+    if (difficulty > 0) this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
+    const mined = await mineEventTemplateFor(template, signer.pubkey, difficulty, this.preparedMiningOptions(options));
+    const signed = await signer.sign(mined);
+    if (signed.pubkey !== signer.pubkey || !verifyEvent(signed)) throw new Error("The signer returned an invalid event.");
+    return signed;
+  }
+
+  private preparedMiningOptions(options?: ProofOfWorkOptions): ProofOfWorkOptions {
+    return {
+      ...this.miningOptions(),
+      ...options,
+      signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal,
+    };
   }
 
   /**

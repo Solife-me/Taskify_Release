@@ -1,6 +1,15 @@
 import NDK, { NDKEvent, type NDKRelay } from "@nostr-dev-kit/ndk";
+import type { EventTemplate, NostrEvent } from "nostr-tools";
+/** The account's signer, for keys held outside this process (an extension or a remote signer). */
+export type RelayAuthAccountSigner = {
+    pubkey: string;
+    sign: (template: EventTemplate) => Promise<NostrEvent>;
+};
 type RelayAuthOptions = {
-    loadSecretKeyHex: () => string | null;
+    /** The account's secret key, for clients that hold it. */
+    loadSecretKeyHex?: () => string | null;
+    /** Preferred when set: the account's signer, or null while signed out. */
+    loadAccountSigner?: () => RelayAuthAccountSigner | null;
     /**
      * Answer challenges with a throwaway key when no account key is available, so relays that
      * gate reads behind NIP-42 still serve signed-out clients. Off by default.
@@ -19,6 +28,7 @@ export declare class RelayAuthManager {
     private readonly authPerConnection;
     private readonly outcomes;
     private readonly loadSecretKeyHex;
+    private readonly loadAccountSigner?;
     private readonly allowEphemeralKey;
     private ephemeralSigner;
     /** AUTH events signed with the throwaway key, so their outcome can say so. */
