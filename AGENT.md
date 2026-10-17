@@ -199,6 +199,7 @@ npx wrangler dev
 | `src/domains/push/reminderClient.test.ts` | Reminder HTTP client | Stable payload ordering, minute offsets, cancellation, missing configuration, and HTTP errors |
 | `src/domains/push/vapidKey.test.ts`, `src/lib/withTimeout.test.ts` | Push registration utilities | URL-safe decoding, invalid keys, timeout rejection, and timer cleanup |
 | `src/domains/push/chatPush.test.ts`, `src/ui/settings/PushSection.test.tsx` | PWA chat alerts | NIP-98 header signed by the user's signer over URL, method and body hash; push relay added to or removed from the kind-10050 inbox list without ever emptying it; only the account's own latest preference read; Settings toggle shown once push is on |
+| `src/chat/cashuTokenText.test.ts`, `src/chat/ChatTokenBubble.test.tsx` | Wallet-independent PWA Chat | Cashu token recognition without loading the Cashu SDK; received tokens are displayed as copy-only and the complete token, not its shortened display, is copied |
 | `taskify-cli/tests/config-command.test.ts`, `taskify-cli/tests/relay-diagnostics.test.ts` | CLI configuration and diagnostics | Selected-profile persistence, redaction, errors, and simulated connection outcomes |
 | `taskify-cli/tests/completions-command.test.ts` | CLI completions | Explicit shells, environment detection, combined fallback output, and invalid-shell exits |
 | `src/storage/boardPrintJobs.test.ts` | Saved print jobs | Legacy defaults, malformed data, per-board preservation, and storage failures |
