@@ -131,13 +131,16 @@ export class FCMClient {
 
 /// Picks the push service for a registration.
 export class PushRouter {
-  constructor({ apnsClient, fcmClient = null }) {
+  constructor({ apnsClient, fcmClient = null, webPushClient = null }) {
     this.apnsClient = apnsClient
     this.fcmClient = fcmClient
+    this.webPushClient = webPushClient
   }
 
   clientFor(registration) {
-    return registration.platform === 'android' ? this.fcmClient : this.apnsClient
+    if (registration.platform === 'android') return this.fcmClient
+    if (registration.platform === 'web') return this.webPushClient
+    return this.apnsClient
   }
 
   async send(registration, previewURL = null) {

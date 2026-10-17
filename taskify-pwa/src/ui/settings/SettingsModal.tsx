@@ -62,6 +62,9 @@ export function SettingsModal({
   pushError,
   onEnablePush,
   onDisablePush,
+  chatPushBusy,
+  onEnableChatPush,
+  onDisableChatPush,
   workerBaseUrl,
   vapidPublicKey,
   onResetWalletTokenTracking,
@@ -94,6 +97,9 @@ export function SettingsModal({
   pushError: string | null;
   onEnablePush: (platform: PushPlatform) => Promise<void>;
   onDisablePush: () => Promise<void>;
+  chatPushBusy: boolean;
+  onEnableChatPush: () => Promise<void>;
+  onDisableChatPush: () => Promise<void>;
   workerBaseUrl: string;
   vapidPublicKey: string;
   onResetWalletTokenTracking: () => void;
@@ -378,6 +384,9 @@ export function SettingsModal({
           pushError={pushError}
           onEnablePush={onEnablePush}
           onDisablePush={onDisablePush}
+          chatPushBusy={chatPushBusy}
+          onEnableChatPush={onEnableChatPush}
+          onDisableChatPush={onDisableChatPush}
           workerBaseUrl={workerBaseUrl}
           vapidPublicKey={vapidPublicKey}
         />

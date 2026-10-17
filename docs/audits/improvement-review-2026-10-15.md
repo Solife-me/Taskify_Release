@@ -495,6 +495,24 @@ The suites are green after the page-router step: PWA lint (one existing warning 
     reset a task's local position; `BoardPublisher` still sets `_nostrAt` on the task object
     passed in.
 
+- **Chat alerts for the PWA (maintainer request 2026-10-16, done; needs a relay deploy).**
+  - The push relay now also sends Web Push (`src/webpush.js`: RFC 8291 encryption and VAPID with
+    node:crypto, no new dependencies). A browser has one push subscription, made with the
+    Worker's VAPID key for reminders, so the relay is configured with the same key pair (the
+    new Configure Web Push StartOS action, or `WEB_PUSH_VAPID_*`). Only browser push service
+    hosts are accepted as endpoints, so a registration cannot aim the relay at other hosts.
+  - The alert payload is `{"type":"message"}`: no sender, conversation or preview link. The
+    service worker tells it apart from reminder pings (which carry no payload), shows "New
+    message", and a tap opens Chat.
+  - The PWA's push code moved out of `App.tsx` into `domains/push/usePushNotifications.ts`
+    (−370 lines from App). Settings → Push notifications gains a Chat messages toggle once push
+    is on. Turning it on registers the subscription with the relay (NIP-98, signed through the
+    identity's signer, so it carries over to NIP-07/NIP-46) and adds the relay to the account's
+    kind-10050 inbox list, as iOS does; turning it off reverses both (the relay stays listed
+    while another device still uses it). Each launch refreshes the registration.
+  - Until the relay is deployed with the key pair, turning chat alerts on shows "Web push is not
+    configured on this relay".
+  - For chunk 5: rich previews on the web (the service worker would need the key, or a signer).
 - **C2-5, first run that starts with tasks (done, PWA).**
   - First run is "Start using Taskify" (makes the key quietly and opens the board) or "I already
     use Taskify" (sign in with an nsec, or restore a backup file). Signer apps join that page

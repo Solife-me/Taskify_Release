@@ -1,14 +1,11 @@
 import { prepareRelayEvent } from "./nostr/prepareRelayEvent";
 import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
-import { PUSH_OPERATION_TIMEOUT_MS } from "./domains/push/reminderClient";
 import { useReminderSync } from "./domains/push/useReminderSync";
-import { urlBase64ToUint8Array } from "./domains/push/vapidKey";
-import { withTimeout } from "./lib/withTimeout";
 import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
 import { useAppRouter } from "./routing/appRouter";
 import { routeForPage, type ActivePage, type AppOverlayRoute, type AppSheetRoute } from "./routing/appRoute";
 import { useOverlayHistory, useRouteOverlayOpener } from "./routing/useOverlayHistory";
-import { useReminderTaps } from "./routing/useReminderTaps";
+import { useNotificationTaps } from "./routing/useNotificationTaps";
 import { DroppableColumn } from "./ui/board/DroppableColumn";
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -66,7 +63,6 @@ import { type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrint
 import { type PrintPaperSize } from "./components/printPaper";
 import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
-import { toBufferSource } from "./lib/binary";
 import { useCashu } from "./context/walletContexts";
 import { useWalletEnabled } from "./wallet/walletAvailability";
 import { WalletPhaseOutNotice } from "./ui/wallet/WalletPhaseOutNotice";
@@ -183,7 +179,6 @@ import type {
   PublishCalendarEventFn,
   PublishTaskFn,
 } from "./domains/tasks/taskTypes";
-import { type PushPlatform } from "./domains/push/pushUtils";
 import {
   daysInCalendarMonth,
   formatDateKeyLocal,
@@ -216,8 +211,7 @@ import {
 import {
   appendWalletHistoryEntry,
 } from "./domains/backup/backupUtils";
-import { type PushPreferences } from "./domains/tasks/settingsTypes";
-import { DEFAULT_PUSH_PREFERENCES, useSettingsSync } from "./domains/tasks/settingsHook";
+import { useSettingsSync } from "./domains/tasks/settingsHook";
 import {
   withBoardOrder,
   nextOccurrence,
@@ -320,6 +314,7 @@ import {
   useNostrAppBackupSync,
 } from "./nostr/useNostrAppBackupSync";
 import { useFirstRunOnboarding } from "./onboarding/useFirstRunOnboarding";
+import { usePushNotifications } from "./domains/push/usePushNotifications";
 import { KeyBackupBanner } from "./onboarding/KeyBackupBanner";
 import { ReminderNotificationOffer, useReminderNotificationOffer } from "./onboarding/ReminderNotificationOffer";
 import { useClipboardWriteToast } from "./hooks/useClipboardWriteToast";
@@ -2515,8 +2510,17 @@ export default function App() {
     });
   }, [setBibleTracker]);
 
-  const [pushWorkState, setPushWorkState] = useState<"idle" | "enabling" | "disabling">("idle");
-  const [pushError, setPushError] = useState<string | null>(null);
+  const {
+    chatPushBusy,
+    disableChatPush,
+    disablePushNotifications,
+    enableChatPush,
+    enablePushNotifications,
+    pushError,
+    pushWorkState,
+    reminderPayloadRef,
+    setPushError,
+  } = usePushNotifications({ settings, setSettings, workerBaseUrl, vapidPublicKey, defaultRelays, nostrPublish });
   const [inlineTitles, setInlineTitles] = useState<Record<string, string>>({});
   const [addMenuKey, setAddMenuKey] = useState<string | null>(null);
   const [voiceDictationKey, setVoiceDictationKey] = useState<string | null>(null);
@@ -4960,7 +4964,6 @@ export default function App() {
     merged.sort((a, b) => a.taskId.localeCompare(b.taskId));
     return merged;
   }, [calendarEvents, reminderSystemTimeZone, tasks]);
-  const reminderPayloadRef = useRef<string | null>(null);
 
   useReminderSync({
     reminderSyncItems,
@@ -4970,101 +4973,6 @@ export default function App() {
     setPushError,
     showToast,
   });
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const pushPrefs = settings.pushNotifications ?? DEFAULT_PUSH_PREFERENCES;
-    const permission = typeof Notification !== 'undefined' ? Notification.permission : pushPrefs.permission;
-
-    const applyUpdates = (patch: Partial<PushPreferences>): boolean => {
-      const keys = Object.keys(patch) as (keyof PushPreferences)[];
-      if (!keys.length) return false;
-      let changed = false;
-      for (const key of keys) {
-        if (patch[key] !== (pushPrefs as any)[key]) {
-          changed = true;
-          break;
-        }
-      }
-      if (!changed) return false;
-      setSettings({ pushNotifications: { ...pushPrefs, ...patch } });
-      return true;
-    };
-
-    const ensureDisabled = () => {
-      const patch: Partial<PushPreferences> = {};
-      if (pushPrefs.enabled) patch.enabled = false;
-      if (pushPrefs.subscriptionId !== undefined) patch.subscriptionId = undefined;
-      if (permission !== pushPrefs.permission) patch.permission = permission;
-      const changed = applyUpdates(patch);
-      if (changed) {
-        reminderPayloadRef.current = null;
-      }
-    };
-
-    if (!pushPrefs.enabled) {
-      if (permission !== pushPrefs.permission) {
-        applyUpdates({ permission });
-      }
-      return;
-    }
-
-    const pushApiSupported = 'serviceWorker' in navigator && 'PushManager' in window;
-    if (!pushApiSupported) {
-      ensureDisabled();
-      return;
-    }
-
-    let cancelled = false;
-    (async () => {
-      let registration: ServiceWorkerRegistration | null | undefined;
-      try {
-        registration = typeof navigator.serviceWorker.getRegistration === 'function'
-          ? await withTimeout(
-            navigator.serviceWorker.getRegistration(),
-            PUSH_OPERATION_TIMEOUT_MS,
-            'Timed out while checking the service worker registration.',
-          )
-          : undefined;
-      } catch {}
-      if (!registration) {
-        try {
-          registration = await withTimeout(
-            navigator.serviceWorker.ready,
-            PUSH_OPERATION_TIMEOUT_MS,
-            'Timed out waiting for the service worker to become ready.',
-          );
-        } catch {}
-      }
-      if (cancelled) return;
-      if (!registration) {
-        ensureDisabled();
-        return;
-      }
-
-      let subscription: PushSubscription | null = null;
-      try {
-        subscription = await withTimeout(
-          registration.pushManager.getSubscription(),
-          PUSH_OPERATION_TIMEOUT_MS,
-          'Timed out while checking the existing push subscription.',
-        );
-      } catch {}
-      if (cancelled) return;
-      if (!subscription || permission !== 'granted') {
-        ensureDisabled();
-        return;
-      }
-
-      if (permission !== pushPrefs.permission) {
-        applyUpdates({ permission });
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [setSettings, settings.pushNotifications]);
 
   // --------- Nostr helpers
   const isShared = (board: Board) => !!board.nostr?.boardId;
@@ -5774,279 +5682,6 @@ export default function App() {
       });
     }, LIVE_BATCH_MS);
   }, [recordRecurringSeriesCutoff, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
-
-  function normalizePushError(err: unknown): string {
-    if (!(err instanceof Error)) return 'Failed to enable push notifications.';
-    const message = err.message || 'Failed to enable push notifications.';
-    const lower = message.toLowerCase();
-    if (lower.includes('push service error')) {
-      return 'The browser\'s push service rejected the registration. Check that notifications are allowed for this site (Safari → Settings → Websites → Notifications on macOS) and try again.';
-    }
-    if (lower.includes('not allowed')) {
-      return 'The browser blocked the subscription request. Grant notification permission and try again.';
-    }
-    if (lower.includes('secure context')) {
-      return 'Push notifications require HTTPS (or localhost during development). Reload the app over a secure origin and try again.';
-    }
-    if (lower.includes('invalid vapid public key')) {
-      return 'The configured VAPID public key appears to be invalid. Update both the Worker and the app with matching VAPID keys.';
-    }
-    return message;
-  }
-
-  function isRecoverablePushError(err: unknown): boolean {
-    if (!err) return false;
-    const message = typeof (err as any)?.message === 'string' ? (err as any).message.toLowerCase() : '';
-    if (!message) return false;
-    return message.includes('push service error')
-      || message.includes('not allowed')
-      || message.includes('denied')
-      || message.includes('aborted');
-  }
-
-  async function purgeExistingPushSubscriptions(): Promise<void> {
-    if (!navigator.serviceWorker) return;
-    const hasGetRegistrations = typeof navigator.serviceWorker.getRegistrations === 'function';
-    const registrations: ServiceWorkerRegistration[] = [];
-    try {
-      if (hasGetRegistrations) {
-        registrations.push(...await navigator.serviceWorker.getRegistrations());
-      } else if (typeof navigator.serviceWorker.getRegistration === 'function') {
-        const single = await navigator.serviceWorker.getRegistration();
-        if (single) registrations.push(single);
-      }
-    } catch {
-      return;
-    }
-    await Promise.all(registrations.map(async (registration) => {
-      try {
-        const sub = await registration.pushManager.getSubscription();
-        if (sub) await sub.unsubscribe();
-      } catch {}
-    }));
-  }
-
-  async function subscribeWithRecovery(
-    registration: ServiceWorkerRegistration,
-    applicationServerKey: Uint8Array,
-  ): Promise<PushSubscription> {
-    const subscribe = () =>
-      withTimeout(
-        registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: toBufferSource(applicationServerKey),
-        }),
-        PUSH_OPERATION_TIMEOUT_MS,
-        'Timed out while creating a push subscription.',
-      );
-    try {
-      return await subscribe();
-    } catch (err) {
-      if (!isRecoverablePushError(err)) throw err;
-      await purgeExistingPushSubscriptions();
-      return await subscribe();
-    }
-  }
-
-  async function resolvePushServiceWorkerRegistration(): Promise<ServiceWorkerRegistration> {
-    if (!('serviceWorker' in navigator)) {
-      throw new Error('Push notifications are not supported on this device.');
-    }
-
-    let registration: ServiceWorkerRegistration | null | undefined;
-    if (typeof navigator.serviceWorker.getRegistration === 'function') {
-      try {
-        registration = await withTimeout(
-          navigator.serviceWorker.getRegistration(),
-          PUSH_OPERATION_TIMEOUT_MS,
-          'Timed out while checking the service worker registration.',
-        );
-      } catch {}
-    }
-
-    if (!registration && typeof navigator.serviceWorker.register === 'function') {
-      try {
-        registration = await withTimeout(
-          navigator.serviceWorker.register('/sw.js'),
-          PUSH_OPERATION_TIMEOUT_MS,
-          'Timed out while registering the service worker.',
-        );
-      } catch {}
-    }
-
-    if (registration?.active) return registration;
-
-    try {
-      return await withTimeout(
-        navigator.serviceWorker.ready,
-        PUSH_OPERATION_TIMEOUT_MS,
-        'Timed out waiting for the service worker to become ready.',
-      );
-    } catch {
-      throw new Error('Service worker is not ready yet. Reload Taskify and try again.');
-    }
-  }
-
-  async function enablePushNotifications(platform: PushPlatform): Promise<void> {
-    if (pushWorkState === 'enabling') return;
-    setPushWorkState('enabling');
-    setPushError(null);
-    try {
-      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-        throw new Error('Push notifications are not supported on this device.');
-      }
-      if (typeof window !== 'undefined' && !window.isSecureContext) {
-        throw new Error('Push notifications require HTTPS (or localhost).');
-      }
-      if (!vapidPublicKey) {
-        throw new Error('Missing VAPID public key.');
-      }
-      if (!workerBaseUrl) {
-        throw new Error('Missing worker base URL.');
-      }
-
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
-        throw new Error('Notifications permission was not granted.');
-      }
-
-      const registration = await resolvePushServiceWorkerRegistration();
-      const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey.trim());
-      let subscription = await withTimeout(
-        registration.pushManager.getSubscription(),
-        PUSH_OPERATION_TIMEOUT_MS,
-        'Timed out while checking the existing push subscription.',
-      );
-      if (!subscription) {
-        subscription = await subscribeWithRecovery(registration, applicationServerKey);
-      }
-
-      const deviceId = settings.pushNotifications.deviceId || crypto.randomUUID();
-      const subscriptionJson = subscription.toJSON();
-      const normalizedPlatform: PushPlatform = platform === 'android' ? 'android' : 'ios';
-
-      const res = await withTimeout(
-        fetch(`${workerBaseUrl}/api/devices`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            deviceId,
-            subscriptionId: settings.pushNotifications.subscriptionId,
-            platform: normalizedPlatform,
-            subscription: subscriptionJson,
-          }),
-        }),
-        PUSH_OPERATION_TIMEOUT_MS,
-        'Timed out while registering this device for notifications.',
-      );
-      if (!res.ok) {
-        throw new Error(`Failed to register device (${res.status})`);
-      }
-      let subscriptionId: string | undefined;
-      let resolvedDeviceId = deviceId;
-      try {
-        const data = await res.json();
-        if (data && typeof data.subscriptionId === 'string') subscriptionId = data.subscriptionId;
-        if (data && typeof data.deviceId === 'string' && data.deviceId) resolvedDeviceId = data.deviceId;
-      } catch {}
-
-      const updated: PushPreferences = {
-        ...settings.pushNotifications,
-        enabled: true,
-        platform: normalizedPlatform,
-        deviceId: resolvedDeviceId,
-        subscriptionId,
-        permission,
-      };
-
-      setSettings({ pushNotifications: updated });
-      reminderPayloadRef.current = null;
-    } catch (err) {
-      const message = normalizePushError(err);
-      setPushError(message);
-      if (typeof Notification !== 'undefined') {
-        setSettings({ pushNotifications: { ...settings.pushNotifications, permission: Notification.permission } });
-      }
-      throw err;
-    } finally {
-      setPushWorkState('idle');
-    }
-  }
-
-  async function disablePushNotifications(): Promise<void> {
-    if (pushWorkState === 'disabling') return;
-    setPushWorkState('disabling');
-    setPushError(null);
-    try {
-      if ('serviceWorker' in navigator) {
-        try {
-          let registration: ServiceWorkerRegistration | null | undefined = undefined;
-          if (typeof navigator.serviceWorker.getRegistration === 'function') {
-            try {
-              registration = await withTimeout(
-                navigator.serviceWorker.getRegistration(),
-                PUSH_OPERATION_TIMEOUT_MS,
-                'Timed out while checking the service worker registration.',
-              );
-            } catch {}
-          }
-          if (!registration) {
-            try {
-              registration = await withTimeout(
-                navigator.serviceWorker.ready,
-                PUSH_OPERATION_TIMEOUT_MS,
-                'Timed out waiting for the service worker to become ready.',
-              );
-            } catch {}
-          }
-          if (registration) {
-            try {
-              const subscription = await registration.pushManager.getSubscription();
-              if (subscription) await subscription.unsubscribe();
-            } catch {}
-          }
-        } catch {}
-      }
-
-      if (workerBaseUrl && settings.pushNotifications.deviceId) {
-        try {
-          await withTimeout(
-            fetch(`${workerBaseUrl}/api/devices/${settings.pushNotifications.deviceId}`, {
-              method: 'DELETE',
-              headers: settings.pushNotifications.subscriptionId
-                ? { 'X-Taskify-Subscription': settings.pushNotifications.subscriptionId }
-                : undefined,
-            }),
-            PUSH_OPERATION_TIMEOUT_MS,
-            'Timed out while unregistering this device from notifications.',
-          );
-        } catch {}
-      }
-
-      const permission = typeof Notification !== 'undefined'
-        ? Notification.permission
-        : settings.pushNotifications.permission;
-
-      setSettings({
-        pushNotifications: {
-          ...settings.pushNotifications,
-          enabled: false,
-          subscriptionId: undefined,
-          permission,
-        },
-      });
-      reminderPayloadRef.current = null;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to disable push notifications';
-      setPushError(message);
-      if (typeof Notification !== 'undefined') {
-        setSettings({ pushNotifications: { ...settings.pushNotifications, permission: Notification.permission } });
-      }
-      throw err;
-    } finally {
-      setPushWorkState('idle');
-    }
-  }
 
   function sameSeries(a: Task, b: Task): boolean {
     return tasksInSameSeries(a, b);
@@ -8525,7 +8160,7 @@ export default function App() {
   });
 
   /* ---------- History: Back closes what is open; links open what they name ---------- */
-  useReminderTaps(appRouter);
+  useNotificationTaps(appRouter);
   const sheetOverlay = (open: boolean, sheet: AppSheetRoute): AppOverlayRoute | null =>
     open ? { kind: "sheet", sheet } : null;
   const editorOverlay = useMemo<AppOverlayRoute | null>(() => {
@@ -9740,6 +9375,9 @@ export default function App() {
             pushError={pushError}
             onEnablePush={enablePushNotifications}
             onDisablePush={disablePushNotifications}
+            chatPushBusy={chatPushBusy}
+            onEnableChatPush={enableChatPush}
+            onDisableChatPush={disableChatPush}
             workerBaseUrl={workerBaseUrl}
             vapidPublicKey={vapidPublicKey}
             onResetWalletTokenTracking={handleResetWalletTokenTracking}

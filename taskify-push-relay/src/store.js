@@ -209,7 +209,7 @@ export class RelayStore {
   async putRegistration(
     pubkey,
     installationID,
-    { deviceToken, environment, platform = 'ios', application = 'taskify' },
+    { deviceToken, environment, platform = 'ios', application = 'taskify', webPush = null },
   ) {
     const normalizedPubkey = pubkey.toLowerCase()
     const key = this.registrationKey(normalizedPubkey, installationID)
@@ -217,11 +217,13 @@ export class RelayStore {
       key,
       pubkey: normalizedPubkey,
       installationID,
-      // APNs tokens are hex, compared without case; FCM tokens are case-sensitive.
-      deviceToken: platform === 'android' ? deviceToken : deviceToken.toLowerCase(),
+      // APNs tokens are hex, compared without case; FCM tokens and Web Push endpoints are
+      // case-sensitive. A web registration's token is its subscription endpoint.
+      deviceToken: platform === 'ios' || platform === 'watchos' ? deviceToken.toLowerCase() : deviceToken,
       environment,
       platform,
       application,
+      ...(platform === 'web' ? { webPush } : {}),
       updatedAt: this.now(),
     }
     // Snapstr keeps several profiles on one phone and alerts for all of them, so its other
@@ -345,7 +347,9 @@ export class RelayStore {
       for (const registration of this.registrationsToNotify(recipient, application)) {
         const id = `${event.id}:${registration.key}`
         if (this.state.pushJobs.some((job) => job.id === id)) continue
-        const previewToken = registration.platform === 'watchos'
+        // The Watch fetches the wrap itself, and the web app shows a generic alert, so neither
+        // needs a preview link.
+        const previewToken = registration.platform === 'watchos' || registration.platform === 'web'
           ? undefined
           : randomBytes(32).toString('base64url')
         // One unsent alert per device at a time, and a minimum gap after the last one sent,

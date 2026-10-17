@@ -49,6 +49,13 @@ asked for a list of everyone who uses it.
 - APNs configuration: `/data/apns.json`
 - Separate Taskify iOS, Taskify watchOS, and Snapstr iOS APNs topics; the defaults are
   `solife.me.Taskify.Native`, `solife.me.Taskify.Native.watchkitapp`, and `app.snapstr.ios`
+- Taskify web app (PWA) chat alerts through Web Push, when configured with the Taskify Worker's
+  VAPID key pair (`WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY`,
+  `WEB_PUSH_VAPID_SUBJECT`, or the Configure Web Push action). Each browser holds one push
+  subscription, made with the Worker's public key for reminders, so the relay must sign with the
+  same pair. A web registration (`platform: "web"`) carries the browser's subscription; only
+  browser push service endpoints are accepted. The encrypted payload is `{"type":"message"}`, with
+  no sender, conversation, event, or preview link; the web app reads its inbox when opened
 - Alerts are routed by the sending app. Gift wraps are opaque, so Snapstr adds
   `["client", "snapstr"]` to its NIP-42 sign-in here (and only here); its wraps alert only Snapstr
   devices. Any other sender alerts only Taskify devices, or an account's Snapstr devices when it

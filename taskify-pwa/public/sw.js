@@ -337,8 +337,29 @@ async function clearOldCaches() {
 }
 
 self.addEventListener('push', (event) => {
-  event.waitUntil(handlePushEvent());
+  event.waitUntil(isChatPush(event) ? showChatNotification() : handlePushEvent());
 });
+
+// Taskify's push relay sends an encrypted {"type":"message"} when a direct message arrives; it
+// names no sender or conversation. The Worker's reminder pings carry no payload.
+function isChatPush(event) {
+  if (!event.data) return false;
+  try {
+    return event.data.json()?.type === 'message';
+  } catch {
+    return false;
+  }
+}
+
+async function showChatNotification() {
+  await self.registration.showNotification('New message', {
+    body: 'Open Taskify to read it.',
+    // One alert stands for any number of unread messages.
+    tag: 'taskify_chat',
+    renotify: true,
+    data: { kind: 'chat' },
+  });
+}
 
 async function handlePushEvent() {
   const reminders = await fetchPendingRemindersWithRetry();
@@ -580,8 +601,10 @@ function formatOffset(minutes) {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  const taskId = typeof data.taskId === 'string' && data.taskId ? data.taskId : null;
-  const targetUrl = new URL(taskId ? `/?task=${encodeURIComponent(taskId)}` : '/', self.location.origin).href;
+  const isChat = data.kind === 'chat';
+  const taskId = !isChat && typeof data.taskId === 'string' && data.taskId ? data.taskId : null;
+  const targetPath = isChat ? '/chat' : taskId ? `/?task=${encodeURIComponent(taskId)}` : '/';
+  const targetUrl = new URL(targetPath, self.location.origin).href;
   event.waitUntil(
     (async () => {
       const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -589,7 +612,8 @@ self.addEventListener('notificationclick', (event) => {
         (candidate) => new URL(candidate.url).origin === self.location.origin && 'focus' in candidate,
       );
       if (client) {
-        if (taskId) client.postMessage({ type: 'TASKIFY_OPEN_REMINDER', taskId });
+        if (isChat) client.postMessage({ type: 'TASKIFY_OPEN_CHAT' });
+        else if (taskId) client.postMessage({ type: 'TASKIFY_OPEN_REMINDER', taskId });
         return client.focus();
       }
       if (clients.openWindow) return clients.openWindow(targetUrl);

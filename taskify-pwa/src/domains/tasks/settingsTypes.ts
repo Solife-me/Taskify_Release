@@ -14,6 +14,8 @@ export type PushPreferences = {
   deviceId?: string;
   subscriptionId?: string;
   permission?: NotificationPermission;
+  /** Chat alerts through Taskify's push relay, on this device's push subscription. */
+  chatEnabled?: boolean;
 };
 
 // ---- Fasting reminders ----

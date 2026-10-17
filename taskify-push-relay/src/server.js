@@ -13,6 +13,7 @@ import {
   socketApplication,
 } from './relay-policy.js'
 import { NostrRelayForwarder, RemoteRelayError, normalizeRelayTargets } from './relay-forwarder.js'
+import { parseWebPushSubscription } from './webpush.js'
 
 const MAX_HTTP_BODY_BYTES = 256 * 1024
 const INSTALLATION_ID = /^[A-Za-z0-9._:-]{1,128}$/
@@ -222,6 +223,7 @@ export function createTaskifyPushServer({
   // Routes each registration to APNs or FCM; APNs alone when Android push is not configured.
   pushClient = apnsClient,
   androidPushEnabled = false,
+  webPushEnabled = false,
   relayForwarder = new NostrRelayForwarder(),
   logger = console,
   watchPreferenceTimeoutMs = 5_000,
@@ -339,7 +341,15 @@ export function createTaskifyPushServer({
         return true
       }
       const payload = JSON.parse(body.toString('utf8'))
-      if (payload.platform === 'android') {
+      if (payload.platform === 'web') {
+        if (!webPushEnabled) throw new Error('Web push is not configured on this relay')
+        if (payload.application != null && payload.application !== 'taskify') {
+          throw new Error('Only Taskify supports web registrations')
+        }
+        payload.webPush = parseWebPushSubscription(payload.subscription)
+        payload.deviceToken = payload.webPush.endpoint
+        payload.environment = 'production'
+      } else if (payload.platform === 'android') {
         if (!androidPushEnabled) throw new Error('Android push is not configured on this relay')
         if (payload.application !== 'snapstr') throw new Error('Only Snapstr supports Android registrations')
         if (!FCM_TOKEN.test(payload.deviceToken ?? '')) throw new Error('Invalid FCM registration token')

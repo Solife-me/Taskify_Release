@@ -45,7 +45,7 @@ Taskify_Release/
 │   ├── Sources/         # Desktop UI and pure presentation helpers
 │   └── Tests/           # Mac presentation regression tests
 │
-├── taskify-push-relay/   # Dedicated NIP-17 inbox relay, APNs bridge, StartOS package
+├── taskify-push-relay/   # Dedicated NIP-17 inbox relay, APNs/FCM/Web Push bridge, StartOS package
 │   ├── src/              # Relay, NIP-42/NIP-98 auth, store, APNs provider
 │   ├── startos/          # Start SDK 2.x manifest, action, daemon, interface, backup
 │   └── test/             # Protocol, persistence, APNs, and WebSocket integration tests
@@ -75,7 +75,7 @@ Taskify is a **privacy-first, local-first task manager** with Nostr-based sync a
 | **Cloudflare Worker** | Wrangler, TypeScript | Push notifications, reminder scheduling, backup storage, cron triggers |
 | **Native iOS app** | SwiftUI, TaskifyCore | Native task/chat/wallet client, NIP-17 inbox, local notification classification |
 | **Native macOS app** | SwiftUI/AppKit, shared native services | Desktop boards, agenda, chat, wallet and settings; see taskify-macos/README.md for parity gaps |
-| **Taskify Push Relay** | Node.js, Nostr, APNs, StartOS | Encrypted kind-1059 retention and opaque-token APNs rich-preview delivery |
+| **Taskify Push Relay** | Node.js, Nostr, APNs, Web Push, StartOS | Encrypted kind-1059 retention, opaque-token APNs rich-preview delivery, and generic Web Push chat alerts for the PWA |
 | **Nostr relay network** | NDK, nostr-tools | Decentralized event transport and persistence |
 
 ### Data Flow
@@ -124,7 +124,7 @@ Backups
 | **NIP-17** | Private DMs, kind-10050 inbox relay preferences, sender/recipient delivery copies | `taskify-ios-native/Sources/TaskifyCore/Nostr/NostrSharedInbox.swift`, `taskify-ios-native/Sources/TaskifyCore/Nostr/NIP17InboxRelayResolver.swift` |
 | **NIP-59** | Gift-wrapped Nostr events with randomized timestamps and ephemeral outer keys | `taskify-ios-native/Sources/TaskifyCore/Nostr/NostrSharedInbox.swift` |
 | **NIP-42** | Relay authentication | `nostr/RelayAuth.ts`, `taskify-ios-native/Sources/TaskifyCore/Sync/TaskSyncEngine.swift`, `taskify-push-relay/src/server.js` |
-| **NIP-98** | Authenticated native APNs device registration | `taskify-ios-native/Sources/TaskifyCore/Nostr/DMPushRegistrationClient.swift`, `taskify-push-relay/src/auth.js` |
+| **NIP-98** | Authenticated chat-push device registration (iOS and PWA) | `taskify-ios-native/Sources/TaskifyCore/Nostr/DMPushRegistrationClient.swift`, `taskify-pwa/src/domains/push/chatPush.ts`, `taskify-push-relay/src/auth.js` |
 | **NIP-47** | Nostr Wallet Connect (NWC) | `wallet/nwc.ts` |
 | **NIP-61** | Nutzap / P2PK Cashu | `wallet/p2pk.ts` |
 | **NIP-96** | File/backup storage over Nostr | `nostr/Nip96Client.ts` |
@@ -194,6 +194,7 @@ npx wrangler dev
 | `taskify-cli/tests/profile-command.test.ts`, `taskify-cli/tests/csv.test.ts` | CLI profiles and CSV | Local identity lifecycle, piped input, masking, quoting, and missing fields |
 | `src/domains/push/reminderClient.test.ts` | Reminder HTTP client | Stable payload ordering, minute offsets, cancellation, missing configuration, and HTTP errors |
 | `src/domains/push/vapidKey.test.ts`, `src/lib/withTimeout.test.ts` | Push registration utilities | URL-safe decoding, invalid keys, timeout rejection, and timer cleanup |
+| `src/domains/push/chatPush.test.ts`, `src/ui/settings/PushSection.test.tsx` | PWA chat alerts | NIP-98 header signed by the user's signer over URL, method and body hash; push relay added to or removed from the kind-10050 inbox list without ever emptying it; only the account's own latest preference read; Settings toggle shown once push is on |
 | `taskify-cli/tests/config-command.test.ts`, `taskify-cli/tests/relay-diagnostics.test.ts` | CLI configuration and diagnostics | Selected-profile persistence, redaction, errors, and simulated connection outcomes |
 | `taskify-cli/tests/completions-command.test.ts` | CLI completions | Explicit shells, environment detection, combined fallback output, and invalid-shell exits |
 | `src/storage/boardPrintJobs.test.ts` | Saved print jobs | Legacy defaults, malformed data, per-board preservation, and storage failures |
@@ -213,7 +214,7 @@ npx wrangler dev
 | `src/nostr/taskEventMerge.test.ts` | Reading shared task events | Writer/reader round trip of the task wire format; absent fields kept, null cleared; malformed fields ignored; authorized bounty state changes |
 | `src/nostr/boardSyncLedger.test.ts` | Board sync clocks | Newer-wins acceptance with pending ties, reserved publish timestamps, monotonic clocks, replaceable board metadata, persisted and trimmed deletion tombstones |
 | `src/context/walletContexts.test.tsx` | Lazy wallet runtime | Unavailable wallet without the runtime, published values outside it, nearest provider inside it |
-| `src/routing/useOverlayHistory.test.tsx`, `src/routing/useReminderTaps.test.tsx` | PWA overlays and deep links | Back closes the top overlay then the one beneath; UI close unwinds history in one step; editor switches replace their entry; links open their task once synced and close to the page; stale sheets in a reloaded URL are dismissed; reminder taps open their task or event |
+| `src/routing/useOverlayHistory.test.tsx`, `src/routing/useNotificationTaps.test.tsx` | PWA overlays and deep links | Back closes the top overlay then the one beneath; UI close unwinds history in one step; editor switches replace their entry; links open their task once synced and close to the page; stale sheets in a reloaded URL are dismissed; reminder taps open their task or event; chat alert taps open Chat |
 | `taskify-core/tests/recurrence-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/RecurrenceVectorTests.swift` | Recurring tasks across clients | Both read `taskify-core/fixtures/recurrence-vectors.json`: next due date and occurrence id through DST, time zones, clamped rules and end dates; the shared next-occurrence builder |
 | `taskify-core/tests/taskify-links-core.test.ts`, `taskify-ios-native/Tests/TaskifyCoreTests/TaskifyWidgetLinkTests.swift` | Cross-client links | Both read `taskify-core/fixtures/taskify-link-vectors.json`: the upcoming, boards, task, event and quick-add app-link grammar; core also round-trips their canonical web paths |
 | `taskify-cli/tests/recurring-completion.test.ts` | CLI recurring completion | `done` opens the next occurrence with the shared id, keeps the series, and skips one that already exists |
@@ -233,7 +234,7 @@ npx wrangler dev
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
 | `taskify-macos/Tests/MacPresentationTests.swift` | Mac presentation | DST-aware task placement, list draft preservation, pending wallet outcomes, recovery consent, payment-request mint-selection fallback, and recurrence-builder day/interval math |
-| `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, and authenticated WebSocket delivery |
+| `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, authenticated WebSocket delivery, and Web Push (RFC 8291 payload a browser decrypts, VAPID signature, push-service-only endpoints) |
 
 Additional PWA regression tests include `src/nostr/startupStability.test.ts`, which is
 present in this checkout and discovered by Vitest.

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 
 import { parseServiceAccount } from './fcm.js'
+import { parseVAPIDKeys } from './webpush.js'
 
 function required(value, name) {
   if (typeof value !== 'string' || value.trim() === '') throw new Error(`${name} is required`)
@@ -48,7 +49,20 @@ export async function loadConfig(environment = process.env) {
     apns,
     // Optional: Android (Snapstr) push through Firebase Cloud Messaging.
     fcm: await loadFCMConfig(environment, fileConfig),
+    // Optional: chat alerts for the Taskify web app. The key pair must be the Taskify Worker's,
+    // since each browser holds one push subscription, made with that public key.
+    webPush: loadWebPushConfig(environment, fileConfig),
   }
+}
+
+function loadWebPushConfig(environment, fileConfig) {
+  const value = {
+    publicKey: environment.WEB_PUSH_VAPID_PUBLIC_KEY ?? fileConfig.webPush?.publicKey,
+    privateKey: environment.WEB_PUSH_VAPID_PRIVATE_KEY ?? fileConfig.webPush?.privateKey,
+    subject: environment.WEB_PUSH_VAPID_SUBJECT ?? fileConfig.webPush?.subject,
+  }
+  if (!value.publicKey && !value.privateKey) return null
+  return parseVAPIDKeys(value)
 }
 
 async function loadFCMConfig(environment, fileConfig) {
