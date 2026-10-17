@@ -45,7 +45,7 @@ Constraints carried through every chunk:
 | --- | --- | --- | --- |
 | 1 | Shared domain core and contract drift | `taskify-core`, and where clients re-implement it | Done |
 | 2 | PWA app shell | `App.tsx` (12.8k lines), navigation, onboarding, settings | Implementing |
-| 3 | PWA boards, tasks, Upcoming, calendar | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar` | Pending |
+| 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | Pending; starts with C3-1 (desktop layout, maintainer request) |
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Pending |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `lib/`, `agent/`, `components/` | Pending |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Pending |
@@ -600,8 +600,38 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
      shared controls hook (`ui/board/useBoardSort.ts`, `BoardSortSheet`). The "View" sheet,
      which nothing could open, is gone, and the Upcoming tab's count no longer includes US
      holidays. Startup JavaScript 462.4 → 449.0 KB gzipped; `App.tsx` 9,427 → 8,777 lines.
-     Next: Boards, then Bible, Print, Import and Voice.
-2. **Chunk 3 onward,** per the chunk plan.
+     Next: Boards (see the reordering below).
+2. **C3-1, a real desktop layout (maintainer request 2026-10-17: "I don't like the PWA desktop
+   layout; the mobile layout is good").** Details under "Desktop layout" below.
+3. **The rest of stage 4:** Bible, Print, Import and Voice as lazy modules. They are small and
+   don't affect layout, so they wait until after C3-1.
+4. **Chunk 3 onward,** per the chunk plan.
+
+**Desktop layout (C3-1, approved by the maintainer 2026-10-17)**
+
+- **What's wrong today.** Desktop is the mobile DOM restyled by one 237-line CSS layer
+  (`styles/desktop-layout.css`, active at ≥1024 px with a mouse). At 1440×900:
+  - The tab bar becomes a floating card holding four links, with an empty column below it.
+  - The board picker stays a dropdown in the header, apart from the rail.
+  - A week board shows about three and a half days and scrolls sideways, with tall empty
+    columns.
+  - Upcoming and Settings are one column stretched across the full width (Settings cards run
+    about 1,000 px wide).
+  - Task and event editors open as phone-sized modals over everything.
+- **Why fix it structurally.** Patching the CSS layer again would repeat the problem. The
+  durable fix is an `AppLayout` component with named regions: rail, header, content, page
+  controls, and an optional detail pane. Each page module fills the regions; mobile and
+  desktop arrange the same regions differently. The Upcoming page's header and footer slots
+  (stage 4 step 2) are the first version of this API.
+- **Order.** The Boards module (next in stage 4) is built on these regions instead of more
+  ad-hoc slots, so the board page is moved once and the layout redesign follows directly.
+- **Proposed direction, to confirm with the maintainer when C3-1 starts:**
+  - A rail that holds the board list (switch boards in one click), Upcoming, Chat and Settings.
+  - A week board that fits seven days at ≥1280 px.
+  - Upcoming with the month calendar and the day list side by side.
+  - Settings at a readable width with section navigation.
+  - Editors in a side detail pane on wide screens instead of a modal.
+  - Mobile layout unchanged.
 
 **Signer support (approved by the maintainer 2026-10-16, to build later):**
 
