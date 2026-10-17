@@ -18,6 +18,7 @@ Taskify_Release/
 │   │   ├── onboarding/   # Welcome/login gating and onboarding flow
 │   │   ├── components/   # Shared React components
 │   │   ├── context/      # React context providers
+│   │   ├── identity/     # The user's Nostr identity: public key and signer; raw key only via revealLocalSecretKey
 │   │   ├── state/        # Synchronous app stores (tasks, boards, events) read via useSyncExternalStore
 │   │   ├── storage/      # Local storage abstractions
 │   │   ├── ui/           # UI primitives and layout components
@@ -203,6 +204,7 @@ npx wrangler dev
 | `src/domains/tasks/generatedTasks.test.ts` | Generated tasks | Fasting reminders created, moved and deleted like native, stable on rerun; one Scripture Memory review task with a date-derived id |
 | `src/domains/calendar/calendarRecurrenceWindow.test.ts` | Recurring event window | Local generation of the window, stable on rerun, orphan cleanup, deleted occurrences skipped, edited occurrences never trimmed |
 | `src/domains/calendar/calendarCommands.test.ts` | PWA calendar commands | Pure plans for event moves, recurring-series deletion/seed advancement, edits, invite materialization and RSVP publication/local state |
+| `src/identity/identity.test.ts` | Identity and signer | Local signer signs verifiable events and round-trips NIP-44/NIP-04; stored key loaded (also when asked before the key store loads); adopt, reveal only via the named accessor, sign out; invalid keys refused |
 | `src/state/stateStore.test.ts` | PWA app stores | Updates apply immediately and exactly once, listeners fire only on change, safe unsubscribe during notify |
 | `src/routing/appRouter.test.ts` | PWA routes and browser history | Typed page/entity/sheet routes, legacy reminder links, canonical paths, page Back navigation, overlay close-via-Back, and direct-link close fallback |
 | `src/nostr/boardPublisher.test.ts` | Shared-board publishing and wire format | Board metadata, task and calendar event shapes (compound children, week `day` column, explicit nulls, no reminders, board secrets kept out of the invitee copy); metadata once before items; superseded edits dropped; tombstone before send; new event keys stored before use; generated occurrences never published; pending settled when a step fails |

@@ -1,14 +1,14 @@
 import { prepareRelayEvent } from "./prepareRelayEvent";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { generateSecretKey, getPublicKey, nip19, type EventTemplate } from "nostr-tools";
+import { generateSecretKey, nip19, type EventTemplate } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import {
   acknowledgeBackupNotice as nostrSkAcknowledgeBackupNotice,
   getSkSync as nostrSkSync,
   isBackupNoticePending as nostrSkBackupNoticePending,
-  setSk as nostrSkSet,
 } from "../lib/nostrSkStore";
+import { adoptLocalSecretKey, revealLocalSecretKey, useIdentity } from "../identity/identity";
 import {
   createNostrPool,
   NOSTR_MIN_EVENT_INTERVAL_MS,
@@ -68,33 +68,16 @@ function toNsec(secret: string): string {
 
 export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
   const pool = useMemo(() => createNostrPool(), []);
-  const initialStoredNostrSecretHex = useMemo(() => {
-    try {
-      const existing = nostrSkSync();
-      if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) {
-        return existing.toLowerCase();
-      }
-    } catch {}
-    return null;
-  }, []);
-
-  const [nostrSK, setNostrSK] = useState<Uint8Array>(() => {
-    if (initialStoredNostrSecretHex) {
-      return hexToBytes(initialStoredNostrSecretHex);
-    }
-    return generateSecretKey();
-  });
-  const [nostrPK, setNostrPK] = useState<string>(() => {
-    if (!initialStoredNostrSecretHex) return "";
-    try {
-      return getPublicKey(hexToBytes(initialStoredNostrSecretHex));
-    } catch {
-      return "";
-    }
-  });
+  const identity = useIdentity();
+  const nostrPK = identity?.pubkey ?? "";
+  // Before sign-in, events this device signs (none are user-facing) use a throwaway key.
+  const [throwawayKey] = useState(() => generateSecretKey());
+  const nostrSK = useMemo<Uint8Array>(() => {
+    const local = identity ? revealLocalSecretKey() : null;
+    return local ? hexToBytes(local) : throwawayKey;
+  }, [identity, throwawayKey]);
   const nostrSkHex = useMemo(() => bytesToHex(nostrSK), [nostrSK]);
 
-  useEffect(() => { (window as any).nostrPK = nostrPK; }, [nostrPK]);
   useEffect(() => {
     const relays = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
     NostrSession.init(relays).catch((err) => {
@@ -116,31 +99,19 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
   }, [dismissSkBackupNotice]);
 
   const rotateNostrKey = useCallback(() => {
-    const sk = generateSecretKey();
-    const skHex = bytesToHex(sk);
-    setNostrSK(sk);
-    const pk = getPublicKey(sk);
-    setNostrPK(pk);
-    void nostrSkSet(skHex);
+    const skHex = bytesToHex(generateSecretKey());
+    void adoptLocalSecretKey(skHex);
     return toNsec(skHex);
   }, []);
 
   const applyCustomNostrKey = useCallback((key: string, options?: { silent?: boolean }): boolean => {
-    try {
-      const normalized = normalizeSecretKeyInput(key);
-      if (!normalized) throw new Error("invalid");
-      const sk = hexToBytes(normalized);
-      setNostrSK(sk);
-      const pk = getPublicKey(sk);
-      setNostrPK(pk);
-      void nostrSkSet(normalized);
-      return true;
-    } catch {
-      if (!options?.silent) {
-        alert("Invalid private key");
-      }
+    const normalized = normalizeSecretKeyInput(key);
+    if (!normalized) {
+      if (!options?.silent) alert("Invalid private key");
       return false;
     }
+    void adoptLocalSecretKey(normalized);
+    return true;
   }, []);
 
   const setCustomNostrKey = useCallback((key: string) => {

@@ -126,6 +126,7 @@ import {
   LS_LIGHTNING_CONTACTS,
   LS_CONTACT_NIP05_CACHE,
 } from "../../localStorageKeys";
+import { currentPubkey } from "../../identity/identity";
 
 // ---- Local types ----
 
@@ -625,7 +626,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const bountyMint = sendMintUrl || overrideMint || mintUrl;
     const lockType: Task["bounty"]["lock"] =
       lockInfo?.type === "p2pk" ? "p2pk" : lockToSelf ? "unknown" : "none";
-    const selfPubkey = (window as any).nostrPK as string | undefined;
+    const selfPubkey = currentPubkey() ?? undefined;
     const selfHex = ensureXOnlyHex(selfPubkey);
     const bounty: Task["bounty"] = {
       id: crypto.randomUUID(),
@@ -633,8 +634,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       amount: amountSat,
       mint: bountyMint,
       state: lockToSelf || recipientHex ? "locked" : "unlocked",
-      owner: task.createdBy || (window as any).nostrPK || "",
-      sender: (window as any).nostrPK || "",
+      owner: task.createdBy || currentPubkey() || "",
+      sender: currentPubkey() || "",
       receiver: recipientHex || (lockToSelf ? selfHex : undefined) || undefined,
       updatedAt: new Date().toISOString(),
       lock: lockType,
@@ -938,7 +939,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     }
   }, [hasDueTime, scheduledTime]);
 
-  const me = (window as any).nostrPK as string | undefined;
+  const me = currentPubkey() ?? undefined;
   const meHex = ensureXOnlyHex(me);
 
   function toNpubKey(value: string): string {
@@ -967,7 +968,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const bountyReceiverIsViewer = useMemo(() => {
     const receiver = task.bounty?.receiver;
     if (!receiver) return false;
-    return pubkeysEqual(receiver, (window as any).nostrPK);
+    return pubkeysEqual(receiver, currentPubkey());
   }, [task.bounty?.receiver]);
 
   const bountySenderIsViewer = useMemo(() => {

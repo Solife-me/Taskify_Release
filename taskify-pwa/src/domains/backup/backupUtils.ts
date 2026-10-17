@@ -11,7 +11,7 @@ import {
   LS_BACKGROUND_IMAGE,
 } from "../storageKeys";
 import { LS_NOSTR_RELAYS, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../../nostrKeys";
-import { setSk as nostrSkSet } from "../../lib/nostrSkStore";
+import { adoptLocalSecretKey } from "../../identity/identity";
 import {
   taskEntityStore,
   boardEntityStore,
@@ -139,7 +139,7 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
     idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
-    void nostrSkSet(data.nostrSk);
+    adoptLocalSecretKey(data.nostrSk).catch((err) => console.warn("Backup has an unreadable Nostr key", err));
     notifyNostrKeyUpdated();
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;

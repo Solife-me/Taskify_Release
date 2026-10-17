@@ -342,6 +342,7 @@ import {
 // ---- UI component imports (extracted subcomponents) ----
 import { Card, getDraggedTaskIds } from "./ui/task/Card";
 import { EventCard } from "./ui/calendar/EventCard";
+import { currentPubkey } from "./identity/identity";
 
 const AppModalStack = lazy(() =>
   import("./ui/app/AppModalStack").then((module) => ({ default: module.AppModalStack })),
@@ -7240,7 +7241,7 @@ export default function App() {
     }
     const plan = planCompleteTask(tasksStore().get(), id, {
       now: new Date(),
-      actorPubkey: (window as any).nostrPK || undefined,
+      actorPubkey: currentPubkey() ?? undefined,
       settings,
       scripture: { state: scriptureMemory, baseDays: scriptureMemoryFrequencyOption?.days ?? 1 },
       inboxAction: options?.inboxAction,
@@ -7304,7 +7305,7 @@ export default function App() {
   function toggleSubtask(taskId: string, subId: string) {
     const plan = planToggleSubtask(tasksStore().get(), taskId, subId, {
       now: new Date(),
-      actorPubkey: (window as any).nostrPK || undefined,
+      actorPubkey: currentPubkey() ?? undefined,
     });
     if (!plan) return;
     setTasks(plan.tasks);
@@ -7316,7 +7317,7 @@ export default function App() {
   function updateTaskNote(taskId: string, note: string, appendedSubtasks: Subtask[] = []) {
     const plan = planUpdateTaskNote(tasksStore().get(), taskId, note, appendedSubtasks, {
       now: new Date(),
-      actorPubkey: (window as any).nostrPK || undefined,
+      actorPubkey: currentPubkey() ?? undefined,
     });
     if (!plan) return;
     setTasks(plan.tasks);
@@ -7364,7 +7365,7 @@ export default function App() {
   ) {
     const plan = planDeleteTask(tasksStore().get(), recurringCutoffsStore().get(), id, {
       now: new Date(),
-      actorPubkey: (window as any).nostrPK || undefined,
+      actorPubkey: currentPubkey() ?? undefined,
       settings,
       scope: options?.scope,
       skipPrompt: options?.skipPrompt,
@@ -7423,7 +7424,7 @@ export default function App() {
   function restoreTask(id: string) {
     const plan = planRestoreTask(tasksStore().get(), recurringCutoffsStore().get(), id, {
       now: new Date(),
-      actorPubkey: (window as any).nostrPK || undefined,
+      actorPubkey: currentPubkey() ?? undefined,
       settings,
     });
     if (!plan) return;
@@ -7463,7 +7464,7 @@ export default function App() {
   function postponeTaskOneWeek(id: string) {
     const plan = planPostponeTask(tasksStore().get(), boards, id, {
       now: new Date(),
-      actorPubkey: (window as any).nostrPK || undefined,
+      actorPubkey: currentPubkey() ?? undefined,
       settings,
     });
     if (!plan) return;
@@ -7478,7 +7479,7 @@ export default function App() {
     try {
       let pt = "";
       const enc = t.bounty.enc as any;
-      const me = (window as any).nostrPK as string | undefined;
+      const me = currentPubkey() ?? undefined;
       if (enc.alg === 'aes-gcm-256') {
         if (!me || t.bounty.sender !== me) throw new Error('Only the funder can reveal this token.');
         pt = await decryptEcashTokenForFunder(enc);
@@ -7499,7 +7500,7 @@ export default function App() {
       const updated = normalizeTaskBounty({
         ...t,
         bounty: nextBounty,
-        lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? t.lastEditedBy ?? t.createdBy,
+        lastEditedBy: normalizeAgentPubkey(currentPubkey()) ?? t.lastEditedBy ?? t.createdBy,
       });
       setTasks(prev => prev.map(x => x.id === id ? updated : x));
       setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
@@ -7521,7 +7522,7 @@ export default function App() {
     if (t.bounty.state === 'revoked' || t.bounty.state === 'claimed') {
       throw new Error('This bounty can no longer be reassigned.');
     }
-    const me = (window as any).nostrPK as string | undefined;
+    const me = currentPubkey() ?? undefined;
     if (!me) throw new Error('Missing local Nostr key.');
     const authorized = (
       (t.bounty.sender && pubkeysEqual(t.bounty.sender, me)) ||
@@ -7570,7 +7571,7 @@ export default function App() {
     const updated = normalizeTaskBounty({
       ...t,
       bounty: nextBounty,
-      lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? t.lastEditedBy ?? t.createdBy,
+      lastEditedBy: normalizeAgentPubkey(currentPubkey()) ?? t.lastEditedBy ?? t.createdBy,
     });
     setTasks(prev => prev.map(x => x.id === id ? updated : x));
     setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
@@ -7607,7 +7608,7 @@ export default function App() {
       const updated = normalizeTaskBounty({
         ...t,
         bounty: nextBounty,
-        lastEditedBy: normalizeAgentPubkey((window as any).nostrPK) ?? t.lastEditedBy ?? t.createdBy,
+        lastEditedBy: normalizeAgentPubkey(currentPubkey()) ?? t.lastEditedBy ?? t.createdBy,
       });
       setTasks(prev => prev.map(x => x.id === id ? updated : x));
       setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
@@ -8360,7 +8361,7 @@ export default function App() {
     }
     const plan = planMoveTask(tasksStore().get(), id, target, beforeId, {
       now: new Date(),
-      actorPubkey: (window as any).nostrPK || undefined,
+      actorPubkey: currentPubkey() ?? undefined,
       settings,
       currentBoard,
       listColumnSources,
@@ -8391,7 +8392,7 @@ export default function App() {
   function moveTaskToBoard(id: string, boardId: string) {
     const plan = planMoveTaskToBoard(tasksStore().get(), boards, id, boardId, {
       now: new Date(),
-      actorPubkey: (window as any).nostrPK || undefined,
+      actorPubkey: currentPubkey() ?? undefined,
       settings,
     });
     if (!plan) return;
@@ -8428,7 +8429,7 @@ export default function App() {
         selectedTasks.map((task) => task.id),
         boardId,
         columnId,
-        { now: new Date(), actorPubkey: (window as any).nostrPK || undefined, settings },
+        { now: new Date(), actorPubkey: currentPubkey() ?? undefined, settings },
       );
       setTasks(plan.tasks);
       plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));

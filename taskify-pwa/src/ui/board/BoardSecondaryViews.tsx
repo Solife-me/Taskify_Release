@@ -10,6 +10,7 @@ import {
 import type { TaskDocument } from "../../lib/documents";
 import { TaskMedia } from "../task/TaskMedia";
 import { TaskTitle } from "../task/TaskTitle";
+import { currentPubkey } from "../../identity/identity";
 
 type BoardUpcomingGroup = {
   dateKey: string;
@@ -170,7 +171,7 @@ export function CompletedBoardView({
             const scheduledTimeLabel = task.dueTimeEnabled
               ? ` at ${formatTimeLabel(task.dueISO, task.dueTimeZone)}`
               : "";
-            const bountyLabel = task.bounty ? bountyStateLabel(task.bounty) : "";
+            const bountyLabel = task.bounty ? bountyStateLabel(task.bounty, currentPubkey()) : "";
             return (
               <li
                 key={task.id}

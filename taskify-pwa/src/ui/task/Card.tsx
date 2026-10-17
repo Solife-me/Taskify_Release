@@ -6,6 +6,7 @@ import { toNpub } from "../../lib/nostr";
 import { TaskTitle, useTaskPreview } from "./TaskTitle";
 import { TaskMedia } from "./TaskMedia";
 import type { TaskDocument } from "../../lib/documents";
+import { currentPubkey } from "../../identity/identity";
 
 type CardResizeHandler = () => void;
 
@@ -333,7 +334,7 @@ function CardComponent({
           ? 'chip chip-warn'
           : 'chip'
     : '';
-  const bountyLabel = task.bounty ? bountyStateLabel(task.bounty) : "";
+  const bountyLabel = task.bounty ? bountyStateLabel(task.bounty, currentPubkey()) : "";
 
   const stackedForm = isStacked || hasDetail;
   const hasReminder = Array.isArray(task.reminders) && task.reminders.length > 0;

@@ -144,14 +144,14 @@ export function normalizeTaskBounty(task: Task): Task {
 
 // ---- Bounty state label ----
 
-export function bountyStateLabel(bounty: Task["bounty"]): string {
+/** How a bounty reads to `selfPubkey`: a bounty locked to them is ready to redeem. */
+export function bountyStateLabel(bounty: Task["bounty"], selfPubkey?: string | null): string {
   if (!bounty) return "";
   if (
     bounty.state === "locked" &&
     bounty.lock === "p2pk" &&
     bounty.receiver &&
-    typeof window !== "undefined" &&
-    pubkeysEqual(bounty.receiver, (window as any).nostrPK)
+    pubkeysEqual(bounty.receiver, selfPubkey)
   ) {
     return "ready to redeem";
   }
