@@ -383,7 +383,7 @@ per step.
 | C2-1 | Approve | 2026-10-15 | Done (quick-add surface is a known gap) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
 | C2-3 | Approve all stages | 2026-10-15 | Stages 1–3 done; stage 4 remains (see Checkpoint) |
-| C2-4 | Approve identity layer; explore signers | 2026-10-15 | Planned |
+| C2-4 | Approve identity layer; explore signers | 2026-10-15 | Identity layer done; signer findings below |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Planned |
 | C2-6 | Approve | 2026-10-15 | Done: 604 → 458 KB gzipped startup, CI budget 470 KB |
 | C2-7 | Not selected (declined) | 2026-10-15 | — |
@@ -495,6 +495,56 @@ The suites are green after the page-router step: PWA lint (one existing warning 
     reset a task's local position; `BoardPublisher` still sets `_nostrAt` on the task object
     passed in.
 
+- **C2-4, identity layer (done) and the signer exploration.**
+  - `src/identity/` is the single source of the user's identity: a public key plus a
+    `NostrSigner` (sign, NIP-44, NIP-04). `LocalKeySigner` wraps the browser-held key.
+  - `window.nostrPK` is gone (20 readers).
+  - The user's own events and relay AUTH are signed through the signer. The runtime gained
+    `prepareEventWith` and `loadAccountSigner`; the CLI is unchanged.
+  - Every other read of the raw key goes through `revealLocalSecretKey` (21 sites in 12 files),
+    which is now the exact list of what a non-local signer needs.
+
+  **What a NIP-07 or NIP-46 signer would require, by feature:**
+
+  | Feature | Key use today | With a signer |
+  | --- | --- | --- |
+  | Sending NIP-17 messages, shares, invites, RSVPs | seal signed, NIP-44 to recipient | sign + `nip44Encrypt`; the wrap keeps its throwaway key |
+  | Receiving them (DMs, share inbox) | two NIP-44 decryptions per gift wrap | `nip44Decrypt` ×2 per wrap |
+  | Private contact list (NIP-51) | NIP-44 to self | `nip44Encrypt`/`Decrypt` |
+  | App-state, chat-state and backup sync | NIP-44 to self | `nip44Encrypt`/`Decrypt` |
+  | Attachment upload authorization | signs an auth event | `sign` |
+  | Showing or exporting the key | raw key | not possible by design |
+  | Taskify wallet (P2PK, bounty AES key, npub.cash) | raw key or keys derived from it | not possible; the wallet is being phased out |
+
+  **Measured cost per operation** (`nostr-tools` 2.25 on this Mac, in process):
+  - a local NIP-44 decrypt is 2.3 ms;
+  - the NIP-46 request/response envelope alone (no network) is 15 ms, 6.8× local.
+
+  Over a real relay, each operation also costs two relay hops plus the signer app's response
+  time. At an assumed 300 ms per operation (100–1,000 ms depending on relay and signer;
+  not measured here), first sign-in on a new device costs:
+  - 500 messages of history: 1,000 decryptions, about 5 minutes;
+  - 5,000 messages: about 50 minutes.
+
+  It is doubled today. The share inbox (`useNostrSubscriptions`) and the DM subscription
+  (`useDmSubscription`) each subscribe to the same kinds 4 and 1059 and decrypt them
+  independently, so every gift wrap in their overlap is unwrapped twice. This also wastes
+  local CPU and relay traffic now.
+
+  **Recommendation:**
+  - NIP-07 (browser extensions) is viable once the table's first five rows move onto the
+    signer: operations are local and take milliseconds.
+  - NIP-46 (remote signers) needs two things first:
+    - one gift-wrap ingestion pipeline that unwraps each wrap once and routes it to chat or the
+      share inbox;
+    - a per-device store of unwrapped messages keyed by wrap id, so a wrap is never decrypted
+      twice on a device.
+
+    With both, the cost after first sign-in is bounded by new messages. First sign-in still
+    needs progressive, backgrounded history.
+  - Proposed for chunk 5 (chat and sharing) as one item: the unified ingestion pipeline. It
+    pays off with local keys today.
+
 **The pattern to follow:** a command takes current state plus a context (`now`,
 `actorPubkey`, the settings it needs) and returns the next state plus what to publish. `App`
 reads the store, calls the command, calls `set`, then publishes. Nothing publishes or records
@@ -504,12 +554,8 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 
 1. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
    modules; `App` keeps layout and routing.
-2. **C2-4, the identity layer.**
-   - Replace `window.nostrPK` (about 24 places) and the 42 `readNostrIdentity` calls with an
-     `IdentityProvider` exposing the public key and a `Signer` (sign, NIP-44).
-   - Then measure the NIP-46 round-trip cost for DM/contact decryption before building signers.
-3. **C2-5, first run that starts with tasks.**
-4. **Chunk 3 onward,** per the chunk plan.
+2. **C2-5, first run that starts with tasks.**
+3. **Chunk 3 onward,** per the chunk plan.
 
 **Logged for later chunks**
 
