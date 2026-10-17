@@ -667,9 +667,27 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     column, and Chat keeps a readable width.
   - Card density: not changed, per the rule that lists and cards keep their mobile size; cards
     only gain a hover state.
-- **Still to do for desktop:**
-  - Move Chat out of the wallet overlay into a real page (chunk 5), which would allow a
-    two-pane conversation list and thread.
+- **Two-pane Chat (done 2026-10-17):** on desktop the conversation list stays on the left and
+  the open conversation, new message or group screens fill the right, with the open
+  conversation highlighted and a placeholder when none is open. The rail stays visible inside a
+  conversation (phones still hide the tab bar there). The overlay uses `overflow: clip`, because
+  `hidden` let a conversation's `scrollIntoView` shift the overlay sideways.
+- **Moving Chat out of the wallet code (chunk 5, scoped 2026-10-17, not done):** Chat is 2,878
+  lines of JSX inside `CashuWalletModal.tsx` (10,054 lines) and uses 373 values from that
+  component's scope, 38 of them payment-related (ecash and Lightning in chat, history). Its DM
+  and contact hooks (`useDmState`, `useDmSubscription`, `useDmSend`, `useDmThreadUtils`,
+  `useDmThreadActions`, `useContactsState`, `useContactsSync`, `useContactLookup`, ...) are
+  already separate files, but the modal composes them interleaved with `useCashu` and the
+  payment hooks. Plan:
+  1. A `ChatRuntime` provider mounted by `App` that owns the DM and contact hooks, so DMs sync,
+     notify and count unread without the wallet.
+  2. Split the chat JSX into components by view (threads, conversation, new message, group
+     info/members/name, new group) reading the runtime.
+  3. Decide what happens to payments in chat under the wallet phase-out (chunk 6): keep them
+     behind a lazily loaded wallet bridge, or remove them. This is the maintainer's call.
+  4. `App` renders Chat as its own page; Cashu no longer loads to show Chat.
+  It needs end-to-end messaging tests with two accounts, which the dev Browser pane can't do
+  alone.
   - When an editor pane opens over the card being edited, scroll that card into view.
 - **Found while doing this:** the PWA always renders dark (`useAppAppearance` removes `light`),
   so the ~106 `html.light` rules across the stylesheets are dead; logged for chunk 14 hygiene.

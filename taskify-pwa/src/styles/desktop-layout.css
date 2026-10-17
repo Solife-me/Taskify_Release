@@ -546,15 +546,66 @@
 
   /* ---- Chat (and the wallet) ----
      Chat still lives in the wallet's full-window overlay (moving it out is planned in chunk 5).
-     On desktop the overlay covers only the content column, so the rail stays usable, and the
-     chat keeps a readable width. */
+     On desktop the overlay covers only the content column, so the rail stays usable. */
   .wallet-modal {
     left: var(--desktop-content-left);
     right: calc(var(--desktop-shell-margin) + var(--desktop-shell-pad-right));
   }
 
-  .wallet-modal--chat .chat-page {
-    max-width: 60rem;
-    margin: 0 auto;
+  /* `hidden` still lets scrollIntoView scroll the overlay itself, which shifted the two panes;
+     `clip` does not. */
+  .wallet-modal--chat {
+    overflow: clip;
+  }
+
+  /* Phones hide the bottom tab bar inside a conversation (chat.css); the desktop rail stays. */
+  body:has(.wallet-modal--chat-convo) .app-tab-switcher,
+  body:has(.wallet-modal--app-nav-hidden) .app-tab-switcher {
+    display: flex;
+  }
+
+  /* Conversations on the left, the open conversation (or a new message) on the right. */
+  .chat-page--two-pane {
+    display: grid;
+    grid-template-columns: minmax(18rem, 22rem) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 1rem;
+    padding-bottom: 1rem;
+  }
+
+  .chat-page--two-pane > .chat-page__threads {
+    grid-column: 1;
+    grid-row: 1;
+    border-right: 1px solid var(--surface-border-strong);
+    padding-right: 0.75rem;
+  }
+
+  .chat-page--two-pane > :not(.chat-page__threads) {
+    grid-column: 2;
+    grid-row: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .chat-page--two-pane .wallet-messages__thread.is-active {
+    background: var(--surface-highlight);
+    border-color: var(--surface-border-strong);
+  }
+
+  .chat-page__empty-pane {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    text-align: center;
+  }
+
+  .chat-page__empty-pane-title {
+    color: var(--text-primary);
+    font-size: 1rem;
+    font-weight: 600;
   }
 }

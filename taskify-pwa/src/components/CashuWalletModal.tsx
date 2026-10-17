@@ -332,6 +332,8 @@ export default function CashuWalletModal({
   const [showSendOptions, setShowSendOptions] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const isCompactLightningSheetLayout = useWalletMediaQuery("(max-height: 820px)");
+  // On a mouse desktop, Chat shows the conversation list beside the open conversation.
+  const chatTwoPane = useWalletMediaQuery("(min-width: 1024px) and (hover: hover) and (pointer: fine)");
   const [scannerMessage, setScannerMessage] = useState("");
   type PendingScan =
     | { type: "ecash"; token: string }
@@ -5667,8 +5669,8 @@ export default function CashuWalletModal({
 
       {/* ── Chat Page ─────────────────────────────────────────────────── */}
       {isChatPage && (
-        <div className="chat-page">
-          {chatView === "threads" && (
+        <div className={`chat-page${chatTwoPane ? " chat-page--two-pane" : ""}`}>
+          {(chatView === "threads" || chatTwoPane) && (
             <div className="chat-page__threads">
               {/* Header */}
               <div className={`chat-page__header chat-page__header--safe-area${contactView !== "list" ? " chat-page__header--compact" : ""}`}>
@@ -5791,7 +5793,10 @@ export default function CashuWalletModal({
 		                      onDelete={() => handleDeleteDmThread(thread)}
 		                    >
 		                      <button
-		                        className="wallet-messages__thread pressable"
+		                        className={`wallet-messages__thread pressable${
+		                          chatTwoPane && chatView !== "threads" && activeThread?.peerPubkey === thread.peerPubkey ? " is-active" : ""
+		                        }`}
+		                        aria-current={chatTwoPane && chatView !== "threads" && activeThread?.peerPubkey === thread.peerPubkey ? "true" : undefined}
 		                        onClick={() => {
 		                          dmListViewRef.current = dmView === "strangers" ? "strangers" : "list";
 		                          setActiveThreadPeer(thread.peerPubkey);
@@ -5893,6 +5898,13 @@ export default function CashuWalletModal({
 		                )}
 		              </div>
 
+            </div>
+          )}
+
+          {chatTwoPane && chatView === "threads" && (
+            <div className="chat-page__empty-pane">
+              <div className="chat-page__empty-pane-title">No conversation open</div>
+              <div>Pick a conversation on the left, or start a new message.</div>
             </div>
           )}
 
