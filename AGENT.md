@@ -20,6 +20,7 @@ Taskify_Release/
 │   │   ├── styles/       # app-shell.css and boards-and-tasks.css are the mobile layout; desktop-layout.css rearranges it (rail with boards) for mouse desktops ≥1024px
 │   │   ├── onboarding/   # First run, key-backup reminder, reminder-notification offer (rules in firstRunRules.ts)
 │   │   ├── components/   # Shared React components
+│   │   ├── chat/         # Wallet-independent PWA chat runtime, page, hooks and presentation helpers
 │   │   ├── context/      # React context providers
 │   │   ├── identity/     # The user's Nostr identity: public key and signer; raw key only via revealLocalSecretKey
 │   │   ├── state/        # Synchronous app stores (tasks, boards, events) read via useSyncExternalStore
@@ -191,7 +192,7 @@ npx wrangler dev
 
 | Test File | Domain | What It Covers |
 |---|---|---|
-| `src/nostr/boardHistoryRace.test.tsx`, `src/hooks/wallet/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | See `docs/audits/pwa-client-history-sync-2026-09-11.md` |
+| `src/nostr/boardHistoryRace.test.tsx`, `src/chat/hooks/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | Preserves complete DM history and sender-copy deduplication, discovers native inbox relays, retains the wallet's opt-in payment handler while wallet-independent Chat leaves tokens inert; see `docs/audits/pwa-client-history-sync-2026-09-11.md` |
 | `src/theme/useAppAppearance.test.tsx` | Appearance settings | Font bounds, theme transitions, status-bar color, object-URL cleanup, and image fallback |
 | `taskify-cli/tests/task-ordering.test.ts` | CLI task ordering | Position moves, legacy orders, deterministic ties, ambiguous IDs, scope validation, and numeric validation |
 | `taskify-cli/tests/profile-command.test.ts`, `taskify-cli/tests/csv.test.ts` | CLI profiles and CSV | Local identity lifecycle, piped input, masking, quoting, and missing fields |

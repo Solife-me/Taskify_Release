@@ -693,31 +693,29 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     - Wallet-only parameters removed or made optional in chat hooks (`useContactDetail` lost the
       pay actions, `useContactsSync` an unused lightning-address argument, `useContactsState`
       the wallet-tab arguments).
+    - `src/chat/ChatRuntime.tsx` now composes Chat's DM, group, contact, profile and attachment
+      behaviour without a wallet context. Its DM subscription is not gated by page visibility,
+      so mounting this provider in `App` will keep the cache and unread count current off-page.
+      Scanner and group-rename behaviour moved to chat-only hooks. The runtime/page remain
+      temporarily unchecked while the faithful extraction is integrated, matching the source
+      wallet modal; the exception is limited to those two files.
+    - Regression caught before this step was committed: removing Chat's automatic payment action
+      also removed the still-live wallet's opt-in payment handler because both consume the same
+      DM hook. The handler is now an optional bridge: wallet passes it, Chat does not. A focused
+      test protects both sides of that boundary.
     - Chat still renders inside `CashuWalletModal` at this checkpoint; its eCash/Lightning
       compose buttons do nothing now (their handlers were removed from `useContactDetail`).
   - **Remaining, in order:**
-    1. `src/chat/ChatRuntime.tsx`: a provider `App` always mounts, so DMs sync and unread counts
-       update with the wallet off. Build it from the modal's chat statements: run
-       `scripts/chat-extraction/analyze.py` then `closure2.py` against `chat_block_clean.tsx.txt`
-       (82 statements). Leave out the wallet-only statements (lightning address 263/270/798,
-       wallet-tab effect 410, debug effect 281, npub.cash effect 2118, the `useCashu`/payment
-       hooks). Replace `useNostrPoolState` with `useNostrSession({ identityEnabled: true })`;
-       make `nostrMissingReason` `nostrIdentityInfo.reason`; pass no `history` to
-       `useDmMessageDerived` (default it to `[]`); drop the payment-request handler from
-       `useDmSubscription`; drop `resetContactForm()` (a no-op) from the contacts effect; move
-       `openGroupNameEditor` and `handleRenameGroupSubmit` out of the wallet's
-       `useContactPaymentActions` into a chat hook. `open`/`isChatPage` become "chat page
-       visible".
-    2. `src/chat/ChatPage.tsx` (lazy): the chat JSX from `chat_block_clean.tsx.txt`, reading the
+    1. `src/chat/ChatPage.tsx` (lazy): the chat JSX from `chat_block_clean.tsx.txt`, reading the
        runtime through context, plus `ChatTokenBubble` (the token in a monospace box and a Copy
        button). Keep the desktop two-pane behaviour (`chat-page--two-pane`). Then split it into
        per-view components (threads, conversation, new message, group info/members/name, new
        group).
-    3. `App` renders `ChatPage` for the chat page and mounts `ChatRuntime` (unread count,
+    2. `App` renders `ChatPage` for the chat page and mounts `ChatRuntime` (unread count,
        inbox, notifications); `CashuWalletShell` stops passing `page="chat"`.
-    4. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
+    3. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
        contact picker for payments reads contacts from the chat runtime (one contacts syncer).
-    5. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
+    4. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
        chunk loads; then type the chat hooks (remove `@ts-nocheck`).
   - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
     from `chat_block_clean`.

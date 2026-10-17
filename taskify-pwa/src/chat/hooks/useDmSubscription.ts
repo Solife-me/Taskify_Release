@@ -54,7 +54,7 @@ export function useDmSubscription({
   stopDmSubscription,
   ensureNostrIdentity,
   defaultNostrRelays,
-  handlePaymentRequestEventRef,
+  handlePaymentRequestEventRef = null,
   persistDmPeerProfileCache,
   contactDisplayLabel,
 }) {
@@ -413,8 +413,10 @@ export function useDmSubscription({
       const normalizedIdentity = normalizeNostrPubkey(identity.pubkey) ?? identity.pubkey;
       const isIncoming =
         normalizedSender != null ? normalizedSender !== normalizedIdentity : event.pubkey !== identity.pubkey;
+      // Wallet consumers may opt into claiming/payment-request handling. Chat deliberately
+      // omits this bridge and only keeps the token as a copyable message attachment.
       if (!options.syncOnly && isIncoming && attachment?.type === "payment") {
-        const handler = handlePaymentRequestEventRef.current;
+        const handler = handlePaymentRequestEventRef?.current;
         if (handler) {
           void handler(event, { updateClock: true });
         }

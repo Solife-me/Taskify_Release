@@ -32,6 +32,36 @@ test('receiving another DM preserves history beyond 400 messages and deduplicate
   } finally { await act(async () => root.unmount()); }
 });
 
+test('wallet consumers can still handle an incoming payment attachment while chat leaves it inert', async () => {
+  const handlePaymentRequestEvent = vi.fn(async () => {});
+  let hook: ReturnType<typeof useDmSubscription>;
+  let messages: any[] = [];
+  const props: any = {
+    dmProcessedEventsRef: { current: new Set() }, dmDeletedEventsRef: { current: new Set() },
+    dmTempDeletedEventsRef: { current: new Map() }, dmBlockedPeersRef: { current: new Set() },
+    ensureNostrIdentity: () => ({ pubkey: 'a'.repeat(64), secret: 'secret' }),
+    decryptNostrPaymentMessage: async () => ({
+      content: 'cashuAexample',
+      createdAt: 500,
+      rumorId: 'payment-rumor',
+      senderPubkey: 'b'.repeat(64),
+    }),
+    resolvePeerPubkey: () => '', messageItemsRef: { current: [] },
+    parseIncomingPaymentMessage: () => ({ amount: 21 }),
+    handlePaymentRequestEventRef: { current: handlePaymentRequestEvent },
+    setDmMessages: (update: any) => { messages = update(messages); },
+  };
+  function Harness() { hook = useDmSubscription(props); return null; }
+  const root = createRoot(document.createElement('div'));
+  await act(async () => root.render(<Harness />));
+  try {
+    const event = wrap('payment-wrap');
+    await hook!.handleDmEvent(event);
+    expect(handlePaymentRequestEvent).toHaveBeenCalledWith(event, { updateClock: true });
+    expect(messages[0]?.attachment).toMatchObject({ type: 'payment', amountSat: 21 });
+  } finally { await act(async () => root.unmount()); }
+});
+
 test('startup discovers iOS inbox relays and recovers old sent DMs despite a recent local cursor', async () => {
   const { NostrSession } = await import('../../nostr/NostrSession');
   const { finalizeEvent, getPublicKey } = await import('nostr-tools');

@@ -22,10 +22,13 @@ export interface UseDmMessageDerivedOptions {
   dmMessages: WalletDmMessage[];
   dmTempDeletedEventsVersion: number;
   formatCalendarInviteWhen: ((invite: any) => string) | undefined;
-  history: any[];
+  /** Wallet payment history, when a wallet still provides it; chat itself has none. */
+  history?: any[];
   dmDeletedEventsRef: React.MutableRefObject<Set<string>>;
   dmTempDeletedEventsRef: React.MutableRefObject<Map<string, number>>;
 }
+
+const NO_HISTORY: any[] = [];
 
 export function useDmMessageDerived({
   messageItems,
@@ -35,7 +38,7 @@ export function useDmMessageDerived({
   dmMessages,
   dmTempDeletedEventsVersion,
   formatCalendarInviteWhen,
-  history,
+  history = NO_HISTORY,
   dmDeletedEventsRef,
   dmTempDeletedEventsRef,
 }: UseDmMessageDerivedOptions) {
