@@ -10,25 +10,18 @@ import { compareDefault, sortBoardTasks as sortTasksForBoard, taskCreatedAt } fr
 import {
   boardUpcomingEvents,
   boardUpcomingTasks,
-  filterUpcomingEvents,
-  filterUpcomingTasks,
   groupUpcomingByDay,
   selectUpcomingEvents,
   selectUpcomingTasks,
   upcomingBoardOrder,
   upcomingDayGroups,
-  type UpcomingFilter,
   type UpcomingSortOptions,
 } from "./domains/upcoming/upcomingModel";
 import { DroppableColumn } from "./ui/board/DroppableColumn";
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-  flattenUpcomingGroups,
-  buildUpcomingDateKeyIndex,
-  type UpcomingFlatRow,
-} from "./lib/upcomingRows";
+
+
 import { type EventTemplate, nip04, nip19 } from "nostr-tools";
 import {
   BIBLE_BOARD_ID,
@@ -108,11 +101,9 @@ import {
   useScriptureMemory,
 } from "./domains/scripture/scriptureHook";
 import {
-  buildUsHolidayCalendarEvents,
   isUsHolidayCalendarEvent,
   fastingReminderTargetBoard,
 } from "./domains/calendar/holidayUtils";
-import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
 import {
   PINNED_BOUNTY_LIST_KEY,
   normalizeTaskPriority,
@@ -192,7 +183,6 @@ import type {
   PublishTaskFn,
 } from "./domains/tasks/taskTypes";
 import {
-  daysInCalendarMonth,
   formatDateKeyLocal,
   formatTimeLabel,
   isoDatePart,
@@ -303,10 +293,11 @@ import {
 import type { ChatInboxResponse } from "taskify-core";
 import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
 import { useWalletShellState } from "./ui/wallet/useWalletShellState";
-import { UpcomingControls } from "./ui/upcoming/UpcomingControls";
-import { UpcomingSearch } from "./ui/upcoming/UpcomingSearch";
-import { useUpcomingControlsState } from "./ui/upcoming/useUpcomingControlsState";
-import { AppSortSheets } from "./ui/app/AppSortSheets";
+import { useBoardSort } from "./ui/board/useBoardSort";
+import { SPECIAL_CALENDAR_US_HOLIDAYS_LABEL } from "./domains/calendar/calendarUtils";
+import { WD_SHORT } from "./domains/appTypes";
+import { BoardSortSheet } from "./ui/board/BoardSortSheet";
+import { useUpcomingPreferences } from "./domains/upcoming/upcomingPreferences";
 import { UpdateToast } from "./ui/app/UpdateToast";
 import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
 import { InlineTaskOverlays } from "./ui/task/InlineTaskOverlays";
@@ -359,6 +350,7 @@ const EditModal = lazy(() =>
 const EventEditModal = lazy(() => import("./ui/calendar/EventEditModal"));
 /** The wallet's providers and the Cashu SDK: only where the wallet is enabled (see walletContexts). */
 const WalletRuntime = lazy(() => import("./wallet/WalletRuntime"));
+const UpcomingPage = lazy(() => import("./ui/upcoming/UpcomingPage"));
 // Opened on demand: kept out of startup (scripts/startup-budget.mjs).
 const ShareBoardDialogs = lazy(() => import("./ui/board/ShareBoardDialogs").then((m) => ({ default: m.ShareBoardDialogs })));
 const WalletBountiesView = lazy(() => import("./ui/wallet/WalletBountiesView").then((m) => ({ default: m.WalletBountiesView })));
@@ -373,11 +365,6 @@ const SettingsModal = lazy(() =>
 const ADD_BOARD_OPTION_ID = "__add-board__";
 const BOARD_PRINT_LAYOUT_VERSION = "v2";
 const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SPECIAL_CALENDAR_US_HOLIDAYS_LABEL = "US Holidays";
-const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS = 1;
-const SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS = 8;
-
-const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const MONTH_NAMES = [
   "January",
   "February",
@@ -2781,56 +2768,14 @@ export default function App() {
     scheduleBoardDropClose,
     cancelBoardDropClose,
   } = useDragAndDrop();
-  const {
-    applyUpcomingFilterPreset,
-    boardSort,
-    boardSortOptions,
-    boardSortSheetOpen,
-    cancelUpcomingPresetHold,
-    handleBoardSortSelect,
-    handleUpcomingSortSelect,
-    maybeCancelUpcomingPresetHold,
-    saveUpcomingFilterPreset,
-    setBoardSortSheetOpen,
-    setUpcomingBoardGrouping,
-    setUpcomingFilter,
-    setUpcomingFilterOpen,
-    setUpcomingSearch,
-    setUpcomingSearchOpen,
-    setUpcomingSortSheetOpen,
-    setUpcomingUsHolidaysEnabled,
-    setUpcomingView,
-    setUpcomingViewSheetOpen,
-    setUpcomingListDate,
-    showUpcomingSearch,
-    startUpcomingPresetHold,
-    toggleUpcomingFilter,
-    upcomingBoardGrouping,
-    upcomingBoardGroupingOptions,
-    upcomingFilter,
-    upcomingFilterGroups,
-    upcomingFilterLabel,
-    upcomingFilterMap,
-    upcomingFilterOpen,
-    upcomingFilterOptions,
-    upcomingFilterPresets,
-    upcomingFilterSelection,
-    upcomingListDate,
-    upcomingPresetHoldTriggeredRef,
-    upcomingSearch,
-    upcomingSearchOpen,
-    upcomingSearchTerm,
-    upcomingSort,
-    upcomingSortSheetOpen,
-    upcomingUsHolidaysEnabled,
-    upcomingView,
-    upcomingViewSheetOpen,
-  } = useUpcomingControlsState({
-    usHolidaysLabel: SPECIAL_CALENDAR_US_HOLIDAYS_LABEL,
-    visibleBoards,
-  });
+  const { boardSort, boardSortSheetOpen, selectBoardSort, setBoardSortSheetOpen } = useBoardSort();
+  const upcomingPreferences = useUpcomingPreferences();
+  // Where the lazily loaded Upcoming page puts its header actions and bottom controls.
+  const [upcomingHeaderSlot, setUpcomingHeaderSlot] = useState<HTMLDivElement | null>(null);
+  const [upcomingFooterSlot, setUpcomingFooterSlot] = useState<HTMLDivElement | null>(null);
 
-  const openUpcomingTaskEditor = useCallback(() => {
+  /** Upcoming's "+": a new task due on the day shown, on the current board or the first one that takes tasks. */
+  const openNewTaskForDate = useCallback((dateKey: string) => {
     if (shouldReloadForNavigation()) return;
     const fallbackBoard =
       (currentBoard && currentBoard.kind !== "bible" && currentBoard.kind !== "compound" ? currentBoard : null) ||
@@ -2844,7 +2789,7 @@ export default function App() {
       showToast("Add a list to this board first.");
       return;
     }
-    const dueISO = isoFromDateTime(upcomingListDate);
+    const dueISO = isoFromDateTime(dateKey);
     const dueDateEnabled = true;
     const nextOrder = nextOrderForBoard(fallbackBoard.id, tasks, settings.newTaskPosition);
     const draft: Task = {
@@ -2865,7 +2810,7 @@ export default function App() {
           : {}),
     };
     setEditing({ type: "task", originalType: "task", originalId: draft.id, task: draft });
-  }, [currentBoard, nostrPK, settings.newTaskPosition, shouldReloadForNavigation, showToast, tasks, upcomingListDate, visibleBoards]);
+  }, [currentBoard, nostrPK, settings.newTaskPosition, shouldReloadForNavigation, showToast, tasks, visibleBoards]);
 
   // fly-to-completed overlay + target
   const flyLayerRef = useRef<HTMLDivElement>(null);
@@ -2878,34 +2823,8 @@ export default function App() {
   const boardDropContainerRef = useRef<HTMLDivElement>(null);
   const boardDropListRef = useRef<HTMLDivElement>(null);
   const upcomingButtonRef = useRef<HTMLButtonElement>(null);
-  const upcomingListRef = useRef<HTMLDivElement | null>(null);
-  const upcomingSearchInputRef = useRef<HTMLInputElement | null>(null);
-  const upcomingAutoScrollRef = useRef(false);
-  const upcomingPendingDetailDateRef = useRef<string | null>(null);
-  const upcomingCalendarSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
   const inlineInputRefs = useRef(new Map<string, HTMLInputElement>());
 
-  useEffect(() => {
-    if (activePage !== "upcoming") return;
-    if (!upcomingSearchOpen) return;
-    upcomingSearchInputRef.current?.focus();
-  }, [activePage, upcomingSearchOpen]);
-
-  const openUpcomingSearch = useCallback(() => {
-    setUpcomingSearchOpen(true);
-    const container = appContentRef.current;
-    if (container) {
-      container.scrollTo({ top: 0, behavior: "smooth" });
-    }
-    requestAnimationFrame(() => {
-      upcomingSearchInputRef.current?.focus();
-    });
-  }, []);
-
-  const closeUpcomingSearch = useCallback(() => {
-    setUpcomingSearch("");
-    setUpcomingSearchOpen(false);
-  }, []);
 
   const setInlineInputRef = useCallback((key: string, el: HTMLInputElement | null) => {
     if (el) inlineInputRefs.current.set(key, el);
@@ -3980,50 +3899,19 @@ export default function App() {
       });
   }, [bibleTracker.completedBooks]);
 
+  // A board's own "upcoming" section: its items after today, sorted as Upcoming sorts them.
   const upcomingBoardOrderValue = useMemo(() => upcomingBoardOrder(visibleBoards), [visibleBoards]);
+  // For the Upcoming tab's label: the user's own dated items (holidays are not counted).
+  const upcomingItemCount = useMemo(() => {
+    const context = { boardOrder: upcomingBoardOrderValue, messagesBoardId };
+    return selectUpcomingTasks(tasks, context).length
+      + selectUpcomingEvents(calendarEvents, { ...context, holidays: null }).length;
+  }, [calendarEvents, messagesBoardId, tasks, upcomingBoardOrderValue]);
   const upcomingSortOptions = useMemo<UpcomingSortOptions>(
-    () => ({ sort: upcomingSort, grouping: upcomingBoardGrouping, boardOrder: upcomingBoardOrderValue }),
-    [upcomingBoardGrouping, upcomingBoardOrderValue, upcomingSort],
+    () => ({ sort: upcomingPreferences.sort, grouping: upcomingPreferences.grouping, boardOrder: upcomingBoardOrderValue }),
+    [upcomingBoardOrderValue, upcomingPreferences.grouping, upcomingPreferences.sort],
   );
-  const upcomingUsHolidayEvents = useMemo(() => {
-    const currentYear = new Date().getFullYear();
-    return buildUsHolidayCalendarEvents(
-      currentYear - SPECIAL_CALENDAR_US_HOLIDAY_RANGE_PAST_YEARS,
-      currentYear + SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS,
-    );
-  }, []);
-  const upcoming = useMemo(
-    () => selectUpcomingTasks(tasks, { boardOrder: upcomingBoardOrderValue, messagesBoardId }),
-    [messagesBoardId, tasks, upcomingBoardOrderValue],
-  );
-  const upcomingEvents = useMemo(
-    () => selectUpcomingEvents(calendarEvents, {
-      boardOrder: upcomingBoardOrderValue,
-      messagesBoardId,
-      holidays: upcomingUsHolidaysEnabled ? upcomingUsHolidayEvents : null,
-    }),
-    [calendarEvents, messagesBoardId, upcomingBoardOrderValue, upcomingUsHolidayEvents, upcomingUsHolidaysEnabled],
-  );
-  const upcomingItemCount = upcoming.length + upcomingEvents.length;
 
-  const upcomingFilterValue = useMemo<UpcomingFilter>(() => ({
-    selection: upcomingFilter,
-    hasOptions: upcomingFilterOptions.length > 0,
-    map: upcomingFilterMap,
-    boardMap,
-    searchTerm: upcomingSearchTerm,
-  }), [boardMap, upcomingFilter, upcomingFilterMap, upcomingFilterOptions.length, upcomingSearchTerm]);
-  const filteredUpcoming = useMemo(
-    () => filterUpcomingTasks(upcoming, upcomingFilterValue),
-    [upcoming, upcomingFilterValue],
-  );
-  const filteredUpcomingEvents = useMemo(
-    () => filterUpcomingEvents(upcomingEvents, upcomingFilterValue, upcomingUsHolidaysEnabled),
-    [upcomingEvents, upcomingFilterValue, upcomingUsHolidaysEnabled],
-  );
-  const filteredUpcomingCount = filteredUpcoming.length + filteredUpcomingEvents.length;
-
-  // A board's own "upcoming" section: its items after today, in Upcoming's order.
   const boardUpcomingCutoffDateKey = formatDateKeyLocal(new Date());
   const boardUpcomingTasksValue = useMemo(
     () => boardUpcomingTasks(tasksForBoard, boardUpcomingCutoffDateKey),
@@ -4042,196 +3930,7 @@ export default function App() {
     [boardUpcomingCutoffDateKey, boardUpcomingEventsValue, boardUpcomingTasksValue, upcomingSortOptions],
   );
 
-  const upcomingDayMap = useMemo(
-    () => groupUpcomingByDay(filteredUpcoming, filteredUpcomingEvents, upcomingSortOptions),
-    [filteredUpcoming, filteredUpcomingEvents, upcomingSortOptions],
-  );
-  const upcomingGroups = useMemo(() => upcomingDayGroups(upcomingDayMap), [upcomingDayMap]);
 
-  // ── Virtualized upcoming list (Item #11) ──────────────────────────────────
-  // The grouped upcoming view is the only surface that grows linearly with
-  // total task/event count across days, so it's the highest-leverage place to
-  // virtualize. We flatten {group → [header, ...events, ...tasks]} into a
-  // single row array (in `lib/upcomingRows.ts`, so the logic is unit-testable
-  // independent of React/jsdom plumbing), then drive a `react-virtual` list
-  // over it. Day headers are small (~32px), cards are variable (~120px
-  // estimate, refined by ResizeObserver via `measureElement`). Scroll parent
-  // is the existing `.app-content` container (`appContentRef`).
-  const upcomingFlatRows = useMemo<UpcomingFlatRow[]>(
-    () => flattenUpcomingGroups(upcomingGroups),
-    [upcomingGroups],
-  );
-
-  // Map dateKey → flat-row index of that day's header. Used by
-  // `scrollUpcomingToDate` to call `virtualizer.scrollToIndex(...)` when the
-  // target day is offscreen (and therefore not in the rendered DOM subtree).
-  const upcomingDateKeyToIndex = useMemo(
-    () => buildUpcomingDateKeyIndex(upcomingFlatRows),
-    [upcomingFlatRows],
-  );
-
-  const upcomingVirtualizer = useVirtualizer({
-    count: upcomingFlatRows.length,
-    getScrollElement: () => appContentRef.current,
-    estimateSize: (index) => {
-      const row = upcomingFlatRows[index];
-      return row?.kind === "day-header" ? 32 : 120;
-    },
-    overscan: 8,
-  });
-  const {
-    calendarAnchor: upcomingListAnchor,
-    calendarMonthLabel: upcomingListMonthLabel,
-    calendarCells: upcomingListCalendar,
-    showMonthPicker: upcomingListMonthPickerOpen,
-    moveCalendarMonth: moveUpcomingListMonth,
-    handleMonthLabelClick: handleUpcomingListMonthLabelClick,
-    monthPickerYears: upcomingListMonthPickerYears,
-    monthPickerMonth: upcomingListMonthPickerMonth,
-    monthPickerYear: upcomingListMonthPickerYear,
-    monthPickerMonthColumnRef: upcomingListMonthPickerMonthColumnRef,
-    monthPickerYearColumnRef: upcomingListMonthPickerYearColumnRef,
-    handleMonthPickerMonthScroll: handleUpcomingListMonthPickerMonthScroll,
-    handleMonthPickerYearScroll: handleUpcomingListMonthPickerYearScroll,
-  } = useCalendarPicker(upcomingListDate);
-  const upcomingListSelectedDate = useMemo(() => {
-    const parsed = new Date(`${upcomingListDate}T00:00:00`);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }, [upcomingListDate]);
-	  const upcomingListToday = useMemo(() => startOfDay(new Date()), []);
-	  const upcomingListDayMap = upcomingDayMap;
-	  const upcomingListEntry = useMemo(
-	    () => upcomingListDayMap.get(upcomingListDate) ?? { tasks: [], events: [] },
-	    [upcomingListDayMap, upcomingListDate],
-	  );
-	  const upcomingListEvents = upcomingListEntry.events;
-	  const upcomingListTasks = upcomingListEntry.tasks;
-	  const upcomingListDateRef = useRef(upcomingListDate);
-  useEffect(() => {
-    const prevDate = upcomingListDateRef.current;
-    const dateChanged = prevDate !== upcomingListDate;
-    upcomingListDateRef.current = upcomingListDate;
-    if (upcomingView !== "list") return;
-    if (dateChanged) return;
-    const selected = new Date(`${upcomingListDate}T00:00:00`);
-    if (Number.isNaN(selected.getTime())) return;
-    if (
-      selected.getFullYear() === upcomingListAnchor.getFullYear() &&
-      selected.getMonth() === upcomingListAnchor.getMonth()
-    ) {
-      return;
-    }
-    const maxDay = daysInCalendarMonth(upcomingListAnchor.getFullYear(), upcomingListAnchor.getMonth());
-    const next = new Date(
-      upcomingListAnchor.getFullYear(),
-      upcomingListAnchor.getMonth(),
-      Math.min(selected.getDate(), maxDay),
-    );
-    setUpcomingListDate(formatDateKeyLocal(next));
-  }, [upcomingListAnchor, upcomingListDate, upcomingView]);
-
-  const resolveUpcomingTargetDateKey = useCallback((preferredDateKey: string) => {
-    if (!upcomingGroups.length) return null;
-    if (upcomingGroups.some((group) => group.dateKey === preferredDateKey)) {
-      return preferredDateKey;
-    }
-    const nextGroup = upcomingGroups.find((group) => group.dateKey > preferredDateKey);
-    if (nextGroup) return nextGroup.dateKey;
-    return upcomingGroups[upcomingGroups.length - 1].dateKey;
-  }, [upcomingGroups]);
-  const scrollUpcomingToDate = useCallback((dateKey: string, behavior: ScrollBehavior = "smooth") => {
-    const list = upcomingListRef.current;
-    const scrollContainer = appContentRef.current;
-    if (!list || !scrollContainer) return false;
-    const targetKey = resolveUpcomingTargetDateKey(dateKey);
-    if (!targetKey) return false;
-
-    // Grouped view is virtualized: target day's header may be outside the
-    // rendered DOM range, so `querySelector` would miss it. Use the
-    // virtualizer's scrollToIndex with the precomputed dateKey→index map.
-    const virtualIndex = upcomingDateKeyToIndex.get(targetKey);
-    if (typeof virtualIndex === "number") {
-      upcomingVirtualizer.scrollToIndex(virtualIndex, { align: "start", behavior });
-      return true;
-    }
-
-    const selector = `[data-upcoming-date="${targetKey}"]`;
-    const target = list.querySelector(selector) as HTMLElement | null;
-    const fallback = list.firstElementChild as HTMLElement | null;
-    const scrollTarget = target ?? fallback;
-    if (!scrollTarget) return false;
-    requestAnimationFrame(() => {
-      const containerRect = scrollContainer.getBoundingClientRect();
-      const targetRect = scrollTarget.getBoundingClientRect();
-      const offset = targetRect.top - containerRect.top + scrollContainer.scrollTop;
-      scrollContainer.scrollTo({ top: offset, behavior });
-    });
-    return true;
-  }, [resolveUpcomingTargetDateKey, upcomingDateKeyToIndex, upcomingVirtualizer]);
-  const scrollUpcomingToToday = useCallback((behavior: ScrollBehavior = "smooth") => {
-    const todayKey = isoDatePart(new Date().toISOString());
-    return scrollUpcomingToDate(todayKey, behavior);
-  }, [scrollUpcomingToDate]);
-  const getFocusedUpcomingDateFromScroll = useCallback(() => {
-    const list = upcomingListRef.current;
-    const scrollContainer = appContentRef.current;
-    if (!list || !scrollContainer) return null;
-    const groups = Array.from(list.querySelectorAll<HTMLElement>("[data-upcoming-date]"));
-    if (!groups.length) return null;
-    const containerTop = scrollContainer.getBoundingClientRect().top;
-    const firstVisible = groups.find((group) => group.getBoundingClientRect().bottom >= containerTop + 1);
-    const focused = firstVisible ?? groups[groups.length - 1];
-    const key = focused.getAttribute("data-upcoming-date");
-    return key && key.trim() ? key : null;
-  }, []);
-  const handleUpcomingViewChange = useCallback((nextView: "details" | "list") => {
-    if (nextView === upcomingView) {
-      setUpcomingViewSheetOpen(false);
-      return;
-    }
-    if (nextView === "details") {
-      upcomingPendingDetailDateRef.current = upcomingListDate;
-      upcomingAutoScrollRef.current = false;
-    } else {
-      const focusedDate = getFocusedUpcomingDateFromScroll();
-      if (focusedDate) {
-        setUpcomingListDate(focusedDate);
-      }
-    }
-    setUpcomingView(nextView);
-    setUpcomingViewSheetOpen(false);
-  }, [getFocusedUpcomingDateFromScroll, upcomingListDate, upcomingView]);
-  const handleUpcomingCalendarTouchStart = useCallback((event: React.TouchEvent) => {
-    if (upcomingListMonthPickerOpen) return;
-    if (!event.touches.length) return;
-    const touch = event.touches[0];
-    upcomingCalendarSwipeRef.current = { startX: touch.clientX, startY: touch.clientY };
-  }, [upcomingListMonthPickerOpen]);
-  const handleUpcomingCalendarTouchEnd = useCallback((event: React.TouchEvent) => {
-    if (upcomingListMonthPickerOpen) return;
-    const swipe = upcomingCalendarSwipeRef.current;
-    upcomingCalendarSwipeRef.current = null;
-    if (!swipe) return;
-    const touch = event.changedTouches[0];
-    if (!touch) return;
-    const deltaX = touch.clientX - swipe.startX;
-    const deltaY = touch.clientY - swipe.startY;
-    if (Math.abs(deltaY) < 40 || Math.abs(deltaY) < Math.abs(deltaX)) return;
-    moveUpcomingListMonth(deltaY < 0 ? 1 : -1);
-  }, [moveUpcomingListMonth, upcomingListMonthPickerOpen]);
-  const handleUpcomingListDaySelect = useCallback((day: number) => {
-    const next = new Date(upcomingListCalendar.year, upcomingListCalendar.month, day);
-    if (Number.isNaN(next.getTime())) return;
-    setUpcomingListDate(formatDateKeyLocal(next));
-  }, [upcomingListCalendar.month, upcomingListCalendar.year]);
-  const handleUpcomingToday = useCallback(() => {
-    if (upcomingView === "list") {
-      const today = isoDatePart(new Date().toISOString());
-      setUpcomingListDate(today);
-      return;
-    }
-    scrollUpcomingToToday("smooth");
-  }, [scrollUpcomingToToday, upcomingView]);
 	  function renderUpcomingTaskCard(t: Task) {
     const board = boardMap.get(t.boardId);
     const boardLabel = board?.name || "Board";
@@ -4353,28 +4052,10 @@ export default function App() {
 	    );
 	  }, [boardMap, handleDragEnd, handleOpenEventDocument, isSelectionMode, pendingNostrCalendarEventIds, selectedItemIds, setCalendarEvents, setEditing, settings.weekStart, toggleItemSelection]);
 
-	  useEffect(() => {
-	    if (activePage !== "upcoming") {
-	      upcomingAutoScrollRef.current = false;
-      upcomingPendingDetailDateRef.current = null;
-	      return;
-	    }
-	    if (upcomingView !== "details") return;
-	    if (upcomingAutoScrollRef.current) return;
-    const targetDate = upcomingPendingDetailDateRef.current ?? upcomingListDate;
-    upcomingPendingDetailDateRef.current = null;
-    if (targetDate && scrollUpcomingToDate(targetDate, "auto")) {
-      upcomingAutoScrollRef.current = true;
-      return;
-    }
-    if (scrollUpcomingToToday("auto")) {
-	      upcomingAutoScrollRef.current = true;
-	    }
-	  }, [activePage, scrollUpcomingToDate, scrollUpcomingToToday, upcomingListDate, upcomingView]);
 
+  // Boards open at the top; Upcoming scrolls itself to the day in view.
   useEffect(() => {
-    if (activePage !== "boards" && activePage !== "upcoming") return;
-    if (activePage === "upcoming" && upcomingAutoScrollRef.current) return;
+    if (activePage !== "boards") return;
     const container = appContentRef.current;
     if (!container) return;
     requestAnimationFrame(() => {
@@ -7666,9 +7347,6 @@ export default function App() {
     setSelectionMoveBoardId(null);
   });
   useOverlayHistory(appRouter, appRoute, sheetOverlay(boardSortSheetOpen, "board-sort"), () => setBoardSortSheetOpen(false));
-  useOverlayHistory(appRouter, appRoute, sheetOverlay(upcomingSortSheetOpen, "upcoming-sort"), () => setUpcomingSortSheetOpen(false));
-  useOverlayHistory(appRouter, appRoute, sheetOverlay(upcomingViewSheetOpen, "upcoming-view"), () => setUpcomingViewSheetOpen(false));
-  useOverlayHistory(appRouter, appRoute, sheetOverlay(upcomingFilterOpen, "upcoming-filter"), () => setUpcomingFilterOpen(false));
   useOverlayHistory(appRouter, appRoute, sheetOverlay(biblePrintOpen, "bible-print"), () => setBiblePrintOpen(false));
   useOverlayHistory(appRouter, appRoute, sheetOverlay(boardPrintOpen, "board-print"), () => setBoardPrintOpen(false));
   useOverlayHistory(appRouter, appRoute, sheetOverlay(bibleScanOpen, "bible-scan"), () => setBibleScanOpen(false));
@@ -8008,107 +7686,7 @@ export default function App() {
             {activePage === "upcoming" && (
               <>
                 <div className="app-header__title">Upcoming</div>
-                <div className="app-header__right">
-	                  <button
-	                    type="button"
-	                    className="app-header__icon-btn pressable"
-	                    onClick={() => handleUpcomingViewChange(upcomingView === "list" ? "details" : "list")}
-	                    title="Change upcoming view"
-	                    aria-label="Change upcoming view"
-	                    data-active={upcomingView === "list"}
-	                  >
-                    {upcomingView === "list" ? (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        className="h-[18px] w-[18px]"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={1.8}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <rect x="4" y="5" width="16" height="15" rx="2" />
-                        <path d="M8 3v4" />
-                        <path d="M16 3v4" />
-                        <path d="M4 11h16" />
-                        <path d="M12 14v3l2 1" />
-                      </svg>
-                    ) : (
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        className="h-[18px] w-[18px]"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={1.8}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <line x1="5" y1="6" x2="21" y2="6" />
-                        <line x1="5" y1="12" x2="21" y2="12" />
-                        <line x1="5" y1="18" x2="21" y2="18" />
-                        <circle cx="3" cy="6" r="1" />
-                        <circle cx="3" cy="12" r="1" />
-                        <circle cx="3" cy="18" r="1" />
-                      </svg>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    className="app-header__icon-btn pressable"
-                    onClick={() => setUpcomingSortSheetOpen(true)}
-                    title="Sort upcoming tasks"
-                    aria-label="Sort upcoming tasks"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      className="h-[18px] w-[18px]"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <line x1="8" y1="17" x2="8" y2="7" />
-                      <polyline points="5 10 8 7 11 10" />
-                      <line x1="16" y1="7" x2="16" y2="17" />
-                      <polyline points="13 14 16 17 19 14" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    className="app-header__icon-btn pressable"
-                    onClick={openUpcomingSearch}
-                    title="Search upcoming tasks"
-                    aria-label="Search upcoming tasks"
-                    data-active={showUpcomingSearch}
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      className="h-[18px] w-[18px]"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={1.8}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <circle cx="11" cy="11" r="7" />
-                      <line x1="16.65" y1="16.65" x2="21" y2="21" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    className="app-header__icon-btn app-header__icon-btn--accent pressable"
-                    onClick={openUpcomingTaskEditor}
-                    title="Add task"
-                    aria-label="Add task"
-                  >
-                    <span aria-hidden="true">+</span>
-                  </button>
-                </div>
+                <div className="app-header__right" ref={setUpcomingHeaderSlot} />
               </>
             )}
             {activePage === "wallet-bounties" && (
@@ -8150,7 +7728,7 @@ export default function App() {
         <div ref={flyLayerRef} className="pointer-events-none fixed inset-0 z-[9999]" />
 
         <div
-          className={`app-content${activePage === "upcoming" && upcomingView === "list" ? " app-content--locked" : ""}`}
+          className={`app-content${activePage === "upcoming" && upcomingPreferences.view === "list" ? " app-content--locked" : ""}`}
           ref={appContentRef}
         >
         {activePage === "boards" && (
@@ -8601,216 +8179,23 @@ export default function App() {
         </div>
       )}
       {activePage === "upcoming" && (
-        <>
-          {showUpcomingSearch && (
-            <UpcomingSearch
-              inputRef={upcomingSearchInputRef}
-              value={upcomingSearch}
-              onChange={setUpcomingSearch}
-              onClose={closeUpcomingSearch}
-            />
-          )}
-          {upcomingView === "list" ? (
-            <div className="upcoming-list-view">
-              <div className="surface-panel upcoming-list-view__calendar">
-                <div className="upcoming-calendar">
-                  <div className="upcoming-calendar__header">
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={() => moveUpcomingListMonth(-1)}
-                      aria-label="Previous month"
-                    >
-                      ‹
-                    </button>
-                    <button
-                      type="button"
-                      className="upcoming-calendar__title upcoming-calendar__title-button"
-                      onClick={handleUpcomingListMonthLabelClick}
-                      onTouchStart={(event) => {
-                        event.preventDefault();
-                        handleUpcomingListMonthLabelClick();
-                      }}
-                      aria-label="Select month and year"
-                      aria-expanded={upcomingListMonthPickerOpen}
-                    >
-                      {upcomingListMonthLabel}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={() => moveUpcomingListMonth(1)}
-                      aria-label="Next month"
-                    >
-                      ›
-                    </button>
-                  </div>
-                  {upcomingListMonthPickerOpen && (
-                    <div className="edit-month-picker">
-                      <div
-                        className="edit-month-picker__column"
-                        ref={upcomingListMonthPickerMonthColumnRef}
-                        onScroll={handleUpcomingListMonthPickerMonthScroll}
-                        role="listbox"
-                        aria-label="Select month"
-                      >
-                        {MONTH_NAMES.map((name, idx) => (
-                          <div
-                            key={name}
-                            className={`edit-month-picker__option ${upcomingListMonthPickerMonth === idx ? "is-active" : ""}`}
-                            data-picker-index={idx}
-                            role="option"
-                            aria-selected={upcomingListMonthPickerMonth === idx}
-                          >
-                            {name.slice(0, 3)}
-                          </div>
-                        ))}
-                      </div>
-                      <div
-                        className="edit-month-picker__column"
-                        ref={upcomingListMonthPickerYearColumnRef}
-                        onScroll={handleUpcomingListMonthPickerYearScroll}
-                        role="listbox"
-                        aria-label="Select year"
-                      >
-                        {upcomingListMonthPickerYears.map((year, idx) => (
-                          <div
-                            key={year}
-                            className={`edit-month-picker__option ${upcomingListMonthPickerYear === year ? "is-active" : ""}`}
-                            data-picker-index={idx}
-                            role="option"
-                            aria-selected={upcomingListMonthPickerYear === year}
-                          >
-                            {year}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <div className="upcoming-calendar__weekdays">
-                    {WD_SHORT.map((label) => (
-                      <span key={label}>{label}</span>
-                    ))}
-                  </div>
-                  <div
-                    className="upcoming-calendar__grid"
-                    onTouchStart={handleUpcomingCalendarTouchStart}
-                    onTouchEnd={handleUpcomingCalendarTouchEnd}
-                  >
-                    {upcomingListCalendar.cells.map((cell, idx) => {
-                      if (!cell) {
-                        return (
-                          <span
-                            key={`empty-${idx}`}
-                            className="upcoming-calendar__day upcoming-calendar__day--muted"
-                          />
-	                      );
-	                    }
-	                    const currentViewDate = new Date(
-	                      upcomingListCalendar.year,
-	                      upcomingListCalendar.month,
-	                      cell,
-	                    );
-	                    const dateKey = isoDatePart(currentViewDate.toISOString());
-	                    const hasItems = upcomingListDayMap.has(dateKey);
-	                    const isSelected =
-	                      !!upcomingListSelectedDate &&
-	                      upcomingListSelectedDate.getFullYear() === upcomingListCalendar.year &&
-	                      upcomingListSelectedDate.getMonth() === upcomingListCalendar.month &&
-                        upcomingListSelectedDate.getDate() === cell;
-                      const isToday =
-                        !isSelected &&
-                        upcomingListToday.getFullYear() === currentViewDate.getFullYear() &&
-                        upcomingListToday.getMonth() === currentViewDate.getMonth() &&
-                        upcomingListToday.getDate() === currentViewDate.getDate();
-	                    const dayCls = [
-	                      "upcoming-calendar__day",
-	                      hasItems ? "upcoming-calendar__day--has-dot" : "",
-	                      isSelected ? "upcoming-calendar__day--selected" : "",
-	                      isToday ? "upcoming-calendar__day--today" : "",
-	                    ]
-	                      .filter(Boolean)
-                        .join(" ");
-                      return (
-                        <button
-                          key={`day-${idx}-${cell}`}
-                          type="button"
-                          className={dayCls}
-                          onClick={() => handleUpcomingListDaySelect(cell)}
-                        >
-                          <span className="upcoming-calendar__day-number">{cell}</span>
-                          <span className="upcoming-calendar__dot" aria-hidden="true" />
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-	            </div>
-	            <div className="upcoming-list-view__tasks">
-	              {upcomingListTasks.length + upcomingListEvents.length === 0 ? (
-	                <div className="text-sm text-secondary">
-	                  {filteredUpcomingCount === 0 ? "No upcoming items." : "No items scheduled for this day."}
-	                </div>
-	              ) : (
-	                <div className="space-y-2">
-	                  {upcomingListEvents.map((ev) => renderUpcomingEventCard(ev))}
-	                  {upcomingListTasks.map((task) => renderUpcomingTaskCard(task))}
-	                </div>
-	              )}
-	            </div>
-	          </div>
-	        ) : filteredUpcomingCount === 0 ? (
-	          <div className="surface-panel p-6 text-center text-sm text-secondary">No upcoming items.</div>
-	        ) : (
-	          // Virtualized grouped upcoming list (Item #11). Total height set
-	          // by virtualizer; rows are absolutely positioned via translateY
-	          // so only ~visible items live in the DOM. `data-upcoming-date`
-	          // attributes on rendered headers preserve the existing
-	          // `getFocusedUpcomingDateFromScroll` lookup for the visible
-	          // viewport; offscreen days are reachable via
-	          // `scrollUpcomingToDate` which routes through
-	          // `virtualizer.scrollToIndex`.
-	          <div
-	            className="upcoming-list"
-	            ref={upcomingListRef}
-	            style={{ height: upcomingVirtualizer.getTotalSize(), position: "relative", width: "100%" }}
-	          >
-	            {upcomingVirtualizer.getVirtualItems().map((virtualRow) => {
-	              const row = upcomingFlatRows[virtualRow.index];
-	              if (!row) return null;
-	              const key =
-	                row.kind === "day-header"
-	                  ? `header-${row.dateKey}`
-	                  : row.kind === "event"
-	                  ? `event-${row.event.id}`
-	                  : `task-${row.task.id}`;
-	              return (
-	                <div
-	                  key={key}
-	                  ref={upcomingVirtualizer.measureElement}
-	                  data-index={virtualRow.index}
-	                  data-upcoming-date={row.kind === "day-header" ? row.dateKey : undefined}
-	                  style={{
-	                    position: "absolute",
-	                    top: 0,
-	                    left: 0,
-	                    width: "100%",
-	                    transform: `translateY(${virtualRow.start}px)`,
-	                  }}
-	                >
-	                  {row.kind === "day-header" ? (
-	                    <div className="upcoming-day__label">{row.label}</div>
-	                  ) : row.kind === "event" ? (
-	                    renderUpcomingEventCard(row.event)
-	                  ) : (
-	                    renderUpcomingTaskCard(row.task)
-	                  )}
-	                </div>
-	              );
-	            })}
-	          </div>
-	        )}
-        </>
+        <Suspense fallback={null}>
+          <UpcomingPage
+            tasks={tasks}
+            calendarEvents={calendarEvents}
+            visibleBoards={visibleBoards}
+            boardMap={boardMap}
+            messagesBoardId={messagesBoardId}
+            scrollElementRef={appContentRef}
+            headerSlot={upcomingHeaderSlot}
+            footerSlot={upcomingFooterSlot}
+            renderTaskCard={renderUpcomingTaskCard}
+            renderEventCard={renderUpcomingEventCard}
+            onAddTask={openNewTaskForDate}
+            router={appRouter}
+            route={appRoute}
+          />
+        </Suspense>
       )}
       {activePage === "wallet-bounties" && (
         <Suspense fallback={null}>
@@ -8875,15 +8260,7 @@ export default function App() {
       )}
       </div>
 
-      {activePage === "upcoming" && (
-        <UpcomingControls
-          todayDisabled={upcomingView === "details" && upcomingGroups.length === 0}
-          onTodayClick={handleUpcomingToday}
-          filterActive={upcomingFilter !== null || upcomingFilterOpen}
-          filterLabel={upcomingFilterLabel}
-          onOpenFilter={() => setUpcomingFilterOpen(true)}
-        />
-      )}
+      {activePage === "upcoming" && <div ref={setUpcomingFooterSlot} style={{ display: "contents" }} />}
 
       <nav className="app-tab-switcher" aria-label="Primary">
         <div className="app-tab-switcher__pill">
@@ -9075,38 +8452,11 @@ export default function App() {
           onConfirm={(destination) => completeTask(sharedTaskDestinationId, { inboxAction: "accept", inboxDestination: destination })}
         />
       )}
-      <AppSortSheets
-        applyUpcomingFilterPreset={applyUpcomingFilterPreset}
-        boardSort={boardSort}
-        boardSortOptions={boardSortOptions}
-        boardSortSheetOpen={boardSortSheetOpen}
-        cancelUpcomingPresetHold={cancelUpcomingPresetHold}
-        handleBoardSortSelect={handleBoardSortSelect}
-        handleUpcomingSortSelect={handleUpcomingSortSelect}
-        handleUpcomingViewChange={handleUpcomingViewChange}
-        maybeCancelUpcomingPresetHold={maybeCancelUpcomingPresetHold}
-        saveUpcomingFilterPreset={saveUpcomingFilterPreset}
-        setBoardSortSheetOpen={setBoardSortSheetOpen}
-        setUpcomingBoardGrouping={setUpcomingBoardGrouping}
-        setUpcomingFilter={setUpcomingFilter}
-        setUpcomingFilterOpen={setUpcomingFilterOpen}
-        setUpcomingSortSheetOpen={setUpcomingSortSheetOpen}
-        setUpcomingUsHolidaysEnabled={setUpcomingUsHolidaysEnabled}
-        setUpcomingViewSheetOpen={setUpcomingViewSheetOpen}
-        startUpcomingPresetHold={startUpcomingPresetHold}
-        toggleUpcomingFilter={toggleUpcomingFilter}
-        upcomingBoardGrouping={upcomingBoardGrouping}
-        upcomingBoardGroupingOptions={upcomingBoardGroupingOptions}
-        upcomingFilterGroups={upcomingFilterGroups}
-        upcomingFilterOpen={upcomingFilterOpen}
-        upcomingFilterPresets={upcomingFilterPresets}
-        upcomingFilterSelection={upcomingFilterSelection}
-        upcomingPresetHoldTriggeredRef={upcomingPresetHoldTriggeredRef}
-        upcomingSort={upcomingSort}
-        upcomingSortSheetOpen={upcomingSortSheetOpen}
-        upcomingUsHolidaysEnabled={upcomingUsHolidaysEnabled}
-        upcomingView={upcomingView}
-        upcomingViewSheetOpen={upcomingViewSheetOpen}
+      <BoardSortSheet
+        open={boardSortSheetOpen}
+        sort={boardSort}
+        onSelect={selectBoardSort}
+        onClose={() => setBoardSortSheetOpen(false)}
       />
 
       <SelectionOverlays

@@ -590,7 +590,17 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
    modules; `App` keeps layout and routing.
    - Step 1 done: Upcoming's data model is pure and tested (`domains/upcoming/upcomingModel.ts`),
      and task comparators moved to `domains/tasks/taskSort.ts`; two copies of the day grouping
-     became one. Next: the Upcoming page view (header, list, calendar, scroll) as a lazy module.
+     became one.
+   - Step 2 done: Upcoming is a lazily loaded page (`ui/upcoming/UpcomingPage.tsx`). `App` gives
+     it the scroll container and two slots, one in the header for its actions and one above the
+     tab bar for its controls, which the page fills through portals; `App` still renders the
+     cards, since it owns the task and event actions. Upcoming's preferences are one store
+     (`domains/upcoming/upcomingPreferences.ts`), read by the page and by a board's "upcoming"
+     section; the calendar filter rules are pure (`upcomingFilter.ts`). Board sort left the
+     shared controls hook (`ui/board/useBoardSort.ts`, `BoardSortSheet`). The "View" sheet,
+     which nothing could open, is gone, and the Upcoming tab's count no longer includes US
+     holidays. Startup JavaScript 462.4 → 449.0 KB gzipped; `App.tsx` 9,427 → 8,777 lines.
+     Next: Boards, then Bible, Print, Import and Voice.
 2. **Chunk 3 onward,** per the chunk plan.
 
 **Signer support (approved by the maintainer 2026-10-16, to build later):**
@@ -607,6 +617,7 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 - Chunk 4: Scripture Memory review tasks whose series fields get normalized are not republished.
   Republishing would send every past review on a frequency change, so it needs a deliberate rule.
 - Chunk 4: `maybePublishTask` mutates `task._nostrAt` on objects held in state.
-- Chunk 3: opening Upcoming directly (`/upcoming`) starts at the oldest day instead of today;
-  "Jump to today" works. Present before stage 4.
+- Chunk 3: check on a device that opening `/upcoming` directly lands on today. In the dev
+  Browser pane it started at the oldest day, but that pane was hidden, and hidden pages pause the
+  animation frames the list's virtualizer scrolls with, so this may not be a real bug.
 - Chunk 12: the CLI's runtime tests assert on source text; build a fake-session harness.
