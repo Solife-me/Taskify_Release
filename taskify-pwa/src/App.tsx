@@ -7828,7 +7828,7 @@ export default function App() {
                 className={`board-scroller flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
                 style={{ WebkitOverflowScrolling: "touch" }} // fluid momentum scroll on iOS
               >
-                <div className="board-week-row flex gap-4 min-w-max h-full items-stretch">
+                <div className="flex gap-4 min-w-max h-full items-stretch">
                   {Array.from({ length: 7 }, (_, i) => i as Weekday).map((day) => (
                     <DroppableColumn
                       ref={el => setColumnRef(`week-day-${day}`, el)}

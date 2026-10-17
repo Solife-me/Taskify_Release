@@ -328,8 +328,11 @@ export default function UpcomingPage({
   const handleUpcomingListDaySelect = useCallback((day: number) => {
     const next = new Date(upcomingListCalendar.year, upcomingListCalendar.month, day);
     if (Number.isNaN(next.getTime())) return;
-    setUpcomingListDate(formatDateKeyLocal(next));
-  }, [upcomingListCalendar.month, upcomingListCalendar.year]);
+    const dateKey = formatDateKeyLocal(next);
+    setUpcomingListDate(dateKey);
+    // Beside the day-by-day list (desktop), a day click jumps the list to that day.
+    if (upcomingView === "details") scrollUpcomingToDate(dateKey, "smooth");
+  }, [scrollUpcomingToDate, upcomingListCalendar.month, upcomingListCalendar.year, upcomingView]);
   const handleUpcomingToday = useCallback(() => {
     if (upcomingView === "list") {
       const today = isoDatePart(new Date().toISOString());
@@ -349,6 +352,143 @@ export default function UpcomingPage({
       upcomingAutoScrollRef.current = true;
     }
   }, [scrollUpcomingToDate, scrollUpcomingToToday, upcomingListDate, upcomingView]);
+
+  // The month calendar: the "list" view's day picker, and on desktop a navigator beside the
+  // day-by-day list (shown there by desktop-layout.css).
+  const monthCalendar = (
+    <div className="upcoming-calendar">
+      <div className="upcoming-calendar__header">
+        <button
+          type="button"
+          className="ghost-button button-sm pressable"
+          onClick={() => moveUpcomingListMonth(-1)}
+          aria-label="Previous month"
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          className="upcoming-calendar__title upcoming-calendar__title-button"
+          onClick={handleUpcomingListMonthLabelClick}
+          onTouchStart={(event) => {
+            event.preventDefault();
+            handleUpcomingListMonthLabelClick();
+          }}
+          aria-label="Select month and year"
+          aria-expanded={upcomingListMonthPickerOpen}
+        >
+          {upcomingListMonthLabel}
+        </button>
+        <button
+          type="button"
+          className="ghost-button button-sm pressable"
+          onClick={() => moveUpcomingListMonth(1)}
+          aria-label="Next month"
+        >
+          ›
+        </button>
+      </div>
+      {upcomingListMonthPickerOpen && (
+        <div className="edit-month-picker">
+          <div
+            className="edit-month-picker__column"
+            ref={upcomingListMonthPickerMonthColumnRef}
+            onScroll={handleUpcomingListMonthPickerMonthScroll}
+            role="listbox"
+            aria-label="Select month"
+          >
+            {MONTH_NAMES.map((name, idx) => (
+              <div
+                key={name}
+                className={`edit-month-picker__option ${upcomingListMonthPickerMonth === idx ? "is-active" : ""}`}
+                data-picker-index={idx}
+                role="option"
+                aria-selected={upcomingListMonthPickerMonth === idx}
+              >
+                {name.slice(0, 3)}
+              </div>
+            ))}
+          </div>
+          <div
+            className="edit-month-picker__column"
+            ref={upcomingListMonthPickerYearColumnRef}
+            onScroll={handleUpcomingListMonthPickerYearScroll}
+            role="listbox"
+            aria-label="Select year"
+          >
+            {upcomingListMonthPickerYears.map((year, idx) => (
+              <div
+                key={year}
+                className={`edit-month-picker__option ${upcomingListMonthPickerYear === year ? "is-active" : ""}`}
+                data-picker-index={idx}
+                role="option"
+                aria-selected={upcomingListMonthPickerYear === year}
+              >
+                {year}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="upcoming-calendar__weekdays">
+        {WD_SHORT.map((label) => (
+          <span key={label}>{label}</span>
+        ))}
+      </div>
+      <div
+        className="upcoming-calendar__grid"
+        onTouchStart={handleUpcomingCalendarTouchStart}
+        onTouchEnd={handleUpcomingCalendarTouchEnd}
+      >
+        {upcomingListCalendar.cells.map((cell, idx) => {
+          if (!cell) {
+            return (
+              <span
+                key={`empty-${idx}`}
+                className="upcoming-calendar__day upcoming-calendar__day--muted"
+              />
+                  );
+                }
+                const currentViewDate = new Date(
+                  upcomingListCalendar.year,
+                  upcomingListCalendar.month,
+                  cell,
+                );
+                const dateKey = isoDatePart(currentViewDate.toISOString());
+                const hasItems = upcomingListDayMap.has(dateKey);
+                const isSelected =
+                  !!upcomingListSelectedDate &&
+                  upcomingListSelectedDate.getFullYear() === upcomingListCalendar.year &&
+                  upcomingListSelectedDate.getMonth() === upcomingListCalendar.month &&
+            upcomingListSelectedDate.getDate() === cell;
+          const isToday =
+            !isSelected &&
+            upcomingListToday.getFullYear() === currentViewDate.getFullYear() &&
+            upcomingListToday.getMonth() === currentViewDate.getMonth() &&
+            upcomingListToday.getDate() === currentViewDate.getDate();
+                const dayCls = [
+                  "upcoming-calendar__day",
+                  hasItems ? "upcoming-calendar__day--has-dot" : "",
+                  isSelected ? "upcoming-calendar__day--selected" : "",
+                  isToday ? "upcoming-calendar__day--today" : "",
+                ]
+                  .filter(Boolean)
+            .join(" ");
+          return (
+            <button
+              key={`day-${idx}-${cell}`}
+              type="button"
+              className={dayCls}
+              onClick={() => handleUpcomingListDaySelect(cell)}
+            >
+              <span className="upcoming-calendar__day-number">{cell}</span>
+              <span className="upcoming-calendar__dot" aria-hidden="true" />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   const headerActions = (
     <>
@@ -468,138 +608,7 @@ export default function UpcomingPage({
           {upcomingView === "list" ? (
             <div className="upcoming-list-view">
               <div className="surface-panel upcoming-list-view__calendar">
-                <div className="upcoming-calendar">
-                  <div className="upcoming-calendar__header">
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={() => moveUpcomingListMonth(-1)}
-                      aria-label="Previous month"
-                    >
-                      ‹
-                    </button>
-                    <button
-                      type="button"
-                      className="upcoming-calendar__title upcoming-calendar__title-button"
-                      onClick={handleUpcomingListMonthLabelClick}
-                      onTouchStart={(event) => {
-                        event.preventDefault();
-                        handleUpcomingListMonthLabelClick();
-                      }}
-                      aria-label="Select month and year"
-                      aria-expanded={upcomingListMonthPickerOpen}
-                    >
-                      {upcomingListMonthLabel}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={() => moveUpcomingListMonth(1)}
-                      aria-label="Next month"
-                    >
-                      ›
-                    </button>
-                  </div>
-                  {upcomingListMonthPickerOpen && (
-                    <div className="edit-month-picker">
-                      <div
-                        className="edit-month-picker__column"
-                        ref={upcomingListMonthPickerMonthColumnRef}
-                        onScroll={handleUpcomingListMonthPickerMonthScroll}
-                        role="listbox"
-                        aria-label="Select month"
-                      >
-                        {MONTH_NAMES.map((name, idx) => (
-                          <div
-                            key={name}
-                            className={`edit-month-picker__option ${upcomingListMonthPickerMonth === idx ? "is-active" : ""}`}
-                            data-picker-index={idx}
-                            role="option"
-                            aria-selected={upcomingListMonthPickerMonth === idx}
-                          >
-                            {name.slice(0, 3)}
-                          </div>
-                        ))}
-                      </div>
-                      <div
-                        className="edit-month-picker__column"
-                        ref={upcomingListMonthPickerYearColumnRef}
-                        onScroll={handleUpcomingListMonthPickerYearScroll}
-                        role="listbox"
-                        aria-label="Select year"
-                      >
-                        {upcomingListMonthPickerYears.map((year, idx) => (
-                          <div
-                            key={year}
-                            className={`edit-month-picker__option ${upcomingListMonthPickerYear === year ? "is-active" : ""}`}
-                            data-picker-index={idx}
-                            role="option"
-                            aria-selected={upcomingListMonthPickerYear === year}
-                          >
-                            {year}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <div className="upcoming-calendar__weekdays">
-                    {WD_SHORT.map((label) => (
-                      <span key={label}>{label}</span>
-                    ))}
-                  </div>
-                  <div
-                    className="upcoming-calendar__grid"
-                    onTouchStart={handleUpcomingCalendarTouchStart}
-                    onTouchEnd={handleUpcomingCalendarTouchEnd}
-                  >
-                    {upcomingListCalendar.cells.map((cell, idx) => {
-                      if (!cell) {
-                        return (
-                          <span
-                            key={`empty-${idx}`}
-                            className="upcoming-calendar__day upcoming-calendar__day--muted"
-                          />
-	                      );
-	                    }
-	                    const currentViewDate = new Date(
-	                      upcomingListCalendar.year,
-	                      upcomingListCalendar.month,
-	                      cell,
-	                    );
-	                    const dateKey = isoDatePart(currentViewDate.toISOString());
-	                    const hasItems = upcomingListDayMap.has(dateKey);
-	                    const isSelected =
-	                      !!upcomingListSelectedDate &&
-	                      upcomingListSelectedDate.getFullYear() === upcomingListCalendar.year &&
-	                      upcomingListSelectedDate.getMonth() === upcomingListCalendar.month &&
-                        upcomingListSelectedDate.getDate() === cell;
-                      const isToday =
-                        !isSelected &&
-                        upcomingListToday.getFullYear() === currentViewDate.getFullYear() &&
-                        upcomingListToday.getMonth() === currentViewDate.getMonth() &&
-                        upcomingListToday.getDate() === currentViewDate.getDate();
-	                    const dayCls = [
-	                      "upcoming-calendar__day",
-	                      hasItems ? "upcoming-calendar__day--has-dot" : "",
-	                      isSelected ? "upcoming-calendar__day--selected" : "",
-	                      isToday ? "upcoming-calendar__day--today" : "",
-	                    ]
-	                      .filter(Boolean)
-                        .join(" ");
-                      return (
-                        <button
-                          key={`day-${idx}-${cell}`}
-                          type="button"
-                          className={dayCls}
-                          onClick={() => handleUpcomingListDaySelect(cell)}
-                        >
-                          <span className="upcoming-calendar__day-number">{cell}</span>
-                          <span className="upcoming-calendar__dot" aria-hidden="true" />
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                {monthCalendar}
 	            </div>
 	            <div className="upcoming-list-view__tasks">
 	              {upcomingListTasks.length + upcomingListEvents.length === 0 ? (
@@ -625,6 +634,10 @@ export default function UpcomingPage({
 	          // viewport; offscreen days are reachable via
 	          // `scrollUpcomingToDate` which routes through
 	          // `virtualizer.scrollToIndex`.
+	          <div className="upcoming-details">
+	            <aside className="surface-panel upcoming-details__calendar" aria-label="Jump to a day">
+	              {monthCalendar}
+	            </aside>
 	          <div
 	            className="upcoming-list"
 	            ref={upcomingListRef}
@@ -663,6 +676,7 @@ export default function UpcomingPage({
 	                </div>
 	              );
 	            })}
+	          </div>
 	          </div>
 	        )}
       {footerSlot && createPortal(

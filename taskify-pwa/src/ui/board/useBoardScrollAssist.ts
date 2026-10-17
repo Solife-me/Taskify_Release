@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type RefObject } from "react";
+import { hasOpenLayer } from "../useEscapeToClose";
 
 /** Mouse and trackpad desktops; touch screens scroll sideways natively. */
 const FINE_POINTER = "(hover: hover) and (pointer: fine)";
@@ -26,6 +27,7 @@ function wheelPixels(event: WheelEvent, page: number): number {
  * Sideways scrolling for a board with an ordinary mouse, which has no sideways wheel:
  * - the wheel scrolls the board sideways, except over a list long enough to scroll itself;
  * - dragging empty board space pans it;
+ * - ← and → move one list at a time when no text field or dialog has focus;
  * - `edges` says whether lists are hidden off either side, for the edge buttons.
  * Touch screens and trackpad sideways swipes are left alone.
  */
@@ -78,6 +80,19 @@ export function useBoardScrollAssist(boardRef: RefObject<HTMLElement | null>, la
       pan = null;
     };
 
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.defaultPrevented) return;
+      if (!finePointer.matches || hasOpenLayer()) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.matches('input, textarea, select, [contenteditable="true"]')) return;
+      const column = board.firstElementChild?.firstElementChild as HTMLElement | null;
+      if (!column) return;
+      const gap = parseFloat(getComputedStyle(board.firstElementChild as HTMLElement).columnGap) || 0;
+      board.scrollBy({ left: (event.key === "ArrowLeft" ? -1 : 1) * (column.offsetWidth + gap), behavior: "smooth" });
+      event.preventDefault();
+    };
+
     updateEdges();
     const resize = new ResizeObserver(updateEdges);
     resize.observe(board);
@@ -88,7 +103,9 @@ export function useBoardScrollAssist(boardRef: RefObject<HTMLElement | null>, la
     board.addEventListener("pointermove", onPointerMove);
     board.addEventListener("pointerup", endPan);
     board.addEventListener("pointercancel", endPan);
+    document.addEventListener("keydown", onKeyDown);
     return () => {
+      document.removeEventListener("keydown", onKeyDown);
       resize.disconnect();
       board.removeEventListener("scroll", updateEdges);
       board.removeEventListener("wheel", onWheel);

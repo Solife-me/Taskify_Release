@@ -1,5 +1,6 @@
 import React, { useEffect, useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useEscapeToClose } from "../useEscapeToClose";
 
 interface ImagePreviewModalProps {
   src: string;
@@ -49,19 +50,15 @@ export function ImagePreviewModal({ src, alt, onClose }: ImagePreviewModalProps)
   const lastTapRef = useRef<number>(0);
   const imgRef = useRef<HTMLImageElement>(null);
 
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === "Escape") onClose();
-  }, [onClose]);
+  useEscapeToClose(onClose);
 
   useEffect(() => {
-    document.addEventListener("keydown", handleKeyDown);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      document.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = prev;
     };
-  }, [handleKeyDown]);
+  }, []);
 
   // Clamp translate so the image doesn't fly off screen
   const clampTranslate = useCallback((x: number, y: number, scale: number) => {

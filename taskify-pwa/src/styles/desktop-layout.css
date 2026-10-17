@@ -14,18 +14,32 @@
  * four links. The shell is not capped at the phone-first 80rem: boards use the width.
  */
 @media (min-width: 1024px) and (hover: hover) and (pointer: fine) {
+  :root {
+    --desktop-shell-max: 110rem;
+    --desktop-shell-pad-left: 0.9rem;
+    --desktop-shell-pad-right: 1.25rem;
+    --desktop-rail-width: 13.5rem;
+    --desktop-rail-gap: 1.25rem;
+    /* Space beside a centered shell on very wide screens. */
+    --desktop-shell-margin: max(0px, calc((100vw - var(--desktop-shell-max)) / 2));
+    /* Where the content column starts, for overlays that must leave the rail visible. */
+    --desktop-content-left: calc(
+      var(--desktop-shell-margin) + var(--desktop-shell-pad-left) + var(--desktop-rail-width) + var(--desktop-rail-gap)
+    );
+  }
+
   .app-shell {
     display: grid;
-    grid-template-columns: 13.5rem minmax(0, 1fr);
+    grid-template-columns: var(--desktop-rail-width) minmax(0, 1fr);
     grid-template-rows: auto auto minmax(0, 1fr) auto;
     grid-template-areas:
       "nav header"
       "nav banner"
       "nav content"
       "nav controls";
-    column-gap: 1.25rem;
-    max-width: 110rem;
-    padding: 0.9rem 1.25rem 0 0.9rem;
+    column-gap: var(--desktop-rail-gap);
+    max-width: var(--desktop-shell-max);
+    padding: 0.9rem var(--desktop-shell-pad-right) 0 var(--desktop-shell-pad-left);
   }
 
   /* ---- Header ---- */
@@ -355,20 +369,6 @@
     user-select: none;
   }
 
-  /* A week fits on screen when there is room (about 1,650 px and wider); below that, columns
-     keep a readable width and the board scrolls, which the wheel and the edge buttons make easy. */
-  .board-week-row {
-    min-width: 100%;
-    width: 100%;
-    gap: 0.75rem;
-  }
-
-  .board-week-row > .board-column {
-    flex: 1 1 0;
-    width: auto;
-    min-width: 10rem;
-  }
-
   .board-scroll-edge {
     position: absolute;
     top: 50%;
@@ -442,11 +442,21 @@
     scrollbar-width: thin;
   }
 
-  .app-content > .upcoming-list {
-    width: 100%;
-    max-width: 56rem;
-    margin: 0 auto;
+  /* Day-by-day view: the month calendar stays beside the list to jump between days. */
+  .upcoming-details {
+    display: grid;
+    grid-template-columns: minmax(17rem, 20rem) minmax(0, 52rem);
+    justify-content: center;
+    align-items: start;
+    gap: 1.5rem;
     padding-bottom: 1.25rem;
+  }
+
+  .upcoming-details__calendar {
+    display: block;
+    position: sticky;
+    top: 0;
+    padding: 1rem;
   }
 
   /* ---- Settings: a readable column, not the full width ---- */
@@ -454,6 +464,97 @@
   .modal-panel--embedded {
     width: 100%;
     max-width: 52rem;
+    margin: 0 auto;
+  }
+
+  /* ---- Dialogs, panes and sheets ---- */
+
+  /* Editors dock on the right, so the board stays in view beside the task being edited. */
+  .modal-backdrop--pane {
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 0.75rem;
+    background: rgba(7, 10, 20, 0.34);
+  }
+
+  .modal-panel--pane {
+    width: clamp(26rem, 38vw, 36rem);
+    height: auto;
+    border-radius: var(--radius-card);
+    animation: taskify-pane-in 180ms ease-out;
+  }
+
+  .modal-panel--pane .modal-panel__header--spaced {
+    padding-top: 0.75rem;
+  }
+
+  /* Short forms are centered and only as tall as they need to be. */
+  .modal-backdrop--dialog {
+    align-items: center;
+  }
+
+  .modal-panel--dialog {
+    width: min(46rem, 92vw);
+    height: auto;
+    max-height: min(85dvh, 50rem);
+    border-radius: var(--radius-card);
+  }
+
+  /* Action sheets float in the middle instead of rising from the bottom edge. */
+  .sheet-backdrop {
+    justify-content: center;
+    align-items: center;
+  }
+
+  .sheet-panel:not(.sheet-panel--inline) {
+    width: min(32rem, 92vw);
+    max-height: min(80dvh, 46rem);
+    border-radius: var(--radius-card);
+    animation: taskify-dialog-in 160ms ease-out;
+  }
+
+  @keyframes taskify-pane-in {
+    from {
+      opacity: 0;
+      transform: translateX(1.5rem);
+    }
+  }
+
+  @keyframes taskify-dialog-in {
+    from {
+      opacity: 0;
+      transform: translateY(0.5rem) scale(0.98);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .modal-panel--pane,
+    .sheet-panel:not(.sheet-panel--inline) {
+      animation: none;
+    }
+  }
+
+  /* ---- Cards: same size as on phones (lists keep one width everywhere), plus a hover state ---- */
+
+  .board-layout .task-card {
+    transition: border-color 140ms ease;
+  }
+
+  .board-layout .task-card:hover {
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+
+  /* ---- Chat (and the wallet) ----
+     Chat still lives in the wallet's full-window overlay (moving it out is planned in chunk 5).
+     On desktop the overlay covers only the content column, so the rail stays usable, and the
+     chat keeps a readable width. */
+  .wallet-modal {
+    left: var(--desktop-content-left);
+    right: calc(var(--desktop-shell-margin) + var(--desktop-shell-pad-right));
+  }
+
+  .wallet-modal--chat .chat-page {
+    max-width: 60rem;
     margin: 0 auto;
   }
 }

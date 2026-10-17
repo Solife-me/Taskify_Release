@@ -640,18 +640,30 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     - dragging empty board space pans;
     - edge buttons appear while lists are hidden off either side.
     Touch screens and trackpad sideways swipes are untouched.
-  - The shell is no longer capped at 80rem. A week board fits all seven days from about
-    1,650 px; narrower, columns keep a readable 10rem minimum and the board scrolls. (Squeezing
-    seven days into 1,440 px gave 147 px columns with two-line titles, which read worse.)
+  - The shell is no longer capped at 80rem, so wide screens show more lists side by side.
+    (Pass 1 also let week columns shrink to fit seven days; that was reverted at the
+    maintainer's request so lists stay 325 px everywhere.)
   - Settings is a readable centered column (52rem); Upcoming's list stays centered.
   - Mobile is unchanged (checked at 375×812).
-- **Pass 2 (next):**
-  - Editors in a side pane on wide screens.
-  - Desktop sizing for the phone-style full-height sheets (Add board and others).
-  - Card density on desktop.
-  - Keyboard movement between lists.
-  - Upcoming's details view using the width.
-  - A desktop look at Chat.
+- **Pass 2 (done 2026-10-17):**
+  - Task, event and note editors dock as a pane on the right, so the board stays in view.
+    `Modal` takes `desktop="pane" | "dialog"`; phones keep the full-height sheet.
+  - Add board is a centered dialog sized to its content. Action sheets (sort, filter) float in
+    the middle instead of rising from the bottom edge.
+  - Escape closes the top-most dialog, sheet or pane, one per press. In a text field, the first
+    Escape only leaves the field (`ui/useEscapeToClose.ts`, tested). It replaces two separate
+    Escape listeners that could fire together.
+  - ← and → move the board one list at a time when no field or dialog has focus.
+  - Upcoming's day-by-day view shows the month calendar beside the list; clicking a day jumps
+    the list there.
+  - Chat no longer covers the rail: on desktop the wallet/chat overlay covers only the content
+    column, and Chat keeps a readable width.
+  - Card density: not changed, per the rule that lists and cards keep their mobile size; cards
+    only gain a hover state.
+- **Still to do for desktop:**
+  - Move Chat out of the wallet overlay into a real page (chunk 5), which would allow a
+    two-pane conversation list and thread.
+  - When an editor pane opens over the card being edited, scroll that card into view.
 - **Found while doing this:** the PWA always renders dark (`useAppAppearance` removes `light`),
   so the ~106 `html.light` rules across the stylesheets are dead; logged for chunk 14 hygiene.
 - **Earlier proposed direction (kept for reference):**
@@ -660,6 +672,9 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     useful. (Confirms the rail-with-boards direction.)
   - Boards with many lists must be easy to scroll sideways with an ordinary mouse, which has no
     sideways wheel.
+  - Lists keep the same width on desktop and mobile (2026-10-17, after pass 1 briefly let week
+    columns shrink to fit seven days on screen). Desktop uses extra width to show more lists,
+    never narrower or wider ones.
   - Overall: a polished desktop experience that is beautiful and makes good use of the space,
     yet still feels like the same app as the mobile PWA (same components, colors and
     interactions; only the arrangement changes).

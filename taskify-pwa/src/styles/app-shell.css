@@ -2314,3 +2314,8 @@ html.light .control-matrix__btn[data-hovered="true"] {
 .board-scroll-edge {
   display: none;
 }
+
+/* Upcoming's calendar beside the day-by-day list is a desktop navigator (desktop-layout.css). */
+.upcoming-details__calendar {
+  display: none;
+}

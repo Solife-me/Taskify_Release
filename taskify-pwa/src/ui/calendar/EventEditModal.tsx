@@ -1061,7 +1061,7 @@ function EventEditModal({
 
 	  return (
 	    <>
-	      <Modal onClose={onCancel} showClose={false} variant="fullscreen">
+	      <Modal onClose={onCancel} showClose={false} variant="fullscreen" desktop="pane">
         <div className="edit-modal">
         <div className="edit-sheet__header">
           <button

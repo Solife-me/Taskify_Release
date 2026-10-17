@@ -3,6 +3,7 @@ import { parseBoardSharePayload } from "taskify-core";
 import { useToast } from "../../context/ToastContext";
 import { Modal } from "../Modal";
 import { BoardQrScanner } from "./BoardQrScanner";
+import { useEscapeToClose } from "../useEscapeToClose";
 
 
 export function AddBoardModal({
@@ -58,18 +59,14 @@ export function AddBoardModal({
       if (button?.contains(target)) return;
       setInfoOpen(null);
     };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setInfoOpen(null);
-    };
     document.addEventListener("mousedown", handlePointer);
     document.addEventListener("touchstart", handlePointer);
-    document.addEventListener("keydown", handleKey);
     return () => {
       document.removeEventListener("mousedown", handlePointer);
       document.removeEventListener("touchstart", handlePointer);
-      document.removeEventListener("keydown", handleKey);
     };
   }, [infoOpen]);
+  useEscapeToClose(() => setInfoOpen(null), infoOpen !== null);
 
   const handleCreateBoard = useCallback(() => {
     const trimmed = newBoardName.trim();
@@ -146,7 +143,7 @@ export function AddBoardModal({
   const joinStatusClass = joinStatus?.tone === "error" ? "text-rose-400" : "text-secondary";
 
   return (
-    <Modal onClose={onClose} title="Add Board" variant="fullscreen">
+    <Modal onClose={onClose} title="Add Board" variant="fullscreen" desktop="dialog">
       <div className="space-y-2">
         <div className="grid gap-2 sm:grid-cols-2">
           <section className="wallet-section wallet-section--compact add-board-section space-y-2">
