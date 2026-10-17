@@ -347,6 +347,8 @@ const EditModal = lazy(() =>
 const EventEditModal = lazy(() => import("./ui/calendar/EventEditModal"));
 /** The wallet's providers and the Cashu SDK: only where the wallet is enabled (see walletContexts). */
 const WalletRuntime = lazy(() => import("./wallet/WalletRuntime"));
+/** Background DM sync loads after the app shell; the Chat page remains another lazy boundary. */
+const ChatShell = lazy(() => import("./chat/ChatShell"));
 const UpcomingPage = lazy(() => import("./ui/upcoming/UpcomingPage"));
 // Opened on demand: kept out of startup (scripts/startup-budget.mjs).
 const ShareBoardDialogs = lazy(() => import("./ui/board/ShareBoardDialogs").then((m) => ({ default: m.ShareBoardDialogs })));
@@ -1754,9 +1756,8 @@ export default function App() {
   const openChatPage = useCallback(() => {
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
-    prefetchWalletModal();
     startTransition(() => setActivePage("chat"));
-  }, [prefetchWalletModal, shouldReloadForNavigation]);
+  }, [shouldReloadForNavigation]);
 
   const openShareBoard = useCallback(() => {
     if (shouldReloadForNavigation()) return;
@@ -8308,32 +8309,58 @@ export default function App() {
         onOpenWallet={openWallet}
       />
 
-      <CashuWalletShell
-        acceptInboxMessage={acceptInboxMessage}
-        addSharedTaskAgain={(task, sender) => setSharedTaskCopy({ task, sender })}
-        closeWallet={closeWallet}
-        declineInboxMessage={declineInboxMessage}
-        defaultRelays={defaultRelays}
-        dismissCalendarInvite={dismissCalendarInvite}
-        dismissInboxMessage={dismissInboxMessage}
-        formatCalendarInviteWhen={formatCalendarInviteWhen}
-        handleCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
-        inboxPendingItems={inboxPendingItems}
-        markInboxMessagesRead={markInboxMessagesRead}
-        maybeInboxMessage={maybeInboxMessage}
-        messagesUnreadCount={messagesUnreadCount}
-        openWalletBounties={openWalletBounties}
-        onResetWalletTokenTracking={handleResetWalletTokenTracking}
-        openWalletAddress={openWalletAddress}
-        pendingCalendarInvites={pendingCalendarInvites}
-        setDmUnreadCount={setDmUnreadCount}
-        setSettings={setSettings}
-        settings={settings}
-        showChat={showChat}
-        showWalletShell={showWalletShell}
-        walletMessageItems={walletMessageItems}
-        walletTokenStateResetNonce={walletTokenStateResetNonce}
-      />
+      <Suspense fallback={null}>
+        <ChatShell
+          active={showChat}
+          contactsSyncEnabled={settings.walletContactsSyncEnabled}
+          fileStorageServer={settings.fileStorageServer}
+          fileServers={settings.fileServers}
+          encryptedFileStorageServer={settings.encryptedFileStorageServer}
+          encryptedFileServers={settings.encryptedFileServers}
+          messageItems={walletMessageItems}
+          inboxPendingItems={inboxPendingItems}
+          pendingCalendarInvites={pendingCalendarInvites}
+          onAcceptMessage={acceptInboxMessage}
+          onAddTaskAgain={(task, sender) => setSharedTaskCopy({ task, sender })}
+          onMaybeMessage={maybeInboxMessage}
+          onDeclineMessage={declineInboxMessage}
+          onDismissMessage={dismissInboxMessage}
+          onMarkMessagesRead={markInboxMessagesRead}
+          onCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
+          onDismissCalendarInvite={dismissCalendarInvite}
+          formatCalendarInviteWhen={formatCalendarInviteWhen}
+          onDmUnreadCountChange={setDmUnreadCount}
+          chatMessageRetention={settings.chatMessageRetention}
+        >
+          {showWalletShell && (
+            <CashuWalletShell
+              acceptInboxMessage={acceptInboxMessage}
+              addSharedTaskAgain={(task, sender) => setSharedTaskCopy({ task, sender })}
+              closeWallet={closeWallet}
+              declineInboxMessage={declineInboxMessage}
+              defaultRelays={defaultRelays}
+              dismissCalendarInvite={dismissCalendarInvite}
+              dismissInboxMessage={dismissInboxMessage}
+              formatCalendarInviteWhen={formatCalendarInviteWhen}
+              handleCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
+              inboxPendingItems={inboxPendingItems}
+              markInboxMessagesRead={markInboxMessagesRead}
+              maybeInboxMessage={maybeInboxMessage}
+              messagesUnreadCount={messagesUnreadCount}
+              openWalletBounties={openWalletBounties}
+              onResetWalletTokenTracking={handleResetWalletTokenTracking}
+              openWalletAddress={openWalletAddress}
+              pendingCalendarInvites={pendingCalendarInvites}
+              setDmUnreadCount={setDmUnreadCount}
+              setSettings={setSettings}
+              settings={settings}
+              showWalletShell={showWalletShell}
+              walletMessageItems={walletMessageItems}
+              walletTokenStateResetNonce={walletTokenStateResetNonce}
+            />
+          )}
+        </ChatShell>
+      </Suspense>
 
       <InlineTaskOverlays
         addMenuKey={addMenuKey}

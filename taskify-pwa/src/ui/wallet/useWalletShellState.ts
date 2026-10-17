@@ -13,7 +13,7 @@ export function useWalletShellState({
 }: UseWalletShellStateParams) {
   const showWallet = activePage === "wallet";
   const showChat = activePage === "chat";
-  const showWalletShell = showWallet || showChat;
+  const showWalletShell = showWallet;
   const walletModalPrefetchedRef = useRef(false);
   const prefetchWalletModal = useCallback(() => {
     if (walletModalPrefetchedRef.current) return;
@@ -48,32 +48,6 @@ export function useWalletShellState({
   const handleReloadLater = useCallback(() => {
     setUpdateToastVisible(false);
   }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (showWalletShell || walletModalPrefetchedRef.current) return;
-    const requestIdle = (window as any).requestIdleCallback as
-      | ((cb: () => void, opts?: { timeout: number }) => number)
-      | undefined;
-    const cancelIdle = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
-    let idleId: number | null = null;
-    let timer: number | undefined;
-    if (requestIdle) {
-      idleId = requestIdle(() => prefetchWalletModal(), { timeout: 1200 });
-    } else {
-      timer = window.setTimeout(() => {
-        prefetchWalletModal();
-      }, 300);
-    }
-    return () => {
-      if (idleId != null && cancelIdle) {
-        cancelIdle(idleId);
-      }
-      if (typeof timer === "number") {
-        window.clearTimeout(timer);
-      }
-    };
-  }, [prefetchWalletModal, showWalletShell]);
 
   const handleResetWalletTokenTracking = useCallback(() => {
     setWalletTokenStateResetNonce((value) => value + 1);

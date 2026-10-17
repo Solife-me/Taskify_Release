@@ -702,20 +702,26 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     - `src/chat/ChatPage.tsx` is the standalone page rendering the runtime, preserving mobile and
       desktop two-pane views. `ChatTokenBubble` replaces the wallet payment card with a tested,
       copy-only token surface; the full token is copied even when its display is shortened.
+    - `App` now loads an always-mounted `ChatShell` asynchronously. It owns `ChatRuntime` off-page
+      and loads `ChatPage` as a second chunk only when Chat is visible. The wallet shell is an
+      optional child of that provider (ready to reuse its contacts) but renders only on the wallet
+      page; opening Chat neither opens nor prefetches it. Idle wallet prefetch is gone.
+    - Production build verification is enforced by `check:startup`: opening Chat's static chunk
+      graph may not include the wallet modal/runtime, Cashu SDK or payment-support chunks. After
+      this integration startup is 451.1 KB gzipped (470 KB budget), and the Chat graph passes.
     - Regression caught before this step was committed: removing Chat's automatic payment action
       also removed the still-live wallet's opt-in payment handler because both consume the same
       DM hook. The handler is now an optional bridge: wallet passes it, Chat does not. A focused
       test protects both sides of that boundary.
-    - Chat still renders inside `CashuWalletModal` at this checkpoint; its eCash/Lightning
-      compose buttons do nothing now (their handlers were removed from `useContactDetail`).
+    - The legacy Chat branch still exists inside `CashuWalletModal`, but `App` no longer renders
+      that branch. The wallet therefore still duplicates Chat's hooks while its own page is open;
+      removing that dead branch and making its contact picker consume the runtime is next.
   - **Remaining, in order:**
-    1. `App` renders `ChatPage` lazily for the chat page and mounts `ChatRuntime` (unread count,
-       inbox, notifications); `CashuWalletShell` stops passing `page="chat"`.
-    2. Split `ChatPage` into per-view components (threads, conversation, new message, group
+    1. Split `ChatPage` into per-view components (threads, conversation, new message, group
        info/members/name and new group) after the faithful page has replaced the wallet branch.
-    3. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
+    2. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
        contact picker for payments reads contacts from the chat runtime (one contacts syncer).
-    4. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
+    3. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
        chunk loads; then type the chat hooks (remove `@ts-nocheck`).
   - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
     from `chat_block_clean`.

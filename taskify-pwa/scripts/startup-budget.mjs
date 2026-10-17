@@ -44,14 +44,18 @@ if (!entryKey) {
   process.exit(2);
 }
 
-const boot = new Set();
-const visit = (key) => {
-  if (boot.has(key) || !manifest[key]) return;
-  boot.add(key);
-  for (const dep of manifest[key].imports ?? []) visit(dep);
-};
-visit(entryKey);
-for (const dynamic of manifest[entryKey].dynamicImports ?? []) visit(dynamic);
+function staticClosure(startKeys) {
+  const result = new Set();
+  const visit = (key) => {
+    if (result.has(key) || !manifest[key]) return;
+    result.add(key);
+    for (const dep of manifest[key].imports ?? []) visit(dep);
+  };
+  for (const key of startKeys) visit(key);
+  return result;
+}
+
+const boot = staticClosure([entryKey, ...(manifest[entryKey].dynamicImports ?? [])]);
 
 const rows = [...boot]
   .map((key) => {
@@ -78,4 +82,22 @@ if (totalKb > budgetKb) {
       " outside main.tsx, or raise the budget in scripts/startup-budget.mjs with a reason.",
   );
   process.exit(1);
+}
+
+// Chat is intentionally independent of the wallet being phased out. Protect the production
+// chunk graph as well as source imports: opening Chat must not fetch the wallet modal, runtime,
+// Cashu SDK or their supporting payment chunks. Dynamic imports below App are not traversed,
+// except for ChatPage because opening Chat does load it.
+const chatShellKey = Object.keys(manifest).find((key) => key.endsWith("/chat/ChatShell.tsx"));
+if (chatShellKey) {
+  const chatStarts = [chatShellKey, ...(manifest[chatShellKey].dynamicImports ?? [])];
+  const chatFiles = [...staticClosure(chatStarts)].map((key) => `${key}\n${manifest[key].file}`);
+  const forbidden = chatFiles.filter((entry) =>
+    /cashu-sdk|cashuTokenMetadata|CashuWalletModal|WalletRuntime|useWalletHistory|cashuProofHelpers|nut16|lightning-/i.test(entry),
+  );
+  if (forbidden.length) {
+    console.error("Opening Chat would load wallet/Cashu chunks:\n" + forbidden.join("\n"));
+    process.exit(1);
+  }
+  if (!args.includes("--json")) console.log("Chat route: no wallet or Cashu chunks.");
 }

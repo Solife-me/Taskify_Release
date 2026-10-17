@@ -28,7 +28,6 @@ type CashuWalletShellProps = {
   setDmUnreadCount: (count: number) => void;
   setSettings: (patch: Partial<Settings>) => void;
   settings: Settings;
-  showChat: boolean;
   showWalletShell: boolean;
   walletMessageItems: WalletMessageItem[];
   walletTokenStateResetNonce: number;
@@ -55,7 +54,6 @@ export function CashuWalletShell({
   setDmUnreadCount,
   setSettings,
   settings,
-  showChat,
   showWalletShell,
   walletMessageItems,
   walletTokenStateResetNonce,
@@ -67,7 +65,7 @@ export function CashuWalletShell({
         onClose={closeWallet}
         onOpenAddress={openWalletAddress}
         onOpenBounties={openWalletBounties}
-        page={showChat ? "chat" : "wallet"}
+        page="wallet"
         showTabSwitcher={false}
         showBottomNav
         walletConversionEnabled={settings.walletConversionEnabled}

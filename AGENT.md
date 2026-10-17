@@ -20,7 +20,7 @@ Taskify_Release/
 │   │   ├── styles/       # app-shell.css and boards-and-tasks.css are the mobile layout; desktop-layout.css rearranges it (rail with boards) for mouse desktops ≥1024px
 │   │   ├── onboarding/   # First run, key-backup reminder, reminder-notification offer (rules in firstRunRules.ts)
 │   │   ├── components/   # Shared React components
-│   │   ├── chat/         # Wallet-independent PWA chat runtime, page, hooks and presentation helpers
+│   │   ├── chat/         # Wallet-independent PWA ChatShell: always-mounted DM runtime, lazy page, hooks and presentation helpers
 │   │   ├── context/      # React context providers
 │   │   ├── identity/     # The user's Nostr identity: public key and signer; raw key only via revealLocalSecretKey
 │   │   ├── state/        # Synchronous app stores (tasks, boards, events) read via useSyncExternalStore
@@ -200,6 +200,7 @@ npx wrangler dev
 | `src/domains/push/vapidKey.test.ts`, `src/lib/withTimeout.test.ts` | Push registration utilities | URL-safe decoding, invalid keys, timeout rejection, and timer cleanup |
 | `src/domains/push/chatPush.test.ts`, `src/ui/settings/PushSection.test.tsx` | PWA chat alerts | NIP-98 header signed by the user's signer over URL, method and body hash; push relay added to or removed from the kind-10050 inbox list without ever emptying it; only the account's own latest preference read; Settings toggle shown once push is on |
 | `src/chat/cashuTokenText.test.ts`, `src/chat/ChatTokenBubble.test.tsx` | Wallet-independent PWA Chat | Cashu token recognition without loading the Cashu SDK; received tokens are displayed as copy-only and the complete token, not its shortened display, is copied |
+| `src/chat/ChatShell.test.tsx`, `src/ui/wallet/useWalletShellState.test.tsx` | PWA Chat/wallet boundary | Chat's background runtime stays mounted off-page while its page is lazy; Chat never opens or prefetches the wallet, and wallet prefetch is explicit |
 | `taskify-cli/tests/config-command.test.ts`, `taskify-cli/tests/relay-diagnostics.test.ts` | CLI configuration and diagnostics | Selected-profile persistence, redaction, errors, and simulated connection outcomes |
 | `taskify-cli/tests/completions-command.test.ts` | CLI completions | Explicit shells, environment detection, combined fallback output, and invalid-shell exits |
 | `src/storage/boardPrintJobs.test.ts` | Saved print jobs | Legacy defaults, malformed data, per-board preservation, and storage failures |
