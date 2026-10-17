@@ -711,8 +711,9 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       this integration startup is 451.1 KB gzipped (470 KB budget), and the Chat graph passes.
     - Page splitting has started: the conversation list/search/profile entry is
       `chat/views/ChatThreadsView.tsx`; the full message conversation and composer are
-      `chat/views/ChatConversationView.tsx`; group info, member list, group-name editing and
-      both new-group steps are `chat/views/ChatGroupViews.tsx`. Each reads the same runtime
+      `chat/views/ChatConversationView.tsx`; the new-message list, contact detail and contact
+      editor are `chat/views/ChatContactsView.tsx`; group info, member list, group-name editing
+      and both new-group steps are `chat/views/ChatGroupViews.tsx`. Each reads the same runtime
       context without a prop matrix, and the original branches were moved without behaviour
       changes.
     - Regression caught before this step was committed: removing Chat's automatic payment action
@@ -723,8 +724,8 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       that branch. The wallet therefore still duplicates Chat's hooks while its own page is open;
       removing that dead branch and making its contact picker consume the runtime is next.
   - **Remaining, in order:**
-    1. Finish splitting `ChatPage` into per-view components. Threads, conversation and all group
-       surfaces are done; the new-message/contact surfaces and shared action sheets remain.
+    1. Finish splitting `ChatPage` into per-view components. Every routed view is done; only the
+       shared profile/contact/message action sheets and scanner overlays remain in the page.
     2. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
        contact picker for payments reads contacts from the chat runtime (one contacts syncer).
     3. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
