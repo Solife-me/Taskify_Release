@@ -721,12 +721,17 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       also removed the still-live wallet's opt-in payment handler because both consume the same
       DM hook. The handler is now an optional bridge: wallet passes it, Chat does not. A focused
       test protects both sides of that boundary.
-    - The legacy Chat branch still exists inside `CashuWalletModal`, but `App` no longer renders
-      that branch. The wallet therefore still duplicates Chat's hooks while its own page is open;
-      removing that dead branch and making its contact picker consume the runtime is next.
+    - The dead Chat page branch is gone from `CashuWalletModal`. The wallet modal now reads
+      contact state from `ChatRuntime` through `useWalletContactsRuntime`, and the extracted
+      `WalletContactsPickerSheet` uses that runtime while the wallet supplies only its
+      payment-selection callback. `ChatRuntime` owns the single contacts syncer; the modal no
+      longer runs `useContactsState` or `useContactsSync`.
+    - `WalletContactsPickerSheet.test.tsx` locks the boundary: Chat owns contacts, their
+      presentation state, and NIP-05 verification; the wallet contributes only the callback that
+      applies a contact to the send flow.
   - **Remaining, in order:**
-    1. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
-       contact picker for payments reads contacts from the chat runtime (one contacts syncer).
+    1. Remove the wallet's unreachable Messages/Contacts tab state and the remaining DM hooks
+       from `CashuWalletModal`; the modal should be wallet-only.
     2. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
        chunk loads; then type the chat hooks (remove `@ts-nocheck`).
   - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
