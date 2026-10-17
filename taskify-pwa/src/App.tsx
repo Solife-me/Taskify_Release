@@ -297,6 +297,8 @@ import { useBoardSort } from "./ui/board/useBoardSort";
 import { SPECIAL_CALENDAR_US_HOLIDAYS_LABEL } from "./domains/calendar/calendarUtils";
 import { WD_SHORT } from "./domains/appTypes";
 import { BoardSortSheet } from "./ui/board/BoardSortSheet";
+import { BoardScrollEdges } from "./ui/board/BoardScrollEdges";
+import { RailBoardList } from "./ui/layout/RailBoardList";
 import { useUpcomingPreferences } from "./domains/upcoming/upcomingPreferences";
 import { UpdateToast } from "./ui/app/UpdateToast";
 import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
@@ -2676,19 +2678,42 @@ export default function App() {
     }
   }
 
-  function handleBoardSelect(e: React.ChangeEvent<HTMLSelectElement>) {
+  function selectBoard(boardId: string) {
     if (shouldReloadForNavigation()) return;
-    const val = e.target.value;
-    if (val === ADD_BOARD_OPTION_ID) {
+    if (boardId === ADD_BOARD_OPTION_ID) {
       openAddBoard();
       return;
     }
-    if (val === BIBLE_BOARD_ID) {
+    if (boardId === BIBLE_BOARD_ID) {
       if (view !== "completed") setView("bible");
     } else if (view === "bible") {
       setView("board");
     }
-    changeBoard(val);
+    changeBoard(boardId);
+  }
+
+  function handleBoardSelect(e: React.ChangeEvent<HTMLSelectElement>) {
+    selectBoard(e.target.value);
+  }
+
+  /** A board chosen in the desktop rail opens it, from any page. */
+  function openBoardFromRail(boardId: string) {
+    if (isOnboardingActiveRef.current) return;
+    selectBoard(boardId);
+    if (activePage !== "boards") startTransition(() => appRouter.navigate({ page: "boards", boardId }));
+  }
+
+  /** Tasks dropped on a board (in the rail or the header's drop menu) move there. */
+  function dropTasksOnBoard(boardId: string, dataTransfer: DataTransfer) {
+    if (!draggingTaskId) return;
+    const allIds = getDraggedTaskIds(dataTransfer);
+    if (allIds && allIds.length > 1) {
+      allIds.forEach((taskId) => moveTaskToBoard(taskId, boardId));
+      if (isSelectionMode) exitSelectionMode();
+    } else {
+      moveTaskToBoard(draggingTaskId, boardId);
+    }
+    handleDragEnd();
   }
 
   function handleQuickAddList() {
@@ -7455,6 +7480,19 @@ export default function App() {
             {activePage === "boards" && (
               <>
                 <div className="app-header__left">
+                  {/* Desktop: the rail picks boards, so the header names the board instead. */}
+                  <h1 className="app-header__board-title" title={currentBoard?.name}>{currentBoard?.name ?? "Boards"}</h1>
+                  {canShareBoard && (
+                    <button
+                      type="button"
+                      className="app-header__icon-btn app-header__board-share pressable"
+                      onClick={openShareBoard}
+                      title="Share board"
+                      aria-label="Share board"
+                    >
+                      <ShareBoardIcon className="h-[17px] w-[17px]" />
+                    </button>
+                  )}
                   <div
                     ref={boardDropContainerRef}
                     className="board-select board-select--compact relative min-w-0 max-w-full sm:min-w-[12rem]"
@@ -7539,14 +7577,7 @@ export default function App() {
                                     onDrop={(e) => {
                                       if (!draggingTaskId) return;
                                       e.preventDefault();
-                                      const allIds = getDraggedTaskIds(e.dataTransfer);
-                                      if (allIds && allIds.length > 1) {
-                                        allIds.forEach((taskId) => moveTaskToBoard(taskId, b.id));
-                                        if (isSelectionMode) exitSelectionMode();
-                                      } else {
-                                        moveTaskToBoard(draggingTaskId, b.id);
-                                      }
-                                      handleDragEnd();
+                                      dropTasksOnBoard(b.id, e.dataTransfer);
                                     }}
                                   >
                                     {b.name}
@@ -7733,6 +7764,12 @@ export default function App() {
         >
         {activePage === "boards" && (
         <div className="board-layout relative flex min-h-0 flex-1 flex-col">
+          {activeView === "board" && currentBoard && currentBoard.kind !== "bible" && (
+            <BoardScrollEdges
+              boardRef={scrollerRef}
+              layoutKey={`${currentBoard.id}:${currentBoard.kind === "lists" ? currentBoard.columns.length : 7}`}
+            />
+          )}
         {/* Board/Completed */}
           {activeView === "bible" ? (
             settings.bibleTrackerEnabled ? (
@@ -7788,10 +7825,10 @@ export default function App() {
               {/* HORIZONTAL board: single row, side-scroll */}
               <div
                 ref={scrollerRef}
-                className={`flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
+                className={`board-scroller flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
                 style={{ WebkitOverflowScrolling: "touch" }} // fluid momentum scroll on iOS
               >
-                <div className="flex gap-4 min-w-max h-full items-stretch">
+                <div className="board-week-row flex gap-4 min-w-max h-full items-stretch">
                   {Array.from({ length: 7 }, (_, i) => i as Weekday).map((day) => (
                     <DroppableColumn
                       ref={el => setColumnRef(`week-day-${day}`, el)}
@@ -7926,7 +7963,7 @@ export default function App() {
               // LISTS board (multiple custom columns) — still a horizontal row
               <div
                 ref={scrollerRef}
-                className={`flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
+                className={`board-scroller flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
                 style={{ WebkitOverflowScrolling: "touch" }}
             >
               <div className="flex gap-4 min-w-max h-full items-stretch">
@@ -8425,6 +8462,15 @@ export default function App() {
           </button>
 
         </div>
+        <RailBoardList
+          boards={visibleBoards}
+          currentBoardId={currentBoardId}
+          boardsPageActive={activePage === "boards"}
+          dragging={!!draggingTaskId}
+          onSelect={openBoardFromRail}
+          onAdd={openAddBoard}
+          onDropTasks={dropTasksOnBoard}
+        />
       </nav>
 
       {sharedTaskCopy && (

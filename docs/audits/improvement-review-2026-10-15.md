@@ -602,7 +602,8 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
      holidays. Startup JavaScript 462.4 → 449.0 KB gzipped; `App.tsx` 9,427 → 8,777 lines.
      Next: Boards (see the reordering below).
 2. **C3-1, a real desktop layout (maintainer request 2026-10-17: "I don't like the PWA desktop
-   layout; the mobile layout is good").** Details under "Desktop layout" below.
+   layout; the mobile layout is good").** Details under "Desktop layout" below. Pass 1 done;
+   pass 2 is next.
 3. **The rest of stage 4:** Bible, Print, Import and Voice as lazy modules. They are small and
    don't affect layout, so they wait until after C3-1.
 4. **Chunk 3 onward,** per the chunk plan.
@@ -623,8 +624,37 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
   controls, and an optional detail pane. Each page module fills the regions; mobile and
   desktop arrange the same regions differently. The Upcoming page's header and footer slots
   (stage 4 step 2) are the first version of this API.
-- **Order.** The Boards module (next in stage 4) is built on these regions instead of more
-  ad-hoc slots, so the board page is moved once and the layout redesign follows directly.
+- **Order (revised 2026-10-17).** Moving the board page out of `App` turned out not to be
+  needed for the maintainer's two main asks (the rail and sideways scrolling), and lazy-loading
+  Boards gains nothing because it is the startup page. Doing it properly first needs the task
+  actions (complete, move, edit, inline add, selection, drag and drop) behind a shared context.
+  That refactor is still planned, after C3-1; C3-1 went first.
+- **Pass 1 (done 2026-10-17):**
+  - The rail is one glass panel in the mobile tab bar's material: the four pages (compact),
+    then the user's boards (`ui/layout/RailBoardList.tsx`). One click opens a board from any
+    page; dropping a dragged task on a board moves it there; "+" adds a board.
+  - On desktop the header names the board (with its share button) instead of showing the board
+    dropdown, which the rail replaces.
+  - Sideways scrolling with a mouse (`ui/board/useBoardScrollAssist.ts`, `BoardScrollEdges`):
+    - the wheel scrolls the board sideways except over a list long enough to scroll itself;
+    - dragging empty board space pans;
+    - edge buttons appear while lists are hidden off either side.
+    Touch screens and trackpad sideways swipes are untouched.
+  - The shell is no longer capped at 80rem. A week board fits all seven days from about
+    1,650 px; narrower, columns keep a readable 10rem minimum and the board scrolls. (Squeezing
+    seven days into 1,440 px gave 147 px columns with two-line titles, which read worse.)
+  - Settings is a readable centered column (52rem); Upcoming's list stays centered.
+  - Mobile is unchanged (checked at 375×812).
+- **Pass 2 (next):**
+  - Editors in a side pane on wide screens.
+  - Desktop sizing for the phone-style full-height sheets (Add board and others).
+  - Card density on desktop.
+  - Keyboard movement between lists.
+  - Upcoming's details view using the width.
+  - A desktop look at Chat.
+- **Found while doing this:** the PWA always renders dark (`useAppAppearance` removes `light`),
+  so the ~106 `html.light` rules across the stylesheets are dead; logged for chunk 14 hygiene.
+- **Earlier proposed direction (kept for reference):**
 - **Maintainer requirements (2026-10-17):**
   - The side navigation wastes space as it is; putting the boards in the rail makes that space
     useful. (Confirms the rail-with-boards direction.)
@@ -637,7 +667,7 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
   is over the board itself and not over a list that can still scroll; dragging empty board
   space pans; edge arrow buttons appear when lists are hidden off either side; keyboard
   shortcuts move between lists. Week boards should fit all seven days, so they rarely need it.
-- **Proposed direction (rail with boards confirmed; the rest to confirm when C3-1 starts):**
+
   - A rail that holds the board list (switch boards in one click), Upcoming, Chat and Settings.
   - A week board that fits seven days at ≥1280 px.
   - Upcoming with the month calendar and the day list side by side.

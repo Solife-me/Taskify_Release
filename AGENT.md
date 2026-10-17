@@ -15,6 +15,7 @@ Taskify_Release/
 │   │   ├── nostr/        # Nostr session layer: NDK, relay health, startup stability
 │   │   ├── mint/         # Cashu mint connections and session management
 │   │   ├── wallet/       # Cashu wallet ops: swap, p2pk, NWC, lightning, seed
+│   │   ├── styles/       # app-shell.css and boards-and-tasks.css are the mobile layout; desktop-layout.css rearranges it (rail with boards) for mouse desktops ≥1024px
 │   │   ├── onboarding/   # First run, key-backup reminder, reminder-notification offer (rules in firstRunRules.ts)
 │   │   ├── components/   # Shared React components
 │   │   ├── context/      # React context providers
