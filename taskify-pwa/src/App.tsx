@@ -6,6 +6,20 @@ import { useAppRouter } from "./routing/appRouter";
 import { routeForPage, type ActivePage, type AppOverlayRoute, type AppSheetRoute } from "./routing/appRoute";
 import { useOverlayHistory, useRouteOverlayOpener } from "./routing/useOverlayHistory";
 import { useNotificationTaps } from "./routing/useNotificationTaps";
+import { compareDefault, sortBoardTasks as sortTasksForBoard, taskCreatedAt } from "./domains/tasks/taskSort";
+import {
+  boardUpcomingEvents,
+  boardUpcomingTasks,
+  filterUpcomingEvents,
+  filterUpcomingTasks,
+  groupUpcomingByDay,
+  selectUpcomingEvents,
+  selectUpcomingTasks,
+  upcomingBoardOrder,
+  upcomingDayGroups,
+  type UpcomingFilter,
+  type UpcomingSortOptions,
+} from "./domains/upcoming/upcomingModel";
 import { DroppableColumn } from "./ui/board/DroppableColumn";
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -30,7 +44,6 @@ import {
   reminderPresetIdForMode,
   sanitizeReminderList,
   type Board,
-  type BoardSortDirection,
   type CalendarEvent,
   type CalendarEventBase,
   type CalendarEventParticipant,
@@ -101,7 +114,6 @@ import {
 } from "./domains/calendar/holidayUtils";
 import { useCalendarPicker } from "./domains/dateTime/calendarPickerHook";
 import {
-  DEFAULT_BOARD_SORT_DIRECTION,
   PINNED_BOUNTY_LIST_KEY,
   normalizeTaskPriority,
   normalizeTaskCreatedAt,
@@ -183,7 +195,6 @@ import {
   daysInCalendarMonth,
   formatDateKeyLocal,
   formatTimeLabel,
-  formatUpcomingDayLabel,
   isoDatePart,
   isoFromDateTime,
   isoTimePart,
@@ -193,8 +204,6 @@ import {
   resolveSystemTimeZone,
   startOfDay,
   taskDateKey,
-  taskDisplayDateKey,
-  taskTimeValue,
   taskWeekday,
   weekdayFromISO,
 } from "./domains/dateTime/dateUtils";
@@ -3304,103 +3313,15 @@ export default function App() {
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }, [boards, calendarEvents, currentBoard]);
 
-  const titleCollator = useMemo(
-    () => new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }),
-    [],
-  );
-  const taskPriorityValue = useCallback(
-    (task: Task) => normalizeTaskPriority(task.priority) ?? 0,
-    [],
-  );
-  const taskCreatedAtValue = useCallback(
-    (task: Task) => (typeof task.createdAt === "number" ? task.createdAt : 0),
-    [],
-  );
-  const taskTitleValue = useCallback(
-    (task: Task) => task.title?.trim() || "",
-    [],
-  );
-  const taskDueDateKey = useCallback((task: Task) => {
-    if (task.dueDateEnabled === false) return null;
-    return isoDatePart(task.dueISO, task.dueTimeZone);
-  }, []);
-  const taskDueTimestamp = useCallback((task: Task) => {
-    if (task.dueDateEnabled === false) return null;
-    const ts = Date.parse(task.dueISO);
-    return Number.isNaN(ts) ? null : ts;
-  }, []);
-  const compareNumber = useCallback((a: number, b: number, direction: BoardSortDirection) => {
-    const diff = a - b;
-    return direction === "asc" ? diff : -diff;
-  }, []);
-  const compareDue = useCallback(
-    (a: Task, b: Task, direction: BoardSortDirection) => {
-      const aDate = taskDueDateKey(a);
-      const bDate = taskDueDateKey(b);
-      if (aDate == null && bDate == null) return 0;
-      if (aDate == null) return 1;
-      if (bDate == null) return -1;
-      if (aDate !== bDate) {
-        const result = aDate.localeCompare(bDate);
-        return direction === "asc" ? result : -result;
-      }
-      const aHasTime = !!a.dueTimeEnabled;
-      const bHasTime = !!b.dueTimeEnabled;
-      if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
-      if (aHasTime && bHasTime) {
-        const aDue = taskDueTimestamp(a);
-        const bDue = taskDueTimestamp(b);
-        if (aDue == null && bDue == null) return 0;
-        if (aDue == null) return 1;
-        if (bDue == null) return -1;
-        return compareNumber(aDue, bDue, direction);
-      }
-      return 0;
-    },
-    [compareNumber, taskDueDateKey, taskDueTimestamp],
-  );
-  const comparePriority = useCallback(
-    (a: Task, b: Task, direction: BoardSortDirection) =>
-      compareNumber(taskPriorityValue(a), taskPriorityValue(b), direction),
-    [compareNumber, taskPriorityValue],
-  );
-  const compareCreatedAt = useCallback(
-    (a: Task, b: Task, direction: BoardSortDirection) =>
-      compareNumber(taskCreatedAtValue(a), taskCreatedAtValue(b), direction),
-    [compareNumber, taskCreatedAtValue],
-  );
-  const compareAlpha = useCallback(
-    (a: Task, b: Task, direction: BoardSortDirection) => {
-      const result = titleCollator.compare(taskTitleValue(a), taskTitleValue(b));
-      return direction === "asc" ? result : -result;
-    },
-    [taskTitleValue, titleCollator],
-  );
-  const compareDefault = useCallback(
-    (a: Task, b: Task) => {
-      let result = compareDue(a, b, DEFAULT_BOARD_SORT_DIRECTION.due);
-      if (result !== 0) return result;
-      result = comparePriority(a, b, DEFAULT_BOARD_SORT_DIRECTION.priority);
-      if (result !== 0) return result;
-      result = compareCreatedAt(a, b, DEFAULT_BOARD_SORT_DIRECTION.created);
-      if (result !== 0) return result;
-      result = compareAlpha(a, b, DEFAULT_BOARD_SORT_DIRECTION.alpha);
-      if (result !== 0) return result;
-      const orderDiff = (a.order ?? 0) - (b.order ?? 0);
-      if (orderDiff !== 0) return orderDiff;
-      return a.id.localeCompare(b.id);
-    },
-    [compareAlpha, compareCreatedAt, compareDue, comparePriority],
-  );
   const walletBountySortTimestamp = useCallback(
     (task: Task) => {
       if (task.completed) {
         const completedAt = task.completedAt ? Date.parse(task.completedAt) : Number.NaN;
         if (Number.isFinite(completedAt)) return completedAt;
       }
-      return taskCreatedAtValue(task);
+      return taskCreatedAt(task);
     },
-    [taskCreatedAtValue],
+    [],
   );
   const compareWalletBountyTasks = useCallback(
     (a: Task, b: Task) => {
@@ -3410,38 +3331,9 @@ export default function App() {
       if (!!a.completed !== !!b.completed) return a.completed ? -1 : 1;
       return compareDefault(a, b);
     },
-    [compareDefault, walletBountySortTimestamp],
+    [walletBountySortTimestamp],
   );
-  const sortBoardTasks = useCallback(
-    (arr: Task[]) => {
-      arr.sort((a, b) => {
-        if (a.completed !== b.completed) return a.completed ? 1 : -1;
-        if (boardSort.mode === "manual") {
-          const orderDiff = (a.order ?? 0) - (b.order ?? 0);
-          if (orderDiff !== 0) return orderDiff;
-          return compareDefault(a, b);
-        }
-        let primary = 0;
-        switch (boardSort.mode) {
-          case "due":
-            primary = compareDue(a, b, boardSort.direction);
-            break;
-          case "priority":
-            primary = comparePriority(a, b, boardSort.direction);
-            break;
-          case "created":
-            primary = compareCreatedAt(a, b, boardSort.direction);
-            break;
-          case "alpha":
-            primary = compareAlpha(a, b, boardSort.direction);
-            break;
-        }
-        if (primary !== 0) return primary;
-        return compareDefault(a, b);
-      });
-    },
-    [boardSort.direction, boardSort.mode, compareAlpha, compareCreatedAt, compareDefault, compareDue, comparePriority],
-  );
+  const sortBoardTasks = useCallback((arr: Task[]) => sortTasksForBoard(arr, boardSort), [boardSort]);
 
   // Week board
   const currentWeekStartMs = startOfDay(startOfWeek(new Date(), settings.weekStart)).getTime();
@@ -4088,174 +3980,10 @@ export default function App() {
       });
   }, [bibleTracker.completedBooks]);
 
-  const upcomingBoardOrder = useMemo(() => {
-    const visibleBoardOrder = visibleBoards.filter((b) => b.kind !== "bible");
-    const boardOrder = new Map<string, number>();
-    visibleBoardOrder.forEach((board, index) => {
-      boardOrder.set(board.id, index);
-    });
-    return {
-      visibleIds: new Set(visibleBoardOrder.map((b) => b.id)),
-      boardOrder,
-      fallbackBoardOrder: visibleBoardOrder.length + 1,
-    };
-  }, [visibleBoards]);
-  const getUpcomingBoardOrder = useCallback(
-    (task: Task) => upcomingBoardOrder.boardOrder.get(task.boardId) ?? upcomingBoardOrder.fallbackBoardOrder,
-    [upcomingBoardOrder],
-  );
-  const getUpcomingEventBoardOrder = useCallback(
-    (ev: CalendarEvent) => upcomingBoardOrder.boardOrder.get(ev.boardId) ?? upcomingBoardOrder.fallbackBoardOrder,
-    [upcomingBoardOrder],
-  );
-  const compareUpcomingTime = useCallback((a: Task, b: Task, direction: BoardSortDirection) => {
-    const timeA = taskTimeValue(a);
-    const timeB = taskTimeValue(b);
-    if (timeA != null && timeB != null && timeA !== timeB) {
-      return direction === "asc" ? timeA - timeB : timeB - timeA;
-    }
-    if (timeA != null && timeB == null) return -1;
-    if (timeA == null && timeB != null) return 1;
-    return 0;
-  }, []);
-  const compareUpcomingFallback = useCallback(
-    (a: Task, b: Task) => {
-      let result = compareUpcomingTime(a, b, DEFAULT_BOARD_SORT_DIRECTION.due);
-      if (result !== 0) return result;
-      const boardDiff = getUpcomingBoardOrder(a) - getUpcomingBoardOrder(b);
-      if (boardDiff !== 0) return boardDiff;
-      const orderDiff = (a.order ?? 0) - (b.order ?? 0);
-      if (orderDiff !== 0) return orderDiff;
-      result = compareAlpha(a, b, DEFAULT_BOARD_SORT_DIRECTION.alpha);
-      if (result !== 0) return result;
-      return a.id.localeCompare(b.id);
-    },
-    [compareAlpha, compareUpcomingTime, getUpcomingBoardOrder],
-  );
-  const compareUpcomingMode = useCallback(
-    (a: Task, b: Task) => {
-      if (upcomingSort.mode === "manual") {
-        const boardDiff = getUpcomingBoardOrder(a) - getUpcomingBoardOrder(b);
-        if (boardDiff !== 0) return boardDiff;
-        const orderDiff = (a.order ?? 0) - (b.order ?? 0);
-        if (orderDiff !== 0) return orderDiff;
-        return compareDefault(a, b);
-      }
-      let primary = 0;
-      switch (upcomingSort.mode) {
-        case "due":
-          primary = compareUpcomingTime(a, b, upcomingSort.direction);
-          break;
-        case "priority":
-          primary = comparePriority(a, b, upcomingSort.direction);
-          break;
-        case "created":
-          primary = compareCreatedAt(a, b, upcomingSort.direction);
-          break;
-        case "alpha":
-          primary = compareAlpha(a, b, upcomingSort.direction);
-          break;
-      }
-      if (primary !== 0) return primary;
-      return compareUpcomingFallback(a, b);
-    },
-    [
-      compareAlpha,
-      compareCreatedAt,
-      compareDefault,
-      comparePriority,
-      compareUpcomingFallback,
-      compareUpcomingTime,
-      getUpcomingBoardOrder,
-      upcomingSort.direction,
-      upcomingSort.mode,
-    ],
-  );
-  const sortUpcomingTasks = useCallback(
-    (arr: Task[]) => {
-      arr.sort((a, b) => {
-        if (upcomingBoardGrouping === "grouped") {
-          const boardDiff = getUpcomingBoardOrder(a) - getUpcomingBoardOrder(b);
-          if (boardDiff !== 0) return boardDiff;
-        }
-        return compareUpcomingMode(a, b);
-      });
-    },
-    [compareUpcomingMode, getUpcomingBoardOrder, upcomingBoardGrouping],
-  );
-
-  const compareUpcomingEventTime = useCallback((a: CalendarEvent, b: CalendarEvent, direction: BoardSortDirection) => {
-    const timeValue = (ev: CalendarEvent): number => {
-      if (ev.kind === "date") return -1;
-      const timePart = isoTimePart(ev.startISO, ev.startTzid);
-      const parsed = parseTimeValue(timePart);
-      if (!parsed) return 0;
-      return parsed.hour * 60 + parsed.minute;
-    };
-
-    const aTime = timeValue(a);
-    const bTime = timeValue(b);
-    if (aTime !== bTime) return direction === "asc" ? aTime - bTime : bTime - aTime;
-    return 0;
-  }, []);
-
-  const compareUpcomingEventFallback = useCallback(
-    (a: CalendarEvent, b: CalendarEvent) => {
-      let result = compareUpcomingEventTime(a, b, DEFAULT_BOARD_SORT_DIRECTION.due);
-      if (result !== 0) return result;
-      const boardDiff = getUpcomingEventBoardOrder(a) - getUpcomingEventBoardOrder(b);
-      if (boardDiff !== 0) return boardDiff;
-      const orderDiff = (a.order ?? 0) - (b.order ?? 0);
-      if (orderDiff !== 0) return orderDiff;
-      result = titleCollator.compare(a.title?.trim() || "", b.title?.trim() || "");
-      if (result !== 0) return result;
-      return a.id.localeCompare(b.id);
-    },
-    [compareUpcomingEventTime, getUpcomingEventBoardOrder, titleCollator],
-  );
-
-  const compareUpcomingEventMode = useCallback(
-    (a: CalendarEvent, b: CalendarEvent) => {
-      if (upcomingSort.mode === "manual") {
-        const orderDiff = (a.order ?? 0) - (b.order ?? 0);
-        if (orderDiff !== 0) return orderDiff;
-        return compareUpcomingEventFallback(a, b);
-      }
-
-      let primary = 0;
-      switch (upcomingSort.mode) {
-        case "due":
-          primary = compareUpcomingEventTime(a, b, upcomingSort.direction);
-          break;
-        case "alpha": {
-          const result = titleCollator.compare(a.title?.trim() || "", b.title?.trim() || "");
-          primary = upcomingSort.direction === "asc" ? result : -result;
-          break;
-        }
-      }
-      if (primary !== 0) return primary;
-      return compareUpcomingEventFallback(a, b);
-    },
-    [
-      compareUpcomingEventFallback,
-      compareUpcomingEventTime,
-      titleCollator,
-      upcomingSort.direction,
-      upcomingSort.mode,
-    ],
-  );
-
-  const sortUpcomingEvents = useCallback(
-    (arr: CalendarEvent[]) => {
-      arr.sort((a, b) => {
-        if (upcomingBoardGrouping === "grouped") {
-          const boardDiff = getUpcomingEventBoardOrder(a) - getUpcomingEventBoardOrder(b);
-          if (boardDiff !== 0) return boardDiff;
-        }
-        return compareUpcomingEventMode(a, b);
-      });
-    },
-    [compareUpcomingEventMode, getUpcomingEventBoardOrder, upcomingBoardGrouping],
+  const upcomingBoardOrderValue = useMemo(() => upcomingBoardOrder(visibleBoards), [visibleBoards]);
+  const upcomingSortOptions = useMemo<UpcomingSortOptions>(
+    () => ({ sort: upcomingSort, grouping: upcomingBoardGrouping, boardOrder: upcomingBoardOrderValue }),
+    [upcomingBoardGrouping, upcomingBoardOrderValue, upcomingSort],
   );
   const upcomingUsHolidayEvents = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -4264,307 +3992,61 @@ export default function App() {
       currentYear + SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS,
     );
   }, []);
-  const upcoming = useMemo(() => {
-    const visibleIds = upcomingBoardOrder.visibleIds;
-    return tasks.filter((t) => {
-      if (!visibleIds.has(t.boardId)) return false;
-      if (t.boardId === messagesBoardId) return false;
-      if (t.completed) return false;
-      if (t.dueDateEnabled === false) return false;
-      const ts = Date.parse(t.dueISO);
-      return !Number.isNaN(ts);
-    });
-  }, [messagesBoardId, tasks, upcomingBoardOrder]);
-
-  const upcomingEvents = useMemo(() => {
-    const visibleIds = upcomingBoardOrder.visibleIds;
-    const boardEvents = calendarEvents.filter((ev) => {
-      if (!isExternalCalendarEvent(ev)) {
-        if (!visibleIds.has(ev.boardId)) return false;
-        if (ev.boardId === messagesBoardId) return false;
-      }
-      if (ev.kind === "date") {
-        return ISO_DATE_PATTERN.test(ev.startDate);
-      }
-      const ts = Date.parse(ev.startISO);
-      return !Number.isNaN(ts);
-    });
-    return upcomingUsHolidaysEnabled ? [...boardEvents, ...upcomingUsHolidayEvents] : boardEvents;
-  }, [
-    calendarEvents,
-    messagesBoardId,
-    upcomingBoardOrder,
-    upcomingUsHolidayEvents,
-    upcomingUsHolidaysEnabled,
-  ]);
-
+  const upcoming = useMemo(
+    () => selectUpcomingTasks(tasks, { boardOrder: upcomingBoardOrderValue, messagesBoardId }),
+    [messagesBoardId, tasks, upcomingBoardOrderValue],
+  );
+  const upcomingEvents = useMemo(
+    () => selectUpcomingEvents(calendarEvents, {
+      boardOrder: upcomingBoardOrderValue,
+      messagesBoardId,
+      holidays: upcomingUsHolidaysEnabled ? upcomingUsHolidayEvents : null,
+    }),
+    [calendarEvents, messagesBoardId, upcomingBoardOrderValue, upcomingUsHolidayEvents, upcomingUsHolidaysEnabled],
+  );
   const upcomingItemCount = upcoming.length + upcomingEvents.length;
 
-  const filteredUpcoming = useMemo(() => {
-    let filtered = upcoming;
-    if (upcomingFilterOptions.length) {
-      if (upcomingFilter !== null && upcomingFilter.length === 0) {
-        filtered = [];
-      } else if (upcomingFilter !== null) {
-        const { selectedBoards, selectedLists } = upcomingFilterMap;
-        filtered = upcoming.filter((task) => {
-          const board = boardMap.get(task.boardId);
-          const listSet = selectedLists.get(task.boardId);
-          if (selectedBoards.has(task.boardId)) {
-            if (board?.kind === "lists") {
-              if (!task.columnId) return false;
-              if (!listSet) return true;
-              if (listSet.size === 0) return false;
-              return listSet.has(task.columnId);
-            }
-            return true;
-          }
-          if (listSet && task.columnId && listSet.has(task.columnId)) return true;
-          return false;
-        });
-      }
-    }
-
-    if (!upcomingSearchTerm) return filtered;
-
-    return filtered.filter((task) => {
-      const note = task.note?.toLowerCase() ?? "";
-      return task.title.toLowerCase().includes(upcomingSearchTerm) || note.includes(upcomingSearchTerm);
-    });
-  }, [boardMap, upcoming, upcomingFilter, upcomingFilterMap, upcomingFilterOptions.length, upcomingSearchTerm]);
-
-  const filteredUpcomingEvents = useMemo(() => {
-    let filtered = upcomingEvents;
-    if (upcomingFilterOptions.length) {
-      if (upcomingFilter !== null && upcomingFilter.length === 0) {
-        filtered = [];
-      } else if (upcomingFilter !== null) {
-        const { selectedBoards, selectedLists } = upcomingFilterMap;
-        filtered = upcomingEvents.filter((ev) => {
-          if (isUsHolidayCalendarEvent(ev)) return upcomingUsHolidaysEnabled;
-          if (ev.external) return true;
-          const board = boardMap.get(ev.boardId);
-          const listSet = selectedLists.get(ev.boardId);
-          if (selectedBoards.has(ev.boardId)) {
-            if (board?.kind === "lists") {
-              if (!ev.columnId) return false;
-              if (!listSet) return true;
-              if (listSet.size === 0) return false;
-              return listSet.has(ev.columnId);
-            }
-            return true;
-          }
-          if (listSet && ev.columnId && listSet.has(ev.columnId)) return true;
-          return false;
-        });
-      }
-    }
-
-    if (!upcomingSearchTerm) return filtered;
-
-    return filtered.filter((ev) => {
-      const summary = (ev.summary || "").toLowerCase();
-      const description = (ev.description || "").toLowerCase();
-      const locations = (ev.locations || []).join(" ").toLowerCase();
-      const refs = (ev.references || []).join(" ").toLowerCase();
-      return (
-        ev.title.toLowerCase().includes(upcomingSearchTerm) ||
-        summary.includes(upcomingSearchTerm) ||
-        description.includes(upcomingSearchTerm) ||
-        locations.includes(upcomingSearchTerm) ||
-        refs.includes(upcomingSearchTerm)
-      );
-    });
-  }, [
+  const upcomingFilterValue = useMemo<UpcomingFilter>(() => ({
+    selection: upcomingFilter,
+    hasOptions: upcomingFilterOptions.length > 0,
+    map: upcomingFilterMap,
     boardMap,
-    upcomingEvents,
-    upcomingFilter,
-    upcomingFilterMap,
-    upcomingFilterOptions.length,
-    upcomingSearchTerm,
-    upcomingUsHolidaysEnabled,
-  ]);
-
+    searchTerm: upcomingSearchTerm,
+  }), [boardMap, upcomingFilter, upcomingFilterMap, upcomingFilterOptions.length, upcomingSearchTerm]);
+  const filteredUpcoming = useMemo(
+    () => filterUpcomingTasks(upcoming, upcomingFilterValue),
+    [upcoming, upcomingFilterValue],
+  );
+  const filteredUpcomingEvents = useMemo(
+    () => filterUpcomingEvents(upcomingEvents, upcomingFilterValue, upcomingUsHolidaysEnabled),
+    [upcomingEvents, upcomingFilterValue, upcomingUsHolidaysEnabled],
+  );
   const filteredUpcomingCount = filteredUpcoming.length + filteredUpcomingEvents.length;
+
+  // A board's own "upcoming" section: its items after today, in Upcoming's order.
   const boardUpcomingCutoffDateKey = formatDateKeyLocal(new Date());
+  const boardUpcomingTasksValue = useMemo(
+    () => boardUpcomingTasks(tasksForBoard, boardUpcomingCutoffDateKey),
+    [boardUpcomingCutoffDateKey, tasksForBoard],
+  );
+  const boardUpcomingEventsValue = useMemo(
+    () => boardUpcomingEvents(calendarEventsForBoard, boardUpcomingCutoffDateKey),
+    [boardUpcomingCutoffDateKey, calendarEventsForBoard],
+  );
+  const boardUpcomingCount = boardUpcomingTasksValue.length + boardUpcomingEventsValue.length;
+  const boardUpcomingGroups = useMemo(
+    () => upcomingDayGroups(groupUpcomingByDay(boardUpcomingTasksValue, boardUpcomingEventsValue, {
+      ...upcomingSortOptions,
+      after: boardUpcomingCutoffDateKey,
+    })),
+    [boardUpcomingCutoffDateKey, boardUpcomingEventsValue, boardUpcomingTasksValue, upcomingSortOptions],
+  );
 
-  const boardUpcomingTasks = useMemo(() => {
-    return tasksForBoard.filter((task) => {
-      if (task.completed) return false;
-      if (task.dueDateEnabled === false) return false;
-      const ts = Date.parse(task.dueISO);
-      if (Number.isNaN(ts)) return false;
-      const dateKey = taskDisplayDateKey(task);
-      if (!ISO_DATE_PATTERN.test(dateKey)) return false;
-      return dateKey > boardUpcomingCutoffDateKey;
-    });
-  }, [boardUpcomingCutoffDateKey, tasksForBoard]);
-
-  const boardUpcomingEvents = useMemo(() => {
-    return calendarEventsForBoard.filter((ev) => {
-      if (ev.kind === "date") {
-        const start = ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : null;
-        if (!start) return false;
-        const end =
-          ev.endDate && ISO_DATE_PATTERN.test(ev.endDate) && ev.endDate >= start
-            ? ev.endDate
-            : start;
-        return end > boardUpcomingCutoffDateKey;
-      }
-      const ts = Date.parse(ev.startISO);
-      if (Number.isNaN(ts)) return false;
-      const dateKey = isoDatePart(ev.startISO, ev.startTzid);
-      if (!ISO_DATE_PATTERN.test(dateKey)) return false;
-      return dateKey > boardUpcomingCutoffDateKey;
-    });
-  }, [boardUpcomingCutoffDateKey, calendarEventsForBoard]);
-
-  const boardUpcomingCount = boardUpcomingTasks.length + boardUpcomingEvents.length;
-
-  const boardUpcomingDayMap = useMemo(() => {
-    const map = new Map<string, { tasks: Task[]; events: CalendarEvent[] }>();
-    const ensureEntry = (dateKey: string) => {
-      let entry = map.get(dateKey);
-      if (entry) return entry;
-      entry = { tasks: [], events: [] };
-      map.set(dateKey, entry);
-      return entry;
-    };
-
-    boardUpcomingTasks.forEach((task) => {
-      const dateKey = taskDisplayDateKey(task);
-      if (dateKey <= boardUpcomingCutoffDateKey) return;
-      ensureEntry(dateKey).tasks.push(task);
-    });
-
-    const addDaysToKey = (dateKey: string, delta: number): string | null => {
-      const parsed = parseDateKey(dateKey);
-      if (!parsed) return null;
-      const base = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
-      if (Number.isNaN(base.getTime())) return null;
-      base.setUTCDate(base.getUTCDate() + delta);
-      return base.toISOString().slice(0, 10);
-    };
-
-    boardUpcomingEvents.forEach((ev) => {
-      if (ev.kind === "date") {
-        const start = ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : null;
-        if (!start) return;
-        const end =
-          ev.endDate && ISO_DATE_PATTERN.test(ev.endDate) && ev.endDate >= start
-            ? ev.endDate
-            : start;
-        let cursor = start;
-        let guard = 0;
-        while (guard++ < 366) {
-          if (cursor > boardUpcomingCutoffDateKey) ensureEntry(cursor).events.push(ev);
-          if (cursor === end) break;
-          const next = addDaysToKey(cursor, 1);
-          if (!next) break;
-          cursor = next;
-        }
-        return;
-      }
-
-      const dateKey = isoDatePart(ev.startISO, ev.startTzid);
-      if (dateKey <= boardUpcomingCutoffDateKey) return;
-      ensureEntry(dateKey).events.push(ev);
-    });
-
-    for (const entry of map.values()) {
-      sortUpcomingEvents(entry.events);
-      sortUpcomingTasks(entry.tasks);
-    }
-
-    return map;
-  }, [boardUpcomingCutoffDateKey, boardUpcomingEvents, boardUpcomingTasks, sortUpcomingEvents, sortUpcomingTasks]);
-
-  const boardUpcomingGroups = useMemo(() => {
-    const groups: { dateKey: string; label: string; tasks: Task[]; events: CalendarEvent[] }[] = [];
-    const dateKeys = Array.from(boardUpcomingDayMap.keys()).sort((a, b) => a.localeCompare(b));
-    dateKeys.forEach((dateKey) => {
-      const entry = boardUpcomingDayMap.get(dateKey);
-      if (!entry) return;
-      groups.push({
-        dateKey,
-        label: formatUpcomingDayLabel(dateKey),
-        tasks: entry.tasks,
-        events: entry.events,
-      });
-    });
-    return groups;
-  }, [boardUpcomingDayMap]);
-
-  const upcomingDayMap = useMemo(() => {
-    const map = new Map<string, { tasks: Task[]; events: CalendarEvent[] }>();
-    const ensureEntry = (dateKey: string) => {
-      let entry = map.get(dateKey);
-      if (entry) return entry;
-      entry = { tasks: [], events: [] };
-      map.set(dateKey, entry);
-      return entry;
-    };
-
-    filteredUpcoming.forEach((task) => {
-      const dateKey = taskDisplayDateKey(task);
-      ensureEntry(dateKey).tasks.push(task);
-    });
-
-    const addDaysToKey = (dateKey: string, delta: number): string | null => {
-      const parsed = parseDateKey(dateKey);
-      if (!parsed) return null;
-      const base = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day));
-      if (Number.isNaN(base.getTime())) return null;
-      base.setUTCDate(base.getUTCDate() + delta);
-      return base.toISOString().slice(0, 10);
-    };
-
-    filteredUpcomingEvents.forEach((ev) => {
-      if (ev.kind === "date") {
-        const start = ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : null;
-        if (!start) return;
-        const end =
-          ev.endDate && ISO_DATE_PATTERN.test(ev.endDate) && ev.endDate >= start
-            ? ev.endDate
-            : start;
-        let cursor = start;
-        let guard = 0;
-        while (guard++ < 366) {
-          ensureEntry(cursor).events.push(ev);
-          if (cursor === end) break;
-          const next = addDaysToKey(cursor, 1);
-          if (!next) break;
-          cursor = next;
-        }
-        return;
-      }
-
-      const dateKey = isoDatePart(ev.startISO, ev.startTzid);
-      ensureEntry(dateKey).events.push(ev);
-    });
-
-    for (const entry of map.values()) {
-      sortUpcomingEvents(entry.events);
-      sortUpcomingTasks(entry.tasks);
-    }
-
-    return map;
-  }, [filteredUpcoming, filteredUpcomingEvents, sortUpcomingEvents, sortUpcomingTasks]);
-  const upcomingGroups = useMemo(() => {
-    const groups: { dateKey: string; label: string; tasks: Task[]; events: CalendarEvent[] }[] = [];
-    const dateKeys = Array.from(upcomingDayMap.keys()).sort((a, b) => a.localeCompare(b));
-    dateKeys.forEach((dateKey) => {
-      const entry = upcomingDayMap.get(dateKey);
-      if (!entry) return;
-      groups.push({
-        dateKey,
-        label: formatUpcomingDayLabel(dateKey),
-        tasks: entry.tasks,
-        events: entry.events,
-      });
-    });
-    return groups;
-  }, [upcomingDayMap]);
+  const upcomingDayMap = useMemo(
+    () => groupUpcomingByDay(filteredUpcoming, filteredUpcomingEvents, upcomingSortOptions),
+    [filteredUpcoming, filteredUpcomingEvents, upcomingSortOptions],
+  );
+  const upcomingGroups = useMemo(() => upcomingDayGroups(upcomingDayMap), [upcomingDayMap]);
 
   // ── Virtualized upcoming list (Item #11) ──────────────────────────────────
   // The grouped upcoming view is the only surface that grows linearly with

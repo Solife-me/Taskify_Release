@@ -201,6 +201,7 @@ npx wrangler dev
 | `src/ui/board/DroppableColumn.test.tsx` | PWA board columns | Drop ordering, multi-selection payloads, empty drops, and keyboard/selection controls |
 | `taskify-cli/tests/command-registration.test.ts` | CLI command composition | Bundled help/arguments plus isolated contact persistence, profile selection, lookup, trust/relay mutations, cache status/clearing, and error exits |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
+| `src/domains/upcoming/upcomingModel.test.ts` | Upcoming and board sort | Which tasks/events are upcoming (holidays, external calendars, messages board excluded); board/list filter and search; ordering by time, board, manual order and title, grouped or mixed; multi-day events on each day; a board's upcoming section only after today; board sort keeps open tasks first |
 | `src/domains/tasks/taskCommands.test.ts` | PWA task commands | Pure plans for complete, delete (incl. series cutoffs, bounties), restore, clear, save, postpone, subtasks, notes, assignment replies and moves (reorder, columns, compound boards, time of day, board position) |
 | `src/domains/tasks/generatedTasks.test.ts` | Generated tasks | Fasting reminders created, moved and deleted like native, stable on rerun; one Scripture Memory review task with a date-derived id |
 | `src/domains/calendar/calendarRecurrenceWindow.test.ts` | Recurring event window | Local generation of the window, stable on rerun, orphan cleanup, deleted occurrences skipped, edited occurrences never trimmed |

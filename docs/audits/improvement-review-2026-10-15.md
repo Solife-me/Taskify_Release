@@ -588,6 +588,9 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 
 1. **C2-3 stage 4.** Make Boards, Upcoming, Bible, Print, Import and Voice lazily loaded feature
    modules; `App` keeps layout and routing.
+   - Step 1 done: Upcoming's data model is pure and tested (`domains/upcoming/upcomingModel.ts`),
+     and task comparators moved to `domains/tasks/taskSort.ts`; two copies of the day grouping
+     became one. Next: the Upcoming page view (header, list, calendar, scroll) as a lazy module.
 2. **Chunk 3 onward,** per the chunk plan.
 
 **Signer support (approved by the maintainer 2026-10-16, to build later):**
@@ -604,4 +607,6 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 - Chunk 4: Scripture Memory review tasks whose series fields get normalized are not republished.
   Republishing would send every past review on a frequency change, so it needs a deliberate rule.
 - Chunk 4: `maybePublishTask` mutates `task._nostrAt` on objects held in state.
+- Chunk 3: opening Upcoming directly (`/upcoming`) starts at the oldest day instead of today;
+  "Jump to today" works. Present before stage 4.
 - Chunk 12: the CLI's runtime tests assert on source text; build a fake-session harness.
