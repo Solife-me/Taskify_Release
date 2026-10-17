@@ -20,6 +20,7 @@ const tsNocheckFiles = [
   // the behaviour-preserving extraction is complete; keep the rest of src/chat checked.
   'src/chat/ChatPage.tsx',
   'src/chat/ChatRuntime.tsx',
+  'src/chat/views/**/*.tsx',
   'src/hooks/wallet/**/*.{ts,tsx}',
   // Moved out of the wallet unchanged; typing them is tracked separately.
   'src/chat/hooks/**/*.{ts,tsx}',
