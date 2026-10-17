@@ -17,7 +17,6 @@ import {
   upcomingDayGroups,
   type UpcomingSortOptions,
 } from "./domains/upcoming/upcomingModel";
-import { DroppableColumn } from "./ui/board/DroppableColumn";
 import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -52,7 +51,6 @@ import {
   type Weekday,
 } from "taskify-core";
 import {
-  BibleTracker,
   type BibleTrackerProgress,
   type BibleTrackerState,
   cloneBibleProgress,
@@ -67,7 +65,7 @@ import {
 import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
 import { type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
 import { type PrintPaperSize } from "./components/printPaper";
-import { ScriptureMemoryCard, type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
+import { type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { useCashu } from "./context/walletContexts";
 import { useWalletEnabled } from "./wallet/walletAvailability";
@@ -101,7 +99,6 @@ import {
   useScriptureMemory,
 } from "./domains/scripture/scriptureHook";
 import {
-  isUsHolidayCalendarEvent,
   fastingReminderTargetBoard,
 } from "./domains/calendar/holidayUtils";
 import {
@@ -277,7 +274,6 @@ import { useNostrSubscriptions, type CalendarViewSubscriptionTarget, type Subscr
 import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
 import { useSelectionMode } from "./ui/selection/useSelectionMode";
 import { useBoardViewScrollState } from "./ui/board/useBoardViewScrollState";
-import { BoardUpcomingView, CompletedBoardView } from "./ui/board/BoardSecondaryViews";
 import { useShareBoardState } from "./ui/board/useShareBoardState";
 import { CashuWalletShell, loadCashuWalletModal } from "./ui/wallet/CashuWalletShell";
 import { useNostrChatStateSync } from "./nostr/useNostrChatStateSync";
@@ -294,11 +290,11 @@ import type { ChatInboxResponse } from "taskify-core";
 import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
 import { useWalletShellState } from "./ui/wallet/useWalletShellState";
 import { useBoardSort } from "./ui/board/useBoardSort";
-import { SPECIAL_CALENDAR_US_HOLIDAYS_LABEL } from "./domains/calendar/calendarUtils";
 import { WD_SHORT } from "./domains/appTypes";
 import { BoardSortSheet } from "./ui/board/BoardSortSheet";
-import { BoardScrollEdges } from "./ui/board/BoardScrollEdges";
 import { RailBoardList } from "./ui/layout/RailBoardList";
+import { BoardPage } from "./ui/board/BoardPage";
+import { TaskActionsProvider, type TaskActions, type TaskView } from "./ui/task/taskActions";
 import { useUpcomingPreferences } from "./domains/upcoming/upcomingPreferences";
 import { UpdateToast } from "./ui/app/UpdateToast";
 import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
@@ -339,8 +335,7 @@ import {
 } from "./lib/shareInbox";
 
 // ---- UI component imports (extracted subcomponents) ----
-import { Card, getDraggedTaskIds } from "./ui/task/Card";
-import { EventCard } from "./ui/calendar/EventCard";
+import { getDraggedTaskIds } from "./ui/task/Card";
 import { currentPubkey } from "./identity/identity";
 
 const AppModalStack = lazy(() =>
@@ -3956,126 +3951,51 @@ export default function App() {
   );
 
 
-	  function renderUpcomingTaskCard(t: Task) {
-    const board = boardMap.get(t.boardId);
-    const boardLabel = board?.name || "Board";
-    const listLabel =
-      board?.kind === "lists"
-        ? board.columns.find((column) => column.id === t.columnId)?.name || ""
-        : "";
-    const locationLabel = listLabel ? `${boardLabel} • ${listLabel}` : boardLabel;
-    const canReveal = t.hiddenUntilISO && !isVisibleNow(t);
-    const revealAction = canReveal ? (
-      <button
-        type="button"
-        className="icon-button icon-button--accent pressable"
-        aria-label="Reveal now"
-        title="Reveal now"
-        onClick={() =>
-          setTasks((prev) =>
-            prev.map((x) => (x.id === t.id ? { ...x, hiddenUntilISO: undefined } : x))
-          )
-        }
-      >
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-          <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
-      </button>
-    ) : null;
-    return (
-      <div key={t.id} className="space-y-2">
-        <Card
-                            displayStreak={runningStreakFor(t)}
-                            isSelectionMode={isSelectionMode}
-                            isSelected={selectedItemIds.includes(t.id)}
-                            onToggleSelect={toggleItemSelection}
-                            selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
-          syncPending={pendingNostrTaskIds.has(t.id)}
-          task={t}
-          meta={locationLabel}
-          trailing={revealAction}
-          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
-          onComplete={(from) => {
-            if (!t.completed) completeTask(t.id);
-            else if (t.bounty && t.bounty.state === "locked") revealBounty(t.id);
-            else if (t.bounty && t.bounty.state === "unlocked" && t.bounty.token) claimBounty(t.id, from);
-            else restoreTask(t.id);
-          }}
-          onEdit={() => setEditing({ type: "task", originalType: "task", originalId: t.id, task: t })}
-          onDropBefore={() => {}}
-          showStreaks={settings.streaksEnabled}
-          onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
-          onDragStart={(id) => setDraggingTaskId(id)}
-          onDragEnd={handleDragEnd}
-          hideCompletedSubtasks={settings.hideCompletedSubtasks}
-          onOpenDocument={handleOpenDocument}
-          onOpenNote={() => setNoteViewerTaskId(t.id)}
-          onDismissInbox={
-            t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
-          }
-        />
-      </div>
-    );
-	  }
-
-	  const renderUpcomingEventCard = useCallback((ev: CalendarEvent) => {
-	    const isUsHoliday = isUsHolidayCalendarEvent(ev);
-	    const board = boardMap.get(ev.boardId);
-	    const boardLabel = isUsHoliday
-	      ? SPECIAL_CALENDAR_US_HOLIDAYS_LABEL
-	      : (board?.name || "Board");
-	    const listLabel =
-	      board?.kind === "lists"
-	        ? board.columns.find((column) => column.id === ev.columnId)?.name || ""
-	        : "";
-	    const placementLabel = listLabel ? `${boardLabel} • ${listLabel}` : boardLabel;
-	    const location = (ev.locations || []).find((value) => typeof value === "string" && value.trim())?.trim() || "";
-	    const meta = location ? `${placementLabel} • ${location}` : placementLabel;
-	    const now = new Date();
-	    const canReveal =
-	      !!ev.hiddenUntilISO &&
-	      !!board &&
-	      isListLikeBoard(board) &&
-	      !isCalendarEventVisibleOnListBoard(ev, settings.weekStart, now);
-	    const revealAction = canReveal ? (
-	      <button
-	        type="button"
-	        className="icon-button icon-button--accent pressable"
-	        aria-label="Reveal now"
-	        title="Reveal now"
-	        onClick={() =>
-	          setCalendarEvents((prev) =>
-	            prev.map((x) => (x.id === ev.id ? { ...x, hiddenUntilISO: undefined } : x))
-	          )
-	        }
-	      >
-	        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-	          <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
-	          <circle cx="12" cy="12" r="3" />
-	        </svg>
-	      </button>
-	    ) : null;
-
-	    return (
-	      <div key={ev.id} className="space-y-2">
-	        <EventCard
-	          event={ev}
-	          syncPending={pendingNostrCalendarEventIds.has(ev.id)}
-	          showDate={false}
-	          meta={meta}
-	          trailing={revealAction}
-	          onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
-	          onEdit={isUsHoliday ? undefined : () => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
-	          onDragStart={isUsHoliday ? undefined : (id) => setDraggingEventId(id)}
-	          onDragEnd={handleDragEnd}
-          isSelectionMode={isSelectionMode}
-          isSelected={selectedItemIds.includes(ev.id)}
-          onToggleSelect={toggleItemSelection}
-	        />
-	      </div>
-	    );
-	  }, [boardMap, handleDragEnd, handleOpenEventDocument, isSelectionMode, pendingNostrCalendarEventIds, selectedItemIds, setCalendarEvents, setEditing, settings.weekStart, toggleItemSelection]);
+  // ---- What task and event cards can do (see ui/task/taskActions) ----
+  const taskActions: TaskActions = {
+    completeTask,
+    restoreTask,
+    revealBounty,
+    claimBounty,
+    editTask: (task) => setEditing({ type: "task", originalType: "task", originalId: task.id, task }),
+    editEvent: (event) => setEditing({ type: "event", originalType: "event", originalId: event.id, event }),
+    toggleSubtask,
+    moveTask,
+    revealTaskNow: (id) => setTasks((prev) => prev.map((task) => (task.id === id ? { ...task, hiddenUntilISO: undefined } : task))),
+    revealEventNow: (id) =>
+      setCalendarEvents((prev) => prev.map((event) => (event.id === id ? { ...event, hiddenUntilISO: undefined } : event))),
+    openDocument: handleOpenDocument,
+    openEventDocument: handleOpenEventDocument,
+    openNote: setNoteViewerTaskId,
+    startTaskDrag: setDraggingTaskId,
+    startEventDrag: setDraggingEventId,
+    endDrag: handleDragEnd,
+    flyToCompleted,
+    toggleItemSelection,
+  };
+  const taskView = useMemo<TaskView>(() => ({
+    isSelectionMode,
+    selectedItemIds,
+    pendingTaskIds: pendingNostrTaskIds,
+    pendingEventIds: pendingNostrCalendarEventIds,
+    runningStreakFor,
+    showStreaks: settings.streaksEnabled,
+    hideCompletedSubtasks: settings.hideCompletedSubtasks,
+    completedTab: settings.completedTab,
+    boardsById: boardMap,
+    weekStart: settings.weekStart,
+  }), [
+    boardMap,
+    isSelectionMode,
+    pendingNostrCalendarEventIds,
+    pendingNostrTaskIds,
+    runningStreakFor,
+    selectedItemIds,
+    settings.completedTab,
+    settings.hideCompletedSubtasks,
+    settings.streaksEnabled,
+    settings.weekStart,
+  ]);
 
 
   // Boards open at the top; Upcoming scrolls itself to the day in view.
@@ -7468,6 +7388,7 @@ export default function App() {
     !!undoTask;
 
   return (
+    <TaskActionsProvider actions={taskActions} view={taskView}>
     <div className="min-h-screen text-primary">
       {walletEnabled && (
         <Suspense fallback={null}>
@@ -7763,458 +7684,89 @@ export default function App() {
           ref={appContentRef}
         >
         {activePage === "boards" && (
-        <div className="board-layout relative flex min-h-0 flex-1 flex-col">
-          {activeView === "board" && currentBoard && currentBoard.kind !== "bible" && (
-            <BoardScrollEdges
-              boardRef={scrollerRef}
-              layoutKey={`${currentBoard.id}:${currentBoard.kind === "lists" ? currentBoard.columns.length : 7}`}
-            />
-          )}
-        {/* Board/Completed */}
-          {activeView === "bible" ? (
-            settings.bibleTrackerEnabled ? (
-              <div
-                ref={bibleScrollerRef}
-                className="overflow-x-auto pb-4 w-full"
-                style={{ WebkitOverflowScrolling: "touch" }}
-              >
-                <div className="flex min-w-max items-start gap-4">
-                  <div className="surface-panel board-column w-[360px] shrink-0 overflow-hidden">
-                    <div className="p-4">
-                      <BibleTracker
-                        state={bibleTracker}
-                        onToggleBook={handleToggleBibleBook}
-                        onToggleChapter={handleToggleBibleChapter}
-                        onUpdateChapterVerses={handleUpdateBibleChapterVerses}
-                        onReset={handleResetBibleTracker}
-                        onOpenPrint={handleOpenBiblePrint}
-                        onOpenScan={handleOpenBibleScan}
-                        onDeleteArchive={handleDeleteBibleArchive}
-                        onRestoreArchive={handleRestoreBibleArchive}
-                        onCompleteBook={handleCompleteBibleBook}
-                      />
-                    </div>
-                  </div>
-                  {settings.scriptureMemoryEnabled ? (
-                    <ScriptureMemoryCard
-                      items={scriptureMemoryItems}
-                      onAdd={handleAddScriptureMemory}
-                      onRemove={handleRemoveScriptureMemory}
-                      onReview={handleReviewScriptureMemory}
-                      boardName={scriptureMemoryBoard?.name || undefined}
-                      frequencyLabel={scriptureMemoryFrequencyOption?.label ?? "Daily"}
-                      sortLabel={scriptureMemorySortLabel}
-                    />
-                  ) : (
-                    <div className="surface-panel board-column w-[360px] shrink-0 p-4 text-sm text-secondary">
-                      Enable scripture memory from Settings to start adding passages you want to review.
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="surface-panel p-6 text-center text-sm text-secondary">
-                Enable the Bible tracker from Settings to start tracking your reading.
-              </div>
-            )
-          ) : activeView === "board" ? (
-            !currentBoard ? (
-              <div className="surface-panel p-6 text-center text-sm text-secondary">No boards. Open Settings to create one.</div>
-            ) : currentBoard?.kind === "week" ? (
-              <>
-              {/* HORIZONTAL board: single row, side-scroll */}
-              <div
-                ref={scrollerRef}
-                className={`board-scroller flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
-                style={{ WebkitOverflowScrolling: "touch" }} // fluid momentum scroll on iOS
-              >
-                <div className="flex gap-4 min-w-max h-full items-stretch">
-                  {Array.from({ length: 7 }, (_, i) => i as Weekday).map((day) => (
-                    <DroppableColumn
-                      ref={el => setColumnRef(`week-day-${day}`, el)}
-                      key={day}
-                      title={WD_SHORT[day]}
-                    onTitleClick={() => setDayChoice(day)}
-                    onDropCard={(payload) => {
-                      const ids = payload.allIds ?? [payload.id];
-                      ids.forEach((taskId) => moveTask(taskId, { type: "day", day }, taskId === payload.id ? payload.beforeId : undefined));
-                      if (isSelectionMode && payload.allIds) exitSelectionMode();
-                    }}
-                    onDropEnd={handleDragEnd}
-                    onSelectAll={isSelectionMode ? () => toggleGroupSelection(weekDayGroupIds(day)) : undefined}
-                    selectionState={isSelectionMode ? groupSelectionState(weekDayGroupIds(day)) : undefined}
-                    data-day={day}
-                    scrollable
-                    footer={(
-                      <form
-                        className="mt-2 flex gap-1"
-                        onSubmit={(e) => { e.preventDefault(); addInlineTask(String(day)); }}
-                      >
-                        <input
-                          ref={el => setInlineInputRef(String(day), el)}
-                          value={inlineTitles[String(day)] || ""}
-                          onChange={(e) => setInlineTitles(prev => ({ ...prev, [String(day)]: e.target.value }))}
-                          className="pill-input pill-input--compact flex-1 min-w-0"
-                          placeholder="New Task"
-                        />
-                        <button
-                          type="submit"
-                          className="accent-button accent-button--circle pressable shrink-0"
-                          aria-label="Add task"
-                        >
-                          <span aria-hidden="true">+</span>
-                          <span className="sr-only">Add task</span>
-                        </button>
-                      </form>
-                    )}
-	                  >
-	                        {(calendarByDay.get(day) || []).map((ev) => (
-		                          <EventCard
-		                            key={`${ev.id}-${day}`}
-		                            event={ev}
-		                            syncPending={pendingNostrCalendarEventIds.has(ev.id)}
-		                            showDate={false}
-		                            onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
-		                            onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
-		                            onDragStart={(id) => setDraggingEventId(id)}
-		                            onDragEnd={handleDragEnd}
-                            isSelectionMode={isSelectionMode}
-                            isSelected={selectedItemIds.includes(ev.id)}
-                            onToggleSelect={toggleItemSelection}
-		                          />
-	                        ))}
-	                        {(byDay.get(day) || []).map((t) => (
-	                        <Card
-                            displayStreak={runningStreakFor(t)}
-                            isSelectionMode={isSelectionMode}
-                            isSelected={selectedItemIds.includes(t.id)}
-                            onToggleSelect={toggleItemSelection}
-                            selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
-                            key={t.id}
-                            syncPending={pendingNostrTaskIds.has(t.id)}
-                            task={t}
-	                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
-                          onComplete={(from) => {
-                            if (!t.completed) completeTask(t.id);
-                            else if (t.bounty && t.bounty.state === 'locked') revealBounty(t.id);
-                            else if (t.bounty && t.bounty.state === 'unlocked' && t.bounty.token) claimBounty(t.id, from);
-                            else restoreTask(t.id);
-                          }}
-                          onEdit={() => setEditing({ type: "task", originalType: "task", originalId: t.id, task: t })}
-                          onDropBefore={(dragId) => moveTask(dragId, { type: "day", day }, t.id)}
-                          showStreaks={settings.streaksEnabled}
-                          onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
-                          onDragStart={(id) => setDraggingTaskId(id)}
-                          onDragEnd={handleDragEnd}
-                          hideCompletedSubtasks={settings.hideCompletedSubtasks}
-                          onOpenDocument={handleOpenDocument}
-                          onOpenNote={() => setNoteViewerTaskId(t.id)}
-                          onDismissInbox={
-                            t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
-                          }
-                        />
-                      ))}
-                    </DroppableColumn>
-                  ))}
-                </div>
-              </div>
-            </>
-            ) : currentBoard?.kind === "bible" ? (
-            <div
-              ref={bibleScrollerRef}
-              className="overflow-x-auto pb-4 w-full"
-              style={{ WebkitOverflowScrolling: "touch" }}
-            >
-              <div className="flex min-w-max items-start gap-4">
-                <div className="surface-panel board-column w-[360px] shrink-0 overflow-hidden">
-                  <div className="p-4">
-                    <BibleTracker
-                      state={bibleTracker}
-                      onToggleBook={handleToggleBibleBook}
-                      onToggleChapter={handleToggleBibleChapter}
-                      onUpdateChapterVerses={handleUpdateBibleChapterVerses}
-                      onReset={handleResetBibleTracker}
-                      onOpenPrint={handleOpenBiblePrint}
-                      onOpenScan={handleOpenBibleScan}
-                      onDeleteArchive={handleDeleteBibleArchive}
-                      onRestoreArchive={handleRestoreBibleArchive}
-                      onCompleteBook={handleCompleteBibleBook}
-                    />
-                  </div>
-                </div>
-                {settings.scriptureMemoryEnabled ? (
-                  <ScriptureMemoryCard
-                    items={scriptureMemoryItems}
-                    onAdd={handleAddScriptureMemory}
-                    onRemove={handleRemoveScriptureMemory}
-                    onReview={handleReviewScriptureMemory}
-                    boardName={scriptureMemoryBoard?.name || undefined}
-                    frequencyLabel={scriptureMemoryFrequencyOption?.label ?? "Daily"}
-                    sortLabel={scriptureMemorySortLabel}
-                  />
-                ) : (
-                  <div className="surface-panel board-column w-[360px] shrink-0 p-4 text-sm text-secondary">
-                    Enable scripture memory from Settings to start adding passages you want to review.
-                  </div>
-                )}
-              </div>
-            </div>
-            ) : (
-              // LISTS board (multiple custom columns) — still a horizontal row
-              <div
-                ref={scrollerRef}
-                className={`board-scroller flex-1 min-h-0 overflow-x-auto pb-0 w-full${isSelectionMode ? ' board-selection-pad' : ''}`}
-                style={{ WebkitOverflowScrolling: "touch" }}
-            >
-              <div className="flex gap-4 min-w-max h-full items-stretch">
-                {currentBoard.indexCardEnabled && (
-                  <div
-                    ref={el => setColumnRef("list-index", el)}
-                    className="board-column surface-panel w-[325px] shrink-0 p-3 flex h-full flex-col"
-                  >
-                    <div className="mb-3 text-sm font-semibold tracking-wide text-secondary">Index</div>
-                    <div className="flex flex-1 min-h-0 flex-col gap-1.5 overflow-y-auto pr-1">
-                      {listColumns.length === 0 ? (
-                        <div className="rounded-lg border border-dashed border-surface bg-surface-muted px-3 py-6 text-center text-sm text-secondary">
-                          No lists yet.
-                        </div>
-                      ) : currentBoard.kind === "compound" ? (
-                        (() => {
-                          let indexCounter = 0;
-                          const hideNames = currentBoard.hideChildBoardNames;
-                          return compoundIndexGroups.map((group, groupIndex) => (
-                            <div key={group.key} className="space-y-1.5" data-group-index={groupIndex}>
-                              {!hideNames && (
-                                <div className={`px-1 text-[0.6875rem] font-semibold uppercase tracking-wide text-secondary/70 ${groupIndex > 0 ? "mt-2" : ""}`}>
-                                  {group.boardName}
-                                </div>
-                              )}
-                              {group.columns.map((col) => {
-                                const order = ++indexCounter;
-                                const active = dayChoice === col.id;
-                                const baseClass =
-                                  "pressable flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition";
-                                const stateClass = active
-                                  ? "border-accent/60 bg-accent/15 text-primary"
-                                  : "border-surface bg-surface-muted text-secondary hover:bg-surface hover:text-primary";
-                                const source = listColumnSources.get(col.id);
-                                const title = source ? `${source.boardName} • ${col.name}` : col.name;
-                                return (
-                                  <button
-                                    key={col.id}
-                                    type="button"
-                                    className={`${baseClass} ${stateClass}`}
-                                    onClick={() => focusListColumn(col.id)}
-                                    aria-current={active ? "true" : undefined}
-                                    title={title}
-                                  >
-                                    <span className="truncate">{col.name}</span>
-                                    <span className={active ? "text-xs text-primary/80" : "text-xs text-secondary"}>{order}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          ));
-                        })()
-                      ) : (
-                        listColumns.map((col, idx) => {
-                          const active = dayChoice === col.id;
-                          const baseClass =
-                            "pressable flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition";
-                          const stateClass = active
-                            ? "border-accent/60 bg-accent/15 text-primary"
-                            : "border-surface bg-surface-muted text-secondary hover:bg-surface hover:text-primary";
-                          return (
-                            <button
-                              key={col.id}
-                              type="button"
-                              className={`${baseClass} ${stateClass}`}
-                              onClick={() => focusListColumn(col.id)}
-                              aria-current={active ? "true" : undefined}
-                              title={col.name}
-                            >
-                              <span className="truncate">{col.name}</span>
-                              <span className={active ? "text-xs text-primary/80" : "text-xs text-secondary"}>{idx + 1}</span>
-                            </button>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-                )}
-                {listColumns.map(col => {
-                  const isRenaming = renamingColumnId === col.id;
-                  const draftName = columnDrafts[col.id] ?? col.name;
-                  const header = isRenaming ? (
-                    <form
-                      className="mb-3 flex items-center gap-2"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        commitRenameColumn(col.id);
-                      }}
-                    >
-                      <input
-                        ref={(el) => setColumnNameInputRef(col.id, el)}
-                        value={draftName}
-                        onChange={(e) =>
-                          setColumnDrafts((prev) => ({ ...prev, [col.id]: e.target.value }))
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") {
-                            e.preventDefault();
-                            cancelRenameColumn(col.id);
-                          }
-                        }}
-                        className="w-[190px] max-w-full bg-transparent text-sm font-semibold tracking-wide text-primary focus:outline-none border-b border-white/10 focus:border-white/30 pb-1"
-                        placeholder="List name"
-                      />
-                      <button
-                        type="submit"
-                        className="h-9 w-9 rounded-full border border-white/20 bg-white/15 text-lg font-semibold text-primary flex items-center justify-center hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-accent"
-                        aria-label="Save list name"
-                      >
-                        +
-                      </button>
-                      <button
-                        type="button"
-                        className="ml-auto text-[11px] font-medium text-secondary hover:text-primary"
-                        onClick={() => cancelRenameColumn(col.id)}
-                      >
-                        Cancel
-                      </button>
-                    </form>
-                  ) : undefined;
-                  return (
-                    <DroppableColumn
-                      ref={el => setColumnRef(`list-${col.id}`, el)}
-                      key={col.id}
-                      title={draftName}
-                      header={header}
-                      onTitleClick={() => focusListColumn(col.id)}
-                      onDropCard={(payload) => {
-                        const ids = payload.allIds ?? [payload.id];
-                        ids.forEach((taskId) => moveTask(taskId, { type: "list", columnId: col.id }, taskId === payload.id ? payload.beforeId : undefined));
-                        if (isSelectionMode && payload.allIds) exitSelectionMode();
-                      }}
-                      onDropEnd={handleDragEnd}
-                      onSelectAll={isSelectionMode ? () => toggleGroupSelection(listColumnGroupIds(col.id)) : undefined}
-                      selectionState={isSelectionMode ? groupSelectionState(listColumnGroupIds(col.id)) : undefined}
-                      scrollable
-                      footer={(
-                        <form
-                          className="mt-2 flex gap-1"
-                          onSubmit={(e) => { e.preventDefault(); addInlineTask(col.id); }}
-                        >
-                          <input
-                            ref={el => setInlineInputRef(col.id, el)}
-                            value={inlineTitles[col.id] || ""}
-                            onChange={(e) => setInlineTitles(prev => ({ ...prev, [col.id]: e.target.value }))}
-                            className="pill-input pill-input--compact flex-1 min-w-0"
-                            placeholder="New Task"
-                          />
-                          <button
-                            type="submit"
-                            className="accent-button accent-button--circle pressable shrink-0"
-                            aria-label="Add task"
-                          >
-                            <span aria-hidden="true">+</span>
-                            <span className="sr-only">Add task</span>
-                          </button>
-                        </form>
-                      )}
-	                    >
-	                      {(calendarItemsByColumn.get(col.id) || []).map((ev) => (
-		                        <EventCard
-		                          key={ev.id}
-		                          event={ev}
-		                          syncPending={pendingNostrCalendarEventIds.has(ev.id)}
-		                          showDate
-		                          onOpenDocument={(event, doc) => handleOpenEventDocument(doc, event.boardId)}
-		                          onEdit={() => setEditing({ type: "event", originalType: "event", originalId: ev.id, event: ev })}
-		                          onDragStart={(id) => setDraggingEventId(id)}
-		                          onDragEnd={handleDragEnd}
-                          isSelectionMode={isSelectionMode}
-                          isSelected={selectedItemIds.includes(ev.id)}
-                          onToggleSelect={toggleItemSelection}
-		                        />
-	                      ))}
-	                      {(itemsByColumn.get(col.id) || []).map((t) => (
-	                        <Card
-                            displayStreak={runningStreakFor(t)}
-                            isSelectionMode={isSelectionMode}
-                            isSelected={selectedItemIds.includes(t.id)}
-                            onToggleSelect={toggleItemSelection}
-                            selectedTaskIds={isSelectionMode ? selectedItemIds : undefined}
-                            key={t.id}
-                            syncPending={pendingNostrTaskIds.has(t.id)}
-                            task={t}
-                          onFlyToCompleted={(rect) => { if (settings.completedTab) flyToCompleted(rect); }}
-                          onComplete={(from) => {
-                            if (!t.completed) completeTask(t.id);
-                            else if (t.bounty && t.bounty.state === 'locked') revealBounty(t.id);
-                            else if (t.bounty && t.bounty.state === 'unlocked' && t.bounty.token) claimBounty(t.id, from);
-                            else restoreTask(t.id);
-                          }}
-                          onEdit={() => setEditing({ type: "task", originalType: "task", originalId: t.id, task: t })}
-                          onDropBefore={(dragId) => moveTask(dragId, { type: "list", columnId: col.id }, t.id)}
-                          showStreaks={settings.streaksEnabled}
-                          onToggleSubtask={(subId) => toggleSubtask(t.id, subId)}
-                          onDragStart={(id) => setDraggingTaskId(id)}
-                          onDragEnd={handleDragEnd}
-                          hideCompletedSubtasks={settings.hideCompletedSubtasks}
-                          onOpenDocument={handleOpenDocument}
-                          onOpenNote={() => setNoteViewerTaskId(t.id)}
-                          onDismissInbox={
-                            t.inboxItem ? () => completeTask(t.id, { inboxAction: "dismiss" }) : undefined
-                          }
-                        />
-                      ))}
-                    </DroppableColumn>
-                  );
-                })}
-                {currentBoard.kind === "lists" && (
-                  <div className="board-column surface-panel w-[325px] shrink-0 p-4 flex h-full flex-col gap-4">
-                    <div className="flex-1 rounded-3xl border border-white/5 bg-white/5 backdrop-blur-sm shadow-inner flex flex-col items-center justify-center gap-3 text-center p-6">
-                      <div className="text-base font-semibold">Add list</div>
-                      <button
-                        type="button"
-                        className="w-16 h-16 rounded-full border border-white/20 bg-white/15 backdrop-blur-lg shadow-lg flex items-center justify-center text-2xl text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-accent"
-                        onClick={handleQuickAddList}
-                        aria-label="Add list"
-                      >
-                        +
-                      </button>
-                      <div className="text-sm text-secondary max-w-[240px]">
-                        Build an empty board and drop your first tasks here.
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )
-        ) : activeView === "board-upcoming" ? (
-          <BoardUpcomingView
-            boardUpcomingCount={boardUpcomingCount}
-            boardUpcomingGroups={boardUpcomingGroups}
-            renderUpcomingEventCard={renderUpcomingEventCard}
-            renderUpcomingTaskCard={renderUpcomingTaskCard}
-          />
-        ) : (
-          <CompletedBoardView
-            clearCompleted={clearCompleted}
-            completed={completed}
-            completedBibleBooks={completedBibleBooks}
-            currentBoard={currentBoard}
-            deleteTask={deleteTask}
-            handleOpenDocument={handleOpenDocument}
-            handleRestoreBibleBook={handleRestoreBibleBook}
-            restoreTask={restoreTask}
-            streaksEnabled={settings.streaksEnabled}
+          <BoardPage
+            view={activeView}
+            board={currentBoard}
+            scrollerRef={scrollerRef}
+            bibleScrollerRef={bibleScrollerRef}
+            inlineAdd={{
+              titles: inlineTitles,
+              setTitle: (key, value) => setInlineTitles((prev) => ({ ...prev, [key]: value })),
+              add: addInlineTask,
+              setInputRef: setInlineInputRef,
+            }}
+            selection={{
+              active: isSelectionMode,
+              toggle: toggleGroupSelection,
+              stateOf: groupSelectionState,
+              exit: exitSelectionMode,
+            }}
+            setColumnRef={setColumnRef}
+            week={{
+              tasksByDay: byDay,
+              eventsByDay: calendarByDay,
+              onDayTitleClick: setDayChoice,
+              dayGroupIds: weekDayGroupIds,
+            }}
+            lists={{
+              listColumns,
+              tasksByColumn: itemsByColumn,
+              eventsByColumn: calendarItemsByColumn,
+              compoundIndexGroups,
+              listColumnSources,
+              focusedColumnId: dayChoice,
+              onFocusColumn: focusListColumn,
+              rename: {
+                renamingColumnId,
+                drafts: columnDrafts,
+                setDrafts: setColumnDrafts,
+                commit: commitRenameColumn,
+                cancel: cancelRenameColumn,
+                setInputRef: setColumnNameInputRef,
+              },
+              columnGroupIds: listColumnGroupIds,
+              onAddList: handleQuickAddList,
+            }}
+            bible={{
+              tracker: {
+                state: bibleTracker,
+                onToggleBook: handleToggleBibleBook,
+                onToggleChapter: handleToggleBibleChapter,
+                onUpdateChapterVerses: handleUpdateBibleChapterVerses,
+                onReset: handleResetBibleTracker,
+                onOpenPrint: handleOpenBiblePrint,
+                onOpenScan: handleOpenBibleScan,
+                onDeleteArchive: handleDeleteBibleArchive,
+                onRestoreArchive: handleRestoreBibleArchive,
+                onCompleteBook: handleCompleteBibleBook,
+              },
+              scriptureMemory: settings.scriptureMemoryEnabled
+                ? {
+                    items: scriptureMemoryItems,
+                    onAdd: handleAddScriptureMemory,
+                    onRemove: handleRemoveScriptureMemory,
+                    onReview: handleReviewScriptureMemory,
+                    boardName: scriptureMemoryBoard?.name || undefined,
+                    frequencyLabel: scriptureMemoryFrequencyOption?.label ?? "Daily",
+                    sortLabel: scriptureMemorySortLabel,
+                  }
+                : null,
+            }}
+            bibleTrackerEnabled={!!settings.bibleTrackerEnabled}
+            upcoming={{ boardUpcomingCount, boardUpcomingGroups }}
+            completed={{
+              clearCompleted,
+              completed,
+              completedBibleBooks,
+              currentBoard,
+              deleteTask,
+              handleOpenDocument,
+              handleRestoreBibleBook,
+              restoreTask,
+              streaksEnabled: settings.streaksEnabled,
+            }}
           />
         )}
-        </div>
-      )}
       {activePage === "upcoming" && (
         <Suspense fallback={null}>
           <UpcomingPage
@@ -8226,8 +7778,6 @@ export default function App() {
             scrollElementRef={appContentRef}
             headerSlot={upcomingHeaderSlot}
             footerSlot={upcomingFooterSlot}
-            renderTaskCard={renderUpcomingTaskCard}
-            renderEventCard={renderUpcomingEventCard}
             onAddTask={openNewTaskForDate}
             router={appRouter}
             route={appRoute}
@@ -8801,6 +8351,7 @@ export default function App() {
 
       </div>
     </div>
+    </TaskActionsProvider>
   );
 }
 

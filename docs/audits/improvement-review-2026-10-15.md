@@ -604,9 +604,16 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 2. **C3-1, a real desktop layout (maintainer request 2026-10-17: "I don't like the PWA desktop
    layout; the mobile layout is good").** Details under "Desktop layout" below. Pass 1 done;
    pass 2 is next.
-3. **The rest of stage 4:** Bible, Print, Import and Voice as lazy modules. They are small and
+3. **Board page out of `App` (done 2026-10-17).** Task and event card behaviour is provided once
+   through `ui/task/taskActions.tsx`: a stable actions object (each method calls `App`'s latest
+   handler, so its identity never changes) plus a view-state context (selection, sync, display
+   settings). `BoardTaskCard`, `BoardEventCard` and the Upcoming card components replace five
+   hand-wired copies of the card props. The board body is `ui/board/BoardPage.tsx` with
+   `WeekBoardView`, `ListsBoardView` and `BibleBoardView` (the Bible view was written out twice).
+   `App.tsx` 8,777 → 8,374 lines. Boards is not lazy: it is the startup page.
+4. **The rest of stage 4:** Bible, Print, Import and Voice as lazy modules. They are small and
    don't affect layout, so they wait until after C3-1.
-4. **Chunk 3 onward,** per the chunk plan.
+5. **Chunk 3 onward,** per the chunk plan.
 
 **Desktop layout (C3-1, approved by the maintainer 2026-10-17)**
 

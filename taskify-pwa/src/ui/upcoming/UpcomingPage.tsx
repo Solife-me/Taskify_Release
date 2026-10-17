@@ -3,11 +3,11 @@
  * ("details") or a month calendar with one day's items ("list"). Loaded on first visit.
  *
  * `App` owns the layout: it gives this page a slot in the header for its actions, a slot above
- * the tab bar for its controls, and the scroll container. Cards are rendered by `App`, which owns
- * the task and event actions.
+ * the tab bar for its controls, and the scroll container. Cards act through the task actions
+ * `App` provides (`ui/task/taskActions`).
  */
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { formatDateKeyLocal, isoDatePart } from "taskify-core";
 import { MONTH_NAMES, WD_SHORT } from "../../domains/appTypes";
@@ -45,6 +45,7 @@ import { useOverlayHistory } from "../../routing/useOverlayHistory";
 import { UpcomingControls } from "./UpcomingControls";
 import { UpcomingSearch } from "./UpcomingSearch";
 import { UpcomingSheets } from "./UpcomingSheets";
+import { UpcomingEventCard, UpcomingTaskCard } from "../task/taskActions";
 
 export type UpcomingPageProps = {
   tasks: Task[];
@@ -55,8 +56,6 @@ export type UpcomingPageProps = {
   scrollElementRef: RefObject<HTMLDivElement | null>;
   headerSlot: HTMLElement | null;
   footerSlot: HTMLElement | null;
-  renderTaskCard: (task: Task) => ReactNode;
-  renderEventCard: (event: CalendarEvent) => ReactNode;
   /** Opens the task editor for a new task due on `dateKey`. */
   onAddTask: (dateKey: string) => void;
   router: AppHistoryRouter;
@@ -72,8 +71,6 @@ export default function UpcomingPage({
   scrollElementRef,
   headerSlot,
   footerSlot,
-  renderTaskCard,
-  renderEventCard,
   onAddTask,
   router,
   route,
@@ -617,8 +614,8 @@ export default function UpcomingPage({
 	                </div>
 	              ) : (
 	                <div className="space-y-2">
-	                  {upcomingListEvents.map((ev) => renderEventCard(ev))}
-	                  {upcomingListTasks.map((task) => renderTaskCard(task))}
+	                  {upcomingListEvents.map((ev) => <UpcomingEventCard key={ev.id} event={ev} />)}
+	                  {upcomingListTasks.map((task) => <UpcomingTaskCard key={task.id} task={task} />)}
 	                </div>
 	              )}
 	            </div>
@@ -669,9 +666,9 @@ export default function UpcomingPage({
 	                  {row.kind === "day-header" ? (
 	                    <div className="upcoming-day__label">{row.label}</div>
 	                  ) : row.kind === "event" ? (
-	                    renderEventCard(row.event)
+	                    <UpcomingEventCard event={row.event} />
 	                  ) : (
-	                    renderTaskCard(row.task)
+	                    <UpcomingTaskCard task={row.task} />
 	                  )}
 	                </div>
 	              );
