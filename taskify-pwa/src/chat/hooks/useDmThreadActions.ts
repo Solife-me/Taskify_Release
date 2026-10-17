@@ -4,8 +4,8 @@ import { chatStateSyncBus } from "../../nostr/chatStateSyncBus";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import { LS_GROUP_MUTED, LS_GROUP_LEFT } from "../../localStorageKeys";
-import { dmThreadKeyForThread, dmThreadKeyForMessage, DM_THREAD_DELETE_CACHE_TTL_MS } from "../../wallet/walletModalHelpers";
-import type { WalletDmThread } from "../../hooks/wallet/useDmState";
+import { dmThreadKeyForThread, dmThreadKeyForMessage, DM_THREAD_DELETE_CACHE_TTL_MS } from "../chatHelpers";
+import type { WalletDmThread } from "./useDmState";
 
 export function useDmThreadActions({
   // DM state refs

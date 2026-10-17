@@ -3,10 +3,10 @@ import { useCallback, useMemo } from "react";
 import {
   CHAT_ATTACH_TRAY_MAX_HEIGHT,
   CHAT_ATTACH_TRAY_MIN_HEIGHT,
-} from "../../wallet/walletModalHelpers";
+} from "../chatHelpers";
 import type { Contact } from "../../lib/contacts";
 import type { GroupChat } from "../../lib/groupChatState";
-import type { GroupAvatarMember } from "../../ui/wallet/walletModalUi";
+import type { GroupAvatarMember } from "../chatUi";
 import type { WalletDmThread } from "./useDmState";
 
 export function useChatGroupDerived({

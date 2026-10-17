@@ -4,7 +4,7 @@ import type {
   DmThreadListEntry,
   WalletDmMessage,
   WalletDmThread,
-} from "../../hooks/wallet/useDmState";
+} from "../../chat/hooks/useDmState";
 import {
   GroupAvatar,
   SwipeableDmThreadRow,

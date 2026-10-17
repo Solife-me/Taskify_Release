@@ -21,7 +21,7 @@ import {
 import type { ContactProfile } from "../../lib/contacts";
 import type { WalletMessageItem } from "../../types/walletMessages";
 import { chatRetentionCutoffMs } from "../../domains/tasks/settingsTypes";
-import { extractFirstCashuTokenFromText } from "../../wallet/walletModalHelpers";
+import { findCashuToken } from "../cashuTokenText";
 import { mergeGroupChats, normalizeGroupChatRecord, type GroupChat } from "../../lib/groupChatState";
 import type { SharedTaskPayload } from "../../lib/shareInbox";
 import { normalizeNostrPubkey } from "../../lib/nostr";
@@ -766,7 +766,7 @@ export function useDmState({
       // A received token is never redeemed in-app while the wallet is phased out, so the chat
       // is the user's only copy of it: retention never prunes those messages.
       const next = prev.filter(
-        (m) => m.createdAt * 1000 >= cutoff || (m.isIncoming && !!extractFirstCashuTokenFromText(m.content || "")),
+        (m) => m.createdAt * 1000 >= cutoff || (m.isIncoming && !!findCashuToken(m.content || "")),
       );
       if (next.length === prev.length) return prev;
       persistDmMessages(next);

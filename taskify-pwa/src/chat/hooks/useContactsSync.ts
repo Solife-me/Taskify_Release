@@ -38,7 +38,7 @@ import {
   type CachedContactProfile,
   type PublicFollow,
   type NostrIdentity,
-} from "../../wallet/walletModalHelpers";
+} from "../chatHelpers";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import { LS_NIP51_CONTACTS_MIGRATED } from "../../localStorageKeys";
@@ -77,8 +77,6 @@ export function useContactsSync({
   safePublish,
   persistProfileEventId,
   readProfileEventId,
-  // callback still in component at extraction time
-  deriveDefaultLightningAddress,
 }) {
   const readNip51ContactsMigrated = useCallback((): boolean => {
     try {
@@ -921,7 +919,6 @@ export function useContactsSync({
     [
       contactsSyncEnabled,
       defaultNostrRelays,
-      deriveDefaultLightningAddress,
       ensureNostrIdentity,
       formatNpub,
       nostrMissingReason,

@@ -2,7 +2,6 @@
 import { useCallback, useMemo } from "react";
 import type { Contact } from "../../lib/contacts";
 import type { FileServerType } from "../../lib/fileStorage";
-import { contactHasNpub } from "../../lib/contacts";
 import { uploadAvatar } from "../../nostr/Nip96Client";
 import { parseFileServers, findServerEntry } from "../../lib/fileStorage";
 import { useScannedContactDerived } from "./useScannedContactDerived";
@@ -73,17 +72,12 @@ interface UseContactDetailOptions {
   formatContactUsername: (username: string) => string;
   showToast: (message: string, duration?: number) => void;
   peerLabelFor: (hex: string) => { label: string; picture?: string; subtitle?: string };
-  openEcashSendToContact: (contact: Contact) => void;
-  openEcashSendSheet: () => void;
-  openLightningSendSheet: () => void;
-  applyLightningContact: (contact: Contact) => void;
   closeAttachTray: () => void;
   onAcceptMessage: (itemId: string) => void;
   handleReturnToProfileCard: () => void;
   resetContactEditDraft: () => void;
   ensureNostrIdentity: () => any | null;
   publishProfileMetadata: (draft: any) => Promise<boolean>;
-  deriveDefaultLightningAddress: () => string;
   isDataUrl: (url: string) => boolean;
   estimateDataUrlSize: (dataUrl: string) => number;
 }
@@ -145,17 +139,12 @@ export function useContactDetail(options: UseContactDetailOptions) {
     formatContactUsername,
     showToast,
     peerLabelFor,
-    openEcashSendToContact,
-    openEcashSendSheet,
-    openLightningSendSheet,
-    applyLightningContact,
     closeAttachTray,
     onAcceptMessage,
     handleReturnToProfileCard,
     resetContactEditDraft,
     ensureNostrIdentity,
     publishProfileMetadata,
-    deriveDefaultLightningAddress,
     isDataUrl,
     estimateDataUrlSize,
   } = options;
@@ -226,24 +215,6 @@ export function useContactDetail(options: UseContactDetailOptions) {
     },
     [compressedToRawHex, nip05Checks, normalizeNip05, normalizeNostrPubkey],
   );
-
-  const handleOpenChatEcash = useCallback(() => {
-    closeAttachTray();
-    if (activeConversationContact && (contactHasNpub(activeConversationContact) || activeConversationContact.paymentRequest.trim().length > 0)) {
-      openEcashSendToContact(activeConversationContact);
-      return;
-    }
-    openEcashSendSheet();
-  }, [activeConversationContact, closeAttachTray, openEcashSendSheet, openEcashSendToContact]);
-
-  const handleOpenChatLightning = useCallback(() => {
-    closeAttachTray();
-    if (activeConversationContact?.address.trim()) {
-      applyLightningContact(activeConversationContact);
-      return;
-    }
-    openLightningSendSheet();
-  }, [activeConversationContact, applyLightningContact, closeAttachTray, openLightningSendSheet]);
 
   const openGroupMemberDetail = useCallback(
     (memberHex: string) => {
@@ -812,7 +783,6 @@ export function useContactDetail(options: UseContactDetailOptions) {
     },
     [
       contactEditDraft,
-      deriveDefaultLightningAddress,
       contactsSyncEnabled,
       ensureNostrIdentity,
       nostrMissingReason,
@@ -843,8 +813,6 @@ export function useContactDetail(options: UseContactDetailOptions) {
     detailContactFollowed,
     // Existing returns
     contactSubtitle,
-    handleOpenChatEcash,
-    handleOpenChatLightning,
     openGroupMemberDetail,
     buildContactFields,
     verifyContactNip05,

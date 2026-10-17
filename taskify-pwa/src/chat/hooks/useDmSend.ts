@@ -13,8 +13,8 @@ import {
 } from "../../lib/messengerAttachmentCrypto";
 import { parseFileServers, findServerEntry, DEFAULT_FILE_STORAGE_SERVER } from "../../lib/fileStorage";
 import type { FileServerType } from "../../lib/fileStorage";
-import { generatePrivateKey, randomPastTimestampSeconds, type NostrEvent } from "../../wallet/walletModalHelpers";
-import type { WalletDmMessage, PendingDmMessage } from "../../hooks/wallet/useDmState";
+import { generatePrivateKey, randomPastTimestampSeconds, type NostrEvent } from "../chatHelpers";
+import type { WalletDmMessage, PendingDmMessage } from "./useDmState";
 import type { GroupChat } from "../../lib/groupChatState";
 
 export function useDmSend({

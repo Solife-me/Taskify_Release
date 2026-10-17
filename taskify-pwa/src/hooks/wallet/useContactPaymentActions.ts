@@ -10,13 +10,13 @@ import {
 } from "@cashu/cashu-ts";
 import { type P2PKKey } from "../../context/P2PKContext";
 import { contactDisplayLabel, contactPrimaryName, type Contact } from "../../lib/contacts";
-import { SATS_PER_BTC } from "../wallet/useWalletPrice";
+import { SATS_PER_BTC } from "./useWalletPrice";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import { normalizeMintUrl } from "../../wallet/cashuProofHelpers";
 import type { CreateSendTokenOptions } from "../../mint/MintSession";
 import type { HistoryTokenState, StoredProofForState } from "../../wallet/walletHistoryTypes";
 import type { GroupChat } from "../../lib/groupChatState";
-import type { WalletDmThread } from "../wallet/useDmState";
+import type { WalletDmThread } from "../../chat/hooks/useDmState";
 
 export function useContactPaymentActions({
   // Reactive state

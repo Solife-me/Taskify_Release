@@ -6,13 +6,13 @@ import {
   buildCalendarInviteSyntheticEventId,
   PAYMENT_HISTORY_EVENT_ID_REGEX,
   type PendingCalendarInvite,
-} from "../../wallet/walletModalHelpers";
+} from "../chatHelpers";
 import {
   normalizeDmPeerHex,
   type WalletDmMessage,
   type WalletDmAttachment,
 } from "./useDmState";
-import { parseDateLikeToUnixSeconds } from "../../ui/wallet/walletModalUi";
+import { parseDateLikeToUnixSeconds } from "../chatUi";
 
 export interface UseDmMessageDerivedOptions {
   messageItems: WalletMessageItem[];

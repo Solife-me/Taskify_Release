@@ -214,11 +214,12 @@ function normalizePublicFollowsList(raw: any): PublicFollow[] {
 
 export interface UseContactsStateOptions {
   isChatPage: boolean;
-  showTabSwitcher: boolean;
-  isContactsPage: boolean;
+  /** Wallet-hosted contacts (legacy): the chat runtime leaves these unset. */
+  showTabSwitcher?: boolean;
+  isContactsPage?: boolean;
   chatView: string;
   setChatView: (view: any) => void;
-  setWalletTab: (tab: string) => void;
+  setWalletTab?: (tab: string) => void;
   activeThreadPeer: string | null;
   persistProfileEventId: (pubkey: string, eventId: string | null) => void;
 }
@@ -227,8 +228,8 @@ export interface UseContactsStateOptions {
 
 export function useContactsState({
   isChatPage,
-  showTabSwitcher,
-  isContactsPage,
+  showTabSwitcher = false,
+  isContactsPage = false,
   chatView,
   setChatView,
   setWalletTab,
@@ -500,7 +501,7 @@ export function useContactsState({
     setContactView("list");
     setActiveContactId(null);
     setShowCustomContactFields(false);
-    setWalletTab("wallet");
+    setWalletTab?.("wallet");
   }, [resetContactEditDraft, setWalletTab]);
   const handleStartAddContact = useCallback(() => {
     resetContactEditDraft();

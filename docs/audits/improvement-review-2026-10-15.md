@@ -672,7 +672,56 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
   conversation highlighted and a placeholder when none is open. The rail stays visible inside a
   conversation (phones still hide the tab bar there). The overlay uses `overflow: clip`, because
   `hidden` let a conversation's `scrollIntoView` shift the overlay sideways.
-- **Moving Chat out of the wallet code (chunk 5, scoped 2026-10-17, not done):** Chat is 2,878
+- **Chat independence (maintainer decision 2026-10-17, in progress).** "The wallet is phasing out
+  so the chat functions need to be totally independent so that the wallet can be turned off when
+  ready. When a cashu token is received in chat it should be copyable but beyond that needs no
+  wallet functions."
+  - **Done (checkpoint commit "Give chat its own module, independent of the wallet"):**
+    - `src/chat/` exists. Chat's hooks moved there from `hooks/wallet` (`src/chat/hooks/`:
+      DM state/subscription/send/thread hooks, contacts state/sync/lookup/detail, group and
+      scanned-contact derivations). They are still `@ts-nocheck`, as before.
+    - Lint rule (eslint.config.js): nothing in `src/chat/**` may import wallet, mint or Cashu
+      code. The wallet may import chat, not the reverse.
+    - `chat/chatHelpers.tsx` (type-checked) and `chat/chatUi.tsx` hold the chat helpers and UI
+      pieces; `wallet/walletModalHelpers.tsx` and `ui/wallet/walletModalUi.tsx` keep wallet-only
+      code and re-export chat's. `QrCodeCard` takes its animation as a prop; the wallet's
+      wrapper passes NUT-16.
+    - `chat/hooks/useNostrSession.ts`: the relay pool, identity, publishing and DM decryption,
+      split out of the wallet's `useNostrPoolState`, which now builds on it.
+    - `chat/cashuTokenText.ts` (tested): finds a Cashu token in a message by its shape, without
+      the Cashu library. `useDmState` and `useDmSubscription` use it; tokens get no amount.
+    - Wallet-only parameters removed or made optional in chat hooks (`useContactDetail` lost the
+      pay actions, `useContactsSync` an unused lightning-address argument, `useContactsState`
+      the wallet-tab arguments).
+    - Chat still renders inside `CashuWalletModal` at this checkpoint; its eCash/Lightning
+      compose buttons do nothing now (their handlers were removed from `useContactDetail`).
+  - **Remaining, in order:**
+    1. `src/chat/ChatRuntime.tsx`: a provider `App` always mounts, so DMs sync and unread counts
+       update with the wallet off. Build it from the modal's chat statements: run
+       `scripts/chat-extraction/analyze.py` then `closure2.py` against `chat_block_clean.tsx.txt`
+       (82 statements). Leave out the wallet-only statements (lightning address 263/270/798,
+       wallet-tab effect 410, debug effect 281, npub.cash effect 2118, the `useCashu`/payment
+       hooks). Replace `useNostrPoolState` with `useNostrSession({ identityEnabled: true })`;
+       make `nostrMissingReason` `nostrIdentityInfo.reason`; pass no `history` to
+       `useDmMessageDerived` (default it to `[]`); drop the payment-request handler from
+       `useDmSubscription`; drop `resetContactForm()` (a no-op) from the contacts effect; move
+       `openGroupNameEditor` and `handleRenameGroupSubmit` out of the wallet's
+       `useContactPaymentActions` into a chat hook. `open`/`isChatPage` become "chat page
+       visible".
+    2. `src/chat/ChatPage.tsx` (lazy): the chat JSX from `chat_block_clean.tsx.txt`, reading the
+       runtime through context, plus `ChatTokenBubble` (the token in a monospace box and a Copy
+       button). Keep the desktop two-pane behaviour (`chat-page--two-pane`). Then split it into
+       per-view components (threads, conversation, new message, group info/members/name, new
+       group).
+    3. `App` renders `ChatPage` for the chat page and mounts `ChatRuntime` (unread count,
+       inbox, notifications); `CashuWalletShell` stops passing `page="chat"`.
+    4. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
+       contact picker for payments reads contacts from the chat runtime (one contacts syncer).
+    5. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
+       chunk loads; then type the chat hooks (remove `@ts-nocheck`).
+  - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
+    from `chat_block_clean`.
+- **Moving Chat out of the wallet code (chunk 5, scoped 2026-10-17):** Chat is 2,878
   lines of JSX inside `CashuWalletModal.tsx` (10,054 lines) and uses 373 values from that
   component's scope, 38 of them payment-related (ecash and Lightning in chat, history). Its DM
   and contact hooks (`useDmState`, `useDmSubscription`, `useDmSend`, `useDmThreadUtils`,

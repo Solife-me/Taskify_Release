@@ -17,6 +17,8 @@ const legacyUncheckedFiles = [
 const tsNocheckFiles = [
   ...legacyUncheckedFiles,
   'src/hooks/wallet/**/*.{ts,tsx}',
+  // Moved out of the wallet unchanged; typing them is tracked separately.
+  'src/chat/hooks/**/*.{ts,tsx}',
   'src/ui/wallet/**/*.tsx',
   'src/wallet/walletModalHelpers.tsx',
 ]
@@ -79,6 +81,35 @@ export default tseslint.config([
       '@typescript-eslint/ban-ts-comment': 'off',
       'react-hooks/exhaustive-deps': 'off',
       'unused-imports/no-unused-vars': 'off',
+    },
+  },
+  {
+    // Chat must keep working when the wallet is turned off and, later, deleted: nothing in
+    // src/chat may import wallet, mint or Cashu code. The wallet may depend on chat, not the
+    // reverse.
+    files: ['src/chat/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '**/wallet/**',
+                '**/mint/**',
+                '@cashu/*',
+                '**/context/walletContexts',
+                '**/context/Cashu*',
+                '**/context/P2PK*',
+                '**/context/Nwc*',
+                '**/hooks/wallet/**',
+                '**/components/CashuWalletModal*',
+              ],
+              message: 'Chat must not depend on the wallet (being phased out). Move shared code into src/chat or a neutral module.',
+            },
+          ],
+        },
+      ],
     },
   },
   {

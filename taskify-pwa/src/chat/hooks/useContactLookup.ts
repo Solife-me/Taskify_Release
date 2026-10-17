@@ -4,8 +4,8 @@ import { nip19 } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { Contact, ContactProfile } from "../../lib/contacts";
 import { makeContactId, normalizeContact } from "../../lib/contacts";
-import type { ContactSharePayload } from "../../wallet/walletModalHelpers";
-import { encodeContactPayload, parseProfileContent } from "../../wallet/walletModalHelpers";
+import type { ContactSharePayload } from "../chatHelpers";
+import { encodeContactPayload, parseProfileContent } from "../chatHelpers";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 
 export interface UseContactLookupOptions {

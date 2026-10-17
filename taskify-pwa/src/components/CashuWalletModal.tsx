@@ -88,7 +88,7 @@ import { usePendingTokenHistorySync } from "../hooks/wallet/usePendingTokenHisto
 import { useMintBackup } from "../hooks/wallet/useMintBackup";
 import { useMintSelection } from "../hooks/wallet/useMintSelection";
 import { useNwcManager } from "../hooks/wallet/useNwcManager";
-import { useWalletMediaQuery } from "../hooks/wallet/useWalletMediaQuery";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { SATS_PER_BTC, useWalletPrice } from "../hooks/wallet/useWalletPrice";
 import { useWalletSwapFlow } from "../hooks/wallet/useWalletSwapFlow";
 import { useLightningFlow, type LnurlPayData } from "../hooks/wallet/useLightningFlow";
@@ -96,14 +96,14 @@ import { useEcashReceiveState } from "../hooks/wallet/useEcashReceiveState";
 import { useEcashSendState } from "../hooks/wallet/useEcashSendState";
 import { usePaymentRequestState } from "../hooks/wallet/usePaymentRequestState";
 import { useNostrPoolState } from "../hooks/wallet/useNostrPoolState";
-import { useDmState, type WalletDmAttachment, type DmReaction, type WalletDmMessage, MAX_GROUP_MEMBERS, generateGroupId, normalizeDmPeerHex } from "../hooks/wallet/useDmState";
-import { useContactsState } from "../hooks/wallet/useContactsState";
+import { useDmState, type WalletDmAttachment, type DmReaction, type WalletDmMessage, MAX_GROUP_MEMBERS, generateGroupId, normalizeDmPeerHex } from "../chat/hooks/useDmState";
+import { useContactsState } from "../chat/hooks/useContactsState";
 import { useManualSendPlan } from "../hooks/wallet/useManualSendPlan";
-import { useDmSubscription } from "../hooks/wallet/useDmSubscription";
-import { useDmSend } from "../hooks/wallet/useDmSend";
-import { useContactsSync } from "../hooks/wallet/useContactsSync";
-import { useDmThreadActions } from "../hooks/wallet/useDmThreadActions";
-import { useContactLookup } from "../hooks/wallet/useContactLookup";
+import { useDmSubscription } from "../chat/hooks/useDmSubscription";
+import { useDmSend } from "../chat/hooks/useDmSend";
+import { useContactsSync } from "../chat/hooks/useContactsSync";
+import { useDmThreadActions } from "../chat/hooks/useDmThreadActions";
+import { useContactLookup } from "../chat/hooks/useContactLookup";
 import { useScannerFlow } from "../hooks/wallet/useScannerFlow";
 import { useEcashRedeem } from "../hooks/wallet/useEcashRedeem";
 import { useSheetManagement } from "../hooks/wallet/useSheetManagement";
@@ -112,7 +112,7 @@ import { useHistoryFormatters } from "../hooks/wallet/useHistoryFormatters";
 import { useWalletFormatters } from "../hooks/wallet/useWalletFormatters";
 import { useAmountKeypadHandlers } from "../hooks/wallet/useAmountKeypadHandlers";
 import { usePaymentRequestFlow } from "../hooks/wallet/usePaymentRequestFlow";
-import { useContactDetail } from "../hooks/wallet/useContactDetail";
+import { useContactDetail } from "../chat/hooks/useContactDetail";
 import {
   fetchBotCommands,
   loadCachedBotCommands,
@@ -121,19 +121,19 @@ import {
   type BotCommand,
 } from "../lib/botCommands";
 import { useTokenHistoryActions } from "../hooks/wallet/useTokenHistoryActions";
-import { useDmThreadUtils } from "../hooks/wallet/useDmThreadUtils";
+import { useDmThreadUtils } from "../chat/hooks/useDmThreadUtils";
 import { useContactPaymentActions } from "../hooks/wallet/useContactPaymentActions";
 import { useWalletFlowState } from "../hooks/wallet/useWalletFlowState";
 import { useAmountFormatters } from "../hooks/wallet/useAmountFormatters";
 import { useLightningInputDerived } from "../hooks/wallet/useLightningInputDerived";
 import { useHistoryFilter } from "../hooks/wallet/useHistoryFilter";
 import { usePaymentRequestDerived } from "../hooks/wallet/usePaymentRequestDerived";
-import { useDmMessageDerived } from "../hooks/wallet/useDmMessageDerived";
-import { useDmThreadDerived } from "../hooks/wallet/useDmThreadDerived";
-import { useThreadUnreadCounts } from "../hooks/wallet/useThreadUnreadCounts";
-import { useContactsDerived } from "../hooks/wallet/useContactsDerived";
+import { useDmMessageDerived } from "../chat/hooks/useDmMessageDerived";
+import { useDmThreadDerived } from "../chat/hooks/useDmThreadDerived";
+import { useThreadUnreadCounts } from "../chat/hooks/useThreadUnreadCounts";
+import { useContactsDerived } from "../chat/hooks/useContactsDerived";
 import { useEcashSendDerived } from "../hooks/wallet/useEcashSendDerived";
-import { useChatGroupDerived } from "../hooks/wallet/useChatGroupDerived";
+import { useChatGroupDerived } from "../chat/hooks/useChatGroupDerived";
 import {
   isSamePaymentRequest,
   type IncomingPaymentRequest,
@@ -331,9 +331,9 @@ export default function CashuWalletModal({
 
   const [showSendOptions, setShowSendOptions] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
-  const isCompactLightningSheetLayout = useWalletMediaQuery("(max-height: 820px)");
+  const isCompactLightningSheetLayout = useMediaQuery("(max-height: 820px)");
   // On a mouse desktop, Chat shows the conversation list beside the open conversation.
-  const chatTwoPane = useWalletMediaQuery("(min-width: 1024px) and (hover: hover) and (pointer: fine)");
+  const chatTwoPane = useMediaQuery("(min-width: 1024px) and (hover: hover) and (pointer: fine)");
   const [scannerMessage, setScannerMessage] = useState("");
   type PendingScan =
     | { type: "ecash"; token: string }

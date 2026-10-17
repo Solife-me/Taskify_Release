@@ -7,7 +7,7 @@ function readMediaQuery(query: string, defaultValue: boolean): boolean {
   return window.matchMedia(query).matches;
 }
 
-export function useWalletMediaQuery(query: string, defaultValue = false): boolean {
+export function useMediaQuery(query: string, defaultValue = false): boolean {
   const [matches, setMatches] = useState(() => readMediaQuery(query, defaultValue));
 
   useEffect(() => {

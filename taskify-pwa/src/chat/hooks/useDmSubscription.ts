@@ -5,9 +5,8 @@ import { historyRecoverySince, setHistoryWatermark } from "../../nostr/historyWa
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import { NostrSession } from "../../nostr/NostrSession";
 import { isImageMime, isVideoMime, isAudioMime } from "../../lib/messengerAttachmentCrypto";
-import { amountFromCashuToken } from "../../wallet/cashuProofHelpers";
 import { parseShareEnvelope } from "../../lib/shareInbox";
-import { truncatePreview } from "../../ui/wallet/walletModalUi";
+import { truncatePreview } from "../chatUi";
 import type { ContactProfile } from "../../lib/contacts";
 import {
   parseProfileContent,
@@ -18,12 +17,12 @@ import {
   fetchProfilePhotoDataUrl,
   cachedContactProfileToDmProfile,
   type NostrEvent,
-} from "../../wallet/walletModalHelpers";
+} from "../chatHelpers";
 import {
   generateGroupId,
   type WalletDmMessage,
   type WalletDmAttachment,
-} from "../../hooks/wallet/useDmState";
+} from "./useDmState";
 
 /** NIP-59 gift wraps backdate created_at by up to two days; read a day beyond that. */
 const DM_HISTORY_LOOKBACK_SECS = 3 * 24 * 60 * 60;
@@ -385,10 +384,8 @@ export function useDmSubscription({
                 ? Math.max(0, Math.floor((amountRaw >= 1_000_000 ? amountRaw / 1000 : amountRaw)))
                 : null;
             detail = typeof (paymentPayload as any).memo === "string" ? (paymentPayload as any).memo : null;
-          } else if (typeof paymentPayload === "string") {
-            const decodedAmount = amountFromCashuToken(paymentPayload);
-            amountSat = decodedAmount > 0 ? decodedAmount : null;
           }
+          // A bare Cashu token: chat shows it to copy and does not decode it (no wallet), so no amount.
           attachment = {
             type: "payment",
             amountSat,
