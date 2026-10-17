@@ -709,13 +709,14 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     - Production build verification is enforced by `check:startup`: opening Chat's static chunk
       graph may not include the wallet modal/runtime, Cashu SDK or payment-support chunks. After
       this integration startup is 451.1 KB gzipped (470 KB budget), and the Chat graph passes.
-    - Page splitting has started: the conversation list/search/profile entry is
+    - Page splitting is complete: the conversation list/search/profile entry is
       `chat/views/ChatThreadsView.tsx`; the full message conversation and composer are
       `chat/views/ChatConversationView.tsx`; the new-message list, contact detail and contact
       editor are `chat/views/ChatContactsView.tsx`; group info, member list, group-name editing
-      and both new-group steps are `chat/views/ChatGroupViews.tsx`. Each reads the same runtime
-      context without a prop matrix, and the original branches were moved without behaviour
-      changes.
+      and both new-group steps are `chat/views/ChatGroupViews.tsx`; and the profile, contact,
+      message, share and scanner sheets are `chat/views/ChatOverlays.tsx`. Each reads the same
+      runtime context without a prop matrix, and the original branches were moved without
+      behaviour changes. `ChatPage` is now the 85-line layout shell that routes those views.
     - Regression caught before this step was committed: removing Chat's automatic payment action
       also removed the still-live wallet's opt-in payment handler because both consume the same
       DM hook. The handler is now an optional bridge: wallet passes it, Chat does not. A focused
@@ -724,11 +725,9 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       that branch. The wallet therefore still duplicates Chat's hooks while its own page is open;
       removing that dead branch and making its contact picker consume the runtime is next.
   - **Remaining, in order:**
-    1. Finish splitting `ChatPage` into per-view components. Every routed view is done; only the
-       shared profile/contact/message action sheets and scanner overlays remain in the page.
-    2. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
+    1. `CashuWalletModal` drops the chat branch, the DM subscription and chat-only hooks; its
        contact picker for payments reads contacts from the chat runtime (one contacts syncer).
-    3. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
+    2. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
        chunk loads; then type the chat hooks (remove `@ts-nocheck`).
   - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
     from `chat_block_clean`.
