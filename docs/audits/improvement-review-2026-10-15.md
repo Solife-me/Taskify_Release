@@ -45,7 +45,7 @@ Constraints carried through every chunk:
 | --- | --- | --- | --- |
 | 1 | Shared domain core and contract drift | `taskify-core`, and where clients re-implement it | Done |
 | 2 | PWA app shell | `App.tsx` (12.8k lines), navigation, onboarding, settings | Implementing |
-| 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | Pending; starts with C3-1 (desktop layout, maintainer request) |
+| 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | C3-1 done; C3-2 to C3-9 reviewed 2026-10-18, awaiting decisions |
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Pending |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `lib/`, `agent/`, `components/` | Pending |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Pending |
@@ -909,7 +909,161 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
 - Chunk 4: Scripture Memory review tasks whose series fields get normalized are not republished.
   Republishing would send every past review on a frequency change, so it needs a deliberate rule.
 - Chunk 4: `maybePublishTask` mutates `task._nostrAt` on objects held in state.
-- Chunk 3: check on a device that opening `/upcoming` directly lands on today. In the dev
-  Browser pane it started at the oldest day, but that pane was hidden, and hidden pages pause the
-  animation frames the list's virtualizer scrolls with, so this may not be a real bug.
+- Chunk 3: check on a device that opening `/upcoming` directly lands on today. Confirmed as a
+  real bug in a visible tab on 2026-10-18; it is C3-2.
 - Chunk 12: the CLI's runtime tests assert on source text; build a fake-session harness.
+
+## Chunk 3 — PWA boards, tasks, Upcoming and calendar
+
+Boards, task and event cards, the task and event editors, Upcoming, and the task and calendar
+domain code. The desktop layout (C3-1) was done first, at the maintainer's request (see
+"Desktop layout" above).
+
+What the review found:
+
+- **The domain layer is in good shape.** Task and calendar mutations are pure, tested commands
+  (`taskCommands`, `calendarCommands`, about 1,000 lines of tests). Recurrence lives in
+  `taskify-core` with shared vectors.
+- **Upcoming opens at the oldest day, not today.** Opening `/upcoming` in a visible tab (checked:
+  animation frames running) showed Wednesday, January 1, 2025. The Today button works. The
+  arrival scroll runs once, before the virtualized list has measured itself, then marks itself
+  done.
+- **"Today" is the UTC date in 12 places.** The code uses `isoDatePart(new Date().toISOString())`
+  in Upcoming's Today, the task editor's date defaults and quick dates, the event editor's
+  reminder default, and the date given to tasks imported by pasting JSON. In the Americas,
+  "today" becomes tomorrow in the evening (after 7 pm in Chicago); in Asia and Australia it is
+  yesterday in the morning. Core already has `formatDateKeyLocal`.
+- **Typing a task re-renders every card.** Measured with a render counter on a week board:
+  every keystroke in an inline "New Task" field re-rendered every card (28 card renders for
+  5 keys with 4 tasks, React's dev double-render included). The causes:
+  - The inline-add drafts are `App` state, so each keystroke re-renders `App`, about 8,400 lines.
+  - `BoardTaskCard` passes new callbacks to the memoized `Card` on every render, which defeats
+    the memo.
+  - The board views are not memoized.
+
+  Selecting one card has the same reach. On a board with hundreds of tasks, this is the main
+  source of input lag.
+- **The two editors are the largest unchecked files.** `EditModal` is 3,061 lines and
+  `EventEditModal` 2,236. Each is one component with 58 and 42 `useState` hooks, and both are
+  `@ts-nocheck`. They share about 195 identical lines: the time picker, reminders, time zone,
+  repeat rows, attachment rows and contact pickers.
+- **Bounties keep the wallet inside tasks.** The task editor imports `useCashu`, ecash locking and
+  the bounty sheets (212 wallet or bounty references). The card's checkbox branches on bounty
+  state. `App` holds reveal, transfer and claim handlers and the bounty list. Turning the wallet
+  off is not possible until tasks stop depending on it, as Chat did.
+- **`App.tsx` still holds about 1,900 lines of board features**, all in the startup chunk:
+  - the paste-JSON import parser (about 510 lines);
+  - the Bible tracker handlers (about 570);
+  - the print and scan handlers (about 570);
+  - the completion and arrival animations (about 270).
+- **Opening the app loads the document viewer.** A card's media row imports `DocumentThumbnail`
+  from `DocumentPreviewModal`. That puts the preview modal, its viewers and DOMPurify (11.6 KB
+  gzipped alone) on the startup path.
+- **Note Markdown is implemented twice without shared vectors.** `domains/tasks/noteMarkdown.ts`
+  mirrors iOS's `TaskNoteMarkdown.swift` by comment only. Recurrence and links have shared
+  vectors in `taskify-core/fixtures`; notes do not.
+- **Accessibility basics are in place.** The checkbox and the card's edit target are keyboard
+  reachable and labelled, and selection offers a non-drag way to move tasks.
+- **Language fit:** the note Markdown parser is the one candidate. It is pure, has two copies
+  that must agree, and would move with a C1-6 Rust core if that goes ahead. Nothing else here is
+  CPU-bound.
+
+### C3-2 — Upcoming opens on today (bug)
+
+- **User:** Everyone who opens Upcoming from a link, a reload or the tab bar.
+- **Proposal:** Scroll on arrival once the virtualizer has measured the target row. Retry until
+  the row is in view, or start from an initial offset computed from the row index. Only then mark
+  the arrival as handled. Write a failing test first, with jsdom layout stubs and the virtualizer.
+- **Effort:** S. **Risk:** low.
+
+### C3-3 — One local "today" (bug, interop)
+
+- **User:** Everyone outside UTC, at the ends of their day.
+- **Proposal:** Add `todayDateKey(now?)` to `taskify-core` (local calendar date, built on
+  `formatDateKeyLocal`) and replace the 12 UTC call sites. Add a lint rule that rejects
+  `toISOString()` sliced to a date where "today" is meant. Tests run under a fixed `TZ`
+  (America/Chicago at 20:00, Australia/Sydney at 08:00). iOS gets the same check in chunk 8.
+- **Effort:** S. **Risk:** low.
+
+### C3-4 — Typing and selecting re-render only what changed (performance)
+
+- **User:** Anyone with large boards, most of all on mid-range phones.
+- **Proposal:**
+  - Inline-add drafts live in the add form, not in `App`.
+  - `Card` takes the task and reads stable actions from context, so its memo holds.
+  - Per-card view state (selected, pending sync, streak) comes from a small store read with
+    `useSyncExternalStore` selectors, so selecting one card re-renders that card only.
+  - Board views are memoized.
+- **Measure, don't assume:** React Profiler on a seeded 300-task board, before and after. The
+  target is no card renders per keystroke and one per toggled selection.
+- **Effort:** M. **Risk:** low–medium (selection and drag-and-drop are touched; both are tested).
+
+### C3-5 — Typed editors built from shared fields (architecture, UX consistency)
+
+- **User:** Everyone who edits a task or event; indirectly, every future editor change.
+- **Proposal:**
+  - Shared, typed field components in `ui/editor/fields/`: time picker, reminders, time zone,
+    repeat, attachments and people.
+  - Each editor gets a pure form model (draft to `Task` or `CalendarEvent` and back) with tests.
+  - The two editors become compositions of those fields, and `@ts-nocheck` comes off both.
+  - Migrate one field at a time, checking both editors on phone and desktop after each.
+- **Effort:** L, staged. **Risk:** medium; these are the most used screens.
+- **Depends on:** C3-6 for the bounty section, so the task editor is not typed around wallet code
+  that is about to leave.
+
+### C3-6 — Tasks independent of the wallet (wallet phase-out) — decision needed
+
+- **User:** Everyone, once the wallet is turned off; today's bounty users until then.
+- **Proposal:** Do for tasks what was done for Chat. Task cards, the editor and `App`'s task
+  handlers carry no wallet code. Bounty UI becomes an optional wallet extension: an editor section
+  slot and a card-action bridge, loaded only where the wallet is enabled. With the wallet off, a
+  task that carries an ecash bounty shows its token as copyable text, so funds stay recoverable.
+  This matches the Chat decision.
+- **Decision needed:** keep bounty creation as a wallet extension until the wallet is removed, or
+  stop offering new bounties now and keep only reveal/copy for existing ones.
+- **Effort:** M. **Risk:** medium; bounty tokens must never become unreachable (tested).
+
+### C3-7 — Board features out of `App` (architecture, performance)
+
+- **Proposal:**
+  - The paste-JSON parser moves to `domains/tasks/inlineImport.ts`, pure and tested.
+  - The Bible tracker handlers move to a scripture hook beside the model split out in stage 4.
+  - The print and scan handlers join the lazy `ui/print` module.
+  - The animations move to `ui/task/taskAnimations.ts`.
+- **Expected:** `App.tsx` about 8,400 → 6,500 lines, and the print code leaves the startup chunk.
+  Startup is measured before and after.
+- **Effort:** M. **Risk:** low; each move is behaviour-preserving, one commit per feature.
+
+### C3-8 — The document viewer off the startup path (performance)
+
+- **Proposal:** `DocumentThumbnail` gets its own module. The preview modal, viewers and
+  DOMPurify load when a document opens. The startup check gains `DocumentPreviewModal` in its
+  lazy list.
+- **Expected:** about 15 KB gzipped off startup (DOMPurify alone is 11.6 KB).
+- **Effort:** S. **Risk:** low.
+
+### C3-9 — Shared note Markdown vectors (interop)
+
+- **Proposal:** `taskify-core/fixtures/note-markdown-vectors.json` holds input and expected
+  blocks, checklist toggles and UTF-16 offsets. Vitest and the Swift tests both run it, as they
+  do for recurrence. Drift between the two parsers then fails CI on both sides.
+- **Effort:** S–M. **Risk:** low.
+
+### Recommended order
+
+C3-2 and C3-3 (bugs) → C3-8 → C3-4 → C3-7 → C3-6 (after the decision) → C3-5 → C3-9. Each
+step is one commit, and bugs get a failing test first.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C3-1 | Approve | 2026-10-17 | Done (passes 1 and 2, two-pane Chat) |
+| C3-2 | Pending | | |
+| C3-3 | Pending | | |
+| C3-4 | Pending | | |
+| C3-5 | Pending | | |
+| C3-6 | Pending (bounty decision needed) | | |
+| C3-7 | Pending | | |
+| C3-8 | Pending | | |
+| C3-9 | Pending | | |
