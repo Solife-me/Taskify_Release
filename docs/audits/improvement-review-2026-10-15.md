@@ -764,6 +764,9 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       documented union members, malformed cached attachments become plain text, and profile relay
       entries are narrowed to strings. A focused test covers each valid attachment type plus
       malformed input.
+    - Chat typing pass 5 checks `useDmThreadActions` without changing behavior. Its state refs,
+      setters, group/contact inputs and callbacks now have explicit contracts, and the legacy
+      dependency-array exceptions are gone.
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.

@@ -1,11 +1,85 @@
-// @ts-nocheck
 import { useCallback } from "react";
+import type { Dispatch, RefObject, SetStateAction } from "react";
 import { chatStateSyncBus } from "../../nostr/chatStateSyncBus";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import { LS_GROUP_MUTED, LS_GROUP_LEFT } from "../../localStorageKeys";
 import { dmThreadKeyForThread, dmThreadKeyForMessage, DM_THREAD_DELETE_CACHE_TTL_MS } from "../chatHelpers";
-import type { WalletDmThread } from "./useDmState";
+import type { Contact, ContactProfile } from "../../lib/contacts";
+import type { GroupChat } from "../../lib/groupChatState";
+import type { PendingDmMessage, WalletDmMessage, WalletDmThread } from "./useDmState";
+
+type ChatView =
+  | "threads"
+  | "conversation"
+  | "new-message"
+  | "new-group-select"
+  | "new-group-name"
+  | "group-info"
+  | "group-members"
+  | "group-name-edit";
+
+type DmView = "list" | "thread" | "strangers";
+
+type DmMessageActions = {
+  eventId: string;
+  copyValue: string;
+  msg: WalletDmMessage;
+} | null;
+
+export interface UseDmThreadActionsOptions {
+  dmMutedGroupsRef: RefObject<Map<string, number>>;
+  setDmMutedGroupsVersion: Dispatch<SetStateAction<number>>;
+  dmLeftGroupsRef: RefObject<Set<string>>;
+  setDmLeftGroupsVersion: Dispatch<SetStateAction<number>>;
+  dmThreadReadAtRef: RefObject<Map<string, number>>;
+  persistDmThreadReadState: (next: Map<string, number>) => void;
+  setDmThreadReadAtVersion: Dispatch<SetStateAction<number>>;
+  dmArchivedThreadsRef: RefObject<Map<string, number>>;
+  persistArchivedDmThreads: (threads: Map<string, number>) => void;
+  setDmArchivedThreadsVersion: Dispatch<SetStateAction<number>>;
+  dmTempDeletedEventsRef: RefObject<Map<string, number>>;
+  persistTempDeletedDmEvents: (events: Map<string, number>) => void;
+  setDmTempDeletedEventsVersion: Dispatch<SetStateAction<number>>;
+  dmProcessedEventsRef: RefObject<Set<string>>;
+  dmBlockedPeersRef: RefObject<Set<string>>;
+  persistBlockedPeers: (peers: Set<string>) => void;
+  setDmBlockedPeersVersion: Dispatch<SetStateAction<number>>;
+  setDmMessageActions: Dispatch<SetStateAction<DmMessageActions>>;
+  setDmExpandedMessages: Dispatch<SetStateAction<Set<string>>>;
+  setDmMessages: Dispatch<SetStateAction<WalletDmMessage[]>>;
+  setPendingMessages: Dispatch<SetStateAction<PendingDmMessage[]>>;
+  cancelDmLongPress: () => void;
+  persistGroupStateSet: (storageKey: string, values: Set<string>) => void;
+  activeThreadPeer: string | null;
+  isChatPage: boolean;
+  setActiveThreadPeer: Dispatch<SetStateAction<string | null>>;
+  setActiveGroupId: Dispatch<SetStateAction<string | null>>;
+  setDmView: Dispatch<SetStateAction<DmView>>;
+  dmListViewRef: RefObject<"list" | "strangers">;
+  setChatView: Dispatch<SetStateAction<ChatView>>;
+  activeGroupChat: GroupChat | null;
+  activeThread: WalletDmThread | null;
+  setRenameGroupDraft: Dispatch<SetStateAction<string>>;
+  setGroupMembersSearch: Dispatch<SetStateAction<string>>;
+  setGroupInfoTab: Dispatch<SetStateAction<"info" | "photos" | "links">>;
+  setAttachTrayOpen: Dispatch<SetStateAction<boolean>>;
+  setShareContactPickerMode: Dispatch<SetStateAction<"recipient" | "chat-source">>;
+  setShareContactSource: Dispatch<SetStateAction<Contact | null>>;
+  setShareContactStatus: Dispatch<SetStateAction<string | null>>;
+  setChatCompose: Dispatch<SetStateAction<string>>;
+  setShareContactPickerOpen: Dispatch<SetStateAction<boolean>>;
+  upsertContact: (input: Partial<Contact>) => Contact | null;
+  getPeerProfile: (pubkey: string) => ContactProfile | undefined;
+  peerLabelFor: (hex: string) => { label: string; picture?: string; subtitle?: string };
+  formatNpub: (value: string) => string;
+  collectUnreadThreadItemEventIds: (
+    messages: WalletDmMessage[],
+    peerPubkey: string | null | undefined,
+  ) => string[];
+  onMarkMessagesRead: (ids: string[]) => void;
+  showToast: (message: string, duration?: number) => void;
+}
 
 export function useDmThreadActions({
   // DM state refs
@@ -61,7 +135,7 @@ export function useDmThreadActions({
   collectUnreadThreadItemEventIds,
   onMarkMessagesRead,
   showToast,
-}) {
+}: UseDmThreadActionsOptions) {
   const persistMutedGroups = useCallback((next: Map<string, number>) => {
     try {
       idbKeyValue.setItem(
@@ -93,7 +167,7 @@ export function useDmThreadActions({
       persistMutedGroups(next);
       setDmMutedGroupsVersion((value) => value + 1);
     },
-    [persistMutedGroups],
+    [dmMutedGroupsRef, persistMutedGroups, setDmMutedGroupsVersion],
   );
 
   const setGroupLeftState = useCallback(
@@ -110,7 +184,7 @@ export function useDmThreadActions({
       persistLeftGroups(next);
       setDmLeftGroupsVersion((value) => value + 1);
     },
-    [persistLeftGroups],
+    [dmLeftGroupsRef, persistLeftGroups, setDmLeftGroupsVersion],
   );
 
   const markThreadReadThrough = useCallback(
@@ -128,7 +202,7 @@ export function useDmThreadActions({
       setDmThreadReadAtVersion((value) => value + 1);
       chatStateSyncBus.reportLocalReadThrough({ [normalizedThreadKey]: normalizedTimestamp });
     },
-    [persistDmThreadReadState],
+    [dmThreadReadAtRef, persistDmThreadReadState, setDmThreadReadAtVersion],
   );
 
   const closeThreadIfActive = useCallback(
@@ -141,7 +215,15 @@ export function useDmThreadActions({
         setChatView("threads");
       }
     },
-    [activeThreadPeer, isChatPage],
+    [
+      activeThreadPeer,
+      dmListViewRef,
+      isChatPage,
+      setActiveGroupId,
+      setActiveThreadPeer,
+      setChatView,
+      setDmView,
+    ],
   );
 
   const clearArchivedDmThread = useCallback(
@@ -154,7 +236,7 @@ export function useDmThreadActions({
       persistArchivedDmThreads(next);
       setDmArchivedThreadsVersion((value) => value + 1);
     },
-    [persistArchivedDmThreads],
+    [dmArchivedThreadsRef, persistArchivedDmThreads, setDmArchivedThreadsVersion],
   );
 
   const handleArchiveDmThread = useCallback(
@@ -177,9 +259,11 @@ export function useDmThreadActions({
     [
       closeThreadIfActive,
       collectUnreadThreadItemEventIds,
+      dmArchivedThreadsRef,
       markThreadReadThrough,
       onMarkMessagesRead,
       persistArchivedDmThreads,
+      setDmArchivedThreadsVersion,
       showToast,
     ],
   );
@@ -230,8 +314,15 @@ export function useDmThreadActions({
       clearArchivedDmThread,
       closeThreadIfActive,
       collectUnreadThreadItemEventIds,
+      dmProcessedEventsRef,
+      dmTempDeletedEventsRef,
       onMarkMessagesRead,
       persistTempDeletedDmEvents,
+      setDmExpandedMessages,
+      setDmMessageActions,
+      setDmMessages,
+      setDmTempDeletedEventsVersion,
+      setPendingMessages,
       showToast,
     ],
   );
@@ -242,7 +333,14 @@ export function useDmThreadActions({
     setRenameGroupDraft(activeGroupChat?.name || "");
     setGroupInfoTab("info");
     setChatView("group-info");
-  }, [activeGroupChat?.name, activeThread?.groupId]);
+  }, [
+    activeGroupChat?.name,
+    activeThread?.groupId,
+    setChatView,
+    setGroupInfoTab,
+    setGroupMembersSearch,
+    setRenameGroupDraft,
+  ]);
 
   const handleToggleActiveGroupMute = useCallback(() => {
     if (!activeGroupChat) return;
@@ -252,7 +350,14 @@ export function useDmThreadActions({
       markThreadReadThrough(activeGroupChat.groupId, Math.floor(Date.now() / 1000));
     }
     showToast(nextMuted ? "Group muted" : "Group unmuted", 2000);
-  }, [activeGroupChat, activeThread?.groupId, markThreadReadThrough, setGroupMutedState, showToast]);
+  }, [
+    activeGroupChat,
+    activeThread?.groupId,
+    dmMutedGroupsRef,
+    markThreadReadThrough,
+    setGroupMutedState,
+    showToast,
+  ]);
 
   const handleToggleActiveGroupMembership = useCallback(() => {
     if (!activeGroupChat) return;
@@ -267,7 +372,18 @@ export function useDmThreadActions({
       setChatCompose("");
     }
     showToast(nextLeft ? "You left the group" : "You rejoined the group", 2400);
-  }, [activeGroupChat, setGroupLeftState, showToast]);
+  }, [
+    activeGroupChat,
+    dmLeftGroupsRef,
+    setAttachTrayOpen,
+    setChatCompose,
+    setGroupLeftState,
+    setShareContactPickerMode,
+    setShareContactPickerOpen,
+    setShareContactSource,
+    setShareContactStatus,
+    showToast,
+  ]);
 
   const toggleBlockPeer = useCallback(
     (peerPubkey: string) => {
@@ -287,7 +403,14 @@ export function useDmThreadActions({
       cancelDmLongPress();
       showToast(isBlocking ? "User blocked" : "User unblocked", isBlocking ? 2000 : 1600);
     },
-    [cancelDmLongPress, persistBlockedPeers, showToast],
+    [
+      cancelDmLongPress,
+      dmBlockedPeersRef,
+      persistBlockedPeers,
+      setDmBlockedPeersVersion,
+      setDmMessageActions,
+      showToast,
+    ],
   );
 
   const handleAddPeerToContacts = useCallback(
