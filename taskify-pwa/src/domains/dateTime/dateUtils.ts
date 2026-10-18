@@ -37,6 +37,7 @@ import {
   normalizeTimeZone,
   parseDateKey,
   parseTimeValue,
+  startOfDay,
   weekdayFromISO,
 } from "taskify-core";
 
@@ -358,4 +359,19 @@ export function formatTimePickerValue(hour12: number, minute: number, meridiem: 
   const hh = String(hour24).padStart(2, "0");
   const mm = String(normalizedMinute).padStart(2, "0");
   return `${hh}:${mm}`;
+}
+
+/** A timestamp string as canonical ISO (UTC), or undefined if it is not a valid date. */
+export function normalizeIsoTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Date.parse(trimmed);
+  if (Number.isNaN(parsed)) return undefined;
+  return new Date(parsed).toISOString();
+}
+
+/** Local midnight today (or of `base`), as an ISO timestamp. */
+export function isoForToday(base = new Date()): string {
+  return startOfDay(base).toISOString();
 }

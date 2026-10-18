@@ -7,15 +7,8 @@ import { calendarEventEntityStore, externalCalendarEventEntityStore } from "../.
 import { ensureDocumentPreview, normalizeDocumentList } from "../../lib/documents";
 import { sanitizeReminderList, normalizeReminderTime } from "../dateTime/reminderUtils";
 import { normalizeAgentPubkey, normalizeNostrPubkeyHex } from "../tasks/assignmentUtils";
+import { normalizeIsoTimestamp } from "../dateTime/dateUtils";
 
-function normalizeIsoTimestamp(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const parsed = Date.parse(trimmed);
-  if (Number.isNaN(parsed)) return undefined;
-  return new Date(parsed).toISOString();
-}
 
 /** Board and external calendar events as stored on this device, normalized. */
 export function loadStoredCalendarEvents(): CalendarEvent[] {
