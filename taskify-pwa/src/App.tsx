@@ -50,12 +50,7 @@ import {
   todayDateKey,
 } from "taskify-core";
 import {
-  type BibleTrackerProgress,
   type BibleTrackerState,
-  cloneBibleProgress,
-  cloneBibleVerses,
-  cloneBibleVerseCounts,
-  cloneBibleCompletedBooks,
   getBibleBookChapterCount,
   getBibleBookTitle,
   getBibleBookOrder,
@@ -293,6 +288,7 @@ import { BoardSortSheet } from "./ui/board/BoardSortSheet";
 import { RailBoardList } from "./ui/layout/RailBoardList";
 import { BoardPage } from "./ui/board/BoardPage";
 import { clearInlineDraft, getInlineDraft } from "./ui/board/inlineDrafts";
+import { useBibleTrackerActions } from "./domains/scripture/useBibleTrackerActions";
 import {
   buildImportedCalendarEventFromPayload,
   buildImportedTaskFromPayload,
@@ -612,6 +608,11 @@ export default function App() {
   const activeBountyListKey = PINNED_BOUNTY_LIST_KEY;
   const bountyListEnabled = true;
   const [bibleTracker, setBibleTracker] = useBibleTracker();
+  const completedTabEnabled = settings.completedTab;
+  const onBibleBookCompleted = useCallback((rect: DOMRect) => {
+    if (completedTabEnabled) flyToCompleted(rect);
+  }, [completedTabEnabled]);
+  const bibleActions = useBibleTrackerActions({ showToast, onBookCompleted: onBibleBookCompleted });
   const bibleTrackerRef = useRef<BibleTrackerState>(bibleTracker);
   useEffect(() => { bibleTrackerRef.current = bibleTracker; }, [bibleTracker]);
   const [biblePrintPaperSize, setBiblePrintPaperSize] = useBiblePrintPaperSize();
@@ -1883,226 +1884,6 @@ export default function App() {
     }
   }, [settings.bibleTrackerEnabled, view]);
 
-  const handleToggleBibleBook = useCallback((bookId: string) => {
-    const normalizedBookId = String(bookId || "");
-    if (!normalizedBookId) return;
-    setBibleTracker((prev) => {
-      const current = prev.expandedBooks || {};
-      const nextExpanded = { ...current };
-      const wasExpanded = !!nextExpanded[normalizedBookId];
-      if (wasExpanded) {
-        delete nextExpanded[normalizedBookId];
-      } else {
-        nextExpanded[normalizedBookId] = true;
-      }
-      if (wasExpanded === !!nextExpanded[normalizedBookId]) {
-        return prev;
-      }
-      return { ...prev, expandedBooks: nextExpanded };
-    });
-  }, [setBibleTracker]);
-
-  const handleToggleBibleChapter = useCallback((bookId: string, chapter: number) => {
-    const normalizedBookId = String(bookId || "");
-    const normalizedChapter = Number.isFinite(chapter) ? Math.trunc(chapter) : NaN;
-    if (!normalizedBookId || !Number.isFinite(normalizedChapter) || normalizedChapter <= 0) return;
-    setBibleTracker((prev) => {
-      const previousChapters = prev.progress[normalizedBookId] ?? [];
-      const alreadyChecked = previousChapters.includes(normalizedChapter);
-      let nextChapters: number[];
-
-      if (alreadyChecked) {
-        nextChapters = previousChapters.filter((value) => value !== normalizedChapter);
-      } else {
-        nextChapters = [...previousChapters, normalizedChapter];
-      }
-
-      if (nextChapters.length === previousChapters.length) {
-        return prev;
-      }
-
-      if (nextChapters.length > 1) {
-        nextChapters.sort((a, b) => a - b);
-      }
-
-      const nextProgress = { ...prev.progress };
-      if (nextChapters.length === 0) {
-        delete nextProgress[normalizedBookId];
-      } else {
-        nextProgress[normalizedBookId] = nextChapters;
-      }
-
-      let nextVerses = prev.verses;
-      const existingChapterVerses = prev.verses?.[normalizedBookId]?.[normalizedChapter];
-      if (existingChapterVerses || alreadyChecked) {
-        const updatedVerses = { ...prev.verses } as typeof prev.verses;
-        const chapterMap = { ...(updatedVerses[normalizedBookId] || {}) };
-        if (chapterMap[normalizedChapter]) {
-          delete chapterMap[normalizedChapter];
-        }
-        if (Object.keys(chapterMap).length === 0) {
-          delete updatedVerses[normalizedBookId];
-        } else {
-          updatedVerses[normalizedBookId] = chapterMap;
-        }
-        nextVerses = updatedVerses;
-      }
-
-      const totalChapters = getBibleBookChapterCount(normalizedBookId) ?? 0;
-      let nextCompletedBooks = prev.completedBooks;
-      if (totalChapters <= 0 || nextChapters.length < totalChapters) {
-        if (prev.completedBooks?.[normalizedBookId]) {
-          const updated = { ...prev.completedBooks };
-          delete updated[normalizedBookId];
-          nextCompletedBooks = updated;
-        }
-      }
-
-      const didChangeProgress = nextProgress !== prev.progress;
-      const didChangeVerses = nextVerses !== prev.verses;
-      const didChangeCompleted = nextCompletedBooks !== prev.completedBooks;
-
-      if (!didChangeProgress && !didChangeVerses && !didChangeCompleted) {
-        return prev;
-      }
-
-      const base = { ...prev };
-      if (didChangeProgress) base.progress = nextProgress;
-      if (didChangeVerses) base.verses = nextVerses;
-      if (didChangeCompleted) base.completedBooks = nextCompletedBooks;
-      return base;
-    });
-  }, [setBibleTracker]);
-
-  const handleUpdateBibleChapterVerses = useCallback((bookId: string, chapter: number, verses: number[], verseCount: number) => {
-    const normalizedBookId = String(bookId || "");
-    const normalizedChapter = Number.isFinite(chapter) ? Math.trunc(chapter) : NaN;
-    if (!normalizedBookId || !Number.isFinite(normalizedChapter) || normalizedChapter <= 0) return;
-    setBibleTracker((prev) => {
-      const chapterLimit = Math.min(
-        Math.max(getBibleChapterVerseCount(normalizedBookId, normalizedChapter) ?? MAX_VERSE_COUNT, 1),
-        MAX_VERSE_COUNT
-      );
-      const normalizedVerses = Array.from(
-        new Set(
-          (Array.isArray(verses) ? verses : [])
-            .map((value) => (typeof value === "number" ? Math.trunc(value) : NaN))
-            .filter((value) => Number.isFinite(value) && value > 0 && value <= chapterLimit)
-        )
-      ).sort((a, b) => a - b);
-
-      const normalizedCount = Number.isFinite(verseCount)
-        ? Math.min(Math.max(Math.trunc(verseCount), 0), chapterLimit)
-        : 0;
-      const effectiveCount = normalizedCount > 0 ? normalizedCount : 0;
-      const filteredVerses = effectiveCount > 0 ? normalizedVerses.filter((value) => value <= effectiveCount) : normalizedVerses;
-
-      let nextVerses = prev.verses;
-      const prevBookVerses = prev.verses?.[normalizedBookId];
-      const prevChapterVerses = prevBookVerses?.[normalizedChapter] ?? [];
-      if (filteredVerses.length > 0) {
-        const updatedBookVerses = { ...(prevBookVerses || {}) };
-        updatedBookVerses[normalizedChapter] = filteredVerses;
-        const updatedVerses = { ...prev.verses, [normalizedBookId]: updatedBookVerses };
-        nextVerses = updatedVerses;
-      } else if (prevChapterVerses.length > 0 || prevBookVerses) {
-        const updatedBookVerses = { ...(prevBookVerses || {}) };
-        if (updatedBookVerses[normalizedChapter]) {
-          delete updatedBookVerses[normalizedChapter];
-        }
-        const updatedVerses = { ...prev.verses } as typeof prev.verses;
-        if (Object.keys(updatedBookVerses).length === 0) {
-          delete updatedVerses[normalizedBookId];
-        } else {
-          updatedVerses[normalizedBookId] = updatedBookVerses;
-        }
-        nextVerses = updatedVerses;
-      }
-
-      let nextVerseCounts = prev.verseCounts;
-      const prevBookCounts = prev.verseCounts?.[normalizedBookId];
-      const prevChapterCount = prevBookCounts?.[normalizedChapter];
-      if (effectiveCount > 0) {
-        const updatedBookCounts = { ...(prevBookCounts || {}) };
-        updatedBookCounts[normalizedChapter] = effectiveCount;
-        nextVerseCounts = { ...prev.verseCounts, [normalizedBookId]: updatedBookCounts };
-      } else if (prevChapterCount) {
-        const updatedBookCounts = { ...(prevBookCounts || {}) };
-        delete updatedBookCounts[normalizedChapter];
-        const updatedCounts = { ...prev.verseCounts } as typeof prev.verseCounts;
-        if (Object.keys(updatedBookCounts).length === 0) {
-          delete updatedCounts[normalizedBookId];
-        } else {
-          updatedCounts[normalizedBookId] = updatedBookCounts;
-        }
-        nextVerseCounts = updatedCounts;
-      }
-
-      let nextProgress = prev.progress;
-      const previousChapters = prev.progress[normalizedBookId] ?? [];
-      const hasChapter = previousChapters.includes(normalizedChapter);
-
-      const shouldComplete = effectiveCount > 0 && filteredVerses.length === effectiveCount && effectiveCount > 0;
-      if (shouldComplete) {
-        if (!hasChapter) {
-          const updatedChapters = [...previousChapters, normalizedChapter].sort((a, b) => a - b);
-          nextProgress = { ...prev.progress, [normalizedBookId]: updatedChapters };
-        }
-        const bookVerses = nextVerses?.[normalizedBookId];
-        if (bookVerses?.[normalizedChapter]) {
-          const updatedBookVerses = { ...bookVerses };
-          delete updatedBookVerses[normalizedChapter];
-          const updatedVerses = { ...nextVerses } as typeof nextVerses;
-          if (Object.keys(updatedBookVerses).length === 0) {
-            delete updatedVerses[normalizedBookId];
-          } else {
-            updatedVerses[normalizedBookId] = updatedBookVerses;
-          }
-          nextVerses = updatedVerses;
-        }
-      } else if (hasChapter) {
-        const updatedChapters = previousChapters.filter((value) => value !== normalizedChapter);
-        const updatedProgress = { ...prev.progress };
-        if (updatedChapters.length === 0) {
-          delete updatedProgress[normalizedBookId];
-        } else {
-          updatedProgress[normalizedBookId] = updatedChapters;
-        }
-        nextProgress = updatedProgress;
-      }
-
-      const totalChapters = getBibleBookChapterCount(normalizedBookId) ?? 0;
-      let nextCompletedBooks = prev.completedBooks;
-      const chapterTotal = Array.isArray(nextProgress[normalizedBookId])
-        ? nextProgress[normalizedBookId].length
-        : 0;
-      if (totalChapters <= 0 || chapterTotal < totalChapters) {
-        if (prev.completedBooks?.[normalizedBookId]) {
-          const updated = { ...prev.completedBooks };
-          delete updated[normalizedBookId];
-          nextCompletedBooks = updated;
-        }
-      }
-
-      const didChangeVerses = nextVerses !== prev.verses;
-      const didChangeCounts = nextVerseCounts !== prev.verseCounts;
-      const didChangeProgress = nextProgress !== prev.progress;
-      const didChangeCompleted = nextCompletedBooks !== prev.completedBooks;
-
-      if (!didChangeVerses && !didChangeCounts && !didChangeProgress && !didChangeCompleted) {
-        return prev;
-      }
-
-      return {
-        ...prev,
-        ...(didChangeProgress ? { progress: nextProgress } : {}),
-        ...(didChangeVerses ? { verses: nextVerses } : {}),
-        ...(didChangeCounts ? { verseCounts: nextVerseCounts } : {}),
-        ...(didChangeCompleted ? { completedBooks: nextCompletedBooks } : {}),
-      };
-    });
-  }, [setBibleTracker]);
-
   const handleOpenBiblePrint = useCallback(() => {
     const meta: BiblePrintMeta = {
       id: crypto.randomUUID(),
@@ -2299,208 +2080,6 @@ export default function App() {
   const handleOpenBibleScan = useCallback(() => {
     setBibleScanOpen(true);
   }, []);
-
-  const handleApplyBibleScan = useCallback((scanProgress: BibleTrackerProgress) => {
-    if (!scanProgress || Object.keys(scanProgress).length === 0) {
-      showToast("No chapters detected in the scan.", 2500);
-      return;
-    }
-    let addedCount = 0;
-    setBibleTracker((prev) => {
-      let nextProgress = prev.progress;
-      let nextVerses = prev.verses;
-      let progressChanged = false;
-      let versesChanged = false;
-
-      for (const [bookIdRaw, chaptersRaw] of Object.entries(scanProgress)) {
-        const normalizedBookId = String(bookIdRaw || "");
-        const chapterTotal = getBibleBookChapterCount(normalizedBookId) ?? 0;
-        if (!chapterTotal || !Array.isArray(chaptersRaw)) continue;
-        const cleaned = Array.from(
-          new Set(
-            chaptersRaw
-              .map((value) => (typeof value === "number" ? Math.trunc(value) : NaN))
-              .filter((value) => Number.isFinite(value) && value > 0 && value <= chapterTotal)
-          )
-        ).sort((a, b) => a - b);
-        if (cleaned.length === 0) continue;
-
-        const existing = prev.progress[normalizedBookId] ?? [];
-        const existingSet = new Set(existing);
-        const merged = [...existing];
-        const newlyAdded: number[] = [];
-
-        for (const chapter of cleaned) {
-          if (!existingSet.has(chapter)) {
-            existingSet.add(chapter);
-            merged.push(chapter);
-            newlyAdded.push(chapter);
-          }
-        }
-
-        if (newlyAdded.length === 0) continue;
-        merged.sort((a, b) => a - b);
-
-        if (nextProgress === prev.progress) {
-          nextProgress = { ...prev.progress };
-        }
-        nextProgress[normalizedBookId] = merged;
-        progressChanged = true;
-        addedCount += newlyAdded.length;
-
-        if (newlyAdded.length > 0) {
-          const bookVerses = nextVerses?.[normalizedBookId];
-          if (bookVerses) {
-            const updatedBookVerses = { ...bookVerses };
-            let bookChanged = false;
-            for (const chapter of newlyAdded) {
-              if (updatedBookVerses[chapter]) {
-                delete updatedBookVerses[chapter];
-                bookChanged = true;
-              }
-            }
-            if (bookChanged) {
-              if (!versesChanged) {
-                nextVerses = { ...prev.verses };
-                versesChanged = true;
-              }
-              if (Object.keys(updatedBookVerses).length === 0) {
-                delete nextVerses[normalizedBookId];
-              } else {
-                nextVerses[normalizedBookId] = updatedBookVerses;
-              }
-            }
-          }
-        }
-      }
-
-      if (!progressChanged && !versesChanged) {
-        return prev;
-      }
-      return {
-        ...prev,
-        ...(progressChanged ? { progress: nextProgress } : {}),
-        ...(versesChanged ? { verses: nextVerses } : {}),
-      };
-    });
-    if (addedCount > 0) {
-      showToast(`Added ${addedCount} chapter${addedCount === 1 ? "" : "s"} from scan.`, 2500);
-    } else {
-      showToast("No new chapters detected.", 2500);
-    }
-  }, [setBibleTracker, showToast]);
-
-  const handleResetBibleTracker = useCallback(() => {
-    let confirmed = true;
-    if (typeof window !== "undefined" && typeof window.confirm === "function") {
-      confirmed = window.confirm("Reset your Bible reading progress? This archives your current progress and clears the tracker.");
-    }
-    if (!confirmed) return;
-    setBibleTracker((prev) => {
-      const nowISO = new Date().toISOString();
-      const snapshot = {
-        id: crypto.randomUUID(),
-        savedAtISO: nowISO,
-        lastResetISO: prev.lastResetISO,
-        progress: cloneBibleProgress(prev.progress),
-        verses: cloneBibleVerses(prev.verses),
-        verseCounts: cloneBibleVerseCounts(prev.verseCounts),
-        completedBooks: cloneBibleCompletedBooks(prev.completedBooks),
-      };
-      return {
-        ...prev,
-        lastResetISO: nowISO,
-        progress: {},
-        verses: {},
-        verseCounts: {},
-        completedBooks: {},
-        archive: [snapshot, ...prev.archive],
-        expandedBooks: {},
-      };
-    });
-  }, [setBibleTracker]);
-
-  const handleDeleteBibleArchive = useCallback((archiveId: string) => {
-    if (!archiveId) return;
-    let confirmed = true;
-    if (typeof window !== "undefined" && typeof window.confirm === "function") {
-      confirmed = window.confirm("Delete this archived progress snapshot?");
-    }
-    if (!confirmed) return;
-    setBibleTracker((prev) => {
-      const nextArchive = prev.archive.filter((entry) => entry.id !== archiveId);
-      if (nextArchive.length === prev.archive.length) return prev;
-      return { ...prev, archive: nextArchive };
-    });
-  }, [setBibleTracker]);
-
-  const handleRestoreBibleArchive = useCallback((archiveId: string) => {
-    if (!archiveId) return;
-    let confirmed = true;
-    if (typeof window !== "undefined" && typeof window.confirm === "function") {
-      confirmed = window.confirm("Restore this archived Bible reading progress? This will replace your current progress.");
-    }
-    if (!confirmed) return;
-    setBibleTracker((prev) => {
-      const entry = prev.archive.find((item) => item.id === archiveId);
-      if (!entry) return prev;
-      return {
-        ...prev,
-        lastResetISO: entry.lastResetISO,
-        progress: cloneBibleProgress(entry.progress),
-        verses: cloneBibleVerses(entry.verses),
-        verseCounts: cloneBibleVerseCounts(entry.verseCounts),
-        completedBooks: cloneBibleCompletedBooks(entry.completedBooks),
-        expandedBooks: {},
-      };
-    });
-  }, [setBibleTracker]);
-
-  const handleCompleteBibleBook = useCallback(
-    (bookId: string, rect?: DOMRect | null) => {
-      const normalizedBookId = String(bookId || "");
-      if (!normalizedBookId) return;
-      let didComplete = false;
-      setBibleTracker((prev) => {
-        const totalChapters = getBibleBookChapterCount(normalizedBookId) ?? 0;
-        if (totalChapters <= 0) return prev;
-        const chaptersRead = prev.progress[normalizedBookId] ?? [];
-        if (!Array.isArray(chaptersRead) || chaptersRead.length < totalChapters) {
-          return prev;
-        }
-        if (prev.completedBooks?.[normalizedBookId]) {
-          return prev;
-        }
-        const nextCompletedBooks = {
-          ...prev.completedBooks,
-          [normalizedBookId]: { completedAtISO: new Date().toISOString() },
-        };
-        const nextExpanded = { ...prev.expandedBooks };
-        if (nextExpanded[normalizedBookId]) {
-          delete nextExpanded[normalizedBookId];
-        }
-        didComplete = true;
-        return { ...prev, completedBooks: nextCompletedBooks, expandedBooks: nextExpanded };
-      });
-      if (didComplete && rect && settings.completedTab) {
-        try {
-          flyToCompleted(rect);
-        } catch {}
-      }
-    },
-    [setBibleTracker, settings.completedTab]
-  );
-
-  const handleRestoreBibleBook = useCallback((bookId: string) => {
-    const normalizedBookId = String(bookId || "");
-    if (!normalizedBookId) return;
-    setBibleTracker((prev) => {
-      if (!prev.completedBooks?.[normalizedBookId]) return prev;
-      const nextCompletedBooks = { ...prev.completedBooks };
-      delete nextCompletedBooks[normalizedBookId];
-      return { ...prev, completedBooks: nextCompletedBooks };
-    });
-  }, [setBibleTracker]);
 
   const {
     chatPushBusy,
@@ -7212,15 +6791,15 @@ export default function App() {
             bible={{
               tracker: {
                 state: bibleTracker,
-                onToggleBook: handleToggleBibleBook,
-                onToggleChapter: handleToggleBibleChapter,
-                onUpdateChapterVerses: handleUpdateBibleChapterVerses,
-                onReset: handleResetBibleTracker,
+                onToggleBook: bibleActions.toggleBook,
+                onToggleChapter: bibleActions.toggleChapter,
+                onUpdateChapterVerses: bibleActions.updateChapterVerses,
+                onReset: bibleActions.reset,
                 onOpenPrint: handleOpenBiblePrint,
                 onOpenScan: handleOpenBibleScan,
-                onDeleteArchive: handleDeleteBibleArchive,
-                onRestoreArchive: handleRestoreBibleArchive,
-                onCompleteBook: handleCompleteBibleBook,
+                onDeleteArchive: bibleActions.deleteArchive,
+                onRestoreArchive: bibleActions.restoreArchive,
+                onCompleteBook: bibleActions.completeBook,
               },
               scriptureMemory: settings.scriptureMemoryEnabled
                 ? {
@@ -7243,7 +6822,7 @@ export default function App() {
               currentBoard,
               deleteTask,
               handleOpenDocument,
-              handleRestoreBibleBook,
+              handleRestoreBibleBook: bibleActions.restoreBook,
               restoreTask,
               streaksEnabled: settings.streaksEnabled,
             }}
@@ -7587,7 +7166,7 @@ export default function App() {
             createBoardFromName={createBoardFromName}
             deleteCalendarEvent={deleteCalendarEvent}
             deleteTask={deleteTask}
-            handleApplyBibleScan={handleApplyBibleScan}
+            handleApplyBibleScan={bibleActions.applyScan}
             handleApplyBoardScan={handleApplyBoardScan}
             handleBiblePaperSizeChange={handleBiblePaperSizeChange}
             handleBoardPaperSizeChange={handleBoardPaperSizeChange}
