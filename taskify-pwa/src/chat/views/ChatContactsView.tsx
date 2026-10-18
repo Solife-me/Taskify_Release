@@ -1,4 +1,3 @@
-// @ts-nocheck -- faithfully extracted from the legacy wallet Chat page; typing is tracked in the review.
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import type { Contact } from "../../lib/contacts";
 import {
@@ -31,7 +30,6 @@ export function ChatContactsView() {
     contactReturnView,
     contactSyncState,
     contactView,
-    contacts,
     contactsPanelRef,
     contactsPublishState,
     defaultNostrRelays,

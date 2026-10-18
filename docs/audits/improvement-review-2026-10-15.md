@@ -808,11 +808,34 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       over 4 s on Chat, no console errors). The empty hook allowlist left eslint.config.js. Lint,
       `tsc -b`, Vitest (563 tests, 12 skipped) and the startup check pass; the Chat route still
       has no wallet or Cashu chunks.
-  - **Remaining, in order:**
-    1. Type `ChatRuntime`, `ChatPage` and the five view modules, removing their temporary
-       `@ts-nocheck` exceptions. All chat hooks are now checked. Live two-account messaging verification is still outstanding.
-  - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
-    from `chat_block_clean`.
+    - Chat typing pass 11 (2026-10-18) checks `ChatRuntime`, `ChatPage` and the five view
+      modules; no file under `src/chat` is exempt any more. The context type is now derived from
+      the runtime's value (`ChatRuntimeValue`), replacing `Record<string, any>`, so a view that
+      reads a name the runtime does not provide fails to compile. That found two regressions
+      from the extraction, both now fixed:
+      - Opening any conversation crashed: the view read `chatAttachTrayHeight`, which the
+        runtime never passed on.
+      - Sending a contact card into a conversation would have thrown: its handler was dropped
+        when the Cashu modal became wallet-only. It now lives in `useDmThreadActions`.
+      Three latent bugs the types exposed are also fixed:
+      - Opening a stranger's contact card from the conversation header crashed when no profile
+        was cached.
+      - "Add again" on a shared task could call a missing handler; it is now shown only when
+        the handler exists.
+      - Reaction and forward lists fell back to a profile `name` field that does not exist;
+        they now fall back to the username.
+      Other changes:
+      - `PendingCalendarInvite` is now an alias of the calendar's `CalendarInvite`.
+      - The profile card is memoized, so the NIP-05 check effect no longer runs on every render.
+      - Dependency arrays list the stable refs and setters they use.
+      - The temporary `scripts/chat-extraction` folder is deleted.
+      Checks: lint, `tsc -b`, Vitest (563 tests, 12 skipped) and the startup check pass, and the
+      Chat route has no wallet or Cashu chunks. In the browser, a conversation, the attachment
+      tray and the contact picker open without errors.
+  - **Remaining:** live two-account messaging verification (needs two devices or accounts;
+    the dev pane cannot do it).
+  - Payment-related: 38 of the 373 values the chat UI used were wallet values; they were removed
+    during the extraction.
 - **Moving Chat out of the wallet code (chunk 5, scoped 2026-10-17):** Chat is 2,878
   lines of JSX inside `CashuWalletModal.tsx` (10,054 lines) and uses 373 values from that
   component's scope, 38 of them payment-related (ecash and Lightning in chat, history). Its DM

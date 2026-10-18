@@ -19,7 +19,7 @@ import {
 } from "../../localStorageKeys";
 import type { ContactProfile } from "../../lib/contacts";
 import type { WalletMessageItem } from "../../types/walletMessages";
-import { chatRetentionCutoffMs } from "../../domains/tasks/settingsTypes";
+import { chatRetentionCutoffMs, type ChatMessageRetention } from "../../domains/tasks/settingsTypes";
 import { findCashuToken } from "../cashuTokenText";
 import { mergeGroupChats, normalizeGroupChatRecord, type GroupChat } from "../../lib/groupChatState";
 import type { SharedTaskPayload } from "../../lib/shareInbox";
@@ -454,12 +454,16 @@ function buildInitialDmPeerProfiles(messages: WalletDmMessage[]): Map<string, Co
 export interface UseDmStateOptions {
   open: boolean;
   isChatPage: boolean;
-  chatMessageRetention: string;
+  chatMessageRetention: ChatMessageRetention;
   showToast: (msg: string, duration?: number) => void;
   messageItems: any[];
 }
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
+
+/** Which Chat screen is showing. */
+export type ChatView =
+  "threads" | "conversation" | "new-message" | "new-group-select" | "new-group-name" | "group-info" | "group-members" | "group-name-edit";
 
 export function useDmState({
   open,
@@ -468,9 +472,7 @@ export function useDmState({
   showToast,
   messageItems,
 }: UseDmStateOptions) {
-  const [chatView, setChatView] = useState<
-    "threads" | "conversation" | "new-message" | "new-group-select" | "new-group-name" | "group-info" | "group-members" | "group-name-edit"
-  >("threads");
+  const [chatView, setChatView] = useState<ChatView>("threads");
   const [chatCompose, setChatCompose] = useState("");
   const [pendingMessages, setPendingMessages] = useState<PendingDmMessage[]>([]);
   const [groupChats, setGroupChats] = useState<GroupChat[]>(() => readGroupChats());
@@ -731,7 +733,7 @@ export function useDmState({
   }, [pruneTempDeletedDmEvents]);
 
   useEffect(() => {
-    const cutoff = chatRetentionCutoffMs(chatMessageRetention as any);
+    const cutoff = chatRetentionCutoffMs(chatMessageRetention);
     if (cutoff == null) return;
     setDmMessages((prev) => {
       // A received token is never redeemed in-app while the wallet is phased out, so the chat

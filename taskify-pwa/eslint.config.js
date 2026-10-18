@@ -16,11 +16,7 @@ const legacyUncheckedFiles = [
 
 const tsNocheckFiles = [
   ...legacyUncheckedFiles,
-  // Chat's runtime/page moved unchanged out of the unchecked wallet modal. Type them after
-  // the behaviour-preserving extraction is complete; keep the rest of src/chat checked.
-  'src/chat/ChatPage.tsx',
-  'src/chat/ChatRuntime.tsx',
-  'src/chat/views/**/*.tsx',
+  // Legacy wallet code (being phased out). Chat is fully type-checked and must stay so.
   'src/hooks/wallet/**/*.{ts,tsx}',
   'src/ui/wallet/**/*.tsx',
   'src/wallet/walletModalHelpers.tsx',

@@ -1,4 +1,3 @@
-// @ts-nocheck -- faithfully extracted from the legacy wallet Chat page; typing is tracked in the review.
 import React from "react";
 import { nip19 } from "nostr-tools";
 import type { GroupChat } from "../../lib/groupChatState";
@@ -398,7 +397,6 @@ export function ChatNewGroupMembersView() {
     chatView,
     compressedToRawHex,
     contactInitials,
-    contacts,
     dmSearch,
     groupSelectMembers,
     nostrIdentityRef,

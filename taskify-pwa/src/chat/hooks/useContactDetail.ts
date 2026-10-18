@@ -11,6 +11,7 @@ import type {
   ContactViewMode,
   Nip05CheckState,
 } from "./useContactsState";
+import type { ChatView } from "./useDmState";
 
 const PROFILE_PHOTO_MAX_DIMENSION = 400;
 const PROFILE_PHOTO_CACHE_LIMIT_BYTES = 512 * 1024; // 512 KB
@@ -87,7 +88,7 @@ interface UseContactDetailOptions {
   setContactReturnView: (view: "new-message" | "group-members" | "group-info") => void;
   setContactView: (view: ContactViewMode) => void;
   setDmSearch: (search: string) => void;
-  setChatView: (view: string) => void;
+  setChatView: (view: ChatView) => void;
   setContactEditError: (error: string) => void;
   setContactLookupError: (error: string) => void;
   setContactLookupInput: (input: string) => void;
@@ -117,7 +118,8 @@ interface UseContactDetailOptions {
   handleReturnToProfileCard: () => void;
   resetContactEditDraft: () => void;
   ensureNostrIdentity: () => NostrIdentity | null;
-  publishProfileMetadata: (draft: ProfileForm) => Promise<boolean>;
+  /** Resolves to something truthy (the published event) when the profile was published. */
+  publishProfileMetadata: (draft: ProfileForm) => Promise<unknown>;
   isDataUrl: (url: string) => boolean;
   estimateDataUrlSize: (dataUrl: string) => number;
 }

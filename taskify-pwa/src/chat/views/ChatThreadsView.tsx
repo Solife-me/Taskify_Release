@@ -1,4 +1,3 @@
-// @ts-nocheck -- faithfully extracted from the legacy wallet Chat page; typing is tracked in the review.
 import React from "react";
 import { GroupAvatar, SwipeableDmThreadRow, formatShortDate } from "../chatUi";
 import { useChatRuntime } from "../ChatRuntime";

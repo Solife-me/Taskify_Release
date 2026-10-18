@@ -1,4 +1,3 @@
-// @ts-nocheck -- the chat UI moved unchanged from CashuWalletModal; typing is tracked in the review.
 /**
  * The Chat page: conversations, a conversation, new messages and groups, contacts and the user's
  * card. Everything it shows and does comes from `ChatRuntime` (`useChatRuntime`). Loaded when

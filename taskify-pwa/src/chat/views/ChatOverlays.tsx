@@ -1,4 +1,3 @@
-// @ts-nocheck -- faithfully extracted from the legacy wallet Chat page; typing is tracked in the review.
 import { ActionSheet } from "../../components/ActionSheet";
 import {
   contactPrimaryName,
@@ -19,7 +18,6 @@ export function ChatOverlays() {
     chatAttachContactOptions,
     closeScanner,
     contactInitials,
-    contacts,
     copyMessageValue,
     dmForwardMessage,
     dmInfoMessage,
@@ -33,6 +31,7 @@ export function ChatOverlays() {
     handleForwardMessage,
     handleImportPublicFollow,
     handlePasteFromClipboard,
+    handleSendChatContactAttachment,
     handleScannerDetected,
     handleScannerError,
     handleSendReaction,
@@ -373,11 +372,13 @@ export function ChatOverlays() {
               ))}
             </div>
             <div className="dm-action-panel__list">
-              {dmMessageActions.msg.attachment?.type === "task" && dmMessageActions.msg.attachment.task && (
+              {onAddTaskAgain && dmMessageActions.msg.attachment?.type === "task" && dmMessageActions.msg.attachment.task && (
                 <button type="button" className="dm-action-panel__item pressable" onClick={() => {
                   const message = dmMessageActions.msg;
+                  const task = message.attachment?.type === "task" ? message.attachment.task : null;
+                  if (!task) return;
                   const senderPubkey = message.senderPubkey || (message.isIncoming ? message.peerPubkey : nostrIdentityRef.current?.pubkey);
-                  onAddTaskAgain(message.attachment.task, senderPubkey ? { pubkey: senderPubkey } : undefined);
+                  onAddTaskAgain(task, senderPubkey ? { pubkey: senderPubkey } : undefined);
                   setDmMessageActions(null);
                 }}>
                   <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3M11 14h7M14.5 10.5v7"/></svg>
@@ -456,7 +457,7 @@ export function ChatOverlays() {
                   <div className="dm-reaction-detail__reactors">
                     {reactors.map((r) => {
                       const rp = dmPeerProfilesRef.current.get(r.senderPubkey);
-                      const label = rp?.displayName || rp?.name || r.senderPubkey.slice(0, 12) + "…";
+                      const label = rp?.displayName || rp?.username || r.senderPubkey.slice(0, 12) + "…";
                       return (
                         <div key={r.senderPubkey} className="dm-reaction-detail__reactor">
                           <div className="dm-reaction-detail__reactor-avatar">
@@ -544,7 +545,7 @@ export function ChatOverlays() {
             <div className="dm-forward-panel__list">
               {dmThreads.filter((t) => t.peerPubkey !== dmForwardMessage.peerPubkey).map((thread) => {
                 const profile = dmPeerProfilesRef.current.get(thread.peerPubkey);
-                const label = profile?.displayName || profile?.name || thread.peerPubkey.slice(0, 12) + "…";
+                const label = profile?.displayName || profile?.username || thread.peerPubkey.slice(0, 12) + "…";
                 return (
                   <button
                     key={thread.peerPubkey}

@@ -9,6 +9,7 @@ import {
   LS_PROFILE_METADATA_CACHE,
 } from "../localStorageKeys";
 import { revealLocalSecretKey } from "../identity/identity";
+import type { CalendarInvite } from "../domains/calendar/calendarInvitesHook";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
 
@@ -450,22 +451,8 @@ export function dmThreadKeyForThread(thread: Pick<WalletDmThread, "peerPubkey" |
   return ((thread?.groupId || thread?.peerPubkey || "") as string).trim().toLowerCase();
 }
 
-export type PendingCalendarInvite = {
-  id: string;
-  source: "dm" | "nostr";
-  eventId: string;
-  canonical: string;
-  view: string;
-  eventKey: string;
-  inviteToken: string;
-  title?: string;
-  start?: string;
-  end?: string;
-  relays?: string[];
-  sender?: { pubkey?: string; name?: string; npub?: string };
-  receivedAt: string;
-  status: string;
-};
+/** A calendar invite that arrived by message; the same record the calendar keeps. */
+export type PendingCalendarInvite = CalendarInvite;
 
 export type SharedContactPreview = {
   contact: Contact;

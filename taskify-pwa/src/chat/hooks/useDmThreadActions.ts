@@ -5,19 +5,10 @@ import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import { LS_GROUP_MUTED, LS_GROUP_LEFT } from "../../localStorageKeys";
 import { dmThreadKeyForThread, dmThreadKeyForMessage, DM_THREAD_DELETE_CACHE_TTL_MS } from "../chatHelpers";
-import type { Contact, ContactProfile } from "../../lib/contacts";
+import type { NostrIdentityInfo } from "../chatHelpers";
+import { contactPrimaryName, type Contact, type ContactProfile } from "../../lib/contacts";
 import type { GroupChat } from "../../lib/groupChatState";
-import type { PendingDmMessage, WalletDmMessage, WalletDmThread } from "./useDmState";
-
-type ChatView =
-  | "threads"
-  | "conversation"
-  | "new-message"
-  | "new-group-select"
-  | "new-group-name"
-  | "group-info"
-  | "group-members"
-  | "group-name-edit";
+import type { ChatView, PendingDmMessage, WalletDmMessage, WalletDmThread } from "./useDmState";
 
 type DmView = "list" | "thread" | "strangers";
 
@@ -69,6 +60,12 @@ export interface UseDmThreadActionsOptions {
   setShareContactStatus: Dispatch<SetStateAction<string | null>>;
   setChatCompose: Dispatch<SetStateAction<string>>;
   setShareContactPickerOpen: Dispatch<SetStateAction<boolean>>;
+  setShareContactBusy: Dispatch<SetStateAction<boolean>>;
+  readNostrIdentity: () => NostrIdentityInfo;
+  sendContactShareToPubkeys: (
+    contact: Contact,
+    recipientPubkeys: string[],
+  ) => Promise<{ ok: true } | { ok: false; error?: string }>;
   upsertContact: (input: Partial<Contact>) => Contact | null;
   getPeerProfile: (pubkey: string) => ContactProfile | undefined;
   peerLabelFor: (hex: string) => { label: string; picture?: string; subtitle?: string };
@@ -126,6 +123,9 @@ export function useDmThreadActions({
   setShareContactStatus,
   setChatCompose,
   setShareContactPickerOpen,
+  setShareContactBusy,
+  readNostrIdentity,
+  sendContactShareToPubkeys,
   // contact callbacks
   upsertContact,
   getPeerProfile,
@@ -436,6 +436,60 @@ export function useDmThreadActions({
     [formatNpub, getPeerProfile, peerLabelFor, showToast, upsertContact],
   );
 
+  /** Sends a contact card into the open conversation (every other member, for a group). */
+  const handleSendChatContactAttachment = useCallback(
+    async (contact: Contact) => {
+      if (!activeThread) {
+        setShareContactStatus("Open a conversation first.");
+        return;
+      }
+      const ownPubkey = readNostrIdentity().identity?.pubkey.toLowerCase();
+      const recipients = activeThread.groupId && activeGroupChat
+        ? activeGroupChat.members
+            .map((member) => member.toLowerCase())
+            .filter((member) => member && member !== ownPubkey)
+        : [activeThread.peerPubkey.toLowerCase()].filter(Boolean);
+      if (!recipients.length) {
+        setShareContactStatus("No recipients available for this conversation.");
+        return;
+      }
+      setShareContactBusy(true);
+      setShareContactStatus(null);
+      try {
+        const result = await sendContactShareToPubkeys(contact, recipients);
+        if (!result.ok) {
+          setShareContactStatus(result.error || "Unable to send contact.");
+          return;
+        }
+        setShareContactPickerOpen(false);
+        setShareContactPickerMode("recipient");
+        setShareContactSource(null);
+        showToast(
+          activeThread.groupId
+            ? `Shared ${contactPrimaryName(contact)} with ${activeGroupChat?.name || "the group"}`
+            : `Sent ${contactPrimaryName(contact)}`,
+          3000,
+        );
+      } catch (err) {
+        setShareContactStatus((err as { message?: string } | null)?.message || "Unable to send contact.");
+      } finally {
+        setShareContactBusy(false);
+      }
+    },
+    [
+      activeGroupChat,
+      activeThread,
+      readNostrIdentity,
+      sendContactShareToPubkeys,
+      setShareContactBusy,
+      setShareContactPickerMode,
+      setShareContactPickerOpen,
+      setShareContactSource,
+      setShareContactStatus,
+      showToast,
+    ],
+  );
+
   return {
     persistMutedGroups,
     persistLeftGroups,
@@ -451,5 +505,6 @@ export function useDmThreadActions({
     handleToggleActiveGroupMembership,
     toggleBlockPeer,
     handleAddPeerToContacts,
+    handleSendChatContactAttachment,
   };
 }

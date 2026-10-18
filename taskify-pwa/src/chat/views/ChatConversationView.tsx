@@ -1,4 +1,3 @@
-// @ts-nocheck -- faithfully extracted from the legacy wallet Chat page; typing is tracked in the review.
 import React from "react";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import {
@@ -43,6 +42,7 @@ export function ChatConversationView() {
     attachTrayOpen,
     buildDmCopyValue,
     cancelDmLongPress,
+    chatAttachTrayHeight,
     chatCompose,
     chatComposeInputRef,
     chatFileInputRef,
@@ -182,13 +182,13 @@ export function ChatConversationView() {
                       const peerMeta = getPeerProfile(activeThread.peerPubkey);
                       const created = upsertContact({
                         npub: formatNpub(activeThread.peerPubkey) || "",
-                        name: peerMeta.displayName || peerMeta.username || peerMeta.label,
-                        displayName: peerMeta.displayName || peerMeta.label,
-                        username: sanitizeUsername(peerMeta.username || ""),
-                        address: peerMeta.lud16 || "",
-                        nip05: peerMeta.nip05 || "",
-                        about: peerMeta.about || "",
-                        picture: peerMeta.picture || "",
+                        name: peerMeta?.displayName || peerMeta?.username || meta.label,
+                        displayName: peerMeta?.displayName || meta.label,
+                        username: sanitizeUsername(peerMeta?.username || ""),
+                        address: peerMeta?.lud16 || "",
+                        nip05: peerMeta?.nip05 || "",
+                        about: peerMeta?.about || "",
+                        picture: peerMeta?.picture || "",
                       });
                       if (created) {
                         setContactReturnView("new-message");
@@ -200,14 +200,14 @@ export function ChatConversationView() {
                         setContactDetailOverride(null);
                         setContactEditDraft({
                           id: null,
-                          name: peerMeta.displayName || peerMeta.username || peerMeta.label,
-                          displayName: peerMeta.displayName || peerMeta.label,
-                          username: sanitizeUsername(peerMeta.username || ""),
-                          address: peerMeta.lud16 || "",
+                          name: peerMeta?.displayName || peerMeta?.username || meta.label,
+                          displayName: peerMeta?.displayName || meta.label,
+                          username: sanitizeUsername(peerMeta?.username || ""),
+                          address: peerMeta?.lud16 || "",
                           npub: formatNpub(activeThread.peerPubkey) || "",
-                          nip05: peerMeta.nip05 || "",
-                          about: peerMeta.about || "",
-                          picture: peerMeta.picture || "",
+                          nip05: peerMeta?.nip05 || "",
+                          about: peerMeta?.about || "",
+                          picture: peerMeta?.picture || "",
                           isProfile: false,
                         });
                         setContactView("edit");
@@ -316,7 +316,8 @@ export function ChatConversationView() {
                     const isIncomingGroupMessage = !!(activeThread.groupId && msg.isIncoming && msg.senderPubkey);
                     const senderMeta =
                       isIncomingGroupMessage && msg.senderPubkey ? peerLabelFor(msg.senderPubkey) : null;
-                    const contactAttachment = isContact ? msg.attachment : null;
+                    const attachment = msg.attachment;
+                    const contactAttachment = attachment?.type === "contact" ? attachment : null;
                     const contactMeta = contactAttachment
                       ? sharedContactMetaFor(
                           contactAttachment.npub,
@@ -329,7 +330,7 @@ export function ChatConversationView() {
                           contactAttachment.picture || matchedItem?.contact?.picture || null,
                         )
                       : null;
-                    const taskAttachment = isTask ? msg.attachment?.task || matchedItem?.task || null : null;
+                    const taskAttachment = attachment?.type === "task" ? attachment.task || matchedItem?.task || null : null;
                     const taskDueSeconds = taskAttachment?.dueISO
                       ? Math.floor(new Date(taskAttachment.dueISO).getTime() / 1000)
                       : null;
@@ -348,7 +349,7 @@ export function ChatConversationView() {
                     const taskCopyValue = isTask
                       ? buildDmCopyValue(msg, { taskPayload: taskAttachment || matchedItem?.task || null })
                       : "";
-                    const eventAttachment = isEvent ? msg.attachment : null;
+                    const eventAttachment = attachment?.type === "event" ? attachment : null;
                     const eventReferenceSeconds =
                       eventAttachment?.start ? parseDateLikeToUnixSeconds(eventAttachment.start, msg.createdAt) : msg.createdAt;
                     const eventDayLabel = `${new Date(eventReferenceSeconds * 1000).getDate()}`.padStart(2, "0");
@@ -418,7 +419,7 @@ export function ChatConversationView() {
                               >
                               {isBoard && (
                                 <div className="chat-bubble__card">
-                                  <div className="chat-bubble__card-title">{msg.attachment?.boardName || "Shared board"}</div>
+                                  <div className="chat-bubble__card-title">{(attachment?.type === "board" && attachment.boardName) || "Shared board"}</div>
                                   <div className="chat-bubble__card-meta">Add this board to your workspace</div>
                                   {showActionButtons && (
                                     <div className="chat-bubble__card-actions">
@@ -557,7 +558,7 @@ export function ChatConversationView() {
                               )}
                               {isPayment && (
                                 <ChatTokenBubble
-                                  token={msg.attachment?.raw || msg.content}
+                                  token={(attachment?.type === "payment" && attachment.raw) || msg.content}
                                   onCopy={(value) => void copyMessageValue(value, "Token")}
                                 />
                               )}

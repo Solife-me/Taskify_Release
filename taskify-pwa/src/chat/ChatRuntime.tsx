@@ -1,4 +1,3 @@
-// @ts-nocheck -- built from CashuWalletModal's chat code, which was never type-checked; typing is tracked in the review.
 /**
  * Chat's state and behaviour, independent of the wallet: direct and group messages (NIP-17 / NIP-04),
  * contacts and their sync, the user's profile card, and unread counts. `App` mounts this once and
@@ -96,6 +95,7 @@ import { useNostrSession } from "./hooks/useNostrSession";
 import { useGroupRename } from "./hooks/useGroupRename";
 import type { InboxSender, SharedTaskPayload } from "taskify-core";
 import type { CalendarInvite } from "../domains/calendar/calendarInvitesHook";
+import type { ChatMessageRetention } from "../domains/tasks/settingsTypes";
 import type { PendingCalendarInvite } from "./chatHelpers";
 import { useChatScanner } from "./hooks/useChatScanner";
 
@@ -124,26 +124,33 @@ export type ChatRuntimeProps = {
   onDismissCalendarInvite?: (invite: CalendarInvite) => void;
   formatCalendarInviteWhen?: (invite: CalendarInvite) => string;
   onDmUnreadCountChange?: (count: number) => void;
-  chatMessageRetention?: string;
+  chatMessageRetention?: ChatMessageRetention;
 };
 
-const ChatRuntimeContext = createContext<Record<string, any> | null>(null);
+/** Chat's state and actions, as the Chat page reads them. */
+export type ChatRuntimeValue = ReturnType<typeof useChatRuntimeValue>;
+
+const ChatRuntimeContext = createContext<ChatRuntimeValue | null>(null);
 
 /** Chat's state and actions, for the Chat page. */
-export function useChatRuntime(): Record<string, any> {
+export function useChatRuntime(): ChatRuntimeValue {
   const value = useContext(ChatRuntimeContext);
   if (!value) throw new Error("useChatRuntime needs a ChatRuntime");
   return value;
 }
 
-export function ChatRuntime({
+export function ChatRuntime({ children, ...props }: ChatRuntimeProps) {
+  const value = useChatRuntimeValue(props);
+  return <ChatRuntimeContext.Provider value={value}>{children}</ChatRuntimeContext.Provider>;
+}
+
+function useChatRuntimeValue({
   active,
-  children,
   contactsSyncEnabled,
   fileStorageServer,
-  fileServers,
-  encryptedFileStorageServer,
-  encryptedFileServers,
+  fileServers = "",
+  encryptedFileStorageServer = "",
+  encryptedFileServers = "",
   messageItems,
   inboxPendingItems,
   pendingCalendarInvites,
@@ -157,8 +164,8 @@ export function ChatRuntime({
   onDismissCalendarInvite,
   formatCalendarInviteWhen,
   onDmUnreadCountChange,
-  chatMessageRetention,
-}: ChatRuntimeProps) {
+  chatMessageRetention = "forever",
+}: Omit<ChatRuntimeProps, "children">) {
   const open = active;
   const chatDebugEnabled = import.meta.env.DEV && (() => {
     try {
@@ -490,7 +497,7 @@ persistBlockedPeers,
       map.set(raw, entry);
     });
     return map;
-  }, [compressedToRawHex, contacts, normalizeNostrPubkey]);
+  }, [compressedToRawHex, contacts]);
   const {
     isUnreadThreadStatus,
     collectUnreadThreadItemEventIds,
@@ -503,8 +510,7 @@ persistBlockedPeers,
     matchesDmThreadSearch,
     openConversationForPeer,
     openConversationForGroup,
-
-
+    sendContactShareToPubkeys,
     handleShareContactToContact,
     closeAttachTray,
     handleToggleAttachTray,
@@ -638,7 +644,7 @@ persistBlockedPeers,
     dmArchivedThreadsRef.current = next;
     persistArchivedDmThreads(next);
     setDmArchivedThreadsVersion((value) => value + 1);
-  }, [dmThreads, persistArchivedDmThreads]);
+  }, [dmArchivedThreadsRef, dmThreads, persistArchivedDmThreads, setDmArchivedThreadsVersion]);
   const activeGroupMuted = !!(activeGroupChat && dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
   const activeGroupLeft = !!(activeGroupChat && dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
   useEffect(() => {
@@ -673,7 +679,7 @@ persistBlockedPeers,
         scroller.scrollTo({ top: scroller.scrollHeight, behavior });
       });
     }
-  }, [activeThread, activeThreadPendingMessages.length, chatView, isChatPage, open]);
+  }, [activeThread, activeThreadPendingMessages.length, chatView, dmAutoScrollStateRef, isChatPage, messagesScrollRef, open, scrollToMessageIdRef]);
   // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands): seeded from
   // the localStorage cache so the "/" menu is instantly available, then
   // refreshed in the background. The published list itself is the signal
@@ -730,7 +736,7 @@ persistBlockedPeers,
         setScrollToMessageId(null);
       });
     });
-  }, [scrollToMessageId, chatView, activeThread]);
+  }, [scrollToMessageId, chatView, activeThread, scrollToMessageIdRef, messagesScrollRef, setScrollToMessageId]);
   useEffect(() => {
     if (dmView !== "thread" || activeThread) return;
     setDmView(dmListViewRef.current);
@@ -739,7 +745,7 @@ persistBlockedPeers,
     if (isChatPage && (chatView === "conversation" || chatView === "group-info" || chatView === "group-members" || chatView === "group-name-edit")) {
       setChatView("threads");
     }
-  }, [activeThread, chatView, dmView, isChatPage]);
+  }, [activeThread, chatView, dmListViewRef, dmView, isChatPage, setActiveGroupId, setActiveThreadPeer, setChatView, setDmView]);
   useEffect(() => {
     if (activeGroupChat) return;
     setRenameGroupBusy(false);
@@ -748,7 +754,7 @@ persistBlockedPeers,
     if (chatView === "group-info" || chatView === "group-members" || chatView === "group-name-edit") {
       setChatView(activeThread ? "conversation" : "threads");
     }
-  }, [activeGroupChat, activeThread, chatView]);
+  }, [activeGroupChat, activeThread, chatView, setChatView, setGroupMembersSearch, setRenameGroupBusy, setRenameGroupDraft]);
   const {
 
 
@@ -764,6 +770,7 @@ persistBlockedPeers,
     handleToggleActiveGroupMembership,
     toggleBlockPeer,
     handleAddPeerToContacts,
+    handleSendChatContactAttachment,
   } = useDmThreadActions({
     dmMutedGroupsRef,
     setDmMutedGroupsVersion,
@@ -806,6 +813,9 @@ persistBlockedPeers,
     setShareContactStatus,
     setChatCompose,
     setShareContactPickerOpen,
+    setShareContactBusy,
+    readNostrIdentity,
+    sendContactShareToPubkeys,
     upsertContact,
     getPeerProfile,
     peerLabelFor,
@@ -892,14 +902,14 @@ persistBlockedPeers,
       skipContactsEventRef.current = false;
       skipContactsTimerRef.current = null;
     }, 0);
-  }, [contacts]);
+  }, [contacts, skipContactsEventRef, skipContactsTimerRef]);
 
   useEffect(() => {
     if (!contactsOpen) {
       setContactsContext(null);
       contactsContextRef.current = null;
     }
-  }, [contactsOpen]);
+  }, [contactsContextRef, contactsOpen, setContactsContext]);
 
   const {
 
@@ -940,9 +950,9 @@ persistBlockedPeers,
     if (profileSharePayload) return profileSharePayload;
     // Read identity directly — not gated by paymentRequestsEnabled so new accounts
     // without payment requests still get a QR on their contact card.
-    const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
+    const identity = readNostrIdentity().identity ?? nostrIdentityInfo.identity;
     return identity ? formatNpub(identity.pubkey) : null;
-  }, [formatNpub, profileSharePayload, readNostrIdentity]);
+  }, [formatNpub, nostrIdentityInfo.identity, profileSharePayload, readNostrIdentity]);
   useEffect(() => {
     if (!contactsSyncEnabled) {
       contactsPublishQueuedRef.current = false;
@@ -961,7 +971,7 @@ persistBlockedPeers,
       return;
     }
     contactsPublishQueuedRef.current = true;
-  }, [computeContactsFingerprint, contactSyncMeta.fingerprint, contacts, contactsPublishState, contactsSyncEnabled]);
+  }, [computeContactsFingerprint, contactSyncMeta.fingerprint, contacts, contactsFingerprintRef, contactsPublishQueuedRef, contactsPublishState, contactsSyncEnabled]);
 
   useEffect(() => {
     if (!contactsSyncEnabled) return;
@@ -978,7 +988,7 @@ persistBlockedPeers,
       }
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [contactsSyncEnabled, contacts, contactSyncMeta.fingerprint, publishContactsToNostr]);
+  }, [contactsSyncEnabled, contacts, contactSyncMeta.fingerprint, publishContactsToNostr, contactsPublishQueuedRef]);
 
   useEffect(() => {
     if (!contactsTabOpen && !contactsOpen && !chatModeUsesContacts) {
@@ -993,7 +1003,7 @@ persistBlockedPeers,
         void syncContactsFromNostr({ silent: true });
       }
     }
-  }, [chatModeUsesContacts, contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
+  }, [chatModeUsesContacts, contactProfilesRefreshedRef, contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
 
   useEffect(() => {
     if (contactsTabOpen) return;
@@ -1004,7 +1014,7 @@ persistBlockedPeers,
     setContactLookupError("");
     setContactLookupInput("");
     setPublicFollowPickerOpen(false);
-  }, [contactsTabOpen, resetContactEditDraft]);
+  }, [contactsTabOpen, resetContactEditDraft, setActiveContactId, setContactEditError, setContactLookupError, setContactLookupInput, setContactView, setPublicFollowPickerOpen]);
 
   useEffect(() => {
     if (!contactsTabOpen) return;
@@ -1016,14 +1026,14 @@ persistBlockedPeers,
         setActiveContactId(null);
       }
     }
-  }, [activeContactId, contactView, contacts, contactsTabOpen]);
+  }, [activeContactId, contactView, contacts, contactsTabOpen, setActiveContactId, setContactView]);
 
   useEffect(() => {
     if (!contactsTabOpen) return;
     if (contactView !== "detail") return;
     const panelEl = contactsPanelRef.current?.closest(".sheet-panel") as HTMLElement | null;
     panelEl?.scrollTo({ top: 0 });
-  }, [activeContactId, contactView, contactsTabOpen]);
+  }, [activeContactId, contactView, contactsPanelRef, contactsTabOpen]);
 
   const dmResumeEpoch = useSyncResume();
   useEffect(() => {
@@ -1041,28 +1051,31 @@ persistBlockedPeers,
   const myCardName = profileForm.displayName.trim() || myCardUsername || "My Card";
   const myCardLightning = profileForm.lud16.trim();
   const myCardNpub = useMemo(() => {
-    const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
+    // nostrIdentityInfo changes whenever the stored key does, so the card follows key changes.
+    const identity = readNostrIdentity().identity ?? nostrIdentityInfo.identity;
     return identity ? formatNpub(identity.pubkey) : "";
-  }, [formatNpub, readNostrIdentity, profileSharePayload]);
+  }, [formatNpub, nostrIdentityInfo.identity, readNostrIdentity]);
   const myCardSubtitle =
     myCardLightning || profileForm.nip05.trim() || myCardNpub || "My Card";
-  const profileCard = {
-    id: "profile",
-    kind: myCardNpub ? ("nostr" as const) : ("custom" as const),
-    name: myCardName,
-    displayName: profileForm.displayName.trim(),
-    username: sanitizeUsername(profileForm.username),
-    address: myCardLightning,
-    paymentRequest: "",
-    npub: myCardNpub,
-    nip05: profileForm.nip05.trim(),
-    about: profileForm.about.trim(),
-    picture: profileForm.picture.trim(),
-    updatedAt: profileUpdatedAt,
-  };
+  const profileCard = useMemo(
+    () => ({
+      id: "profile",
+      kind: myCardNpub ? ("nostr" as const) : ("custom" as const),
+      name: myCardName,
+      displayName: profileForm.displayName.trim(),
+      username: sanitizeUsername(profileForm.username),
+      address: myCardLightning,
+      paymentRequest: "",
+      npub: myCardNpub,
+      nip05: profileForm.nip05.trim(),
+      about: profileForm.about.trim(),
+      picture: profileForm.picture.trim(),
+      updatedAt: profileUpdatedAt,
+    }),
+    [myCardLightning, myCardName, myCardNpub, profileForm, profileUpdatedAt],
+  );
   const {
-    activeConversationContact,
-
+    chatAttachTrayHeight,
     chatAttachContactOptions,
     activeGroupAvatarMembers,
     activeGroupMembers,
@@ -1195,11 +1208,11 @@ persistBlockedPeers,
 
   useEffect(() => {
     ensureNip05VerificationRef.current = ensureNip05Verification;
-  }, [ensureNip05Verification]);
+  }, [ensureNip05Verification, ensureNip05VerificationRef]);
 
   useEffect(() => {
     isNip05VerifiedForRef.current = isNip05VerifiedFor;
-  }, [isNip05VerifiedFor]);
+  }, [isNip05VerifiedFor, isNip05VerifiedForRef]);
 
     const detailNip05Normalized = normalizeNip05(detailTarget?.nip05 ?? null);
     const detailNpubHex = detailTarget?.npub
@@ -1337,18 +1350,7 @@ persistBlockedPeers,
     }
 
     candidates.forEach(({ id, nip05, npub, updatedAt }) => ensureNip05Verification(id, nip05, npub, updatedAt));
-  }, [
-    contactsContext,
-    contactsOpen,
-    contactsTabOpen,
-    ensureNip05Verification,
-    normalizeNip05,
-    normalizeNostrPubkey,
-    profileCard,
-    profileUpdatedAt,
-    sortedContacts,
-    visibleContacts,
-  ]);
+  }, [contactsContext, contactsOpen, contactsTabOpen, ensureNip05Verification, normalizeNip05, profileCard, profileUpdatedAt, sortedContacts, visibleContacts]);
 
 
     const detailTitle = detailTarget ? contactPrimaryName(detailTarget) : "Contact";
@@ -1363,7 +1365,7 @@ persistBlockedPeers,
         isNip05VerifiedFor(detailTarget.id, detailTarget.nip05, detailTarget.npub)
       );
       return hasNpub || hasVerifiedNip05;
-    }, [detailTarget, isNip05VerifiedFor, normalizeNostrPubkey]);
+    }, [detailTarget, isNip05VerifiedFor]);
     const detailContactCanFollow = !!detailTarget && detailIsNostrContact && !!detailTarget.npub.trim();
     const detailCanAddContact = !!detailTarget && activeContactId !== "profile" && !activeContact;
 
@@ -1385,6 +1387,7 @@ persistBlockedPeers,
   });
 
   const value = {
+    chatAttachTrayHeight,
     activeBotCommands,
     activeContact,
     activeContactId,
@@ -1499,8 +1502,6 @@ persistBlockedPeers,
     contactsContext,
     contactsContextRef,
     contactsOpen,
-    contactInitials,
-    contactSubtitle,
     isNip05VerifiedForRef,
     lightningContactCount,
     normalizeNip05,
@@ -1518,6 +1519,7 @@ persistBlockedPeers,
     groupNameDraft,
     groupSelectMembers,
     handleAddPeerToContacts,
+    handleSendChatContactAttachment,
     handleArchiveDmThread,
     handleBackToContactsList,
     handleCancelContactEdit,
@@ -1550,7 +1552,6 @@ persistBlockedPeers,
     handleToggleFollowDetailContact,
     isChatPage,
     isDmMessageExpanded,
-    loadProfileMetadata,
     messageItemsByEventId,
     messageSearchResults,
     messagesInnerRef,
@@ -1590,7 +1591,6 @@ persistBlockedPeers,
     publicFollowOptions,
     publicFollowPickerOpen,
     publishNip17Giftwraps,
-    publishProfileMetadata,
     readNostrIdentity,
     renameGroupBusy,
     renameGroupDraft,
@@ -1673,5 +1673,5 @@ persistBlockedPeers,
     upsertGroupChat,
     visiblePendingMessages,
   };
-  return <ChatRuntimeContext.Provider value={value}>{children}</ChatRuntimeContext.Provider>;
+  return value;
 }

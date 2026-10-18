@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import type { GroupChat } from "../../lib/groupChatState";
+import type { ChatView } from "./useDmState";
 
-type ChatView = string;
 
 /** Renaming a group chat: open the editor, then save locally and publish the new subject. */
 export function useGroupRename({

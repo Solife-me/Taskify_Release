@@ -6,6 +6,7 @@ import { makeContactId, normalizeContact } from "../../lib/contacts";
 import type { ContactSharePayload } from "../chatHelpers";
 import { encodeContactPayload, parseProfileContent } from "../chatHelpers";
 import { normalizeNostrPubkey } from "../../lib/nostr";
+import type { ContactViewMode } from "./useContactsState";
 
 export interface UseContactLookupOptions {
   compressedToRawHex: (hex: string) => string;
@@ -19,7 +20,7 @@ export interface UseContactLookupOptions {
   setContactLookupBusy: (busy: boolean) => void;
   setContactLookupError: (error: string) => void;
   setContactLookupInput: (input: string) => void;
-  setContactView: (view: string) => void;
+  setContactView: (view: ContactViewMode) => void;
   setContacts: React.Dispatch<React.SetStateAction<Contact[]>>;
   setPublicFollowPickerOpen: (open: boolean) => void;
   setScannerMessage: (message: string) => void;
