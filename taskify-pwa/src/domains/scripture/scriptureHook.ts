@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import React from "react";
-import type { BibleTrackerState } from "../../components/BibleTracker";
-import { sanitizeBibleTrackerState } from "../../components/BibleTracker";
+import type { BibleTrackerState } from "./bibleTrackerModel";
+import { sanitizeBibleTrackerState } from "./bibleTrackerModel";
 import type { ScriptureMemoryState } from "./scriptureTypes";
 import { sanitizeScriptureMemoryState } from "./scriptureUtils";
 import { kvStorage } from "../../storage/kvStorage";

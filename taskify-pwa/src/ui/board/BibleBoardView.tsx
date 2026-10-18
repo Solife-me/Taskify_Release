@@ -2,17 +2,15 @@ import type { ComponentProps, RefObject } from "react";
 import { BibleTracker } from "../../components/BibleTracker";
 import { ScriptureMemoryCard } from "../../components/ScriptureMemoryCard";
 
-/** The Bible board: the reading tracker and, when enabled, scripture memory, side by side. */
-export function BibleBoardView({
-  scrollerRef,
-  tracker,
-  scriptureMemory,
-}: {
+export type BibleBoardViewProps = {
   scrollerRef: RefObject<HTMLDivElement | null>;
   tracker: ComponentProps<typeof BibleTracker>;
   /** null when scripture memory is turned off in Settings. */
   scriptureMemory: ComponentProps<typeof ScriptureMemoryCard> | null;
-}) {
+};
+
+/** The Bible board: the reading tracker and, when enabled, scripture memory, side by side. */
+export function BibleBoardView({ scrollerRef, tracker, scriptureMemory }: BibleBoardViewProps) {
   return (
     <div ref={scrollerRef} className="overflow-x-auto pb-4 w-full" style={{ WebkitOverflowScrolling: "touch" }}>
       <div className="flex min-w-max items-start gap-4">

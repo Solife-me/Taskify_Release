@@ -61,7 +61,7 @@ import {
   getBibleBookTitle,
   getBibleBookOrder,
   MAX_VERSE_COUNT,
-} from "./components/BibleTracker";
+} from "./domains/scripture/bibleTrackerModel";
 import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
 import { type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
 import { type PrintPaperSize } from "./components/printPaper";

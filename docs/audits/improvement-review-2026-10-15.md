@@ -382,7 +382,7 @@ per step.
 | --- | --- | --- | --- |
 | C2-1 | Approve | 2026-10-15 | Done (quick-add surface is a known gap) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
-| C2-3 | Approve all stages | 2026-10-15 | Stages 1–3 done. Stage 4 has made Chat independent and reduced the Cashu modal to wallet-only code; wallet-off hooks and build graph are tested. Chat typing and remaining feature extraction continue (see Checkpoint); live two-account messaging verification remains outstanding |
+| C2-3 | Approve all stages | 2026-10-15 | Stages 1–4 done (2026-10-18): Chat is independent and fully type-checked, the Cashu modal is wallet-only, and Upcoming, Chat, Bible, Print, scan and Voice load lazily. Live two-account messaging verification remains outstanding |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Identity layer done; signer findings below. 2026-10-16: maintainer wants NIP-07 and NIP-46 support built later (sequence below) |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Done (PWA); iOS parity in chunk 9 |
 | C2-6 | Approve | 2026-10-15 | Done: 604 → 458 KB gzipped startup, CI budget 470 KB |
@@ -611,8 +611,24 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
    hand-wired copies of the card props. The board body is `ui/board/BoardPage.tsx` with
    `WeekBoardView`, `ListsBoardView` and `BibleBoardView` (the Bible view was written out twice).
    `App.tsx` 8,777 → 8,374 lines. Boards is not lazy: it is the startup page.
-4. **The rest of stage 4:** Bible, Print, Import and Voice as lazy modules. They are small and
-   don't affect layout, so they wait until after C3-1.
+4. **The rest of stage 4 (done 2026-10-18):** Bible, Print, Import (scan) and Voice load lazily.
+   - The Bible tracker's data model (books, stored state, clean-up) moved out of the component
+     into `domains/scripture/bibleTrackerModel.ts`, so the domain code and backups no longer
+     pull in the tracker UI. The Bible board view (tracker and scripture memory) loads only when
+     a Bible board is shown.
+   - Voice dictation loads when Dictate is chosen.
+   - Print and scan sheets moved out of `AppModalStack` into `ui/print/PrintSheets.tsx`, which
+     loads only when one opens. The camera QR scanner in Add board loads with its scan section.
+     The modal stack opens for common things (the delete-undo snackbar, onboarding); it was
+     26.4 KB gzipped with the QR tools and is now 4.7 KB.
+   - Fixed while testing: Print (and Print selected) from the Share sheet closed at once. Closing
+     one sheet and opening another in the same action stepped history back over both. The router
+     now lets the new overlay take the closed one's entry, and overlays close in the layout phase
+     so that always happens before an open. Two tests cover it.
+   - `scripts/startup-budget.mjs` now fails if Upcoming, Chat, the Bible board, voice
+     dictation, print sheets or the wallet runtime become part of startup, or if the modal stack
+     carries the QR tools. Startup JavaScript 450.8 → 441.0 KB gzipped; the budget is lowered
+     from 470 to 455 KB.
 5. **Chunk 3 onward,** per the chunk plan.
 
 **Desktop layout (C3-1, approved by the maintainer 2026-10-17)**

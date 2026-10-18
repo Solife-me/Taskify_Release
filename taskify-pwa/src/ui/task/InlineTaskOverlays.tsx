@@ -1,9 +1,12 @@
+import { lazy, Suspense } from "react";
 import { nip19 } from "nostr-tools";
 import { ActionSheet } from "../../components/ActionSheet";
 import { kvStorage } from "../../storage/kvStorage";
 import type { FinalTask, VoiceBoardContext } from "../../nostr/useVoiceSession";
-import { VoiceDictationModal } from "../../components/VoiceDictationModal";
 import type { Board } from "../../domains/tasks/taskTypes";
+
+// Speech recognition and the voice session load only when dictation is opened.
+const VoiceDictationModal = lazy(() => import("../../components/VoiceDictationModal"));
 
 type InlineTaskOverlaysProps = {
   addMenuKey: string | null;
@@ -94,24 +97,26 @@ export function InlineTaskOverlays({
       </ActionSheet>
 
       {voiceDictationKey !== null && (
-        <VoiceDictationModal
-          isOpen={true}
-          onClose={() => {
-            setVoiceDictationKey(null);
-            setAddMenuKey(null);
-          }}
-          onSave={(tasks) => {
-            if (voiceDictationKey !== null) {
-              handleVoiceSave(voiceDictationKey, tasks);
-            }
-          }}
-          workerBaseUrl={workerBaseUrl}
-          npub={npub}
-          privateKeyHex={nostrSkHex}
-          testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
-          defaultBoardId={currentBoardId}
-          boards={voiceBoards}
-        />
+        <Suspense fallback={null}>
+          <VoiceDictationModal
+            isOpen={true}
+            onClose={() => {
+              setVoiceDictationKey(null);
+              setAddMenuKey(null);
+            }}
+            onSave={(tasks) => {
+              if (voiceDictationKey !== null) {
+                handleVoiceSave(voiceDictationKey, tasks);
+              }
+            }}
+            workerBaseUrl={workerBaseUrl}
+            npub={npub}
+            privateKeyHex={nostrSkHex}
+            testingMode={kvStorage.getItem("taskify.voice.testInput.enabled") === "true"}
+            defaultBoardId={currentBoardId}
+            boards={voiceBoards}
+          />
+        </Suspense>
       )}
     </>
   );

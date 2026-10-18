@@ -4,7 +4,7 @@ import { getBibleChapterVerseCount } from "../../data/bibleVerseCounts";
 import {
   getBibleBookChapterCount,
   getBibleBookTitle,
-} from "../../components/BibleTracker";
+} from "./bibleTrackerModel";
 
 export const MAX_SCRIPTURE_STAGE = 8;
 export const SCRIPTURE_STAGE_GROWTH = 1.8;

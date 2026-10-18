@@ -12,7 +12,7 @@ import {
 import {
   sanitizeBibleTrackerState,
   type BibleTrackerState,
-} from "../components/BibleTracker";
+} from "../domains/scripture/bibleTrackerModel";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import {
   decryptNostrBackupPayload,

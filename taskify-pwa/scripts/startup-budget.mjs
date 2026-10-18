@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 
 // 604 KB at the start of the improvement review (October 2026); 458 KB once the wallet, QR and
 // share dialogs became lazy and React, the preload helper and the Node polyfills got their own
-// chunks. The budget leaves a little room; raise it only with a reason.
-const DEFAULT_BUDGET_KB = 470;
+// chunks; 441 KB once Upcoming, Chat, the Bible board and voice dictation became lazy. The budget leaves a little room; raise it only with a reason.
+const DEFAULT_BUDGET_KB = 455;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
@@ -82,6 +82,34 @@ if (totalKb > budgetKb) {
       " outside main.tsx, or raise the budget in scripts/startup-budget.mjs with a reason.",
   );
   process.exit(1);
+}
+
+// Optional features must stay out of startup. Each must be its own lazily loaded chunk: if it
+// is imported statically somewhere, it merges into a startup chunk and has no manifest entry.
+const LAZY_FEATURES = [
+  "src/ui/upcoming/UpcomingPage.tsx",
+  "src/ui/board/BibleBoardView.tsx",
+  "src/components/VoiceDictationModal.tsx",
+  "src/ui/print/PrintSheets.tsx",
+  "src/chat/ChatPage.tsx",
+  "src/wallet/WalletRuntime.tsx",
+];
+const notLazy = LAZY_FEATURES.filter((key) => !manifest[key]?.isDynamicEntry || boot.has(key));
+if (notLazy.length) {
+  console.error("These features must load lazily but are part of startup:\n" + notLazy.join("\n"));
+  process.exit(1);
+}
+if (!args.includes("--json")) console.log(`Lazy features: ${LAZY_FEATURES.length} checked, none in startup.`);
+
+// The modal stack opens for common things (the delete-undo snackbar, onboarding), so it must not
+// carry the camera QR scanner; that loads with the sheets that scan.
+const modalStackKey = "src/ui/app/AppModalStack.tsx";
+if (manifest[modalStackKey]) {
+  const heavy = [...staticClosure([modalStackKey])].filter((key) => /qr-tools/.test(`${key} ${manifest[key].file}`));
+  if (heavy.length) {
+    console.error("The modal stack would load the QR tools:\n" + heavy.join("\n"));
+    process.exit(1);
+  }
 }
 
 // Chat is intentionally independent of the wallet being phased out. Protect the production

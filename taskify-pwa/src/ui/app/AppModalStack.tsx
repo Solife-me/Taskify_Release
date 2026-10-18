@@ -1,12 +1,5 @@
-import { createPortal } from "react-dom";
-import type { BoardPrintJob } from "../../components/BoardPrintLayout";
-import { BoardPrintPreview } from "../../components/BoardPrintSheet";
-import { BoardScanPanel } from "../../components/BoardScanSheet";
-import type { BiblePrintMeta } from "../../components/BibleTrackerPrintSheet";
-import { BibleTrackerPrintPreview } from "../../components/BibleTrackerPrintSheet";
-import { BibleTrackerScanPanel } from "../../components/BibleTrackerScanSheet";
-import type { BibleTrackerProgress, BibleTrackerState } from "../../components/BibleTracker";
-import type { PrintPaperSize } from "../../components/printPaper";
+import { lazy, Suspense } from "react";
+import type { PrintSheetsProps } from "../print/PrintSheets";
 import { FirstRunOnboarding } from "../../onboarding/FirstRunOnboarding";
 import { AddBoardModal } from "../board/AddBoardModal";
 import { DocumentPreviewModal } from "../task/DocumentPreviewModal";
@@ -14,45 +7,24 @@ import { Modal } from "../Modal";
 import type { Task, CalendarEvent } from "taskify-core";
 import type { TaskDocument } from "../../lib/documents";
 
-type AppModalStackProps = {
+// Print and scan (with the QR tools) load only when one of their sheets opens.
+const PrintSheets = lazy(() => import("../print/PrintSheets").then((m) => ({ default: m.PrintSheets })));
+
+type AppModalStackProps = PrintSheetsProps & {
   addBoardOpen: boolean;
-  biblePrintMeta: BiblePrintMeta | null;
-  biblePrintOpen: boolean;
-  biblePrintPaperSize: PrintPaperSize;
-  biblePrintPdfBusy: boolean;
-  biblePrintPortal: HTMLDivElement | null;
-  bibleScanOpen: boolean;
-  bibleTracker: BibleTrackerState;
-  boardPrintJob: BoardPrintJob | null;
-  boardPrintOpen: boolean;
-  boardPrintPdfBusy: boolean;
-  boardPrintPortal: HTMLDivElement | null;
-  boardScanOpen: boolean;
   closeAddBoard: () => void;
   createBoardFromName: (name: string, type: "lists" | "compound", shared?: boolean) => string | null;
   deleteCalendarEvent: (id: string, options?: any) => void;
   deleteTask: (id: string, options?: any) => void;
-  handleApplyBibleScan: (scanProgress: BibleTrackerProgress) => void;
-  handleApplyBoardScan: (taskIds: string[]) => void;
-  handleBiblePaperSizeChange: (paperSize: PrintPaperSize) => void;
-  handleBoardPaperSizeChange: (paperSize: PrintPaperSize) => void;
   handleDownloadDocument: (doc: TaskDocument) => void;
-  handleExportBiblePdf: () => void;
-  handleExportBoardPdf: () => void;
   handleOnboardingStart: () => boolean;
   handleOnboardingRestoreFromBackupFile: (file: File) => Promise<void>;
   handleOnboardingUseExistingKey: (value: string) => boolean;
-  handlePrintBibleWindow: () => void;
-  handlePrintBoardWindow: () => void;
   joinSharedBoard: (nostrId: string, name?: string, relayCsv?: string) => void;
   previewDocument: TaskDocument | null;
   previewDocumentBoardId: string | undefined;
   recurringDeleteEvent: CalendarEvent | null;
   recurringDeleteTask: Task | null;
-  setBiblePrintOpen: (open: boolean) => void;
-  setBibleScanOpen: (open: boolean) => void;
-  setBoardPrintOpen: (open: boolean) => void;
-  setBoardScanOpen: (open: boolean) => void;
   setPreviewDocument: (document: TaskDocument | null) => void;
   setPreviewDocumentBoardId: (boardId: string | undefined) => void;
   setRecurringDeleteEvent: (event: CalendarEvent | null) => void;
@@ -64,43 +36,19 @@ type AppModalStackProps = {
 
 export function AppModalStack({
   addBoardOpen,
-  biblePrintMeta,
-  biblePrintOpen,
-  biblePrintPaperSize,
-  biblePrintPdfBusy,
-  biblePrintPortal,
-  bibleScanOpen,
-  bibleTracker,
-  boardPrintJob,
-  boardPrintOpen,
-  boardPrintPdfBusy,
-  boardPrintPortal,
-  boardScanOpen,
   closeAddBoard,
   createBoardFromName,
   deleteCalendarEvent,
   deleteTask,
-  handleApplyBibleScan,
-  handleApplyBoardScan,
-  handleBiblePaperSizeChange,
-  handleBoardPaperSizeChange,
   handleDownloadDocument,
-  handleExportBiblePdf,
-  handleExportBoardPdf,
   handleOnboardingRestoreFromBackupFile,
   handleOnboardingStart,
   handleOnboardingUseExistingKey,
-  handlePrintBibleWindow,
-  handlePrintBoardWindow,
   joinSharedBoard,
   previewDocument,
   previewDocumentBoardId,
   recurringDeleteEvent,
   recurringDeleteTask,
-  setBiblePrintOpen,
-  setBibleScanOpen,
-  setBoardPrintOpen,
-  setBoardScanOpen,
   setPreviewDocument,
   setPreviewDocumentBoardId,
   setRecurringDeleteEvent,
@@ -108,6 +56,7 @@ export function AppModalStack({
   showFirstRunOnboarding,
   undoDelete,
   undoTask,
+  ...print
 }: AppModalStackProps) {
   return (
     <>
@@ -165,97 +114,10 @@ export function AppModalStack({
         />
       )}
 
-      {biblePrintPortal && biblePrintOpen && biblePrintMeta &&
-        createPortal(
-          <BibleTrackerPrintPreview
-            state={bibleTracker}
-            meta={biblePrintMeta}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />,
-          biblePrintPortal
-        )}
-
-      {biblePrintOpen && biblePrintMeta && (
-        <Modal
-          onClose={() => setBiblePrintOpen(false)}
-          title="Print Bible tracker"
-          actions={(
-            <>
-              <button
-                className="accent-button button-sm pressable"
-                onClick={handleExportBiblePdf}
-                disabled={biblePrintPdfBusy}
-              >
-                {biblePrintPdfBusy ? "Preparing PDF..." : "Export PDF"}
-              </button>
-              <button className="ghost-button button-sm pressable" onClick={handlePrintBibleWindow}>
-                Print
-              </button>
-            </>
-          )}
-        >
-          <BibleTrackerPrintPreview
-            state={bibleTracker}
-            meta={biblePrintMeta}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {bibleScanOpen && (
-        <Modal onClose={() => setBibleScanOpen(false)} title="Scan Bible tracker">
-          <BibleTrackerScanPanel
-            state={bibleTracker}
-            onApply={handleApplyBibleScan}
-            paperSize={biblePrintPaperSize}
-            onPaperSizeChange={handleBiblePaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {boardPrintPortal && boardPrintOpen && boardPrintJob &&
-        createPortal(
-          <BoardPrintPreview
-            job={boardPrintJob}
-            paperSize={boardPrintJob.paperSize}
-            onPaperSizeChange={handleBoardPaperSizeChange}
-          />,
-          boardPrintPortal
-        )}
-
-      {boardPrintOpen && boardPrintJob && (
-        <Modal
-          onClose={() => setBoardPrintOpen(false)}
-          title={`Print ${boardPrintJob.boardName || "board"}`}
-          actions={(
-            <>
-              <button
-                className="accent-button button-sm pressable"
-                onClick={handleExportBoardPdf}
-                disabled={boardPrintPdfBusy}
-              >
-                {boardPrintPdfBusy ? "Preparing PDF..." : "Export PDF"}
-              </button>
-              <button className="ghost-button button-sm pressable" onClick={handlePrintBoardWindow}>
-                Print
-              </button>
-            </>
-          )}
-        >
-          <BoardPrintPreview
-            job={boardPrintJob}
-            paperSize={boardPrintJob.paperSize}
-            onPaperSizeChange={handleBoardPaperSizeChange}
-          />
-        </Modal>
-      )}
-
-      {boardScanOpen && boardPrintJob && (
-        <Modal onClose={() => setBoardScanOpen(false)} title={`Scan ${boardPrintJob.boardName || "board"}`}>
-          <BoardScanPanel job={boardPrintJob} onApply={handleApplyBoardScan} />
-        </Modal>
+      {(print.biblePrintOpen || print.bibleScanOpen || print.boardPrintOpen || print.boardScanOpen) && (
+        <Suspense fallback={null}>
+          <PrintSheets {...print} />
+        </Suspense>
       )}
 
       {showFirstRunOnboarding && (

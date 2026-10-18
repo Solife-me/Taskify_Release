@@ -1,4 +1,4 @@
-import { TOTAL_BIBLE_CHAPTERS, type BibleTrackerState } from "../components/BibleTracker";
+import { TOTAL_BIBLE_CHAPTERS, type BibleTrackerState } from "../domains/scripture/bibleTrackerModel";
 import { buildBiblePrintLayout } from "../components/BibleTrackerPrintLayout";
 import { buildBoardPrintLayout, type BoardPrintJob } from "../components/BoardPrintLayout";
 import type { BiblePrintMeta } from "../components/BibleTrackerPrintSheet";

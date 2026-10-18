@@ -1,9 +1,11 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from "react";
 import { parseBoardSharePayload } from "taskify-core";
 import { useToast } from "../../context/ToastContext";
 import { Modal } from "../Modal";
-import { BoardQrScanner } from "./BoardQrScanner";
 import { useEscapeToClose } from "../useEscapeToClose";
+
+// The camera QR scanner loads only when the scan section is shown.
+const BoardQrScanner = lazy(() => import("./BoardQrScanner").then((m) => ({ default: m.BoardQrScanner })));
 
 
 export function AddBoardModal({
@@ -387,11 +389,13 @@ export function AddBoardModal({
                     </div>
                   )}
                 </div>
-                <BoardQrScanner
-                  active={scannerActive}
-                  onDetected={handleScanDetected}
-                  onError={setScannerStatus}
-                />
+                <Suspense fallback={<div className="wallet-scanner"><div className="wallet-scanner__viewport" /></div>}>
+                  <BoardQrScanner
+                    active={scannerActive}
+                    onDetected={handleScanDetected}
+                    onError={setScannerStatus}
+                  />
+                </Suspense>
                 {scannerStatus && <div className="text-xs text-rose-400">{scannerStatus}</div>}
               </div>
             )}

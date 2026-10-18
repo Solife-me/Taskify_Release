@@ -1,4 +1,4 @@
-import { BIBLE_BOOKS } from "./BibleTracker";
+import { BIBLE_BOOKS } from "../domains/scripture/bibleTrackerModel";
 import { getPaperDefinition, type PrintPaperSize } from "./printPaper";
 
 export type BiblePrintLayoutVersion = "v2" | "v3";

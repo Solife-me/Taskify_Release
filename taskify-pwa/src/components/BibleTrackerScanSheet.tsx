@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { BIBLE_BOOKS, type BibleTrackerProgress, type BibleTrackerState } from "./BibleTracker";
+import { BIBLE_BOOKS, type BibleTrackerProgress, type BibleTrackerState } from "../domains/scripture/bibleTrackerModel";
 import { buildBiblePrintLayout, type BiblePrintLayout, type BiblePrintLayoutVersion } from "./BibleTrackerPrintLayout";
 import { PRINT_PAPER_OPTIONS, type PrintPaperSize } from "./printPaper";
 

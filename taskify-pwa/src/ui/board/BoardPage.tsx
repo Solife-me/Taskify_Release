@@ -3,14 +3,17 @@
  * Upcoming view. `App` keeps the header, the rail and routing; cards act through the task
  * actions it provides (`ui/task/taskActions`).
  */
-import type { ComponentProps, RefObject } from "react";
+import { lazy, Suspense, type ComponentProps, type RefObject } from "react";
 import type { Board } from "../../domains/tasks/taskTypes";
-import { BibleBoardView } from "./BibleBoardView";
+import type { BibleBoardViewProps } from "./BibleBoardView";
 import { BoardScrollEdges } from "./BoardScrollEdges";
 import { BoardUpcomingView, CompletedBoardView } from "./BoardSecondaryViews";
 import type { GroupSelection, InlineAdd } from "./BoardViewParts";
 import { ListsBoardView } from "./ListsBoardView";
 import { WeekBoardView } from "./WeekBoardView";
+
+// The Bible tracker and scripture memory load only when a Bible board is shown.
+const BibleBoardView = lazy(() => import("./BibleBoardView").then((m) => ({ default: m.BibleBoardView })));
 
 export type BoardPageView = "board" | "completed" | "board-upcoming" | "bible";
 
@@ -45,14 +48,18 @@ export function BoardPage({
   setColumnRef: (key: string, element: HTMLDivElement | null) => void;
   week: WeekProps;
   lists: ListsProps;
-  bible: Omit<ComponentProps<typeof BibleBoardView>, "scrollerRef">;
+  bible: Omit<BibleBoardViewProps, "scrollerRef">;
   /** The Bible view (from the header) needs the tracker turned on in Settings. */
   bibleTrackerEnabled: boolean;
   upcoming: ComponentProps<typeof BoardUpcomingView>;
   completed: ComponentProps<typeof CompletedBoardView>;
 }) {
   const shared = { scrollerRef, inlineAdd, selection, setColumnRef };
-  const bibleView = <BibleBoardView scrollerRef={bibleScrollerRef} {...bible} />;
+  const bibleView = (
+    <Suspense fallback={null}>
+      <BibleBoardView scrollerRef={bibleScrollerRef} {...bible} />
+    </Suspense>
+  );
 
   let content;
   if (view === "bible") {
