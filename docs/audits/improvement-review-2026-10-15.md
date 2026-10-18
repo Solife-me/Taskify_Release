@@ -1063,5 +1063,5 @@ step is one commit, and bugs get a failing test first.
 | C3-5 | Approve | 2026-10-18 | In progress (recommended order) |
 | C3-6 | Approve; bounty creation stays as an optional wallet extension until the wallet is removed | 2026-10-18 | Pending |
 | C3-7 | Approve | 2026-10-18 | In progress (recommended order) |
-| C3-8 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-8 | Approve | 2026-10-18 | Done: `DocumentThumbnail` and `documentAsset` are their own modules; an HTML thumbnail loads the sanitizer on demand (tested). Startup 441.0 → 428.3 KB gzipped; the startup check fails if DOMPurify returns |
 | C3-9 | Approve | 2026-10-18 | In progress (recommended order) |

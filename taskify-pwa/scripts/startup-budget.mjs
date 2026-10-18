@@ -101,6 +101,19 @@ if (notLazy.length) {
 }
 if (!args.includes("--json")) console.log(`Lazy features: ${LAZY_FEATURES.length} checked, none in startup.`);
 
+// Libraries that must not reach startup, found by a string their code always contains (they can
+// share a chunk with other code, so the chunk graph alone cannot tell).
+const FORBIDDEN_IN_STARTUP = [
+  { name: "DOMPurify (loads with the document viewer and HTML previews)", marker: "SAFE_FOR_TEMPLATES" },
+];
+for (const { name, marker } of FORBIDDEN_IN_STARTUP) {
+  const carriers = rows.filter((row) => readFileSync(join(dist, row.file), "utf8").includes(marker));
+  if (carriers.length) {
+    console.error(`${name} is part of startup, in: ${carriers.map((row) => row.file).join(", ")}`);
+    process.exit(1);
+  }
+}
+
 // The modal stack opens for common things (the delete-undo snackbar, onboarding), so it must not
 // carry the camera QR scanner; that loads with the sheets that scan.
 const modalStackKey = "src/ui/app/AppModalStack.tsx";
