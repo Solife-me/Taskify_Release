@@ -188,6 +188,8 @@ npx wrangler dev
   the provider modules.
 - Chat typing debt is tracked by explicit paths in `eslint.config.js`. When removing a Chat file's
   `@ts-nocheck`, remove that path from the allowlist too; do not restore a broad `src/chat/**` glob.
+  Thread actions and utilities now expose typed hook contracts; preserve cached-data normalization
+  and callback behavior when checking the remaining transport hooks and runtime views.
 - Wrangler config (`wrangler.toml`) is at repo root; it references paths relative to root.
 
 ---

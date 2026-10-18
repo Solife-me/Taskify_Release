@@ -1,5 +1,117 @@
-// @ts-nocheck
-import { useCallback } from "react";
+import { useCallback, type Dispatch, type RefObject, type SetStateAction } from "react";
+import type { Contact, ContactProfile } from "../../lib/contacts";
+import type { GroupChat } from "../../lib/groupChatState";
+import type {
+  NostrIdentity,
+  NostrIdentityInfo,
+  PendingCalendarInvite,
+  SharedContactPreview,
+} from "../chatHelpers";
+import type { ShareEnvelope, SharedContactPayload } from "../../lib/shareInbox";
+import type { WalletMessageItem } from "../../types/walletMessages";
+import type { WalletDmAttachment, WalletDmMessage, WalletDmThread } from "./useDmState";
+
+type ChatView =
+  | "threads"
+  | "conversation"
+  | "new-message"
+  | "new-group-select"
+  | "new-group-name"
+  | "group-info"
+  | "group-members"
+  | "group-name-edit";
+
+type DmView = "list" | "thread" | "strangers";
+
+type ContactViewMode = "list" | "detail" | "edit";
+
+type ProfileForm = {
+  username: string;
+  displayName: string;
+  lud16: string;
+  nip05: string;
+  about: string;
+  picture: string;
+};
+
+type ContactShareResult = { ok: true } | { ok: false; error?: string };
+
+type Nip05Verifier = (
+  contactId: string,
+  nip05?: string | null,
+  npub?: string | null,
+) => boolean;
+
+type KVStorageLike = {
+  getItem: (key: string) => string | null;
+};
+
+export interface UseDmThreadUtilsOptions {
+  inboxPendingItems: WalletMessageItem[] | undefined;
+  messageItemsByEventId: Map<string, WalletMessageItem>;
+  pendingMessageItemsByEventId: Map<string, WalletMessageItem>;
+  pendingCalendarInvitesByEventId: Map<string, PendingCalendarInvite>;
+  pendingCalendarInvites: PendingCalendarInvite[] | undefined;
+  paymentHistoryByEventId: Map<string, { summary?: string }>;
+  contactIndex: Map<string, { name: string; picture?: string }>;
+  dmArchivedThreadsVersion: number;
+  groupChats: GroupChat[];
+  dmSearch: string;
+  displayDmMessages: WalletDmMessage[];
+  activeThreadPeer: string | null;
+  shareContactSource: Contact | null;
+  profileForm: ProfileForm;
+  setSharedContactPreview: Dispatch<SetStateAction<SharedContactPreview | null>>;
+  setActiveThreadPeer: Dispatch<SetStateAction<string | null>>;
+  setDmView: Dispatch<SetStateAction<DmView>>;
+  setChatView: Dispatch<SetStateAction<ChatView>>;
+  setContactView: Dispatch<SetStateAction<ContactViewMode>>;
+  setActiveContactId: Dispatch<SetStateAction<string | "profile" | null>>;
+  setContactDetailOverride: Dispatch<SetStateAction<Contact | null>>;
+  setContactReturnView: Dispatch<SetStateAction<"new-message" | "group-members" | "group-info">>;
+  setDmSearch: Dispatch<SetStateAction<string>>;
+  setDmMessages: Dispatch<SetStateAction<WalletDmMessage[]>>;
+  setActiveGroupId: Dispatch<SetStateAction<string | null>>;
+  setAttachTrayOpen: Dispatch<SetStateAction<boolean>>;
+  setShareContactPickerOpen: Dispatch<SetStateAction<boolean>>;
+  setShareContactPickerMode: Dispatch<SetStateAction<"recipient" | "chat-source">>;
+  setShareContactSource: Dispatch<SetStateAction<Contact | null>>;
+  setShareContactStatus: Dispatch<SetStateAction<string | null>>;
+  setShareContactBusy: Dispatch<SetStateAction<boolean>>;
+  dmArchivedThreadsRef: RefObject<Map<string, number>>;
+  dmPeerProfilesRef: RefObject<Map<string, ContactProfile>>;
+  nostrIdentityRef: RefObject<NostrIdentity | null>;
+  isNip05VerifiedForRef: RefObject<Nip05Verifier | null>;
+  chatComposeInputRef: RefObject<HTMLInputElement | null>;
+  chatPhotoInputRef: RefObject<HTMLInputElement | null>;
+  chatFileInputRef: RefObject<HTMLInputElement | null>;
+  shareContactOpenedAtPeerRef: RefObject<string | null>;
+  normalizeNostrPubkey: (value: string | null | undefined) => string | null;
+  compressedToRawHex: (value: string) => string;
+  formatNpubDisplay: (value: string | null | undefined) => string | null;
+  shortenNpubDisplay: (value: string | null | undefined, lead?: number, tail?: number) => string;
+  pickPreferredProfilePhoto: (...candidates: Array<string | null | undefined>) => string | undefined;
+  makeContactId: () => string;
+  normalizeContact: (input: Partial<Contact> & { id?: string }) => Contact | null;
+  dmThreadKeyForThread: (thread: Pick<WalletDmThread, "peerPubkey" | "groupId"> | null | undefined) => string;
+  formatContactNpub: (value: string | null | undefined) => string;
+  formatNpub: (value: string) => string;
+  buildContactShareEnvelope: (payload: SharedContactPayload) => ShareEnvelope;
+  sendShareMessage: (
+    payload: ShareEnvelope,
+    recipientPubkey: string,
+    senderSecretHex: string,
+    relays: string[] | string,
+  ) => Promise<void>;
+  readNostrIdentity: () => NostrIdentityInfo;
+  defaultNostrRelays: string[];
+  buildWalletMessageSyntheticEventId: (item: WalletMessageItem) => string;
+  buildCalendarInviteSyntheticEventId: (invite: PendingCalendarInvite) => string;
+  normalizeDmPeerHex: (value: string | null | undefined) => string | null;
+  showToast: (message: string, duration?: number) => void;
+  LS_NOSTR_RELAYS: string;
+  kvStorage: KVStorageLike;
+}
 
 export function useDmThreadUtils({
   // Reactive state values
@@ -39,7 +151,6 @@ export function useDmThreadUtils({
   dmArchivedThreadsRef,
   dmPeerProfilesRef,
   nostrIdentityRef,
-  groupChatsRef,
   isNip05VerifiedForRef,
   chatComposeInputRef,
   chatPhotoInputRef,
@@ -66,8 +177,8 @@ export function useDmThreadUtils({
   showToast,
   LS_NOSTR_RELAYS,
   kvStorage,
-}) {
-  const isUnreadThreadStatus = useCallback((status) => {
+}: UseDmThreadUtilsOptions) {
+  const isUnreadThreadStatus = useCallback((status: string | null | undefined) => {
     if (!status) return false;
     return (
       status !== "accepted" &&
@@ -80,8 +191,8 @@ export function useDmThreadUtils({
   }, []);
 
   const collectUnreadThreadItemEventIds = useCallback(
-    (messages, peerPubkey) => {
-      const unreadIds = new Set();
+    (messages: WalletDmMessage[], peerPubkey: string | null | undefined): string[] => {
+      const unreadIds = new Set<string>();
       messages.forEach((message) => {
         const item = messageItemsByEventId.get(message.eventId) || pendingMessageItemsByEventId.get(message.eventId);
         if (isUnreadThreadStatus(item?.status)) {
@@ -116,11 +227,14 @@ export function useDmThreadUtils({
       pendingCalendarInvites,
       pendingCalendarInvitesByEventId,
       pendingMessageItemsByEventId,
+      buildWalletMessageSyntheticEventId,
+      buildCalendarInviteSyntheticEventId,
+      normalizeDmPeerHex,
     ],
   );
 
   const dmPreviewForMessage = useCallback(
-    (msg) => {
+    (msg: WalletDmMessage): string => {
       if (msg.attachment?.type === "payment") {
         const historyEntry = paymentHistoryByEventId.get(msg.eventId.toLowerCase());
         if (historyEntry?.summary) {
@@ -133,7 +247,12 @@ export function useDmThreadUtils({
   );
 
   const peerLabelFor = useCallback(
-    (peerHex) => {
+    (peerHex: string): {
+      label: string;
+      subtitle?: string;
+      picture?: string;
+      verifiedNip05: string | null;
+    } => {
       const contact = contactIndex.get(peerHex);
       const profile = dmPeerProfilesRef.current.get(peerHex);
       const npub = formatNpubDisplay(peerHex);
@@ -152,11 +271,17 @@ export function useDmThreadUtils({
       const picture = pickPreferredProfilePhoto(profile?.picture, contact?.picture);
       return { label, subtitle, picture, verifiedNip05 };
     },
-    [contactIndex, formatNpubDisplay],
+    [contactIndex, formatNpubDisplay, dmPeerProfilesRef, isNip05VerifiedForRef, pickPreferredProfilePhoto, shortenNpubDisplay],
   );
 
   const sharedContactMetaFor = useCallback(
-    (npub, fallbackName, fallbackPicture) => {
+    (npub: string | null | undefined, fallbackName: string | null | undefined, fallbackPicture: string | null | undefined): {
+      label: string;
+      subtitle?: string;
+      picture?: string;
+      verifiedNip05: string | null;
+      npub: string;
+    } => {
       const normalized = npub ? normalizeNostrPubkey(npub) : null;
       const hex = normalized ? compressedToRawHex(normalized).toLowerCase() : null;
       const profile = hex ? dmPeerProfilesRef.current.get(hex) : undefined;
@@ -183,11 +308,14 @@ export function useDmThreadUtils({
         npub: npubDisplay || formatNpubDisplay(npub) || "",
       };
     },
-    [compressedToRawHex, formatNpubDisplay, normalizeNostrPubkey],
+    [compressedToRawHex, formatNpubDisplay, normalizeNostrPubkey, dmPeerProfilesRef, isNip05VerifiedForRef, pickPreferredProfilePhoto, shortenNpubDisplay],
   );
 
   const buildSharedContactPreview = useCallback(
-    (attachment, item) => {
+    (
+      attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
+      item: WalletMessageItem | null | undefined,
+    ): SharedContactPreview | null => {
       const attachmentNpub = attachment?.npub || item?.contact?.npub || "";
       const normalizedNpub = normalizeNostrPubkey(attachmentNpub);
       const contactHex = normalizedNpub ? compressedToRawHex(normalizedNpub).toLowerCase() : null;
@@ -218,14 +346,17 @@ export function useDmThreadUtils({
       return {
         contact: normalized,
         itemId: item?.id ?? attachment?.taskId ?? null,
-        status: item?.status ?? attachment?.status ?? null,
+        status: (item?.status ?? attachment?.status ?? null) as SharedContactPreview["status"],
       };
     },
-    [compressedToRawHex, makeContactId, normalizeContact, normalizeNostrPubkey],
+    [compressedToRawHex, makeContactId, normalizeContact, normalizeNostrPubkey, dmPeerProfilesRef, pickPreferredProfilePhoto],
   );
 
   const openSharedContactPreview = useCallback(
-    (attachment, item) => {
+    (
+      attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
+      item: WalletMessageItem | null | undefined,
+    ): void => {
       const preview = buildSharedContactPreview(attachment, item);
       if (!preview) {
         showToast("Unable to open shared contact", 2200);
@@ -233,11 +364,11 @@ export function useDmThreadUtils({
       }
       setSharedContactPreview(preview);
     },
-    [buildSharedContactPreview, showToast],
+    [buildSharedContactPreview, showToast, setSharedContactPreview],
   );
 
   const isArchivedDmThread = useCallback(
-    (thread) => {
+    (thread: WalletDmThread): boolean => {
       void dmArchivedThreadsVersion;
       const key = dmThreadKeyForThread(thread);
       const archivedAt = key ? dmArchivedThreadsRef.current.get(key) ?? 0 : 0;
@@ -246,11 +377,11 @@ export function useDmThreadUtils({
         (message) => !message.eventId.startsWith("draft-") && message.createdAt * 1000 > archivedAt,
       );
     },
-    [dmArchivedThreadsVersion],
+    [dmArchivedThreadsVersion, dmArchivedThreadsRef, dmThreadKeyForThread],
   );
 
   const matchesDmThreadSearch = useCallback(
-    (thread) => {
+    (thread: WalletDmThread): boolean => {
       if (!dmSearch.trim()) return true;
       const groupName = thread.groupId ? (groupChats.find((g) => g.groupId === thread.groupId)?.name ?? "") : "";
       const meta = thread.groupId ? { label: groupName, subtitle: undefined } : peerLabelFor(thread.peerPubkey);
@@ -261,14 +392,14 @@ export function useDmThreadUtils({
   );
 
   const openConversationForPeer = useCallback(
-    (peerHex) => {
+    (peerHex: string | null | undefined): boolean => {
       // Normalise to raw 64-char hex (strip "02"/"03" prefix if present)
       const raw = (peerHex || "").trim().toLowerCase();
       const normalizedPeer = /^(02|03)[0-9a-f]{64}$/.test(raw) ? raw.slice(2) : raw;
       if (!normalizedPeer) return false;
       // Match regardless of whether stored peerPubkey uses raw or compressed form
-      const peerMatches = (mp) => {
-        const lc = mp.toLowerCase();
+      const peerMatches = (peerPubkey: string) => {
+        const lc = peerPubkey.toLowerCase();
         return lc === normalizedPeer || lc === `02${normalizedPeer}` || lc === `03${normalizedPeer}`;
       };
       const hasThread = displayDmMessages.some((message) => peerMatches(message.peerPubkey));
@@ -300,11 +431,11 @@ export function useDmThreadUtils({
       setDmSearch("");
       return true;
     },
-    [displayDmMessages],
+    [displayDmMessages, setDmMessages, setActiveThreadPeer, setDmView, setChatView, setContactView, setActiveContactId, setContactDetailOverride, setContactReturnView, setDmSearch],
   );
 
   const openConversationForGroup = useCallback(
-    (groupId) => {
+    (groupId: string): boolean => {
       const hasThread = displayDmMessages.some((msg) => msg.groupId === groupId);
       if (!hasThread) {
         // Create a placeholder so the thread appears immediately
@@ -338,11 +469,11 @@ export function useDmThreadUtils({
       setDmSearch("");
       return true;
     },
-    [displayDmMessages],
+    [displayDmMessages, nostrIdentityRef, setDmMessages, setActiveThreadPeer, setActiveGroupId, setDmView, setChatView, setContactView, setActiveContactId, setContactDetailOverride, setContactReturnView, setDmSearch],
   );
 
   const buildShareRelayList = useCallback(
-    (relaySource) => {
+    (relaySource: string[] | null | undefined): string[] => {
       const storedRelays = (() => {
         try {
           const raw = kvStorage.getItem(LS_NOSTR_RELAYS);
@@ -367,11 +498,11 @@ export function useDmThreadUtils({
         ),
       );
     },
-    [defaultNostrRelays],
+    [defaultNostrRelays, kvStorage, LS_NOSTR_RELAYS],
   );
 
   const sendContactShareToPubkeys = useCallback(
-    async (sourceContact, recipientPubkeys) => {
+    async (sourceContact: Contact, recipientPubkeys: string[]): Promise<ContactShareResult> => {
       const sourceNpub = formatContactNpub(sourceContact.npub);
       if (!sourceNpub) {
         return { ok: false, error: "This contact is missing a valid npub." };
@@ -408,11 +539,13 @@ export function useDmThreadUtils({
       profileForm.displayName,
       profileForm.username,
       readNostrIdentity,
+      buildContactShareEnvelope,
+      sendShareMessage,
     ],
   );
 
   const handleShareContactToContact = useCallback(
-    async (recipient) => {
+    async (recipient: Contact): Promise<void> => {
       if (!shareContactSource) {
         setShareContactStatus("Select a contact to share first.");
         return;
@@ -434,8 +567,8 @@ export function useDmThreadUtils({
         setShareContactPickerMode("recipient");
         setShareContactSource(null);
         showToast(`Contact sent to ${recipient.name || recipient.address || "contact"}`, 3000);
-      } catch (err) {
-        setShareContactStatus(err?.message || "Unable to send contact.");
+      } catch (error) {
+        setShareContactStatus((error as { message?: string } | null)?.message || "Unable to send contact.");
       } finally {
         setShareContactBusy(false);
       }
@@ -445,12 +578,17 @@ export function useDmThreadUtils({
       sendContactShareToPubkeys,
       shareContactSource,
       showToast,
+      setShareContactStatus,
+      setShareContactBusy,
+      setShareContactPickerOpen,
+      setShareContactPickerMode,
+      setShareContactSource,
     ],
   );
 
   const closeAttachTray = useCallback(() => {
     setAttachTrayOpen(false);
-  }, []);
+  }, [setAttachTrayOpen]);
 
   const handleToggleAttachTray = useCallback(() => {
     setShareContactPickerOpen(false);
@@ -466,15 +604,15 @@ export function useDmThreadUtils({
       }
       return next;
     });
-  }, []);
+  }, [chatComposeInputRef, setAttachTrayOpen, setShareContactPickerOpen, setShareContactPickerMode, setShareContactSource, setShareContactStatus]);
 
   const handleOpenChatPhotoPicker = useCallback(() => {
     chatPhotoInputRef.current?.click();
-  }, []);
+  }, [chatPhotoInputRef]);
 
   const handleOpenChatFilePicker = useCallback(() => {
     chatFileInputRef.current?.click();
-  }, []);
+  }, [chatFileInputRef]);
 
   const handleOpenChatContactPicker = useCallback(() => {
     closeAttachTray();
@@ -483,7 +621,7 @@ export function useDmThreadUtils({
     setShareContactSource(null);
     setShareContactStatus(null);
     setShareContactPickerOpen(true);
-  }, [activeThreadPeer, closeAttachTray]);
+  }, [activeThreadPeer, closeAttachTray, shareContactOpenedAtPeerRef, setShareContactPickerMode, setShareContactSource, setShareContactStatus, setShareContactPickerOpen]);
 
   return {
     isUnreadThreadStatus,

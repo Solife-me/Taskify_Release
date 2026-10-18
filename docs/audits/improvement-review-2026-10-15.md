@@ -382,7 +382,7 @@ per step.
 | --- | --- | --- | --- |
 | C2-1 | Approve | 2026-10-15 | Done (quick-add surface is a known gap) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
-| C2-3 | Approve all stages | 2026-10-15 | Stages 1–3 done. Stage 4 has made Chat independent, reduced the Cashu modal to wallet-only code and verified wallet-off operation; typing remains (see Checkpoint) |
+| C2-3 | Approve all stages | 2026-10-15 | Stages 1–3 done. Stage 4 has made Chat independent and reduced the Cashu modal to wallet-only code; wallet-off hooks and build graph are tested. Chat typing and remaining feature extraction continue (see Checkpoint); live two-account messaging verification remains outstanding |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Identity layer done; signer findings below. 2026-10-16: maintainer wants NIP-07 and NIP-46 support built later (sequence below) |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Done (PWA); iOS parity in chunk 9 |
 | C2-6 | Approve | 2026-10-15 | Done: 604 → 458 KB gzipped startup, CI budget 470 KB |
@@ -767,6 +767,14 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     - Chat typing pass 5 checks `useDmThreadActions` without changing behavior. Its state refs,
       setters, group/contact inputs and callbacks now have explicit contracts, and the legacy
       dependency-array exceptions are gone.
+    - Chat typing pass 6 (2026-10-18) checks `useDmThreadUtils`: explicit contracts for thread
+      navigation, unread items, contact shares, refs and setters; the unused group ref argument
+      is removed and callback dependencies are complete. Existing error-message and navigation
+      behavior is preserved. PWA lint, `tsc -b` and Vitest pass (556 tests, 12 skipped).
+      This is React orchestration; Rust/UniFFI/WASM would add a boundary without a gain.
+      Follow-up found during review: restore cached profile relay trimming lost in pass 4,
+      with a failing regression test first. The attachment tray also still schedules a blur
+      inside a state updater; move that work out in a separately tested step.
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.
