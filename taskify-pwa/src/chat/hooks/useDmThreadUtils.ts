@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { Contact, ContactProfile } from "../../lib/contacts";
 import type { GroupChat } from "../../lib/groupChatState";
 import type {
@@ -59,6 +59,7 @@ export interface UseDmThreadUtilsOptions {
   dmSearch: string;
   displayDmMessages: WalletDmMessage[];
   activeThreadPeer: string | null;
+  attachTrayOpen: boolean;
   shareContactSource: Contact | null;
   profileForm: ProfileForm;
   setSharedContactPreview: Dispatch<SetStateAction<SharedContactPreview | null>>;
@@ -127,6 +128,7 @@ export function useDmThreadUtils({
   dmSearch,
   displayDmMessages,
   activeThreadPeer,
+  attachTrayOpen,
   shareContactSource,
   profileForm,
   // Stable setters
@@ -595,16 +597,14 @@ export function useDmThreadUtils({
     setShareContactPickerMode("recipient");
     setShareContactSource(null);
     setShareContactStatus(null);
-    setAttachTrayOpen((current) => {
-      const next = !current;
-      if (next) {
-        window.setTimeout(() => {
-          chatComposeInputRef.current?.blur();
-        }, 0);
-      }
-      return next;
-    });
-  }, [chatComposeInputRef, setAttachTrayOpen, setShareContactPickerOpen, setShareContactPickerMode, setShareContactSource, setShareContactStatus]);
+    setAttachTrayOpen((current) => !current);
+  }, [setAttachTrayOpen, setShareContactPickerOpen, setShareContactPickerMode, setShareContactSource, setShareContactStatus]);
+
+  useEffect(() => {
+    if (!attachTrayOpen) return;
+    const timer = window.setTimeout(() => chatComposeInputRef.current?.blur(), 0);
+    return () => window.clearTimeout(timer);
+  }, [attachTrayOpen, chatComposeInputRef]);
 
   const handleOpenChatPhotoPicker = useCallback(() => {
     chatPhotoInputRef.current?.click();

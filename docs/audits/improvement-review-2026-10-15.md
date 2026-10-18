@@ -772,8 +772,7 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       is removed and callback dependencies are complete. Existing error-message and navigation
       behavior is preserved. PWA lint, `tsc -b` and Vitest pass (556 tests, 12 skipped).
       This is React orchestration; Rust/UniFFI/WASM would add a boundary without a gain.
-      The attachment tray still schedules a blur
-      inside a state updater; move that work out in a separately tested step.
+      The attachment tray updater issue found here is fixed in the separately tested step below.
     - Cache regression fix (2026-10-18): restored relay trimming before deduplication in
       `normalizeCachedContactProfile`, accidentally removed during typing pass 4. The regression
       test first failed with whitespace and duplicate relay URLs, then passed with the original
@@ -785,6 +784,13 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       API (the old relay argument was ignored). New lifecycle tests cover refresh, listener cleanup,
       disabled identity and subscription release without network access. PWA lint, `tsc -b` and
       Vitest pass (560 tests, 12 skipped). Decryption and wire behavior are unchanged.
+    - Attachment-tray fix (2026-10-18): three regression tests first reproduced duplicate blur
+      timers under StrictMode and stale blur after close/unmount. The updater now only toggles
+      state; an effect owns the timer and cancels it on close/unmount. PWA lint, `tsc -b` and
+      Vitest pass (563 tests, 12 skipped). A fresh headless Brave profile loaded the real hook
+      from the configured Vite dev server and verified open → one native blur → close under
+      StrictMode, with external web/relay URLs blocked. This was an isolated browser harness,
+      not end-to-end Chat or two-account messaging verification; no account or board was created.
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.
