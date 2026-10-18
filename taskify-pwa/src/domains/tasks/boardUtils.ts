@@ -278,3 +278,8 @@ export function nextOrderForCalendarBoard(
   }
   return boardEvents.reduce((max, event) => Math.max(max, event.order ?? -1), -1) + 1;
 }
+
+/** A compound board's key for one of its child boards' lists. */
+export function compoundColumnKey(boardId: string, columnId: string): string {
+  return `${boardId}::${columnId}`;
+}
