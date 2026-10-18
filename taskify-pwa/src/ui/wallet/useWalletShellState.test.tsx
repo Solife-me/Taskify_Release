@@ -6,11 +6,11 @@ import { useWalletShellState } from "./useWalletShellState";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-async function render(activePage: string) {
+async function render(activePage: string, walletEnabled = true) {
   const loadWalletModal = vi.fn(async () => ({}));
   let state: ReturnType<typeof useWalletShellState>;
   function Harness() {
-    state = useWalletShellState({ activePage, loadWalletModal, showToast: vi.fn() });
+    state = useWalletShellState({ activePage, loadWalletModal, showToast: vi.fn(), walletEnabled });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -28,6 +28,17 @@ test("Chat is not a wallet shell and never prefetches the wallet", async () => {
   } finally {
     await act(async () => view.root.unmount());
     vi.useRealTimers();
+  }
+});
+
+test("a direct wallet route cannot mount or load the wallet while it is disabled", async () => {
+  const view = await render("wallet", false);
+  try {
+    expect(view.state().showWalletShell).toBe(false);
+    await act(async () => view.state().prefetchWalletModal());
+    expect(view.loadWalletModal).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => view.root.unmount());
   }
 });
 

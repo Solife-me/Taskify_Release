@@ -119,6 +119,8 @@ Backups
 - `LockedTokenManager.ts` — locked token bookkeeping
 - `CashuWalletModal` is optional, lazy and wallet-only. Chat never imports it; the wallet may read
   Chat-owned contacts through `ChatRuntime` for payment selection and scanned-contact metadata.
+- Always pass `walletEnabled` into `useWalletShellState`; it synchronously prevents a disabled
+  wallet route or prefetch request from loading the Cashu chunk before navigation redirects.
 
 ---
 

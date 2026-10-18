@@ -382,7 +382,7 @@ per step.
 | --- | --- | --- | --- |
 | C2-1 | Approve | 2026-10-15 | Done (quick-add surface is a known gap) |
 | C2-2 | Not selected (declined) | 2026-10-15 | — |
-| C2-3 | Approve all stages | 2026-10-15 | Stages 1–3 done. Stage 4 has made Chat independent and reduced the Cashu modal to wallet-only code; runtime verification and typing remain (see Checkpoint) |
+| C2-3 | Approve all stages | 2026-10-15 | Stages 1–3 done. Stage 4 has made Chat independent, reduced the Cashu modal to wallet-only code and verified wallet-off operation; typing remains (see Checkpoint) |
 | C2-4 | Approve identity layer; explore signers | 2026-10-15 | Identity layer done; signer findings below. 2026-10-16: maintainer wants NIP-07 and NIP-46 support built later (sequence below) |
 | C2-5 | Approve, after C2-4 | 2026-10-15 | Done (PWA); iOS parity in chunk 9 |
 | C2-6 | Approve | 2026-10-15 | Done: 604 → 458 KB gzipped startup, CI budget 470 KB |
@@ -738,10 +738,15 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
     - The full PWA gate, production build and startup graph pass after that removal: 546 tests
       pass (12 skipped), startup is 450.7 KB gzipped against the 470 KB budget, and the Chat route
       still contains no wallet, Cashu SDK or payment-support chunks.
+    - Wallet-off verification found and fixed one real bug: a direct `/wallet` route could render
+      the lazy wallet shell for one frame before the redirect effect ran, fetching Cashu on a
+      device where the wallet was disabled. `useWalletShellState` now gates both rendering and
+      prefetching synchronously on wallet availability. The regression test failed first, then the
+      full gate passed with 547 tests (12 skipped) and a 450.8 KB startup graph; Chat remains
+      mounted off-page for DM sync/unread updates and its route graph contains no wallet or Cashu
+      chunks.
   - **Remaining, in order:**
-    1. Check with the wallet turned off: Chat loads, syncs and counts unread, and no Cashu
-       chunk loads.
-    2. Type the Chat runtime, hooks and views incrementally, removing their temporary
+    1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.
   - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
     from `chat_block_clean`.

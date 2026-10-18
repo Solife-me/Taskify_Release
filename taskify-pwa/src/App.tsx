@@ -1680,6 +1680,7 @@ export default function App() {
     activePage,
     loadWalletModal: loadCashuWalletModal,
     showToast,
+    walletEnabled,
   });
   const shouldReloadForNavigation = useCallback(() => false, []);
 
