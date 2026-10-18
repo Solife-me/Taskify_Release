@@ -754,6 +754,12 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       `useContactLookup` no longer use `@ts-nocheck`; their callback dependencies are explicit and
       npub encoding now follows nostr-tools' hex-string contract instead of passing a byte array
       through an unchecked call.
+    - Chat typing pass 3 checks `useChatGroupDerived` and `useContactDetail`, gives their contact,
+      group, identity and profile-photo inputs explicit contracts, and removes eight stale runtime
+      arguments. It also found a real profile-photo bug: when a browser could load an image but
+      not create a 2D canvas context, the processor returned a string that its caller treated as an
+      upload object and lost the draft. A failing test was added first; the fallback now preserves
+      the original data URL and blob.
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.

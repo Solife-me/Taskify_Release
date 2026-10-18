@@ -1,13 +1,54 @@
-// @ts-nocheck
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, type RefObject } from "react";
 import {
   CHAT_ATTACH_TRAY_MAX_HEIGHT,
   CHAT_ATTACH_TRAY_MIN_HEIGHT,
 } from "../chatHelpers";
-import type { Contact } from "../../lib/contacts";
+import type { Contact, ContactProfile } from "../../lib/contacts";
 import type { GroupChat } from "../../lib/groupChatState";
 import type { GroupAvatarMember } from "../chatUi";
+import type { NostrIdentity, NostrIdentityInfo } from "../chatHelpers";
 import type { WalletDmThread } from "./useDmState";
+
+type ChatProfileCard = Omit<
+  Contact,
+  "about" | "address" | "displayName" | "nip05" | "picture" | "updatedAt" | "username"
+> & {
+  about: string;
+  address: string;
+  displayName: string;
+  nip05: string;
+  picture: string;
+  updatedAt: number | null;
+  username: string;
+};
+
+export interface UseChatGroupDerivedOptions {
+  activeThread: WalletDmThread | null;
+  activeGroupChat: GroupChat | null;
+  contactByHex: Map<string, Contact>;
+  sortedContacts: Contact[];
+  myCardNpub: string;
+  myCardName: string;
+  profileCard: ChatProfileCard;
+  groupMembersSearch: string;
+  chatKeyboardHeight: number;
+  chatKeyboardHeightCache: number;
+  nostrIdentityInfo: NostrIdentityInfo;
+  nostrIdentityRef: RefObject<NostrIdentity | null>;
+  dmPeerProfilesRef: RefObject<Map<string, ContactProfile>>;
+  getPeerProfile: (pubkey: string) => ContactProfile | undefined;
+  peerLabelFor: (pubkey: string) => { label: string; picture?: string; subtitle?: string };
+  compressedToRawHex: (value: string) => string;
+  normalizeNostrPubkey: (value: string) => string | null;
+  formatNpub: (value: string) => string;
+  sanitizeUsername: (value: string) => string;
+  contactDisplayLabel: (contact: Contact) => string;
+  formatContactUsername: (value?: string) => string;
+  formatContactNpub: (value: string | null | undefined) => string;
+  pickPreferredProfilePhoto: (...candidates: Array<string | null | undefined>) => string | undefined;
+  shortenNpubDisplay: (value: string | null | undefined, lead?: number, tail?: number) => string;
+  profileUpdatedAt: number | null;
+}
 
 export function useChatGroupDerived({
   activeThread,
@@ -35,7 +76,7 @@ export function useChatGroupDerived({
   pickPreferredProfilePhoto,
   shortenNpubDisplay,
   profileUpdatedAt,
-}) {
+}: UseChatGroupDerivedOptions) {
   const activeConversationContact = useMemo(() => {
     if (!activeThread || activeThread.groupId) return null;
     const ownNpub = normalizeNostrPubkey(myCardNpub);
@@ -146,7 +187,7 @@ export function useChatGroupDerived({
       }
       const recentMembers = recentMemberHexes
         .map((memberHex) => memberMap.get(memberHex))
-        .filter(Boolean);
+        .filter((member): member is (typeof resolvedMembers)[number] => member !== undefined);
       const remainingMembers = resolvedMembers
         .filter((member) => !recentSeen.has(member.memberHex))
         .sort((left, right) => Number(Boolean(right.picture)) - Number(Boolean(left.picture)) || left.index - right.index);
@@ -218,11 +259,13 @@ export function useChatGroupDerived({
     activeGroupChat,
     contactByHex,
     contactDisplayLabel,
+    dmPeerProfilesRef,
     formatContactUsername,
     formatNpub,
     myCardName,
     myCardNpub,
     nostrIdentityInfo.identity?.pubkey,
+    nostrIdentityRef,
     peerLabelFor,
     pickPreferredProfilePhoto,
     profileCard.about,

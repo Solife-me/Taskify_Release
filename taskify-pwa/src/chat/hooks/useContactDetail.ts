@@ -1,52 +1,91 @@
-// @ts-nocheck
 import { useCallback, useMemo } from "react";
 import type { Contact } from "../../lib/contacts";
 import type { FileServerType } from "../../lib/fileStorage";
 import { uploadAvatar } from "../../nostr/Nip96Client";
 import { parseFileServers, findServerEntry } from "../../lib/fileStorage";
+import type { NostrIdentity, SharedContactPreview } from "../chatHelpers";
 import { useScannedContactDerived } from "./useScannedContactDerived";
+import type {
+  ContactEditDraft,
+  ContactSyncMeta,
+  ContactViewMode,
+  Nip05CheckState,
+} from "./useContactsState";
 
 const PROFILE_PHOTO_MAX_DIMENSION = 400;
 const PROFILE_PHOTO_CACHE_LIMIT_BYTES = 512 * 1024; // 512 KB
 
+type ProfileForm = {
+  username: string;
+  displayName: string;
+  lud16: string;
+  nip05: string;
+  about: string;
+  picture: string;
+};
+
+type ProfilePhotoUpload = { blob: Blob; name?: string; contentType?: string };
+
+type ProcessedProfilePhoto = {
+  dataUrl: string;
+  blob: Blob;
+  contentType: string;
+  name?: string;
+};
+
+type ActiveGroupMember = {
+  memberHex: string;
+  isSelf: boolean;
+  contactId: string | null;
+  detailContact: Contact;
+};
+
+export async function buildOriginalProfilePhoto(
+  dataUrl: string,
+  file: Pick<File, "name" | "type">,
+  fetchBlob: (url: string) => Promise<Blob> = async (url) => fetch(url).then((response) => response.blob()),
+): Promise<ProcessedProfilePhoto> {
+  const blob = await fetchBlob(dataUrl);
+  return {
+    dataUrl,
+    blob,
+    contentType: blob.type || file.type || "image/jpeg",
+    name: file.name,
+  };
+}
+
 interface UseContactDetailOptions {
   // State values
-  nip05Checks: Record<string, any>;
+  nip05Checks: Record<string, Nip05CheckState>;
   contacts: Contact[];
   contactsRef: React.RefObject<Contact[]>;
-  contactSyncMeta: any;
+  contactSyncMeta: ContactSyncMeta;
   contactsSyncEnabled: boolean;
   scannedContact: Contact | null;
-  sharedContactPreview: any | null;
+  sharedContactPreview: SharedContactPreview | null;
   contactDetailOverride: Contact | null;
   activeContactId: string | null;
-  contactEditDraft: any;
-  profileForm: any;
-  profileUpdatedAt: number | null;
-  nostrIdentityInfo: any;
-  myCardName: string;
+  contactEditDraft: ContactEditDraft;
+  profileForm: ProfileForm;
   profileCard: any;
-  activeGroupMembers: any[];
-  activeConversationContact: Contact | null;
+  activeGroupMembers: ActiveGroupMember[];
   nostrMissingReason: string | null;
   preferredFileServer: string;
   fileServers: string;
-  profilePhotoBusy: boolean;
 
   // Stable refs
-  nostrIdentityRef: React.RefObject<any>;
   contactsPublishQueuedRef: React.RefObject<boolean>;
-  profilePhotoUploadRef: React.RefObject<any>;
+  profilePhotoUploadRef: React.RefObject<ProfilePhotoUpload | null>;
 
   // Stable setters / callbacks
-  setNip05Checks: (fn: any) => void;
-  setScannedContact: (contact: Contact | null | ((prev: any) => any)) => void;
-  setSharedContactPreview: (preview: any | null | ((prev: any) => any)) => void;
+  setNip05Checks: React.Dispatch<React.SetStateAction<Record<string, Nip05CheckState>>>;
+  setScannedContact: React.Dispatch<React.SetStateAction<Contact | null>>;
+  setSharedContactPreview: React.Dispatch<React.SetStateAction<SharedContactPreview | null>>;
   setContactDetailOverride: (contact: Contact | null) => void;
   setActiveContactId: (id: string | null) => void;
-  setContactEditDraft: (draft: any | ((prev: any) => any)) => void;
-  setContactReturnView: (view: string) => void;
-  setContactView: (view: string) => void;
+  setContactEditDraft: React.Dispatch<React.SetStateAction<ContactEditDraft>>;
+  setContactReturnView: (view: "new-message" | "group-members" | "group-info") => void;
+  setContactView: (view: ContactViewMode) => void;
   setDmSearch: (search: string) => void;
   setChatView: (view: string) => void;
   setContactEditError: (error: string) => void;
@@ -55,9 +94,9 @@ interface UseContactDetailOptions {
   setShowCustomContactFields: (show: boolean) => void;
   setProfilePhotoError: (error: string) => void;
   setProfilePhotoBusy: (busy: boolean) => void;
-  setProfileStatus: (status: string) => void;
+  setProfileStatus: (status: "idle" | "loading" | "ready" | "publishing" | "error") => void;
   setProfileMessage: (message: string) => void;
-  setProfileForm: (form: any | ((prev: any) => any)) => void;
+  setProfileForm: React.Dispatch<React.SetStateAction<ProfileForm>>;
 
   // Functions from other hooks (stable callbacks)
   normalizeNip05: (nip05: string | null) => string | null;
@@ -65,19 +104,20 @@ interface UseContactDetailOptions {
   compressedToRawHex: (npub: string) => string;
   resolveNip05Record: (nip05: string) => Promise<{ pubkey: string }>;
   upsertContact: (contact: Partial<Contact>) => Contact | null;
-  publishContactsToNostr: (opts?: { silent?: boolean; publicFollowsOverride?: any[] }) => Promise<void>;
-  persistContactSyncMeta: (meta: Partial<any>) => any | null;
+  publishContactsToNostr: (opts?: {
+    silent?: boolean;
+    publicFollowsOverride?: ContactSyncMeta["publicFollows"];
+  }) => Promise<void>;
+  persistContactSyncMeta: (meta: Partial<ContactSyncMeta>) => ContactSyncMeta | null;
   sanitizeUsername: (username: string) => string;
   formatContactNpub: (npub: string) => string;
   formatContactUsername: (username: string) => string;
   showToast: (message: string, duration?: number) => void;
-  peerLabelFor: (hex: string) => { label: string; picture?: string; subtitle?: string };
-  closeAttachTray: () => void;
   onAcceptMessage: (itemId: string) => void;
   handleReturnToProfileCard: () => void;
   resetContactEditDraft: () => void;
-  ensureNostrIdentity: () => any | null;
-  publishProfileMetadata: (draft: any) => Promise<boolean>;
+  ensureNostrIdentity: () => NostrIdentity | null;
+  publishProfileMetadata: (draft: ProfileForm) => Promise<boolean>;
   isDataUrl: (url: string) => boolean;
   estimateDataUrlSize: (dataUrl: string) => number;
 }
@@ -95,17 +135,11 @@ export function useContactDetail(options: UseContactDetailOptions) {
     activeContactId,
     contactEditDraft,
     profileForm,
-    profileUpdatedAt,
-    nostrIdentityInfo,
-    myCardName,
     profileCard,
     activeGroupMembers,
-    activeConversationContact,
     nostrMissingReason,
     preferredFileServer,
     fileServers,
-    profilePhotoBusy,
-    nostrIdentityRef,
     contactsPublishQueuedRef,
     profilePhotoUploadRef,
     setNip05Checks,
@@ -138,8 +172,6 @@ export function useContactDetail(options: UseContactDetailOptions) {
     formatContactNpub,
     formatContactUsername,
     showToast,
-    peerLabelFor,
-    closeAttachTray,
     onAcceptMessage,
     handleReturnToProfileCard,
     resetContactEditDraft,
@@ -235,7 +267,15 @@ export function useContactDetail(options: UseContactDetailOptions) {
       }
       setChatView("new-message");
     },
-    [activeGroupMembers],
+    [
+      activeGroupMembers,
+      setActiveContactId,
+      setChatView,
+      setContactDetailOverride,
+      setContactReturnView,
+      setContactView,
+      setDmSearch,
+    ],
   );
 
   const buildContactFields = useCallback(
@@ -297,7 +337,7 @@ export function useContactDetail(options: UseContactDetailOptions) {
         }));
       }
     },
-    [compressedToRawHex, normalizeNostrPubkey, resolveNip05Record],
+    [compressedToRawHex, normalizeNostrPubkey, resolveNip05Record, setNip05Checks],
   );
 
   const ensureNip05Verification = useCallback(
@@ -368,6 +408,7 @@ export function useContactDetail(options: UseContactDetailOptions) {
     publishContactsToNostr,
     scannedContact,
     scannedContactSaved,
+    setScannedContact,
     showToast,
     upsertContact,
   ]);
@@ -411,6 +452,7 @@ export function useContactDetail(options: UseContactDetailOptions) {
     sharedContactPreview,
     sharedContactPreviewCanAccept,
     sharedContactPreviewSaved,
+    setSharedContactPreview,
     showToast,
     upsertContact,
   ]);
@@ -484,7 +526,23 @@ export function useContactDetail(options: UseContactDetailOptions) {
     setContactLookupInput("");
     setShowCustomContactFields(true);
     setContactView("edit");
-  }, [activeContact, activeContactId, contactDetailOverride, profileCard, resetContactEditDraft]);
+  }, [
+    activeContact,
+    activeContactId,
+    contactDetailOverride,
+    profileCard,
+    profilePhotoUploadRef,
+    resetContactEditDraft,
+    sanitizeUsername,
+    setContactEditDraft,
+    setContactEditError,
+    setContactLookupError,
+    setContactLookupInput,
+    setContactView,
+    setProfilePhotoBusy,
+    setProfilePhotoError,
+    setShowCustomContactFields,
+  ]);
 
   const handleCancelContactEdit = useCallback(() => {
     setContactEditError("");
@@ -495,7 +553,15 @@ export function useContactDetail(options: UseContactDetailOptions) {
       return;
     }
     setContactView(detailTarget ? "detail" : "list");
-  }, [contactEditDraft.isProfile, detailTarget, handleReturnToProfileCard]);
+  }, [
+    contactEditDraft.isProfile,
+    detailTarget,
+    handleReturnToProfileCard,
+    setContactEditError,
+    setContactLookupError,
+    setContactView,
+    setShowCustomContactFields,
+  ]);
 
   const handleToggleFollowDetailContact = useCallback(() => {
     if (!detailTarget) return;
@@ -578,13 +644,7 @@ export function useContactDetail(options: UseContactDetailOptions) {
         const needsResize =
           image.width > PROFILE_PHOTO_MAX_DIMENSION || image.height > PROFILE_PHOTO_MAX_DIMENSION;
         if (!needsResize && initialSize <= PROFILE_PHOTO_CACHE_LIMIT_BYTES) {
-          const blobDirect = await fetch(trimmed).then((res) => res.blob());
-          return {
-            dataUrl: trimmed,
-            blob: blobDirect,
-            contentType: blobDirect.type || file.type || "image/jpeg",
-            name: file.name,
-          };
+          return buildOriginalProfilePhoto(trimmed, file);
         }
         const maxSide = Math.max(image.width || 1, image.height || 1);
         const scale = maxSide ? Math.min(1, PROFILE_PHOTO_MAX_DIMENSION / maxSide) : 1;
@@ -596,7 +656,7 @@ export function useContactDetail(options: UseContactDetailOptions) {
         );
         const ctx = canvas.getContext("2d");
         if (!ctx) {
-          return trimmed;
+          return buildOriginalProfilePhoto(trimmed, file);
         }
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
@@ -624,7 +684,7 @@ export function useContactDetail(options: UseContactDetailOptions) {
         return null;
       }
     },
-    [],
+    [estimateDataUrlSize, setProfilePhotoError],
   );
 
   const handleProfilePhotoChange = useCallback(
@@ -647,14 +707,20 @@ export function useContactDetail(options: UseContactDetailOptions) {
         setProfilePhotoBusy(false);
       }
     },
-    [processProfilePhotoFile],
+    [
+      processProfilePhotoFile,
+      profilePhotoUploadRef,
+      setContactEditDraft,
+      setProfilePhotoBusy,
+      setProfilePhotoError,
+    ],
   );
 
   const handleClearProfilePhoto = useCallback(() => {
     setProfilePhotoError("");
     setContactEditDraft((prev) => ({ ...prev, picture: "" }));
     profilePhotoUploadRef.current = null;
-  }, []);
+  }, [profilePhotoUploadRef, setContactEditDraft, setProfilePhotoError]);
 
   const handleContactEditSubmit = useCallback(
     async (event?: React.FormEvent) => {
@@ -783,21 +849,29 @@ export function useContactDetail(options: UseContactDetailOptions) {
     },
     [
       contactEditDraft,
+      contactsPublishQueuedRef,
+      contactsRef,
       contactsSyncEnabled,
       ensureNostrIdentity,
       nostrMissingReason,
       preferredFileServer,
       fileServers,
       profileForm,
+      profilePhotoUploadRef,
       publishContactsToNostr,
       publishProfileMetadata,
+      isDataUrl,
+      sanitizeUsername,
+      setActiveContactId,
+      setContactEditDraft,
+      setContactEditError,
+      setContactView,
       setProfileMessage,
       setProfilePhotoBusy,
       setProfilePhotoError,
       setProfileStatus,
       setProfileForm,
       upsertContact,
-      uploadAvatar,
     ],
   );
 
