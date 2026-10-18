@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useCallback } from "react";
 import { nip19 } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -120,8 +119,9 @@ export function useContactLookup({
           try {
             const decoded = nip19.decode(trimmed.toLowerCase());
             if (decoded.type === "npub" && decoded.data) {
-              if (typeof decoded.data === "string" && /^[0-9a-f]{64}$/i.test(decoded.data)) return decoded.data.toLowerCase();
-              if (decoded.data instanceof Uint8Array) return bytesToHex(decoded.data).toLowerCase();
+              const decodedData: unknown = decoded.data;
+              if (typeof decodedData === "string" && /^[0-9a-f]{64}$/i.test(decodedData)) return decodedData.toLowerCase();
+              if (decodedData instanceof Uint8Array) return bytesToHex(decodedData).toLowerCase();
             }
             if (decoded.type === "nprofile" && decoded.data) {
               const pubkey = (decoded.data as any)?.pubkey;
@@ -288,15 +288,17 @@ export function useContactLookup({
     compressedToRawHex,
     contactLookupBusy,
     contactLookupInput,
+    contactsPublishQueuedRef,
     defaultNostrRelays,
     ensureNostrPool,
     formatNpub,
+    setContactLookupBusy,
+    setContactLookupError,
+    setContactLookupInput,
     setActiveContactId,
     setContactView,
     normalizeNip05,
-    normalizeNostrPubkey,
     resolveNip05Record,
-    parseProfileContent,
     upsertContact,
   ]);
 
@@ -323,7 +325,7 @@ export function useContactLookup({
       const message = err?.message || "Unable to read from clipboard.";
       setContactLookupError(message);
     }
-  }, [contactLookupBusy, contactLookupInput, handleLookupContact]);
+  }, [contactLookupBusy, contactLookupInput, handleLookupContact, setContactLookupError, setContactLookupInput]);
 
   const handleImportPublicFollow = useCallback(
     async (npub: string) => {
@@ -333,7 +335,7 @@ export function useContactLookup({
       setContactLookupInput(trimmed);
       await handleLookupContact(trimmed);
     },
-    [handleLookupContact],
+    [handleLookupContact, setContactLookupInput, setPublicFollowPickerOpen],
   );
 
     const handleScannedContactPayload = useCallback(
@@ -409,7 +411,7 @@ export function useContactLookup({
       defaultNostrRelays,
       ensureNostrPool,
       formatNpub,
-      parseProfileContent,
+      setScannedContact,
       setScannerMessage,
       setShowScanner,
     ],
@@ -418,7 +420,7 @@ export function useContactLookup({
   const handleDeleteContact = useCallback((id: string) => {
     setContacts((prev) => prev.filter((c) => c.id !== id));
     contactsPublishQueuedRef.current = true;
-  }, []);
+  }, [contactsPublishQueuedRef, setContacts]);
 
   const buildContactShareValue = useCallback(
     (contact: Contact): string | null => {
@@ -457,7 +459,7 @@ export function useContactLookup({
         nip05: contact.nip05?.trim() || undefined,
       });
     },
-    [encodeContactPayload, formatNpub],
+    [formatNpub],
   );
 
   return {

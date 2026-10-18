@@ -750,6 +750,10 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       `useDmMessageDerived`, and `useDmThreadDerived`). Their inputs now have explicit contracts,
       two stale thread-derivation inputs are gone, and the lint exemption is an explicit allowlist
       of the remaining unchecked hooks instead of a wildcard that could hide new debt.
+    - Chat typing pass 2 checks the contact state and lookup boundary. `useContactsState` and
+      `useContactLookup` no longer use `@ts-nocheck`; their callback dependencies are explicit and
+      npub encoding now follows nostr-tools' hex-string contract instead of passing a byte array
+      through an unchecked call.
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.

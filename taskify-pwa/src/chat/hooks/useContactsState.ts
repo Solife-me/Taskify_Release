@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
@@ -624,7 +623,7 @@ export function useContactsState({
       });
       return result;
     },
-    [normalizeContact, normalizeNostrPubkey, setContacts, makeContactId, formatContactNpub],
+    [setContacts],
   );
 
   const compressedToRawHex = useCallback((value: string) => {
@@ -663,14 +662,14 @@ export function useContactsState({
       }
       if (rawHex) {
         try {
-          return nip19.npubEncode(hexToBytes(rawHex));
+          return nip19.npubEncode(rawHex);
         } catch {
           return rawHex;
         }
       }
       return candidate;
     },
-    [normalizeNostrPubkey],
+    [],
   );
 
   return {
