@@ -295,6 +295,7 @@ import { WD_SHORT } from "./domains/appTypes";
 import { BoardSortSheet } from "./ui/board/BoardSortSheet";
 import { RailBoardList } from "./ui/layout/RailBoardList";
 import { BoardPage } from "./ui/board/BoardPage";
+import { clearInlineDraft, getInlineDraft } from "./ui/board/inlineDrafts";
 import { TaskActionsProvider, type TaskActions, type TaskView } from "./ui/task/taskActions";
 import { useUpcomingPreferences } from "./domains/upcoming/upcomingPreferences";
 import { UpdateToast } from "./ui/app/UpdateToast";
@@ -2517,7 +2518,6 @@ export default function App() {
     reminderPayloadRef,
     setPushError,
   } = usePushNotifications({ settings, setSettings, workerBaseUrl, vapidPublicKey, defaultRelays, nostrPublish });
-  const [inlineTitles, setInlineTitles] = useState<Record<string, string>>({});
   const [addMenuKey, setAddMenuKey] = useState<string | null>(null);
   const [voiceDictationKey, setVoiceDictationKey] = useState<string | null>(null);
   const [pendingFocusColumnId, setPendingFocusColumnId] = useState<string | null>(null);
@@ -5535,7 +5535,7 @@ export default function App() {
 
   function addInlineTask(key: string) {
     if (!currentBoard) return;
-    const raw = (inlineTitles[key] || "").trim();
+    const raw = getInlineDraft(key).trim();
     if (!raw) {
       openInlineTaskEditor(key);
       return;
@@ -5652,7 +5652,7 @@ export default function App() {
       if (totalCreated > 1) {
         showToast(`Added ${totalCreated} items.`);
       }
-      setInlineTitles(prev => ({ ...prev, [key]: "" }));
+      clearInlineDraft(key);
       return;
     }
 
@@ -5686,7 +5686,7 @@ export default function App() {
     animateTaskArrival(originRect, t, currentBoard);
     setTasks(prev => [...prev, t]);
     maybePublishTask(t).catch(() => {});
-    setInlineTitles(prev => ({ ...prev, [key]: "" }));
+    clearInlineDraft(key);
   }
 
   const addSharedBoardFromInbox = useCallback(
@@ -7693,8 +7693,6 @@ export default function App() {
             scrollerRef={scrollerRef}
             bibleScrollerRef={bibleScrollerRef}
             inlineAdd={{
-              titles: inlineTitles,
-              setTitle: (key, value) => setInlineTitles((prev) => ({ ...prev, [key]: value })),
               add: addInlineTask,
               setInputRef: setInlineInputRef,
             }}

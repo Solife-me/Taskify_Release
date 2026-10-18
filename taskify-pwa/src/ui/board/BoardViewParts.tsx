@@ -1,10 +1,9 @@
 /** Small pieces shared by the board views. */
 import type { ListColumn } from "../../domains/tasks/taskTypes";
+import { setInlineDraft, useInlineDraft } from "./inlineDrafts";
 
-/** The "New Task" field at the foot of a day or list. */
+/** The "New Task" field at the foot of a day or list. Its text lives in `inlineDrafts`. */
 export type InlineAdd = {
-  titles: Record<string, string>;
-  setTitle: (key: string, value: string) => void;
   add: (key: string) => void;
   setInputRef: (key: string, element: HTMLInputElement | null) => void;
 };
@@ -21,6 +20,7 @@ export type GroupSelection = {
 export type CompoundIndexGroup = { key: string; boardName: string; columns: ListColumn[] };
 
 export function InlineAddTaskForm({ columnKey, inlineAdd }: { columnKey: string; inlineAdd: InlineAdd }) {
+  const draft = useInlineDraft(columnKey);
   return (
     <form
       className="mt-2 flex gap-1"
@@ -31,8 +31,8 @@ export function InlineAddTaskForm({ columnKey, inlineAdd }: { columnKey: string;
     >
       <input
         ref={(element) => inlineAdd.setInputRef(columnKey, element)}
-        value={inlineAdd.titles[columnKey] || ""}
-        onChange={(event) => inlineAdd.setTitle(columnKey, event.target.value)}
+        value={draft}
+        onChange={(event) => setInlineDraft(columnKey, event.target.value)}
         className="pill-input pill-input--compact flex-1 min-w-0"
         placeholder="New Task"
       />

@@ -60,7 +60,7 @@ export function WeekBoardView({
               <BoardTaskCard
                 key={task.id}
                 task={task}
-                onDropBefore={(dragId) => actions.moveTask(dragId, { type: "day", day }, task.id)}
+                dropTarget={{ type: "day", day }}
               />
             ))}
           </DroppableColumn>

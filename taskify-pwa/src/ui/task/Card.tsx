@@ -167,7 +167,7 @@ function CardComponent({
   isSelectionMode,
   isSelected,
   onToggleSelect,
-  selectedTaskIds,
+  getSelectedTaskIds,
   syncPending,
 }: {
   task: Task;
@@ -192,7 +192,8 @@ function CardComponent({
   isSelectionMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (id: string) => void;
-  selectedTaskIds?: string[];
+  /** The selected tasks, read when a drag starts (a multi-select drag carries them all). */
+  getSelectedTaskIds?: () => string[];
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
@@ -246,14 +247,15 @@ function CardComponent({
     }
     e.dataTransfer.setData('text/task-id', task.id);
     e.dataTransfer.setData('text/plain', task.id);
-    const isMultiDrag = isSelectionMode && isSelected && selectedTaskIds && selectedTaskIds.length > 1;
+    const selectedTaskIds = isSelectionMode && isSelected ? getSelectedTaskIds?.() : undefined;
+    const isMultiDrag = !!selectedTaskIds && selectedTaskIds.length > 1;
     if (isMultiDrag) {
       e.dataTransfer.setData('text/task-ids', JSON.stringify(selectedTaskIds));
     }
     e.dataTransfer.effectAllowed = 'move';
 
     if (isMultiDrag) {
-      const count = selectedTaskIds!.length;
+      const count = selectedTaskIds.length;
       const cardEl = e.currentTarget as HTMLElement;
       const rect = cardEl.getBoundingClientRect();
       const container = document.createElement('div');

@@ -228,7 +228,7 @@ export function ListsBoardView({
               <BoardTaskCard
                 key={task.id}
                 task={task}
-                onDropBefore={(dragId) => actions.moveTask(dragId, { type: "list", columnId: column.id }, task.id)}
+                dropTarget={{ type: "list", columnId: column.id }}
               />
             ))}
           </DroppableColumn>

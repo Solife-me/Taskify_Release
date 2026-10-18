@@ -1059,7 +1059,7 @@ step is one commit, and bugs get a failing test first.
 | C3-1 | Approve | 2026-10-17 | Done (passes 1 and 2, two-pane Chat) |
 | C3-2 | Approve | 2026-10-18 | Done: `lib/settleScroll` keeps correcting until the day sits at the top (estimates were 32/120 px against measured 23/70, and StrictMode remounts reset the scroll); tested, checked in dev and a production build |
 | C3-3 | Approve | 2026-10-18 | Done as a clarity change: not a bug (the round-trip already gave the local date). `todayDateKey()` in core with an evening test; 12 call sites use it; lint rejects the round-trip |
-| C3-4 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-4 | Approve | 2026-10-18 | Done. New Task drafts live in `ui/board/inlineDrafts` (outside React state), cards are memoized with stable callbacks, and each card selects its own view state from a store. On a 300-task board (`boardRenderIsolation.test.tsx`): a keystroke went from 300 card renders to 0, and a selection toggle from 300 to 1 (entering selection mode still updates every card, which shows a checkbox). Confirmed in the browser: 0 card renders per keystroke |
 | C3-5 | Approve | 2026-10-18 | In progress (recommended order) |
 | C3-6 | Approve; bounty creation stays as an optional wallet extension until the wallet is removed | 2026-10-18 | Pending |
 | C3-7 | Approve | 2026-10-18 | In progress (recommended order) |
