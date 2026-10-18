@@ -14,10 +14,6 @@ const legacyUncheckedFiles = [
   'src/ui/task/EditModal.tsx',
 ]
 
-const uncheckedChatHookFiles = [
-  'src/chat/hooks/useDmSubscription.ts',
-]
-
 const tsNocheckFiles = [
   ...legacyUncheckedFiles,
   // Chat's runtime/page moved unchanged out of the unchecked wallet modal. Type them after
@@ -26,8 +22,6 @@ const tsNocheckFiles = [
   'src/chat/ChatRuntime.tsx',
   'src/chat/views/**/*.tsx',
   'src/hooks/wallet/**/*.{ts,tsx}',
-  // Moved out of the wallet unchanged; typing them is tracked separately.
-  ...uncheckedChatHookFiles,
   'src/ui/wallet/**/*.tsx',
   'src/wallet/walletModalHelpers.tsx',
 ]

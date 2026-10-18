@@ -800,11 +800,17 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       contacts-state and Nostr-session hooks that own them, module-level helpers left the
       dependency arrays, and the refs and setters it uses joined them. Sync, NIP-51 migration and
       profile publishing are unchanged. PWA lint, `tsc -b` and Vitest pass (563 tests, 12 skipped).
+    - Chat typing pass 10 (2026-10-18) checks `useDmSubscription`, the last unchecked chat hook.
+      Its options derive from `useDmState`, `useContactsState` and `useNostrSession`; the
+      wallet's optional payment-request bridge has a named handler type. Dependency arrays now
+      list the refs and setters they use and drop module-level helpers. All additions are stable,
+      so the subscription does not restart more often (checked in the browser: no new requests
+      over 4 s on Chat, no console errors). The empty hook allowlist left eslint.config.js. Lint,
+      `tsc -b`, Vitest (563 tests, 12 skipped) and the startup check pass; the Chat route still
+      has no wallet or Cashu chunks.
   - **Remaining, in order:**
-    1. Type the Chat runtime, hooks and views incrementally, removing their temporary
-       `@ts-nocheck` exceptions.
-       Remaining hook: `useDmSubscription`; then `ChatRuntime`, `ChatPage` and the five view
-       modules. Live two-account messaging verification is still outstanding.
+    1. Type `ChatRuntime`, `ChatPage` and the five view modules, removing their temporary
+       `@ts-nocheck` exceptions. All chat hooks are now checked. Live two-account messaging verification is still outstanding.
   - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
     from `chat_block_clean`.
 - **Moving Chat out of the wallet code (chunk 5, scoped 2026-10-17):** Chat is 2,878

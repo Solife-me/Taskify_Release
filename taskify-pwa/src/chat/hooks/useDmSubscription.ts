@@ -1,5 +1,4 @@
-// @ts-nocheck
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, type MutableRefObject } from "react";
 import { inboxReadRelays, recoverRelayHistory } from "taskify-runtime-nostr";
 import { historyRecoverySince, setHistoryWatermark } from "../../nostr/historyWatermarks";
 import { normalizeNostrPubkey } from "../../lib/nostr";
@@ -7,7 +6,7 @@ import { NostrSession } from "../../nostr/NostrSession";
 import { isImageMime, isVideoMime, isAudioMime } from "../../lib/messengerAttachmentCrypto";
 import { parseShareEnvelope } from "../../lib/shareInbox";
 import { truncatePreview } from "../chatUi";
-import type { ContactProfile } from "../../lib/contacts";
+import type { Contact, ContactProfile } from "../../lib/contacts";
 import {
   parseProfileContent,
   loadContactProfileCache,
@@ -23,6 +22,30 @@ import {
   type WalletDmMessage,
   type WalletDmAttachment,
 } from "./useDmState";
+import type { useDmState } from "./useDmState";
+import type { useContactsState } from "./useContactsState";
+import type { useNostrSession } from "./useNostrSession";
+
+/**
+ * A wallet that still handles Cashu payment requests can pass this to be told about incoming
+ * payment messages. Chat never does: a token in chat is only shown and copied.
+ */
+export type PaymentRequestEventHandler = (event: NostrEvent, options: { updateClock: boolean }) => unknown;
+
+export type UseDmSubscriptionOptions = Pick<ReturnType<typeof useDmState>,
+  | "dmPeerProfilesRef" | "dmPeerProfileLoadingRef" | "setDmPeerProfilesVersion"
+  | "dmDeletedEventsRef" | "dmTempDeletedEventsRef" | "persistTempDeletedDmEvents"
+  | "setDmTempDeletedEventsVersion" | "dmProcessedEventsRef" | "dmSubscriptionCloseRef"
+  | "dmLastSyncRef" | "persistDmSyncMeta" | "dmBlockedPeersRef" | "messageItemsRef"
+  | "setDmMessages" | "setDmReactions" | "groupChatsRef" | "upsertGroupChat" | "persistDmPeerProfileCache"
+> & Pick<ReturnType<typeof useContactsState>, "compressedToRawHex" | "contactsRef" | "ensureNip05VerificationRef">
+  & Pick<ReturnType<typeof useNostrSession>,
+  | "decryptNostrPaymentMessage" | "parseIncomingPaymentMessage" | "resolvePeerPubkey"
+  | "stopDmSubscription" | "ensureNostrIdentity" | "defaultNostrRelays"
+> & {
+  handlePaymentRequestEventRef?: MutableRefObject<PaymentRequestEventHandler | null> | null;
+  contactDisplayLabel: (contact: Contact) => string;
+};
 
 /** NIP-59 gift wraps backdate created_at by up to two days; read a day beyond that. */
 const DM_HISTORY_LOOKBACK_SECS = 3 * 24 * 60 * 60;
@@ -57,7 +80,7 @@ export function useDmSubscription({
   handlePaymentRequestEventRef = null,
   persistDmPeerProfileCache,
   contactDisplayLabel,
-}) {
+}: UseDmSubscriptionOptions) {
   const syncGenerationRef = useRef(0);
   const ensurePeerProfile = useCallback(
     async (pubkey: string) => {
@@ -171,10 +194,14 @@ export function useDmSubscription({
     },
     [
       compressedToRawHex,
+      contactDisplayLabel,
+      contactsRef,
       defaultNostrRelays,
-      normalizeNostrPubkey,
-      parseProfileContent,
+      dmPeerProfileLoadingRef,
+      dmPeerProfilesRef,
+      ensureNip05VerificationRef,
       persistDmPeerProfileCache,
+      setDmPeerProfilesVersion,
     ],
   );
 
@@ -185,7 +212,7 @@ export function useDmSubscription({
       const peerHex = compressedToRawHex(normalized).toLowerCase();
       return dmPeerProfilesRef.current.get(peerHex);
     },
-    [compressedToRawHex, normalizeNostrPubkey],
+    [compressedToRawHex, dmPeerProfilesRef],
   );
 
   const handleDmEvent = useCallback(
@@ -502,12 +529,21 @@ export function useDmSubscription({
     },
     [
       decryptNostrPaymentMessage,
+      dmBlockedPeersRef,
+      dmDeletedEventsRef,
+      dmProcessedEventsRef,
+      dmTempDeletedEventsRef,
       ensureNostrIdentity,
       ensurePeerProfile,
-      normalizeNostrPubkey,
+      groupChatsRef,
+      handlePaymentRequestEventRef,
+      messageItemsRef,
       parseIncomingPaymentMessage,
       persistTempDeletedDmEvents,
       resolvePeerPubkey,
+      setDmMessages,
+      setDmReactions,
+      setDmTempDeletedEventsVersion,
       upsertGroupChat,
     ],
   );
@@ -581,7 +617,15 @@ export function useDmSubscription({
     } catch (err) {
       if (isCurrent()) console.warn("Failed to sync DMs", err);
     }
-  }, [defaultNostrRelays, ensureNostrIdentity, handleDmEvent, persistDmSyncMeta, stopDmSubscription]);
+  }, [
+    defaultNostrRelays,
+    dmLastSyncRef,
+    dmSubscriptionCloseRef,
+    ensureNostrIdentity,
+    handleDmEvent,
+    persistDmSyncMeta,
+    stopDmSubscription,
+  ]);
 
   return {
     ensurePeerProfile,
