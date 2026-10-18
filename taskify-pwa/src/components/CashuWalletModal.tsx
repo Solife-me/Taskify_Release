@@ -3,11 +3,9 @@
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
-import { useSyncResume } from "../nostr/useSyncResume";
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PaymentRequestTransportType,
-  type PaymentRequestPayload,
   type PaymentRequestTransport,
   type Proof,
 } from "@cashu/cashu-ts";
@@ -30,9 +28,7 @@ import { decodeBolt11Amount } from "../wallet/lightning";
 
 
 import { revealLocalSecretKey } from "../identity/identity";
-import { LS_NOSTR_RELAYS } from "../nostrKeys";
 import { kvStorage } from "../storage/kvStorage";
-import { buildContactShareEnvelope, sendShareMessage } from "../lib/shareInbox";
 import { normalizeNostrPubkey } from "../lib/nostr";
 
 
@@ -46,20 +42,9 @@ import {
   SOLIFE_LIGHTNING_ADDRESS_DOMAIN,
 } from "../wallet/solife";
 import { ActionSheet } from "./ActionSheet";
-import type { Contact } from "../lib/contacts";
 import {
-  contactDisplayLabel,
-  contactHasNpub,
   contactHasLightning,
-  contactPrimaryName,
-  formatContactNpub,
-  formatContactUsername,
-  makeContactId,
-  normalizeContact,
-  sanitizeUsername,
-  saveContactsToStorage,
 } from "../lib/contacts";
-import type { WalletMessageItem } from "../types/walletMessages";
 import {
   aggregateStoredProofStates,
   computeProofY,
@@ -89,13 +74,8 @@ import { useEcashReceiveState } from "../hooks/wallet/useEcashReceiveState";
 import { useEcashSendState } from "../hooks/wallet/useEcashSendState";
 import { usePaymentRequestState } from "../hooks/wallet/usePaymentRequestState";
 import { useNostrPoolState } from "../hooks/wallet/useNostrPoolState";
-import { useDmState, type DmReaction, normalizeDmPeerHex } from "../chat/hooks/useDmState";
 import { useWalletContactsRuntime } from "../ui/wallet/useWalletContactsRuntime";
 import { useManualSendPlan } from "../hooks/wallet/useManualSendPlan";
-import { useDmSubscription } from "../chat/hooks/useDmSubscription";
-import { useDmSend } from "../chat/hooks/useDmSend";
-import { useDmThreadActions } from "../chat/hooks/useDmThreadActions";
-import { useContactLookup } from "../chat/hooks/useContactLookup";
 import { useScannerFlow } from "../hooks/wallet/useScannerFlow";
 import { useEcashRedeem } from "../hooks/wallet/useEcashRedeem";
 import { useSheetManagement } from "../hooks/wallet/useSheetManagement";
@@ -104,89 +84,53 @@ import { useHistoryFormatters } from "../hooks/wallet/useHistoryFormatters";
 import { useWalletFormatters } from "../hooks/wallet/useWalletFormatters";
 import { useAmountKeypadHandlers } from "../hooks/wallet/useAmountKeypadHandlers";
 import { usePaymentRequestFlow } from "../hooks/wallet/usePaymentRequestFlow";
-import { useContactDetail } from "../chat/hooks/useContactDetail";
-import {
-  fetchBotCommands,
-  loadCachedBotCommands,
-  saveCachedBotCommands,
-  shouldRefreshCachedBotCommands,
-  type BotCommand,
-} from "../lib/botCommands";
+
+
 import { useTokenHistoryActions } from "../hooks/wallet/useTokenHistoryActions";
-import { useDmThreadUtils } from "../chat/hooks/useDmThreadUtils";
 import { useContactPaymentActions } from "../hooks/wallet/useContactPaymentActions";
 import { useWalletFlowState } from "../hooks/wallet/useWalletFlowState";
 import { useAmountFormatters } from "../hooks/wallet/useAmountFormatters";
 import { useLightningInputDerived } from "../hooks/wallet/useLightningInputDerived";
 import { useHistoryFilter } from "../hooks/wallet/useHistoryFilter";
 import { usePaymentRequestDerived } from "../hooks/wallet/usePaymentRequestDerived";
-import { useDmMessageDerived } from "../chat/hooks/useDmMessageDerived";
-import { useDmThreadDerived } from "../chat/hooks/useDmThreadDerived";
-import { useThreadUnreadCounts } from "../chat/hooks/useThreadUnreadCounts";
-import { useContactsDerived } from "../chat/hooks/useContactsDerived";
 import { useEcashSendDerived } from "../hooks/wallet/useEcashSendDerived";
-import { useChatGroupDerived } from "../chat/hooks/useChatGroupDerived";
 import {
   isSamePaymentRequest,
   type IncomingPaymentRequest,
 } from "../wallet/paymentRequestTypes";
 import {
-  BackIcon,
-  CheckIcon,
-  CloseIcon,
-  PencilIcon,
   QrCodeCard,
   QrScanner,
-  ShareArrowIcon,
   VerifiedBadgeIcon,
   avatarInitials,
-  formatDmDay,
-  formatDmTime,
-  formatShortDate,
-  parseDateLikeToUnixSeconds,
-  shortenNpubDisplay,
-  tryParseJson,
 } from "../ui/wallet/walletModalUi";
 import {
   yieldToBrowser,
   extractMinibitsPaymentSender,
-  getWalletMessageStatusLabel,
-  getCalendarInviteStatusLabel,
   computeSubsetSelectionInfo,
   totalForSelection,
   decodeLnurlString,
   decodeContactPayload,
-  estimateDataUrlSize,
-  isDataUrl,
-  pickPreferredProfilePhoto,
   extractDomain,
-  renderFormattedText,
   fetchWithTimeout,
-  dmThreadKeyForThread,
   buildTokenSpentToastMessage,
   extractWitnesses,
   shouldSuppressProofStateChecks,
-  buildWalletMessageSyntheticEventId,
-  buildCalendarInviteSyntheticEventId,
   UNPAID_MINT_QUOTE_RETENTION_MS,
   BACKGROUND_REFRESH_INTERVAL_MS,
   NPUB_CASH_REFRESH_STAGGER_MS,
   TOKEN_STATE_BACKGROUND_STAGGER_MS,
   SUBSCRIPTION_RETRY_DELAY_MS,
-  type SharedContactPreview,
   type NostrEvent,
 } from "../wallet/walletModalHelpers";
 import type { CashuWalletModalProps } from "./cashuWalletModalTypes";
-import { WalletTabSwitcher } from "../ui/wallet/WalletTabSwitcher";
 import { WalletContactsPickerSheet } from "../ui/wallet/WalletContactsPickerSheet";
-import { WalletMessagesListPanel } from "../ui/wallet/WalletMessagesListPanel";
 import {
   EcashReceiveSheet,
   EcashSendSheet,
   LightningReceiveSheet,
   LightningSendSheet,
   PaymentRequestFulfillSheet,
-  WalletContactsSheet,
   WalletHistorySheet,
   WalletNwcManagerSheet,
   WalletSettingsSheet,
@@ -198,8 +142,6 @@ export default function CashuWalletModal({
   onClose,
   onOpenAddress,
   onOpenBounties,
-  page = "wallet",
-  showTabSwitcher = true,
   showBottomNav = false,
   walletConversionEnabled,
   walletSettings,
@@ -217,25 +159,7 @@ export default function CashuWalletModal({
   paymentRequestsBackgroundChecksEnabled,
   tokenStateResetNonce,
   mintBackupEnabled: mintBackupEnabledProp,
-  contactsSyncEnabled,
   fileStorageServer,
-  fileServers,
-  encryptedFileStorageServer,
-  encryptedFileServers,
-  messageItems,
-  onAcceptMessage,
-  onAddTaskAgain,
-  onMaybeMessage,
-  onDeclineMessage,
-  onDismissMessage,
-  onMarkMessagesRead,
-  inboxPendingItems,
-  pendingCalendarInvites,
-  onCalendarInviteRsvp,
-  onDismissCalendarInvite,
-  formatCalendarInviteWhen,
-  onDmUnreadCountChange,
-  chatMessageRetention = "forever",
 }: CashuWalletModalProps) {
   const walletDebugEnabled = import.meta.env.DEV && (() => {
     try {
@@ -253,15 +177,6 @@ export default function CashuWalletModal({
   const solifeLightningAddressEnabled = activeLightningAddressProvider === "solife.me";
   const selectedSolifeLightningAddress =
     typeof solifeLightningAddress === "string" ? solifeLightningAddress.trim().toLowerCase() : "";
-  const nip17TimestampMode: "random" | "now" = (() => {
-    try {
-      const value = (kvStorage.getItem("taskify.nip17.timestamp") || "").trim().toLowerCase();
-      return value === "now" ? "now" : "random";
-    } catch {
-      return "random";
-    }
-  })();
-
   useEffect(() => {
     if (!open) return;
     if (!walletDebugEnabled) return;
@@ -316,8 +231,6 @@ export default function CashuWalletModal({
   const [showSendOptions, setShowSendOptions] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const isCompactLightningSheetLayout = useMediaQuery("(max-height: 820px)");
-  // On a mouse desktop, Chat shows the conversation list beside the open conversation.
-  const chatTwoPane = useMediaQuery("(min-width: 1024px) and (hover: hover) and (pointer: fine)");
   const [scannerMessage, setScannerMessage] = useState("");
   type PendingScan =
     | { type: "ecash"; token: string }
@@ -326,77 +239,8 @@ export default function CashuWalletModal({
     | { type: "lnurl"; data: string }
     | { type: "paymentRequest"; request: string };
   const [pendingScan, setPendingScan] = useState<PendingScan | null>(null);
-  const [scannedContact, setScannedContact] = useState<Contact | null>(null);
-  const [sharedContactPreview, setSharedContactPreview] = useState<SharedContactPreview | null>(null);
-  const [walletTab, setWalletTab] = useState<"wallet" | "messages" | "contacts">("wallet");
   const walletEnabled = useWalletEnabled();
-  const isContactsPage = page === "contacts";
-  const isChatPage = page === "chat";
-  const {
-    chatView, setChatView,
-    chatCompose, setChatCompose,
-    pendingMessages, setPendingMessages,
-    groupChats, setGroupChats,
-    groupSelectMembers, setGroupSelectMembers,
-    groupNameDraft, setGroupNameDraft,
-    renameGroupDraft, setRenameGroupDraft,
-    renameGroupBusy, setRenameGroupBusy,
-    activeGroupId, setActiveGroupId,
-    groupMembersSearch, setGroupMembersSearch,
-    groupInfoTab, setGroupInfoTab,
-    groupChatsRef,
-    dmMutedGroupsRef, dmMutedGroupsVersion, setDmMutedGroupsVersion,
-    dmLeftGroupsRef, dmLeftGroupsVersion, setDmLeftGroupsVersion,
-    dmThreadReadAtRef, dmThreadReadAtVersion, setDmThreadReadAtVersion,
-    attachTrayOpen, setAttachTrayOpen,
-    chatKeyboardHeight, setChatKeyboardHeight,
-    chatKeyboardHeightCache, setChatKeyboardHeightCache,
-    chatComposeInputRef, chatPhotoInputRef, chatFileInputRef,
-    messagesScrollRef, messagesInnerRef,
-    dragTouchStartX, dragTouchStartY, dragDirectionLocked,
-    dmListViewRef, scrollToMessageIdRef, dmAutoScrollStateRef,
-    chatModeUsesContacts,
-    dmMessages, setDmMessages,
-    dmExpandedMessages, setDmExpandedMessages,
-    dmMessageActions, setDmMessageActions,
-    replyToMessage, setReplyToMessage,
-    dmReactions, setDmReactions,
-    dmInfoMessage, setDmInfoMessage,
-    dmForwardMessage, setDmForwardMessage,
-    dmReactionDetail, setDmReactionDetail,
-    dmLongPressTimerRef,
-    dmDeletedEventsRef, dmDeletedEventsVersion, setDmDeletedEventsVersion,
-    dmTempDeletedEventsRef, dmTempDeletedEventsVersion, setDmTempDeletedEventsVersion,
-    dmArchivedThreadsRef, dmArchivedThreadsVersion, setDmArchivedThreadsVersion,
-    dmBlockedPeersRef, setDmBlockedPeersVersion,
-    dmPeerProfilesRef, dmPeerProfileLoadingRef, setDmPeerProfilesVersion,
-    dmProcessedEventsRef, dmSubscriptionCloseRef, dmLastSyncRef,
-    messageItemsRef,
-    dmView, setDmView,
-    activeThreadPeer, setActiveThreadPeer,
-    dmSearch, setDmSearch,
-    scrollToMessageId, setScrollToMessageId,
-    visiblePendingMessages,
-    toggleDmMessageExpanded, isDmMessageExpanded,
-    copyMessageValue,
-    persistDeletedDmEvents, persistTempDeletedDmEvents, persistArchivedDmThreads,
-    pruneTempDeletedDmEvents, persistBlockedPeers, persistDmMessages,
-    persistDmThreadReadState, persistGroupChats, persistGroupStateSet,
-    upsertGroupChat, persistDmSyncMeta, persistDmPeerProfileCache,
-    buildDmCopyValue, handleDeleteDmMessage, cancelDmLongPress,
-  } = useDmState({
-    open,
-    isChatPage,
-    chatMessageRetention,
-    showToast,
-    messageItems,
-  });
-  useEffect(() => {
-    if (showTabSwitcher || isContactsPage || isChatPage) return;
-    if (walletTab !== "wallet") {
-      setWalletTab("wallet");
-    }
-  }, [isChatPage, isContactsPage, showTabSwitcher, walletTab]);
+  const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
   const [receiveMode, setReceiveMode] = useState<null | "ecash" | "lightning" | "lnurlWithdraw">(null);
   const {
     receiveLockVisible,
@@ -510,19 +354,17 @@ export default function CashuWalletModal({
   const {
     claimingEventIds, setClaimingEventIds,
     defaultNostrRelays,
-    preferredFileServer,
-    nostrPoolRef, nostrPoolClosingRef, nostrSubscriptionActiveRef, nostrIdentityRef,
+    nostrSubscriptionActiveRef, nostrIdentityRef,
     nostrIdentityInfo, setNostrIdentityInfo,
     peanutSendToken,
     ensureNostrPool, closeNostrPool,
-    isReplaceableRejection, safePublish,
+    safePublish,
     resetSendLockSettings,
-    readNostrIdentity, readProfileEventId, persistProfileEventId,
+    readNostrIdentity,
     ensureNostrIdentity,
     fingerprintIncomingToken,
     rebuildSpentFingerprints, addSpentIncomingPayment, isIncomingPaymentSpent,
     decryptNostrPaymentMessage, parseIncomingPaymentMessage,
-    resolvePeerPubkey, stopDmSubscription, refreshNostrIdentity,
   } = useNostrPoolState({
     walletDebugEnabled,
     paymentRequestsEnabled,
@@ -557,52 +399,30 @@ export default function CashuWalletModal({
   const [recvMsg, setRecvMsg] = useState("");
 
   const {
-    contacts, setContacts,
+    contacts,
     contactsOpen, setContactsOpen,
-    nip05Checks, setNip05Checks,
-    ensureNip05VerificationRef, isNip05VerifiedForRef,
-    contactsRef, skipContactsEventRef, skipContactsTimerRef,
-    contactsTabOpen, setContactsTabOpen,
-    contactsPanelRef,
-    contactSyncState, setContactSyncState,
-    contactsPublishState, setContactsPublishState,
-    setContactsPublishMessage,
-    contactSyncMetaRef, contactSyncMeta, setContactSyncMeta,
-    persistContactSyncMeta,
-    profileForm, setProfileForm,
-    profileSharePayload, setProfileSharePayload,
-    profileEventIdRef, profileFormRef,
-    profileStatus, setProfileStatus,
-    profileMessage, setProfileMessage,
-    profileUpdatedAt, setProfileUpdatedAt,
-    profileEditorOpen, setProfileEditorOpen,
-    contactLookupInput, setContactLookupInput,
-    contactLookupBusy, setContactLookupBusy,
-    contactLookupError, setContactLookupError,
-    showCustomContactFields, setShowCustomContactFields,
-    contactView, setContactView,
-    activeContactId, setActiveContactId,
-    contactReturnView, setContactReturnView,
-    contactDetailOverride, setContactDetailOverride,
-    shareContactPickerOpen, setShareContactPickerOpen,
-    shareContactPickerMode, setShareContactPickerMode,
-    shareContactSource, setShareContactSource,
-    shareContactStatus, setShareContactStatus,
-    shareContactBusy, setShareContactBusy,
-    shareContactOpenedAtPeerRef,
-    contactEditDraft, setContactEditDraft,
-    contactEditError, setContactEditError,
-    profilePhotoError, setProfilePhotoError,
-    profilePhotoBusy, setProfilePhotoBusy,
-    profilePhotoInputRef, profilePhotoUploadRef,
-    publicFollowPickerOpen, setPublicFollowPickerOpen,
-    resetContactEditDraft, closeContactsTab,
-    handleStartAddContact, handleBackToContactsList, handleReturnToProfileCard,
-    contactsPublishQueuedRef, contactsContext, setContactsContext,
-    contactsContextRef, contactsFingerprintRef,
-    nip51MigrationInFlightRef, contactProfilesRefreshedRef,
-    computeContactsFingerprint,
-    upsertContact, compressedToRawHex, formatNpub, formatNpubDisplay,
+    contactsContext, setContactsContext,
+    contactsContextRef,
+    compressedToRawHex,
+    dmPeerProfilesRef,
+    ensurePeerProfile,
+    formatNpub,
+    handleCopyContactField,
+    handleScannedContactPayload,
+    isNip05VerifiedFor,
+    lightningContactCount,
+    nip05Checks,
+    normalizeNip05,
+    publishNip17Giftwraps,
+    resolveNip17Relays,
+    scannedContact, setScannedContact,
+    scannedContactCanShare,
+    scannedContactFields,
+    scannedContactHeader,
+    scannedContactNip05Verified,
+    scannedContactShareValue,
+    scannedContactTitle,
+    scannedContactUsername,
   } = useWalletContactsRuntime();
   const {
     lnurlWithdrawInfo,
@@ -951,531 +771,21 @@ export default function CashuWalletModal({
     }
   }, [expandedHistoryId, filteredHistory]);
   const {
-    messageItemsByEventId,
-    pendingMessageItemsByEventId,
-    pendingCalendarInvitesByEventId,
-    syntheticDmMessages,
-    displayDmMessages,
-    paymentHistoryByEventId,
-  } = useDmMessageDerived({
-    messageItems,
-    inboxPendingItems,
-    pendingCalendarInvites,
-    dmDeletedEventsVersion,
-    dmMessages,
-    dmTempDeletedEventsVersion,
-    formatCalendarInviteWhen,
-    history,
-    dmDeletedEventsRef,
-    dmTempDeletedEventsRef,
-  });
-  const messageItemStatusRef = useRef<Map<string, WalletMessageItem["status"]>>(new Map());
-  useEffect(() => {
-    const seenIds = new Set<string>();
-    messageItems.forEach((item) => {
-      seenIds.add(item.id);
-      const prevStatus = messageItemStatusRef.current.get(item.id);
-      if (prevStatus === undefined) {
-        messageItemStatusRef.current.set(item.id, item.status);
-        return;
-      }
-      if (prevStatus !== item.status) {
-        messageItemStatusRef.current.set(item.id, item.status);
-        if (item.status === "accepted") {
-          const label = getWalletMessageStatusLabel(item.type, item.status);
-          if (label) {
-            showToast(label);
-          }
-        }
-      }
-    });
-    messageItemStatusRef.current.forEach((_, key) => {
-      if (!seenIds.has(key)) {
-        messageItemStatusRef.current.delete(key);
-      }
-    });
-  }, [messageItems, showToast]);
-  const { ensurePeerProfile, getPeerProfile, handleDmEvent, startDmSubscription } = useDmSubscription({
-    compressedToRawHex,
-    contactsRef,
-    ensureNip05VerificationRef,
-    dmPeerProfilesRef,
-    dmPeerProfileLoadingRef,
-    setDmPeerProfilesVersion,
-    dmDeletedEventsRef,
-    dmTempDeletedEventsRef,
-    persistTempDeletedDmEvents,
-    setDmTempDeletedEventsVersion,
-    dmProcessedEventsRef,
-    dmSubscriptionCloseRef,
-    dmLastSyncRef,
-    persistDmSyncMeta,
-    dmBlockedPeersRef,
-    messageItemsRef,
-    setDmMessages,
-    setDmReactions,
-    groupChatsRef,
-    upsertGroupChat,
-    decryptNostrPaymentMessage,
-    parseIncomingPaymentMessage,
-    resolvePeerPubkey,
-    stopDmSubscription,
-    ensureNostrIdentity,
-    defaultNostrRelays,
-    handlePaymentRequestEventRef,
-    persistDmPeerProfileCache,
-    contactDisplayLabel,
-  });
-  const {
-    resolveNip17Timestamp,
-    resolveNip17Relays,
-    publishNip17Giftwraps,
-    handleSendReaction,
-    handleForwardMessage,
-    publishGroupSubjectUpdate,
-    resolveMessengerServerEntry,
-    sendMessengerFileAttachments,
-  } = useDmSend({
-    nip17TimestampMode,
-    walletDebugEnabled,
-    defaultNostrRelays,
-    ensureNostrPool,
-    safePublish,
-    readNostrIdentity,
-    handleDmEvent,
-    setDmReactions,
-    setDmMessageActions,
-    groupChatsRef,
-    setPendingMessages,
-    fileStorageServer,
-    fileServers,
-    encryptedFileStorageServer,
-    encryptedFileServers,
-    showToast,
-  });
-  const contactIndex = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        name: string;
-        picture?: string;
-      }
-    >();
-    contacts.forEach((contact) => {
-      const normalized = normalizeNostrPubkey(contact.npub || "");
-      if (!normalized) return;
-      const compressed = normalized.toLowerCase();
-      const raw = compressedToRawHex(normalized).toLowerCase();
-      const entry = {
-        name: contactDisplayLabel(contact),
-        picture: contact.picture?.trim() || undefined,
-      };
-      map.set(compressed, entry);
-      map.set(raw, entry);
-    });
-    return map;
-  }, [compressedToRawHex, contacts, normalizeNostrPubkey]);
-  const {
-    isUnreadThreadStatus,
-    collectUnreadThreadItemEventIds,
-    dmPreviewForMessage,
-    peerLabelFor,
-    sharedContactMetaFor,
-    buildSharedContactPreview,
-    openSharedContactPreview,
-    isArchivedDmThread,
-    matchesDmThreadSearch,
-    openConversationForPeer,
-    openConversationForGroup,
-    buildShareRelayList,
-    sendContactShareToPubkeys,
-    handleShareContactToContact,
-    closeAttachTray,
-    handleToggleAttachTray,
-    handleOpenChatPhotoPicker,
-    handleOpenChatFilePicker,
-    handleOpenChatContactPicker,
-  } = useDmThreadUtils({
-    inboxPendingItems,
-    messageItemsByEventId,
-    pendingMessageItemsByEventId,
-    pendingCalendarInvitesByEventId,
-    pendingCalendarInvites,
-    paymentHistoryByEventId,
-    contactIndex,
-    dmArchivedThreadsVersion,
-    groupChats,
-    dmSearch,
-    displayDmMessages,
-    activeThreadPeer,
-    shareContactSource,
-    profileForm,
-    setSharedContactPreview,
-    setActiveThreadPeer,
-    setDmView,
-    setChatView,
-    setContactView,
-    setActiveContactId,
-    setContactDetailOverride,
-    setContactReturnView,
-    setDmSearch,
-    setDmMessages,
-    setActiveGroupId,
-    setAttachTrayOpen,
-    setShareContactPickerOpen,
-    setShareContactPickerMode,
-    setShareContactSource,
-    setShareContactStatus,
-    setShareContactBusy,
-    dmArchivedThreadsRef,
-    dmPeerProfilesRef,
-    nostrIdentityRef,
-    groupChatsRef,
-    isNip05VerifiedForRef,
-    chatComposeInputRef,
-    chatPhotoInputRef,
-    chatFileInputRef,
-    shareContactOpenedAtPeerRef,
-    normalizeNostrPubkey,
-    compressedToRawHex,
-    formatNpubDisplay,
-    shortenNpubDisplay,
-    pickPreferredProfilePhoto,
-    makeContactId,
-    normalizeContact,
-    dmThreadKeyForThread,
-    formatContactNpub,
-    formatNpub,
-    buildContactShareEnvelope,
-    sendShareMessage,
-    readNostrIdentity,
-    defaultNostrRelays,
-    buildWalletMessageSyntheticEventId,
-    buildCalendarInviteSyntheticEventId,
-    normalizeDmPeerHex,
-    showToast,
-    LS_NOSTR_RELAYS,
-    kvStorage,
-  });
-  useEffect(() => {
-    if (!displayDmMessages.length) return;
-    const targets = new Set<string>();
-    displayDmMessages.forEach((msg) => {
-      if (msg.peerPubkey) {
-        const normalized = normalizeNostrPubkey(msg.peerPubkey);
-        if (normalized) targets.add(normalized);
-      }
-      if (msg.attachment?.type === "contact" && msg.attachment.npub) {
-        const normalized = normalizeNostrPubkey(msg.attachment.npub);
-        if (normalized) targets.add(normalized);
-      }
-    });
-    targets.forEach((pubkey) => {
-      void ensurePeerProfile(pubkey);
-    });
-  }, [displayDmMessages, ensurePeerProfile]);
-  const {
-    dmThreads,
-    activeThread,
-    activeGroupChat,
-    visibleDmThreads,
-    contactByHex,
-    strangerThreads,
-    dmThreadListEntries,
-    messageSearchResults,
-    activeThreadPendingMessages,
-  } = useDmThreadDerived({
-    displayDmMessages,
-    contactIndex,
-    dmPreviewForMessage,
-    isArchivedDmThread,
-    matchesDmThreadSearch,
-    nostrIdentityInfo,
-    nostrIdentityRef,
-    activeThreadPeer,
-    groupChats,
-    dmSearch,
-    dmView,
-    visiblePendingMessages,
-    contacts,
-    contactsContext,
-    shareContactSource,
-    compressedToRawHex,
-    normalizeNostrPubkey,
-  });
-  useEffect(() => {
-    if (!dmArchivedThreadsRef.current.size) return;
-    const next = new Map(dmArchivedThreadsRef.current);
-    let changed = false;
-    dmThreads.forEach((thread) => {
-      const key = dmThreadKeyForThread(thread);
-      if (!key) return;
-      const archivedAt = next.get(key) ?? 0;
-      if (archivedAt <= 0) return;
-      const hasNewerMessage = thread.messages.some(
-        (message) => !message.eventId.startsWith("draft-") && message.createdAt * 1000 > archivedAt,
-      );
-      if (hasNewerMessage) {
-        next.delete(key);
-        changed = true;
-      }
-    });
-    if (!changed) return;
-    dmArchivedThreadsRef.current = next;
-    persistArchivedDmThreads(next);
-    setDmArchivedThreadsVersion((value) => value + 1);
-  }, [dmThreads, persistArchivedDmThreads]);
-  const activeGroupMuted = !!(activeGroupChat && dmMutedGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
-  const activeGroupLeft = !!(activeGroupChat && dmLeftGroupsRef.current.has(activeGroupChat.groupId.toLowerCase()));
-  useEffect(() => {
-    if (!open || !isChatPage || chatView !== "conversation" || !activeThread) {
-      dmAutoScrollStateRef.current = { threadPeer: activeThread?.peerPubkey ?? null, itemCount: 0 };
-      return;
-    }
-    const nextState = {
-      threadPeer: activeThread.peerPubkey,
-      itemCount: activeThread.messages.length + activeThreadPendingMessages.length,
-    };
-    const prevState = dmAutoScrollStateRef.current;
-    const threadChanged = prevState.threadPeer !== nextState.threadPeer;
-    const grew = nextState.itemCount > prevState.itemCount;
-    dmAutoScrollStateRef.current = nextState;
-    if (!threadChanged && !grew) return;
-    // Skip auto-scroll-to-bottom when we are about to scroll to a specific message
-    if (threadChanged && scrollToMessageIdRef.current) return;
-    const scroller = messagesScrollRef.current;
-    if (!scroller) return;
-    const behavior: ScrollBehavior = threadChanged ? "auto" : "smooth";
-    if (threadChanged) {
-      // Double rAF: first frame lets React flush the new messages into the DOM,
-      // second frame fires after the browser has done layout so scrollHeight is final.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          scroller.scrollTo({ top: scroller.scrollHeight, behavior });
-        });
-      });
-    } else {
-      requestAnimationFrame(() => {
-        scroller.scrollTo({ top: scroller.scrollHeight, behavior });
-      });
-    }
-  }, [activeThread, activeThreadPendingMessages.length, chatView, isChatPage, open]);
-  // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands): seeded from
-  // the localStorage cache so the "/" menu is instantly available, then
-  // refreshed in the background. The published list itself is the signal
-  // that the peer is a bot (docs/reference/bot-command-lists.md).
-  const [activeBotCommands, setActiveBotCommands] = useState<BotCommand[] | null>(null);
-  const activeBotCommandsPeerRef = useRef<string | null>(null);
-  const botCommandsFetchingRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const peerHex = activeThread && !activeThread.groupId && activeThread.peerPubkey
-      ? activeThread.peerPubkey.toLowerCase()
-      : null;
-    activeBotCommandsPeerRef.current = peerHex;
-    if (!open || !isChatPage || chatView !== "conversation" || !peerHex) {
-      setActiveBotCommands(null);
-      return;
-    }
-    setActiveBotCommands(loadCachedBotCommands(peerHex));
-    if (!shouldRefreshCachedBotCommands(peerHex)) return;
-    if (botCommandsFetchingRef.current.has(peerHex)) return;
-    botCommandsFetchingRef.current.add(peerHex);
-    void (async () => {
-      try {
-        const pool = ensureNostrPool();
-        const relays = await resolveNip17Relays(peerHex, defaultNostrRelays);
-        const { commands } = await fetchBotCommands(pool, relays, peerHex);
-        if (commands.length) {
-          saveCachedBotCommands(peerHex, commands);
-          if (activeBotCommandsPeerRef.current === peerHex) setActiveBotCommands(commands);
-        }
-      } catch {
-        // Offline or unreachable — cached commands (if any) still stand.
-      } finally {
-        botCommandsFetchingRef.current.delete(peerHex);
-      }
-    })();
-  }, [activeThread, chatView, defaultNostrRelays, ensureNostrPool, isChatPage, open, resolveNip17Relays]);
-  useEffect(() => {
-    if (!scrollToMessageId || chatView !== "conversation") return;
-    scrollToMessageIdRef.current = scrollToMessageId;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const scroller = messagesScrollRef.current;
-        const el = scroller?.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(scrollToMessageId)}"]`);
-        if (el && scroller) {
-          // Scroll within the container (not viewport) to avoid breaking the fixed compose bar
-          const scrollerRect = scroller.getBoundingClientRect();
-          const elRect = el.getBoundingClientRect();
-          const targetTop = scroller.scrollTop + elRect.top - scrollerRect.top - scroller.clientHeight / 2 + elRect.height / 2;
-          scroller.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
-          el.classList.add("chat-message--highlight");
-          setTimeout(() => el.classList.remove("chat-message--highlight"), 2000);
-        }
-        scrollToMessageIdRef.current = null;
-        setScrollToMessageId(null);
-      });
-    });
-  }, [scrollToMessageId, chatView, activeThread]);
-  useEffect(() => {
-    if (dmView !== "thread" || activeThread) return;
-    setDmView(dmListViewRef.current);
-    setActiveThreadPeer(null);
-    setActiveGroupId(null);
-    if (isChatPage && (chatView === "conversation" || chatView === "group-info" || chatView === "group-members" || chatView === "group-name-edit")) {
-      setChatView("threads");
-    }
-  }, [activeThread, chatView, dmView, isChatPage]);
-  useEffect(() => {
-    if (activeGroupChat) return;
-    setRenameGroupBusy(false);
-    setRenameGroupDraft("");
-    setGroupMembersSearch("");
-    if (chatView === "group-info" || chatView === "group-members" || chatView === "group-name-edit") {
-      setChatView(activeThread ? "conversation" : "threads");
-    }
-  }, [activeGroupChat, activeThread, chatView]);
-  const {
-    persistMutedGroups,
-    persistLeftGroups,
-    setGroupMutedState,
-    setGroupLeftState,
-    markThreadReadThrough,
-    closeThreadIfActive,
-    clearArchivedDmThread,
-    handleArchiveDmThread,
-    handleDeleteDmThread,
-    openActiveGroupInfo,
-    handleToggleActiveGroupMute,
-    handleToggleActiveGroupMembership,
-    toggleBlockPeer,
-    handleAddPeerToContacts,
-  } = useDmThreadActions({
-    dmMutedGroupsRef,
-    setDmMutedGroupsVersion,
-    dmLeftGroupsRef,
-    setDmLeftGroupsVersion,
-    dmThreadReadAtRef,
-    persistDmThreadReadState,
-    setDmThreadReadAtVersion,
-    dmArchivedThreadsRef,
-    persistArchivedDmThreads,
-    setDmArchivedThreadsVersion,
-    dmTempDeletedEventsRef,
-    persistTempDeletedDmEvents,
-    setDmTempDeletedEventsVersion,
-    dmProcessedEventsRef,
-    dmBlockedPeersRef,
-    persistBlockedPeers,
-    setDmBlockedPeersVersion,
-    setDmMessageActions,
-    setDmExpandedMessages,
-    setDmMessages,
-    setPendingMessages,
-    cancelDmLongPress,
-    persistGroupStateSet,
-    activeThreadPeer,
-    isChatPage,
-    setActiveThreadPeer,
-    setActiveGroupId,
-    setDmView,
-    dmListViewRef,
-    setChatView,
-    activeGroupChat,
-    activeThread,
-    setRenameGroupDraft,
-    setGroupMembersSearch,
-    setGroupInfoTab,
-    setAttachTrayOpen,
-    setShareContactPickerMode,
-    setShareContactSource,
-    setShareContactStatus,
-    setChatCompose,
-    setShareContactPickerOpen,
-    upsertContact,
-    getPeerProfile,
-    peerLabelFor,
-    formatNpub,
-    collectUnreadThreadItemEventIds,
-    onMarkMessagesRead,
-    showToast,
-  });
-  const {
-    threadUnreadMap,
-    strangerUnreadCount,
-    mainUnreadCount,
-  } = useThreadUnreadCounts({
-    dmThreads,
-    messageItemsByEventId,
-    pendingMessageItemsByEventId,
-    pendingCalendarInvitesByEventId,
-    isUnreadThreadStatus,
-    dmMutedGroupsRef,
-    dmLeftGroupsRef,
-    dmThreadReadAtRef,
-    dmMutedGroupsVersion,
-    dmLeftGroupsVersion,
-    dmThreadReadAtVersion,
-    strangerThreads,
-    visibleDmThreads,
-  });
-  useEffect(() => {
-    onDmUnreadCountChange?.(mainUnreadCount);
-  }, [mainUnreadCount, onDmUnreadCountChange]);
-  const activeThreadBlocked = activeThread
-    ? dmBlockedPeersRef.current.has(activeThread.peerPubkey.toLowerCase())
-    : false;
-  useEffect(() => {
-    if (!activeThread) return;
-    const latestIncomingCreatedAt = activeThread.messages.reduce((latest, message) => {
-      if (!message.isIncoming || message.eventId.startsWith("draft-")) return latest;
-      return Math.max(latest, message.createdAt);
-    }, 0);
-    if (latestIncomingCreatedAt > 0) {
-      markThreadReadThrough(activeThread.peerPubkey, latestIncomingCreatedAt);
-    }
-    const unreadIds = collectUnreadThreadItemEventIds(activeThread.messages, activeThread.peerPubkey);
-    if (unreadIds.length) {
-      onMarkMessagesRead(unreadIds);
-    }
-  }, [activeThread, collectUnreadThreadItemEventIds, markThreadReadThrough, onMarkMessagesRead]);
-  const {
-    sortedContacts,
-    visibleContacts,
-    shareRecipientOptions,
-    publicFollowOptions,
-    lightningContactCount,
-  } = useContactsDerived({
-    contacts,
-    contactsContext,
-    shareContactSource,
-    compressedToRawHex,
-    normalizeNostrPubkey,
-    contactSyncMeta,
-    formatNpub,
-  });
-  const {
     resetContactForm,
     handleGenerateP2pkKey,
     handleOpenReceiveLock,
     readLightningInput,
     commitLightningInputFromDom,
-    handleSendChatContactAttachment,
     handlePaymentRequestScan,
     openContactsFor,
     closeContactsSheet,
     applyLightningContact,
-    openGroupNameEditor,
-    handleRenameGroupSubmit,
     applyEcashContact,
     handleSelectContact,
     handleProofStateNotification,
   } = useContactPaymentActions({
     mintUrl,
     info,
-    activeThread,
-    activeGroupChat,
-    renameGroupDraft,
     activeP2pkKey,
     lnInput,
     walletConversionEnabled,
@@ -1505,14 +815,6 @@ export default function CashuWalletModal({
     setLnAddrAmt,
     setLnState,
     setLnError,
-    setRenameGroupDraft,
-    setChatView,
-    setRenameGroupBusy,
-    setShareContactStatus,
-    setShareContactBusy,
-    setShareContactPickerOpen,
-    setShareContactPickerMode,
-    setShareContactSource,
     setCreatingSendToken,
     setSendTokenStr,
     setLastSendTokenAmount,
@@ -1541,9 +843,6 @@ export default function CashuWalletModal({
     ensureNostrPool,
     safePublish,
     publishNip17Giftwraps,
-    publishGroupSubjectUpdate,
-    upsertGroupChat,
-    sendContactShareToPubkeys,
     defaultNostrRelays,
   });
   const truncateContactName = (value: string, maxLength = 32) => {
@@ -1578,18 +877,6 @@ export default function CashuWalletModal({
   }, [lnurlWithdrawState]);
 
   useEffect(() => {
-    skipContactsEventRef.current = true;
-    saveContactsToStorage(contacts);
-    if (skipContactsTimerRef.current) {
-      clearTimeout(skipContactsTimerRef.current);
-    }
-    skipContactsTimerRef.current = setTimeout(() => {
-      skipContactsEventRef.current = false;
-      skipContactsTimerRef.current = null;
-    }, 0);
-  }, [contacts]);
-
-  useEffect(() => {
     if (!contactsOpen) {
       resetContactForm();
       setContactsContext(null);
@@ -1597,48 +884,6 @@ export default function CashuWalletModal({
     }
   }, [contactsOpen, resetContactForm]);
 
-  const {
-    parseNip05Address,
-    normalizeNip05,
-    resolveNip05Record,
-    handleLookupContact,
-    handleContactImportAction,
-    handleImportPublicFollow,
-    handleScannedContactPayload,
-    handleDeleteContact,
-    buildContactShareValue,
-  } = useContactLookup({
-    compressedToRawHex,
-    contactLookupBusy,
-    contactLookupInput,
-    contactsPublishQueuedRef,
-    defaultNostrRelays,
-    ensureNostrPool,
-    formatNpub,
-    setActiveContactId,
-    setContactLookupBusy,
-    setContactLookupError,
-    setContactLookupInput,
-    setContactView,
-    setContacts,
-    setPublicFollowPickerOpen,
-    setScannerMessage,
-    setScannedContact,
-    setShowScanner,
-    upsertContact,
-  });
-
-
-
-
-
-  const profileShareValue = useMemo(() => {
-    if (profileSharePayload) return profileSharePayload;
-    // Read identity directly — not gated by paymentRequestsEnabled so new accounts
-    // without payment requests still get a QR on their contact card.
-    const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
-    return identity ? formatNpub(identity.pubkey) : null;
-  }, [formatNpub, profileSharePayload, readNostrIdentity]);
   const {
     showMintBalances,
     setShowMintBalances,
@@ -2297,10 +1542,7 @@ export default function CashuWalletModal({
     [canToggleCurrency],
   );
 
-  const contentClass = useMemo(
-    () => `wallet-modal__content${walletTab === "wallet" ? " wallet-modal__content--home" : ""}`,
-    [walletTab],
-  );
+  const contentClass = "wallet-modal__content wallet-modal__content--home";
 
 
 
@@ -2605,88 +1847,6 @@ export default function CashuWalletModal({
     });
   }, [paymentRequestsEnabled, mintUrl, info?.unit]);
 
-  useEffect(() => {
-    if (!contactsSyncEnabled) {
-      contactsPublishQueuedRef.current = false;
-      return;
-    }
-    const fingerprint = computeContactsFingerprint(contacts);
-    contactsFingerprintRef.current = fingerprint;
-    if (!contacts.length && !contactSyncMeta.fingerprint) {
-      contactsPublishQueuedRef.current = false;
-      return;
-    }
-    if (contactSyncMeta.fingerprint && contactSyncMeta.fingerprint === fingerprint) {
-      if (contactsPublishState !== "publishing") {
-        contactsPublishQueuedRef.current = false;
-      }
-      return;
-    }
-    contactsPublishQueuedRef.current = true;
-  }, [computeContactsFingerprint, contactSyncMeta.fingerprint, contacts, contactsPublishState, contactsSyncEnabled]);
-
-  useEffect(() => {
-    if (!contactsSyncEnabled) return;
-    if (nostrMissingReason) return;
-    void migrateNip51ContactsIfNeeded({ silent: true });
-  }, [contactsSyncEnabled, nostrMissingReason, migrateNip51ContactsIfNeeded]);
-
-  useEffect(() => {
-    if (!contactsSyncEnabled) return;
-    if (!contactsPublishQueuedRef.current) return;
-    const timer = window.setTimeout(() => {
-      if (contactsPublishQueuedRef.current) {
-        void publishContactsToNostr({ silent: true });
-      }
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [contactsSyncEnabled, contacts, contactSyncMeta.fingerprint, publishContactsToNostr]);
-
-  useEffect(() => {
-    if (!contactsTabOpen && !contactsOpen && !chatModeUsesContacts) {
-      contactProfilesRefreshedRef.current = false;
-      return;
-    }
-    if (!contactProfilesRefreshedRef.current) {
-      contactProfilesRefreshedRef.current = true;
-      void refreshContactProfiles();
-      if (contactsSyncEnabled) {
-        void loadProfileMetadata();
-        void syncContactsFromNostr({ silent: true });
-      }
-    }
-  }, [chatModeUsesContacts, contactsOpen, contactsSyncEnabled, contactsTabOpen, loadProfileMetadata, refreshContactProfiles, syncContactsFromNostr]);
-
-  useEffect(() => {
-    if (contactsTabOpen) return;
-    setContactView("list");
-    setActiveContactId(null);
-    resetContactEditDraft();
-    setContactEditError("");
-    setContactLookupError("");
-    setContactLookupInput("");
-    setPublicFollowPickerOpen(false);
-  }, [contactsTabOpen, resetContactEditDraft]);
-
-  useEffect(() => {
-    if (!contactsTabOpen) return;
-    if (contactView !== "detail") return;
-    if (activeContactId && activeContactId !== "profile") {
-      const exists = contacts.some((entry) => entry.id === activeContactId);
-      if (!exists) {
-        setContactView("list");
-        setActiveContactId(null);
-      }
-    }
-  }, [activeContactId, contactView, contacts, contactsTabOpen]);
-
-  useEffect(() => {
-    if (!contactsTabOpen) return;
-    if (contactView !== "detail") return;
-    const panelEl = contactsPanelRef.current?.closest(".sheet-panel") as HTMLElement | null;
-    panelEl?.scrollTo({ top: 0 });
-  }, [activeContactId, contactView, contactsTabOpen]);
-
   const PAYMENT_REQUEST_SEND_TIMEOUT_MS = 8000;
 
   const decryptNostrPaymentMessageRef = useRef(decryptNostrPaymentMessage);
@@ -2846,14 +2006,6 @@ export default function CashuWalletModal({
       void closeNostrPool(true);
     };
   }, [closeNostrPool, stopPaymentRequestSubscription]);
-
-  const dmResumeEpoch = useSyncResume();
-  useEffect(() => {
-    void startDmSubscription();
-    return () => {
-      stopDmSubscription();
-    };
-  }, [startDmSubscription, stopDmSubscription, dmResumeEpoch]);
 
   const {
     normalizedSendLockPubkey,
@@ -3561,9 +2713,6 @@ export default function CashuWalletModal({
           await handlePaymentRequestScan(pendingScan.request);
           break;
         }
-        default:
-          closeCamera();
-          break;
       }
     }
 
@@ -4153,482 +3302,6 @@ export default function CashuWalletModal({
   const contactInitials = (value: string) => {
     return avatarInitials(value);
   };
-
-  const myCardUsername = formatContactUsername(profileForm.username);
-  const myCardName = profileForm.displayName.trim() || myCardUsername || "My Card";
-  const myCardLightning = profileForm.lud16.trim();
-  const myCardNpub = useMemo(() => {
-    const identity = readNostrIdentity().identity ?? nostrIdentityRef.current;
-    return identity ? formatNpub(identity.pubkey) : "";
-  }, [formatNpub, readNostrIdentity, profileSharePayload]);
-  const myCardSubtitle =
-    myCardLightning || profileForm.nip05.trim() || myCardNpub || "My Card";
-  const profileCard = {
-    id: "profile",
-    kind: myCardNpub ? ("nostr" as const) : ("custom" as const),
-    name: myCardName,
-    displayName: profileForm.displayName.trim(),
-    username: sanitizeUsername(profileForm.username),
-    address: myCardLightning,
-    paymentRequest: "",
-    npub: myCardNpub,
-    nip05: profileForm.nip05.trim(),
-    about: profileForm.about.trim(),
-    picture: profileForm.picture.trim(),
-    updatedAt: profileUpdatedAt,
-  };
-  const {
-    activeConversationContact,
-    chatAttachTrayHeight,
-    chatAttachContactOptions,
-    activeGroupAvatarMembers,
-    activeGroupMembers,
-    filteredActiveGroupMembers,
-    groupAvatarMembersFor,
-  } = useChatGroupDerived({
-    activeThread,
-    activeGroupChat,
-    contactByHex,
-    sortedContacts,
-    myCardNpub,
-    myCardName,
-    profileCard,
-    groupMembersSearch,
-    chatKeyboardHeight,
-    chatKeyboardHeightCache,
-    nostrIdentityInfo,
-    nostrIdentityRef,
-    dmPeerProfilesRef,
-    getPeerProfile,
-    peerLabelFor,
-    compressedToRawHex,
-    normalizeNostrPubkey,
-    formatNpub,
-    sanitizeUsername,
-    contactDisplayLabel,
-    formatContactUsername,
-    formatContactNpub,
-    pickPreferredProfilePhoto,
-    shortenNpubDisplay,
-    profileUpdatedAt,
-  });
-  const {
-    activeContact,
-    detailTarget,
-    sharedContactPreviewContact,
-    scannedContactSaved,
-    scannedContactFollowed,
-    sharedContactPreviewSaved,
-    sharedContactPreviewCanAccept,
-    detailContactFollowed,
-    contactSubtitle,
-    handleOpenChatEcash,
-    handleOpenChatLightning,
-    openGroupMemberDetail,
-    buildContactFields,
-    verifyContactNip05,
-    ensureNip05Verification,
-    isNip05VerifiedFor,
-    handleSaveScannedContact,
-    handleSaveSharedContactPreview,
-    handleToggleFollowScannedContact,
-    handleStartEditCurrentContact,
-    handleCancelContactEdit,
-    handleToggleFollowDetailContact,
-    handleCopyContactField,
-    processProfilePhotoFile,
-    handleProfilePhotoChange,
-    handleClearProfilePhoto,
-    handleContactEditSubmit,
-  } = useContactDetail({
-    nip05Checks,
-    contacts,
-    contactsRef,
-    contactSyncMeta,
-    contactsSyncEnabled,
-    scannedContact,
-    sharedContactPreview,
-    contactDetailOverride,
-    activeContactId,
-    contactEditDraft,
-    profileForm,
-    profileUpdatedAt,
-    nostrIdentityInfo,
-    myCardName,
-    profileCard,
-    activeGroupMembers,
-    activeConversationContact,
-    nostrMissingReason,
-    preferredFileServer,
-    fileServers,
-    profilePhotoBusy,
-    nostrIdentityRef,
-    contactsPublishQueuedRef,
-    profilePhotoUploadRef,
-    setNip05Checks,
-    setScannedContact,
-    setSharedContactPreview,
-    setContactDetailOverride,
-    setActiveContactId,
-    setContactEditDraft,
-    setContactReturnView,
-    setContactView,
-    setDmSearch,
-    setChatView,
-    setContactEditError,
-    setContactLookupError,
-    setContactLookupInput,
-    setShowCustomContactFields,
-    setProfilePhotoError,
-    setProfilePhotoBusy,
-    setProfileStatus,
-    setProfileMessage,
-    setProfileForm,
-    normalizeNip05,
-    normalizeNostrPubkey,
-    compressedToRawHex,
-    resolveNip05Record,
-    upsertContact,
-    publishContactsToNostr,
-    persistContactSyncMeta,
-    sanitizeUsername,
-    formatContactNpub,
-    formatContactUsername,
-    showToast,
-    peerLabelFor,
-    openEcashSendToContact,
-    openEcashSendSheet,
-    openLightningSendSheet,
-    applyLightningContact,
-    closeAttachTray,
-    onAcceptMessage,
-    handleReturnToProfileCard,
-    resetContactEditDraft,
-    ensureNostrIdentity,
-    publishProfileMetadata,
-    deriveDefaultLightningAddress,
-    isDataUrl,
-    estimateDataUrlSize,
-  });
-  const detailShareValue =
-    activeContactId === "profile"
-      ? profileShareValue
-      : detailTarget
-        ? buildContactShareValue(detailTarget as Contact)
-        : null;
-  const detailUsername = detailTarget ? formatContactUsername(detailTarget.username) : "";
-  const detailFields = buildContactFields(detailTarget);
-  const detailHasLightning = activeContact ? contactHasLightning(activeContact) : false;
-  const detailCanShare = activeContact ? contactHasNpub(activeContact) : false;
-
-  useEffect(() => {
-    if (!detailTarget?.id) return;
-    ensureNip05Verification(detailTarget.id, detailTarget.nip05, detailTarget.npub, detailTarget.updatedAt ?? null);
-  }, [detailTarget, ensureNip05Verification]);
-
-  useEffect(() => {
-    ensureNip05VerificationRef.current = ensureNip05Verification;
-  }, [ensureNip05Verification]);
-
-  useEffect(() => {
-    isNip05VerifiedForRef.current = isNip05VerifiedFor;
-  }, [isNip05VerifiedFor]);
-
-    const detailNip05Normalized = normalizeNip05(detailTarget?.nip05 ?? null);
-    const detailNpubHex = detailTarget?.npub
-      ? compressedToRawHex(normalizeNostrPubkey(detailTarget.npub) ?? detailTarget.npub).toLowerCase()
-      : null;
-    const detailNip05Verified =
-      !!detailNip05Normalized &&
-      !!detailNpubHex &&
-      isNip05VerifiedFor(detailTarget?.id ?? "", detailTarget?.nip05, detailTarget?.npub);
-
-    const scannedContactTitle = scannedContact ? contactPrimaryName(scannedContact) : "Contact";
-    const scannedContactUsername = scannedContact ? formatContactUsername(scannedContact.username) : "";
-    const scannedContactShareValue = scannedContact ? buildContactShareValue(scannedContact) : null;
-    const scannedContactFields = buildContactFields(scannedContact);
-    const scannedContactNip05Verified = scannedContact
-      ? isNip05VerifiedFor(scannedContact.id, scannedContact.nip05, scannedContact.npub)
-      : false;
-    const scannedContactCanShare = !!scannedContact && contactHasNpub(scannedContact);
-    useEffect(() => {
-      if (!scannedContact?.id) return;
-      ensureNip05Verification(
-        scannedContact.id,
-        scannedContact.nip05,
-        scannedContact.npub,
-        scannedContact.updatedAt ?? null,
-      );
-    }, [ensureNip05Verification, scannedContact]);
-    const sharedContactPreviewTitle = sharedContactPreviewContact ? contactPrimaryName(sharedContactPreviewContact) : "Contact";
-    const sharedContactPreviewUsername = sharedContactPreviewContact
-      ? formatContactUsername(sharedContactPreviewContact.username)
-      : "";
-    const sharedContactPreviewShareValue = sharedContactPreviewContact
-      ? buildContactShareValue(sharedContactPreviewContact)
-      : null;
-    const sharedContactPreviewFields = buildContactFields(sharedContactPreviewContact);
-    const sharedContactPreviewNip05Verified = sharedContactPreviewContact
-      ? isNip05VerifiedFor(
-          sharedContactPreviewContact.id,
-          sharedContactPreviewContact.nip05,
-          sharedContactPreviewContact.npub,
-        )
-      : false;
-    const scannedContactCanFollow = !!scannedContact && scannedContactSaved && !!scannedContact.npub.trim();
-    const sharedContactPreviewCanShare =
-      !!sharedContactPreviewContact && contactHasNpub(sharedContactPreviewContact);
-    useEffect(() => {
-      if (!sharedContactPreviewContact?.id) return;
-      ensureNip05Verification(
-        sharedContactPreviewContact.id,
-        sharedContactPreviewContact.nip05,
-        sharedContactPreviewContact.npub,
-        sharedContactPreviewContact.updatedAt ?? null,
-      );
-    }, [ensureNip05Verification, sharedContactPreviewContact]);
-    useEffect(() => {
-      if (open && isChatPage && chatView === "conversation") return;
-      setSharedContactPreview(null);
-    }, [chatView, isChatPage, open]);
-
-
-    const scannedContactHeader = scannedContact ? (
-      <div className="contacts-sheet-header contacts-sheet-header--detail">
-        <button
-          className="glass-icon-button pressable"
-          onClick={() => setScannedContact(null)}
-          aria-label="Close contact"
-        >
-          <CloseIcon className="h-4 w-4" />
-        </button>
-        <div className="contacts-header-spacer" aria-hidden="true" />
-        {!scannedContactSaved ? (
-          <button
-            type="button"
-            className="contact-pill contact-pill--accent contact-pill--compact contact-pill--wrap pressable"
-            onClick={handleSaveScannedContact}
-          >
-            Add contact
-          </button>
-        ) : scannedContactCanFollow ? (
-          <button
-            type="button"
-            className="contact-pill contact-pill--accent contact-pill--compact pressable"
-            onClick={handleToggleFollowScannedContact}
-          >
-            {scannedContactFollowed ? "Unfollow" : "Follow"}
-          </button>
-        ) : (
-          <div className="contacts-header-spacer" aria-hidden="true" />
-        )}
-      </div>
-    ) : null;
-    const sharedContactPreviewHeader = sharedContactPreview ? (
-      <div className="contacts-sheet-header contacts-sheet-header--detail">
-        <button
-          className="glass-icon-button pressable"
-          onClick={() => setSharedContactPreview(null)}
-          aria-label="Close shared contact"
-        >
-          <CloseIcon className="h-4 w-4" />
-        </button>
-        <div className="contacts-header-spacer" aria-hidden="true" />
-        <button
-          type="button"
-          className="contact-pill contact-pill--accent contact-pill--compact contact-pill--wrap pressable"
-          onClick={handleSaveSharedContactPreview}
-          disabled={sharedContactPreviewSaved && !sharedContactPreviewCanAccept}
-        >
-          {sharedContactPreviewSaved && !sharedContactPreviewCanAccept ? "In contacts" : "Add to contacts"}
-        </button>
-      </div>
-    ) : null;
-
-  useEffect(() => {
-    const candidates: { id: string; nip05: string; npub: string; updatedAt?: number | null }[] = [];
-    const seen = new Set<string>();
-    const addCandidate = (contact: Contact | typeof profileCard) => {
-      if (!contact.id || !contact.nip05 || !contact.npub) return;
-      const normalizedNip05 = normalizeNip05(contact.nip05);
-      const normalizedNpub = normalizeNostrPubkey(contact.npub);
-      if (!normalizedNip05 || !normalizedNpub) return;
-      const key = `${contact.id}:${normalizedNip05}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      const updatedAt = (contact as Contact).updatedAt ?? (contact === profileCard ? profileUpdatedAt : null);
-      candidates.push({ id: contact.id, nip05: normalizedNip05, npub: normalizedNpub, updatedAt });
-    };
-
-    if (contactsTabOpen) {
-      addCandidate(profileCard);
-      sortedContacts.forEach(addCandidate);
-    }
-
-    if (contactsOpen && contactsContext) {
-      visibleContacts.forEach(addCandidate);
-    }
-
-    candidates.forEach(({ id, nip05, npub, updatedAt }) => ensureNip05Verification(id, nip05, npub, updatedAt));
-  }, [
-    contactsContext,
-    contactsOpen,
-    contactsTabOpen,
-    ensureNip05Verification,
-    normalizeNip05,
-    normalizeNostrPubkey,
-    profileCard,
-    profileUpdatedAt,
-    sortedContacts,
-    visibleContacts,
-  ]);
-
-
-    const detailTitle = detailTarget ? contactPrimaryName(detailTarget) : "Contact";
-    const detailIsNostrContact = useMemo(() => {
-      if (!detailTarget) return false;
-      if (detailTarget.id === "profile" || (detailTarget as any).isProfile || detailTarget.kind === "custom") {
-        return false;
-      }
-      const hasNpub = !!normalizeNostrPubkey(detailTarget.npub || "");
-      const hasVerifiedNip05 = !!(
-        detailTarget.nip05 &&
-        isNip05VerifiedFor(detailTarget.id, detailTarget.nip05, detailTarget.npub)
-      );
-      return hasNpub || hasVerifiedNip05;
-    }, [detailTarget, isNip05VerifiedFor, normalizeNostrPubkey]);
-    const detailContactCanFollow = !!detailTarget && detailIsNostrContact && !!detailTarget.npub.trim();
-    const detailCanAddContact = !!detailTarget && activeContactId !== "profile" && !activeContact;
-
-    const profileHeaderPhoto = profileCard.picture?.trim();
-    const contactsHeaderTitle =
-      contactView === "edit"
-        ? contactEditDraft.isProfile
-          ? "Edit My Card"
-          : contactEditDraft.id
-            ? "Edit Contact"
-            : "New Contact"
-        : contactView === "detail"
-          ? ""
-          : isContactsPage
-            ? ""
-            : "Contacts";
-
-    const contactsHeaderLeft =
-      contactView === "list" && isContactsPage ? (
-        <button
-          type="button"
-          className={`contact-avatar pressable${profileHeaderPhoto ? " contact-avatar--image contact-avatar--profile" : " contact-avatar--profile"}`}
-          onClick={() => {
-            setActiveContactId("profile");
-            setContactView("detail");
-          }}
-          aria-label="Open profile"
-          title="Open profile"
-        >
-          {profileHeaderPhoto ? (
-            <img src={profileHeaderPhoto} alt={myCardName} className="contact-avatar__img" />
-          ) : (
-            contactInitials(myCardName)
-          )}
-        </button>
-      ) : contactView === "list" ? (
-        <button
-          className="glass-icon-button pressable"
-          onClick={closeContactsTab}
-          aria-label="Close contacts"
-        >
-          <CloseIcon className="h-4 w-4" />
-        </button>
-      ) : contactView === "detail" ? (
-        <button
-          className="glass-icon-button pressable"
-          onClick={handleBackToContactsList}
-          aria-label={contactReturnView === "group-members" ? "Back to members" : contactReturnView === "group-info" ? "Back to group info" : "Back to contacts"}
-        >
-          <BackIcon className="h-5 w-5" />
-        </button>
-      ) : (
-        <button
-          className="glass-icon-button pressable"
-          onClick={handleCancelContactEdit}
-          aria-label="Cancel contact changes"
-        >
-          <CloseIcon className="h-4 w-4" />
-        </button>
-      );
-
-    const contactsHeaderRight =
-      contactView === "list" ? (
-        <button
-          type="button"
-          className="glass-icon-button glass-icon-button--accent pressable"
-          onClick={handleStartAddContact}
-          title="Add contact"
-          aria-label="Add contact"
-        >
-          <span className="text-xl leading-none">+</span>
-        </button>
-      ) : contactView === "detail" && detailTarget ? (
-        detailCanAddContact ? (
-          <button
-            type="button"
-            className="contact-pill contact-pill--accent contact-pill--compact pressable"
-            onClick={handleStartEditCurrentContact}
-          >
-            Add contact
-          </button>
-        ) : detailIsNostrContact ? (
-          detailContactCanFollow ? (
-            <button
-              type="button"
-              className="contact-pill contact-pill--accent contact-pill--compact pressable"
-              onClick={handleToggleFollowDetailContact}
-            >
-              {detailContactFollowed ? "Unfollow" : "Follow"}
-            </button>
-          ) : (
-            <div className="contacts-header-spacer" aria-hidden="true" />
-          )
-        ) : (
-          <button
-            type="button"
-            className="glass-icon-button glass-icon-button--accent pressable"
-            onClick={handleStartEditCurrentContact}
-            aria-label="Edit contact"
-          >
-            <PencilIcon className="h-4 w-4" />
-          </button>
-        )
-      ) : contactView === "edit" ? (
-        <button
-          type="button"
-          className="glass-icon-button glass-icon-button--accent pressable"
-          aria-label="Save contact"
-          onClick={() => {
-            void handleContactEditSubmit();
-          }}
-          disabled={contactsPublishState === "publishing" || profileStatus === "publishing" || profilePhotoBusy}
-        >
-          <CheckIcon className="h-4 w-4" />
-        </button>
-      ) : (
-        <div className="contacts-header-spacer" aria-hidden="true" />
-      );
-
-    const contactsHeader = (
-      <div className="contacts-sheet-header contacts-sheet-header--detail">
-        {contactsHeaderLeft}
-        {contactsHeaderTitle ? (
-          <div className="contacts-sheet-title">{contactsHeaderTitle}</div>
-        ) : (
-          <div className="contacts-header-spacer" aria-hidden="true" />
-        )}
-        {contactsHeaderRight}
-      </div>
-    );
-
-
   const { setOnReceived: setNwcOnReceived, clearReceiveInvoice: clearNwcReceiveInvoice } = nwcMode;
   useEffect(() => {
     setNwcOnReceived(() => {
@@ -4703,24 +3376,16 @@ export default function CashuWalletModal({
     }
   };
 
-  const inConversation = isChatPage && chatView === "conversation";
-  const hideAppTabSwitcher = isChatPage && chatView !== "threads";
-  const walletRootClass = `wallet-modal${showBottomNav && !hideAppTabSwitcher ? " wallet-modal--with-nav" : ""}${isContactsPage ? " wallet-modal--contacts" : ""}${isChatPage ? " wallet-modal--chat" : ""}${hideAppTabSwitcher ? " wallet-modal--app-nav-hidden" : ""}${inConversation ? " wallet-modal--chat-convo" : ""}`;
-  const contactsPanelInline = !showTabSwitcher && isContactsPage;
-  const contactsPanelOpen = contactsTabOpen || contactsPanelInline;
-  const showWalletTabSwitcher = showTabSwitcher && !isContactsPage && !isChatPage;
+  const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}`;
 
   if (!open) return null;
 
   return (
     <div className={walletRootClass}>
-      {!isContactsPage && !isChatPage && (
-        <>
           <div className="wallet-modal__header">
             <div className="wallet-modal__title-group">
               <button className="ghost-button button-sm pressable" onClick={onClose}>Close</button>
               <span className="wallet-modal__title">Wallet</span>
-              {walletTab !== "messages" && (
                 <button
                   type="button"
                   className={unitButtonClass}
@@ -4730,19 +3395,14 @@ export default function CashuWalletModal({
                 >
                   {unitLabel}
                 </button>
-              )}
             </div>
-            {walletTab !== "messages" && (
               <div className="wallet-modal__utilities">
                 <button className="ghost-button button-sm pressable" onClick={()=>setShowHistory(true)}>History</button>
                 <button className="ghost-button button-sm pressable" onClick={openNwcManager}>Wallets</button>
                 <button className="ghost-button button-sm pressable" onClick={()=>setShowWalletSettings(true)}>Settings</button>
               </div>
-            )}
           </div>
           <div className={contentClass}>
-            {walletTab === "wallet" && (
-              <>
             <button
               type="button"
               className={balanceCardClass}
@@ -4808,792 +3468,7 @@ export default function CashuWalletModal({
               </button>
               <button className="ghost-button pressable" onClick={openLightningSendSheet}>Send</button>
             </div>
-              </>
-            )}
-            {walletTab === "messages" && (
-              <div className="wallet-messages">
-            <div className="wallet-messages__search">
-              <div className="chat-page__search-shell">
-                <input
-                  className="wallet-messages__search-input"
-                  placeholder="Search"
-                  value={dmSearch}
-                  onChange={(event) => setDmSearch(event.target.value)}
-                />
-                {dmSearch.length > 0 && (
-                  <button
-                    type="button"
-                    className="chat-page__search-clear pressable"
-                    aria-label="Clear search"
-                    title="Clear search"
-                    onClick={() => setDmSearch("")}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M18 6 6 18" />
-                      <path d="m6 6 12 12" />
-                    </svg>
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="wallet-messages__body">
-              {(dmView === "list" || dmView === "strangers") && (
-                <WalletMessagesListPanel
-                  dmSearch={dmSearch}
-                  dmView={dmView}
-                  setDmView={setDmView}
-                  dmListViewRef={dmListViewRef}
-                  setActiveThreadPeer={setActiveThreadPeer}
-                  dmThreadListEntries={dmThreadListEntries}
-                  strangerUnreadCount={strangerUnreadCount}
-                  groupChats={groupChats}
-                  groupAvatarMembersFor={groupAvatarMembersFor}
-                  peerLabelFor={peerLabelFor}
-                  threadUnreadMap={threadUnreadMap}
-                  handleArchiveDmThread={handleArchiveDmThread}
-                  handleDeleteDmThread={handleDeleteDmThread}
-                  collectUnreadThreadItemEventIds={collectUnreadThreadItemEventIds}
-                  onMarkMessagesRead={onMarkMessagesRead}
-                />
-              )}
-              {dmView === "thread" && activeThread && (
-                <div className="wallet-messages__thread-view">
-                <div className="wallet-messages__thread-header">
-	                  <button
-	                    className="glass-icon-button pressable"
-	                    onClick={() => {
-	                      setDmView(dmListViewRef.current);
-	                      setActiveThreadPeer(null);
-	                    }}
-	                  >
-                    <BackIcon className="h-4 w-4" />
-                  </button>
-	                  {(() => {
-	                    const meta = peerLabelFor(activeThread.peerPubkey);
-	                    return (
-	                      <div className="wallet-messages__thread-title">
-	                        <div className="wallet-messages__thread-title-text">{meta.label}</div>
-	                      </div>
-	                    );
-	                  })()}
-                  <span className="wallet-messages__thread-date">
-                    {formatDmDay(activeThread.lastCreatedAt)}
-                  </span>
-                </div>
-                {activeThread.isStranger && (
-                  <div className="wallet-messages__stranger-actions">
-                    <button
-                      type="button"
-                      className="wallet-messages__stranger-button wallet-messages__stranger-button--muted pressable"
-                      onClick={() => toggleBlockPeer(activeThread.peerPubkey)}
-                    >
-                      {activeThreadBlocked ? "Unblock User" : "Block User"}
-                    </button>
-                    <button
-                      type="button"
-                      className="wallet-messages__stranger-button wallet-messages__stranger-button--accent pressable"
-                      onClick={() => handleAddPeerToContacts(activeThread.peerPubkey)}
-                    >
-                      Add to contacts
-                    </button>
-                  </div>
-                )}
-                <div className="wallet-messages__thread-messages">
-                  {activeThread.messages.map((msg) => {
-                    const matchedItem =
-                      messageItemsByEventId.get(msg.eventId) || pendingMessageItemsByEventId.get(msg.eventId);
-                    const matchedInvite = pendingCalendarInvitesByEventId.get(msg.eventId);
-                    const isPayment = msg.attachment?.type === "payment";
-                    const isContact = msg.attachment?.type === "contact";
-                    const isBoard = msg.attachment?.type === "board";
-                    const isTask = msg.attachment?.type === "task";
-                    const isEvent = msg.attachment?.type === "event";
-                    const isStructured = !!msg.attachment && msg.attachment.type !== "text";
-                    const bubbleClass = `wallet-message__bubble${isStructured ? " wallet-message__bubble--card" : ""}`;
-                    const expanded = isDmMessageExpanded(msg.eventId);
-                    const paymentHistoryEntry = isPayment
-                      ? paymentHistoryByEventId.get(msg.eventId.toLowerCase())
-                      : null;
-                    const paymentCreatedSeconds = paymentHistoryEntry?.createdAt
-                      ? Math.floor(paymentHistoryEntry.createdAt / 1000)
-                      : msg.createdAt;
-                    const cardDayLabel = (() => {
-                      const date = new Date(paymentCreatedSeconds * 1000);
-                      const day = date.getDate();
-                      if (!Number.isFinite(day)) return "–";
-                      return `${day}`.padStart(2, "0");
-                    })();
-                    const cardDate = formatShortDate(paymentCreatedSeconds);
-                    const paymentDetails = isPayment
-                      ? selectIncomingPaymentFromPayload(
-                          tryParseJson<PaymentRequestPayload>(msg.attachment?.raw ?? null) ??
-                            tryParseJson<PaymentRequestPayload>(msg.content) ??
-                            msg.attachment?.raw ??
-                            msg.content,
-                        )
-                      : null;
-                    const paymentAmount =
-                      paymentDetails?.amount ??
-                      (isPayment ? msg.attachment?.amountSat ?? null : null);
-                    const paymentUnit =
-                      paymentDetails?.unit && typeof paymentDetails.unit === "string"
-                        ? paymentDetails.unit.toLowerCase()
-                        : "sat";
-                    const paymentMintRaw =
-                      paymentDetails?.mint && typeof paymentDetails.mint === "string"
-                        ? normalizeMintUrl(paymentDetails.mint)
-                        : null;
-                    const paymentMint = paymentHistoryEntry
-                      ? resolveMintDisplay(paymentHistoryEntry)
-                      : paymentMintRaw;
-                    const paymentToken =
-                      paymentHistoryEntry?.detail ||
-                      (paymentDetails?.token as string | undefined) ||
-                      (isPayment && typeof msg.attachment?.raw === "string" ? msg.attachment.raw : "");
-                    const paymentTitle =
-                      paymentHistoryEntry?.amountSat != null
-                        ? formatHistoryAmount(paymentHistoryEntry)
-                        : paymentAmount != null
-                        ? paymentUnit === "sat"
-                          ? formatSatAmount(Math.max(0, Math.floor(paymentAmount)))
-                          : `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
-                        : "Payment request received";
-                    const paymentStatusInfo = paymentHistoryEntry ? deriveHistoryStatus(paymentHistoryEntry) : null;
-                    const paymentSubtitle =
-                      paymentHistoryEntry?.summary ||
-                      (paymentStatusInfo?.label
-                        ? [paymentStatusInfo.label, paymentMint].filter(Boolean).join(" • ")
-                        : null) ||
-                      (isPayment && msg.attachment?.detail) ||
-                      paymentMint ||
-                      "Tap to view payment details";
-                    const contactAttachment = isContact ? msg.attachment : null;
-                    const contactMeta = contactAttachment
-                      ? sharedContactMetaFor(
-                          contactAttachment.npub,
-                          contactAttachment.contactName ||
-                            contactAttachment.displayName ||
-                            contactAttachment.username ||
-                            matchedItem?.contact?.displayName ||
-                            matchedItem?.contact?.name ||
-                            matchedItem?.title,
-                          contactAttachment.picture,
-                        )
-                      : null;
-                    const taskAttachment = isTask ? msg.attachment?.task : null;
-                    const taskDueSeconds = taskAttachment?.dueISO
-                      ? Math.floor(new Date(taskAttachment.dueISO).getTime() / 1000)
-                      : null;
-                    const taskHasDue = !!(taskDueSeconds && Number.isFinite(taskDueSeconds) && taskDueSeconds > 0);
-                    const taskDayLabel = taskHasDue
-                      ? (() => {
-                          const date = new Date((taskDueSeconds as number) * 1000);
-                          const day = date.getDate();
-                          if (!Number.isFinite(day)) return cardDayLabel;
-                          return `${day}`.padStart(2, "0");
-                        })()
-                      : cardDayLabel;
-                    const taskCardDate = taskHasDue ? formatShortDate(taskDueSeconds as number) : cardDate;
-                    const taskDueLabel = taskHasDue
-                      ? `Due ${formatDmDay(taskDueSeconds as number)}${
-                          taskAttachment?.dueTimeEnabled ? ` · ${formatDmTime(taskDueSeconds as number)}` : ""
-                        }`
-                      : "Shared task";
-                    const taskSubtasks = Array.isArray(taskAttachment?.subtasks)
-                      ? taskAttachment.subtasks
-                          .map((subtask) => subtask.title?.trim())
-                          .filter((title): title is string => !!title)
-                      : [];
-                    const isTaskAssignment = !!(taskAttachment?.assignment || matchedItem?.task?.assignment);
-                    const eventAttachment = isEvent ? msg.attachment : null;
-                    const eventReferenceSeconds =
-                      eventAttachment?.start ? parseDateLikeToUnixSeconds(eventAttachment.start, msg.createdAt) : msg.createdAt;
-                    const eventDayLabel = (() => {
-                      const date = new Date(eventReferenceSeconds * 1000);
-                      const day = date.getDate();
-                      if (!Number.isFinite(day)) return cardDayLabel;
-                      return `${day}`.padStart(2, "0");
-                    })();
-                    const eventCardDate = formatShortDate(eventReferenceSeconds);
-                    const eventWhenLabel =
-                      eventAttachment?.whenLabel ||
-                      (matchedInvite && formatCalendarInviteWhen ? formatCalendarInviteWhen(matchedInvite) : "") ||
-                      "Event invite";
-                    const eventTitle = eventAttachment?.title || matchedInvite?.title || "Event invite";
-                    const eventCopyValue =
-                      (
-                        eventAttachment?.view ||
-                        matchedInvite?.view ||
-                        eventAttachment?.canonical ||
-                        matchedInvite?.canonical ||
-                        [eventTitle, eventWhenLabel].filter(Boolean).join("\n")
-                      ).trim() || eventTitle;
-                    const cardTime = `${formatDmDay(paymentCreatedSeconds)} · ${formatDmTime(paymentCreatedSeconds)}`;
-                    const paymentAmountLabel =
-                      paymentHistoryEntry?.amountSat != null
-                        ? formatHistoryAmount(paymentHistoryEntry)
-                        : paymentAmount != null
-                          ? paymentUnit === "sat"
-                            ? formatSatAmount(Math.max(0, Math.floor(paymentAmount)))
-                            : `${satFormatter.format(Math.max(0, Math.floor(paymentAmount)))} ${paymentUnit}`
-                          : null;
-                    const paymentStatusLabel = paymentStatusInfo?.label;
-                    const paymentSummary = paymentHistoryEntry?.summary;
-                    const actionStatus = matchedItem?.status || matchedInvite?.status;
-                    const showActionButtons =
-                      actionStatus !== "accepted" &&
-                      actionStatus !== "declined" &&
-                      actionStatus !== "tentative" &&
-                      actionStatus !== "deleted" &&
-                      actionStatus !== "dismissed";
-                    const boardStatusLabel = getWalletMessageStatusLabel("board", actionStatus);
-                    const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus);
-                    const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus);
-                    const eventStatusLabel = getCalendarInviteStatusLabel(actionStatus);
-                    const copyValue = buildDmCopyValue(msg, {
-                      paymentToken,
-                      boardId: isBoard
-                        ? msg.attachment?.boardId || msg.attachment?.boardName || msg.content
-                        : undefined,
-                      contactNpub:
-                        contactAttachment?.npub ||
-                        formatNpubDisplay(contactAttachment?.npub || msg.peerPubkey) ||
-                        formatNpub(msg.peerPubkey) ||
-                        msg.peerPubkey,
-                      taskPayload: taskAttachment || matchedItem?.task || null,
-                    });
-                    const copyLabel =
-                      msg.attachment?.type === "board"
-                        ? "Board ID"
-                        : msg.attachment?.type === "contact"
-                          ? "Pubkey"
-                          : msg.attachment?.type === "task"
-                            ? "Task"
-                          : msg.attachment?.type === "payment"
-                            ? "Token"
-                            : "Message";
-                    const isActionOpen = dmMessageActions?.eventId === msg.eventId;
-                    const hasReactions = (dmReactions.get(msg.rumorEventId || msg.eventId)?.length ?? 0) > 0;
-                    const stackClass = `wallet-message__stack${msg.isIncoming ? "" : " wallet-message__stack--out"}`;
-                    return (
-                      <div
-                        key={msg.eventId}
-                        className={`wallet-message ${msg.isIncoming ? "wallet-message--in" : "wallet-message--out"}`}
-                      >
-                        <div className={stackClass}>
-                          <div className={`chat-bubble-wrap${hasReactions ? " chat-bubble-wrap--reacted" : ""}`}>
-                          <div
-                            className={bubbleClass}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              cancelDmLongPress();
-                              setDmMessageActions({ eventId: msg.eventId, copyValue, msg });
-                            }}
-                            onPointerDown={(event) => {
-                              if ((event.target as HTMLElement | null)?.closest("button")) return;
-                              cancelDmLongPress();
-                              dmLongPressTimerRef.current = window.setTimeout(() => {
-                                setDmMessageActions({ eventId: msg.eventId, copyValue, msg });
-                              }, 420);
-                            }}
-                            onPointerUp={cancelDmLongPress}
-                            onPointerLeave={cancelDmLongPress}
-                            onPointerCancel={cancelDmLongPress}
-                          >
-                            {isBoard && (
-                              <div className="wallet-message__card wallet-message__card--inline">
-                                <div className="wallet-message__card-icon">{cardDayLabel}</div>
-                                <div className="wallet-message__card-body">
-                                  <div className="wallet-message__card-title">
-                                    {msg.attachment?.boardName || "Shared board"}
-                                  </div>
-                                  <div className="wallet-message__card-subtitle">
-                                    Add this board to your workspace
-                                  </div>
-                                  {showActionButtons ? (
-                                    <div className="wallet-message__card-actions">
-                                    <button
-                                      className="accent-button button-sm pressable"
-                                      onClick={() => {
-                                        if (matchedItem) onAcceptMessage(matchedItem.id);
-                                      }}
-                                      disabled={!matchedItem}
-                                    >
-                                      Add board
-                                    </button>
-                                    <button
-                                      className="ghost-button button-sm pressable"
-                                      onClick={() => {
-                                        if (matchedItem) onDismissMessage(matchedItem.id);
-                                      }}
-                                      disabled={!matchedItem}
-                                    >
-                                      Dismiss
-                                    </button>
-                                    </div>
-                                  ) : (
-                                    boardStatusLabel && (
-                                      <div className="wallet-message__card-status">{boardStatusLabel}</div>
-                                    )
-                                  )}
-                                </div>
-                                <div className="wallet-message__card-meta">{cardDate}</div>
-                              </div>
-                            )}
-                            {isContact && (
-                              <div
-                                role="button"
-                                tabIndex={0}
-                                className="wallet-message__card pressable"
-                                onClick={() => toggleDmMessageExpanded(msg.eventId)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter" || event.key === " ") {
-                                    event.preventDefault();
-                                    toggleDmMessageExpanded(msg.eventId);
-                                  }
-                                }}
-                                aria-expanded={expanded}
-                              >
-                                <div className="wallet-message__card-icon wallet-message__card-icon--contact">
-                                  {contactMeta?.picture ? (
-                                    <img src={contactMeta.picture} alt={contactMeta.label} className="wallet-message__avatar-img" />
-                                  ) : (
-                                    <span>{cardDayLabel}</span>
-                                  )}
-                                </div>
-                                <div className="wallet-message__card-body">
-                                  <div className="wallet-message__card-title">
-                                    {contactMeta?.label || contactAttachment?.contactName || "Shared contact"}
-                                  </div>
-                                  <div className="wallet-message__card-subtitle">
-                                    {contactMeta?.subtitle || "Shared contact"}
-                                  </div>
-                                  {contactMeta?.verifiedNip05 && (
-                                    <div className="wallet-message__badge">NIP-05 verified</div>
-                                  )}
-                                </div>
-                                <div className="wallet-message__card-meta">{cardDate}</div>
-                                {expanded && (
-                                  <>
-                                    <div className="wallet-message__card-details">
-                                      {(contactMeta?.npub || contactAttachment?.npub) && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>Npub</span>
-                                          <div className="wallet-message__detail-value">
-                                            <span className="wallet-message__mono">
-                                              {contactMeta?.npub ||
-                                                formatNpubDisplay(contactAttachment?.npub) ||
-                                                ""}
-                                            </span>
-                                            <button
-                                              type="button"
-                                              className="ghost-button button-xs pressable"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                void copyMessageValue(
-                                                  contactMeta?.npub ||
-                                                    formatNpubDisplay(contactAttachment?.npub) ||
-                                                    "",
-                                                  "npub",
-                                                );
-                                              }}
-                                            >
-                                              Copy
-                                            </button>
-                                          </div>
-                                        </div>
-                                      )}
-                                      {(contactAttachment?.nip05 || contactMeta?.verifiedNip05) && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>NIP-05</span>
-                                          <div className="wallet-message__detail-value">
-                                            {contactMeta?.verifiedNip05 || contactAttachment?.nip05}
-                                            {contactMeta?.verifiedNip05 && (
-                                              <span className="wallet-message__badge">Verified</span>
-                                            )}
-                                          </div>
-                                        </div>
-                                      )}
-                                      {contactAttachment?.address && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>Lightning</span>
-                                          <span className="wallet-message__detail-value">
-                                            {contactAttachment.address}
-                                          </span>
-                                        </div>
-                                      )}
-                                    </div>
-                                    {showActionButtons ? (
-                                      <div className="wallet-message__card-actions">
-                                        <button
-                                          className="accent-button button-sm pressable"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            if (matchedItem) onAcceptMessage(matchedItem.id);
-                                          }}
-                                          disabled={!matchedItem}
-                                        >
-                                          Add contact
-                                        </button>
-                                        <button
-                                          className="ghost-button button-sm pressable"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            if (matchedItem) onDismissMessage(matchedItem.id);
-                                          }}
-                                          disabled={!matchedItem}
-                                        >
-                                          Dismiss
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      contactStatusLabel && (
-                                        <div className="wallet-message__card-status">{contactStatusLabel}</div>
-                                      )
-                                    )}
-                                  </>
-                                )}
-                              </div>
-                            )}
-                            {isTask && (
-                              <div
-                                role="button"
-                                tabIndex={0}
-                                className="wallet-message__card pressable"
-                                onClick={() => toggleDmMessageExpanded(msg.eventId)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter" || event.key === " ") {
-                                    event.preventDefault();
-                                    toggleDmMessageExpanded(msg.eventId);
-                                  }
-                                }}
-                                aria-expanded={expanded}
-                              >
-                                <div className="wallet-message__card-icon">{taskDayLabel}</div>
-                                <div className="wallet-message__card-body">
-                                  <div className="wallet-message__card-title">
-                                    {taskAttachment?.title || "Shared task"}
-                                  </div>
-                                  <div className="wallet-message__card-subtitle">{taskDueLabel}</div>
-                                </div>
-                                <div className="wallet-message__card-meta">{taskCardDate}</div>
-                                {expanded && (
-                                  <>
-                                    <div className="wallet-message__card-details">
-                                      {taskAttachment?.note && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>Note</span>
-                                          <span className="wallet-message__detail-value">
-                                            {taskAttachment.note}
-                                          </span>
-                                        </div>
-                                      )}
-                                      {taskHasDue && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>Due</span>
-                                          <span className="wallet-message__detail-value">
-                                            {taskDueLabel.replace("Due ", "")}
-                                          </span>
-                                        </div>
-                                      )}
-                                      {taskSubtasks.length > 0 && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>Subtasks</span>
-                                          <span className="wallet-message__detail-value">
-                                            {taskSubtasks.join(", ")}
-                                          </span>
-                                        </div>
-                                      )}
-                                    </div>
-                                    {showActionButtons ? (
-                                      <div className="wallet-message__card-actions">
-                                        {isTaskAssignment ? (
-                                          <>
-                                            <button
-                                              className="accent-button button-sm pressable"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                if (matchedItem) onAcceptMessage(matchedItem.id);
-                                              }}
-                                              disabled={!matchedItem}
-                                            >
-                                              Accept
-                                            </button>
-                                            <button
-                                              className="ghost-button button-sm pressable"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                if (matchedItem) onMaybeMessage(matchedItem.id);
-                                              }}
-                                              disabled={!matchedItem}
-                                            >
-                                              Maybe
-                                            </button>
-                                            <button
-                                              className="ghost-button button-sm pressable text-rose-400"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                if (matchedItem) onDeclineMessage(matchedItem.id);
-                                              }}
-                                              disabled={!matchedItem}
-                                            >
-                                              Decline
-                                            </button>
-                                          </>
-                                        ) : (
-                                          <>
-                                            <button
-                                              className="accent-button button-sm pressable"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                if (matchedItem) onAcceptMessage(matchedItem.id);
-                                              }}
-                                              disabled={!matchedItem}
-                                            >
-                                              Add task
-                                            </button>
-                                            <button
-                                              className="ghost-button button-sm pressable"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                void copyMessageValue(copyValue, "Task");
-                                              }}
-                                            >
-                                              Copy
-                                            </button>
-                                            <button
-                                              className="ghost-button button-sm pressable"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                if (matchedItem) onDismissMessage(matchedItem.id);
-                                              }}
-                                              disabled={!matchedItem}
-                                            >
-                                              Dismiss
-                                            </button>
-                                          </>
-                                        )}
-                                      </div>
-                                    ) : (
-                                      taskStatusLabel && (
-                                        <div className="wallet-message__card-status">{taskStatusLabel}</div>
-                                      )
-                                    )}
-                                  </>
-                                )}
-                              </div>
-                            )}
-                            {isEvent && (
-                              <div className="wallet-message__card wallet-message__card--inline">
-                                <div className="wallet-message__card-icon">{eventDayLabel}</div>
-                                <div className="wallet-message__card-body">
-                                  <div className="wallet-message__card-title">{eventTitle}</div>
-                                  <div className="wallet-message__card-subtitle">{eventWhenLabel}</div>
-                                  {showActionButtons ? (
-                                    <div className="wallet-message__card-actions">
-                                      <button
-                                        className="accent-button button-sm pressable"
-                                        onClick={() => matchedInvite && onCalendarInviteRsvp?.(matchedInvite, "accepted")}
-                                        disabled={!matchedInvite}
-                                      >
-                                        Add event
-                                      </button>
-                                      <button
-                                        className="ghost-button button-sm pressable"
-                                        onClick={() => void copyMessageValue(eventCopyValue, "Event")}
-                                      >
-                                        Copy
-                                      </button>
-                                      <button
-                                        className="ghost-button button-sm pressable"
-                                        onClick={() => matchedInvite && onDismissCalendarInvite?.(matchedInvite)}
-                                        disabled={!matchedInvite}
-                                      >
-                                        Dismiss
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    eventStatusLabel && (
-                                      <div className="wallet-message__card-status">{eventStatusLabel}</div>
-                                    )
-                                  )}
-                                </div>
-                                <div className="wallet-message__card-meta">{eventCardDate}</div>
-                              </div>
-                            )}
-                            {isPayment && (
-                              <div
-                                role="button"
-                                tabIndex={0}
-                                className="wallet-message__card pressable"
-                                onClick={() => toggleDmMessageExpanded(msg.eventId)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter" || event.key === " ") {
-                                    event.preventDefault();
-                                    toggleDmMessageExpanded(msg.eventId);
-                                  }
-                                }}
-                                aria-expanded={expanded}
-                              >
-                                <div className="wallet-message__card-icon wallet-message__card-icon--payment">
-                                  {cardDayLabel}
-                                </div>
-                                <div className="wallet-message__card-body">
-                                  <div className="wallet-message__card-title">{paymentTitle}</div>
-                                  <div className="wallet-message__card-subtitle">{paymentSubtitle}</div>
-                                </div>
-                                <div className="wallet-message__card-meta">{cardDate}</div>
-                                {expanded && (
-                                  <>
-                                    <div className="wallet-message__card-details">
-                                      {paymentAmountLabel && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>Amount</span>
-                                          <span className="wallet-message__detail-value">{paymentAmountLabel}</span>
-                                        </div>
-                                      )}
-                                      {paymentStatusLabel && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>Status</span>
-                                          <span className="wallet-message__detail-value">{paymentStatusLabel}</span>
-                                        </div>
-                                      )}
-                                      {paymentMint && (
-                                        <div className="wallet-message__detail-row">
-                                          <span>Mint</span>
-                                          <span className="wallet-message__detail-value">{paymentMint}</span>
-                                        </div>
-                                      )}
-                                      <div className="wallet-message__detail-row">
-                                        <span>Received</span>
-                                        <span className="wallet-message__detail-value">{cardTime}</span>
-                                      </div>
-                                      {paymentSummary && (
-                                        <div className="wallet-message__detail-row wallet-message__detail-row--stacked">
-                                          <span>History</span>
-                                          <div className="wallet-message__token">{paymentSummary}</div>
-                                        </div>
-                                      )}
-                                      {paymentToken && (
-                                        <div className="wallet-message__detail-row wallet-message__detail-row--stacked">
-                                          <span>Token</span>
-                                          <div className="wallet-message__token">
-                                            {paymentToken}
-                                          </div>
-                                          <div className="wallet-message__card-actions">
-                                            <button
-                                              type="button"
-                                              className="ghost-button button-sm pressable"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                void copyMessageValue(paymentToken, "Token");
-                                              }}
-                                            >
-                                              Copy token
-                                            </button>
-                                          </div>
-                                        </div>
-                                      )}
-                                    </div>
-                                  </>
-                                )}
-                              </div>
-                            )}
-                            {msg.attachment?.type === "text" && (
-                              <>
-                                {msg.replyToEventId && (() => {
-                                  const replied = dmMessages.find(
-                                    (m) => m.eventId === msg.replyToEventId || m.rumorEventId === msg.replyToEventId,
-                                  );
-                                  if (!replied) return null;
-                                  return (
-                                    <div className="chat-reply-quote">
-                                      <div className="chat-reply-quote__bar" />
-                                      <div className="chat-reply-quote__text">
-                                        {replied.content.length > 80 ? replied.content.slice(0, 80) + "…" : replied.content}
-                                      </div>
-                                    </div>
-                                  );
-                                })()}
-                                <div className="wallet-message__text">{renderFormattedText(msg.content)}</div>
-                                <div className="wallet-message__time">
-                                  {formatDmDay(msg.createdAt)} · {formatDmTime(msg.createdAt)}
-                                </div>
-                              </>
-                            )}
-                          </div>
-                          {(() => {
-                            const reactionKey = msg.rumorEventId || msg.eventId;
-                            const msgReactions = dmReactions.get(reactionKey);
-                            if (!msgReactions?.length) return null;
-                            const grouped = new Map<string, DmReaction[]>();
-                            for (const r of msgReactions) {
-                              const arr = grouped.get(r.emoji) || [];
-                              arr.push(r);
-                              grouped.set(r.emoji, arr);
-                            }
-                            return (
-                              <div className={`chat-tapbacks${msg.isIncoming ? " chat-tapbacks--in" : " chat-tapbacks--out"}`}>
-                                {Array.from(grouped.entries()).map(([emoji, reactions]) => (
-                                  <button
-                                    key={emoji}
-                                    type="button"
-                                    className="chat-tapback pressable"
-                                    onClick={() => setDmReactionDetail({ eventId: reactionKey })}
-                                  >
-                                    <span className="chat-tapback__emoji">{emoji}</span>
-                                    {reactions.length > 1 && <span className="chat-tapback__count">{reactions.length}</span>}
-                                  </button>
-                                ))}
-                              </div>
-                            );
-                          })()}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              )}
-            </div>
           </div>
-        )}
-            {walletTab === "contacts" && (
-              <div className="wallet-messages__empty text-secondary text-sm text-center space-y-3">
-            <div>Contacts live here now. Open the Contacts panel to add or manage entries.</div>
-            <button
-              className="accent-button button-sm pressable"
-              onClick={() => {
-                setWalletTab("contacts");
-                setContactsTabOpen(true);
-              }}
-            >
-              Open contacts
-            </button>
-          </div>
-            )}
-          </div>
-
-          {showWalletTabSwitcher && (
-            <WalletTabSwitcher
-              activeTab={walletTab}
-              unreadMessages={mainUnreadCount}
-              onSelectWallet={() => setWalletTab("wallet")}
-              onSelectMessages={() => {
-                setWalletTab("messages");
-                setDmView("list");
-              }}
-              onSelectContacts={() => {
-                setWalletTab("contacts");
-                setContactsTabOpen(true);
-              }}
-            />
-          )}
-        </>
-      )}
-
       {receiveMode === "ecash" && (
         <Suspense fallback={null}>
           <EcashReceiveSheet
@@ -5895,218 +3770,6 @@ export default function CashuWalletModal({
         onClose={closeContactsSheet}
         onSelectContact={handleSelectContact}
       />
-
-      {contactsPanelOpen && (
-        <Suspense fallback={null}>
-          <WalletContactsSheet
-        contactsPanelOpen={contactsPanelOpen}
-        closeContactsTab={closeContactsTab}
-        contactsHeader={contactsHeader}
-        contactsPanelInline={contactsPanelInline}
-        contactsPanelRef={contactsPanelRef}
-        contactSyncState={contactSyncState}
-        contactsPublishState={contactsPublishState}
-        contactView={contactView}
-        sortedContacts={sortedContacts}
-        profileCard={profileCard}
-        myCardName={myCardName}
-        myCardSubtitle={myCardSubtitle}
-        normalizeNip05={normalizeNip05}
-        isNip05VerifiedFor={isNip05VerifiedFor}
-        contactInitials={contactInitials}
-        setActiveContactId={setActiveContactId}
-        setContactView={setContactView}
-        detailTarget={detailTarget}
-        detailShareValue={detailShareValue}
-        detailTitle={detailTitle}
-        detailFields={detailFields}
-        detailNip05Verified={detailNip05Verified}
-        activeContact={activeContact}
-        activeContactId={activeContactId}
-        detailHasLightning={detailHasLightning}
-        detailCanShare={detailCanShare}
-        detailUsername={detailUsername}
-        truncateContactName={truncateContactName}
-        truncateContactValue={truncateContactValue}
-        applyLightningContact={applyLightningContact}
-        setContactsTabOpen={setContactsTabOpen}
-        openEcashSendToContact={openEcashSendToContact}
-        setShareContactSource={setShareContactSource}
-        setShareContactStatus={setShareContactStatus}
-        setShareContactPickerMode={setShareContactPickerMode}
-        setShareContactPickerOpen={setShareContactPickerOpen}
-        defaultNostrRelays={defaultNostrRelays}
-        handleDeleteContact={handleDeleteContact}
-        publicFollowOptions={publicFollowOptions}
-        setPublicFollowPickerOpen={setPublicFollowPickerOpen}
-        showCustomContactFields={showCustomContactFields}
-        setShowCustomContactFields={setShowCustomContactFields}
-        contactEditDraft={contactEditDraft}
-        setContactEditDraft={setContactEditDraft}
-        sanitizeUsername={sanitizeUsername}
-        contactLookupInput={contactLookupInput}
-        setContactLookupInput={setContactLookupInput}
-        contactLookupBusy={contactLookupBusy}
-        handleContactImportAction={handleContactImportAction}
-        contactLookupError={contactLookupError}
-        contactEditError={contactEditError}
-        handleProfilePhotoChange={handleProfilePhotoChange}
-        handleClearProfilePhoto={handleClearProfilePhoto}
-        profilePhotoBusy={profilePhotoBusy}
-        profilePhotoError={profilePhotoError}
-        profilePhotoInputRef={profilePhotoInputRef}
-        setProfilePhotoError={setProfilePhotoError}
-        setShowScanner={setShowScanner}
-        contactSubtitle={contactSubtitle}
-        handleCopyContactField={handleCopyContactField}
-          />
-        </Suspense>
-      )}
-
-      <ActionSheet
-        open={publicFollowPickerOpen}
-        onClose={() => setPublicFollowPickerOpen(false)}
-        title="Import from follows"
-        stackLevel={75}
-      >
-        <div className="wallet-section space-y-3 text-sm">
-          {publicFollowOptions.length ? (
-            <div className="contact-list">
-              {publicFollowOptions.map((follow) => {
-                const formattedUsername = follow.username ? formatContactUsername(follow.username) : "";
-                const nip05Label = follow.nip05 || "";
-                const label = follow.petname || nip05Label || formattedUsername || follow.npub;
-                const subtitle =
-                  nip05Label || formattedUsername || follow.relay || follow.npub;
-                return (
-                  <button
-                    key={follow.pubkey}
-                    type="button"
-                    className="contact-row pressable"
-                    onClick={() => {
-                      void handleImportPublicFollow(follow.npub);
-                    }}
-                  >
-                    <div className="contact-avatar">{contactInitials(label)}</div>
-                    <div className="contact-row__text">
-                      <div className="contact-row__name">{truncateContactName(label)}</div>
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{truncateContactValue(subtitle)}</span>
-                      </div>
-                    </div>
-                    <span className="contact-chevron">›</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-secondary">No public follows found yet. Sync contacts to load your follows.</div>
-          )}
-        </div>
-      </ActionSheet>
-
-      <ActionSheet
-        open={profileEditorOpen}
-        onClose={() => setProfileEditorOpen(false)}
-        title="Edit profile"
-        stackLevel={80}
-      >
-        <div className="wallet-section space-y-3 text-sm">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <div className="text-xs text-secondary uppercase tracking-wide">Profile</div>
-              <div className="font-semibold text-primary">Update your info</div>
-            </div>
-            <div className="text-right text-[11px] text-secondary">
-              {profileStatus === "publishing"
-                ? "Publishing…"
-                : profileStatus === "loading"
-                  ? "Loading…"
-                  : profileUpdatedAt
-                    ? `Updated ${new Date(profileUpdatedAt).toLocaleString()}`
-                    : "Draft"}
-            </div>
-          </div>
-          <div className="grid gap-2">
-            <input
-              className="pill-input"
-              placeholder="Username"
-              value={profileForm.username}
-              onChange={(e) => setProfileForm((prev) => ({ ...prev, username: e.target.value }))}
-              autoComplete="username"
-            />
-            <input
-              className="pill-input"
-              placeholder="Display name"
-              value={profileForm.displayName}
-              onChange={(e) => setProfileForm((prev) => ({ ...prev, displayName: e.target.value }))}
-              autoComplete="name"
-            />
-            <input
-              className="pill-input"
-              placeholder="Lightning address"
-              value={profileForm.lud16}
-              onChange={(e) => setProfileForm((prev) => ({ ...prev, lud16: e.target.value }))}
-              autoComplete="off"
-            />
-            <input
-              className="pill-input"
-              placeholder="NIP-05 (name@example.com)"
-              value={profileForm.nip05}
-              onChange={(e) => setProfileForm((prev) => ({ ...prev, nip05: e.target.value }))}
-              autoComplete="off"
-            />
-            <textarea
-              className="pill-textarea"
-              rows={2}
-              placeholder="About (optional)"
-              value={profileForm.about}
-              onChange={(e) => setProfileForm((prev) => ({ ...prev, about: e.target.value }))}
-            />
-          </div>
-          {profileMessage && (
-            <div className={`text-[11px] ${profileStatus === "error" ? "text-rose-400" : "text-secondary"}`}>
-              {profileMessage}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2 text-xs">
-            <button
-              className="accent-button button-sm pressable"
-              type="button"
-              onClick={() => {
-                void publishProfileMetadata();
-              }}
-              disabled={profileStatus === "publishing" || profileStatus === "loading"}
-            >
-              {profileStatus === "publishing" ? "Publishing…" : "Save & publish"}
-            </button>
-            <button
-              className="ghost-button button-sm pressable"
-              type="button"
-              onClick={() => {
-                void loadProfileMetadata();
-              }}
-              disabled={profileStatus === "loading"}
-            >
-              Refresh
-            </button>
-          </div>
-          {profileShareValue && (
-            <div className="flex flex-col items-center gap-2">
-              <QrCodeCard
-                className="bg-surface-muted border border-surface rounded-2xl p-3 text-xs"
-                value={profileShareValue}
-                label="Your profile"
-                copyLabel="Copy profile"
-                size={200}
-              />
-              <div className="text-[11px] text-secondary text-center">
-                Share to add you, pay lightning, or send eCash via Nostr.
-              </div>
-            </div>
-          )}
-        </div>
-      </ActionSheet>
 
       <ActionSheet open={manualSendPlan !== null} onClose={closeManualSendPlan} title="Select notes">
         {manualSendPlan && (
@@ -6412,21 +4075,6 @@ export default function CashuWalletModal({
                       Pay eCash
                     </button>
                   )}
-                  {scannedContactCanShare && (
-                    <button
-                      type="button"
-                      className="contact-pill contact-pill--circle pressable"
-                      title="Share contact"
-                      onClick={() => {
-                        setShareContactSource(scannedContact);
-                        setShareContactStatus(null);
-                        setShareContactPickerMode("recipient");
-                        setShareContactPickerOpen(true);
-                      }}
-                    >
-                      <ShareArrowIcon className="contact-pill__icon" />
-                    </button>
-                  )}
                 </div>
               )}
 
@@ -6464,248 +4112,6 @@ export default function CashuWalletModal({
             </div>
           )}
         </ActionSheet>
-
-        <ActionSheet
-          open={!!sharedContactPreview}
-          onClose={() => setSharedContactPreview(null)}
-          header={sharedContactPreviewHeader}
-          stackLevel={76}
-        >
-          {sharedContactPreviewContact && (
-            <div className="contact-detail-view">
-              <div className="contact-hero">
-                <div className="contact-hero__center">
-                  <div className="contact-qr-wrapper">
-                    {sharedContactPreviewShareValue ? (
-                      <QrCodeCard
-                        className="contact-qr-card"
-                        value={sharedContactPreviewShareValue}
-                        label={sharedContactPreviewTitle}
-                        size={200}
-                        flat
-                        hideLabel
-                        hideCopyButton
-                      />
-                    ) : (
-                      <div className="contact-qr-placeholder text-secondary">No QR to share yet.</div>
-                    )}
-                  </div>
-                  <div
-                    className={`contact-heading${sharedContactPreviewContact.picture ? "" : " contact-heading--text-only"}`}
-                  >
-                    {sharedContactPreviewContact.picture && (
-                      <img
-                        src={sharedContactPreviewContact.picture}
-                        alt={sharedContactPreviewTitle}
-                        className="contact-portrait"
-                      />
-                    )}
-                    <div className="contact-heading__text">
-                      <div className="contact-name-lg" title={sharedContactPreviewTitle}>
-                        {truncateContactName(sharedContactPreviewTitle, 34)}
-                      </div>
-                      {sharedContactPreviewUsername && (
-                        <div className="contact-username" title={sharedContactPreviewUsername}>
-                          {truncateContactValue(sharedContactPreviewUsername, 33)}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {(contactHasLightning(sharedContactPreviewContact) || sharedContactPreviewCanShare) && (
-                <div className="contact-actions-row contact-actions-row--top contact-actions-row--wide">
-                  {walletEnabled && contactHasLightning(sharedContactPreviewContact) && (
-                    <button
-                      type="button"
-                      className="contact-pill pressable"
-                      onClick={() => {
-                        applyLightningContact(sharedContactPreviewContact);
-                        setSharedContactPreview(null);
-                      }}
-                    >
-                      Pay lightning
-                    </button>
-                  )}
-                  {walletEnabled && sharedContactPreviewCanShare && (
-                    <button
-                      type="button"
-                      className="contact-pill pressable"
-                      onClick={() => {
-                        openEcashSendToContact(sharedContactPreviewContact);
-                        setSharedContactPreview(null);
-                      }}
-                    >
-                      Pay eCash
-                    </button>
-                  )}
-                  {sharedContactPreviewCanShare && (
-                    <button
-                      type="button"
-                      className="contact-pill contact-pill--circle pressable"
-                      title="Share contact"
-                      onClick={() => {
-                        setShareContactSource(sharedContactPreviewContact);
-                        setShareContactStatus(null);
-                        setShareContactPickerMode("recipient");
-                        setShareContactPickerOpen(true);
-                      }}
-                    >
-                      <ShareArrowIcon className="contact-pill__icon" />
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <div className="contact-fields">
-                {sharedContactPreviewFields.length ? (
-                  sharedContactPreviewFields.map((field) => {
-                    const isNip05Field = field.key === "nip05";
-                    return (
-                      <div key={field.key} className="contact-field">
-                        <div className="contact-field__label">{field.label}</div>
-                        <button
-                          type="button"
-                          className={`contact-field__value${field.multiline ? " contact-field__value--multiline" : ""}${
-                            isNip05Field ? " contact-field__value--nip05" : ""
-                          }`}
-                          onClick={() => handleCopyContactField(field.value, field.label)}
-                          title={field.value}
-                        >
-                          <span
-                            className={`contact-field__text${field.multiline ? " contact-field__text--multiline" : ""}`}
-                          >
-                            {field.multiline ? field.value : truncateContactValue(field.value, 36)}
-                          </span>
-                          {isNip05Field && sharedContactPreviewNip05Verified && (
-                            <VerifiedBadgeIcon className="contact-nip05__badge" aria-label="Verified NIP-05" />
-                          )}
-                        </button>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="contact-empty text-secondary">No details saved for this contact yet.</div>
-                )}
-              </div>
-            </div>
-          )}
-        </ActionSheet>
-
-      <ActionSheet
-        open={shareContactPickerOpen}
-        onClose={() => {
-          if (shareContactBusy) return;
-          setShareContactPickerOpen(false);
-          setShareContactPickerMode("recipient");
-          setShareContactSource(null);
-          setShareContactStatus(null);
-        }}
-        title="Send contact"
-        stackLevel={90}
-      >
-        {shareContactPickerMode === "chat-source" ? (
-          <>
-            <div className="text-sm text-secondary mb-2">Choose a contact card to send into this conversation.</div>
-            {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
-            {chatAttachContactOptions.length ? (
-              <div className="space-y-2">
-                {chatAttachContactOptions.map((contact) => {
-                  const label = contactPrimaryName(contact);
-                  const subtitle = formatContactNpub(contact.npub) || formatContactUsername(contact.username);
-                  const picture = contact.picture?.trim();
-                  return (
-                    <button
-                      key={contact.id}
-                      type="button"
-                      className="contact-row pressable"
-                      disabled={shareContactBusy}
-                      onClick={() => {
-                        void handleSendChatContactAttachment(contact);
-                      }}
-                    >
-                      <div className={`contact-avatar${picture ? " contact-avatar--image" : ""}`}>
-                        {picture ? (
-                          <img src={picture} alt={label} className="contact-avatar__img" />
-                        ) : (
-                          contactInitials(label)
-                        )}
-                      </div>
-                      <div className="contact-row__text">
-                        <div className="contact-row__name">{label}</div>
-                        {subtitle ? (
-                          <div className="contact-row__meta">
-                            <span className="contact-row__meta-text">{truncateContactValue(subtitle, 32)}</span>
-                          </div>
-                        ) : null}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-sm text-secondary">Add a contact with a valid npub first.</div>
-            )}
-          </>
-        ) : (
-          <>
-            {shareContactSource ? (
-              <div className="text-sm text-secondary mb-2">
-                Send <span className="font-semibold">{contactPrimaryName(shareContactSource)}</span> to a contact.
-              </div>
-            ) : (
-              <div className="text-sm text-secondary mb-2">Choose who to send this contact to.</div>
-            )}
-            {shareContactStatus && <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>}
-            {shareRecipientOptions.length ? (
-              <div className="space-y-2">
-                {shareRecipientOptions.map((contact) => {
-                  const label = contactPrimaryName(contact);
-                  const subtitle = formatContactNpub(contact.npub);
-                  return (
-                    <button
-                      key={contact.id}
-                      type="button"
-                      className="contact-row pressable"
-                      disabled={shareContactBusy}
-                      onClick={() => handleShareContactToContact(contact)}
-                    >
-                      <div className="contact-avatar">{contactInitials(label)}</div>
-                      <div className="contact-row__text">
-                        <div className="contact-row__name">{label}</div>
-                        {subtitle ? (
-                          <div className="contact-row__meta">
-                            <span className="contact-row__meta-text">{subtitle}</span>
-                          </div>
-                        ) : null}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-sm text-secondary">Add another contact with an npub to share to.</div>
-            )}
-          </>
-        )}
-        <div className="flex gap-2 mt-3">
-          <button
-            type="button"
-            className="ghost-button button-sm pressable flex-1 justify-center"
-            onClick={() => {
-              if (shareContactBusy) return;
-              setShareContactPickerOpen(false);
-              setShareContactPickerMode("recipient");
-              setShareContactSource(null);
-              setShareContactStatus(null);
-            }}
-            disabled={shareContactBusy}
-          >
-            Cancel
-          </button>
-        </div>
-      </ActionSheet>
 
       {showHistory && (
         <Suspense fallback={null}>
@@ -6878,218 +4284,6 @@ export default function CashuWalletModal({
         </Suspense>
       )}
 
-      {/* ── Message action overlay (long-press menu) ── */}
-      {dmMessageActions && (
-        <div
-          className="dm-action-overlay"
-          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmMessageActions(null); }}
-        >
-          <div className="dm-action-panel">
-            <div className="dm-action-panel__reactions">
-              {["❤️", "👍", "👎", "😂", "😮", "😢"].map((emoji) => (
-                <button
-                  key={emoji}
-                  type="button"
-                  className="dm-action-panel__reaction pressable"
-                  onClick={() => { void handleSendReaction(dmMessageActions.msg, emoji); setDmMessageActions(null); }}
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
-            <div className="dm-action-panel__list">
-              {dmMessageActions.msg.attachment?.type === "task" && dmMessageActions.msg.attachment.task && (
-                <button type="button" className="dm-action-panel__item pressable" onClick={() => {
-                  const message = dmMessageActions.msg;
-                  const senderPubkey = message.senderPubkey || (message.isIncoming ? message.peerPubkey : nostrIdentityRef.current?.pubkey);
-                  onAddTaskAgain(message.attachment.task, senderPubkey ? { pubkey: senderPubkey } : undefined);
-                  setDmMessageActions(null);
-                }}>
-                  <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3M11 14h7M14.5 10.5v7"/></svg>
-                  Add again
-                </button>
-              )}
-              <button
-                type="button"
-                className="dm-action-panel__item pressable"
-                onClick={() => { setReplyToMessage(dmMessageActions.msg); setDmMessageActions(null); }}
-              >
-                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
-                Reply
-              </button>
-              <button
-                type="button"
-                className="dm-action-panel__item pressable"
-                onClick={() => { setDmForwardMessage(dmMessageActions.msg); setDmMessageActions(null); }}
-              >
-                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 014-4h12"/></svg>
-                Forward
-              </button>
-              <button
-                type="button"
-                className="dm-action-panel__item pressable"
-                onClick={() => { void copyMessageValue(dmMessageActions.copyValue, "Message"); setDmMessageActions(null); }}
-              >
-                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-                Copy
-              </button>
-              <button
-                type="button"
-                className="dm-action-panel__item pressable"
-                onClick={() => { setDmInfoMessage(dmMessageActions.msg); setDmMessageActions(null); }}
-              >
-                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                Info
-              </button>
-              <button
-                type="button"
-                className="dm-action-panel__item dm-action-panel__item--danger pressable"
-                onClick={() => handleDeleteDmMessage(dmMessageActions.eventId)}
-              >
-                <svg className="dm-action-panel__item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Reaction detail sheet ── */}
-      {dmReactionDetail && (() => {
-        const reactions = dmReactions.get(dmReactionDetail.eventId) || [];
-        const grouped = new Map<string, DmReaction[]>();
-        for (const r of reactions) {
-          const arr = grouped.get(r.emoji) || [];
-          arr.push(r);
-          grouped.set(r.emoji, arr);
-        }
-        return (
-          <div
-            className="dm-action-overlay"
-            onPointerDown={(e) => { if (e.target === e.currentTarget) setDmReactionDetail(null); }}
-          >
-            <div className="dm-info-panel">
-              <div className="dm-info-panel__header">
-                <span className="dm-info-panel__title">Reactions</span>
-                <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmReactionDetail(null)}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-              </div>
-              {Array.from(grouped.entries()).map(([emoji, reactors]) => (
-                <div key={emoji} className="dm-reaction-detail__group">
-                  <div className="dm-reaction-detail__emoji">{emoji}</div>
-                  <div className="dm-reaction-detail__reactors">
-                    {reactors.map((r) => {
-                      const rp = dmPeerProfilesRef.current.get(r.senderPubkey);
-                      const label = rp?.displayName || rp?.name || r.senderPubkey.slice(0, 12) + "…";
-                      return (
-                        <div key={r.senderPubkey} className="dm-reaction-detail__reactor">
-                          <div className="dm-reaction-detail__reactor-avatar">
-                            {rp?.picture
-                              ? <img src={rp.picture} alt={label} className="contact-avatar__img" />
-                              : contactInitials(label)}
-                          </div>
-                          <span className="dm-reaction-detail__reactor-name">{label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── Info modal ── */}
-      {dmInfoMessage && (
-        <div
-          className="dm-action-overlay"
-          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmInfoMessage(null); }}
-        >
-          <div className="dm-info-panel">
-            <div className="dm-info-panel__header">
-              <span className="dm-info-panel__title">Message Info</span>
-              <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmInfoMessage(null)}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-            <div className="dm-info-panel__row">
-              <span className="dm-info-panel__label">Time</span>
-              <span className="dm-info-panel__value">{new Date(dmInfoMessage.createdAt * 1000).toLocaleString()}</span>
-            </div>
-            <div className="dm-info-panel__row">
-              <span className="dm-info-panel__label">Direction</span>
-              <span className="dm-info-panel__value">{dmInfoMessage.isIncoming ? "Received" : "Sent"}</span>
-            </div>
-            <div className="dm-info-panel__row">
-              <span className="dm-info-panel__label">Event ID</span>
-              <button
-                type="button"
-                className="dm-info-panel__value dm-info-panel__value--mono dm-info-panel__value--tap pressable"
-                onClick={() => void navigator.clipboard.writeText(dmInfoMessage.eventId)}
-                title="Tap to copy"
-              >
-                {dmInfoMessage.eventId.slice(0, 20)}…
-              </button>
-            </div>
-            {dmInfoMessage.senderPubkey && (
-              <div className="dm-info-panel__row">
-                <span className="dm-info-panel__label">Sender</span>
-                <button
-                  type="button"
-                  className="dm-info-panel__value dm-info-panel__value--mono dm-info-panel__value--tap pressable"
-                  onClick={() => void navigator.clipboard.writeText(dmInfoMessage.senderPubkey!)}
-                  title="Tap to copy"
-                >
-                  {dmInfoMessage.senderPubkey.slice(0, 20)}…
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── Forward modal ── */}
-      {dmForwardMessage && (
-        <div
-          className="dm-action-overlay"
-          onPointerDown={(e) => { if (e.target === e.currentTarget) setDmForwardMessage(null); }}
-        >
-          <div className="dm-forward-panel">
-            <div className="dm-forward-panel__header">
-              <span className="dm-forward-panel__title">Forward to</span>
-              <button type="button" className="dm-info-panel__close pressable" onClick={() => setDmForwardMessage(null)}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-            <div className="dm-forward-panel__preview">
-              {dmForwardMessage.content.length > 60 ? dmForwardMessage.content.slice(0, 60) + "…" : dmForwardMessage.content}
-            </div>
-            <div className="dm-forward-panel__list">
-              {dmThreads.filter((t) => t.peerPubkey !== dmForwardMessage.peerPubkey).map((thread) => {
-                const profile = dmPeerProfilesRef.current.get(thread.peerPubkey);
-                const label = profile?.displayName || profile?.name || thread.peerPubkey.slice(0, 12) + "…";
-                return (
-                  <button
-                    key={thread.peerPubkey}
-                    type="button"
-                    className="dm-forward-panel__thread pressable"
-                    onClick={() => { void handleForwardMessage(dmForwardMessage, thread.peerPubkey); setDmForwardMessage(null); }}
-                  >
-                    <div className="dm-forward-panel__thread-avatar">
-                      {profile?.picture
-                        ? <img src={profile.picture} alt={label} className="contact-avatar__img" />
-                        : contactInitials(label)}
-                    </div>
-                    <span className="dm-forward-panel__thread-name">{label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 

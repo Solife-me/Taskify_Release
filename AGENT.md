@@ -117,6 +117,8 @@ Backups
 - `SwapManager.ts` — atomic token swaps
 - `MintSession.ts` — per-mint connection lifecycle
 - `LockedTokenManager.ts` — locked token bookkeeping
+- `CashuWalletModal` is optional, lazy and wallet-only. Chat never imports it; the wallet may read
+  Chat-owned contacts through `ChatRuntime` for payment selection and scanned-contact metadata.
 
 ---
 

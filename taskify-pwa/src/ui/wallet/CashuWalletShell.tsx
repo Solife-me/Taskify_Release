@@ -1,61 +1,30 @@
-import type { SharedTaskPayload, InboxSender } from "taskify-core";
 import { lazy, Suspense } from "react";
-import type { CalendarInvite } from "../../domains/calendar/calendarInvitesHook";
 import type { Settings } from "../../domains/tasks/settingsTypes";
-import type { WalletMessageItem } from "../../types/walletMessages";
 
 export const loadCashuWalletModal = () => import("../../components/CashuWalletModal");
 const CashuWalletModal = lazy(loadCashuWalletModal);
 
 type CashuWalletShellProps = {
-  acceptInboxMessage: (id: string) => void;
-  addSharedTaskAgain: (task: SharedTaskPayload, sender?: InboxSender) => void;
   closeWallet: () => void;
-  declineInboxMessage: (id: string) => void;
   defaultRelays: string[];
-  dismissCalendarInvite: (invite: CalendarInvite) => void;
-  dismissInboxMessage: (id: string) => void;
-  formatCalendarInviteWhen: (invite: CalendarInvite) => string;
-  handleCalendarInviteRsvp: (invite: CalendarInvite, status: string) => void;
-  inboxPendingItems: WalletMessageItem[];
-  maybeInboxMessage: (id: string) => void;
-  messagesUnreadCount: number;
-  markInboxMessagesRead: (ids: string[]) => void;
   openWalletAddress: () => void;
   openWalletBounties: () => void;
   onResetWalletTokenTracking: () => void;
-  pendingCalendarInvites: CalendarInvite[];
-  setDmUnreadCount: (count: number) => void;
   setSettings: (patch: Partial<Settings>) => void;
   settings: Settings;
   showWalletShell: boolean;
-  walletMessageItems: WalletMessageItem[];
   walletTokenStateResetNonce: number;
 };
 
 export function CashuWalletShell({
-  acceptInboxMessage,
-  addSharedTaskAgain,
   closeWallet,
-  declineInboxMessage,
   defaultRelays,
-  dismissCalendarInvite,
-  dismissInboxMessage,
-  formatCalendarInviteWhen,
-  handleCalendarInviteRsvp,
-  inboxPendingItems,
-  maybeInboxMessage,
-  messagesUnreadCount,
-  markInboxMessagesRead,
   openWalletAddress,
   openWalletBounties,
   onResetWalletTokenTracking,
-  pendingCalendarInvites,
-  setDmUnreadCount,
   setSettings,
   settings,
   showWalletShell,
-  walletMessageItems,
   walletTokenStateResetNonce,
 }: CashuWalletShellProps) {
   return (
@@ -65,8 +34,6 @@ export function CashuWalletShell({
         onClose={closeWallet}
         onOpenAddress={openWalletAddress}
         onOpenBounties={openWalletBounties}
-        page="wallet"
-        showTabSwitcher={false}
         showBottomNav
         walletConversionEnabled={settings.walletConversionEnabled}
         walletSettings={settings}
@@ -78,7 +45,6 @@ export function CashuWalletShell({
         setWalletPrimaryCurrency={(currency) => setSettings({ walletPrimaryCurrency: currency })}
         lightningAddressProvider={settings.lightningAddressProvider}
         solifeLightningAddress={settings.solifeLightningAddress}
-        npubCashLightningAddressEnabled={settings.npubCashLightningAddressEnabled}
         npubCashAutoClaim={settings.lightningAddressProvider === "npub.cash" && settings.npubCashAutoClaim}
         sentTokenStateChecksEnabled={settings.walletSentStateChecksEnabled}
         paymentRequestsEnabled={settings.walletPaymentRequestsEnabled}
@@ -87,25 +53,7 @@ export function CashuWalletShell({
         }
         tokenStateResetNonce={walletTokenStateResetNonce}
         mintBackupEnabled={settings.walletMintBackupEnabled}
-        contactsSyncEnabled={settings.walletContactsSyncEnabled}
         fileStorageServer={settings.fileStorageServer}
-        fileServers={settings.fileServers}
-        encryptedFileStorageServer={settings.encryptedFileStorageServer}
-        encryptedFileServers={settings.encryptedFileServers}
-        messageItems={walletMessageItems}
-        messagesUnreadCount={messagesUnreadCount}
-        onAcceptMessage={acceptInboxMessage}
-        onAddTaskAgain={addSharedTaskAgain}
-        onMaybeMessage={maybeInboxMessage}
-        onDeclineMessage={declineInboxMessage}
-        onDismissMessage={dismissInboxMessage}
-        onMarkMessagesRead={markInboxMessagesRead}
-        inboxPendingItems={inboxPendingItems}
-        pendingCalendarInvites={pendingCalendarInvites}
-        onCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
-        onDismissCalendarInvite={dismissCalendarInvite}
-        formatCalendarInviteWhen={formatCalendarInviteWhen}
-        onDmUnreadCountChange={setDmUnreadCount}
       />
     </Suspense>
   );

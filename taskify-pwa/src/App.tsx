@@ -8334,28 +8334,14 @@ export default function App() {
         >
           {showWalletShell && (
             <CashuWalletShell
-              acceptInboxMessage={acceptInboxMessage}
-              addSharedTaskAgain={(task, sender) => setSharedTaskCopy({ task, sender })}
               closeWallet={closeWallet}
-              declineInboxMessage={declineInboxMessage}
               defaultRelays={defaultRelays}
-              dismissCalendarInvite={dismissCalendarInvite}
-              dismissInboxMessage={dismissInboxMessage}
-              formatCalendarInviteWhen={formatCalendarInviteWhen}
-              handleCalendarInviteRsvp={handleCalendarInviteRsvp as unknown as (invite: any, status: string) => void}
-              inboxPendingItems={inboxPendingItems}
-              markInboxMessagesRead={markInboxMessagesRead}
-              maybeInboxMessage={maybeInboxMessage}
-              messagesUnreadCount={messagesUnreadCount}
               openWalletBounties={openWalletBounties}
               onResetWalletTokenTracking={handleResetWalletTokenTracking}
               openWalletAddress={openWalletAddress}
-              pendingCalendarInvites={pendingCalendarInvites}
-              setDmUnreadCount={setDmUnreadCount}
               setSettings={setSettings}
               settings={settings}
               showWalletShell={showWalletShell}
-              walletMessageItems={walletMessageItems}
               walletTokenStateResetNonce={walletTokenStateResetNonce}
             />
           )}
