@@ -779,6 +779,12 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       test first failed with whitespace and duplicate relay URLs, then passed with the original
       normalization restored. This changes no wire contract. Attachment tests validate recognized
       type tags only; full attachment payload validation is not claimed.
+    - Chat typing pass 7 (2026-10-18) checks `useNostrSession`. Identity refresh has an explicit
+      three-value dependency tuple matching the existing wallet caller; subscription cleanup
+      tracks its ref, publishing takes the event contract, and pool close uses its zero-argument
+      API (the old relay argument was ignored). New lifecycle tests cover refresh, listener cleanup,
+      disabled identity and subscription release without network access. PWA lint, `tsc -b` and
+      Vitest pass (560 tests, 12 skipped). Decryption and wire behavior are unchanged.
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.

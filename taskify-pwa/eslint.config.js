@@ -18,7 +18,6 @@ const uncheckedChatHookFiles = [
   'src/chat/hooks/useContactsSync.ts',
   'src/chat/hooks/useDmSend.ts',
   'src/chat/hooks/useDmSubscription.ts',
-  'src/chat/hooks/useNostrSession.ts',
 ]
 
 const tsNocheckFiles = [

@@ -1,4 +1,3 @@
-// @ts-nocheck -- carried over unchanged from the wallet's useNostrPoolState; typing is tracked separately.
 /**
  * The Nostr connection chat runs on: one relay pool, the user's identity, publishing, and NIP-04 /
  * NIP-17 direct-message decryption. Extracted from the wallet's `useNostrPoolState` (which now
@@ -31,8 +30,8 @@ export interface UseNostrSessionOptions {
   dmSubscriptionCloseRef: React.MutableRefObject<(() => void) | null>;
   /** Chat always loads the identity; the wallet only does when payment requests are on. */
   identityEnabled: boolean;
-  /** Re-read the identity when these change (the wallet passes its sheet state). */
-  identityRefreshKeys?: unknown[];
+  /** Re-read on the wallet's open, receive-mode and send-mode transitions. */
+  identityRefreshKeys?: readonly [open?: boolean, receiveMode?: string | null, sendMode?: string | null];
 }
 
 export function useNostrSession({
@@ -42,6 +41,7 @@ export function useNostrSession({
   identityEnabled,
   identityRefreshKeys = [],
 }: UseNostrSessionOptions) {
+  const [refreshOpen, refreshReceiveMode, refreshSendMode] = identityRefreshKeys;
   const defaultNostrRelays = useMemo(() => Array.from(new Set(DEFAULT_NOSTR_RELAYS)), []);
   const preferredFileServer = useMemo(
     () => normalizeFileServerUrl(fileStorageServer) || DEFAULT_FILE_STORAGE_SERVER,
@@ -76,7 +76,7 @@ export function useNostrSession({
         if (destroy && typeof (pool as any).destroy === "function") {
           await (pool as any).destroy();
         } else if (defaultNostrRelays.length && typeof pool.close === "function") {
-          pool.close(defaultNostrRelays);
+          pool.close();
         }
       } catch (err: any) {
         const msg = err?.message || "";
@@ -97,7 +97,7 @@ export function useNostrSession({
   }, []);
 
   const safePublish = useCallback(
-    async (pool: SessionPool, relays: string[], event: any) => {
+    async (pool: SessionPool, relays: string[], event: NostrEvent) => {
       const result = pool.publish(relays, event);
       try {
         await Promise.resolve(result);
@@ -370,7 +370,7 @@ export function useNostrSession({
 
       return toRaw(normalizedSender) ?? toRaw(identityPubkey) ?? identityPubkey.toLowerCase();
     },
-    [normalizeNostrPubkey],
+    [],
   );
 
   const stopDmSubscription = useCallback(() => {
@@ -382,7 +382,7 @@ export function useNostrSession({
       }
       dmSubscriptionCloseRef.current = null;
     }
-  }, []);
+  }, [dmSubscriptionCloseRef]);
 
   const refreshNostrIdentity = useCallback(() => {
     setNostrIdentityInfo(identityEnabled ? readNostrIdentity() : EMPTY_NOSTR_IDENTITY_INFO);
@@ -390,8 +390,7 @@ export function useNostrSession({
 
   useEffect(() => {
     refreshNostrIdentity();
-     
-  }, [refreshNostrIdentity, ...identityRefreshKeys]);
+  }, [refreshNostrIdentity, refreshOpen, refreshReceiveMode, refreshSendMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
