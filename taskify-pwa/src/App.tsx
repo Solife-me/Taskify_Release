@@ -49,6 +49,7 @@ import {
   type TaskAssignee,
   type TaskAssigneeStatus,
   type Weekday,
+  todayDateKey,
 } from "taskify-core";
 import {
   type BibleTrackerProgress,
@@ -3438,7 +3439,7 @@ export default function App() {
     const now = new Date();
 
     const dateKeyForEvent = (ev: CalendarEvent): string => {
-      if (ev.kind === "date") return ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : isoDatePart(new Date().toISOString());
+      if (ev.kind === "date") return ISO_DATE_PATTERN.test(ev.startDate) ? ev.startDate : todayDateKey();
       return isoDatePart(ev.startISO, ev.startTzid);
     };
 
@@ -5572,7 +5573,7 @@ export default function App() {
           ? isoDatePart(
               inlineOverrides.dueISO || isoForWeekday(Number(key) as Weekday, { weekStart: settings.weekStart }),
             )
-          : isoDatePart(new Date().toISOString());
+          : todayDateKey();
       const taskImports = importedItems.filter((entry) => entry.type === "task");
       const eventImports = importedItems.filter((entry) => entry.type === "event");
       const createdTasks: Task[] = [];
@@ -6840,7 +6841,7 @@ export default function App() {
 	      ...(task.recurrence ? { recurrence: task.recurrence, seriesId: task.seriesId || task.id } : {}),
 	    };
 
-    const todayKey = isoDatePart(new Date().toISOString());
+    const todayKey = todayDateKey();
 	    if (task.dueDateEnabled === false) {
 	      const startISO = new Date().toISOString();
 	      const startMs = Date.parse(startISO);

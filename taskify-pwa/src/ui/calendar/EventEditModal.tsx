@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { nip19 } from "nostr-tools";
-import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList } from "taskify-core";
+import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList, todayDateKey } from "taskify-core";
 
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
@@ -422,7 +422,7 @@ function EventEditModal({
   const reminderTimeLabel = useMemo(
     () =>
       formatTimeLabel(
-        isoFromDateTime(startDate || isoDatePart(new Date().toISOString()), reminderTime || DEFAULT_DATE_REMINDER_TIME, systemTimeZone),
+        isoFromDateTime(startDate || todayDateKey(), reminderTime || DEFAULT_DATE_REMINDER_TIME, systemTimeZone),
         systemTimeZone,
       ),
     [reminderTime, startDate, systemTimeZone],

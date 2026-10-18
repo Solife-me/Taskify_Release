@@ -9,7 +9,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { formatDateKeyLocal, isoDatePart } from "taskify-core";
+import { formatDateKeyLocal, isoDatePart, todayDateKey } from "taskify-core";
 import { MONTH_NAMES, WD_SHORT } from "../../domains/appTypes";
 import {
   SPECIAL_CALENDAR_US_HOLIDAY_RANGE_FUTURE_YEARS,
@@ -322,7 +322,7 @@ export default function UpcomingPage({
     };
   }, [resolveUpcomingTargetDateKey, scrollElementRef, upcomingDateKeyToIndex, upcomingVirtualizer]);
   const scrollUpcomingToToday = useCallback((behavior: ScrollBehavior = "smooth", onDone?: (settled: boolean) => void) => {
-    const todayKey = isoDatePart(new Date().toISOString());
+    const todayKey = todayDateKey();
     return scrollUpcomingToDate(todayKey, behavior, onDone);
   }, [scrollUpcomingToDate]);
   const getFocusedUpcomingDateFromScroll = useCallback(() => {
@@ -378,7 +378,7 @@ export default function UpcomingPage({
   }, [scrollUpcomingToDate, upcomingListCalendar.month, upcomingListCalendar.year, upcomingView]);
   const handleUpcomingToday = useCallback(() => {
     if (upcomingView === "list") {
-      const today = isoDatePart(new Date().toISOString());
+      const today = todayDateKey();
       setUpcomingListDate(today);
       return;
     }

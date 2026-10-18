@@ -16,6 +16,8 @@ export declare function resolveSystemTimeZone(): string;
 export declare function normalizeTimeZone(value?: string | null): string | null;
 export declare function formatDateKeyFromParts(year: number, month: number, day: number): string;
 export declare function formatDateKeyLocal(date: Date): string;
+/** Today's date key (YYYY-MM-DD) on this device's calendar, not UTC's. */
+export declare function todayDateKey(now?: Date): string;
 export declare function parseDateKey(value: string): DateKeyParts | null;
 /** Moves a date key by whole calendar days, so DST cannot shift it. Null for an invalid key. */
 export declare function addDaysToDateKey(dateKey: string, days: number): string | null;

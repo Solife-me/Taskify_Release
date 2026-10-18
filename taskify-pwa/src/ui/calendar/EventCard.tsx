@@ -1,6 +1,6 @@
 import React, { useMemo, useCallback } from "react";
 import type { CalendarEvent } from "../../domains/tasks/taskTypes";
-import { ISO_DATE_PATTERN } from "taskify-core";
+import { ISO_DATE_PATTERN, todayDateKey } from "taskify-core";
 import { normalizeTimeZone } from "../../domains/dateTime/dateUtils";
 import { isoDatePart } from "../../domains/dateTime/dateUtils";
 import { toNpub } from "../../lib/nostr";
@@ -98,7 +98,7 @@ export function EventCard({
     [event.lastEditedBy, event.createdBy, event.boardPubkey],
   );
   const dateKey = useMemo(() => {
-    if (event.kind === "date") return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : isoDatePart(new Date().toISOString());
+    if (event.kind === "date") return ISO_DATE_PATTERN.test(event.startDate) ? event.startDate : todayDateKey();
     return isoDatePart(event.startISO, event.startTzid);
   }, [event]);
   const timeLabel = useMemo(() => {

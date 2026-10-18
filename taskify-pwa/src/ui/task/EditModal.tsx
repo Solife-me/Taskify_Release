@@ -4,7 +4,7 @@ import { ImagePreviewModal } from "./ImagePreviewModal";
 import { NoteMarkdownView } from "./NoteMarkdown";
 import { NoteEditorModal } from "./NoteModals";
 import { nip19 } from "nostr-tools";
-import { normalizeTaskAssignmentStatus } from "taskify-core";
+import { normalizeTaskAssignmentStatus, todayDateKey } from "taskify-core";
 
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
@@ -794,7 +794,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     () =>
       formatTimeLabel(
         isoFromDateTime(
-          scheduledDate || isoDatePart(new Date().toISOString()),
+          scheduledDate || todayDateKey(),
           reminderTime || DEFAULT_DATE_REMINDER_TIME,
           systemTimeZone,
         ),
@@ -855,7 +855,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   }, [dateEnabled]);
   useEffect(() => {
     if (selectedBoardKind !== "week" || dateEnabled) return;
-    const todayISO = isoDatePart(new Date().toISOString());
+    const todayISO = todayDateKey();
     setScheduledDate((prev) => prev || todayISO);
     setCalendarBaseDate((prev) => prev || todayISO);
     setDateEnabled(true);
@@ -1406,7 +1406,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   function toggleDateSwitch() {
     if (selectedBoardKind === "week") {
       if (!dateEnabled) {
-        const todayISO = isoDatePart(new Date().toISOString());
+        const todayISO = todayDateKey();
         setScheduledDate((prev) => prev || todayISO);
         setCalendarBaseDate((prev) => prev || todayISO);
         setDateEnabled(true);
@@ -1417,7 +1417,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const next = !prev;
       if (next) {
         if (!scheduledDate) {
-          const todayISO = isoDatePart(new Date().toISOString());
+          const todayISO = todayDateKey();
           setScheduledDate(todayISO);
           setCalendarBaseDate(todayISO);
         } else {
@@ -1530,7 +1530,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     setReminderTimeDetailsOpen(false);
     setDateDetailsOpen(false);
     if (!dateEnabled) {
-      const todayISO = scheduledDate || isoDatePart(new Date().toISOString());
+      const todayISO = scheduledDate || todayDateKey();
       setScheduledDate(todayISO);
       setCalendarBaseDate(todayISO);
       setDateEnabled(true);

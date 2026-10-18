@@ -928,11 +928,10 @@ What the review found:
   animation frames running) showed Wednesday, January 1, 2025. The Today button works. The
   arrival scroll runs once, before the virtualized list has measured itself, then marks itself
   done.
-- **"Today" is the UTC date in 12 places.** The code uses `isoDatePart(new Date().toISOString())`
-  in Upcoming's Today, the task editor's date defaults and quick dates, the event editor's
-  reminder default, and the date given to tasks imported by pasting JSON. In the Americas,
-  "today" becomes tomorrow in the evening (after 7 pm in Chicago); in Asia and Australia it is
-  yesterday in the morning. Core already has `formatDateKeyLocal`.
+- **"Today" is written as a UTC round-trip in 12 places** (`isoDatePart(new Date().toISOString())`).
+  The review first read this as a UTC-date bug. It is not: core's `isoDatePart` parses the ISO
+  string back into local time, so the result is the local date (checked at 20:30 in Chicago).
+  The pattern only hides its intent; see C3-3.
 - **Typing a task re-renders every card.** Measured with a render counter on a week board:
   every keystroke in an inline "New Task" field re-rendered every card (28 card renders for
   5 keys with 4 tasks, React's dev double-render included). The causes:
@@ -976,13 +975,12 @@ What the review found:
   the arrival as handled. Write a failing test first, with jsdom layout stubs and the virtualizer.
 - **Effort:** S. **Risk:** low.
 
-### C3-3 — One local "today" (bug, interop)
+### C3-3 — One named local "today" (clarity; first filed as a bug)
 
-- **User:** Everyone outside UTC, at the ends of their day.
-- **Proposal:** Add `todayDateKey(now?)` to `taskify-core` (local calendar date, built on
-  `formatDateKeyLocal`) and replace the 12 UTC call sites. Add a lint rule that rejects
-  `toISOString()` sliced to a date where "today" is meant. Tests run under a fixed `TZ`
-  (America/Chicago at 20:00, Australia/Sydney at 08:00). iOS gets the same check in chunk 8.
+- **Correction:** the suspected bug does not exist (see the findings). What remains is clarity:
+  the round-trip reads as UTC and misled this review.
+- **Proposal:** Add `todayDateKey(now?)` to `taskify-core` and use it at the 12 call sites, with
+  a lint rule against the round-trip. A core test pins the evening case.
 - **Effort:** S. **Risk:** low.
 
 ### C3-4 — Typing and selecting re-render only what changed (performance)
@@ -1051,7 +1049,7 @@ What the review found:
 
 ### Recommended order
 
-C3-2 and C3-3 (bugs) → C3-8 → C3-4 → C3-7 → C3-6 (after the decision) → C3-5 → C3-9. Each
+C3-2 (bug) and C3-3 → C3-8 → C3-4 → C3-7 → C3-6 (after the decision) → C3-5 → C3-9. Each
 step is one commit, and bugs get a failing test first.
 
 ### Decisions
@@ -1060,7 +1058,7 @@ step is one commit, and bugs get a failing test first.
 | --- | --- | --- | --- |
 | C3-1 | Approve | 2026-10-17 | Done (passes 1 and 2, two-pane Chat) |
 | C3-2 | Approve | 2026-10-18 | Done: `lib/settleScroll` keeps correcting until the day sits at the top (estimates were 32/120 px against measured 23/70, and StrictMode remounts reset the scroll); tested, checked in dev and a production build |
-| C3-3 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-3 | Approve | 2026-10-18 | Done as a clarity change: not a bug (the round-trip already gave the local date). `todayDateKey()` in core with an evening test; 12 call sites use it; lint rejects the round-trip |
 | C3-4 | Approve | 2026-10-18 | In progress (recommended order) |
 | C3-5 | Approve | 2026-10-18 | In progress (recommended order) |
 | C3-6 | Approve; bounty creation stays as an optional wallet extension until the wallet is removed | 2026-10-18 | Pending |

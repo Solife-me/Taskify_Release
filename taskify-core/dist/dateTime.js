@@ -45,6 +45,10 @@ export function formatDateKeyFromParts(year, month, day) {
 export function formatDateKeyLocal(date) {
     return formatDateKeyFromParts(date.getFullYear(), date.getMonth() + 1, date.getDate());
 }
+/** Today's date key (YYYY-MM-DD) on this device's calendar, not UTC's. */
+export function todayDateKey(now = new Date()) {
+    return formatDateKeyLocal(now);
+}
 export function parseDateKey(value) {
     if (!ISO_DATE_PATTERN.test(value))
         return null;

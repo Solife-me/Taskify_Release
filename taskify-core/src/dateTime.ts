@@ -51,6 +51,11 @@ export function formatDateKeyLocal(date: Date): string {
   return formatDateKeyFromParts(date.getFullYear(), date.getMonth() + 1, date.getDate());
 }
 
+/** Today's date key (YYYY-MM-DD) on this device's calendar, not UTC's. */
+export function todayDateKey(now: Date = new Date()): string {
+  return formatDateKeyLocal(now);
+}
+
 export function parseDateKey(value: string): DateKeyParts | null {
   if (!ISO_DATE_PATTERN.test(value)) return null;
   const [yearRaw, monthRaw, dayRaw] = value.split("-");

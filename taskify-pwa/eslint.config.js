@@ -60,6 +60,14 @@ export default tseslint.config([
       // opt-out everywhere: prefix the name with `_`.
       '@typescript-eslint/no-unused-vars': 'off',
       'unused-imports/no-unused-imports': 'error',
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "CallExpression[callee.name='isoDatePart'] > CallExpression.arguments[callee.property.name='toISOString'][callee.object.type='NewExpression'][callee.object.arguments.length=0]",
+          message: "Use todayDateKey() from taskify-core for today's local date.",
+        },
+      ],
       'unused-imports/no-unused-vars': [
         'error',
         {
