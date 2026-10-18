@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -174,7 +173,6 @@ export function normalizeDmPeerHex(value: string | null | undefined): string | n
 
 type CachedContactProfile = { profile: ContactProfile; updatedAt: number; pictureDataUrl?: string };
 
-const PROFILE_PHOTO_CACHE_LIMIT_BYTES = 350_000;
 const CHAT_ATTACH_TRAY_MIN_HEIGHT = 248;
 const CHAT_ATTACH_TRAY_MAX_HEIGHT = 380;
 const CHAT_ATTACH_TRAY_FALLBACK_RATIO = 0.38;
@@ -189,13 +187,6 @@ function measureDefaultChatAttachTrayHeight(): number {
   );
 }
 
-function estimateDataUrlSize(value: string): number {
-  const parts = value.split(",", 2);
-  if (parts.length < 2) return value.length;
-  const base64 = parts[1];
-  return Math.ceil((base64.length * 3) / 4);
-}
-
 function isDataUrl(value: string): boolean {
   return /^data:image\//i.test(value.trim());
 }
@@ -206,39 +197,6 @@ function pickPreferredProfilePhoto(...candidates: Array<string | null | undefine
     .filter(Boolean);
   if (!normalized.length) return undefined;
   return normalized.find((value) => isDataUrl(value)) || normalized[0];
-}
-
-function shouldCacheProfilePhoto(value: string): boolean {
-  return /^https?:\/\//i.test(value.trim());
-}
-
-async function fetchProfilePhotoDataUrl(url: string, timeoutMs = 8000): Promise<string | null> {
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
-  try {
-    const response = await fetch(url, { signal: controller?.signal, cache: "force-cache" });
-    if (!response.ok) return null;
-    const contentType = response.headers.get("content-type");
-    if (contentType && !contentType.toLowerCase().startsWith("image/")) return null;
-    const blob = await response.blob();
-    if (!blob || blob.size > PROFILE_PHOTO_CACHE_LIMIT_BYTES) return null;
-    const dataUrl = await new Promise<string | null>((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = typeof reader.result === "string" ? reader.result : null;
-        resolve(result && result.trim() ? result : null);
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
-    return dataUrl;
-  } catch {
-    return null;
-  } finally {
-    if (timer) {
-      window.clearTimeout(timer);
-    }
-  }
 }
 
 function normalizeCachedContactProfile(raw: any): CachedContactProfile | null {
@@ -254,9 +212,8 @@ function normalizeCachedContactProfile(raw: any): CachedContactProfile | null {
   const relays = Array.isArray((profileRaw as any).relays)
     ? Array.from(
         new Set(
-          (profileRaw as any).relays
-            .map((relay: unknown) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
+          ((profileRaw as any).relays as unknown[])
+            .filter((relay): relay is string => typeof relay === "string" && relay.trim().length > 0),
         ),
       )
     : undefined;
@@ -391,10 +348,21 @@ function readStoredExpiryMap(storageKey: string): Map<string, number> {
   }
 }
 
-function isWalletDmAttachment(value: unknown): value is WalletDmAttachment {
+export function isWalletDmAttachment(value: unknown): value is WalletDmAttachment {
   if (!value || typeof value !== "object") return false;
   const type = (value as { type?: unknown }).type;
-  return typeof type === "string";
+  switch (type) {
+    case "board":
+    case "contact":
+    case "task":
+    case "event":
+    case "payment":
+    case "file":
+    case "text":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function isWalletDmMessage(value: unknown): value is WalletDmMessage {
@@ -429,6 +397,9 @@ function readDmCache(): WalletDmMessage[] {
     return parsed
       .filter(isWalletDmMessage)
       .map((entry) => ({
+        attachment: (
+          isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" as const }
+        ) as WalletDmAttachment,
         id: entry.id || entry.eventId,
         eventId: entry.eventId,
         peerPubkey: entry.peerPubkey.toLowerCase(),
@@ -436,7 +407,6 @@ function readDmCache(): WalletDmMessage[] {
         createdAt: entry.createdAt,
         content: entry.content,
         preview: entry.preview,
-        attachment: isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" },
         ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
         ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
       }))

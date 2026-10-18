@@ -17,7 +17,6 @@ const legacyUncheckedFiles = [
 const uncheckedChatHookFiles = [
   'src/chat/hooks/useContactsSync.ts',
   'src/chat/hooks/useDmSend.ts',
-  'src/chat/hooks/useDmState.ts',
   'src/chat/hooks/useDmSubscription.ts',
   'src/chat/hooks/useDmThreadActions.ts',
   'src/chat/hooks/useDmThreadUtils.ts',
