@@ -142,3 +142,25 @@ test("an overlay opened from a link closes to its page without leaving the app",
   unsubscribe();
   unsubscribeLinked();
 });
+
+test("an overlay opened while others close in the same tick takes the lowest closed entry", async () => {
+  window.history.replaceState(null, "", "/boards/b1");
+  const router = new AppHistoryRouter(window);
+  const unsubscribe = router.subscribe(() => {});
+  const page = router.getEntryId();
+  const editor = router.openOverlay({ kind: "task", id: "t1", boardId: "b1" });
+  const sheet = router.openOverlay({ kind: "sheet", sheet: "recurring-task-delete" });
+
+  router.closeOverlayEntry(sheet);
+  router.closeOverlayEntry(editor);
+  const print = router.openOverlay({ kind: "sheet", sheet: "board-print" });
+  expect(print).toBe(editor);
+  await vi.waitFor(() => expect(window.location.search).toBe("?sheet=board-print"));
+  expect(router.getEntryId()).toBe(editor);
+  expect(router.getSnapshot().overlay).toEqual({ kind: "sheet", sheet: "board-print" });
+
+  window.history.back();
+  await vi.waitFor(() => expect(router.getEntryId()).toBe(page));
+  expect(router.getSnapshot()).toEqual({ page: "boards", boardId: "b1" });
+  unsubscribe();
+});

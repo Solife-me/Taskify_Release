@@ -141,3 +141,35 @@ test("a sheet left in the URL by a reload is dismissed", async () => {
   expect(window.location.search).toBe("");
   await app.unmount();
 });
+
+test("closing one overlay and opening another in one action swaps them in one history entry", async () => {
+  window.history.replaceState(null, "", "/boards/b1");
+  const app = await mount();
+  const pageEntry = app.router.getEntryId();
+
+  // The closing overlay's hook runs first (editor is declared before the sheet).
+  await act(async () => app.openEditor("t1"));
+  await act(async () => {
+    app.openEditor(null);
+    app.openSheet(true);
+  });
+  await vi.waitFor(() => expect(window.location.search).toContain("sheet=recurring-task-delete"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(app.state()).toEqual({ editor: null, sheet: true });
+  expect(app.router.getEntryId()).toBe(pageEntry + 1);
+
+  // The opening overlay's hook runs first.
+  await act(async () => {
+    app.openSheet(false);
+    app.openEditor("t2");
+  });
+  await vi.waitFor(() => expect(window.location.pathname).toBe("/task/t2"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(app.state()).toEqual({ editor: "t2", sheet: false });
+  expect(app.router.getEntryId()).toBe(pageEntry + 1);
+
+  await act(async () => window.history.back());
+  await vi.waitFor(() => expect(app.state()).toEqual({ editor: null, sheet: false }));
+  expect(app.router.getEntryId()).toBe(pageEntry);
+  await app.unmount();
+});

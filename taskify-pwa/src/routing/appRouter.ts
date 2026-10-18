@@ -52,6 +52,8 @@ export class AppHistoryRouter {
   private replaceOverlayAt: number | null = null;
   /** Overlay entries with UI bound to them (see `useOverlayHistory`). */
   private claimed = new Set<number>();
+  /** An overlay that takes the place of closed ones once Back reaches `entry` (see `openOverlay`). */
+  private swapAt: { entry: number; overlay: AppOverlayRoute } | null = null;
 
   constructor(private readonly browserWindow: Window) {
     const existing = storedRoute(browserWindow.history.state);
@@ -115,8 +117,24 @@ export class AppHistoryRouter {
     return this.claimed.has(entryId);
   }
 
-  /** Opens an overlay over the current page as a new history entry; returns that entry. */
+  /**
+   * Opens an overlay over the current page as a new history entry; returns that entry. When
+   * overlays were asked to close in this same tick (one sheet hands over to another), the new
+   * overlay takes the place of the lowest closed one instead of stacking on entries that are
+   * about to go, so Back from it returns to what was beneath them.
+   */
   openOverlay(overlay: AppOverlayRoute, options?: { replace?: boolean }): number {
+    const closing = this.pendingClose;
+    if (!options?.replace && closing !== null && closing <= this.entryId && this.current.overlay) {
+      this.pendingClose = null;
+      if (closing === this.entryId) {
+        this.navigate({ ...this.current, overlay } as AppRoute, { replace: true });
+      } else {
+        this.swapAt = { entry: closing, overlay };
+        this.browserWindow.history.go(closing - this.entryId);
+      }
+      return closing;
+    }
     this.navigate({ ...this.current, overlay } as AppRoute, options);
     return this.entryId;
   }
@@ -172,6 +190,14 @@ export class AppHistoryRouter {
       this.write("replace", route, entryId, parentEntryId, this.browserWindow.location.href);
     }
     this.commit(route, entryId, parentEntryId);
+    if (this.swapAt !== null) {
+      const swap = this.swapAt;
+      this.swapAt = null;
+      if (entryId === swap.entry && this.current.overlay) {
+        this.navigate({ ...this.current, overlay: swap.overlay } as AppRoute, { replace: true });
+        return;
+      }
+    }
     if (this.replaceOverlayAt !== null && entryId <= this.replaceOverlayAt) {
       this.replaceOverlayAt = null;
       if (this.current.overlay) this.replaceWithPage();

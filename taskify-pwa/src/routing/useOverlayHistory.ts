@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import type { AppOverlayRoute, AppRoute } from "./appRoute";
 import type { AppHistoryRouter } from "./appRouter";
 
@@ -41,6 +41,16 @@ export function useOverlayHistory(
   closeRef.current = close;
   const identity = overlay ? overlayIdentity(overlay) : null;
 
+  // Closing runs in the layout phase, before any overlay opens in the same commit, so the router
+  // can let a newly opened overlay take the closed one's place (see `openOverlay`).
+  useLayoutEffect(() => {
+    if (identity || entryRef.current === null) return;
+    const entry = entryRef.current;
+    entryRef.current = null;
+    router.releaseEntry(entry);
+    router.closeOverlayEntry(entry);
+  }, [identity, router]);
+
   useEffect(() => {
     const current = overlayRef.current;
     if (identity && current) {
@@ -53,13 +63,6 @@ export function useOverlayHistory(
         // Something else opened in the same place (the editor switched tasks): no new entry.
         router.openOverlay(current, { replace: true });
       }
-      return;
-    }
-    if (entryRef.current !== null) {
-      const entry = entryRef.current;
-      entryRef.current = null;
-      router.releaseEntry(entry);
-      router.closeOverlayEntry(entry);
     }
   }, [identity, router]);
 
