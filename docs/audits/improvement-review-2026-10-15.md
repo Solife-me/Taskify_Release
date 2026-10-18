@@ -772,9 +772,13 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       is removed and callback dependencies are complete. Existing error-message and navigation
       behavior is preserved. PWA lint, `tsc -b` and Vitest pass (556 tests, 12 skipped).
       This is React orchestration; Rust/UniFFI/WASM would add a boundary without a gain.
-      Follow-up found during review: restore cached profile relay trimming lost in pass 4,
-      with a failing regression test first. The attachment tray also still schedules a blur
+      The attachment tray still schedules a blur
       inside a state updater; move that work out in a separately tested step.
+    - Cache regression fix (2026-10-18): restored relay trimming before deduplication in
+      `normalizeCachedContactProfile`, accidentally removed during typing pass 4. The regression
+      test first failed with whitespace and duplicate relay URLs, then passed with the original
+      normalization restored. This changes no wire contract. Attachment tests validate recognized
+      type tags only; full attachment payload validation is not claimed.
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.

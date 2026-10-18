@@ -199,7 +199,7 @@ function pickPreferredProfilePhoto(...candidates: Array<string | null | undefine
   return normalized.find((value) => isDataUrl(value)) || normalized[0];
 }
 
-function normalizeCachedContactProfile(raw: any): CachedContactProfile | null {
+export function normalizeCachedContactProfile(raw: any): CachedContactProfile | null {
   if (!raw || typeof raw !== "object") return null;
   const updatedAt = Number.isFinite((raw as any).updatedAt) ? Math.floor((raw as any).updatedAt) : 0;
   const profileRaw = (raw as any).profile;
@@ -213,7 +213,8 @@ function normalizeCachedContactProfile(raw: any): CachedContactProfile | null {
     ? Array.from(
         new Set(
           ((profileRaw as any).relays as unknown[])
-            .filter((relay): relay is string => typeof relay === "string" && relay.trim().length > 0),
+            .map(normalizeString)
+            .filter(Boolean),
         ),
       )
     : undefined;
