@@ -17,6 +17,7 @@ import {
   SPECIAL_CALENDAR_US_HOLIDAYS_LABEL,
 } from "../../domains/calendar/calendarUtils";
 import { buildUsHolidayCalendarEvents } from "../../domains/calendar/holidayUtils";
+import { settleScroll } from "../../lib/settleScroll";
 import { useCalendarPicker } from "../../domains/dateTime/calendarPickerHook";
 import { daysInCalendarMonth, startOfDay } from "../../domains/dateTime/dateUtils";
 import type { Board, CalendarEvent, Task } from "../../domains/tasks/taskTypes";
@@ -88,6 +89,9 @@ export default function UpcomingPage({
   const upcomingSearchInputRef = useRef<HTMLInputElement | null>(null);
   const upcomingAutoScrollRef = useRef(false);
   const upcomingPendingDetailDateRef = useRef<string | null>(null);
+  /** The scroll being settled onto a day (see `scrollUpcomingToDate`), and whether the user took over. */
+  const upcomingSettleRef = useRef<(() => void) | null>(null);
+  const upcomingUserScrolledRef = useRef(false);
   const upcomingCalendarSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
 
   // ---- What is shown ----
@@ -182,7 +186,9 @@ export default function UpcomingPage({
     getScrollElement: () => scrollElementRef.current,
     estimateSize: (index) => {
       const row = upcomingFlatRows[index];
-      return row?.kind === "day-header" ? 32 : 120;
+      // Close to measured sizes (a day header is about 23 px, a one-line card about 70 px), so
+      // jumps land near their target before rows are measured.
+      return row?.kind === "day-header" ? 24 : 72;
     },
     overscan: 8,
   });
@@ -246,38 +252,78 @@ export default function UpcomingPage({
     if (nextGroup) return nextGroup.dateKey;
     return upcomingGroups[upcomingGroups.length - 1].dateKey;
   }, [upcomingGroups]);
-  const scrollUpcomingToDate = useCallback((dateKey: string, behavior: ScrollBehavior = "smooth") => {
+  // Wheel, touch and keys mean the user is scrolling: a scroll being settled stops fighting them.
+  useEffect(() => {
+    const container = scrollElementRef.current;
+    if (!container) return;
+    const markUserScroll = () => {
+      upcomingUserScrolledRef.current = true;
+    };
+    const options = { passive: true } as const;
+    container.addEventListener("wheel", markUserScroll, options);
+    container.addEventListener("touchstart", markUserScroll, options);
+    container.addEventListener("keydown", markUserScroll);
+    return () => {
+      container.removeEventListener("wheel", markUserScroll);
+      container.removeEventListener("touchstart", markUserScroll);
+      container.removeEventListener("keydown", markUserScroll);
+    };
+  }, [scrollElementRef]);
+  useEffect(() => () => upcomingSettleRef.current?.(), []);
+
+  /**
+   * Scrolls the day-by-day list to a day (or the next day with items) and keeps it there while
+   * rows above it are measured. Returns a function that stops it, or null when there is nothing
+   * to scroll to yet. `onDone` runs once the day sits at the top or the user takes over.
+   */
+  const scrollUpcomingToDate = useCallback((
+    dateKey: string,
+    behavior: ScrollBehavior = "smooth",
+    onDone?: (settled: boolean) => void,
+  ): (() => void) | null => {
     const list = upcomingListRef.current;
     const scrollContainer = scrollElementRef.current;
-    if (!list || !scrollContainer) return false;
+    if (!list || !scrollContainer) return null;
     const targetKey = resolveUpcomingTargetDateKey(dateKey);
-    if (!targetKey) return false;
-
-    // Grouped view is virtualized: target day's header may be outside the
-    // rendered DOM range, so `querySelector` would miss it. Use the
-    // virtualizer's scrollToIndex with the precomputed dateKey→index map.
+    if (!targetKey) return null;
     const virtualIndex = upcomingDateKeyToIndex.get(targetKey);
+
+    upcomingSettleRef.current?.();
+    upcomingUserScrolledRef.current = false;
+    // The day may be outside the rendered range (the list is virtualized): jump by index first.
     if (typeof virtualIndex === "number") {
       upcomingVirtualizer.scrollToIndex(virtualIndex, { align: "start", behavior });
-      return true;
     }
-
-    const selector = `[data-upcoming-date="${targetKey}"]`;
-    const target = list.querySelector(selector) as HTMLElement | null;
-    const fallback = list.firstElementChild as HTMLElement | null;
-    const scrollTarget = target ?? fallback;
-    if (!scrollTarget) return false;
-    requestAnimationFrame(() => {
-      const containerRect = scrollContainer.getBoundingClientRect();
-      const targetRect = scrollTarget.getBoundingClientRect();
-      const offset = targetRect.top - containerRect.top + scrollContainer.scrollTop;
-      scrollContainer.scrollTo({ top: offset, behavior });
+    const maxScroll = () => Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+    const stop = settleScroll({
+      target: () => {
+        const header = list.querySelector<HTMLElement>(`[data-upcoming-date="${targetKey}"]`);
+        if (header) {
+          const offset =
+            header.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top + scrollContainer.scrollTop;
+          return Math.min(Math.max(0, offset), maxScroll());
+        }
+        if (typeof virtualIndex !== "number") return null;
+        const estimate = upcomingVirtualizer.getOffsetForIndex(virtualIndex, "start");
+        return estimate ? Math.min(Math.max(0, estimate[0]), maxScroll()) : null;
+      },
+      current: () => scrollContainer.scrollTop,
+      scrollTo: (top) => scrollContainer.scrollTo({ top }),
+      userInterrupted: () => upcomingUserScrolledRef.current,
+      onDone: (settled) => {
+        if (upcomingSettleRef.current === stop) upcomingSettleRef.current = null;
+        onDone?.(settled);
+      },
     });
-    return true;
+    upcomingSettleRef.current = stop;
+    return () => {
+      stop();
+      if (upcomingSettleRef.current === stop) upcomingSettleRef.current = null;
+    };
   }, [resolveUpcomingTargetDateKey, scrollElementRef, upcomingDateKeyToIndex, upcomingVirtualizer]);
-  const scrollUpcomingToToday = useCallback((behavior: ScrollBehavior = "smooth") => {
+  const scrollUpcomingToToday = useCallback((behavior: ScrollBehavior = "smooth", onDone?: (settled: boolean) => void) => {
     const todayKey = isoDatePart(new Date().toISOString());
-    return scrollUpcomingToDate(todayKey, behavior);
+    return scrollUpcomingToDate(todayKey, behavior, onDone);
   }, [scrollUpcomingToDate]);
   const getFocusedUpcomingDateFromScroll = useCallback(() => {
     const list = upcomingListRef.current;
@@ -344,10 +390,14 @@ export default function UpcomingPage({
     if (upcomingView !== "details") return;
     if (upcomingAutoScrollRef.current) return;
     const targetDate = upcomingPendingDetailDateRef.current ?? upcomingListDate;
-    upcomingPendingDetailDateRef.current = null;
-    if ((targetDate && scrollUpcomingToDate(targetDate, "auto")) || scrollUpcomingToToday("auto")) {
+    // Arrival is handled once the day has settled at the top, or the user scrolled first. Until
+    // then this re-runs as items arrive (and survives a remount), aiming at the same day.
+    const arrived = () => {
       upcomingAutoScrollRef.current = true;
-    }
+      upcomingPendingDetailDateRef.current = null;
+    };
+    const stop = (targetDate && scrollUpcomingToDate(targetDate, "auto", arrived)) || scrollUpcomingToToday("auto", arrived);
+    return stop ?? undefined;
   }, [scrollUpcomingToDate, scrollUpcomingToToday, upcomingListDate, upcomingView]);
 
   // The month calendar: the "list" view's day picker, and on desktop a navigator beside the

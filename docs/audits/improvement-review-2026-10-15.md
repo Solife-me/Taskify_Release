@@ -1059,11 +1059,11 @@ step is one commit, and bugs get a failing test first.
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
 | C3-1 | Approve | 2026-10-17 | Done (passes 1 and 2, two-pane Chat) |
-| C3-2 | Pending | | |
-| C3-3 | Pending | | |
-| C3-4 | Pending | | |
-| C3-5 | Pending | | |
-| C3-6 | Pending (bounty decision needed) | | |
-| C3-7 | Pending | | |
-| C3-8 | Pending | | |
-| C3-9 | Pending | | |
+| C3-2 | Approve | 2026-10-18 | Done: `lib/settleScroll` keeps correcting until the day sits at the top (estimates were 32/120 px against measured 23/70, and StrictMode remounts reset the scroll); tested, checked in dev and a production build |
+| C3-3 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-4 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-5 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-6 | Approve; bounty creation stays as an optional wallet extension until the wallet is removed | 2026-10-18 | Pending |
+| C3-7 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-8 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-9 | Approve | 2026-10-18 | In progress (recommended order) |
