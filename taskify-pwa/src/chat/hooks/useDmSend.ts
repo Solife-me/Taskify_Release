@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import { useCallback } from "react";
 import { nip44, finalizeEvent, getEventHash } from "nostr-tools";
@@ -12,10 +11,33 @@ import {
   MESSENGER_ATTACHMENT_ALGO,
 } from "../../lib/messengerAttachmentCrypto";
 import { parseFileServers, findServerEntry, DEFAULT_FILE_STORAGE_SERVER } from "../../lib/fileStorage";
-import type { FileServerType } from "../../lib/fileStorage";
+import type { FileServerEntry, FileServerType } from "../../lib/fileStorage";
 import { generatePrivateKey, randomPastTimestampSeconds, type NostrEvent } from "../chatHelpers";
-import type { WalletDmMessage, PendingDmMessage } from "./useDmState";
+import type { WalletDmMessage, PendingDmMessage, useDmState } from "./useDmState";
+import type { useNostrSession } from "./useNostrSession";
 import type { GroupChat } from "../../lib/groupChatState";
+
+type DmState = ReturnType<typeof useDmState>;
+type ChatSession = ReturnType<typeof useNostrSession>;
+
+export interface UseDmSendOptions {
+  nip17TimestampMode: "now" | "random";
+  walletDebugEnabled: boolean;
+  defaultNostrRelays: string[];
+  ensureNostrPool: ChatSession["ensureNostrPool"];
+  safePublish: ChatSession["safePublish"];
+  readNostrIdentity: ChatSession["readNostrIdentity"];
+  handleDmEvent: (event: NostrEvent) => Promise<void>;
+  setDmReactions: DmState["setDmReactions"];
+  setDmMessageActions: DmState["setDmMessageActions"];
+  groupChatsRef: DmState["groupChatsRef"];
+  setPendingMessages: DmState["setPendingMessages"];
+  fileStorageServer: string;
+  fileServers: string;
+  encryptedFileStorageServer: string;
+  encryptedFileServers: string;
+  showToast: (message: string, duration?: number) => void;
+}
 
 export function useDmSend({
   nip17TimestampMode,
@@ -34,7 +56,7 @@ export function useDmSend({
   encryptedFileStorageServer,
   encryptedFileServers,
   showToast,
-}) {
+}: UseDmSendOptions) {
   const resolveNip17Timestamp = useCallback(() => {
     if (nip17TimestampMode === "now") {
       return Math.floor(Date.now() / 1000);
@@ -225,7 +247,7 @@ export function useDmSend({
         console.warn("[chat] reaction send failed", err);
       }
     },
-    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish],
+    [defaultNostrRelays, ensureNostrPool, handleDmEvent, publishNip17Giftwraps, readNostrIdentity, resolveNip17Relays, safePublish, groupChatsRef, setDmReactions, setDmMessageActions],
   );
   const handleForwardMessage = useCallback(
     async (msg: WalletDmMessage, targetPeerPubkey: string) => {
@@ -505,6 +527,7 @@ export function useDmSend({
       safePublish,
       setPendingMessages,
       showToast,
+      groupChatsRef,
     ],
   );
 

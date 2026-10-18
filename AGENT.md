@@ -190,6 +190,8 @@ npx wrangler dev
   `@ts-nocheck`, remove that path from the allowlist too; do not restore a broad `src/chat/**` glob.
   Thread actions and utilities now expose typed hook contracts; preserve cached-data normalization
   and callback behavior when checking the remaining transport hooks and runtime views.
+  Send-hook state and session dependencies reuse the owning hooks' return types rather than
+  redeclaring their setter and publishing signatures.
 - Wrangler config (`wrangler.toml`) is at repo root; it references paths relative to root.
 
 ---
