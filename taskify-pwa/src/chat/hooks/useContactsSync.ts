@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
 import { useCallback } from "react";
 import { nip44 } from "nostr-tools";
@@ -42,6 +41,25 @@ import {
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
 import { LS_NIP51_CONTACTS_MIGRATED } from "../../localStorageKeys";
+import type { useContactsState } from "./useContactsState";
+import type { useNostrSession } from "./useNostrSession";
+
+type UseContactsSyncOptions = Pick<ReturnType<typeof useContactsState>,
+  | "setContacts" | "contactsRef" | "contactSyncMetaRef" | "contactSyncMeta"
+  | "setContactSyncState" | "contactsPublishQueuedRef" | "setContactsPublishState"
+  | "setContactsPublishMessage" | "contactsFingerprintRef" | "nip51MigrationInFlightRef"
+  | "computeContactsFingerprint" | "persistContactSyncMeta" | "compressedToRawHex"
+  | "setProfileStatus" | "setProfileMessage" | "setProfileForm" | "setProfileSharePayload"
+  | "setProfileUpdatedAt" | "profileEventIdRef" | "profileFormRef" | "formatNpub"
+  | "setProfilePhotoError"
+> & Pick<ReturnType<typeof useNostrSession>,
+  | "ensureNostrIdentity" | "defaultNostrRelays" | "ensureNostrPool" | "safePublish"
+  | "persistProfileEventId" | "readProfileEventId"
+> & {
+  contactsSyncEnabled: boolean;
+  walletDebugEnabled: boolean;
+  nostrMissingReason: string | null;
+};
 
 export function useContactsSync({
   contactsSyncEnabled,
@@ -77,7 +95,7 @@ export function useContactsSync({
   safePublish,
   persistProfileEventId,
   readProfileEventId,
-}) {
+}: UseContactsSyncOptions) {
   const readNip51ContactsMigrated = useCallback((): boolean => {
     try {
       return idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_NIP51_CONTACTS_MIGRATED) === "true";
@@ -100,7 +118,7 @@ export function useContactsSync({
       if (!normalized) return null;
       return compressedToRawHex(normalized).toLowerCase();
     },
-    [compressedToRawHex, normalizeNostrPubkey],
+    [compressedToRawHex],
   );
 
   const mergeContactsByPubkey = useCallback(
@@ -136,7 +154,7 @@ export function useContactsSync({
         })),
       };
     },
-    [formatContactNpub, makeContactId],
+    [],
   );
 
   const loadLegacyContacts = useCallback(
@@ -164,12 +182,8 @@ export function useContactsSync({
       return mergeContactsByPubkey(localContacts, legacyFromEvent);
     },
     [
-      contactHasNpub,
       ensureNostrPool,
-      loadContactsFromStorage,
       mergeContactsByPubkey,
-      mergeContactsFromSync,
-      parseContactSyncEnvelope,
       walletDebugEnabled,
     ],
   );
@@ -254,13 +268,14 @@ export function useContactsSync({
       ensureNostrPool,
       loadLegacyContacts,
       mergeContactsByPubkey,
-      publishNip51PrivateContactsList,
       persistContactSyncMeta,
       persistNip51ContactsMigrated,
       readNip51ContactsMigrated,
-      saveContactsToStorage,
       setContacts,
       walletDebugEnabled,
+      contactsFingerprintRef,
+      nip51MigrationInFlightRef,
+      setContactSyncState,
     ],
   );
 
@@ -390,7 +405,6 @@ export function useContactsSync({
       contactSyncMeta.publicFollows,
       contactsRef,
       buildContactSyncEnvelopeFromNip51,
-      fetchLatestPrivateContactsList,
       migrateNip51ContactsIfNeeded,
       defaultNostrRelays,
       ensureNostrIdentity,
@@ -398,9 +412,10 @@ export function useContactsSync({
       nostrMissingReason,
       persistContactSyncMeta,
       setContacts,
-      saveContactsToStorage,
-      mergeContactsFromSync,
       computeContactsFingerprint,
+      contactsFingerprintRef,
+      contactsPublishQueuedRef,
+      setContactSyncState,
     ],
   );
 
@@ -564,7 +579,11 @@ export function useContactsSync({
       persistContactSyncMeta,
       safePublish,
       walletDebugEnabled,
-      publishNip51PrivateContactsList,
+      contactsFingerprintRef,
+      contactsPublishQueuedRef,
+      setContactSyncState,
+      setContactsPublishMessage,
+      setContactsPublishState,
     ],
   );
 
@@ -644,7 +663,7 @@ export function useContactsSync({
         persistContactProfileCache(nextCache);
       }
     },
-    [compressedToRawHex, normalizeNostrPubkey, sanitizeUsername],
+    [compressedToRawHex, setContacts],
   );
 
   const refreshContactProfiles = useCallback(async () => {
@@ -749,8 +768,6 @@ export function useContactsSync({
     contactsRef,
     defaultNostrRelays,
     ensureNostrPool,
-    normalizeNostrPubkey,
-    parseProfileContent,
   ]);
 
   const publishProfileMetadata = useCallback(
@@ -834,9 +851,15 @@ export function useContactsSync({
       formatNpub,
       nostrMissingReason,
       persistProfileEventId,
-      persistProfileMetadataCache,
       readProfileEventId,
       setProfilePhotoError,
+      profileEventIdRef,
+      profileFormRef,
+      setProfileForm,
+      setProfileMessage,
+      setProfileSharePayload,
+      setProfileStatus,
+      setProfileUpdatedAt,
     ],
   );
 
@@ -922,11 +945,15 @@ export function useContactsSync({
       ensureNostrIdentity,
       formatNpub,
       nostrMissingReason,
-      parseProfileContent,
-      persistProfileMetadataCache,
       persistProfileEventId,
-      readProfileMetadataCache,
       readProfileEventId,
+      profileEventIdRef,
+      profileFormRef,
+      setProfileForm,
+      setProfileMessage,
+      setProfileSharePayload,
+      setProfileStatus,
+      setProfileUpdatedAt,
     ],
   );
 

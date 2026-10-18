@@ -796,11 +796,15 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       and reaction/file callbacks include their refs and setters in dependencies. Message encoding,
       encryption, publication and attachment progress are unchanged. PWA lint, `tsc -b` and Vitest
       pass (563 tests, 12 skipped).
+    - Chat typing pass 9 (2026-10-18) checks `useContactsSync`: its options are derived from the
+      contacts-state and Nostr-session hooks that own them, module-level helpers left the
+      dependency arrays, and the refs and setters it uses joined them. Sync, NIP-51 migration and
+      profile publishing are unchanged. PWA lint, `tsc -b` and Vitest pass (563 tests, 12 skipped).
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.
-       Remaining hooks: `useContactsSync` and `useDmSubscription`; then `ChatRuntime`, `ChatPage`
-       and the five view modules. Live two-account messaging verification is still outstanding.
+       Remaining hook: `useDmSubscription`; then `ChatRuntime`, `ChatPage` and the five view
+       modules. Live two-account messaging verification is still outstanding.
   - Payment-related: 38 of the 373 values the chat UI used were wallet values; they are gone
     from `chat_block_clean`.
 - **Moving Chat out of the wallet code (chunk 5, scoped 2026-10-17):** Chat is 2,878
