@@ -1,5 +1,23 @@
-// @ts-nocheck
-import { useMemo } from "react";
+import { useMemo, type RefObject } from "react";
+import type { WalletMessageItem } from "../../types/walletMessages";
+import type { PendingCalendarInvite } from "../chatHelpers";
+import type { WalletDmThread } from "./useDmState";
+
+export interface UseThreadUnreadCountsOptions {
+  dmThreads: WalletDmThread[];
+  messageItemsByEventId: Map<string, WalletMessageItem>;
+  pendingMessageItemsByEventId: Map<string, WalletMessageItem>;
+  pendingCalendarInvitesByEventId: Map<string, PendingCalendarInvite>;
+  isUnreadThreadStatus: (status: string | null | undefined) => boolean;
+  dmMutedGroupsRef: RefObject<Map<string, number>>;
+  dmLeftGroupsRef: RefObject<Set<string>>;
+  dmThreadReadAtRef: RefObject<Map<string, number>>;
+  dmMutedGroupsVersion: number;
+  dmLeftGroupsVersion: number;
+  dmThreadReadAtVersion: number;
+  strangerThreads: WalletDmThread[];
+  visibleDmThreads: WalletDmThread[];
+}
 
 export function useThreadUnreadCounts({
   dmThreads,
@@ -15,8 +33,12 @@ export function useThreadUnreadCounts({
   dmThreadReadAtVersion,
   strangerThreads,
   visibleDmThreads,
-}) {
+}: UseThreadUnreadCountsOptions) {
   const threadUnreadMap = useMemo(() => {
+    // Ref contents change in place; their companion versions deliberately invalidate this memo.
+    void dmLeftGroupsVersion;
+    void dmMutedGroupsVersion;
+    void dmThreadReadAtVersion;
     const map = new Map<string, number>();
     dmThreads.forEach((thread) => {
       const unreadIds = new Set<string>();
@@ -43,8 +65,11 @@ export function useThreadUnreadCounts({
     return map;
   }, [
     dmLeftGroupsVersion,
+    dmLeftGroupsRef,
     dmMutedGroupsVersion,
+    dmMutedGroupsRef,
     dmThreadReadAtVersion,
+    dmThreadReadAtRef,
     dmThreads,
     isUnreadThreadStatus,
     messageItemsByEventId,

@@ -1,5 +1,15 @@
-// @ts-nocheck
 import { useMemo } from "react";
+import type { Contact } from "../../lib/contacts";
+import type { ContactSyncMeta } from "./useContactsState";
+
+export interface UseScannedContactDerivedOptions {
+  scannedContact: Contact | null;
+  contacts: Contact[];
+  normalizeNostrPubkey: (value: string) => string | null;
+  compressedToRawHex: (value: string) => string;
+  contactSyncMeta: ContactSyncMeta;
+  sharedContactPreviewContact: Contact | null;
+}
 
 export function useScannedContactDerived({
   scannedContact,
@@ -8,7 +18,7 @@ export function useScannedContactDerived({
   compressedToRawHex,
   contactSyncMeta,
   sharedContactPreviewContact,
-}) {
+}: UseScannedContactDerivedOptions) {
   const scannedContactSaved = useMemo(() => {
     if (!scannedContact) return false;
     const normalizedTarget = normalizeNostrPubkey(scannedContact.npub || "");

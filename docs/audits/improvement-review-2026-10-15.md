@@ -745,6 +745,11 @@ follow-up work inside a `set(prev => …)` updater. Bugs get a failing test firs
       full gate passed with 547 tests (12 skipped) and a 450.8 KB startup graph; Chat remains
       mounted off-page for DM sync/unread updates and its route graph contains no wallet or Cashu
       chunks.
+    - Chat typing pass 1 removes `@ts-nocheck` from the five derived-data hooks
+      (`useScannedContactDerived`, `useContactsDerived`, `useThreadUnreadCounts`,
+      `useDmMessageDerived`, and `useDmThreadDerived`). Their inputs now have explicit contracts,
+      two stale thread-derivation inputs are gone, and the lint exemption is an explicit allowlist
+      of the remaining unchecked hooks instead of a wildcard that could hide new debt.
   - **Remaining, in order:**
     1. Type the Chat runtime, hooks and views incrementally, removing their temporary
        `@ts-nocheck` exceptions.

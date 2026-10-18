@@ -186,6 +186,8 @@ npx wrangler dev
   `main.tsx` imports counts; optional features load lazily from `App`. The wallet's providers run in
   a lazily mounted `WalletRuntime`; import wallet hooks from `context/walletContexts`, never from
   the provider modules.
+- Chat typing debt is tracked by explicit paths in `eslint.config.js`. When removing a Chat file's
+  `@ts-nocheck`, remove that path from the allowlist too; do not restore a broad `src/chat/**` glob.
 - Wrangler config (`wrangler.toml`) is at repo root; it references paths relative to root.
 
 ---

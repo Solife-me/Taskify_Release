@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useMemo } from "react";
 import type { Contact } from "../../lib/contacts";
 import {
@@ -23,8 +22,6 @@ export interface UseDmThreadDerivedOptions {
   dmView: string;
   visiblePendingMessages: any[];
   contacts: Contact[];
-  contactsContext: string | null;
-  shareContactSource: any;
   compressedToRawHex: (pubkey: string) => string;
   normalizeNostrPubkey: (npub: string) => string | null;
 }
@@ -43,8 +40,6 @@ export function useDmThreadDerived({
   dmView,
   visiblePendingMessages,
   contacts,
-  contactsContext,
-  shareContactSource,
   compressedToRawHex,
   normalizeNostrPubkey,
 }: UseDmThreadDerivedOptions) {
@@ -81,7 +76,7 @@ export function useDmThreadDerived({
     }));
     ordered.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
     return ordered;
-  }, [contactIndex, displayDmMessages, dmPreviewForMessage, nostrIdentityInfo]);
+  }, [contactIndex, displayDmMessages, dmPreviewForMessage, nostrIdentityInfo, nostrIdentityRef]);
 
   const activeThread = useMemo(
     () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),

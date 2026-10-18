@@ -14,6 +14,20 @@ const legacyUncheckedFiles = [
   'src/ui/task/EditModal.tsx',
 ]
 
+const uncheckedChatHookFiles = [
+  'src/chat/hooks/useChatGroupDerived.ts',
+  'src/chat/hooks/useContactDetail.ts',
+  'src/chat/hooks/useContactLookup.ts',
+  'src/chat/hooks/useContactsState.ts',
+  'src/chat/hooks/useContactsSync.ts',
+  'src/chat/hooks/useDmSend.ts',
+  'src/chat/hooks/useDmState.ts',
+  'src/chat/hooks/useDmSubscription.ts',
+  'src/chat/hooks/useDmThreadActions.ts',
+  'src/chat/hooks/useDmThreadUtils.ts',
+  'src/chat/hooks/useNostrSession.ts',
+]
+
 const tsNocheckFiles = [
   ...legacyUncheckedFiles,
   // Chat's runtime/page moved unchanged out of the unchecked wallet modal. Type them after
@@ -23,7 +37,7 @@ const tsNocheckFiles = [
   'src/chat/views/**/*.tsx',
   'src/hooks/wallet/**/*.{ts,tsx}',
   // Moved out of the wallet unchanged; typing them is tracked separately.
-  'src/chat/hooks/**/*.{ts,tsx}',
+  ...uncheckedChatHookFiles,
   'src/ui/wallet/**/*.tsx',
   'src/wallet/walletModalHelpers.tsx',
 ]

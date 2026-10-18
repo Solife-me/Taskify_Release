@@ -1,6 +1,16 @@
-// @ts-nocheck
 import { useMemo } from "react";
-import { contactHasNpub, sanitizeUsername } from "../../lib/contacts";
+import { contactHasNpub, sanitizeUsername, type Contact } from "../../lib/contacts";
+import type { ContactSyncMeta } from "./useContactsState";
+
+export interface UseContactsDerivedOptions {
+  contacts: Contact[];
+  contactsContext: "lightning" | "ecash" | null;
+  shareContactSource: Contact | null;
+  compressedToRawHex: (value: string) => string;
+  normalizeNostrPubkey: (value: string) => string | null;
+  contactSyncMeta: ContactSyncMeta;
+  formatNpub: (value: string) => string;
+}
 
 export function useContactsDerived({
   contacts,
@@ -10,7 +20,7 @@ export function useContactsDerived({
   normalizeNostrPubkey,
   contactSyncMeta,
   formatNpub,
-}) {
+}: UseContactsDerivedOptions) {
   const sortedContacts = useMemo(() => {
     return [...contacts].sort((a, b) => {
       const baseA = (a.name || a.address || a.nip05 || a.npub || "").toLowerCase();

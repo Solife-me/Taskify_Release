@@ -614,8 +614,6 @@ persistBlockedPeers,
     dmView,
     visiblePendingMessages,
     contacts,
-    contactsContext,
-    shareContactSource,
     compressedToRawHex,
     normalizeNostrPubkey,
   });

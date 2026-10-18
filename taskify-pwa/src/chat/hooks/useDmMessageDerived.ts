@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useMemo } from "react";
 import type { WalletMessageItem } from "../../types/walletMessages";
 import {
@@ -164,8 +163,10 @@ export function useDmMessageDerived({
     return messages;
   }, [
     dmDeletedEventsVersion,
+    dmDeletedEventsRef,
     dmMessages,
     dmTempDeletedEventsVersion,
+    dmTempDeletedEventsRef,
     formatCalendarInviteWhen,
     inboxPendingItems,
     pendingCalendarInvites,
@@ -186,8 +187,10 @@ export function useDmMessageDerived({
     return Array.from(merged.values()).sort((a, b) => a.createdAt - b.createdAt);
   }, [
     dmDeletedEventsVersion,
+    dmDeletedEventsRef,
     dmMessages,
     dmTempDeletedEventsVersion,
+    dmTempDeletedEventsRef,
     syntheticDmMessages,
   ]);
 
