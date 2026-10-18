@@ -14,6 +14,22 @@ const legacyUncheckedFiles = [
   'src/ui/task/EditModal.tsx',
 ]
 
+// Wallet code (being phased out). Chat and tasks must not import it, so the wallet can be turned
+// off and later deleted; the wallet may import them.
+const walletModules = [
+  '**/wallet/**',
+  '**/mint/**',
+  '@cashu/*',
+  '**/context/walletContexts',
+  '**/context/Cashu*',
+  '**/context/P2PK*',
+  '**/context/Nwc*',
+  '**/hooks/wallet/**',
+  '**/components/CashuWalletModal*',
+  '**/components/EcashGlyph*',
+  '**/ui/bounty/**',
+]
+
 const tsNocheckFiles = [
   ...legacyUncheckedFiles,
   // Legacy wallet code (being phased out). Chat is fully type-checked and must stay so.
@@ -101,18 +117,35 @@ export default tseslint.config([
         {
           patterns: [
             {
-              group: [
-                '**/wallet/**',
-                '**/mint/**',
-                '@cashu/*',
-                '**/context/walletContexts',
-                '**/context/Cashu*',
-                '**/context/P2PK*',
-                '**/context/Nwc*',
-                '**/hooks/wallet/**',
-                '**/components/CashuWalletModal*',
-              ],
+              group: walletModules,
               message: 'Chat must not depend on the wallet (being phased out). Move shared code into src/chat or a neutral module.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // Tasks, boards, events, Upcoming and printing work with the wallet off. Bounty editing is
+    // wallet code the task editor receives through its bounty slot (ui/task/taskBountyExtension).
+    files: [
+      'src/ui/task/**/*.{ts,tsx}',
+      'src/ui/board/**/*.{ts,tsx}',
+      'src/ui/calendar/**/*.{ts,tsx}',
+      'src/ui/upcoming/**/*.{ts,tsx}',
+      'src/ui/print/**/*.{ts,tsx}',
+      'src/domains/tasks/**/*.{ts,tsx}',
+      'src/domains/calendar/**/*.{ts,tsx}',
+      'src/domains/upcoming/**/*.{ts,tsx}',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: walletModules,
+              message: 'Tasks must not depend on the wallet (being phased out). Use the bounty slot or a neutral module.',
             },
           ],
         },

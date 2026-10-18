@@ -9,9 +9,6 @@ import { normalizeTaskAssignmentStatus, todayDateKey } from "taskify-core";
 // Sub-sheet components
 import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
-import { LockToNpubSheet } from "../bounty/LockToNpubSheet";
-import { BountyAttachSheet } from "../bounty/BountyAttachSheet";
-import { useWalletEnabled } from "../../wallet/walletAvailability";
 import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "../recurrence/RecurrencePicker";
 
 // Domain types
@@ -23,11 +20,6 @@ import { TASK_PRIORITY_MARKS } from "../../domains/tasks/taskTypes";
 import {
   normalizeTaskPriority,
   normalizeTaskBounty,
-  taskHasBountyList,
-  normalizeBounty,
-  bountyStateLabel,
-  ensureXOnlyHex,
-  pubkeysEqual,
 } from "../../domains/tasks/taskUtils";
 
 // Board utilities
@@ -39,7 +31,6 @@ import {
 // Contact utilities
 import {
   compressedToRawHex,
-  contactVerifiedNip05,
   contactInitials,
   loadNip05Cache,
   type Nip05CheckState,
@@ -107,18 +98,15 @@ import {
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 
 // Nostr crypto
-import { encryptEcashTokenForRecipient, hexToBytes } from "../../domains/nostr/nostrCrypto";
+import { hexToBytes } from "../../domains/nostr/nostrCrypto";
 
 // Backup utils
-import { appendWalletHistoryEntry } from "../../domains/backup/backupUtils";
 
 // Context hooks
-import { useCashu } from "../../context/walletContexts";
 import { useToast } from "../../context/ToastContext";
 
 // UI components
 import { Modal } from "../Modal";
-import { EcashGlyph } from "../../components/EcashGlyph";
 import { ActionSheet } from "../../components/ActionSheet";
 
 // Local Storage Keys
@@ -126,23 +114,11 @@ import {
   LS_LIGHTNING_CONTACTS,
   LS_CONTACT_NIP05_CACHE,
 } from "../../localStorageKeys";
-import { currentPubkey } from "../../identity/identity";
+import { shortenPubkey, toNpubKey } from "./pubkeyLabels";
+import { TaskBountyToken } from "./TaskBountyToken";
+import type { TaskBountyExtension } from "./taskBountyExtension";
 
 // ---- Local types ----
-
-type LockRecipientSelection = {
-  value: string;
-  label: string;
-  contactId?: string;
-};
-
-type QuickLockOption = {
-  id: string;
-  title: string;
-  value: string;
-  label: string;
-  contactId?: string;
-};
 
 // ---- Local constants ----
 
@@ -221,7 +197,7 @@ function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssign
 // They will be properly extracted in subsequent refactor steps.
 
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListKey, onAddToBountyList, onRemoveFromBountyList, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
+function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRevealBounty, onPreviewDocument, bountyExtension, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
@@ -230,16 +206,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   weekStart: Weekday;
   boardKind: Board["kind"];
   boards: Board[];
-  onRedeemCoins?: (from: DOMRect)=>void;
+  /** Decrypts a bounty locked to this user (Nostr keys only; no wallet needed). */
   onRevealBounty?: (taskId: string)=>Promise<void>;
-  onTransferBounty?: (taskId: string, recipientHex: string)=>Promise<void>;
   onPreviewDocument?: (task: Task, doc: TaskDocument) => void;
-  walletConversionEnabled: boolean;
-  walletPrimaryCurrency: "sat" | "usd";
-  bountyListEnabled: boolean;
-  bountyListKey?: string | null;
-  onAddToBountyList?: (taskId: string) => void;
-  onRemoveFromBountyList?: (taskId: string) => void;
+  /** Bounty editing, provided by the wallet where it is enabled; otherwise bounties are copy-only. */
+  bountyExtension?: TaskBountyExtension;
   defaultRelays: string[];
   nostrPK: string;
   nostrSkHex: string;
@@ -316,21 +287,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [assigneesExpanded, setAssigneesExpanded] = useState(false);
   const [timeDetailsOpen, setTimeDetailsOpen] = useState(false);
   const [reminderTimeDetailsOpen, setReminderTimeDetailsOpen] = useState(false);
-  const [, setBountyState] = useState<Task["bounty"]["state"]>(task.bounty?.state || "locked");
-  const { createSendToken, receiveToken, mintUrl } = useCashu();
-  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
-  const [signOverSheetOpen, setSignOverSheetOpen] = useState(false);
-  const [lockToSelf, setLockToSelf] = useState(true);
-  const walletEnabled = useWalletEnabled();
-  const [bountyExpanded, setBountyExpanded] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
   const prefetchedContactPhotos = useRef<Set<string>>(new Set());
   const [nip05Cache, setNip05Cache] = useState<Record<string, Nip05CheckState>>(() =>
     typeof window !== "undefined" ? loadNip05Cache() : {},
   );
-  const [lockNpubSheetOpen, setLockNpubSheetOpen] = useState(false);
-  const [lockRecipientSelection, setLockRecipientSelection] = useState<LockRecipientSelection | null>(null);
-  const [signingBounty, setSigningBounty] = useState(false);
   const [shareTaskPickerOpen, setShareTaskPickerOpen] = useState(false);
   const [shareTaskStatus, setShareTaskStatus] = useState<string | null>(null);
   const [shareTaskBusy, setShareTaskBusy] = useState(false);
@@ -404,16 +365,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     currentStreak,
     typeof task.longestStreak === "number" ? task.longestStreak : currentStreak,
   );
-  const bountyButtonActive = bountyListEnabled && !!bountyListKey;
-  const taskInBountyList = bountyButtonActive && bountyListKey ? taskHasBountyList(task, bountyListKey) : false;
-  const contactsByHex = useMemo(() => {
-    const map = new Map<string, Contact>();
-    contacts.forEach((contact) => {
-      const hex = normalizeNostrPubkey(contact.npub);
-      if (hex) map.set(hex, contact);
-    });
-    return map;
-  }, [contacts]);
   const shareableContacts = useMemo(
     () => contacts.filter((contact) => contactHasNpub(contact)),
     [contacts],
@@ -540,139 +491,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     return "";
   }, []);
 
-  const lockLabelForContact = useCallback(
-    (contact: Contact | null | undefined, fallback: string) => {
-      const verifiedNip05 = contact ? contactVerifiedNip05(contact, nip05Cache) : null;
-      if (verifiedNip05) return verifiedNip05;
-      const primaryName = contact ? contactPrimaryName(contact) : "";
-      if (primaryName && primaryName !== "Contact" && primaryName !== contact?.npub?.trim()) {
-        return primaryName;
-      }
-      return fallback;
-    },
-    [nip05Cache],
-  );
-  const quickLockOptions = useMemo<QuickLockOption[]>(() => {
-    const options: QuickLockOption[] = [];
-    const ownerHex = normalizeNostrPubkey(task.createdBy || "");
-    if (ownerHex) {
-      const contact = contactsByHex.get(ownerHex);
-      const sourceValue = contact?.npub?.trim() || (task.createdBy ? toNpubKey(task.createdBy) : ownerHex);
-      const label = lockLabelForContact(contact, shortenPubkey(sourceValue));
-      options.push({
-        id: "creator",
-        title: "Task creator",
-        value: sourceValue,
-        label,
-        contactId: contact?.id,
-      });
-    }
-    const completerHex = normalizeNostrPubkey(task.completedBy || "");
-    if (completerHex) {
-      const contact = contactsByHex.get(completerHex);
-      const sourceValue = contact?.npub?.trim() || (task.completedBy ? toNpubKey(task.completedBy) : completerHex);
-      const label = lockLabelForContact(contact, shortenPubkey(sourceValue));
-      options.push({
-        id: "completer",
-        title: "Task fulfiller",
-        value: sourceValue,
-        label,
-        contactId: contact?.id,
-      });
-    }
-    return options;
-  }, [contactsByHex, lockLabelForContact, task.completedBy, task.createdBy]);
-  const handleLockRecipientSelect = useCallback((selection: LockRecipientSelection) => {
-    setLockRecipientSelection(selection);
-    setLockToSelf(false);
-    setLockNpubSheetOpen(false);
-  }, []);
-  const handleToggleLockToSelf = useCallback(() => {
-    setLockToSelf((prev) => {
-      const next = !prev;
-      if (next) {
-        setLockRecipientSelection(null);
-      }
-      return next;
-    });
-  }, []);
-  const handleClearLockRecipient = useCallback(() => {
-    setLockRecipientSelection(null);
-  }, []);
-  const handleOpenAttachSheet = useCallback(() => {
-    setLockToSelf(true);
-    setLockRecipientSelection(null);
-    setAttachSheetOpen(true);
-  }, []);
-  async function handleAttachBounty(amountSat: number, overrideMint?: string) {
-    if (!amountSat || amountSat <= 0) {
-      throw new Error("Enter an amount greater than zero.");
-    }
-    const recipientPubkey = lockRecipientSelection
-      ? normalizeNostrPubkey(lockRecipientSelection.value)
-      : null;
-    const recipientHex = ensureXOnlyHex(recipientPubkey);
-    if (lockRecipientSelection && (!recipientPubkey || !recipientHex)) {
-      throw new Error("Selected npub is invalid.");
-    }
-    const sendOptions: { p2pk?: { pubkey: string }; mintUrl?: string } = {};
-    if (recipientPubkey) {
-      sendOptions.p2pk = { pubkey: recipientPubkey };
-    }
-    if (overrideMint?.trim()) {
-      sendOptions.mintUrl = overrideMint.trim();
-    }
-    const { token: tok, lockInfo, mintUrl: sendMintUrl } = await createSendToken(amountSat, sendOptions);
-    const bountyMint = sendMintUrl || overrideMint || mintUrl;
-    const lockType: Task["bounty"]["lock"] =
-      lockInfo?.type === "p2pk" ? "p2pk" : lockToSelf ? "unknown" : "none";
-    const selfPubkey = currentPubkey() ?? undefined;
-    const selfHex = ensureXOnlyHex(selfPubkey);
-    const bounty: Task["bounty"] = {
-      id: crypto.randomUUID(),
-      token: lockToSelf || recipientHex ? "" : tok,
-      amount: amountSat,
-      mint: bountyMint,
-      state: lockToSelf || recipientHex ? "locked" : "unlocked",
-      owner: task.createdBy || currentPubkey() || "",
-      sender: currentPubkey() || "",
-      receiver: recipientHex || (lockToSelf ? selfHex : undefined) || undefined,
-      updatedAt: new Date().toISOString(),
-      lock: lockType,
-    };
-    if (recipientHex) {
-      const enc = await encryptEcashTokenForRecipient(recipientHex, tok);
-      bounty.enc = enc;
-    } else if (lockToSelf) {
-      const funderHex = selfHex || "";
-      if (!funderHex) {
-        throw new Error("Locking to yourself requires a connected Nostr key.");
-      }
-      const enc = await encryptEcashTokenForRecipient(funderHex, tok);
-      bounty.enc = enc;
-    }
-    save({ bounty });
-    const summaryPrefix = recipientHex
-      ? "Locked bounty"
-      : lockToSelf
-        ? "Hidden bounty"
-        : "Attached bounty";
-    appendWalletHistoryEntry({
-      id: `attach-bounty-${bounty.id}`,
-      summary: `${summaryPrefix} • ${amountSat} sats`,
-      detail: tok,
-      detailKind: "token",
-      type: "ecash",
-      direction: "out",
-      amountSat,
-      entryKind: "bounty-attachment",
-      relatedTaskTitle: task.title || undefined,
-      mintUrl: bountyMint ?? undefined,
-    });
-    setAttachSheetOpen(false);
-    setLockToSelf(true);
-    setLockRecipientSelection(null);
-  }
   useEffect(() => {
     if (typeof window === "undefined") return;
     const urls = new Set<string>();
@@ -931,209 +749,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   }, [timeDetailsOpen, hasDueTime, reminderTimeDetailsOpen, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
   useEffect(() => {
-    setSigningBounty(false);
-  }, [task.id]);
-  useEffect(() => {
     if (hasDueTime && scheduledTime) {
       lastTimeRef.current = scheduledTime;
     }
   }, [hasDueTime, scheduledTime]);
 
-  const me = currentPubkey() ?? undefined;
-  const meHex = ensureXOnlyHex(me);
-
-  function toNpubKey(value: string): string {
-    const raw = compressedToRawHex(value);
-    try {
-      if (typeof (nip19 as any)?.npubEncode === "function") {
-        return (nip19 as any).npubEncode(raw);
-      }
-      return raw;
-    } catch {
-      return raw;
-    }
-  }
-
-  function shortenPubkey(value: string): string {
-    if (value.length <= 18) return value;
-    return `${value.slice(0, 10)}…${value.slice(-6)}`;
-  }
-
-  const currentReceiverDisplay = useMemo(() => {
-    const receiver = task.bounty?.receiver;
-    if (!receiver) return null;
-    return shortenPubkey(toNpubKey(receiver));
-  }, [task.bounty?.receiver]);
-
-  const bountyReceiverIsViewer = useMemo(() => {
-    const receiver = task.bounty?.receiver;
-    if (!receiver) return false;
-    return pubkeysEqual(receiver, currentPubkey());
-  }, [task.bounty?.receiver]);
-
-  const bountySenderIsViewer = useMemo(() => {
-    if (!task.bounty?.sender || !meHex) return false;
-    return pubkeysEqual(task.bounty.sender, meHex);
-  }, [meHex, task.bounty?.sender]);
-
-  const canRemoveBounty = useMemo(() => {
-    if (!task.bounty) return false;
-    return task.bounty.state === "unlocked" || bountySenderIsViewer;
-  }, [bountySenderIsViewer, task.bounty]);
-
-  const bountyOwnerIsViewer = useMemo(() => {
-    if (!task.bounty?.owner || !meHex) return false;
-    return pubkeysEqual(task.bounty.owner, meHex);
-  }, [meHex, task.bounty?.owner]);
-
-  const hasTransferableBounty = !!(task.bounty && (task.bounty.token || task.bounty.enc));
-
-  const bountyHasReceiver = !!task.bounty?.receiver;
-  const bountyReceiverGate = bountyHasReceiver ? bountyReceiverIsViewer : true;
-
-  const bountySignerHasKey = useMemo(() => {
-    if (!task.bounty || !meHex) return false;
-    const tokenAvailable = !!task.bounty.token?.trim();
-    if (tokenAvailable) {
-      return bountySenderIsViewer || bountyOwnerIsViewer || bountyReceiverIsViewer;
-    }
-    const enc = task.bounty.enc as any;
-    if (!enc) return false;
-    if (enc.alg === "aes-gcm-256") return bountySenderIsViewer || bountyOwnerIsViewer;
-    if (enc.alg === "nip04") return bountyReceiverIsViewer;
-    return false;
-  }, [bountyOwnerIsViewer, bountyReceiverIsViewer, bountySenderIsViewer, meHex, task.bounty]);
-
-  const bountyTokenReady = !!task.bounty?.token?.trim();
-
-  const canSignOverBounty = useMemo(() => {
-    if (!hasTransferableBounty || !bountySignerHasKey || !onTransferBounty) return false;
-    if (!task.bounty) return false;
-    return task.bounty.state !== "revoked" && task.bounty.state !== "claimed";
-  }, [bountySignerHasKey, hasTransferableBounty, onTransferBounty, task.bounty]);
-
-  const canRedeemBounty = useMemo(() => {
-    if (!task.bounty || !bountyReceiverGate) return false;
-    return task.bounty.state === "unlocked" && bountyTokenReady;
-  }, [bountyReceiverGate, bountyTokenReady, task.bounty]);
-
-  const canRevealBounty = useMemo(() => {
-    if (!task.bounty?.enc) return false;
-    const alg = (task.bounty.enc as any).alg;
-    return bountyReceiverIsViewer || alg === "aes-gcm-256";
-  }, [bountyReceiverIsViewer, task.bounty?.enc]);
-
-  useEffect(() => {
-    if (!task.bounty) {
-      setBountyExpanded(false);
-    }
-  }, [task.bounty]);
-
-  async function handleSignOver(recipientHex: string, displayHint?: string) {
-    if (!onTransferBounty || signingBounty) return;
-    setSigningBounty(true);
-    try {
-      await onTransferBounty(task.id, recipientHex);
-      setBountyState("locked");
-      const label = displayHint || shortenPubkey(toNpubKey(recipientHex));
-      if (label) {
-        showToast(`Bounty locked to ${label}`, 2500);
-      } else {
-        showToast("Bounty locked to recipient", 2500);
-      }
-    } catch (error) {
-      const message = (error as Error)?.message || String(error) || "Unknown error";
-      alert(`Unable to sign bounty: ${message}`);
-    } finally {
-      setSigningBounty(false);
-    }
-  }
-
-  function handleSignOverSelection(selection: LockRecipientSelection) {
-    const trimmed = selection.value.trim();
-    if (!trimmed) return;
-    const normalized = normalizeNostrPubkey(trimmed);
-    if (!normalized) {
-      alert("Enter a valid recipient npub or hex.");
-      return;
-    }
-    if (task.bounty?.receiver && pubkeysEqual(task.bounty.receiver, normalized)) {
-      alert("Bounty is already locked to that recipient.");
-      return;
-    }
-    handleSignOver(normalized, selection.label);
-    setSignOverSheetOpen(false);
-  }
-
-  const handleCopyBountyToken = useCallback(async () => {
-    const token = task.bounty?.token?.trim();
-    if (!token) return;
-    try {
-      await navigator.clipboard.writeText(token);
-      showToast("Bounty token copied", 1800);
-    } catch (error) {
-      console.error("Failed to copy bounty token", error);
-      alert("Unable to copy bounty token.");
-    }
-  }, [showToast, task.bounty?.token]);
-
-  function handleMarkBountyClaimed() {
-    if (!task.bounty) return;
-    const next = normalizeBounty({
-      ...task.bounty,
-      token: "",
-      state: "claimed",
-      updatedAt: new Date().toISOString(),
-    });
-    if (!next) return;
-    setBountyState("claimed");
-    save({ bounty: next });
-  }
-
-  async function redeemCurrentBounty(fromRect?: DOMRect) {
-    if (!task.bounty?.token) return;
-    try {
-      const bountyToken = task.bounty.token;
-      const res = await receiveToken(bountyToken);
-      if (res.savedForLater) {
-        alert("Token saved for later redemption. We'll redeem it when your connection returns.");
-        return;
-      }
-      if (res.crossMint) {
-        alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
-      }
-      const amt = res.proofs.reduce((a, p) => a + (p?.amount || 0), 0);
-      appendWalletHistoryEntry({
-        id: `redeem-bounty-${Date.now()}`,
-        summary: `Redeemed bounty • ${amt} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
-        detail: bountyToken,
-        detailKind: "token",
-        type: "ecash",
-        direction: "in",
-        amountSat: amt,
-        mintUrl: res.usedMintUrl ?? task.bounty?.mint ?? undefined,
-      });
-      onRedeemCoins?.(fromRect);
-      save({ bounty: undefined });
-    } catch (error) {
-      console.error(error);
-      alert("Unable to redeem bounty token right now.");
-    }
-  }
-
-  function handleRemoveBounty() {
-    if (!task.bounty || !canRemoveBounty) return;
-    save({ bounty: undefined });
-  }
-
-  const handleToggleBountyList = useCallback(() => {
-    if (!bountyButtonActive) return;
-    if (taskInBountyList) {
-      onRemoveFromBountyList?.(task.id);
-    } else {
-      onAddToBountyList?.(task.id);
-    }
-  }, [bountyButtonActive, onAddToBountyList, onRemoveFromBountyList, task.id, taskInBountyList]);
 
 
   async function uploadSharedImage(file: File): Promise<string> {
@@ -2544,203 +2164,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           )}
         </section>
 
-        {task.bounty ? (
-          <section className="edit-card space-y-2">
-            <div className="edit-card__title">Bounty (ecash)</div>
-            <div className={`wallet-history__item bounty-card${bountyExpanded ? " wallet-history__item--open" : ""}`}>
-              <button
-                type="button"
-                className="wallet-history__summary bounty-card__summary"
-                onClick={() => setBountyExpanded((prev) => !prev)}
-                aria-expanded={bountyExpanded}
-              >
-                <div className="wallet-history__icon" aria-hidden="true">
-                  <EcashGlyph className="wallet-history__glyph" />
-                </div>
-                <div className="wallet-history__body">
-                  <div className="wallet-history__title-row">
-                    <span className="wallet-history__type">Ecash bounty</span>
-                    <span className="wallet-history__time">{bountyStateLabel(task.bounty)}</span>
-                  </div>
-                </div>
-                <div className="wallet-history__value">
-                  {typeof task.bounty.amount === "number" && (
-                    <span className="wallet-history__amount wallet-history__amount--in">+{task.bounty.amount} sats</span>
-                  )}
-                </div>
-              </button>
-
-              {!bountyExpanded && (
-                <div className="bounty-card__actions px-4 pb-3">
-                  {task.bounty.state === "locked" && canRevealBounty && bountySignerHasKey && (
-                    <button
-                      className="accent-button button-sm pressable"
-                      onClick={async () => {
-                        try {
-                          await onRevealBounty?.(task.id);
-                          setBountyState("unlocked");
-                        } catch (error) {
-                          alert((error as Error)?.message || "Unable to reveal bounty token.");
-                        }
-                      }}
-                      disabled={!canRevealBounty}
-                    >
-                      {bountyReceiverIsViewer ? "Unlock" : "Reveal"}
-                    </button>
-                  )}
-
-                  {canSignOverBounty && (
-                    <button
-                      className="ghost-button button-sm pressable"
-                      onClick={() => setSignOverSheetOpen(true)}
-                      disabled={signingBounty}
-                    >
-                      {signingBounty ? "Signing…" : "Sign over"}
-                    </button>
-                  )}
-
-                  {canRedeemBounty && (
-                    <>
-                      <button
-                        className="accent-button button-sm pressable"
-                        onClick={(e) => redeemCurrentBounty((e.currentTarget as HTMLElement).getBoundingClientRect())}
-                        disabled={!bountyTokenReady}
-                      >
-                        Redeem
-                      </button>
-                      <button
-                        className="ghost-button button-sm pressable"
-                        onClick={handleCopyBountyToken}
-                        disabled={!bountyTokenReady}
-                      >
-                        Copy
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {bountyExpanded && (
-                <div className="bounty-card__details">
-                  <div className="bounty-card__meta">
-                    <div>
-                      <div className="bounty-card__label">Status</div>
-                      <div className="bounty-card__value">{bountyStateLabel(task.bounty)}</div>
-                    </div>
-                    <div>
-                      <div className="bounty-card__label">Amount</div>
-                      <div className="bounty-card__value font-semibold">
-                        {typeof task.bounty.amount === "number" ? `${task.bounty.amount} sats` : "Unknown"}
-                      </div>
-                    </div>
-                    {task.bounty.receiver && (
-                      <div>
-                        <div className="bounty-card__label">Locked to</div>
-                        <div className="bounty-card__value">{currentReceiverDisplay || "recipient"}</div>
-                      </div>
-                    )}
-                    {task.bounty.mint && (
-                      <div>
-                        <div className="bounty-card__label">Mint</div>
-                        <div className="bounty-card__value break-all">{task.bounty.mint}</div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="bounty-card__label">Token</div>
-                    {task.bounty.enc && !task.bounty.token ? (
-                      <div className="bounty-card__token-note">
-                        {((task.bounty.enc as any).alg === "aes-gcm-256")
-                          ? "Hidden (encrypted by funder). Only the funder can reveal."
-                          : "Locked to recipient's Nostr key (nip04). Only the recipient can decrypt."}
-                      </div>
-                    ) : (
-                      <textarea
-                        readOnly
-                        value={task.bounty.token || ""}
-                        className="pill-textarea w-full"
-                        rows={3}
-                      />
-                    )}
-                  </div>
-
-                  <div className="bounty-card__actions">
-                    {task.bounty.state === "locked" && task.bounty.enc && bountySignerHasKey && (
-                      <button
-                        className="accent-button button-sm pressable"
-                        onClick={async () => {
-                          try {
-                            await onRevealBounty?.(task.id);
-                            setBountyState("unlocked");
-                          } catch (error) {
-                            alert((error as Error)?.message || "Unable to reveal bounty token.");
-                          }
-                        }}
-                        disabled={!canRevealBounty}
-                      >
-                        {bountyReceiverIsViewer ? "Unlock" : "Reveal"}
-                      </button>
-                    )}
-
-                    {canSignOverBounty && (
-                      <button
-                        className="ghost-button button-sm pressable"
-                        onClick={() => setSignOverSheetOpen(true)}
-                        disabled={signingBounty}
-                      >
-                        {signingBounty ? "Signing…" : "Sign over"}
-                      </button>
-                    )}
-
-                    {canRedeemBounty && (
-                      <>
-                        <button
-                          className="accent-button button-sm pressable"
-                          onClick={(e) => redeemCurrentBounty((e.currentTarget as HTMLElement).getBoundingClientRect())}
-                          disabled={!bountyTokenReady}
-                        >
-                          Redeem
-                        </button>
-                        <button
-                          className="ghost-button button-sm pressable"
-                          onClick={handleCopyBountyToken}
-                          disabled={!bountyTokenReady}
-                        >
-                          Copy
-                        </button>
-                        <button
-                          className="ghost-button button-sm pressable"
-                          onClick={handleMarkBountyClaimed}
-                          disabled={!bountyTokenReady}
-                        >
-                          Mark as claimed
-                        </button>
-                      </>
-                    )}
-
-                    {task.bounty && canRemoveBounty && (
-                      <button
-                        className="ghost-button button-sm pressable text-rose-500"
-                        onClick={handleRemoveBounty}
-                      >
-                        Remove bounty
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-        ) : walletEnabled ? (
-          <button
-            type="button"
-            className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-            onClick={handleOpenAttachSheet}
-          >
-            Attach bounty
-          </button>
-        ) : null}
+        {bountyExtension
+          ? bountyExtension.renderSection({ task, saveWith: save, contacts, nip05Cache })
+          : task.bounty
+            ? <TaskBountyToken task={task} onReveal={onRevealBounty} />
+            : null}
 
         {streakEligible && (
           <section className="edit-card space-y-2">
@@ -2765,11 +2193,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             Delete
           </button>
           <div className="edit-actions__secondary">
-            {bountyButtonActive && (
-              <button type="button" className="ghost-button button-sm pressable" onClick={handleToggleBountyList}>
-                {taskInBountyList ? "Unpin task" : "Pin task"}
-              </button>
-            )}
+            {bountyExtension?.renderActions?.({ task })}
             <button
               type="button"
               className="ghost-button button-sm pressable"
@@ -3014,37 +2438,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       }
     />
 
-    <LockToNpubSheet
-      open={lockNpubSheetOpen}
-      onClose={() => setLockNpubSheetOpen(false)}
-      contacts={contacts}
-      quickOptions={quickLockOptions}
-      nip05Cache={nip05Cache}
-      onSelect={handleLockRecipientSelect}
-      selected={lockRecipientSelection}
-    />
-    <LockToNpubSheet
-      open={signOverSheetOpen}
-      onClose={() => setSignOverSheetOpen(false)}
-      contacts={contacts}
-      quickOptions={quickLockOptions}
-      nip05Cache={nip05Cache}
-      onSelect={handleSignOverSelection}
-      selected={null}
-    />
-    <BountyAttachSheet
-      open={attachSheetOpen}
-      onClose={() => setAttachSheetOpen(false)}
-      onAttach={handleAttachBounty}
-      lockToSelf={lockToSelf}
-      onToggleLockToSelf={handleToggleLockToSelf}
-      onOpenLockContacts={() => setLockNpubSheetOpen(true)}
-      lockRecipient={lockRecipientSelection}
-      onClearRecipient={handleClearLockRecipient}
-      walletConversionEnabled={walletConversionEnabled}
-      walletPrimaryCurrency={walletPrimaryCurrency}
-      mintUrl={mintUrl}
-    />
     <TimeZoneSheet
       open={timeZoneSheetOpen}
       onClose={() => setTimeZoneSheetOpen(false)}
@@ -3058,4 +2451,3 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
 }
 
 export { EditModal };
-export type { LockRecipientSelection, QuickLockOption, Nip05CheckState };

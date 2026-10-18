@@ -16,10 +16,10 @@ import { LS_SETTINGS } from "../storageKeys";
 import { kvStorage } from "../../storage/kvStorage";
 import { normalizeAccentPalette, normalizeAccentPaletteList } from "../../theme/palette";
 import {
+  CHAT_RETENTION_OPTIONS,
   DEFAULT_WALLET_DENOMINATION_DISPLAY,
   normalizeWalletDenominationDisplay,
-} from "../../wallet/denomination";
-import { CHAT_RETENTION_OPTIONS } from "./settingsTypes";
+} from "./settingsTypes";
 import type {
   ChatMessageRetention,
   FastingRemindersMode,

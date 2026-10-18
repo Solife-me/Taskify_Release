@@ -305,6 +305,7 @@ import {
 } from "./domains/tasks/inlineImport";
 import { isoForToday, normalizeIsoTimestamp } from "./domains/dateTime/dateUtils";
 import { TaskActionsProvider, type TaskActions, type TaskView } from "./ui/task/taskActions";
+import type { TaskBountyExtension } from "./ui/task/taskBountyExtension";
 import { useUpcomingPreferences } from "./domains/upcoming/upcomingPreferences";
 import { UpdateToast } from "./ui/app/UpdateToast";
 import { SelectionOverlays } from "./ui/selection/SelectionOverlays";
@@ -360,6 +361,9 @@ const WalletRuntime = lazy(() => import("./wallet/WalletRuntime"));
 /** Background DM sync loads after the app shell; the Chat page remains another lazy boundary. */
 const ChatShell = lazy(() => import("./chat/ChatShell"));
 const UpcomingPage = lazy(() => import("./ui/upcoming/UpcomingPage"));
+// Bounty editing is wallet code: loaded only where the wallet is enabled.
+const TaskBountySection = lazy(() => import("./ui/wallet/TaskBountyEditor").then((m) => ({ default: m.TaskBountySection })));
+const TaskBountyPinButton = lazy(() => import("./ui/wallet/TaskBountyEditor").then((m) => ({ default: m.TaskBountyPinButton })));
 // Opened on demand: kept out of startup (scripts/startup-budget.mjs).
 const ShareBoardDialogs = lazy(() => import("./ui/board/ShareBoardDialogs").then((m) => ({ default: m.ShareBoardDialogs })));
 const WalletBountiesView = lazy(() => import("./ui/wallet/WalletBountiesView").then((m) => ({ default: m.WalletBountiesView })));
@@ -2973,7 +2977,7 @@ export default function App() {
     completeTask,
     restoreTask,
     revealBounty,
-    claimBounty,
+    claimBounty: (id: string, from?: DOMRect) => (walletEnabled ? claimBounty(id, from) : copyBountyToken(id)),
     editTask: (task) => setEditing({ type: "task", originalType: "task", originalId: task.id, task }),
     editEvent: (event) => setEditing({ type: "event", originalType: "event", originalId: event.id, event }),
     toggleSubtask,
@@ -4815,6 +4819,18 @@ export default function App() {
     maybePublishTask(updated).catch(() => {});
   }
 
+  /** Without the wallet, an unlocked bounty's token is copied, to redeem in any Cashu wallet. */
+  async function copyBountyToken(id: string) {
+    const token = tasks.find((x) => x.id === id)?.bounty?.token?.trim();
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      showToast("Bounty token copied. Redeem it in any Cashu wallet.", 2600);
+    } catch {
+      showToast("Unable to copy the bounty token", 2400);
+    }
+  }
+
   async function claimBounty(id: string, from?: DOMRect) {
     const t = tasks.find(x => x.id === id);
     if (!t || !t.bounty || t.bounty.state !== 'unlocked' || !t.bounty.token) return;
@@ -5878,6 +5894,29 @@ export default function App() {
       <option value={ADD_BOARD_OPTION_ID}>+</option>
     </>
   );
+  const taskBountyWalletProps = {
+    onRevealBounty: revealBounty,
+    onTransferBounty: transferBounty,
+    onRedeemCoins: (rect: DOMRect) => flyCoinsToWallet(rect),
+    walletConversionEnabled: settings.walletConversionEnabled,
+    walletPrimaryCurrency: settings.walletPrimaryCurrency,
+    bountyListEnabled,
+    bountyListKey: activeBountyListKey,
+    onAddToBountyList: addTaskToBountyList,
+    onRemoveFromBountyList: removeTaskFromBountyList,
+  };
+  const taskBountyExtension: TaskBountyExtension = {
+    renderSection: (context) => (
+      <Suspense fallback={null}>
+        <TaskBountySection {...context} {...taskBountyWalletProps} />
+      </Suspense>
+    ),
+    renderActions: ({ task }) => (
+      <Suspense fallback={null}>
+        <TaskBountyPinButton task={task} {...taskBountyWalletProps} />
+      </Suspense>
+    ),
+  };
   const shouldRenderAppModalStack =
     addBoardOpen ||
     biblePrintOpen ||
@@ -6665,16 +6704,9 @@ export default function App() {
             weekStart={settings.weekStart}
             boardKind={editingBoard?.kind ?? currentBoard?.kind ?? "week"}
             boards={boards}
-            onRedeemCoins={(rect) => flyCoinsToWallet(rect)}
             onRevealBounty={revealBounty}
-            onTransferBounty={transferBounty}
             onPreviewDocument={handleOpenDocument}
-            walletConversionEnabled={settings.walletConversionEnabled}
-            walletPrimaryCurrency={settings.walletPrimaryCurrency}
-            bountyListEnabled={bountyListEnabled}
-            bountyListKey={activeBountyListKey}
-            onAddToBountyList={addTaskToBountyList}
-            onRemoveFromBountyList={removeTaskFromBountyList}
+            bountyExtension={walletEnabled ? taskBountyExtension : undefined}
             defaultRelays={defaultRelays}
             nostrPK={nostrPK}
             nostrSkHex={nostrSkHex}
