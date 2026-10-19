@@ -46,7 +46,7 @@ Constraints carried through every chunk:
 | 1 | Shared domain core and contract drift | `taskify-core`, and where clients re-implement it | Done |
 | 2 | PWA app shell | `App.tsx` (12.8k lines), navigation, onboarding, settings | Implementing |
 | 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | Done (2026-10-18); one follow-up (event attachments) |
-| 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Pending |
+| 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Reviewed 2026-10-18, awaiting decisions |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `lib/`, `agent/`, `components/` | Pending |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Pending |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Pending |
@@ -1073,3 +1073,106 @@ step is one commit, and bugs get a failing test first.
 | C3-7 | Approve | 2026-10-18 | Done in four commits: paste-JSON import (`domains/tasks/inlineImport.ts`, tested), Bible tracker commands and store (`bibleTrackerCommands.ts`, `useBibleTrackerActions`, tested; results no longer recorded inside setState updaters), printing and PDF export into the lazy print module (`ui/print/printOutput.ts`), and the fly animations (`ui/task/flyAnimations.ts`, destination logic tested). `App.tsx` 8,388 → 6,881 lines; startup 428.6 → 426.6 KB gzipped. Printing itself could not be exercised in the dev pane (it blocks popups); its code and stylesheets moved verbatim |
 | C3-8 | Approve | 2026-10-18 | Done: `DocumentThumbnail` and `documentAsset` are their own modules; an HTML thumbnail loads the sanitizer on demand (tested). Startup 441.0 → 428.3 KB gzipped; the startup check fails if DOMPurify returns |
 | C3-9 | Approve | 2026-10-18 | Done: 34 vectors in `taskify-core/fixtures/note-markdown-vectors.json` (blocks, checklist toggles, list continuation with UTF-16 offsets, formatting, previews), run by Vitest and by Swift `NoteMarkdownVectorTests`; both pass, so the two parsers agree today |
+
+## Chunk 4 — PWA sync and storage
+
+How tasks, boards and events reach the relays and come back, and how they are stored on the
+device: `nostr/` (about 10,600 lines with tests), `storage/`, `domains/nostr`, and the sync code
+still in `App.tsx` (now 6,913 lines).
+
+What the review found:
+
+- **The publishing side is well built.** `BoardPublisher` owns ordering: reserved timestamps,
+  supersession of in-flight edits, durable deletion tombstones, metadata before items. Keys,
+  crypto and the network are injected and the rules are unit-tested. Signed events go through
+  a durable outbox (`NostrOutboxStore`) that retries until relays acknowledge them.
+- **An edit that fails before it is signed is lost to other devices (confirmed).** The outbox
+  only holds *signed* events. Everything before signing (attachment upload, key derivation,
+  encryption) runs in memory, and `App` calls `maybePublishTask(...).catch(() => {})`. A probe
+  against the real `BoardPublisher` showed what happens when an image is attached offline:
+  - the upload throws and the publish rejects, so nothing is sent or queued;
+  - the "syncing" mark is cleared, so the task looks synced;
+  - the task keeps the new local version stamp, so this device protects the edit, and no
+    later sync sends it, because the relays already hold an (older) copy.
+
+  The same happens if the app is closed between an edit and its signing. `App.tsx` has 48
+  swallowed `.catch(() => {})` calls, most on publish paths.
+- **Version stamps live on task objects.** `publishTask` writes `task._nostrAt` onto the object
+  held in the store (logged in chunk 2). It reaches IndexedDB only because the write happens
+  to be queued after the mutation; nothing guarantees that.
+- **The receive path is in `App` and is tested only through copies.** Applying incoming task,
+  board and calendar events, and merging each relay's batch at end-of-stored-events, is about
+  600 lines inside `App`. `relaySyncBehavior.test.ts` and `startupStability.test.ts` (1,003
+  lines) test inline re-implementations "mirroring" that code, so they pass whatever the real
+  code does. The rule that matters most, that relay data never regresses local data, is not
+  tested against the code that applies it.
+- **App backup and scripture sync: one pattern, three copies, no tests.**
+  `useNostrAppBackupSync` (972 lines, 78 hooks) syncs three encrypted replaceable documents
+  (the app backup, the Bible tracker, scripture memory). Each has its own base, local and
+  remote state and three-way merge wiring, and none of it is tested.
+- **Logged from chunk 2:** Scripture Memory review tasks whose series fields are normalized
+  are not republished, and republishing would resend every past review.
+- **Storage is sound.** Per-entity IndexedDB stores with diff writes and a serialized write
+  chain; `kvStorage` is the only `localStorage` gateway (enforced in development); a storage
+  failure banner.
+- **Language fit:** nothing here. The crypto is in audited libraries, and the sync rules are
+  small and must stay readable next to their tests.
+
+### C4-1 — Durable publish intents (bug, data durability)
+
+- **User:** Anyone who edits offline, attaches files on a weak connection, or closes the app
+  quickly; and everyone they share boards with.
+- **Proposal:** Record *what needs publishing* durably, before any asynchronous work.
+  - A `PublishIntentStore` (IndexedDB) holds item kind, id, board and local version. It is
+    written in the same step as the local change.
+  - A publish worker drains intents on startup, on reconnecting (`online`) and when a relay
+    recovers, with backoff. Each attempt re-reads the item's current local state, so the
+    latest edit is what goes out. An intent clears only once its signed event is in the
+    runtime outbox, which already handles relay acknowledgements.
+  - The sync indicator is "intent or outbox entry pending". A failing item shows "Couldn't
+    sync — retrying" instead of looking synced.
+  - Local version stamps move off task objects into the ledger and intent store, which fixes
+    the logged `_nostrAt` mutation.
+  - The swallowed `.catch(() => {})` calls on publish paths go away.
+- **Test first:** the probe above becomes a failing test (offline attachment edit, then
+  reconnect: the edit is published once).
+- **Effort:** M–L. **Risk:** medium; this is the core sync path, staged behind the existing
+  publisher and outbox.
+
+### C4-2 — The receive path out of `App`, tested for real (architecture, test quality)
+
+- **Proposal:** Move the incoming task, board and calendar handling and the per-relay batch
+  merge into `nostr/boardItemReceiver.ts`: pure decisions (accept, merge, tombstone) plus a thin
+  hook. Replace the two "mirror" test files with tests of the real code, keeping their
+  scenarios. Expected `App.tsx` reduction: about 600 lines.
+- **Effort:** M. **Risk:** medium; behaviour-preserving, with the scenarios ported first.
+
+### C4-3 — One engine for encrypted replaceable documents (architecture)
+
+- **Proposal:** A small, tested engine for "one encrypted replaceable document per d-tag,
+  three-way merged with a stored base". The app backup, Bible tracker and scripture memory
+  become three configurations of it. Tests cover first sync, concurrent edits on two devices,
+  a stale relay copy and decryption failure.
+- **Effort:** M. **Risk:** low–medium.
+
+### C4-4 — Generated-task normalization never republishes (decision)
+
+- **Proposal:** Normalizing generated tasks (Scripture Memory reviews, fasting reminders) is
+  deterministic local bookkeeping. Every device applies it on read, and a change made only
+  by normalization is never published. That avoids resending past reviews while keeping
+  devices consistent. Tested with two simulated devices.
+- **Effort:** S. **Risk:** low.
+
+### Recommended order
+
+C4-1 (it loses edits today) → C4-2 → C4-3 → C4-4. One commit per step; the bug gets its
+failing test first.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C4-1 | Pending | | |
+| C4-2 | Pending | | |
+| C4-3 | Pending | | |
+| C4-4 | Pending | | |
