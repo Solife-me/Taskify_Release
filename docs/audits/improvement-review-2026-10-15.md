@@ -48,7 +48,7 @@ Constraints carried through every chunk:
 | 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | Done (2026-10-18); one follow-up (event attachments) |
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Done (2026-10-19) |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Done (2026-10-19) |
-| 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Pending |
+| 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Reviewed 2026-10-19, awaiting decisions |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Pending |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Pending |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Pending |
@@ -1344,3 +1344,154 @@ deleted after its passage was removed.
 - Live two-account messaging verification (from chunk 2) now also covers shares reaching the
   inbox through chat.
 - The real-camera scan check needs a device.
+
+## Chunk 6 — PWA wallet phase-out
+
+What is left of the Taskify wallet in the PWA, and how it ends. The decisions so far:
+- **`cd9e02f6`:** the wallet is hidden on devices that never used it and kept where it was used.
+  A one-time notice goes to users with a balance, and a close-out returns an emptied wallet to
+  the no-wallet state.
+- **Chunks 2–3:** chat and tasks work with the wallet off, and received Cashu tokens are
+  copy-only.
+- **C3-6:** bounty creation stays as an optional wallet extension until the wallet is removed.
+
+What the review found:
+
+- **The wallet is about 35,000 lines, a third of the PWA's own code**, loaded only on devices
+  where it is enabled:
+
+  | Area | Lines |
+  | --- | --- |
+  | `wallet/` | 7,200 |
+  | `mint/` | 1,000 |
+  | Cashu, NWC and P2PK providers | 2,200 |
+  | `hooks/wallet` | 8,500 |
+  | `ui/wallet` | 6,000 |
+  | Bounty sheets | 700 |
+  | `CashuWalletModal` | 4,300 |
+  | Wallet settings (unchecked) | 1,200 |
+
+  Its own tests cover the risky parts (proof storage, counters, P2PK, NWC sweeps, secrets at
+  rest).
+- **Money still flows in.** Wallet users still see **Receive** first: Lightning invoices,
+  pasted ecash, and their npub.cash Lightning address. They can still create payment requests.
+  The notice asks them to move funds out "immediately", but there is no guided way to do that.
+  "Open wallet" lands on the full wallet. The phase-out has no end state: nothing says when the
+  wallet goes, or how funds are recovered after it does.
+- **Recovery after removal is already possible.** The seed is a standard BIP39 phrase with
+  NUT-13 deterministic secrets, so a NUT-13 wallet (Cashu.me, Minibits and others) can restore
+  most funds from the 12 words. Every backup also carries the seed: the local file and the
+  Nostr app backup. Two kinds of funds need more than the phrase:
+  - proofs received and never swapped;
+  - P2PK-locked bounties.
+
+  Both can be exported as tokens from stored proofs, without asking the mint.
+- **Everyone loads wallet seed code at startup, and every backup creates a seed.** The app backup
+  calls `getWalletSeedBackup()`, which creates a seed when there is none. So devices that never
+  used the wallet create a wallet seed and publish it in their backup. The seed module, the
+  BIP39 word list (6.3 KB gzipped on its own), the availability check and the NWC catalog are
+  in the startup bundle: about 12 KB of 430 KB, for everyone.
+- **A dead control for every new user (confirmed in the build).** Settings → "Support
+  development" says "Donate from your internal wallet" and shows a Donate button. Without the
+  wallet there is no mint, so the button is permanently disabled.
+- **The inbox lives under the wallet.** Shared tasks, boards and contacts are stored and counted
+  by `ui/wallet/useWalletMessages.ts` (`useMessagesBoardId`, `WalletMessageItem`). The inbox is
+  not wallet code and must outlive it. `ChatRuntime` also still opens with a stale "wallet
+  surface" TODO.
+- **Elsewhere:** the in-app debug console (eruda) is switched on from Wallet settings, so it
+  needs a new home before those go.
+- **Cross-client:** iOS and macOS have their own wallets (chunks 9 and 11). Whatever is decided
+  here should be mirrored there in the same release, so a user sees one policy on every device.
+- **Language fit:** none. This chunk removes code.
+
+### C6-1 — Withdraw-only wallet with one "Move funds out" path (decision)
+
+- **User:** Everyone who still has the wallet.
+- **Proposal:**
+  - **Stop new money coming in.** Remove Receive (Lightning invoices, ecash paste), the
+    npub.cash address display and payment-request creation.
+  - **Keep everything that takes money out or claims what is already owed:**
+    - paying a Lightning invoice or address;
+    - sending ecash as a token;
+    - NWC sweep to the user's own wallet;
+    - claiming funds already waiting at npub.cash;
+    - redeeming payment requests that already arrived;
+    - finishing pending mint and melt quotes.
+  - **One "Move funds out" screen.** It shows the balance per mint and three ways out:
+    - to your Lightning wallet;
+    - copy everything as an ecash token;
+    - restore in another Cashu wallet with your 12 words (shows the phrase and instructions).
+
+    The phase-out notice opens this screen instead of the full wallet.
+- **Decision needed:** keep bounty creation (C3-6) until removal, or end it here. Creating a
+  bounty locks the user's own funds into a task.
+- **Effort:** M. **Risk:** medium; every way out must keep working (tested), and pending quotes
+  must finish.
+
+### C6-2 — A removal date and a small recovery module (decision)
+
+- **Proposal:** Remove the wallet in stages, on a date the maintainer sets (for example three
+  months after C6-1 ships, announced in the notice).
+  1. **C6-1 ships:** the wallet is withdraw-only.
+  2. **On the date:** the wallet is replaced by a recovery module of a few hundred lines,
+     loaded only on devices with funds:
+     - the balance per mint, read from stored proofs (no mint calls);
+     - copy each mint's proofs as a token;
+     - the 12 words with NUT-13 restore instructions;
+     - existing bounty tokens, still copyable (C3-6).
+
+     Everything else is deleted (about 30,000 lines): `mint/`, `hooks/wallet`, most of
+     `wallet/`, `ui/wallet`, `CashuWalletModal`, the providers, NWC, npub.cash, solife and the
+     wallet lint lists. The debug console moves to Settings → Advanced.
+  3. **Later:** the recovery module goes too. The phrase stays in backups and is shown in
+     Settings → Backup.
+- **Decision needed:** the date, and whether iOS and macOS follow the same schedule.
+- **Effort:** L, mostly deletion. **Risk:** medium; no balance may become unreachable (tested
+  against stored proofs, pending tokens and locked bounties).
+
+### C6-3 — No wallet code at startup, and no seed for non-wallet users (performance, correctness)
+
+- **Proposal:**
+  - The app backup and the local backup include the wallet seed only when one exists; they
+    never create one.
+  - The startup availability check reads only cheap storage flags.
+  - The seed module, the BIP39 word list and the NWC catalog load with the wallet or a backup
+    restore.
+  - The startup budget check fails if they return.
+
+  Saves about 12 KB gzipped at startup for everyone.
+- **Effort:** S–M. **Risk:** low; restoring a backup that carries a seed must still restore it
+  (tested).
+
+### C6-4 — Donations without the internal wallet (bug, UX)
+
+- **Proposal:** "Support development" offers a `lightning:dev@solife.me` link (opens whatever
+  Lightning wallet the user has) and a copy button, for everyone. The internal-wallet donation
+  goes, with its wallet dependency in Settings.
+- **Effort:** S. **Risk:** low.
+
+### C6-5 — The inbox out of the wallet namespace (simplification)
+
+- **Proposal:**
+  - Move `useWalletMessages`, `useMessagesBoardId` and `WalletMessageItem` to
+    `domains/inbox`, as `useInboxItems`, `useInboxBoardId` and `InboxItem`, unchanged in
+    behaviour and storage.
+  - Remove `ChatRuntime`'s stale wallet TODO.
+  - Add a lint rule: nothing outside the wallet imports `ui/wallet` except through the
+    bounty and wallet-shell seams.
+- **Effort:** S. **Risk:** low.
+
+### Recommended order
+
+C6-4 → C6-5 → C6-3 → C6-1 (after its decision) → C6-2 (on the chosen date). C6-1 and C6-2
+should be mirrored on iOS and macOS in chunks 9 and 11.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C6-1 | | | |
+| C6-2 | | | |
+| C6-3 | | | |
+| C6-4 | | | |
+| C6-5 | | | |
