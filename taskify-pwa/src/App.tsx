@@ -314,10 +314,11 @@ import { useTaskPersistence } from "./nostr/useTaskPersistence";
 import { BoardSyncLedger } from "./nostr/boardSyncLedger";
 import { BoardPublisher } from "./nostr/boardPublisher";
 import { DurablePublisher } from "./nostr/durablePublisher";
+import { addToRelayBatch, applyIncomingTask, LiveUpdateBatcher, type IncomingTaskUpdate } from "./nostr/taskSyncMerge";
 import { LS_PUBLISH_INTENTS } from "./localStorageKeys";
 import { sameDocumentList, sameStringList } from "./nostr/boardWire";
 import { mergeInviteTokens } from "./nostr/calendarWire";
-import { mergeIncomingTask, parseTaskEvent } from "./nostr/taskEventMerge";
+import { parseTaskEvent } from "./nostr/taskEventMerge";
 import { mergeIncomingCalendarEvent, parseCalendarEvent } from "./nostr/calendarEventMerge";
 import { useNostrIdentity } from "./nostr/useNostrIdentity";
 import {
@@ -976,18 +977,15 @@ export default function App() {
   // Map<bTag, Set<relayUrl>>
   const pendingRelaysByBoardRef = useRef<Map<string, Set<string>>>(new Map());
 
-  // Live-mode micro-batch coalescer. After the initial batch flush, post-EOSE events
-  // (e.g. from slow relays still streaming, or live peer updates) are accumulated for
-  // LIVE_BATCH_MS before a single setTasks is called. This prevents slow-relay events
-  // from triggering individual renders that briefly show stale state — by the time the
-  // window fires, both CREATE and DELETE events for a task have arrived, and the clock
-  // check ensures only the latest wins. Initial load speed is completely unaffected.
-  //
-  // Updater functions (not pre-built tasks) are buffered so all existing merge logic
-  // (bounty merging, subtask merging, etc.) runs intact inside a single setTasks call.
-  const LIVE_BATCH_MS = 150;
-  type TaskUpdater = (prev: Task[]) => Task[];
-  const liveBatchRef = useRef<Map<string, { updaters: TaskUpdater[]; timer: number }>>(new Map());
+  // After a board's first sync, live task events that arrive within 150 ms of each other are
+  // applied in one update, so a burst (a slow relay catching up) renders once (taskSyncMerge).
+  const sanitizeRecurringTasksRef = useRef(sanitizeRecurringTasks);
+  sanitizeRecurringTasksRef.current = sanitizeRecurringTasks;
+  const liveTaskUpdatesRef = useRef<LiveUpdateBatcher<Task[]> | null>(null);
+  liveTaskUpdatesRef.current ??= new LiveUpdateBatcher<Task[]>(
+    (apply) => setTasks((prev) => sanitizeRecurringTasksRef.current(apply(prev))),
+    150,
+  );
 
   const markNostrBoardInitialSyncComplete = useCallback((bTag: string) => {
     if (!bTag) return;
@@ -3766,82 +3764,40 @@ export default function App() {
     // every device.
     if (status === "deleted") recordTaskTombstone(bTag, taskId, ev.created_at);
 
-    // ── Per-relay batch path (relay hasn't fired EOSE yet) ───────────────────
-    // Route event into the relay-specific batch Map. On EOSE, the relay's batch
-    // is clock-protected-merged into state. IDB data is always visible immediately.
-    // evRelay is captured from pool.subscribe's onEvent(ev, relay) argument.
-    const evRelay = (ev as any).__relay as string | undefined;
-    const isPendingRelay = evRelay && pendingRelaysByBoardRef.current.get(bTag)?.has(evRelay);
-    if (isPendingRelay) {
-      let boardBatch = relayBatchRef.current.get(bTag);
-      if (!boardBatch) { boardBatch = new Map(); relayBatchRef.current.set(bTag, boardBatch); }
-      let batchMap = boardBatch.get(evRelay!);
-      if (!batchMap) { batchMap = new Map(); boardBatch.set(evRelay!, batchMap); }
-      if (status === "deleted") {
-        batchMap.set(taskKey, { _deleted: true, _nostrAt: ev.created_at });
-      } else {
-        // Merged over what this relay already batched for the task.
-        const existing = batchMap.get(taskKey);
-        const cur = existing && !("_deleted" in existing) ? (existing as Task) : undefined;
-        batchMap.set(taskKey, mergeIncomingTask(cur, incoming, {
-          nostrAt: ev.created_at,
-          order: cur?.order ?? 0,
-          now: Date.now(),
+    const update: IncomingTaskUpdate = status === "deleted"
+      ? { deleted: true, at: ev.created_at }
+      : {
+          deleted: false,
+          at: ev.created_at,
+          incoming,
           eventPubkey: ev.pubkey,
           incomingIsNewerOnTie: ev.created_at > ledger.taskAt(bTag, taskId),
-        }));
-      }
-      return; // ← do NOT call setTasks; flush happens at relay EOSE
+          now: Date.now(),
+        };
+
+    // During a relay's first sync its events collect in its batch, merged into the task list when
+    // the relay reaches EOSE (see useBoardSync). `__relay` is set by pool.subscribe's onEvent.
+    const evRelay = (ev as any).__relay as string | undefined;
+    if (evRelay && pendingRelaysByBoardRef.current.get(bTag)?.has(evRelay)) {
+      let boardBatch = relayBatchRef.current.get(bTag);
+      if (!boardBatch) { boardBatch = new Map(); relayBatchRef.current.set(bTag, boardBatch); }
+      let relayBatch = boardBatch.get(evRelay);
+      if (!relayBatch) { relayBatch = new Map(); boardBatch.set(evRelay, relayBatch); }
+      addToRelayBatch(relayBatch, taskKey, update);
+      return;
     }
 
-    // ── Live path (sync already complete, normal per-event update) ────────────
-    // Enqueue the updater into the micro-batch coalescer instead of calling
-    // setTasks directly. Multiple events arriving within LIVE_BATCH_MS are
-    // applied sequentially inside a single setTasks call so React only renders
-    // once. The clock check already rejected older events above, so each updater
-    // here represents a genuinely newer state — applying them in arrival order
-    // (newest clock wins) produces the correct final state without flicker.
-    const liveUpdater = (prev: Task[]) => {
-      if (!ledger.isTaskEventCurrent(bTag, taskId, ev.created_at)) return prev;
-      const idx = prev.findIndex((x) => x.id === taskId && x.boardId === lb.id);
-      if (status === "deleted") {
-        if (idx < 0) return prev;
-        return dedupeRecurringInstances(prev.filter((_, i) => i !== idx));
-      }
-      const current = idx >= 0 ? prev[idx] : undefined;
-      const merged = mergeIncomingTask(current, incoming, {
-        nostrAt: ev.created_at,
-        order: typeof current?.order === "number"
-          ? current.order
-          : nextOrderForBoard(base.boardId, prev, settings.newTaskPosition),
-        now: Date.now(),
-        eventPubkey: ev.pubkey,
-        incomingIsNewerOnTie: ev.created_at > ledger.taskAt(bTag, taskId),
-      });
-      if (idx < 0) return dedupeRecurringInstances([...prev, merged]);
-      const copy = prev.slice();
-      copy[idx] = merged;
-      return dedupeRecurringInstances(copy);
-    };
-
-    // Enqueue liveUpdater into the micro-batch coalescer
-    let batch = liveBatchRef.current.get(bTag);
-    if (!batch) {
-      batch = { updaters: [], timer: 0 };
-      liveBatchRef.current.set(bTag, batch);
-    }
-    batch.updaters.push(liveUpdater);
-    window.clearTimeout(batch.timer);
-    batch.timer = window.setTimeout(() => {
-      const b = liveBatchRef.current.get(bTag);
-      if (!b) return;
-      liveBatchRef.current.delete(bTag);
-      setTasks(prev => {
-        let result = prev;
-        for (const updater of b.updaters) result = updater(result);
-        return sanitizeRecurringTasks(result);
-      });
-    }, LIVE_BATCH_MS);
+    // Afterwards, live: rechecked against the ledger when applied, coalesced per board.
+    liveTaskUpdatesRef.current?.enqueue(bTag, (prev) => {
+      const next = applyIncomingTask(
+        prev,
+        { boardId: lb.id, taskId },
+        update,
+        () => ledger.isTaskEventCurrent(bTag, taskId, ev.created_at),
+        (tasks) => nextOrderForBoard(base.boardId, tasks, settings.newTaskPosition),
+      );
+      return next === prev ? prev : dedupeRecurringInstances(next);
+    });
   }, [recordRecurringSeriesCutoff, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
 
   function sameSeries(a: Task, b: Task): boolean {
