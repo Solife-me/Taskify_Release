@@ -27,7 +27,6 @@ import {
 // Contact utilities
 import {
   compressedToRawHex,
-  contactInitials,
   loadNip05Cache,
   type Nip05CheckState,
 } from "../../domains/tasks/contactUtils";
@@ -105,6 +104,8 @@ import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
 import { ReminderChips } from "../editor/fields/ReminderChips";
 import { RepeatField } from "../editor/fields/RepeatField";
 import { AttachmentList } from "../editor/fields/AttachmentList";
+import { ContactRow } from "../editor/fields/ContactRow";
+import { ContactShareSheet } from "../editor/fields/ContactShareSheet";
 import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import type { TaskBountyExtension } from "./taskBountyExtension";
 
@@ -1773,34 +1774,14 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             {filteredAssigneeContacts.map((contact) => {
               const pubkey = normalizeAssigneePubkey(contact?.npub);
               if (!pubkey) return null;
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              const selected = assignedPubkeys.has(pubkey);
               return (
-                <button
+                <ContactRow
                   key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
+                  contact={contact}
+                  selected={assignedPubkeys.has(pubkey)}
+                  selectedLabel="Assigned"
                   onClick={() => toggleAssigneeContact(contact)}
-                  aria-pressed={selected}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name flex items-center gap-2">
-                      <span className="min-w-0 truncate">{label}</span>
-                      {selected ? (
-                        <span className="text-xs text-secondary" aria-label="Assigned">
-                          ✓
-                        </span>
-                      ) : null}
-                    </div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </button>
+                />
               );
             })}
           </div>
@@ -1822,66 +1803,19 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       </div>
     </ActionSheet>
 
-    <ActionSheet
+    <ContactShareSheet
       open={shareTaskPickerOpen}
+      title="Send task"
+      itemLabel={title.trim() || "this task"}
+      contacts={shareableContacts}
+      busy={shareTaskBusy}
+      status={shareTaskStatus}
+      onPick={handleShareTaskToContact}
       onClose={() => {
-        if (shareTaskBusy) return;
         setShareTaskPickerOpen(false);
         setShareTaskStatus(null);
       }}
-      title="Send task"
-      stackLevel={85}
-    >
-      <div className="text-sm text-secondary mb-2">
-        Choose a contact to send <span className="font-semibold">{title.trim() || "this task"}</span>.
-      </div>
-      {shareTaskStatus && (
-        <div className="text-sm text-rose-400 mb-2">{shareTaskStatus}</div>
-      )}
-      {shareableContacts.length ? (
-        <div className="space-y-2">
-          {shareableContacts.map((contact) => {
-            const label = contactPrimaryName(contact);
-            const subtitle = formatContactNpub(contact.npub);
-            return (
-              <button
-                key={contact.id}
-                type="button"
-                className="contact-row pressable"
-                disabled={shareTaskBusy}
-                onClick={() => handleShareTaskToContact(contact)}
-              >
-                <div className="contact-avatar">{contactInitials(label)}</div>
-                <div className="contact-row__text">
-                  <div className="contact-row__name">{label}</div>
-                  {subtitle ? (
-                    <div className="contact-row__meta">
-                      <span className="contact-row__meta-text">{subtitle}</span>
-                    </div>
-                  ) : null}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
-      )}
-      <div className="flex gap-2 mt-3">
-        <button
-          type="button"
-          className="ghost-button button-sm pressable flex-1 justify-center"
-          onClick={() => {
-            if (shareTaskBusy) return;
-            setShareTaskPickerOpen(false);
-            setShareTaskStatus(null);
-          }}
-          disabled={shareTaskBusy}
-        >
-          Cancel
-        </button>
-      </div>
-    </ActionSheet>
+    />
 
 
 

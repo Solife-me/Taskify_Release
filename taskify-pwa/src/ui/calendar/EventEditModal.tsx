@@ -54,12 +54,10 @@ import {
 // Contact utilities
 import {
   contactPrimaryName,
-  formatContactNpub,
   contactHasNpub,
 } from "../../lib/contacts";
 import {
   normalizeNostrPubkeyHex,
-  contactInitials,
 } from "../../domains/tasks/contactUtils";
 
 // Nostr key utilities
@@ -90,6 +88,8 @@ import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
 import { ReminderChips } from "../editor/fields/ReminderChips";
 import { RepeatField } from "../editor/fields/RepeatField";
 import { AttachmentList } from "../editor/fields/AttachmentList";
+import { ContactRow } from "../editor/fields/ContactRow";
+import { ContactShareSheet } from "../editor/fields/ContactShareSheet";
 import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import { readDocumentsFromFiles } from "../../lib/documents";
 
@@ -1490,35 +1490,15 @@ function EventEditModal({
               {filteredInviteContacts.map((contact) => {
                 const pubkey = resolveInviteInput(contact?.npub ?? "");
                 if (!pubkey) return null;
-                const label = contactPrimaryName(contact);
-                const subtitle = formatContactNpub(contact.npub);
-                const selected = invitedPubkeys.has(pubkey);
                 return (
-                  <button
+                  <ContactRow
                     key={contact.id}
-                    type="button"
-                    className="contact-row pressable"
+                    contact={contact}
+                    selected={invitedPubkeys.has(pubkey)}
+                    selectedLabel="Invited"
                     onClick={() => handleToggleInviteContact(contact)}
-                    aria-pressed={selected}
                     disabled={isReadOnly}
-                  >
-                    <div className="contact-avatar">{contactInitials(label)}</div>
-                    <div className="contact-row__text">
-                      <div className="contact-row__name flex items-center gap-2">
-                        <span className="min-w-0 truncate">{label}</span>
-                        {selected ? (
-                          <span className="text-xs text-secondary" aria-label="Invited">
-                            ✓
-                          </span>
-                        ) : null}
-                      </div>
-                      {subtitle ? (
-                        <div className="contact-row__meta">
-                          <span className="contact-row__meta-text">{subtitle}</span>
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
+                  />
                 );
               })}
             </div>
@@ -1563,66 +1543,19 @@ function EventEditModal({
         </div>
       </ActionSheet>
 
-      <ActionSheet
+      <ContactShareSheet
         open={shareEventPickerOpen}
+        title="Send event"
+        itemLabel={title.trim() || "this event"}
+        contacts={shareableContacts}
+        busy={shareEventBusy}
+        status={shareEventStatus}
+        onPick={handleShareEventToContact}
         onClose={() => {
-          if (shareEventBusy) return;
           setShareEventPickerOpen(false);
           setShareEventStatus(null);
         }}
-        title="Send event"
-        stackLevel={85}
-      >
-        <div className="text-sm text-secondary mb-2">
-          Choose a contact to send <span className="font-semibold">{title.trim() || "this event"}</span>.
-        </div>
-        {shareEventStatus && (
-          <div className="text-sm text-rose-400 mb-2">{shareEventStatus}</div>
-        )}
-        {shareableContacts.length ? (
-          <div className="space-y-2">
-            {shareableContacts.map((contact) => {
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              return (
-                <button
-                  key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
-                  disabled={shareEventBusy}
-                  onClick={() => handleShareEventToContact(contact)}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name">{label}</div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
-        )}
-        <div className="flex gap-2 mt-3">
-          <button
-            type="button"
-            className="ghost-button button-sm pressable flex-1 justify-center"
-            onClick={() => {
-              if (shareEventBusy) return;
-              setShareEventPickerOpen(false);
-              setShareEventStatus(null);
-            }}
-            disabled={shareEventBusy}
-          >
-            Cancel
-          </button>
-        </div>
-      </ActionSheet>
+      />
 
 
       <TimeZoneSheet
