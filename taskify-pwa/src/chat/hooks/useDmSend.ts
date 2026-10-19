@@ -1,9 +1,8 @@
-import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
-import { useCallback } from "react";
-import { nip44, finalizeEvent, getEventHash } from "nostr-tools";
-import type { EventTemplate } from "nostr-tools";
-import { hexToBytes } from "@noble/hashes/utils.js";
-import { NostrSession } from "../../nostr/NostrSession";
+import { useCallback, useMemo } from "react";
+import { createNip17Rumor } from "taskify-core";
+import { nip17Crypto } from "taskify-runtime-nostr";
+import { LocalKeySigner } from "../../identity/signer";
+import { giftWrapNip17Rumor, nip17TimestampSource, recipientInboxRelays } from "../../lib/nip17Messages";
 import {
   isImageMime,
   probeImageDimensions,
@@ -12,7 +11,7 @@ import {
 } from "../../lib/messengerAttachmentCrypto";
 import { parseFileServers, findServerEntry, DEFAULT_FILE_STORAGE_SERVER } from "../../lib/fileStorage";
 import type { FileServerEntry, FileServerType } from "../../lib/fileStorage";
-import { generatePrivateKey, randomPastTimestampSeconds, type NostrEvent } from "../chatHelpers";
+import type { NostrEvent } from "../chatHelpers";
 import type { WalletDmMessage, PendingDmMessage, useDmState } from "./useDmState";
 import type { useNostrSession } from "./useNostrSession";
 import type { GroupChat } from "../../lib/groupChatState";
@@ -22,7 +21,6 @@ type ChatSession = ReturnType<typeof useNostrSession>;
 
 export interface UseDmSendOptions {
   nip17TimestampMode: "now" | "random";
-  walletDebugEnabled: boolean;
   defaultNostrRelays: string[];
   ensureNostrPool: ChatSession["ensureNostrPool"];
   safePublish: ChatSession["safePublish"];
@@ -41,7 +39,6 @@ export interface UseDmSendOptions {
 
 export function useDmSend({
   nip17TimestampMode,
-  walletDebugEnabled,
   defaultNostrRelays,
   ensureNostrPool,
   safePublish,
@@ -57,54 +54,11 @@ export function useDmSend({
   encryptedFileServers,
   showToast,
 }: UseDmSendOptions) {
-  const resolveNip17Timestamp = useCallback(() => {
-    if (nip17TimestampMode === "now") {
-      return Math.floor(Date.now() / 1000);
-    }
-    return randomPastTimestampSeconds();
-  }, [nip17TimestampMode]);
+  const resolveNip17Timestamp = useMemo(() => nip17TimestampSource(nip17TimestampMode), [nip17TimestampMode]);
 
   const resolveNip17Relays = useCallback(
-    async (recipientHex: string, fallbackRelays: string[]): Promise<string[]> => {
-      const normalizedFallback = Array.from(
-        new Set(
-          (fallbackRelays || [])
-            .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-            .filter(Boolean),
-        ),
-      );
-      if (!normalizedFallback.length) return normalizedFallback;
-      const normalizedRecipient = (recipientHex || "").toLowerCase();
-      if (!/^[0-9a-f]{64}$/.test(normalizedRecipient)) return normalizedFallback;
-      try {
-        const session = await NostrSession.init(normalizedFallback);
-        const events = await session.fetchEvents(
-          [{ kinds: [10050], authors: [normalizedRecipient] }],
-          normalizedFallback,
-        );
-        const latest = Array.isArray(events)
-          ? events.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0]
-          : null;
-        const inboxRelays = Array.isArray(latest?.tags)
-          ? latest.tags
-              .filter(
-                (tag) =>
-                  Array.isArray(tag) &&
-                  tag[0] === "relay" &&
-                  typeof tag[1] === "string" &&
-                  tag[1].trim(),
-              )
-              .map((tag) => tag[1]!.trim())
-          : [];
-        return Array.from(new Set([...inboxRelays, ...normalizedFallback]));
-      } catch (err) {
-        if (walletDebugEnabled) {
-          console.warn("[wallet] Failed to load NIP-17 inbox relays", err);
-        }
-        return normalizedFallback;
-      }
-    },
-    [walletDebugEnabled],
+    (recipientHex: string, fallbackRelays: string[]): Promise<string[]> => recipientInboxRelays(recipientHex, fallbackRelays),
+    [],
   );
 
   const publishNip17Giftwraps = useCallback(
@@ -121,68 +75,30 @@ export function useDmSend({
       recipientHexes?: string[];
     }) => {
       const { content, senderHex, senderSecret, publish, kind, extraTags } = options;
-      if (!nip44?.v2) {
-        throw new Error("NIP-44 support is required to send this message");
-      }
+      const account = new LocalKeySigner(senderSecret);
       const normalizedSender = senderHex.toLowerCase();
+      if (account.pubkey !== normalizedSender) throw new Error("The sending key does not match this account.");
       const isGroupSend = Array.isArray(options.recipientHexes) && options.recipientHexes.length > 0;
-      // Support multi-recipient (group) or single-recipient (DM)
-      const allRecipients: string[] = isGroupSend
-        ? [...new Set(options.recipientHexes!.map((h) => h.toLowerCase()))].filter((h) => h !== normalizedSender)
-        : [options.recipientHex.toLowerCase()];
-      const rumorKind = typeof kind === "number" ? kind : 14;
-      // For group messages, include sender in p-tags (0xchat compatibility).
-      // 0xchat includes ALL members (including sender) as p-tags in the inner rumor
-      // and uses p-tag count to distinguish groups from DMs.
-      const combinedTags: string[][] = isGroupSend
-        ? [["p", normalizedSender], ...allRecipients.map((r) => ["p", r])]
-        : allRecipients.map((r) => ["p", r]);
-      if (Array.isArray(extraTags)) {
-        for (const tag of extraTags) {
-          if (Array.isArray(tag) && tag.length > 0) combinedTags.push(tag);
-        }
-      }
-      // The inner kind:14/15 rumor carries the canonical DM timestamp.
-      const rumorCreatedAt = Math.floor(Date.now() / 1000);
-      const rumorBase = {
-        kind: rumorKind,
-        content,
-        tags: combinedTags,
-        created_at: rumorCreatedAt,
-        pubkey: normalizedSender,
-      };
-      const rumor = {
-        ...rumorBase,
-        id: getEventHash(rumorBase),
-      } satisfies Partial<NostrEvent>;
-      // Gift-wrap to each recipient + self
-      const wrapRecipients = Array.from(new Set([...allRecipients, normalizedSender]));
+      // The inner rumor carries the canonical message timestamp; group rumors tag every member
+      // (taskify-core's createNip17Rumor).
+      const rumor = createNip17Rumor(
+        {
+          sender: normalizedSender,
+          recipients: isGroupSend ? options.recipientHexes! : [options.recipientHex],
+          content,
+          createdAt: Math.floor(Date.now() / 1000),
+          kind: typeof kind === "number" ? kind : 14,
+          group: isGroupSend,
+          extraTags,
+        },
+        nip17Crypto,
+      );
+      const wraps = await giftWrapNip17Rumor(rumor, account, options.relays, resolveNip17Timestamp);
+      // The self-addressed wrap lets callers show the message at once.
       let selfWrapEvent: NostrEvent | null = null;
-      for (const wrapRecipient of wrapRecipients) {
-        const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(senderSecret), wrapRecipient);
-        const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), dmKey);
-        const sealTemplate: EventTemplate = {
-          kind: 13,
-          content: sealedContent,
-          tags: [],
-          created_at: resolveNip17Timestamp(),
-        };
-        const sealEvent = finalizeEvent(sealTemplate, hexToBytes(senderSecret));
-        const wrapKey = generatePrivateKey();
-        const wrapConversationKey = nip44.v2.utils.getConversationKey(hexToBytes(wrapKey.hex), wrapRecipient);
-        const wrapContent = await nip44.v2.encrypt(JSON.stringify(sealEvent), wrapConversationKey);
-        const wrapTemplate: EventTemplate = {
-          kind: 1059,
-          content: wrapContent,
-          tags: [["p", wrapRecipient]],
-          created_at: resolveNip17Timestamp(),
-        };
-        const wrapEvent = await prepareRelayEvent(wrapTemplate, wrapKey.bytes, options.relays);
-        await publish(wrapEvent);
-        // Track the self-addressed wrap so callers can immediately process it locally
-        if (wrapRecipient === normalizedSender) {
-          selfWrapEvent = wrapEvent as NostrEvent;
-        }
+      for (const { recipient, wrap } of wraps) {
+        await publish(wrap as NostrEvent);
+        if (recipient === normalizedSender) selfWrapEvent = wrap as NostrEvent;
       }
       return { selfWrapEvent };
     },

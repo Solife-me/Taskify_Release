@@ -1,17 +1,22 @@
 import { hexToBytes } from "@noble/hashes/utils.js";
+import { SimplePool, finalizeEvent, type Event } from "nostr-tools";
 import {
-  SimplePool,
-  finalizeEvent,
-  generateSecretKey,
-  getPublicKey,
-  nip44,
-  nip59,
-  type Event,
-} from "nostr-tools";
-import { parseShareEnvelope, type ShareEnvelope } from "taskify-core";
+  createNip17Rumor,
+  nip17Timestamp,
+  nip17WrapRecipients,
+  openNip17GiftWrap,
+  parseShareEnvelope,
+  sealNip17Rumor,
+  wrapNip17Seal,
+  type ShareEnvelope,
+} from "taskify-core";
 import { sanitizeRemote } from "./displaySafe.js";
 import {
   countLeadingZeroBits,
+  inboxReadRelays,
+  newNip17WrapKey,
+  nip17Crypto,
+  nip17KeyParty,
   mineEventTemplate,
   recordRelayProofOfWorkRejection,
   relayProofOfWorkDifficulty,
@@ -91,40 +96,45 @@ async function publishWrap(
   if (!accepted) throw new Error(`No relay accepted the message. ${failures.join("; ")}`);
 }
 
+/** `fallback` plus the relays in the recipient's newest signed inbox list (kind 10050). */
+async function recipientInboxRelays(recipient: string, fallback: string[]): Promise<string[]> {
+  const pool = new SimplePool();
+  try {
+    const events = await pool.querySync(fallback, { kinds: [10050], authors: [recipient] }, { maxWait: 5_000 });
+    return inboxReadRelays(events, recipient, fallback);
+  } catch {
+    return fallback;
+  } finally {
+    pool.close(fallback);
+  }
+}
+
 export async function sendShareEnvelopeNip17(input: {
   envelope: ShareEnvelope;
   senderSecretHex: string;
   recipientPubkeyHex: string;
   relays: string[];
 }): Promise<void> {
-  const relays = normalizeRelays(input.relays);
-  if (!relays.length) throw new Error("No relays configured.");
+  const ownRelays = normalizeRelays(input.relays);
+  if (!ownRelays.length) throw new Error("No relays configured.");
   const senderSecret = hexToBytes(input.senderSecretHex);
-  const senderPublicKey = getPublicKey(senderSecret);
-  const recipient = input.recipientPubkeyHex;
+  const account = nip17KeyParty(senderSecret);
+  const recipient = input.recipientPubkeyHex.toLowerCase();
+  // NIP-17: deliver to the recipient's signed inbox relays as well as our own.
+  const relays = await recipientInboxRelays(recipient, ownRelays);
   const difficulty = await relayProofOfWorkDifficulty(relays);
-  const rumor = nip59.createRumor(
-    {
-      kind: 14,
-      content: JSON.stringify(input.envelope),
-      tags: [["p", recipient]],
-      created_at: Math.floor(Date.now() / 1000),
-    },
-    senderSecret,
+  const now = Date.now() / 1000;
+  // taskify-core's NIP-17 rules, shared with the apps (fixtures/nip17-vectors.json).
+  const rumor = createNip17Rumor(
+    { sender: account.pubkey, recipients: [recipient], content: JSON.stringify(input.envelope), createdAt: now },
+    nip17Crypto,
   );
   const wrapped: Array<{ template: Parameters<typeof finalizeEvent>[0]; wrapKey: Uint8Array }> = [];
-  for (const wrapRecipient of Array.from(new Set([senderPublicKey, recipient]))) {
-    const seal = nip59.createSeal(rumor, senderSecret, wrapRecipient);
-    const wrapKey = generateSecretKey();
-    const conversationKey = nip44.v2.utils.getConversationKey(wrapKey, wrapRecipient);
-    const wrapContent = await nip44.v2.encrypt(JSON.stringify(seal), conversationKey);
-    const wrapTemplate = {
-      kind: 1059,
-      content: wrapContent,
-      tags: [["p", wrapRecipient]],
-      created_at: Math.floor(Date.now() / 1000) - Math.floor(Math.random() * 172800),
-    };
-    wrapped.push({ template: wrapTemplate, wrapKey });
+  for (const wrapRecipient of nip17WrapRecipients(rumor)) {
+    const seal = await sealNip17Rumor(rumor, wrapRecipient, account, nip17Timestamp(now));
+    const wrapKey = newNip17WrapKey();
+    const template = await wrapNip17Seal(seal, wrapRecipient, wrapKey, nip17Timestamp(now));
+    wrapped.push({ template, wrapKey: wrapKey.secretKey });
   }
 
   const pool = new SimplePool();
@@ -145,7 +155,8 @@ export async function fetchShareInboxNip17(input: {
   const relays = normalizeRelays(input.relays);
   if (!relays.length) return [];
   const secret = hexToBytes(input.recipientSecretHex);
-  const pubkey = getPublicKey(secret);
+  const receiver = nip17KeyParty(secret);
+  const pubkey = receiver.pubkey;
   const pool = new SimplePool();
   try {
     const wraps = await new Promise<Event[]>(resolve => {
@@ -162,18 +173,15 @@ export async function fetchShareInboxNip17(input: {
     const out: InboxShareItem[] = [];
     for (const wrap of wraps) {
       try {
-        const rumor = nip59.unwrapEvent(wrap as Event, secret) as {
-          id: string;
-          content: string;
-          pubkey: string;
-          created_at: number;
-        };
+        const opened = await openNip17GiftWrap(wrap, receiver, nip17Crypto);
+        if (!opened || opened.rumor.kind !== 14) continue;
+        const { rumor } = opened;
         const envelope = parseShareEnvelope(rumor.content);
         if (!envelope) continue;
         out.push({
           wrapId: wrap.id,
           rumorId: rumor.id,
-          senderPubkey: rumor.pubkey,
+          senderPubkey: opened.senderPubkey,
           createdAt: rumor.created_at,
           raw: rumor.content,
           // Anyone can send a share; its text is shown in the terminal.

@@ -33,28 +33,28 @@ function forgedWrap(attackerSecret: Uint8Array, claimedSender: string) {
   return nip59.createWrap(seal, recipient);
 }
 
-describe("unwrapShareGiftWrap", () => {
-  it("opens a share and reports the seal's author as the sender", () => {
+describe("unwrapShareGiftWrap", async () => {
+  it("opens a share and reports the seal's author as the sender", async () => {
     const senderSecret = generateSecretKey();
-    const opened = unwrapShareGiftWrap(genuineWrap(senderSecret), bytesToHex(recipientSecret));
+    const opened = await unwrapShareGiftWrap(genuineWrap(senderSecret), bytesToHex(recipientSecret));
     expect(opened).toEqual({ content: envelope, senderPubkey: getPublicKey(senderSecret), tags: [["p", recipient]] });
   });
 
-  it("rejects a share whose rumor claims a sender other than the one who sealed it", () => {
+  it("rejects a share whose rumor claims a sender other than the one who sealed it", async () => {
     const trustedContact = getPublicKey(generateSecretKey());
     const wrap = forgedWrap(generateSecretKey(), trustedContact);
-    expect(unwrapShareGiftWrap(wrap, bytesToHex(recipientSecret))).toBeNull();
+    expect(await unwrapShareGiftWrap(wrap, bytesToHex(recipientSecret))).toBeNull();
   });
 
-  it("rejects a wrap addressed to someone else", () => {
+  it("rejects a wrap addressed to someone else", async () => {
     const wrap = genuineWrap(generateSecretKey());
-    expect(unwrapShareGiftWrap(wrap, bytesToHex(generateSecretKey()))).toBeNull();
+    expect(await unwrapShareGiftWrap(wrap, bytesToHex(generateSecretKey()))).toBeNull();
   });
 
-  it("ignores rumors that are not chat messages and events that are not gift wraps", () => {
+  it("ignores rumors that are not chat messages and events that are not gift wraps", async () => {
     const secretHex = bytesToHex(recipientSecret);
-    expect(unwrapShareGiftWrap(genuineWrap(generateSecretKey(), 15), secretHex)).toBeNull();
+    expect(await unwrapShareGiftWrap(genuineWrap(generateSecretKey(), 15), secretHex)).toBeNull();
     const notAWrap = finalizeEvent({ kind: 1, created_at: 1_790_000_000, tags: [], content: envelope }, generateSecretKey());
-    expect(unwrapShareGiftWrap(notAWrap, secretHex)).toBeNull();
+    expect(await unwrapShareGiftWrap(notAWrap, secretHex)).toBeNull();
   });
 });

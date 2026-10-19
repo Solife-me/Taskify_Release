@@ -1,7 +1,5 @@
-import { prepareRelayEvent } from "../nostr/prepareRelayEvent";
-import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { finalizeEvent, getEventHash, getPublicKey, nip19, nip44, nip59, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { nip19, type Event as NostrEvent } from "nostr-tools";
 
 import {
   buildBoardShareEnvelope as buildBoardShareEnvelopeCore,
@@ -16,7 +14,12 @@ import {
   type SharedCalendarEventInvitePayload,
   type SharedTaskAssignmentResponsePayload,
   normalizeRelayList,
+  createNip17Rumor,
+  openNip17GiftWrap,
 } from "taskify-core";
+import { nip17Crypto } from "taskify-runtime-nostr";
+import { LocalKeySigner } from "../identity/signer";
+import { giftWrapNip17Rumor, nip17TimestampSource, recipientInboxRelays } from "./nip17Messages";
 import { NostrSession } from "../nostr/NostrSession";
 import { kvStorage } from "../storage/kvStorage";
 
@@ -178,85 +181,30 @@ function toRawHexPubkey(value: string): string | null {
   return null;
 }
 
-function randomPastTimestampSeconds(maxOffsetSeconds = 2 * 24 * 60 * 60): number {
-  const now = Math.floor(Date.now() / 1000);
-  const offset = Math.floor(Math.random() * maxOffsetSeconds);
-  return Math.max(0, now - offset);
-}
-
-function resolveNip17Timestamp(): number {
+/** "taskify.nip17.timestamp" = "now" turns off NIP-59's randomized seal and wrap timestamps. */
+function shareTimestampMode(): "now" | "random" {
   try {
-    const raw = kvStorage.getItem("taskify.nip17.timestamp") || "";
-    if (raw.trim().toLowerCase() === "now") {
-      return Math.floor(Date.now() / 1000);
-    }
+    return (kvStorage.getItem("taskify.nip17.timestamp") || "").trim().toLowerCase() === "now" ? "now" : "random";
   } catch {
-    // ignore storage access failures
-  }
-  return randomPastTimestampSeconds();
-}
-
-function generatePrivateKey(): { hex: string; bytes: Uint8Array } {
-  const bytes = secp256k1.utils.randomSecretKey();
-  const hex = bytesToHex(bytes);
-  return { hex, bytes: hexToBytes(hex) };
-}
-
-async function resolveRecipientInboxRelays(
-  recipientHex: string,
-  fallbackRelays: string[],
-): Promise<string[]> {
-  const normalizedFallback = Array.from(
-    new Set(
-      (fallbackRelays || [])
-        .map((relay) => (typeof relay === "string" ? relay.trim() : ""))
-        .filter(Boolean),
-    ),
-  );
-  if (!normalizedFallback.length) return normalizedFallback;
-  const normalizedRecipient = (recipientHex || "").toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(normalizedRecipient)) return normalizedFallback;
-  try {
-    const session = await NostrSession.init(normalizedFallback);
-    const events = await session.fetchEvents(
-      [{ kinds: [10050], authors: [normalizedRecipient] }],
-      normalizedFallback,
-    );
-    const latest = Array.isArray(events)
-      ? events.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0]
-      : null;
-    const inboxRelays = Array.isArray(latest?.tags)
-      ? latest.tags
-          .filter(
-            (tag) =>
-              Array.isArray(tag) &&
-              tag[0] === "relay" &&
-              typeof tag[1] === "string" &&
-              tag[1].trim(),
-          )
-          .map((tag) => tag[1]!.trim())
-      : [];
-    return Array.from(new Set([...inboxRelays, ...normalizedFallback]));
-  } catch {
-    return normalizedFallback;
+    return "random";
   }
 }
 
 /**
- * Opens a kind-1059 gift wrap sent to the share inbox. NIP-17's sender is the seal's author,
- * not the rumor's self-declared pubkey: `nip59.unwrapEvent` checks the seal's signature and
- * rejects a rumor that names anyone else, so a stranger cannot pass a share off as coming
- * from one of the recipient's contacts. Returns null for anything that does not open.
+ * Opens a kind-1059 gift wrap sent to the share inbox (taskify-core's `openNip17GiftWrap`). The
+ * sender is the seal's author, which the rumor must name, so a stranger cannot pass a share off
+ * as coming from one of the recipient's contacts. Returns null for anything that does not open
+ * or is not a kind-14 message.
  */
-export function unwrapShareGiftWrap(
+export async function unwrapShareGiftWrap(
   wrap: NostrEvent,
   recipientSecretHex: string,
-): { content: string; senderPubkey: string; tags: string[][] } | null {
+): Promise<{ content: string; senderPubkey: string; tags: string[][] } | null> {
   if (wrap?.kind !== 1059) return null;
   try {
-    const rumor = nip59.unwrapEvent(wrap, hexToBytes(recipientSecretHex));
-    if (rumor.kind !== 14 || typeof rumor.content !== "string") return null;
-    return { content: rumor.content, senderPubkey: rumor.pubkey, tags: Array.isArray(rumor.tags) ? rumor.tags : [] };
+    const opened = await openNip17GiftWrap(wrap, new LocalKeySigner(recipientSecretHex), nip17Crypto);
+    if (!opened || opened.rumor.kind !== 14) return null;
+    return { content: opened.rumor.content, senderPubkey: opened.senderPubkey, tags: opened.rumor.tags };
   } catch {
     return null;
   }
@@ -276,57 +224,27 @@ export async function sendShareMessage(
   if (!relayList.length) {
     throw new Error("No relays configured for sending.");
   }
-  const publishRelays = await resolveRecipientInboxRelays(recipientRaw, relayList);
+  const publishRelays = await recipientInboxRelays(recipientRaw, relayList);
   if (!publishRelays.length) {
     throw new Error("No relays configured for NIP-17 inbox.");
   }
   const session = await NostrSession.init(publishRelays);
-  const publish = async (event: NostrEvent) => {
-    await session.publishRaw(event, { relayUrls: publishRelays, returnEvent: false });
-  };
-  const content = serializeTaskAssignmentShareEnvelope(payload);
-  if (!nip44?.v2) {
-    throw new Error("NIP-44 support is required to send share messages.");
-  }
-  const senderPubkey = getPublicKey(hexToBytes(senderSecretHex)).toLowerCase();
-  const normalizedRecipient = recipientRaw.toLowerCase();
-  // The inner kind:14 rumor carries the canonical DM timestamp.
-  const rumorCreatedAt = Math.floor(Date.now() / 1000);
-  const rumorBase = {
-    kind: 14,
-    content,
-    tags: [["p", normalizedRecipient]],
-    created_at: rumorCreatedAt,
-    pubkey: senderPubkey,
-  };
-  const rumor = {
-    ...rumorBase,
-    id: getEventHash(rumorBase),
-  } satisfies Partial<NostrEvent>;
-  const wrapRecipients = Array.from(new Set([normalizedRecipient, senderPubkey]));
-  for (const wrapRecipient of wrapRecipients) {
-    const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(senderSecretHex), wrapRecipient);
-    const sealedContent = await nip44.v2.encrypt(JSON.stringify(rumor), dmKey);
-    const sealTemplate: EventTemplate = {
-      kind: 13,
-      content: sealedContent,
-      tags: [],
-      created_at: resolveNip17Timestamp(),
-    };
-    const sealEvent = finalizeEvent(sealTemplate, hexToBytes(senderSecretHex));
-    const wrapKey = generatePrivateKey();
-    const wrapConversationKey = nip44.v2.utils.getConversationKey(hexToBytes(wrapKey.hex), wrapRecipient);
-    const wrapContent = await nip44.v2.encrypt(JSON.stringify(sealEvent), wrapConversationKey);
-    const wrapTemplate: EventTemplate = {
-      kind: 1059,
-      content: wrapContent,
-      tags: [["p", wrapRecipient]],
-      created_at: resolveNip17Timestamp(),
-    };
-    const wrapEvent = await prepareRelayEvent(wrapTemplate, wrapKey.bytes, publishRelays);
-    await publish(wrapEvent);
+  const account = new LocalKeySigner(senderSecretHex);
+  const rumor = createNip17Rumor(
+    {
+      sender: account.pubkey,
+      recipients: [recipientRaw],
+      content: serializeTaskAssignmentShareEnvelope(payload),
+      createdAt: Math.floor(Date.now() / 1000),
+    },
+    nip17Crypto,
+  );
+  const wraps = await giftWrapNip17Rumor(rumor, account, publishRelays, nip17TimestampSource(shareTimestampMode()));
+  for (const { wrap } of wraps) {
+    await session.publishRaw(wrap as NostrEvent, { relayUrls: publishRelays, returnEvent: false });
   }
 }
+
 function toRelayList(input: unknown): string[] {
   let candidates: unknown[] = [];
   if (Array.isArray(input)) {

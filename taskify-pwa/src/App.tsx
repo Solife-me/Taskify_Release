@@ -1127,7 +1127,7 @@ export default function App() {
           };
         }
         if (event.kind === 1059) {
-          const opened = unwrapShareGiftWrap(event, nostrSkHex);
+          const opened = await unwrapShareGiftWrap(event, nostrSkHex);
           if (!opened) return null;
           return {
             content: opened.content,

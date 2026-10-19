@@ -460,7 +460,6 @@ persistBlockedPeers,
     sendMessengerFileAttachments,
   } = useDmSend({
     nip17TimestampMode,
-    walletDebugEnabled: chatDebugEnabled,
     defaultNostrRelays,
     ensureNostrPool,
     safePublish,

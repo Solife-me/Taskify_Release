@@ -25,3 +25,4 @@ export * from "./appStateSync.js";
 export * from "./botCommands.js";
 export * from "./nip51Contacts.js";
 export * from "./taskifyLinks.js";
+export * from "./nip17.js";

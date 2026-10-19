@@ -16,3 +16,4 @@ export * from "./history.js";
 export * from "./inboxRelays.js";
 export * from "./RelayAccess.js";
 export * from "./RelayPublishBudget.js";
+export * from "./nip17Keys.js";

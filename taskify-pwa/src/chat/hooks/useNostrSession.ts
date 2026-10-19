@@ -6,6 +6,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nip04, nip44 } from "nostr-tools";
 import { hexToBytes } from "@noble/hashes/utils.js";
+import { nip17MessageRecipients, openNip17GiftWrap } from "taskify-core";
+import { nip17Crypto } from "taskify-runtime-nostr";
+import { LocalKeySigner } from "../../identity/signer";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../../storage/taskifyDb";
@@ -33,6 +36,9 @@ export interface UseNostrSessionOptions {
   /** Re-read on the wallet's open, receive-mode and send-mode transitions. */
   identityRefreshKeys?: readonly [open?: boolean, receiveMode?: string | null, sendMode?: string | null];
 }
+
+/** Chat messages, file messages and reactions. */
+const NIP17_CHAT_RUMOR_KINDS = new Set([14, 15, 7]);
 
 export function useNostrSession({
   debug,
@@ -221,85 +227,23 @@ export function useNostrSession({
                 : null,
           };
         }
-        if (event.kind === 1059 && nip44?.v2) {
-          if (debug) {
-            console.debug("[wallet] payment request DM kind=1059", event.id);
-          }
-          const wrapRecipients = extractTagPubkeys(event.tags, "p");
-          if (!wrapRecipients.length) {
-            if (debug) {
-              console.debug("[wallet] kind=1059 missing recipient p tags", event.id);
-            }
-            return null;
-          }
-          const wrapKey = nip44.v2.utils.getConversationKey(hexToBytes(secretHex), event.pubkey);
-          const sealJson = await nip44.v2.decrypt(event.content, wrapKey);
-          let sealEvent: NostrEvent | null = null;
-          try {
-            sealEvent = JSON.parse(sealJson) as NostrEvent;
-          } catch {
-            sealEvent = null;
-          }
-          if (!sealEvent || sealEvent.kind !== 13 || typeof sealEvent.content !== "string") {
-            return null;
-          }
-          const senderPubkey = typeof sealEvent.pubkey === "string" ? sealEvent.pubkey : null;
-          if (!senderPubkey) return null;
-          const dmKey = nip44.v2.utils.getConversationKey(hexToBytes(secretHex), senderPubkey);
-          const dmJson = await nip44.v2.decrypt(sealEvent.content, dmKey);
-          let rumor: NostrEvent | null = null;
-          try {
-            rumor = JSON.parse(dmJson) as NostrEvent;
-          } catch {
-            rumor = null;
-          }
-          if (!rumor || (rumor.kind !== 14 && rumor.kind !== 15 && rumor.kind !== 7) || typeof rumor.content !== "string") {
-            return null;
-          }
-          const rumorPubkey = typeof rumor.pubkey === "string" ? rumor.pubkey.trim().toLowerCase() : "";
-          const normalizedSenderPubkey = senderPubkey.trim().toLowerCase();
-          if (!rumorPubkey || rumorPubkey !== normalizedSenderPubkey) {
-            if (debug) {
-              console.debug("[wallet] kind=1059 sender mismatch between seal and rumor", {
-                eventId: event.id,
-                sealPubkey: normalizedSenderPubkey,
-                rumorPubkey,
-              });
-            }
-            return null;
-          }
-          let rumorRecipients = extractTagPubkeys(rumor.tags, "p");
-          if (!rumorRecipients.length) {
-            // NUT-18 payment senders built on CDK leave the rumor's `p` tags out. The wrap
-            // opened with this account's key, so it was addressed here (iOS accepts these
-            // too). A copy the account sent to itself with no tags names no one, so drop it.
-            if (normalizedSenderPubkey === normalizedIdentity) {
-              if (debug) {
-                console.debug("[wallet] self-addressed rumor without recipient p tags", event.id);
-              }
-              return null;
-            }
-            rumorRecipients = [normalizedIdentity];
-          }
-          const rumorCreatedAt =
-            typeof rumor.created_at === "number" && Number.isFinite(rumor.created_at) && rumor.created_at > 0
-              ? Math.floor(rumor.created_at)
-              : null;
-          // The inner rumor's id is the canonical cross-client message identifier (NIP-17).
-          // It is the same for all recipients of the same message, unlike the outer giftwrap id.
-          const rumorId =
-            typeof (rumor as any).id === "string" && /^[0-9a-f]{64}$/i.test((rumor as any).id)
-              ? ((rumor as any).id as string)
-              : null;
+        if (event.kind === 1059) {
+          // taskify-core's NIP-17 rules, shared with iOS and the CLI (fixtures/nip17-vectors.json).
+          const opened = await openNip17GiftWrap(event, new LocalKeySigner(secretHex), nip17Crypto);
+          if (!opened || !NIP17_CHAT_RUMOR_KINDS.has(opened.rumor.kind)) return null;
+          const recipients = nip17MessageRecipients(opened, normalizedIdentity);
+          if (!recipients) return null;
+          const { rumor } = opened;
           return {
             content: rumor.content,
-            senderPubkey,
-            recipientPubkey: rumorRecipients[0] ?? null,
-            recipientPubkeys: rumorRecipients,
-            createdAt: rumorCreatedAt,
-            kind: typeof rumor.kind === "number" ? rumor.kind : null,
-            tags: Array.isArray(rumor.tags) ? (rumor.tags as string[][]) : null,
-            rumorId,
+            senderPubkey: opened.senderPubkey,
+            recipientPubkey: recipients[0] ?? null,
+            recipientPubkeys: recipients,
+            createdAt: rumor.created_at > 0 ? Math.floor(rumor.created_at) : null,
+            kind: rumor.kind,
+            tags: rumor.tags,
+            // The rumor's id is the cross-client message id (the same for every recipient).
+            rumorId: rumor.id,
           };
         }
       } catch (err) {

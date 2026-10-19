@@ -1,7 +1,5 @@
 /** Helpers for chat, contacts and profiles: identity, profile caches, links, DM keys, inbox ids. */
 import React from "react";
-import { bytesToHex } from "@noble/hashes/utils.js";
-import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { getPublicKey } from "nostr-tools";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import {
@@ -423,24 +421,6 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
   } finally {
     clearTimeout(timer);
   }
-}
-
-export function generatePrivateKey(): { hex: string; bytes: Uint8Array } {
-  let bytes: Uint8Array<ArrayBuffer>;
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-  } else {
-    bytes = secp256k1.utils.randomSecretKey();
-  }
-  const hex = bytesToHex(bytes);
-  return { hex, bytes };
-}
-
-export function randomPastTimestampSeconds(maxOffsetSeconds = 2 * 24 * 60 * 60): number {
-  const now = Math.floor(Date.now() / 1000);
-  const offset = Math.floor(Math.random() * maxOffsetSeconds);
-  return Math.max(0, now - offset);
 }
 
 export function dmThreadKeyForMessage(message: Pick<WalletDmMessage, "peerPubkey" | "groupId"> | null | undefined): string {
