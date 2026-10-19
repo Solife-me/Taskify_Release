@@ -156,3 +156,16 @@ if (chatShellKey) {
   }
   if (!args.includes("--json")) console.log("Chat route: no wallet or Cashu chunks.");
 }
+
+// The wallet recovery view (after the wallet's removal date) reads stored data only; it must not
+// load the Cashu SDK or the wallet, so it keeps working once the wallet code is deleted.
+const recoveryKey = Object.keys(manifest).find((key) => key.endsWith("/ui/wallet/WalletRecoveryView.tsx"));
+if (recoveryKey) {
+  const recoveryFiles = [...staticClosure([recoveryKey])].map((key) => `${key}\n${manifest[key].file}`);
+  const forbidden = recoveryFiles.filter((entry) => /cashu-sdk|CashuWalletModal|WalletRuntime|nut16|mint\//i.test(entry));
+  if (forbidden.length) {
+    console.error("The wallet recovery view would load wallet/Cashu chunks:\n" + forbidden.join("\n"));
+    process.exit(1);
+  }
+  if (!args.includes("--json")) console.log("Wallet recovery: no wallet or Cashu chunks.");
+}

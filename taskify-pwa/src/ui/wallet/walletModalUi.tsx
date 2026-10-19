@@ -30,34 +30,8 @@ export function formatLightningAddressDisplay(address: string, baseMaxLength = 3
   return `${localPart.slice(0, maxLocalLength)}${ellipsis}${domainPartWithAt}`;
 }
 
-export function capitalizeWords(value: string): string {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(" ");
-}
+export { capitalizeWords, formatMintDisplayName } from "../../wallet/mintDisplayName";
 
-export function formatMintDisplayName(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname.replace(/^www\./i, "");
-    const hostParts = hostname.split(".").filter(Boolean);
-    const hostLabel = hostParts
-      .slice(Math.max(0, hostParts.length - 2))
-      .map((part) => capitalizeWords(part.replace(/[-_]+/g, " ")))
-      .join(" ");
-    const pathSegments = parsed.pathname.split("/").filter(Boolean);
-    const lastSegment = pathSegments.length ? decodeURIComponent(pathSegments[pathSegments.length - 1]!) : "";
-    if (lastSegment) {
-      const formattedSegment = capitalizeWords(lastSegment.replace(/[-_]+/g, " "));
-      return `${hostLabel || hostname} • ${formattedSegment}`.trim();
-    }
-    return hostLabel || hostname || url;
-  } catch {
-    return url.replace(/^https?:\/\//i, "");
-  }
-}
 
 export function trimMintUrlScheme(url: string): string {
   return url.replace(/^https?:\/\//i, "");

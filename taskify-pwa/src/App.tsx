@@ -60,7 +60,7 @@ import { type PrintPaperSize } from "./components/printPaper";
 import { type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { useCashu } from "./context/walletContexts";
-import { useWalletEnabled } from "./wallet/walletFlags";
+import { useWalletEnabled, useWalletRecoveryShown } from "./wallet/walletFlags";
 import { WalletPhaseOutNotice } from "./ui/wallet/WalletPhaseOutNotice";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
@@ -361,6 +361,7 @@ const EditModal = lazy(() =>
 const EventEditModal = lazy(() => import("./ui/calendar/EventEditModal"));
 /** The wallet's providers and the Cashu SDK: only where the wallet is enabled (see walletContexts). */
 const WalletRuntime = lazy(() => import("./wallet/WalletRuntime"));
+const WalletRecoveryView = lazy(() => import("./ui/wallet/WalletRecoveryView").then((m) => ({ default: m.WalletRecoveryView })));
 /** Background DM sync loads after the app shell; the Chat page remains another lazy boundary. */
 const ChatShell = lazy(() => import("./chat/ChatShell"));
 const UpcomingPage = lazy(() => import("./ui/upcoming/UpcomingPage"));
@@ -1419,13 +1420,16 @@ export default function App() {
   // header view
   const [view, setView] = useState<"board" | "completed" | "board-upcoming" | "bible">("board");
   const walletEnabled = useWalletEnabled();
+  // After the wallet's removal date, a device that had it shows a recovery page instead (C6-2).
+  const walletRecoveryShown = useWalletRecoveryShown();
   useEffect(() => {
     // Closing the wallet out from its own settings leaves nothing to show on its pages.
     if (walletEnabled) return;
+    if (walletRecoveryShown && activePage === "wallet") return;
     if (activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-move-out") {
       startTransition(() => appRouter.navigate(routeForPage("boards", currentBoardId), { replace: true }));
     }
-  }, [activePage, appRouter, currentBoardId, walletEnabled]);
+  }, [activePage, appRouter, currentBoardId, walletEnabled, walletRecoveryShown]);
   const {
     handleOnboardingRestoreFromBackupFile,
     handleOnboardingStart,
@@ -1560,12 +1564,12 @@ export default function App() {
   }, []);
 
   const openWallet = useCallback(() => {
-    if (!walletEnabled) return;
+    if (!walletEnabled && !walletRecoveryShown) return;
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
     prefetchWalletModal();
     startTransition(() => setActivePage("wallet"));
-  }, [prefetchWalletModal, shouldReloadForNavigation, walletEnabled]);
+  }, [prefetchWalletModal, shouldReloadForNavigation, walletEnabled, walletRecoveryShown]);
   const openWalletBounties = useCallback(() => {
     if (!walletEnabled) return;
     if (isOnboardingActiveRef.current) return;
@@ -1720,14 +1724,14 @@ export default function App() {
     if (isOnboardingActiveRef.current) return;
     if (appRouter.initialRouteWasExplicit) return;
     const startupView = settings.startupView;
-    if (startupView === "wallet" && !walletEnabled) return;
+    if (startupView === "wallet" && !walletEnabled && !walletRecoveryShown) return;
     if (startupView === "wallet" || startupView === "upcoming" || startupView === "chat") {
       if (startupView === "wallet" || startupView === "chat") {
         prefetchWalletModal();
       }
       startTransition(() => setActivePage(startupView));
     }
-  }, [appRouter, prefetchWalletModal, setActivePage, settings.startupView, walletEnabled]);
+  }, [appRouter, prefetchWalletModal, setActivePage, settings.startupView, walletEnabled, walletRecoveryShown]);
   const { receiveToken, totalBalance: walletTotalBalance } = useCashu();
 
   useEffect(() => {
@@ -5587,7 +5591,7 @@ export default function App() {
         </Suspense>
       )}
       <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "settings") && (
+        {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "settings" || (activePage === "wallet" && walletRecoveryShown)) && (
           <header className="app-header">
             {activePage === "boards" && (
               <>
@@ -5847,6 +5851,7 @@ export default function App() {
               </>
             )}
             {activePage === "settings" && <div className="app-header__title">Settings</div>}
+            {activePage === "wallet" && walletRecoveryShown && <div className="app-header__title">Wallet</div>}
           </header>
         )}
 
@@ -5957,6 +5962,11 @@ export default function App() {
             router={appRouter}
             route={appRoute}
           />
+        </Suspense>
+      )}
+      {activePage === "wallet" && walletRecoveryShown && (
+        <Suspense fallback={null}>
+          <WalletRecoveryView />
         </Suspense>
       )}
       {activePage === "wallet-bounties" && (
@@ -6096,7 +6106,7 @@ export default function App() {
             </div>
             <div className="app-tab-switcher__label">Upcoming</div>
           </button>
-          {walletEnabled && (
+          {(walletEnabled || walletRecoveryShown) && (
           <button
             type="button"
             className={`app-tab-switcher__btn pressable${activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-move-out" ? " app-tab-switcher__btn--active" : ""}`}

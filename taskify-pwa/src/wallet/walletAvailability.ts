@@ -1,5 +1,5 @@
 import { kvStorage } from "../storage/kvStorage";
-import { __resetWalletFlagsForTests, isWalletClosed, isWalletEnabled, setWalletEnabled } from "./walletFlags";
+import { __resetWalletFlagsForTests, isWalletClosed, isWalletEnabled, isWalletRecoveryShown, setWalletEnabled } from "./walletFlags";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 import {
@@ -162,7 +162,7 @@ export function hasWalletFunds(): boolean {
  * closed-out wallet, funds).
  */
 export function refreshWalletAvailability(): boolean {
-  if (isWalletEnabled()) return true;
+  if (isWalletEnabled() || isWalletRecoveryShown()) return true;
   if (!(isWalletClosed() ? hasWalletFunds() : hasWalletActivity())) return false;
   setWalletEnabled(true);
   return true;

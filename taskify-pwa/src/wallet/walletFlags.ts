@@ -1,10 +1,11 @@
 /**
  * The startup-safe half of wallet availability: whether the (phasing-out) wallet is shown on
- * this device, and whether the device holds any wallet data at all. Reads raw storage only, so
+ * this device (and, after the removal date, whether its recovery view is), and whether the device holds any wallet data at all. Reads raw storage only, so
  * it pulls no wallet code into startup; `walletAvailability` (loaded only where wallet data
  * exists) decides when the wallet comes back.
  */
 import { useSyncExternalStore } from "react";
+import { isWalletRemoved } from "./walletPhaseOut";
 import { kvStorage } from "../storage/kvStorage";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
@@ -69,8 +70,26 @@ const listeners = new Set<() => void>();
 let enabled = readFlag(LS_WALLET_ENABLED);
 let closed = readFlag(LS_WALLET_CLOSED);
 
+/** Shows the recovery view now, for testing it before the removal date. */
+export const LS_WALLET_REMOVAL_PREVIEW = "taskify_wallet_removal_preview_v1";
+
+function walletRemovedNow(): boolean {
+  if (isWalletRemoved()) return true;
+  try {
+    return kvStorage.getItem(LS_WALLET_REMOVAL_PREVIEW) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the full wallet is shown on this device (never after the removal date). */
 export function isWalletEnabled(): boolean {
-  return enabled;
+  return enabled && !walletRemovedNow();
+}
+
+/** After the removal date, a device that had the wallet shows how to recover what is left. */
+export function isWalletRecoveryShown(): boolean {
+  return enabled && walletRemovedNow();
 }
 
 export function isWalletClosed(): boolean {
@@ -80,6 +99,7 @@ export function isWalletClosed(): boolean {
 /** Records the wallet as shown (`true`, sticky) or closed out (`false`). */
 export function setWalletEnabled(next: boolean): void {
   if (enabled === next && closed === !next) return;
+  // (Compares the stored flag, not isWalletEnabled(), which is false after the removal date.)
   enabled = next;
   closed = !next;
   try {
@@ -105,6 +125,10 @@ function subscribe(listener: () => void) {
 
 export function useWalletEnabled(): boolean {
   return useSyncExternalStore(subscribe, isWalletEnabled, isWalletEnabled);
+}
+
+export function useWalletRecoveryShown(): boolean {
+  return useSyncExternalStore(subscribe, isWalletRecoveryShown, isWalletRecoveryShown);
 }
 
 /** Test-only: forget the in-memory flags and re-read storage. */
