@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nip19 } from "nostr-tools";
-import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList, todayDateKey } from "taskify-core";
+import { todayDateKey } from "taskify-core";
 
 // Sub-sheet components
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
@@ -8,7 +8,6 @@ import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
 // Domain types
 import type {
   CalendarEvent,
-  CalendarEventBase,
   CalendarEventParticipant,
   Board,
   Recurrence,
@@ -35,7 +34,6 @@ import {
   resolveSystemTimeZone,
   normalizeTimeZone,
   formatTimeLabel,
-  currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
 // Timezone utilities (from domains)
@@ -72,7 +70,6 @@ import {
 } from "../../lib/shareInbox";
 
 // Document utilities
-import { ensureDocumentPreview } from "../../lib/documents";
 
 // Relay defaults
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
@@ -90,6 +87,7 @@ import { RepeatField } from "../editor/fields/RepeatField";
 import { AttachmentList } from "../editor/fields/AttachmentList";
 import { ContactRow } from "../editor/fields/ContactRow";
 import { ContactShareSheet } from "../editor/fields/ContactShareSheet";
+import { buildEventFromEditor, eventEditorStart } from "../../domains/calendar/eventEditorModel";
 import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import { readDocumentsFromFiles } from "../../lib/documents";
 
@@ -270,10 +268,12 @@ function EventEditModal({
     }
   }, [editableBoards, selectedBoardId]);
 
-  const initialAllDay = event.kind === "date";
+  const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
+  const eventStart = useMemo(() => eventEditorStart(event, systemTimeZone), [event, systemTimeZone]);
+  const initialAllDay = eventStart.allDay;
   const [allDay, setAllDay] = useState(initialAllDay);
   const hasEventTime = !allDay;
-  const initialReminderTime = normalizeReminderTime(event.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
+  const initialReminderTime = eventStart.reminderTime;
 
   const [reminderSelection, setReminderSelection] = useState<ReminderPreset[]>(() => {
     return Array.isArray(event.reminders) ? event.reminders : [];
@@ -281,37 +281,12 @@ function EventEditModal({
   const [reminderTime, setReminderTime] = useState(initialReminderTime);
   const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
 
-  const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
-  const initialStartTzid = event.kind === "time" ? (normalizeTimeZone(event.startTzid) ?? systemTimeZone) : systemTimeZone;
-  const initialEndTzid = event.kind === "time" ? (normalizeTimeZone(event.endTzid) ?? normalizeTimeZone(event.startTzid) ?? systemTimeZone) : systemTimeZone;
-  const [startTzid, setStartTzid] = useState(initialStartTzid);
-  const [endTzid, setEndTzid] = useState(initialEndTzid);
-
-  const initialStartDate = event.kind === "date" ? event.startDate : isoDatePart(event.startISO, initialStartTzid);
-  const initialEndDate = event.kind === "date"
-    ? (event.endDate || event.startDate)
-    : (() => {
-        if (!event.endISO) {
-          const startMs = Date.parse(event.startISO);
-          if (Number.isNaN(startMs)) return initialStartDate;
-          return isoDatePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
-        }
-        return isoDatePart(event.endISO, initialEndTzid);
-      })();
-  const [startDate, setStartDate] = useState(initialStartDate);
-  const [endDate, setEndDate] = useState(initialEndDate);
-
-  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : currentTimeValue(0, initialStartTzid);
-  const initialEndTime = event.kind === "time"
-    ? (() => {
-        if (event.endISO) return isoTimePart(event.endISO, initialEndTzid);
-        const startMs = Date.parse(event.startISO);
-        if (Number.isNaN(startMs)) return currentTimeValue(60, initialStartTzid);
-        return isoTimePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
-      })()
-    : currentTimeValue(60, initialStartTzid);
-  const [startTime, setStartTime] = useState(initialStartTime);
-  const [endTime, setEndTime] = useState(initialEndTime);
+  const [startTzid, setStartTzid] = useState(eventStart.startTzid);
+  const [endTzid, setEndTzid] = useState(eventStart.endTzid);
+  const [startDate, setStartDate] = useState(eventStart.startDate);
+  const [endDate, setEndDate] = useState(eventStart.endDate);
+  const [startTime, setStartTime] = useState(eventStart.startTime);
+  const [endTime, setEndTime] = useState(eventStart.endTime);
 
   const [selectedColumnId, setSelectedColumnId] = useState<string>(() => {
     if (!selectedBoard || !isListLikeBoard(selectedBoard)) return "";
@@ -494,101 +469,36 @@ function EventEditModal({
     setEndTime(isoTimePart(nextEnd, safeEndTzid));
   }, [allDay, endDate, endTime, safeEndTzid, safeStartTzid, startDate, startTime]);
 
-  const normalizeHashtags = (raw: string): string[] | undefined =>
-    normalizeDelimitedValues(raw, /[,\n]+/g, { stripPrefix: "#" });
-
-  const normalizeReferences = (raw: string): string[] | undefined =>
-    normalizeDelimitedValues(raw, /\n+/g);
-
-  const normalizeLocations = (list: string[]): string[] | undefined => normalizeLocationList(list);
-
-  const buildDraft = (): CalendarEvent => {
-    const boardId = selectedBoardId;
-    const columnId = selectedBoard && isListLikeBoard(selectedBoard) ? (selectedColumnId || undefined) : undefined;
-    const normalizedTitle = title.trim() || "Untitled";
-    const normalizedDescription = description.trim();
-    const derivedSummary = (normalizedDescription || (event.summary || "").trim()).trim();
-    const normalizedDocuments = documents.map(ensureDocumentPreview);
-    const normalizedImage = image.trim();
-    const normalizedGeohash = geohash.trim();
-    const normalizedParticipants = participantValidation.normalized;
-
-    const base: CalendarEventBase = {
-      id: event.id,
-      boardId,
-      columnId,
-      order: event.order,
-      title: normalizedTitle,
-      ...(derivedSummary ? { summary: derivedSummary } : {}),
-      ...(normalizedDescription ? { description: normalizedDescription } : {}),
-      ...(normalizedDocuments.length ? { documents: normalizedDocuments } : {}),
-      ...(normalizedImage ? { image: normalizedImage } : {}),
-      ...(normalizeLocations(locations) ? { locations: normalizeLocations(locations) } : {}),
-      ...(normalizedGeohash ? { geohash: normalizedGeohash } : {}),
-      ...(normalizedParticipants.length ? { participants: normalizedParticipants } : {}),
-      ...(normalizeHashtags(hashtagsText) ? { hashtags: normalizeHashtags(hashtagsText) } : {}),
-      ...(normalizeReferences(referencesText) ? { references: normalizeReferences(referencesText) } : {}),
-      ...(reminderSelection.length ? { reminders: reminderSelection.slice() } : {}),
-      ...(allDay ? { reminderTime: normalizeReminderTime(reminderTime) ?? DEFAULT_DATE_REMINDER_TIME } : {}),
-      ...(rule && rule.type !== "none" ? { recurrence: rule, seriesId: event.seriesId || event.id } : {}),
-      ...(event.readOnly ? { readOnly: true } : {}),
-      ...(event.originBoardId ? { originBoardId: event.originBoardId } : {}),
-      ...(event.eventKey ? { eventKey: event.eventKey } : {}),
-      ...(event.inviteTokens ? { inviteTokens: event.inviteTokens } : {}),
-      ...(event.canonicalAddress ? { canonicalAddress: event.canonicalAddress } : {}),
-      ...(event.viewAddress ? { viewAddress: event.viewAddress } : {}),
-      ...(event.inviteToken ? { inviteToken: event.inviteToken } : {}),
-      ...(event.inviteRelays ? { inviteRelays: event.inviteRelays } : {}),
-    };
-
-    if (allDay) {
-      const core = normalizeCalendarEventPayload({
-        kind: "date",
-        title: normalizedTitle,
+  const buildDraft = (): CalendarEvent =>
+    buildEventFromEditor(
+      event,
+      eventStart,
+      {
+        title,
+        description,
+        documents,
+        image,
+        locations,
+        geohash,
+        participants: participantValidation.normalized,
+        hashtagsText,
+        referencesText,
+        reminders: reminderSelection,
+        reminderTime,
+        rule,
+        boardId: selectedBoardId,
+        board: selectedBoard,
+        columnId: selectedColumnId,
+        allDay,
         startDate,
         endDate,
-      });
-      if (!core) return { ...base, kind: "date", startDate } as CalendarEvent;
-      return {
-        ...base,
-        kind: "date",
-        startDate: core.startDate || startDate,
-        ...(core.endDate ? { endDate: core.endDate } : {}),
-      };
-    }
-
-    const normalizedStartTz = normalizeTimeZone(startTzid) ?? systemTimeZone;
-    const normalizedEndTz = normalizeTimeZone(endTzid) ?? normalizedStartTz;
-    const startISO = isoFromDateTime(startDate, startTime || "09:00", normalizedStartTz);
-    const endISO = isoFromDateTime(endDate || startDate, endTime || "10:00", normalizedEndTz);
-
-    const core = normalizeCalendarEventPayload({
-      kind: "time",
-      title: normalizedTitle,
-      startISO,
-      endISO,
-      startTzid: normalizedStartTz,
-      endTzid: normalizedEndTz,
-    });
-    if (!core) {
-      return {
-        ...base,
-        kind: "time",
-        startISO,
-        ...(normalizedStartTz ? { startTzid: normalizedStartTz } : {}),
-        ...(normalizedEndTz ? { endTzid: normalizedEndTz } : {}),
-      } as CalendarEvent;
-    }
-
-    return {
-      ...base,
-      kind: "time",
-      startISO: core.startISO || startISO,
-      ...(core.endISO ? { endISO: core.endISO } : {}),
-      ...(core.startTzid ? { startTzid: core.startTzid } : {}),
-      ...(core.endTzid ? { endTzid: core.endTzid } : {}),
-    };
-  };
+        startTime,
+        endTime,
+        startTzid,
+        endTzid,
+      },
+      systemTimeZone,
+    );
 
   const handleSave = () => {
     if (isReadOnly) return;
