@@ -21,7 +21,7 @@ import {
 } from "../storage/entityStore";
 import { LS_FIRST_RUN_ONBOARDING_DONE, shouldShowFirstRun } from "./firstRunRules";
 
-type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-address" | "chat" | "settings";
+type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-move-out" | "chat" | "settings";
 
 type UseFirstRunOnboardingParams = {
   activePage: ActivePage;

@@ -8,6 +8,7 @@ import { decodeLnurlString, extractDomain } from "../../wallet/walletModalHelper
 import type { LnurlPayData } from "./useLightningFlow";
 import type { LnurlWithdrawData } from "../../wallet/walletModalHelpers";
 import { PaymentRequest } from "@cashu/cashu-ts";
+import { WALLET_NO_INCOMING_MESSAGE } from "../../wallet/walletPhaseOut";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 
 export interface UseScannerFlowOptions {
@@ -315,33 +316,8 @@ export function useScannerFlow({
       }
 
       if (tag === "withdrawrequest") {
-        if (!data?.callback || !data?.k1) throw new Error("LNURL withdraw missing callback parameters");
-        const minWithdrawable = Number(data?.minWithdrawable ?? 0);
-        const maxWithdrawable = Number(data?.maxWithdrawable ?? 0);
-        if (!minWithdrawable || !maxWithdrawable) throw new Error("LNURL withdraw missing withdrawable range");
-
-        const info: LnurlWithdrawData = {
-          lnurl: lnurlValue.trim(),
-          callback: data.callback,
-          domain,
-          k1: data.k1,
-          minWithdrawable,
-          maxWithdrawable,
-          defaultDescription: typeof data?.defaultDescription === "string" ? data.defaultDescription : undefined,
-        };
-
-        setLnurlWithdrawInfo(info);
-        const maxSat = Math.floor(maxWithdrawable / 1000);
-        setLnurlWithdrawAmt(maxSat > 0 ? String(maxSat) : "");
-        setLnurlWithdrawState("idle");
-        setLnurlWithdrawMessage("");
-        setLnurlWithdrawInvoice("");
-        setLnurlPayData(null);
-        setSendMode(null);
-        setShowSendOptions(false);
-        setReceiveMode("lnurlWithdraw");
-        setScannerMessage("");
-        return;
+        // Withdraw-only (C6-1): an LNURL withdraw would bring money into the wallet.
+        throw new Error(WALLET_NO_INCOMING_MESSAGE);
       }
 
       throw new Error("Unsupported LNURL tag");

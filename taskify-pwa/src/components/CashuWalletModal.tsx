@@ -124,11 +124,13 @@ import {
   type NostrEvent,
 } from "../wallet/walletModalHelpers";
 import type { CashuWalletModalProps } from "./cashuWalletModalTypes";
+import { MoveFundsOutSheet } from "../ui/wallet/MoveFundsOutSheet";
+import { WALLET_NO_INCOMING_MESSAGE, walletRemovalDateLabel } from "../wallet/walletPhaseOut";
+import { amountToNumber, loadStore as loadProofStore } from "../wallet/storage";
+import { getWalletSeedMnemonic } from "../wallet/seed";
 import { WalletContactsPickerSheet } from "../ui/wallet/WalletContactsPickerSheet";
 import {
-  EcashReceiveSheet,
   EcashSendSheet,
-  LightningReceiveSheet,
   LightningSendSheet,
   PaymentRequestFulfillSheet,
   WalletHistorySheet,
@@ -140,8 +142,9 @@ import {
 export default function CashuWalletModal({
   open,
   onClose,
-  onOpenAddress,
   onOpenBounties,
+  openMoveFundsOut = false,
+  onMoveFundsOutClosed,
   showBottomNav = false,
   walletConversionEnabled,
   walletSettings,
@@ -2667,15 +2670,12 @@ export default function CashuWalletModal({
           setSendMode(null);
           setShowSendOptions(false);
           setScannerMessage("");
-          const interpretation = interpretEcashInput(pendingScan.token);
-          if (interpretation.kind !== "token") {
-            showToast("Unrecognized eCash token.", 3500);
-            break;
-          }
+          // Withdraw-only: a scanned token is not redeemed here; it is copied for another wallet.
           try {
-            await redeemEcashToken(interpretation.value);
-          } catch (err: any) {
-            showToast(err?.message || "Unable to redeem scanned eCash token.", 4000);
+            await navigator.clipboard.writeText(pendingScan.token);
+            showToast(`${WALLET_NO_INCOMING_MESSAGE} The token was copied.`, 5000);
+          } catch {
+            showToast(WALLET_NO_INCOMING_MESSAGE, 5000);
           }
           break;
         }
@@ -3378,6 +3378,63 @@ export default function CashuWalletModal({
 
   const walletRootClass = `wallet-modal${showBottomNav ? " wallet-modal--with-nav" : ""}`;
 
+  // Move funds out (the wallet is withdraw-only, C6-1). A mint's funds become one token in two
+  // steps: switch to that mint, then, once the wallet has switched, export every note.
+  const [showMoveFundsOut, setShowMoveFundsOut] = useState(false);
+  const [moveOutExportMint, setMoveOutExportMint] = useState<string | null>(null);
+  const [moveOutError, setMoveOutError] = useState("");
+  useEffect(() => {
+    if (open && openMoveFundsOut) setShowMoveFundsOut(true);
+  }, [open, openMoveFundsOut]);
+  const closeMoveFundsOut = useCallback(() => {
+    setShowMoveFundsOut(false);
+    setMoveOutError("");
+    onMoveFundsOutClosed?.();
+  }, [onMoveFundsOutClosed]);
+  const moveOutMints = useMemo(() => {
+    if (!showMoveFundsOut) return [];
+    return Object.entries(loadProofStore())
+      .map(([mint, list]) => ({
+        mintUrl: mint,
+        sat: Array.isArray(list) ? list.reduce((sum, proof) => sum + amountToNumber(proof?.amount), 0) : 0,
+      }))
+      .sort((a, b) => b.sat - a.sat);
+  }, [showMoveFundsOut, proofs, totalBalance]);
+  const requestMoveOutExport = useCallback((targetMint: string) => {
+    setMoveOutError("");
+    setMoveOutExportMint(targetMint);
+    if (targetMint !== mintUrl) {
+      setMintUrl(targetMint).catch((err: any) => {
+        setMoveOutError(err?.message || "Unable to switch to that mint.");
+        setMoveOutExportMint(null);
+      });
+    }
+  }, [mintUrl, setMintUrl]);
+  useEffect(() => {
+    if (!moveOutExportMint || moveOutExportMint !== mintUrl || !walletReady) return;
+    const notes = (proofs || []).filter((proof) => typeof proof?.secret === "string" && proof.secret && amountToNumber(proof.amount) > 0);
+    const total = notes.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!total) throw new Error("This mint has nothing left to move.");
+        resetEcashSendForm();
+        await finalizeManualSelection({ selection: notes.map((proof) => proof.secret), selectedTotal: total, target: total });
+        if (cancelled) return;
+        setShowMoveFundsOut(false);
+        setSendMode("ecash");
+        setShowSendOptions(false);
+      } catch (err: any) {
+        if (!cancelled) setMoveOutError(err?.message || "Unable to make a token.");
+      } finally {
+        if (!cancelled) setMoveOutExportMint(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [moveOutExportMint, mintUrl, walletReady, proofs, finalizeManualSelection, resetEcashSendForm]);
+
   if (!open) return null;
 
   return (
@@ -3452,7 +3509,7 @@ export default function CashuWalletModal({
               </button>
             )}
             <div className="wallet-modal__cta">
-              <button className="accent-button pressable" onClick={openReceiveLightningSheet}>{"Receive"}</button>
+              <button className="accent-button pressable" onClick={() => setShowMoveFundsOut(true)}>Move funds out</button>
               <button
                 type="button"
                 className="wallet-modal__scan-button pressable"
@@ -3469,51 +3526,6 @@ export default function CashuWalletModal({
               <button className="ghost-button pressable" onClick={openLightningSendSheet}>Send</button>
             </div>
           </div>
-      {receiveMode === "ecash" && (
-        <Suspense fallback={null}>
-          <EcashReceiveSheet
-        receiveMode={receiveMode}
-        closeReceiveEcashSheet={closeReceiveEcashSheet}
-        openReceiveLightningSheet={openReceiveLightningSheet}
-        ecashReceiveView={ecashReceiveView}
-        paymentRequestsEnabled={paymentRequestsEnabled}
-        overviewPaymentRequest={overviewPaymentRequest}
-        handleOpenEcashRequestAmountView={handleOpenEcashRequestAmountView}
-        handleOpenReceiveLock={handleOpenReceiveLock}
-        paymentRequestStatusMessage={paymentRequestStatusMessage}
-        paymentRequestError={paymentRequestError}
-        nostrMissingReason={nostrMissingReason}
-        handlePasteEcashClipboard={handlePasteEcashClipboard}
-        recvMsg={recvMsg}
-        mintSelectionOptions={mintSelectionOptions}
-        selectedMintValue={selectedMintValue}
-        setMintUrl={setMintUrl}
-        mintInfoByUrl={mintInfoByUrl}
-        selectedMintLabel={selectedMintLabel}
-        selectedMintBalanceLabel={selectedMintBalanceLabel}
-        canToggleCurrency={canToggleCurrency}
-        handleLightningAmountUnitToggle={handleLightningAmountUnitToggle}
-        ecashRequestPrimaryAmountText={ecashRequestPrimaryAmountText}
-        ecashRequestSecondaryAmountText={ecashRequestSecondaryAmountText}
-        ecashRequestMode={ecashRequestMode}
-        handleSetEcashRequestMode={handleSetEcashRequestMode}
-        primaryCurrency={primaryCurrency}
-        handleEcashRequestKeypadInput={handleEcashRequestKeypadInput}
-        canCreateEcashRequest={canCreateEcashRequest}
-        handleCreateEcashRequest={handleCreateEcashRequest}
-        lastCreatedEcashRequest={lastCreatedEcashRequest}
-        satFormatter={satFormatter}
-        formatSatAmount={formatSatAmount}
-        walletConversionEnabled={walletConversionEnabled}
-        btcUsdPrice={btcUsdPrice}
-        formatUsdAmount={formatUsdAmount}
-        mintUrl={mintUrl}
-        ensureOpenPaymentRequest={ensureOpenPaymentRequest}
-        setLastCreatedEcashRequest={setLastCreatedEcashRequest}
-        setEcashReceiveView={setEcashReceiveView}
-          />
-        </Suspense>
-      )}
 
       <ActionSheet
         open={receiveLockVisible}
@@ -3606,59 +3618,6 @@ export default function CashuWalletModal({
         onDelete={(id) => void nwcSweeps.deleteToken(id)}
       />
 
-      {receiveMode === "lightning" && (
-        <Suspense fallback={null}>
-          <LightningReceiveSheet
-        receiveMode={receiveMode}
-        closeReceiveLightningSheet={closeReceiveLightningSheet}
-        openReceiveEcashSheet={openReceiveEcashSheet}
-        lightningReceiveView={lightningReceiveView}
-        lightningAddressProvider={activeLightningAddressProvider}
-        npubCashLightningAddressEnabled={lightningAddressEnabled}
-        npubCashClaimEnabled={npubCashClaimEnabled}
-        npubCashIdentity={npubCashIdentity}
-        npubCashClaimStatus={npubCashClaimStatus}
-        handleClaimNpubCash={handleClaimNpubCash}
-        handleCopyLightningAddress={nwcWalletActive ? handleCopyNwcReceiveAddress : handleCopyLightningAddress}
-        lightningAddressDisplay={lightningAddressDisplay}
-        npubCashClaimMessage={npubCashClaimMessage}
-        npubCashIdentityError={npubCashIdentityError}
-        handleOpenLightningAmountView={handleOpenLightningAmountView}
-        mintSelectionOptions={mintSelectionOptions}
-        selectedMintValue={selectedMintValue}
-        setMintUrl={setMintUrl}
-        mintInfoByUrl={mintInfoByUrl}
-        selectedMintLabel={selectedMintLabel}
-        selectedMintBalanceLabel={selectedMintBalanceLabel}
-        canToggleCurrency={canToggleCurrency}
-        handleLightningAmountUnitToggle={handleLightningAmountUnitToggle}
-        lightningPrimaryAmountText={lightningPrimaryAmountText}
-        lightningSecondaryAmountText={lightningSecondaryAmountText}
-        primaryCurrency={primaryCurrency}
-        handleLightningAmountKeypadInput={handleLightningAmountKeypadInput}
-        handleCreateInvoice={handleCreateInvoice}
-        canCreateMintInvoice={nwcWalletActive ? parseAmountInput(mintAmt).sats > 0 : canCreateMintInvoice}
-        creatingMintInvoice={nwcWalletActive ? nwcMode.creatingInvoice : creatingMintInvoice}
-        mintError={nwcWalletActive ? mintError || nwcMode.receiveError : mintError}
-        mintQuote={nwcWalletActive ? (nwcMode.receiveInvoice ? { request: nwcMode.receiveInvoice.request } : null) : mintQuote}
-        activeMintInvoice={nwcWalletActive ? nwcMode.receiveInvoice : activeMintInvoice}
-        handleLightningInvoiceBack={nwcWalletActive ? handleNwcInvoiceBack : handleLightningInvoiceBack}
-        lightningInvoiceStatusLabel={
-          nwcWalletActive ? (nwcMode.receiveInvoice?.status === "paid" ? "Received" : "Pending") : lightningInvoiceStatusLabel
-        }
-        nwcMode={nwcWalletActive}
-        nwcWalletLabel={nwcMode.walletLabel}
-        nwcReceiveAddress={nwcMode.receiveAddress}
-        nwcWalletLud16={nwcMode.walletLud16}
-        nwcCustomAddress={nwcMode.customReceiveAddress}
-        onSaveNwcAddress={nwcMode.setCustomReceiveAddress}
-        satFormatter={satFormatter}
-        formatSatAmount={formatSatAmount}
-        invoiceAmountSecondary={invoiceAmountSecondary}
-        mintUrl={mintUrl}
-          />
-        </Suspense>
-      )}
 
       <ActionSheet open={receiveMode === "lnurlWithdraw"} onClose={closeReceiveLnurlWithdrawSheet} title="LNURL Withdraw">
         {lnurlWithdrawInfo ? (
@@ -3699,6 +3658,23 @@ export default function CashuWalletModal({
           <div className="wallet-section text-sm text-secondary">Scan an LNURL withdraw QR code to pull funds into your wallet.</div>
         )}
       </ActionSheet>
+
+      <MoveFundsOutSheet
+        open={showMoveFundsOut}
+        onClose={closeMoveFundsOut}
+        removalDateLabel={walletRemovalDateLabel()}
+        mints={moveOutMints}
+        formatSatAmount={formatSatAmount}
+        busyMint={moveOutExportMint}
+        error={moveOutError}
+        onSendLightning={() => { closeMoveFundsOut(); openLightningSendSheet(); }}
+        onExportMint={requestMoveOutExport}
+        nwcAvailable={hasNwcConnection}
+        onSendNwc={() => { closeMoveFundsOut(); openNwcManager(); }}
+        npubCashAvailable={activeLightningAddressProvider === "npub.cash"}
+        onClaimNpubCash={() => { void handleClaimNpubCash({ auto: false }); }}
+        revealSeed={() => { try { return getWalletSeedMnemonic(); } catch { return null; } }}
+      />
 
       {/* Send options */}
       <ActionSheet open={showSendOptions && sendMode === null} onClose={()=>setShowSendOptions(false)} title="Send">
@@ -4277,7 +4253,6 @@ export default function CashuWalletModal({
             defaultRelays={defaultRelays}
             onResetWalletTokenTracking={onResetWalletTokenTracking}
             onOpenWallets={() => { setShowWalletSettings(false); openNwcManager(); }}
-            onOpenAddress={() => { setShowWalletSettings(false); onOpenAddress?.(); }}
             onOpenSwap={() => { setShowWalletSettings(false); setShowNwcSheet(true); }}
             onOpenMints={() => { setShowWalletSettings(false); setShowMintBalances(true); }}
           />

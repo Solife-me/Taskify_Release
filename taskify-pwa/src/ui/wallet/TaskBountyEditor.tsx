@@ -1,24 +1,23 @@
 // @ts-nocheck -- wallet code (being phased out), moved unchanged out of the task editor. It is
 // deleted with the wallet; tasks keep only the copy-only bounty view (ui/task/TaskBountyToken).
 /**
- * Ecash bounties on a task: attaching one, locking it to someone, signing it over, redeeming it
- * into the wallet, and pinning the task to the wallet's bounty list. The task editor renders
- * these through its bounty slot only where the wallet is enabled.
+ * Ecash bounties on a task, where the wallet is still enabled: revealing, signing over, copying
+ * and removing an existing bounty, and pinning the task to the wallet's bounty list. The task
+ * editor renders these through its bounty slot.
+ *
+ * The wallet is withdraw-only (C6-1): no new bounties are attached, and a bounty is not redeemed
+ * into the Taskify wallet; its token is copied to redeem in any Cashu wallet.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import type { Task } from "../../domains/tasks/taskTypes";
 import { bountyStateLabel, ensureXOnlyHex, normalizeBounty, pubkeysEqual, taskHasBountyList } from "../../domains/tasks/taskUtils";
 import { contactVerifiedNip05 } from "../../domains/tasks/contactUtils";
-import { encryptEcashTokenForRecipient } from "../../domains/nostr/nostrCrypto";
-import { appendWalletHistoryEntry } from "../../domains/backup/backupUtils";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import { contactPrimaryName, type Contact } from "../../lib/contacts";
 import { currentPubkey } from "../../identity/identity";
-import { useCashu } from "../../context/walletContexts";
 import { useToast } from "../../context/ToastContext";
 import { EcashGlyph } from "../../components/EcashGlyph";
 import { LockToNpubSheet, type LockRecipientSelection, type QuickLockOption } from "../bounty/LockToNpubSheet";
-import { BountyAttachSheet } from "../bounty/BountyAttachSheet";
 import { shortenPubkey, toNpubKey } from "../task/pubkeyLabels";
 import type { TaskBountyEditorContext } from "../task/taskBountyExtension";
 
@@ -26,7 +25,6 @@ import type { TaskBountyEditorContext } from "../task/taskBountyExtension";
 export type TaskBountyWalletProps = {
   onRevealBounty?: (taskId: string) => Promise<void>;
   onTransferBounty?: (taskId: string, recipientHex: string) => Promise<void>;
-  onRedeemCoins?: (from: DOMRect) => void;
   walletConversionEnabled: boolean;
   walletPrimaryCurrency: "sat" | "usd";
   bountyListEnabled: boolean;
@@ -42,19 +40,11 @@ export function TaskBountySection({
   nip05Cache,
   onRevealBounty,
   onTransferBounty,
-  onRedeemCoins,
-  walletConversionEnabled,
-  walletPrimaryCurrency,
 }: TaskBountyEditorContext & TaskBountyWalletProps) {
   const { show: showToast } = useToast();
   const [, setBountyState] = useState<Task["bounty"]["state"]>(task.bounty?.state || "locked");
-  const { createSendToken, receiveToken, mintUrl } = useCashu();
-  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [signOverSheetOpen, setSignOverSheetOpen] = useState(false);
-  const [lockToSelf, setLockToSelf] = useState(true);
   const [bountyExpanded, setBountyExpanded] = useState(false);
-  const [lockNpubSheetOpen, setLockNpubSheetOpen] = useState(false);
-  const [lockRecipientSelection, setLockRecipientSelection] = useState<LockRecipientSelection | null>(null);
   const [signingBounty, setSigningBounty] = useState(false);
   const contactsByHex = useMemo(() => {
     const map = new Map<string, Contact>();
@@ -106,97 +96,6 @@ export function TaskBountySection({
     }
     return options;
   }, [contactsByHex, lockLabelForContact, task.completedBy, task.createdBy]);
-  const handleLockRecipientSelect = useCallback((selection: LockRecipientSelection) => {
-    setLockRecipientSelection(selection);
-    setLockToSelf(false);
-    setLockNpubSheetOpen(false);
-  }, []);
-  const handleToggleLockToSelf = useCallback(() => {
-    setLockToSelf((prev) => {
-      const next = !prev;
-      if (next) {
-        setLockRecipientSelection(null);
-      }
-      return next;
-    });
-  }, []);
-  const handleClearLockRecipient = useCallback(() => {
-    setLockRecipientSelection(null);
-  }, []);
-  const handleOpenAttachSheet = useCallback(() => {
-    setLockToSelf(true);
-    setLockRecipientSelection(null);
-    setAttachSheetOpen(true);
-  }, []);
-  async function handleAttachBounty(amountSat: number, overrideMint?: string) {
-    if (!amountSat || amountSat <= 0) {
-      throw new Error("Enter an amount greater than zero.");
-    }
-    const recipientPubkey = lockRecipientSelection
-      ? normalizeNostrPubkey(lockRecipientSelection.value)
-      : null;
-    const recipientHex = ensureXOnlyHex(recipientPubkey);
-    if (lockRecipientSelection && (!recipientPubkey || !recipientHex)) {
-      throw new Error("Selected npub is invalid.");
-    }
-    const sendOptions: { p2pk?: { pubkey: string }; mintUrl?: string } = {};
-    if (recipientPubkey) {
-      sendOptions.p2pk = { pubkey: recipientPubkey };
-    }
-    if (overrideMint?.trim()) {
-      sendOptions.mintUrl = overrideMint.trim();
-    }
-    const { token: tok, lockInfo, mintUrl: sendMintUrl } = await createSendToken(amountSat, sendOptions);
-    const bountyMint = sendMintUrl || overrideMint || mintUrl;
-    const lockType: Task["bounty"]["lock"] =
-      lockInfo?.type === "p2pk" ? "p2pk" : lockToSelf ? "unknown" : "none";
-    const selfPubkey = currentPubkey() ?? undefined;
-    const selfHex = ensureXOnlyHex(selfPubkey);
-    const bounty: Task["bounty"] = {
-      id: crypto.randomUUID(),
-      token: lockToSelf || recipientHex ? "" : tok,
-      amount: amountSat,
-      mint: bountyMint,
-      state: lockToSelf || recipientHex ? "locked" : "unlocked",
-      owner: task.createdBy || currentPubkey() || "",
-      sender: currentPubkey() || "",
-      receiver: recipientHex || (lockToSelf ? selfHex : undefined) || undefined,
-      updatedAt: new Date().toISOString(),
-      lock: lockType,
-    };
-    if (recipientHex) {
-      const enc = await encryptEcashTokenForRecipient(recipientHex, tok);
-      bounty.enc = enc;
-    } else if (lockToSelf) {
-      const funderHex = selfHex || "";
-      if (!funderHex) {
-        throw new Error("Locking to yourself requires a connected Nostr key.");
-      }
-      const enc = await encryptEcashTokenForRecipient(funderHex, tok);
-      bounty.enc = enc;
-    }
-    save({ bounty });
-    const summaryPrefix = recipientHex
-      ? "Locked bounty"
-      : lockToSelf
-        ? "Hidden bounty"
-        : "Attached bounty";
-    appendWalletHistoryEntry({
-      id: `attach-bounty-${bounty.id}`,
-      summary: `${summaryPrefix} • ${amountSat} sats`,
-      detail: tok,
-      detailKind: "token",
-      type: "ecash",
-      direction: "out",
-      amountSat,
-      entryKind: "bounty-attachment",
-      relatedTaskTitle: task.title || undefined,
-      mintUrl: bountyMint ?? undefined,
-    });
-    setAttachSheetOpen(false);
-    setLockToSelf(true);
-    setLockRecipientSelection(null);
-  }
   useEffect(() => {
     setSigningBounty(false);
   }, [task.id]);
@@ -317,7 +216,7 @@ export function TaskBountySection({
     if (!token) return;
     try {
       await navigator.clipboard.writeText(token);
-      showToast("Bounty token copied", 1800);
+      showToast("Bounty token copied. Redeem it in any Cashu wallet.", 2600);
     } catch (error) {
       console.error("Failed to copy bounty token", error);
       alert("Unable to copy bounty token.");
@@ -335,37 +234,6 @@ export function TaskBountySection({
     if (!next) return;
     setBountyState("claimed");
     save({ bounty: next });
-  }
-
-  async function redeemCurrentBounty(fromRect?: DOMRect) {
-    if (!task.bounty?.token) return;
-    try {
-      const bountyToken = task.bounty.token;
-      const res = await receiveToken(bountyToken);
-      if (res.savedForLater) {
-        alert("Token saved for later redemption. We'll redeem it when your connection returns.");
-        return;
-      }
-      if (res.crossMint) {
-        alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
-      }
-      const amt = res.proofs.reduce((a, p) => a + (p?.amount || 0), 0);
-      appendWalletHistoryEntry({
-        id: `redeem-bounty-${Date.now()}`,
-        summary: `Redeemed bounty • ${amt} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
-        detail: bountyToken,
-        detailKind: "token",
-        type: "ecash",
-        direction: "in",
-        amountSat: amt,
-        mintUrl: res.usedMintUrl ?? task.bounty?.mint ?? undefined,
-      });
-      onRedeemCoins?.(fromRect);
-      save({ bounty: undefined });
-    } catch (error) {
-      console.error(error);
-      alert("Unable to redeem bounty token right now.");
-    }
   }
 
   function handleRemoveBounty() {
@@ -434,13 +302,6 @@ export function TaskBountySection({
                     <>
                       <button
                         className="accent-button button-sm pressable"
-                        onClick={(e) => redeemCurrentBounty((e.currentTarget as HTMLElement).getBoundingClientRect())}
-                        disabled={!bountyTokenReady}
-                      >
-                        Redeem
-                      </button>
-                      <button
-                        className="ghost-button button-sm pressable"
                         onClick={handleCopyBountyToken}
                         disabled={!bountyTokenReady}
                       >
@@ -563,24 +424,7 @@ export function TaskBountySection({
               )}
             </div>
           </section>
-        ) : (
-          <button
-            type="button"
-            className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-            onClick={handleOpenAttachSheet}
-          >
-            Attach bounty
-          </button>
-        )}
-    <LockToNpubSheet
-      open={lockNpubSheetOpen}
-      onClose={() => setLockNpubSheetOpen(false)}
-      contacts={contacts}
-      quickOptions={quickLockOptions}
-      nip05Cache={nip05Cache}
-      onSelect={handleLockRecipientSelect}
-      selected={lockRecipientSelection}
-    />
+        ) : null}
     <LockToNpubSheet
       open={signOverSheetOpen}
       onClose={() => setSignOverSheetOpen(false)}
@@ -589,19 +433,6 @@ export function TaskBountySection({
       nip05Cache={nip05Cache}
       onSelect={handleSignOverSelection}
       selected={null}
-    />
-    <BountyAttachSheet
-      open={attachSheetOpen}
-      onClose={() => setAttachSheetOpen(false)}
-      onAttach={handleAttachBounty}
-      lockToSelf={lockToSelf}
-      onToggleLockToSelf={handleToggleLockToSelf}
-      onOpenLockContacts={() => setLockNpubSheetOpen(true)}
-      lockRecipient={lockRecipientSelection}
-      onClearRecipient={handleClearLockRecipient}
-      walletConversionEnabled={walletConversionEnabled}
-      walletPrimaryCurrency={walletPrimaryCurrency}
-      mintUrl={mintUrl}
     />
     </>
   );

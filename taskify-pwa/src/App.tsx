@@ -201,9 +201,6 @@ import {
   deriveBoardNostrKeys,
   type BoardNostrKeyPair,
 } from "./domains/nostr/nostrKeyUtils";
-import {
-  appendWalletHistoryEntry,
-} from "./domains/backup/backupUtils";
 import { useSettingsSync } from "./domains/tasks/settingsHook";
 import {
   withBoardOrder,
@@ -297,7 +294,6 @@ import { useBibleTrackerActions } from "./domains/scripture/useBibleTrackerActio
 import { compoundColumnKey } from "./domains/tasks/boardUtils";
 import {
   flyCheckToTarget,
-  flyCoinsToTarget,
   flyTaskCard,
   taskArrivalDestination,
   type TaskArrivalDestination,
@@ -374,7 +370,6 @@ const TaskBountyPinButton = lazy(() => import("./ui/wallet/TaskBountyEditor").th
 // Opened on demand: kept out of startup (scripts/startup-budget.mjs).
 const ShareBoardDialogs = lazy(() => import("./ui/board/ShareBoardDialogs").then((m) => ({ default: m.ShareBoardDialogs })));
 const WalletBountiesView = lazy(() => import("./ui/wallet/WalletBountiesView").then((m) => ({ default: m.WalletBountiesView })));
-const WalletAddressView = lazy(() => import("./ui/wallet/WalletAddressView").then((m) => ({ default: m.WalletAddressView })));
 const NoteViewerModal = lazy(() =>
   import("./ui/task/NoteModals").then((module) => ({ default: module.NoteViewerModal })),
 );
@@ -1427,7 +1422,7 @@ export default function App() {
   useEffect(() => {
     // Closing the wallet out from its own settings leaves nothing to show on its pages.
     if (walletEnabled) return;
-    if (activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-address") {
+    if (activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-move-out") {
       startTransition(() => appRouter.navigate(routeForPage("boards", currentBoardId), { replace: true }));
     }
   }, [activePage, appRouter, currentBoardId, walletEnabled]);
@@ -1577,12 +1572,16 @@ export default function App() {
     if (shouldReloadForNavigation()) return;
     startTransition(() => setActivePage("wallet-bounties"));
   }, [shouldReloadForNavigation, walletEnabled]);
-  const openWalletAddress = useCallback(() => {
+  const openMoveFundsOut = useCallback(() => {
     if (!walletEnabled) return;
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
-    startTransition(() => setActivePage("wallet-address"));
-  }, [shouldReloadForNavigation, walletEnabled]);
+    prefetchWalletModal();
+    startTransition(() => setActivePage("wallet-move-out"));
+  }, [prefetchWalletModal, shouldReloadForNavigation, walletEnabled]);
+  const handleMoveFundsOutClosed = useCallback(() => {
+    if (activePage === "wallet-move-out") startTransition(() => setActivePage("wallet"));
+  }, [activePage]);
   const closeWallet = useCallback(() => {
     startTransition(() => setActivePage("boards"));
   }, []);
@@ -2093,7 +2092,6 @@ export default function App() {
   // wallet button target for coin animation
   const boardSelectorRef = useRef<HTMLSelectElement>(null);
   const boardSelectorBottomRef = useRef<HTMLSelectElement>(null);
-  const walletButtonRef = useRef<HTMLButtonElement>(null);
   const boardDropContainerRef = useRef<HTMLDivElement>(null);
   const boardDropListRef = useRef<HTMLDivElement>(null);
   const upcomingButtonRef = useRef<HTMLButtonElement>(null);
@@ -2236,10 +2234,6 @@ export default function App() {
   }, [pendingFocusColumnId, view, currentBoardId, isListBoard, listColumnSources, focusListColumn]);
   function flyToCompleted(from: DOMRect) {
     flyCheckToTarget(flyLayerRef.current, completedTabRef.current, from);
-  }
-
-  function flyCoinsToWallet(from: DOMRect) {
-    flyCoinsToTarget(flyLayerRef.current, walletButtonRef.current, from);
   }
 
   function flyNewTask(from: DOMRect | null, dest: TaskArrivalDestination) {
@@ -2827,7 +2821,8 @@ export default function App() {
     completeTask,
     restoreTask,
     revealBounty,
-    claimBounty: (id: string, from?: DOMRect) => (walletEnabled ? claimBounty(id, from) : copyBountyToken(id)),
+    // The wallet is withdraw-only: a bounty is never redeemed into it; its token is copied.
+    claimBounty: (id: string) => copyBountyToken(id),
     editTask: (task) => setEditing({ type: "task", originalType: "task", originalId: task.id, task }),
     editEvent: (event) => setEditing({ type: "event", originalType: "event", originalId: event.id, event }),
     toggleSubtask,
@@ -4541,46 +4536,6 @@ export default function App() {
     }
   }
 
-  async function claimBounty(id: string, from?: DOMRect) {
-    const t = tasks.find(x => x.id === id);
-    if (!t || !t.bounty || t.bounty.state !== 'unlocked' || !t.bounty.token) return;
-    try {
-      const bountyToken = t.bounty.token;
-      const res = await receiveToken(bountyToken);
-      if (res.savedForLater) {
-        alert('Token saved for later redemption. We\'ll redeem it when your connection returns.');
-        return;
-      }
-      if (res.crossMint) {
-        alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
-      }
-      const redeemedAmount = res.proofs.reduce((sum, proof) => sum + (Number((proof as any)?.amount || 0) || 0), 0);
-      appendWalletHistoryEntry({
-        id: `redeem-bounty-${Date.now()}`,
-        summary: `Redeemed bounty • ${redeemedAmount} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
-        detail: bountyToken,
-        detailKind: "token",
-        type: "ecash",
-        direction: "in",
-        amountSat: redeemedAmount,
-        mintUrl: res.usedMintUrl ?? t.bounty.mint ?? undefined,
-      });
-      try { if (from) flyCoinsToWallet(from); } catch {}
-      const nextBounty = normalizeBounty({ ...t.bounty, token: '', state: 'claimed', updatedAt: new Date().toISOString() });
-      if (!nextBounty) return;
-      const updated = normalizeTaskBounty({
-        ...t,
-        bounty: nextBounty,
-        lastEditedBy: normalizeAgentPubkey(currentPubkey()) ?? t.lastEditedBy ?? t.createdBy,
-      });
-      setTasks(prev => prev.map(x => x.id === id ? updated : x));
-      setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
-      void maybePublishTask(updated);
-    } catch (e) {
-      alert('Redeem failed: ' + (e as Error).message);
-    }
-  }
-
   const reminderNotificationOffer = useReminderNotificationOffer({
     pushEnabled: !!settings.pushNotifications?.enabled,
     pushConfigured: !!workerBaseUrl && !!vapidPublicKey,
@@ -5592,7 +5547,6 @@ export default function App() {
   const taskBountyWalletProps = {
     onRevealBounty: revealBounty,
     onTransferBounty: transferBounty,
-    onRedeemCoins: (rect: DOMRect) => flyCoinsToWallet(rect),
     walletConversionEnabled: settings.walletConversionEnabled,
     walletPrimaryCurrency: settings.walletPrimaryCurrency,
     bountyListEnabled,
@@ -5633,7 +5587,7 @@ export default function App() {
         </Suspense>
       )}
       <div className="app-shell mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "wallet-address" || activePage === "settings") && (
+        {(activePage === "boards" || activePage === "upcoming" || activePage === "wallet-bounties" || activePage === "settings") && (
           <header className="app-header">
             {activePage === "boards" && (
               <>
@@ -5892,20 +5846,6 @@ export default function App() {
                 </div>
               </>
             )}
-            {activePage === "wallet-address" && (
-              <>
-                <div className="app-header__title">Address</div>
-                <div className="app-header__right">
-                  <button
-                    type="button"
-                    className="ghost-button button-sm pressable"
-                    onClick={openWallet}
-                  >
-                    Wallet
-                  </button>
-                </div>
-              </>
-            )}
             {activePage === "settings" && <div className="app-header__title">Settings</div>}
           </header>
         )}
@@ -6034,15 +5974,6 @@ export default function App() {
           />
         </Suspense>
       )}
-      {activePage === "wallet-address" && (
-        <Suspense fallback={null}>
-          <WalletAddressView
-            settings={settings}
-            setSettings={setSettings}
-            defaultRelays={defaultRelays}
-          />
-        </Suspense>
-      )}
       {activePage === "settings" && (
         <Suspense fallback={null}>
           <SettingsModal
@@ -6167,9 +6098,8 @@ export default function App() {
           </button>
           {walletEnabled && (
           <button
-            ref={walletButtonRef}
             type="button"
-            className={`app-tab-switcher__btn pressable${activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-address" ? " app-tab-switcher__btn--active" : ""}`}
+            className={`app-tab-switcher__btn pressable${activePage === "wallet" || activePage === "wallet-bounties" || activePage === "wallet-move-out" ? " app-tab-switcher__btn--active" : ""}`}
             onClick={openWallet}
             onPointerEnter={prefetchWalletModal}
             onFocus={prefetchWalletModal}
@@ -6527,7 +6457,7 @@ export default function App() {
       <WalletPhaseOutNotice
         hasBalance={walletEnabled && walletTotalBalance > 0}
         suppressed={showFirstRunOnboarding}
-        onOpenWallet={openWallet}
+        onMoveFundsOut={openMoveFundsOut}
       />
 
       <Suspense fallback={null}>
@@ -6560,7 +6490,8 @@ export default function App() {
               defaultRelays={defaultRelays}
               openWalletBounties={openWalletBounties}
               onResetWalletTokenTracking={handleResetWalletTokenTracking}
-              openWalletAddress={openWalletAddress}
+              moveFundsOut={activePage === "wallet-move-out"}
+              onMoveFundsOutClosed={handleMoveFundsOutClosed}
               setSettings={setSettings}
               settings={settings}
               showWalletShell={showWalletShell}

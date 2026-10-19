@@ -12,7 +12,6 @@ type Props = {
   defaultRelays: string[];
   onResetWalletTokenTracking: () => void;
   onOpenWallets: () => void;
-  onOpenAddress: () => void;
   onOpenSwap: () => void;
   onOpenMints: () => void;
 };
@@ -25,7 +24,6 @@ export function WalletSettingsSheet({
   defaultRelays,
   onResetWalletTokenTracking,
   onOpenWallets,
-  onOpenAddress,
   onOpenSwap,
   onOpenMints,
 }: Props) {
@@ -41,7 +39,6 @@ export function WalletSettingsSheet({
     <ActionSheet open={open} onClose={onClose} title="Wallet Settings">
       <div className="space-y-3">
         {row("Wallets", "Add and switch between eCash and NWC", "◫", onOpenWallets)}
-        {row("Lightning Address", "Choose what Receive shows for each wallet", "@", onOpenAddress)}
         {row("Swap", "Move funds between wallets", "⇄", onOpenSwap)}
         {row("Mints", "Manage eCash balances", "▤", onOpenMints)}
         <WalletSection

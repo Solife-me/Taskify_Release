@@ -13,7 +13,7 @@ export function useWalletShellState({
   showToast,
   walletEnabled,
 }: UseWalletShellStateParams) {
-  const showWallet = walletEnabled && activePage === "wallet";
+  const showWallet = walletEnabled && (activePage === "wallet" || activePage === "wallet-move-out");
   const showChat = activePage === "chat";
   const showWalletShell = showWallet;
   const walletModalPrefetchedRef = useRef(false);

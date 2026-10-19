@@ -2,12 +2,14 @@ import { useCallback, useState } from "react";
 import { Modal } from "../Modal";
 import { kvStorage } from "../../storage/kvStorage";
 import { LS_WALLET_PHASE_OUT_NOTICE_SEEN } from "../../localStorageKeys";
+import { walletRemovalDateLabel } from "../../wallet/walletPhaseOut";
 
 export const WALLET_PHASE_OUT_NOTICE_TITLE = "The Taskify wallet is being phased out";
 
-export const WALLET_PHASE_OUT_NOTICE_PARAGRAPHS = [
+export const WALLET_PHASE_OUT_NOTICE_PARAGRAPHS: string[] = [
   "Dear Taskify User,",
   "We appreciate you choosing to use our app and are committed to providing the best possible user experience. As a result of this commitment we have decided to phase out the Taskify wallet. Removing the wallet will allow us to spend more time improving the core app experience and can improve the app performance.",
+  `The wallet no longer takes in new funds, and it closes on ${walletRemovalDateLabel()}. After that, Taskify only shows how to recover what is left.`,
   "We encourage you to move any remaining funds immediately. If you're looking for another ecash wallet, Minibits and Cashu.me are both great options.",
   "As always feel free to reach out if you have any questions.",
 ];
@@ -24,12 +26,12 @@ function readSeen(): boolean {
 export function WalletPhaseOutNotice({
   hasBalance,
   suppressed,
-  onOpenWallet,
+  onMoveFundsOut,
 }: {
   hasBalance: boolean;
   /** True while something else (e.g. first-run onboarding) owns the screen. */
   suppressed: boolean;
-  onOpenWallet: () => void;
+  onMoveFundsOut: () => void;
 }) {
   const [seen, setSeen] = useState(readSeen);
 
@@ -60,10 +62,10 @@ export function WalletPhaseOutNotice({
           className="accent-button button-sm pressable"
           onClick={() => {
             dismiss();
-            onOpenWallet();
+            onMoveFundsOut();
           }}
         >
-          Open wallet
+          Move funds out
         </button>
       </div>
     </Modal>

@@ -14,9 +14,14 @@ test.each([
   [{ page: "chat", conversationId: "peer:1" }, "/chat/peer%3A1"],
   [{ page: "settings", section: "notifications" }, "/settings/notifications"],
   [{ page: "wallet-bounties" }, "/wallet/bounties"],
+  [{ page: "wallet-move-out" }, "/wallet/move-out"],
 ] as const)("page route %j formats as %s and round-trips", (route, expected) => {
   expect(formatAppRoute(route)).toBe(expected);
   expect(parseAppRoute(expected)).toEqual(route);
+});
+
+test("the retired wallet address page opens the wallet", () => {
+  expect(parseAppRoute("/wallet/address")).toEqual({ page: "wallet" });
 });
 
 test("shared task, event and quick-add paths resolve to board overlays", () => {

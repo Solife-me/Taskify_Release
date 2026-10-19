@@ -1,6 +1,6 @@
 /**
- * Small flights across the screen that show where something went: a check to Completed, coins to
- * the wallet, a new task to its column or to Upcoming. Each draws into `layer` (a fixed overlay)
+ * Small flights across the screen that show where something went: a check to Completed, a new
+ * task to its column or to Upcoming. Each draws into `layer` (a fixed overlay)
  * and cleans up after itself.
  */
 import { isListLikeBoard } from "taskify-core";
@@ -62,59 +62,6 @@ export function flyCheckToTarget(layer: HTMLElement | null, targetEl: HTMLElemen
       try { layer.removeChild(dot); } catch {}
     }, 750);
   });
-}
-
-export function flyCoinsToTarget(layer: HTMLElement | null, targetEl: HTMLElement | null, from: DOMRect): void {
-  if (!layer || !targetEl) return;
-  const target = targetEl.getBoundingClientRect();
-
-  const startX = from.left + from.width / 2;
-  const startY = from.top + from.height / 2;
-  const endX = target.left + target.width / 2;
-  const endY = target.top + target.height / 2;
-
-  const rem = (() => {
-    try { return parseFloat(getComputedStyle(document.documentElement).fontSize) || 16; } catch { return 16; }
-  })();
-  const coinSize = 1.25 * rem; // 20px @ 16px base
-  const coinFont = 0.875 * rem; // 14px @ 16px base
-  const coinCount = 5;
-
-  const makeCoin = () => {
-    const coin = document.createElement('div');
-    coin.style.position = 'fixed';
-    coin.style.left = `${startX - coinSize / 2}px`;
-    coin.style.top = `${startY - coinSize / 2}px`;
-    coin.style.width = `${coinSize}px`;
-    coin.style.height = `${coinSize}px`;
-    coin.style.display = 'grid';
-    coin.style.placeItems = 'center';
-    coin.style.fontSize = `${coinFont}px`;
-    coin.style.lineHeight = `${coinSize}px`;
-    coin.style.background = 'transparent';
-    coin.style.boxShadow = 'none';
-    coin.style.zIndex = '1000';
-    coin.style.transform = 'translate(0, 0) scale(1)';
-    coin.style.transition = 'transform 700ms cubic-bezier(.2,.7,.3,1), opacity 450ms ease 450ms';
-    coin.textContent = '🥜';
-    return coin;
-  };
-
-  for (let i = 0; i < coinCount; i++) {
-    const coin = makeCoin();
-    layer.appendChild(coin);
-    const dx = endX - startX;
-    const dy = endY - startY;
-    // slight horizontal variance per coin
-    const wobble = (i - (coinCount - 1) / 2) * (0.4 * rem);
-    setTimeout(() => {
-      coin.style.transform = `translate(${dx + wobble}px, ${dy}px) scale(0.6)`;
-      coin.style.opacity = '0.35';
-      setTimeout(() => {
-        try { layer.removeChild(coin); } catch {}
-      }, 800);
-    }, i * 140);
-  }
 }
 
 export function flyTaskCard(

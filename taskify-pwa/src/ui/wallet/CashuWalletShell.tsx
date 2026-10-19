@@ -7,7 +7,9 @@ const CashuWalletModal = lazy(loadCashuWalletModal);
 type CashuWalletShellProps = {
   closeWallet: () => void;
   defaultRelays: string[];
-  openWalletAddress: () => void;
+  /** The "Move funds out" page: the wallet opens at that sheet. */
+  moveFundsOut: boolean;
+  onMoveFundsOutClosed: () => void;
   openWalletBounties: () => void;
   onResetWalletTokenTracking: () => void;
   setSettings: (patch: Partial<Settings>) => void;
@@ -19,7 +21,8 @@ type CashuWalletShellProps = {
 export function CashuWalletShell({
   closeWallet,
   defaultRelays,
-  openWalletAddress,
+  moveFundsOut,
+  onMoveFundsOutClosed,
   openWalletBounties,
   onResetWalletTokenTracking,
   setSettings,
@@ -32,7 +35,8 @@ export function CashuWalletShell({
       <CashuWalletModal
         open={showWalletShell}
         onClose={closeWallet}
-        onOpenAddress={openWalletAddress}
+        openMoveFundsOut={moveFundsOut}
+        onMoveFundsOutClosed={onMoveFundsOutClosed}
         onOpenBounties={openWalletBounties}
         showBottomNav
         walletConversionEnabled={settings.walletConversionEnabled}

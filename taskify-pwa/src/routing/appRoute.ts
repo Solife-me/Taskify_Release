@@ -9,7 +9,7 @@ export type ActivePage =
   | "upcoming"
   | "wallet"
   | "wallet-bounties"
-  | "wallet-address"
+  | "wallet-move-out"
   | "chat"
   | "settings";
 
@@ -47,7 +47,7 @@ export type AppRoute = (
   | { page: "settings"; section?: string }
   | { page: "wallet" }
   | { page: "wallet-bounties" }
-  | { page: "wallet-address" }
+  | { page: "wallet-move-out" }
 ) & OverlayField;
 
 const ACTIVE_PAGES = new Set<ActivePage>([
@@ -55,7 +55,7 @@ const ACTIVE_PAGES = new Set<ActivePage>([
   "upcoming",
   "wallet",
   "wallet-bounties",
-  "wallet-address",
+  "wallet-move-out",
   "chat",
   "settings",
 ]);
@@ -171,8 +171,11 @@ function parsePageRoute(url: URL): AppRoute | null {
     route = { page: "wallet" };
   } else if (parts[0] === "wallet" && parts[1] === "bounties" && parts.length === 2) {
     route = { page: "wallet-bounties" };
+  } else if (parts[0] === "wallet" && parts[1] === "move-out" && parts.length === 2) {
+    route = { page: "wallet-move-out" };
   } else if (parts[0] === "wallet" && parts[1] === "address" && parts.length === 2) {
-    route = { page: "wallet-address" };
+    // The receive address page was retired with the withdraw-only wallet (C6-1).
+    route = { page: "wallet" };
   }
 
   if (!route) return null;
@@ -236,8 +239,8 @@ function formatPage(route: AppRoute): string {
       return "/wallet";
     case "wallet-bounties":
       return "/wallet/bounties";
-    case "wallet-address":
-      return "/wallet/address";
+    case "wallet-move-out":
+      return "/wallet/move-out";
   }
 }
 

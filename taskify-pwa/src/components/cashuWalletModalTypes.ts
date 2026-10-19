@@ -3,7 +3,9 @@ import type { Settings } from "../domains/tasks/settingsTypes";
 export interface CashuWalletModalProps {
   open: boolean;
   onClose: () => void;
-  onOpenAddress?: () => void;
+  /** Open straight into "Move funds out" (the phase-out notice links here). */
+  openMoveFundsOut?: boolean;
+  onMoveFundsOutClosed?: () => void;
   onOpenBounties?: () => void;
   showBottomNav?: boolean;
   walletConversionEnabled: boolean;
