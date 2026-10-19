@@ -1172,7 +1172,7 @@ failing test first.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C4-1 | Pending | | |
-| C4-2 | Pending | | |
-| C4-3 | Pending | | |
-| C4-4 | Pending | | |
+| C4-1 | Approve | 2026-10-19 | Done: `nostr/durablePublisher.ts` records every task and event publish (and deletion) before any async work, keeps it on failure, retries with backoff (5 s, 15 s, 60 s, then 5 min), on reconnecting and on the next launch, and sends the item as it is at retry time; items with a waiting change stay marked as syncing. Intents are preloaded at startup. 43 swallowed `.catch(() => {})` calls on publish paths removed (board metadata, re-sent ahead of every item, keeps its catches). Tests: 8, including the offline-attachment case. Checked in a production build: edits queue and clear, and a stored intent is resumed after a reload. Not done: version stamps still live on task objects (`_nostrAt`); moving them belongs with C4-2, which owns the receive side that reads them |
+| C4-2 | Approve | 2026-10-19 | In progress (recommended order) |
+| C4-3 | Approve | 2026-10-19 | In progress (recommended order) |
+| C4-4 | Approve | 2026-10-19 | In progress (recommended order) |

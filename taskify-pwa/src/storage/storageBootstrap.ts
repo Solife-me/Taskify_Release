@@ -20,6 +20,7 @@ import {
   LS_GROUP_CHATS,
   LS_GROUP_MUTED,
   LS_GROUP_LEFT,
+  LS_PUBLISH_INTENTS,
 } from "../localStorageKeys";
 import { LS_BACKGROUND_IMAGE } from "../domains/storageKeys";
 import { RECURRING_SERIES_CUTOFFS_KEY } from "../domains/tasks/recurrenceCutoffs";
@@ -138,6 +139,7 @@ export async function initializeStorageBoundaries(): Promise<void> {
       LS_GROUP_LEFT,
       PROFILE_SHARE_CACHE_KEY,
       INBOX_PROCESSED_KEY,
+      LS_PUBLISH_INTENTS, // changes waiting to reach relays — must preload so they resume on launch
     ]),
   ]);
 

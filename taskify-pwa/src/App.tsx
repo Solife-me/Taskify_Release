@@ -313,6 +313,8 @@ import { InlineTaskOverlays } from "./ui/task/InlineTaskOverlays";
 import { useTaskPersistence } from "./nostr/useTaskPersistence";
 import { BoardSyncLedger } from "./nostr/boardSyncLedger";
 import { BoardPublisher } from "./nostr/boardPublisher";
+import { DurablePublisher } from "./nostr/durablePublisher";
+import { LS_PUBLISH_INTENTS } from "./localStorageKeys";
 import { sameDocumentList, sameStringList } from "./nostr/boardWire";
 import { mergeInviteTokens } from "./nostr/calendarWire";
 import { mergeIncomingTask, parseTaskEvent } from "./nostr/taskEventMerge";
@@ -848,7 +850,7 @@ export default function App() {
     if (!plan) return;
     setTasks(plan.tasks);
     if (plan.created && plan.scheduledEntryId) {
-      maybePublishTaskRef.current?.(plan.created)?.catch(() => {});
+      void maybePublishTaskRef.current?.(plan.created);
       const scheduledEntryId = plan.scheduledEntryId;
       setScriptureMemory((prev) => scheduleScriptureEntry(prev, scheduledEntryId, now.toISOString()));
     }
@@ -882,8 +884,8 @@ export default function App() {
     const plan = planFastingReminders(tasksStore().get(), { targetBoard: targetBoard ?? undefined, now: new Date(), settings });
     if (!plan) return;
     setTasks(plan.tasks);
-    plan.publish.forEach((task) => maybePublishTaskRef.current?.(task, targetBoard ?? undefined)?.catch(() => {}));
-    plan.publishDeleted.forEach((task) => publishTaskDeletedRef.current?.(task)?.catch(() => {}));
+    plan.publish.forEach((task) => void maybePublishTaskRef.current?.(task, targetBoard ?? undefined));
+    plan.publishDeleted.forEach((task) => void publishTaskDeletedRef.current?.(task));
   }, [
     boards,
     settings.fastingRemindersEnabled,
@@ -1272,7 +1274,7 @@ export default function App() {
         inboxItem,
       };
       setTasks((prev) => [...prev, task]);
-      maybePublishTaskRef.current?.(task).catch(() => {});
+      void maybePublishTaskRef.current?.(task);
       const toastLabel =
         item.type === "board"
           ? `New board from ${senderLabel}`
@@ -1354,7 +1356,7 @@ export default function App() {
       const plan = planAssignmentResponse(tasksStore().get(), taskId, responderPubkey, status, respondedAtMs);
       if (plan) {
         setTasks(plan.tasks);
-        maybePublishTaskRef.current?.(plan.updated).catch(() => {});
+        void maybePublishTaskRef.current?.(plan.updated);
         const senderLabel = formatSenderLabel(sender);
         const statusLabel = status === "accepted" ? "accepted" : status === "tentative" ? "maybe" : "declined";
         showToast(`${senderLabel} responded: ${statusLabel}`);
@@ -1995,12 +1997,12 @@ export default function App() {
       tasks
         .filter((t) => t.boardId === boardId)
         .forEach((t) => {
-          maybePublishTaskRef.current?.(t, board, { skipBoardMetadata: true, republish: true }).catch(() => {});
+          void maybePublishTaskRef.current?.(t, board, { skipBoardMetadata: true, republish: true });
         });
       calendarEvents
         .filter((ev) => ev.boardId === boardId)
         .forEach((ev) => {
-          maybePublishCalendarEventRef.current?.(ev, board, { skipBoardMetadata: true, republish: true }).catch(() => {});
+          void maybePublishCalendarEventRef.current?.(ev, board, { skipBoardMetadata: true, republish: true });
         });
     }
   }
@@ -3181,6 +3183,36 @@ export default function App() {
     },
   });
   const publisher = publisherRef.current;
+  // Every publish is recorded before any async work and retried until it is sent (C4-1).
+  const durablePublisherRef = useRef<DurablePublisher | null>(null);
+  durablePublisherRef.current ??= new DurablePublisher({
+    target: publisher,
+    storage: {
+      load: () => idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_PUBLISH_INTENTS),
+      save: (serialized) => idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_PUBLISH_INTENTS, serialized),
+    },
+    boards: () => boardsRef.current,
+    task: (id) => tasksStore().get().find((task) => task.id === id),
+    event: (id) => calendarEventsStore().get().find((event) => event.id === id),
+    now: () => Date.now(),
+    setTimer: (run, delayMs) => window.setTimeout(run, delayMs),
+    clearTimer: (timer) => window.clearTimeout(timer as number),
+    onPending: (kind, id, pending) => {
+      if (kind === "task") {
+        if (pending) markNostrTaskSyncPending(id);
+        else clearOptimisticNostrTaskSyncPending(id);
+      } else if (pending) markNostrCalendarEventSyncPending(id);
+      else clearOptimisticNostrCalendarEventSyncPending(id);
+    },
+    log: (message, error) => console.warn(message, error),
+  });
+  const durablePublisher = durablePublisherRef.current;
+  useEffect(() => {
+    void durablePublisher.start();
+    const retry = () => void durablePublisher.retryNow();
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+  }, [durablePublisher]);
   function markTaskRelayPublishPending(taskId: string, board: Board | null | undefined): number | null {
     return publisher.reserveTaskPublish(taskId, board);
   }
@@ -3196,7 +3228,7 @@ export default function App() {
     await publisher.publishBoardMetadataForItem(board);
   }
   async function publishTaskDeleted(t: Task) {
-    await publisher.publishTaskDeleted(t);
+    await durablePublisher.publishTaskDeleted(t);
   }
   // Ensure all images and documents for a shared board are stored remotely (encrypted).
   // Images still as data URLs are encrypted and uploaded to the file server.
@@ -3273,14 +3305,14 @@ export default function App() {
     boardOverride?: Board,
     options?: { skipBoardMetadata?: boolean; republish?: boolean }
   ) {
-    await publisher.publishTask(t, boardOverride, options);
+    await durablePublisher.publishTask(t, boardOverride, options);
   }
 
   maybePublishTaskRef.current = maybePublishTask;
   publishTaskDeletedRef.current = publishTaskDeleted;
 
   async function publishCalendarEventDeleted(event: CalendarEvent) {
-    await publisher.publishCalendarEventDeleted(event);
+    await durablePublisher.publishCalendarEventDeleted(event);
   }
   publishCalendarEventDeletedRef.current = publishCalendarEventDeleted;
 
@@ -3289,7 +3321,7 @@ export default function App() {
     boardOverride?: Board,
     options?: { skipBoardMetadata?: boolean; republish?: boolean },
   ) {
-    await publisher.publishCalendarEvent(event, boardOverride, options);
+    await durablePublisher.publishCalendarEvent(event, boardOverride, options);
   }
 
   maybePublishCalendarEventRef.current = maybePublishCalendarEvent;
@@ -3312,12 +3344,12 @@ export default function App() {
             tasks
               .filter((t) => t.boardId === nb.id)
               .forEach((t) => {
-                maybePublishTaskRef.current?.(t, nb, { skipBoardMetadata: true }).catch(() => {});
+                void maybePublishTaskRef.current?.(t, nb, { skipBoardMetadata: true });
               });
             calendarEvents
               .filter((ev) => ev.boardId === nb.id && !isExternalCalendarEvent(ev))
               .forEach((ev) => {
-                maybePublishCalendarEventRef.current?.(ev, nb, { skipBoardMetadata: true }).catch(() => {});
+                void maybePublishCalendarEventRef.current?.(ev, nb, { skipBoardMetadata: true });
               });
           }, 0);
           return nb;
@@ -3340,10 +3372,10 @@ export default function App() {
         publishBoardMetadata(updated!).catch(() => {});
         tasks
           .filter(t => t.boardId === updated!.id)
-          .forEach(t => { maybePublishTask(t, updated!, { skipBoardMetadata: true }).catch(() => {}); });
+          .forEach(t => { void maybePublishTask(t, updated!, { skipBoardMetadata: true }); });
         calendarEvents
           .filter((ev) => ev.boardId === updated!.id && !isExternalCalendarEvent(ev))
-          .forEach((ev) => { maybePublishCalendarEvent(ev, updated!, { skipBoardMetadata: true }).catch(() => {}); });
+          .forEach((ev) => { void maybePublishCalendarEvent(ev, updated!, { skipBoardMetadata: true }); });
       }, 0);
     }
   }
@@ -3843,7 +3875,7 @@ export default function App() {
         return !!nostrBoardId && ledger.isTombstoned(boardTag(nostrBoardId), taskId);
       },
     });
-    generated.forEach((task) => maybePublishTask(task).catch(() => {}));
+    generated.forEach((task) => void maybePublishTask(task));
     return sanitizeRecurringTasks(ensured);
   }
   const ensureWeekRecurrencesRef = useRef(ensureWeekRecurrences);
@@ -4025,7 +4057,7 @@ export default function App() {
 
     if (!newTasks.length) return;
     setTasks((prev) => [...prev, ...newTasks]);
-    newTasks.forEach((t) => maybePublishTask(t).catch(() => {}));
+    newTasks.forEach((t) => void maybePublishTask(t));
     showToast(newTasks.length === 1 ? "Task added" : `${newTasks.length} tasks added`);
     setVoiceDictationKey(null);
     setAddMenuKey(null);
@@ -4143,12 +4175,12 @@ export default function App() {
       if (createdTasks.length) {
         animateTaskArrival(originRect, createdTasks[0], currentBoard);
         createdTasks.forEach((task) => {
-          maybePublishTask(task).catch(() => {});
+          void maybePublishTask(task);
         });
       }
       if (createdEvents.length) {
         createdEvents.forEach((event) => {
-          maybePublishCalendarEventRef.current?.(event).catch(() => {});
+          void maybePublishCalendarEventRef.current?.(event);
         });
       }
 
@@ -4189,7 +4221,7 @@ export default function App() {
     applyHiddenForFuture(t, settings.weekStart, currentBoard.kind);
     animateTaskArrival(originRect, t, currentBoard);
     setTasks(prev => [...prev, t]);
-    maybePublishTask(t).catch(() => {});
+    void maybePublishTask(t);
     clearInlineDraft(key);
   }
 
@@ -4400,7 +4432,7 @@ export default function App() {
           ? ensureWeekRecurrencesRef.current(withShared, [nextTask])
           : withShared,
       );
-      maybePublishTaskRef.current?.(nextTask).catch(() => {});
+      void maybePublishTaskRef.current?.(nextTask);
       return nextTask;
     },
     [
@@ -4490,7 +4522,7 @@ export default function App() {
     });
     setTasks(plan.tasks);
     plan.publish.forEach((task) => {
-      maybePublishTask(task).catch(() => {});
+      void maybePublishTask(task);
     });
     if (plan.inboxAction?.action === "accept") {
       const item = plan.inboxAction.item;
@@ -4550,7 +4582,7 @@ export default function App() {
     });
     if (!plan) return;
     setTasks(plan.tasks);
-    maybePublishTask(plan.updated).catch(() => {});
+    void maybePublishTask(plan.updated);
   }
 
 
@@ -4562,7 +4594,7 @@ export default function App() {
     });
     if (!plan) return;
     setTasks(plan.tasks);
-    maybePublishTask(plan.updated).catch(() => {});
+    void maybePublishTask(plan.updated);
   }
 
 
@@ -4618,8 +4650,8 @@ export default function App() {
     }
     recurringCutoffsStore().set(plan.cutoffs);
     setTasks(plan.tasks);
-    plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
-    plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
+    plan.publish.forEach((task) => void maybePublishTask(task));
+    plan.publishDeleted.forEach((task) => void publishTaskDeleted(task));
     if (plan.archivedBounties) {
       showToast(
         options?.scope === "future"
@@ -4690,7 +4722,7 @@ export default function App() {
         )
       );
     }
-    plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
+    plan.publish.forEach((task) => void maybePublishTask(task));
   }
   function clearCompleted() {
     if (currentBoard?.kind === "bible" || currentBoard?.clearCompletedDisabled) {
@@ -4699,7 +4731,7 @@ export default function App() {
     if (!currentBoard) return;
     const plan = planClearCompleted(tasksStore().get(), new Set(boardScopeIds(currentBoard, boards)));
     setTasks(plan.tasks);
-    plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
+    plan.publishDeleted.forEach((task) => void publishTaskDeleted(task));
   }
 
   function postponeTaskOneWeek(id: string) {
@@ -4710,7 +4742,7 @@ export default function App() {
     });
     if (!plan) return;
     setTasks(plan.tasks);
-    maybePublishTask(plan.updated).catch(() => {});
+    void maybePublishTask(plan.updated);
     showToast('Task moved to next week');
   }
 
@@ -4745,7 +4777,7 @@ export default function App() {
       });
       setTasks(prev => prev.map(x => x.id === id ? updated : x));
       setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
-      maybePublishTask(updated).catch(() => {});
+      void maybePublishTask(updated);
     } catch (e) {
       alert('Decrypt failed: ' + (e as Error).message);
     }
@@ -4816,7 +4848,7 @@ export default function App() {
     });
     setTasks(prev => prev.map(x => x.id === id ? updated : x));
     setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
-    maybePublishTask(updated).catch(() => {});
+    void maybePublishTask(updated);
   }
 
   /** Without the wallet, an unlocked bounty's token is copied, to redeem in any Cashu wallet. */
@@ -4865,7 +4897,7 @@ export default function App() {
       });
       setTasks(prev => prev.map(x => x.id === id ? updated : x));
       setEditing((prev) => (prev && prev.type === "task" && prev.task.id === id ? { ...prev, task: updated } : prev));
-      maybePublishTask(updated).catch(() => {});
+      void maybePublishTask(updated);
     } catch (e) {
       alert('Redeem failed: ' + (e as Error).message);
     }
@@ -4902,7 +4934,7 @@ export default function App() {
     const task = tasksRef.current.find((t) => t.id === id);
     if (!task) return;
     setTasks((prev) => prev.filter((t) => t.id !== id));
-    publishTaskDeleted(task).catch(() => {});
+    void publishTaskDeleted(task);
   }
 
   function deleteCalendarEvent(
@@ -4920,8 +4952,8 @@ export default function App() {
     }
     plan.deletedOccurrenceIds.forEach((eventId) => deletedCalendarOccurrenceIdsRef.current.add(eventId));
     setCalendarEvents(plan.events);
-    plan.publish.forEach((event) => maybePublishCalendarEvent(event).catch(() => {}));
-    plan.publishDeleted.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
+    plan.publish.forEach((event) => void maybePublishCalendarEvent(event));
+    plan.publishDeleted.forEach((event) => void publishCalendarEventDeleted(event));
   }
 
   const parseCalendarAddressForKind = (coord: string, kind: number): { kind: number; pubkey: string; d: string } | null => {
@@ -5502,10 +5534,10 @@ export default function App() {
 
     try {
       plan.publish.forEach((event) => {
-        maybePublishCalendarEventRef.current?.(event, inviteBoard ?? undefined).catch(() => {});
+        void maybePublishCalendarEventRef.current?.(event, inviteBoard ?? undefined);
       });
     } catch {}
-    plan.publishDeleted.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
+    plan.publishDeleted.forEach((event) => void publishCalendarEventDeleted(event));
 
     try {
       maybeSendCalendarEventInvites(updated, {
@@ -5635,8 +5667,8 @@ export default function App() {
     });
     if (!plan) return;
     setTasks(plan.tasks);
-    plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
-    plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
+    plan.publishDeleted.forEach((task) => void publishTaskDeleted(task));
+    plan.publish.forEach((task) => void maybePublishTask(task));
   }
 
   const completeSelectedItems = useCallback(() => {
@@ -5664,8 +5696,8 @@ export default function App() {
     });
     if (!plan) return;
     setTasks(plan.tasks);
-    plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
-    plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
+    plan.publishDeleted.forEach((task) => void publishTaskDeleted(task));
+    plan.publish.forEach((task) => void maybePublishTask(task));
   }
 
   const moveSelectedTasksToBoard = useCallback((boardId: string) => {
@@ -5674,8 +5706,8 @@ export default function App() {
     if (selectedEvents.length) {
       const plan = planMoveCalendarEvents(calendarEventsStore().get(), selectedItemIdSet, boardId);
       setCalendarEvents(plan.events);
-      plan.publishDeleted.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
-      plan.publish.forEach((event) => maybePublishCalendarEvent(event).catch(() => {}));
+      plan.publishDeleted.forEach((event) => void publishCalendarEventDeleted(event));
+      plan.publish.forEach((event) => void maybePublishCalendarEvent(event));
     }
     const boardName = boards.find((board) => board.id === boardId)?.name || "board";
     const totalMoved = selectedTasks.length + selectedEvents.length;
@@ -5699,14 +5731,14 @@ export default function App() {
         { now: new Date(), actorPubkey: currentPubkey() ?? undefined, settings },
       );
       setTasks(plan.tasks);
-      plan.publishDeleted.forEach((task) => publishTaskDeleted(task).catch(() => {}));
-      plan.publish.forEach((task) => maybePublishTask(task).catch(() => {}));
+      plan.publishDeleted.forEach((task) => void publishTaskDeleted(task));
+      plan.publish.forEach((task) => void maybePublishTask(task));
     }
     if (selectedEvents.length) {
       const plan = planMoveCalendarEvents(calendarEventsStore().get(), selectedItemIdSet, boardId, columnId);
       setCalendarEvents(plan.events);
-      plan.publishDeleted.forEach((event) => publishCalendarEventDeleted(event).catch(() => {}));
-      plan.publish.forEach((event) => maybePublishCalendarEvent(event).catch(() => {}));
+      plan.publishDeleted.forEach((event) => void publishCalendarEventDeleted(event));
+      plan.publish.forEach((event) => void maybePublishCalendarEvent(event));
     }
     const boardName = board?.name || "board";
     const colName = col?.name || "list";

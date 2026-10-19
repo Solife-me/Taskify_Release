@@ -33,3 +33,5 @@ export const LS_NWC_TOKEN_SWEEP_JOURNAL = "taskify_nwc_token_sweep_journal_v1";
 export const LS_WALLET_ENABLED = "taskify_wallet_enabled_v1";
 export const LS_WALLET_CLOSED = "taskify_wallet_closed_v1";
 export const LS_WALLET_PHASE_OUT_NOTICE_SEEN = "taskify_wallet_phase_out_notice_v1";
+/** Changes waiting to be published to relays (see nostr/durablePublisher). */
+export const LS_PUBLISH_INTENTS = "taskify_publish_intents_v1";
