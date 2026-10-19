@@ -408,3 +408,13 @@ export function parseStoredHistory(parsed: unknown): HistoryItem[] {
     })
     .filter((item): item is HistoryItem => !!item);
 }
+
+/**
+ * History entries written to storage outside the open wallet (bounties, saved-token clean-up)
+ * merged into the wallet's own list, so its next save keeps them. New ones go first.
+ */
+export function mergeExternallyAddedHistory(current: HistoryItem[], stored: HistoryItem[]): HistoryItem[] {
+  const known = new Set(current.map((item) => item.id));
+  const added = stored.filter((item) => item?.id && !known.has(item.id));
+  return added.length ? [...added, ...current] : current;
+}

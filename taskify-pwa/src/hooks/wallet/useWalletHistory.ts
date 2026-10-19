@@ -9,6 +9,7 @@ import {
 } from "../../lib/walletHistory";
 import { deriveTimestampFromId } from "../../wallet/cashuProofHelpers";
 import {
+  mergeExternallyAddedHistory,
   parseStoredHistory,
   type HistoryEntryInput,
   type HistoryFilter,
@@ -46,6 +47,23 @@ export function useWalletHistory({ showToast, captureFiatValueUsd }: UseWalletHi
   useEffect(() => {
     idbKeyValue.setItem(TASKIFY_STORE_WALLET, "cashuHistory", JSON.stringify(history));
   }, [history]);
+
+  // Entries appended to storage by code outside the wallet (appendWalletHistoryEntry) would be
+  // overwritten by the next save above; take them in first.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => {
+      try {
+        const saved = idbKeyValue.getItem(TASKIFY_STORE_WALLET, "cashuHistory");
+        const stored = saved ? parseStoredHistory(JSON.parse(saved)) : [];
+        setHistory((prev) => mergeExternallyAddedHistory(prev, stored));
+      } catch {
+        // unreadable: keep the wallet's list
+      }
+    };
+    window.addEventListener("taskify:wallet-history-updated", handler);
+    return () => window.removeEventListener("taskify:wallet-history-updated", handler);
+  }, []);
 
   const buildHistoryEntry = useCallback(
     (entry: HistoryEntryInput): HistoryItem => {

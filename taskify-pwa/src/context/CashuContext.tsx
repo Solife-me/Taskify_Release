@@ -234,6 +234,15 @@ function normalizeMintUrl(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
 
+/** A token's notes read without the mint's keyset list (enough to ask the mint their state). */
+function notesWithoutKeysets(token: string): Proof[] {
+  try {
+    return getCashuTokenMetadata(token).incompleteProofs;
+  } catch {
+    return [];
+  }
+}
+
 function extractProofsForMint(token: string, mintUrl: string, decodedToken?: any): Proof[] {
   const normalizedMint = normalizeMintUrl(mintUrl);
   if (!normalizedMint) return [];
@@ -450,7 +459,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
           throw error;
         }
 
-        const proofsToCheck = freshProofs.length ? freshProofs : tokenProofs;
+        // A token the full decoder could not read (short keyset ids it cannot resolve) is still
+        // checked from its notes; otherwise a token spent elsewhere stays saved forever.
+        const proofsToCheck = freshProofs.length ? freshProofs : tokenProofs.length ? tokenProofs : notesWithoutKeysets(entry.token);
         if (!proofsToCheck.length) {
           throw error;
         }
