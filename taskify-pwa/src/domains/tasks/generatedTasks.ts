@@ -29,7 +29,7 @@ import {
   type RecurringSeriesCutoffs,
 } from "./recurrenceCutoffs";
 import type { Settings } from "./settingsTypes";
-import type { Board, Task } from "./taskTypes";
+import type { Board, Recurrence, Task } from "./taskTypes";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -40,9 +40,84 @@ export type ScriptureReviewPlan = {
   scheduledEntryId: string | null;
 };
 
+/** Where Scripture Memory review tasks live and how often they recur, from the settings. */
+export type ScriptureReviewPlacement = {
+  board: Board;
+  recurrence: Recurrence;
+  /** The list a lists board puts them in. */
+  firstColumn?: { id: string };
+};
+
+/** Null when the board cannot hold review tasks (a Bible board, or a lists board without lists). */
+export function scriptureReviewPlacement(
+  targetBoard: Board | null | undefined,
+  baseDays: number,
+): ScriptureReviewPlacement | null {
+  if (!targetBoard || targetBoard.kind === "bible") return null;
+  const firstColumn = targetBoard.kind === "lists" ? targetBoard.columns?.[0] : undefined;
+  if (targetBoard.kind === "lists" && !firstColumn) return null;
+  return { board: targetBoard, recurrence: scriptureFrequencyToRecurrence(baseDays), firstColumn };
+}
+
+const isScriptureReview = (task: Task) =>
+  task.seriesId === SCRIPTURE_MEMORY_SERIES_ID || !!task.scriptureMemoryId;
+
+const versionOf = (task: Task) => (task as Task & { _nostrAt?: number })._nostrAt ?? 0;
+
 /**
- * Keeps one open Scripture Memory review task on the chosen board: existing review tasks follow
- * the board and frequency (locally; history is not republished), and a review for the most due
+ * Brings every Scripture Memory review task, open and done, onto the chosen board with the
+ * chosen frequency, keeping one copy per id (a relay may still hold a copy from before a move).
+ *
+ * This is deterministic bookkeeping: every device applies it to the tasks it holds and to every
+ * task it receives, so the result is never published. Publishing it would resend every past
+ * review whenever the board or frequency changed. Returns `tasks` itself when nothing changes.
+ */
+export function normalizeScriptureReviewTasks<T extends Task>(tasks: T[], placement: ScriptureReviewPlacement): T[] {
+  const { board, recurrence, firstColumn } = placement;
+  let changed = false;
+  const out: T[] = [];
+  const indexById = new Map<string, number>();
+  for (const task of tasks) {
+    if (!isScriptureReview(task)) {
+      out.push(task);
+      continue;
+    }
+    let updated = task;
+    if (updated.seriesId !== SCRIPTURE_MEMORY_SERIES_ID) updated = { ...updated, seriesId: SCRIPTURE_MEMORY_SERIES_ID };
+    if (!recurrencesEqual(updated.recurrence, recurrence)) updated = { ...updated, recurrence };
+    if (updated.boardId !== board.id) {
+      updated = { ...updated, boardId: board.id };
+      if (board.kind === "week") updated = { ...updated, column: "day" as const };
+      else if (firstColumn) updated = { ...updated, columnId: firstColumn.id };
+    } else if (
+      firstColumn &&
+      updated.columnId !== firstColumn.id &&
+      !(board.kind === "lists" && board.columns.some((col) => col.id === updated.columnId))
+    ) {
+      updated = { ...updated, columnId: firstColumn.id };
+    }
+    if (updated !== task) changed = true;
+
+    const existingIndex = indexById.get(updated.id);
+    if (existingIndex === undefined) {
+      indexById.set(updated.id, out.length);
+      out.push(updated);
+      continue;
+    }
+    // Two copies of one review: a completion outlasts an open copy, then the newer version wins.
+    changed = true;
+    const existing = out[existingIndex];
+    const keepIncoming = !!updated.completed !== !!existing.completed
+      ? !!updated.completed
+      : versionOf(updated) > versionOf(existing);
+    if (keepIncoming) out[existingIndex] = updated;
+  }
+  return changed ? out : tasks;
+}
+
+/**
+ * Keeps one open Scripture Memory review task on the chosen board: existing review tasks are
+ * normalized (`normalizeScriptureReviewTasks`, never published), and a review for the most due
  * passage is created when none is open. Returns null when nothing changes.
  */
 export function planScriptureReviewTask(
@@ -56,34 +131,15 @@ export function planScriptureReviewTask(
     settings: Pick<Settings, "weekStart" | "newTaskPosition">;
   },
 ): ScriptureReviewPlan | null {
-  const { targetBoard, now, settings } = input;
-  if (targetBoard.kind === "bible") return null;
-  const firstColumn = targetBoard.kind === "lists" ? targetBoard.columns?.[0] : undefined;
-  if (targetBoard.kind === "lists" && !firstColumn) return null;
-  const recurrence = scriptureFrequencyToRecurrence(input.baseDays);
+  const { now, settings } = input;
+  const placement = scriptureReviewPlacement(input.targetBoard, input.baseDays);
+  if (!placement) return null;
+  const { board: targetBoard, recurrence, firstColumn } = placement;
   const selection = chooseNextScriptureEntry(input.entries, input.baseDays, now);
   if (!selection) return null;
 
-  let changed = false;
-  const followed = tasks.map((task) => {
-    if (task.seriesId !== SCRIPTURE_MEMORY_SERIES_ID && !task.scriptureMemoryId) return task;
-    let updated = task;
-    if (updated.seriesId !== SCRIPTURE_MEMORY_SERIES_ID) updated = { ...updated, seriesId: SCRIPTURE_MEMORY_SERIES_ID };
-    if (!recurrencesEqual(updated.recurrence, recurrence)) updated = { ...updated, recurrence };
-    if (updated.boardId !== targetBoard.id) {
-      updated = { ...updated, boardId: targetBoard.id };
-      if (targetBoard.kind === "week") updated = { ...updated, column: "day" as const };
-      else if (firstColumn) updated = { ...updated, columnId: firstColumn.id };
-    } else if (
-      firstColumn &&
-      updated.columnId !== firstColumn.id &&
-      !(targetBoard.kind === "lists" && targetBoard.columns.some((col) => col.id === updated.columnId))
-    ) {
-      updated = { ...updated, columnId: firstColumn.id };
-    }
-    if (updated !== task) changed = true;
-    return updated;
-  });
+  const followed = normalizeScriptureReviewTasks(tasks, placement);
+  let changed = followed !== tasks;
   const bounded = applyRecurringSeriesCutoffs(followed, cutoffs);
   if (bounded !== followed) changed = true;
   const unchanged = (): ScriptureReviewPlan | null =>

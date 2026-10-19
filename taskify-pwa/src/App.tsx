@@ -130,7 +130,13 @@ import {
   selectAcceptedInviteDestination,
   type ResolvedCalendarInviteView,
 } from "./domains/calendar/calendarCommands";
-import { planFastingReminders, planScriptureReviewTask } from "./domains/tasks/generatedTasks";
+import {
+  normalizeScriptureReviewTasks,
+  planFastingReminders,
+  planScriptureReviewTask,
+  scriptureReviewPlacement,
+  type ScriptureReviewPlacement,
+} from "./domains/tasks/generatedTasks";
 import {
   planAssignmentResponse,
   planClearCompleted,
@@ -510,9 +516,18 @@ export default function App() {
   const recordRecurringSeriesCutoff = useCallback((task: Task, cutoffISO: string) => {
     recurringCutoffsStore().set((current) => updateRecurringSeriesCutoff(current, task, cutoffISO));
   }, []);
-  const sanitizeRecurringTasks = useCallback(<TTask extends Task,>(items: TTask[]): TTask[] => (
-    applyRecurringSeriesCutoffs(items, recurringCutoffsStore().get())
-  ), []);
+  // Local bookkeeping every device applies to the tasks it holds and to every task it receives
+  // (both relay paths call this), so none of it is published: series cutoffs, and review tasks
+  // following the Scripture Memory board and frequency.
+  const scripturePlacementRef = useRef<ScriptureReviewPlacement | null>(null);
+  scripturePlacementRef.current = settings.scriptureMemoryEnabled
+    ? scriptureReviewPlacement(scriptureMemoryBoard, scriptureMemoryFrequencyOption?.days ?? 1)
+    : null;
+  const sanitizeRecurringTasks = useCallback(<TTask extends Task,>(items: TTask[]): TTask[] => {
+    const bounded = applyRecurringSeriesCutoffs(items, recurringCutoffsStore().get());
+    const placement = scripturePlacementRef.current;
+    return placement ? normalizeScriptureReviewTasks(bounded, placement) : bounded;
+  }, []);
   const calendarSeriesCutoffsRef = useRef(
     parseCalendarSeriesCutoffs(
       idbKeyValue.getItem(TASKIFY_STORE_TASKS, CALENDAR_SERIES_CUTOFFS_KEY),
