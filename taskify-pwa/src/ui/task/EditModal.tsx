@@ -3,7 +3,7 @@ import { ImagePreviewModal } from "./ImagePreviewModal";
 import { NoteMarkdownView } from "./NoteMarkdown";
 import { NoteEditorModal } from "./NoteModals";
 import { nip19 } from "nostr-tools";
-import { normalizeTaskAssignmentStatus, todayDateKey } from "taskify-core";
+import { todayDateKey } from "taskify-core";
 
 // Sub-sheet components
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
@@ -21,12 +21,10 @@ import {
 // Board utilities
 import {
   isFrequentRecurrence,
-  hiddenUntilForBoard,
 } from "../../domains/tasks/boardUtils";
 
 // Contact utilities
 import {
-  compressedToRawHex,
   loadNip05Cache,
   type Nip05CheckState,
 } from "../../domains/tasks/contactUtils";
@@ -34,7 +32,6 @@ import {
 // Date/time utilities
 import {
   isoDatePart,
-  isoTimePart,
   isoFromDateTime,
   formatTimeLabel,
   resolveSystemTimeZone,
@@ -106,6 +103,7 @@ import { RepeatField } from "../editor/fields/RepeatField";
 import { AttachmentList } from "../editor/fields/AttachmentList";
 import { ContactRow } from "../editor/fields/ContactRow";
 import { ContactShareSheet } from "../editor/fields/ContactShareSheet";
+import { buildTaskFromEditor, normalizeAssigneeList, normalizeAssigneePubkey, taskEditorStart } from "../../domains/tasks/taskEditorModel";
 import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import type { TaskBountyExtension } from "./taskBountyExtension";
 
@@ -127,33 +125,6 @@ async function fileToDataURL(file: File): Promise<string> {
 }
 
 
-function normalizeAssigneePubkey(value: string | null | undefined): string | null {
-  const normalized = normalizeNostrPubkey(value);
-  const raw = compressedToRawHex(normalized ?? (value || "")).toLowerCase();
-  return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
-}
-
-function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssignee[] {
-  if (!Array.isArray(value)) return [];
-  const normalized: TaskAssignee[] = [];
-  const seen = new Set<string>();
-  value.forEach((assignee) => {
-    const pubkey = normalizeAssigneePubkey(assignee?.pubkey);
-    if (!pubkey || seen.has(pubkey)) return;
-    seen.add(pubkey);
-    const relay = typeof assignee?.relay === "string" ? assignee.relay.trim() : "";
-    const status = normalizeTaskAssignmentStatus(assignee?.status) as TaskAssignee["status"] | undefined;
-    const respondedAtRaw = Number(assignee?.respondedAt);
-    const respondedAt = Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
-    normalized.push({
-      pubkey,
-      ...(relay ? { relay } : {}),
-      ...(status ? { status } : {}),
-      ...(respondedAt ? { respondedAt } : {}),
-    });
-  });
-  return normalized;
-}
 
 // ---- Sub-components are imported from App.tsx until extracted ----
 // These are forward declarations for components still in App.tsx.
@@ -201,15 +172,12 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const documentInputRef = useRef<HTMLInputElement>(null);
   const dragSubtaskIdRef = useRef<string | null>(null);
   const [rule, setRule] = useState<Recurrence>(task.recurrence ?? R_NONE);
-  const initialDateEnabled = task.dueDateEnabled !== false;
   const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
-  const initialTimeZone = useMemo(
-    () => normalizeTimeZone(task.dueTimeEnabled ? task.dueTimeZone : undefined) ?? systemTimeZone,
-    [systemTimeZone, task.dueTimeEnabled, task.dueTimeZone],
-  );
-  const initialDate = initialDateEnabled ? isoDatePart(task.dueISO, initialTimeZone) : "";
-  const initialTime = initialDateEnabled ? isoTimePart(task.dueISO, initialTimeZone) : "";
-  const defaultHasTime = initialDateEnabled && (task.dueTimeEnabled ?? false);
+  const editorStart = useMemo(() => taskEditorStart(task, systemTimeZone), [task, systemTimeZone]);
+  const initialTimeZone = editorStart.timeZone;
+  const initialDate = editorStart.date;
+  const initialTime = editorStart.storedTime;
+  const defaultHasTime = editorStart.hadTime;
   // Only use the task's stored time as the default if time was actually enabled.
   // Otherwise (time disabled / new task) default to current time rounded to next hour,
   // so the picker opens at "now" instead of a stale or midnight time from dueISO.
@@ -218,11 +186,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : "");
   const [scheduledTimeZone, setScheduledTimeZone] = useState(initialTimeZone);
   const [timeZoneSheetOpen, setTimeZoneSheetOpen] = useState(false);
-  const initialReminderTime = normalizeReminderTime(task.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
+  const initialReminderTime = editorStart.reminderTime;
   const [reminderSelection, setReminderSelection] = useState<ReminderPreset[]>(task.reminders ?? []);
   const [reminderTime, setReminderTime] = useState<string>(initialReminderTime);
   const lastTimeRef = useRef<string>(defaultTimeValue);
-  const [dateEnabled, setDateEnabled] = useState(() => initialDateEnabled && !!initialDate);
+  const [dateEnabled, setDateEnabled] = useState(() => editorStart.dateEnabled);
   const hasDueTime = dateEnabled && scheduledTime.trim().length > 0;
   const [dateDetailsOpen, setDateDetailsOpen] = useState(false);
   const [calendarBaseDate, setCalendarBaseDate] = useState(initialDate);
@@ -893,51 +861,32 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   }
 
   function buildTask(overrides: Partial<Task> = {}): Task {
-    const targetBoardKind = selectedBoardKind;
-    const effectiveDateEnabled = targetBoardKind === "week" ? true : dateEnabled;
-    const baseDate = scheduledDate || initialDate || isoDatePart(task.dueISO, initialTimeZone);
-    const hasTime = effectiveDateEnabled && scheduledTime.trim().length > 0;
-    const dateUnchanged = baseDate === (initialDate || "");
-    const timeUnchanged = hasTime === defaultHasTime && (!hasTime || scheduledTime === initialTime);
-    const timeZoneUnchanged = !hasTime || safeScheduledTimeZone === initialTimeZone;
-    const dueISO = effectiveDateEnabled
-      ? (dateUnchanged && timeUnchanged && timeZoneUnchanged
-        ? task.dueISO
-        : isoFromDateTime(baseDate, hasTime ? scheduledTime : undefined, hasTime ? safeScheduledTimeZone : undefined))
-      : task.dueISO;
-    const targetColumnId =
-      targetBoardKind === "lists"
-        ? selectedColumnId || (selectedBoard?.kind === "lists" ? selectedBoard.columns[0]?.id : undefined)
-        : undefined;
-    const targetColumn =
-      targetBoardKind === "week"
-        ? "day"
-        : undefined;
-    const hiddenUntilISO = effectiveDateEnabled ? hiddenUntilForBoard(dueISO, targetBoardKind, weekStart) : undefined;
-    const reminderValues = effectiveDateEnabled ? [...reminderSelection] : [];
-    const normalizedReminderTime = normalizeReminderTime(reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
-    return {
-      ...task,
-      boardId: selectedBoardId,
-      columnId: targetBoardKind === "lists" ? targetColumnId : undefined,
-      column: targetBoardKind === "week" ? targetColumn : undefined,
-      title,
-      priority: priority === 0 ? undefined : priority,
-      note: note || undefined,
-      images: images.length ? images : undefined,
-      documents: documents.length ? documents : undefined,
-      subtasks: subtasks.length ? subtasks : undefined,
-      assignees: assignees.length ? normalizeAssigneeList(assignees) : undefined,
-      recurrence: rule.type === "none" ? undefined : rule,
-      dueISO,
-      dueDateEnabled: effectiveDateEnabled ? true : false,
-      hiddenUntilISO,
-      dueTimeEnabled: hasTime ? true : undefined,
-      dueTimeZone: hasTime ? safeScheduledTimeZone : undefined,
-      reminders: reminderValues,
-      reminderTime: effectiveDateEnabled && !hasTime ? normalizedReminderTime : undefined,
-      ...overrides,
-    };
+    const saved = buildTaskFromEditor(
+      task,
+      editorStart,
+      {
+        title,
+        note,
+        priority,
+        images,
+        documents,
+        subtasks,
+        assignees,
+        rule,
+        boardId: selectedBoardId,
+        board: selectedBoard,
+        boardKind,
+        columnId: selectedColumnId,
+        dateEnabled,
+        date: scheduledDate,
+        time: scheduledTime,
+        timeZone: safeScheduledTimeZone,
+        reminders: reminderSelection,
+        reminderTime,
+      },
+      weekStart,
+    );
+    return { ...saved, ...overrides };
   }
 
   async function save(overrides: Partial<Task> = {}) {
