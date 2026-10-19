@@ -18,10 +18,8 @@ import {
   loadContactsFromStorage,
   contactHasNpub,
 } from "../../lib/contacts";
-import { appendWalletHistoryEntry } from "../../domains/backup/backupUtils";
 import type { Settings, PushPlatform } from "../../domains/tasks/settingsTypes";
 import type { Board, Task } from "../../domains/tasks/taskTypes";
-import { useCashu } from "../../context/walletContexts";
 import { useToast } from "../../context/ToastContext";
 import { ActionSheet } from "../../components/ActionSheet";
 import { Modal } from "../Modal";
@@ -33,6 +31,7 @@ import { PushSection } from "./PushSection";
 import { NostrSection } from "./NostrSection";
 import { BackupSection } from "./BackupSection";
 import { ChatSection } from "./ChatSection";
+import { SupportSection } from "./SupportSection";
 import { ManageBoardModal } from "./ManageBoardModal";
 
 
@@ -105,7 +104,6 @@ export function SettingsModal({
   onResetWalletTokenTracking: () => void;
 }) {
   const { show: showToast } = useToast();
-  const { mintUrl, payInvoice } = useCashu();
 
   // ─── Cross-cutting state ────────────────────────────────────────────────────
   const [reloadNeeded, setReloadNeeded] = useState(false);
@@ -119,12 +117,6 @@ export function SettingsModal({
   const [shareBoardTarget, setShareBoardTarget] = useState<Board | null>(null);
   const [shareBoardStatus, setShareBoardStatus] = useState<string | null>(null);
   const [shareBoardBusy, setShareBoardBusy] = useState(false);
-
-  // Donate
-  const [donateAmt, setDonateAmt] = useState("");
-  const [donateComment, setDonateComment] = useState("");
-  const [donateState, setDonateState] = useState<"idle" | "sending" | "done" | "error">("idle");
-  const [donateMsg, setDonateMsg] = useState("");
 
   // AI import
   const taskifyAiInstructionBlock = useMemo(() => [
@@ -264,65 +256,6 @@ export function SettingsModal({
 
 
 
-  async function handleDonate() {
-    setDonateState("sending");
-    setDonateMsg("");
-    try {
-      const amtSat = Math.max(0, Math.floor(Number(donateAmt) || 0));
-      if (!amtSat) throw new Error("Enter amount in sats");
-      if (!mintUrl) throw new Error("Set a Cashu mint in Wallet first");
-
-      const lnAddress = "dev@solife.me";
-      const [name, domain] = lnAddress.split("@");
-      const infoRes = await fetch(`https://${domain}/.well-known/lnurlp/${name}`);
-      if (!infoRes.ok) throw new Error("Unable to fetch LNURL pay info");
-      const info = await infoRes.json();
-
-      const minSat = Math.ceil((info?.minSendable || 0) / 1000);
-      const maxSat = Math.floor((info?.maxSendable || Infinity) / 1000);
-      if (amtSat < minSat) throw new Error(`Minimum is ${minSat} sats`);
-      if (amtSat > maxSat) throw new Error(`Maximum is ${maxSat} sats`);
-
-      const commentAllowed: number = Number(info?.commentAllowed || 0) || 0;
-      const comment = (donateComment || "").trim();
-      if (comment && commentAllowed > 0 && comment.length > commentAllowed) {
-        throw new Error(`Comment too long (max ${commentAllowed} chars)`);
-      }
-
-      const params = new URLSearchParams({ amount: String(amtSat * 1000) });
-      if (comment) params.set("comment", comment);
-      const invRes = await fetch(`${info.callback}?${params.toString()}`);
-      if (!invRes.ok) throw new Error("Failed to get invoice");
-      const inv = await invRes.json();
-      if (inv?.status === "ERROR") throw new Error(inv?.reason || "Invoice error");
-
-      const invoice = inv.pr;
-      const paymentResult = await payInvoice(invoice);
-      const donationSummary = comment
-        ? `Donated ${amtSat} sats to ${lnAddress} • ${comment}`
-        : `Donated ${amtSat} sats to ${lnAddress}`;
-
-      appendWalletHistoryEntry({
-        id: `donate-${Date.now()}`,
-        summary: donationSummary,
-        detail: invoice,
-        detailKind: "invoice",
-        type: "lightning",
-        direction: "out",
-        amountSat: amtSat,
-        feeSat: paymentResult?.feeReserveSat ?? undefined,
-        mintUrl: paymentResult?.mintUrl ?? mintUrl ?? undefined,
-      });
-
-      setDonateState("done");
-      setDonateMsg("Thank you for your support! - The Solife team");
-      setDonateAmt("");
-      setDonateComment("");
-    } catch (e: any) {
-      setDonateState("error");
-      setDonateMsg(e?.message || String(e));
-    }
-  }
 
   const handleClose = useCallback(() => {
     onClose();
@@ -442,36 +375,7 @@ export function SettingsModal({
 
         </section>
 
-        {/* Development donation */}
-        <section className="wallet-section space-y-3">
-          <div className="text-sm font-medium mb-2">Support development</div>
-          <div className="text-xs text-secondary mb-3">Donate from your internal wallet to dev@solife.me</div>
-          <div className="flex gap-2 mb-2 w-full">
-            <input
-              className="pill-input flex-1 min-w-[7rem]"
-              placeholder="Amount (sats)"
-              value={donateAmt}
-              onChange={(e)=>setDonateAmt(e.target.value)}
-              inputMode="numeric"
-            />
-            <button
-              className="accent-button button-sm pressable shrink-0 whitespace-nowrap"
-              onClick={handleDonate}
-              disabled={!mintUrl || donateState === 'sending'}
-            >Donate now</button>
-          </div>
-          <input
-            className="pill-input w-full"
-            placeholder="Comment (optional)"
-            value={donateComment}
-            onChange={(e)=>setDonateComment(e.target.value)}
-          />
-          <div className="mt-2 text-xs text-secondary">
-            {donateState === 'sending' && <span>Sending…</span>}
-            {donateState === 'done' && <span className="text-accent">{donateMsg}</span>}
-            {donateState === 'error' && <span className="text-rose-400">{donateMsg}</span>}
-          </div>
-        </section>
+        <SupportSection />
 
         {/* Feedback / Feature requests */}
         <section className="wallet-section space-y-2 text-xs text-secondary">
