@@ -50,7 +50,6 @@ import {
   todayDateKey,
 } from "taskify-core";
 import {
-  type BibleTrackerState,
   getBibleBookChapterCount,
   getBibleBookTitle,
   getBibleBookOrder,
@@ -625,8 +624,6 @@ export default function App() {
     if (completedTabEnabled) flyToCompleted(rect);
   }, [completedTabEnabled]);
   const bibleActions = useBibleTrackerActions({ showToast, onBookCompleted: onBibleBookCompleted });
-  const bibleTrackerRef = useRef<BibleTrackerState>(bibleTracker);
-  useEffect(() => { bibleTrackerRef.current = bibleTracker; }, [bibleTracker]);
   const [biblePrintPaperSize, setBiblePrintPaperSize] = useBiblePrintPaperSize();
   const [biblePrintOpen, setBiblePrintOpen] = useState(false);
   const [biblePrintMeta, setBiblePrintMeta] = useState<BiblePrintMeta | null>(null);
@@ -1595,7 +1592,6 @@ export default function App() {
 
   useNostrAppBackupSync({
     bibleTracker,
-    bibleTrackerRef,
     boards,
     defaultRelays,
     nostrPK,
