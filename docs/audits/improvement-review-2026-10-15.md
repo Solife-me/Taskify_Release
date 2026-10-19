@@ -47,7 +47,7 @@ Constraints carried through every chunk:
 | 2 | PWA app shell | `App.tsx` (12.8k lines), navigation, onboarding, settings | Implementing |
 | 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | Done (2026-10-18); one follow-up (event attachments) |
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Done (2026-10-19) |
-| 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `lib/`, `agent/`, `components/` | Pending |
+| 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Reviewed 2026-10-19, awaiting decisions |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Pending |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Pending |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Pending |
@@ -1177,3 +1177,146 @@ failing test first.
 | C4-2 | Approve | 2026-10-19 | Done in three commits. The task merge, per-relay batching, live application and update coalescing are `nostr/taskSyncMerge.ts`; board metadata is `applyBoardMetadata` (`nostr/boardEventMerge.ts`); the calendar list upsert joined `calendarEventMerge`. All are used by App and `useBoardSync` and tested directly. Both "mirror" test files are gone: their scenarios run against the real code (`taskSyncMerge.test.ts` with a real `BoardSyncLedger`; `SubscriptionManager` in taskify-runtime-nostr; `SessionPool`). Task version stamps (`_nostrAt`) are no longer written onto task objects: the publisher records them through the task store (`recordTaskVersion`), so they are saved deliberately. `App.tsx` 6,913 → 6,758 lines, less than estimated: decoding and orchestration stay in `App`, and the parse and merge code was already in modules |
 | C4-3 | Approve | 2026-10-19 | Done for the Bible tracker and scripture memory: both are configurations of `nostr/mergedDocumentSync.ts` (three-way merge with a stored base, debounced and serialized publishing, first-use publish, echo and stale-copy rejection, key changes), run by `useMergedDocumentSync`; 8 engine tests (first use, a second device, concurrent edits on two devices, echoes, unreadable copies, debounce, publishing before the pull, switching keys). Stored state and base keys are unchanged, so devices keep their sync position. `useNostrAppBackupSync` 972 → 556 lines. The app backup (boards and settings) stays as it was: it is a whole-snapshot backup with a different restore flow, not a merged document. Checked in a production build: a Bible tracker change published, and the base was recorded |
 | C4-4 | Approve | 2026-10-19 | Done: `normalizeScriptureReviewTasks` (`domains/tasks/generatedTasks.ts`) moves every review task, open and done, to the chosen board and frequency, and keeps one copy per id (a completion outlasts an open copy, then the newer version wins). It runs in the planner and, through `sanitizeRecurringTasks`, on both relay receive paths (the initial-sync batch and live events), so a relay copy from before a move is normalized on arrival instead of reverting the move or adding a second copy on the old board. Nothing it changes is published. Fasting reminders needed no change: only open reminders move, and those moves are published, as native does. Tests: 6, including two simulated devices sharing a relay (a board and frequency change on both, re-syncs with a stale copy, a completion on one device); the duplicate cases fail without the change. Checked in a production build: after a frequency change the stored review task recurred weekly, with one copy. Relies on both devices having the same Scripture Memory settings, which the app backup syncs |
+
+## Chunk 5 — PWA chat, contacts, sharing, voice, Bible tracker
+
+Chat (`src/chat`, about 15,300 lines), the share inbox (in `App.tsx` and `lib/shareInbox.ts`),
+contacts, voice dictation, the Bible tracker, and printing and scanning (`components/`). Agent
+mode was removed before this review (`45f29edb`, superseded by the CLI).
+
+What the review found:
+
+- **Two pipelines read the same gift wraps.** Chat (`useDmSubscription`) and the share inbox
+  (`useNostrSubscriptions` plus about 300 lines in `App`) each subscribe to the account's
+  kind-4 and kind-1059 events and each open every gift wrap with two NIP-44 decryptions. They
+  differ in what they read and remember:
+
+  | | Chat | Share inbox |
+  | --- | --- | --- |
+  | Relays | the account's NIP-17 inbox relays (kind 10050) | the default relays only |
+  | History | full on first run, then watermarks per relay | the last 3 days, every launch |
+  | Remembers opened wraps | in memory only | only wraps that held a share (last 400) |
+
+  So on every launch each wrap from the last 3 days is opened at least twice (chat once, the
+  inbox once or twice, since its fetch and its subscription overlap). A share that arrives while
+  every device is offline for more than 3 days shows in chat but never reaches the inbox. A
+  share sent only to an inbox relay the defaults don't include never reaches it either. This
+  is the duplication the signer work (chunk 2, C2-4) needs removed: with a remote signer each
+  decryption is a round trip.
+- **The inbox deletes shares from the relays (PWA only).** After handling a share, the PWA
+  publishes a kind-5 deletion for its gift wrap (`sendInboxDeletion`). NIP-59 now says relays
+  SHOULD delete a gift wrap when its recipient asks. Where a relay does, the user's other
+  devices never receive the share, and it disappears from chat history on a new device. That
+  contradicts the rest of the design: chat-state sync carries inbox responses *keyed by the
+  wrap id* so other devices can apply them. iOS never deletes. Whether it bites depends on
+  each relay; it was not exercised against public relays, since that would publish real
+  events.
+- **The PWA turns a bare npub into a contact share.** If a message, or JSON in one, is only an
+  npub or pubkey, the inbox treats it as a contact share. iOS accepts only real share envelopes
+  (parsed by `taskify-core`), so the same message gives different results on the two clients.
+- **NIP-17 wrap and unwrap exist in four places, none in `taskify-core`.**
+  - Sending: `useDmSend` and `lib/shareInbox`, each with its own copy of the recipient-relay
+    lookup (kind 10050).
+  - Receiving: `useNostrSession` and `unwrapShareGiftWrap`.
+  - The CLI has its own (`shareTransport.ts`).
+
+  Share envelopes already live in core; the transport around them does not.
+- **Chat-state sync is a fourth copy of the replaceable-document pattern.**
+  `useNostrChatStateSync` (282 lines) holds read markers and inbox responses. It hand-rolls
+  what C4-3's `MergedDocumentSync` engine does, plus flushing on tab hide. Its merge
+  (`mergeChatSyncStates`, in core) needs no base.
+- **Scanning code is duplicated and untested.** `BoardScanSheet` and `BibleTrackerScanSheet`
+  each hold about 570 lines of image processing: marker detection, Otsu threshold,
+  homography, sampling. Only 22 of those lines differ. No test covers any of it, so a fix in
+  one sheet silently misses the other.
+- **Dead styles at startup.** `styles/agent.css` is imported by `index.css`, so it loads on
+  startup. About 280 of its 400 lines style the removed agent panel; nothing references
+  `agent-panel`. The rest are document-viewer and attachment styles filed there by mistake.
+- **In good shape:** chat is fully type-checked and walled off from the wallet by lint.
+  Contacts sync, through a private NIP-51 list with the legacy kind-3 envelope as a fallback,
+  has one owner (`useContactsSync`). Link previews go through the Worker. The Bible tracker's
+  model was already moved out in chunk 2. Voice uses the browser's speech recognition. Its
+  private-key prop is already on the C2-4 list of sites to move to the signer.
+- **Language fit:** none needed. Scanning is the only CPU-bound code. It runs once per photo
+  on typed arrays, so WASM would need a measured slow case first. The NIP-17 codec should go
+  to `taskify-core`, not Rust (C1-6 still holds).
+
+### C5-1 — Stop deleting received shares from the relays (bug, interop)
+
+- **User:** Anyone with Taskify on more than one device, and anyone opening chat on a new one.
+- **Proposal:** Remove `sendInboxDeletion`. A handled share stays where the user's other
+  devices can get it, as on iOS. Re-handling is already prevented locally, and across devices
+  by the inbox responses in chat-state sync (keyed by wrap id). C5-3 makes that durable.
+- **Test first:** handling a share publishes nothing.
+- **Effort:** S. **Risk:** low. Shares stay on relays as they do for iOS users today.
+
+### C5-2 — NIP-17 transport in `taskify-core` (interop, simplification)
+
+- **Proposal:** `taskify-core/src/nip17.ts` owns NIP-17:
+  - building a message's gift wraps for its recipients and the sender's own copy;
+  - opening one;
+  - choosing the relays to send to from a recipient's kind 10050.
+
+  Crypto goes through an injected signer (sign, NIP-44 encrypt and decrypt), so the C2-4 signer
+  plugs straight in. PWA chat, the PWA share inbox and the CLI use it, and their four copies
+  go. JSON vectors of fixed wraps and the rumors they hold are read by the Node tests and by
+  Swift (`NostrSharedInbox`), so all three clients open the same wraps the same way.
+- **Effort:** M. **Risk:** low–medium; covered by vectors on both sides.
+
+### C5-3 — One gift-wrap pipeline with a per-device store (architecture, performance, bug)
+
+- **User:** Everyone who chats or shares; a prerequisite for NIP-46 signers.
+- **Proposal:** Every gift wrap enters through one pipeline.
+  - **One subscription,** using chat's relay choice (kind 10050 plus defaults) and its
+    watermarked history.
+  - **Each wrap opened once per device.** Opened wraps are stored in IndexedDB keyed by wrap id
+    (what they held, or "not for this app"). A reload decrypts nothing it has seen.
+  - **Routed by content:** a share envelope goes to the inbox, everything else to chat. A share
+    still appears in its chat thread, as now.
+  - **The inbox becomes a pure command.** `domains/inbox/shareInboxReceiver.ts` takes an opened
+    share and the current state and returns the inbox change. It is tested, and leaves `App`
+    (about 300 lines).
+  - **Envelopes only,** matching iOS: the bare-npub fallback goes. (Decision: a contact shared
+    by an older client as a bare npub would show only as a chat message.)
+
+  This fixes the two missed-share cases above, and launch decrypts only new wraps. The wallet's
+  payment-request listener keeps its own subscription until chunk 6 removes it.
+- **Test first:** a share received 4 days ago reaches the inbox; a reload opens no wrap twice.
+- **Effort:** L. **Risk:** medium; staged behind C5-2, with chat's existing tests kept.
+
+### C5-4 — Chat-state sync on the document engine (simplification)
+
+- **Proposal:** Make chat state (read markers, inbox responses) a configuration of C4-3's
+  `MergedDocumentSync`. The engine gains `flushPending()` for tab hide. Its 15-second debounce
+  and storage keys stay, so devices keep their sync position. About 200 lines go.
+- **Effort:** S. **Risk:** low.
+
+### C5-5 — One tested scan engine (simplification, test quality)
+
+- **Proposal:** `domains/print/scanEngine.ts` holds marker detection, thresholding, homography
+  and sampling once. It works on plain luma arrays, so tests run without a canvas. Each sheet
+  passes its layout and reads the marks. Tests use synthetic pages rendered from each layout,
+  including rotation and uneven lighting. About 550 lines go.
+- **Effort:** M. **Risk:** low–medium; check with a real printed sheet before and after.
+
+### C5-6 — Remove the agent-panel styles (cleanup)
+
+- **Proposal:** Delete the agent-panel rules. Move the document and attachment styles next to
+  their components' stylesheet. This shrinks startup CSS.
+- **Effort:** S. **Risk:** low.
+
+### Recommended order
+
+C5-1 (a one-line bug with cross-device effects) → C5-6 → C5-2 → C5-3 → C5-4 → C5-5. C5-3
+needs C5-2. The others stand alone.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C5-1 | | | |
+| C5-2 | | | |
+| C5-3 | | | |
+| C5-4 | | | |
+| C5-5 | | | |
+| C5-6 | | | |
