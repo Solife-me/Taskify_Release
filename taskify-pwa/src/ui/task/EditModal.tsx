@@ -1,5 +1,4 @@
-// @ts-nocheck
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { NoteMarkdownView } from "./NoteMarkdown";
 import { NoteEditorModal } from "./NoteModals";
@@ -13,7 +12,6 @@ import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet }
 
 // Domain types
 import type { Task, TaskAssignee, Board, TaskPriority, Recurrence, Subtask, ReminderPreset, Weekday } from "../../domains/tasks/taskTypes";
-import { HOURS_12, MINUTES, MERIDIEMS, type Meridiem } from "../../domains/appTypes";
 import { TASK_PRIORITY_MARKS } from "../../domains/tasks/taskTypes";
 
 // Task utilities
@@ -44,12 +42,6 @@ import {
   formatTimeLabel,
   resolveSystemTimeZone,
   normalizeTimeZone,
-  getWheelNearestIndex,
-  scrollWheelColumnToIndex,
-  scheduleWheelSnap,
-  handleWheelPickerScroll,
-  parseTimePickerValue,
-  formatTimePickerValue,
   currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
@@ -116,6 +108,7 @@ import {
 } from "../../localStorageKeys";
 import { shortenPubkey, toNpubKey } from "./pubkeyLabels";
 import { TaskBountyToken } from "./TaskBountyToken";
+import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
 import type { TaskBountyExtension } from "./taskBountyExtension";
 
 // ---- Local types ----
@@ -268,18 +261,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const hasDueTime = dateEnabled && scheduledTime.trim().length > 0;
   const [dateDetailsOpen, setDateDetailsOpen] = useState(false);
   const [calendarBaseDate, setCalendarBaseDate] = useState(initialDate);
-  const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerMinuteColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerMeridiemColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerHourScrollFrame = useRef<number | null>(null);
-  const timePickerMinuteScrollFrame = useRef<number | null>(null);
-  const timePickerMeridiemScrollFrame = useRef<number | null>(null);
-  const timePickerHourSnapTimeout = useRef<number | null>(null);
-  const timePickerMinuteSnapTimeout = useRef<number | null>(null);
-  const timePickerMeridiemSnapTimeout = useRef<number | null>(null);
-  const timePickerHourValueRef = useRef(0);
-  const timePickerMinuteValueRef = useRef(0);
-  const timePickerMeridiemValueRef = useRef<Meridiem>("AM");
   const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
   const [customReminderSheetOpen, setCustomReminderSheetOpen] = useState(false);
   const [subtasksExpanded, setSubtasksExpanded] = useState(false);
@@ -641,18 +622,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const iso = isoFromDateTime(scheduledDate, reminderClock, systemTimeZone);
     return Number.isNaN(Date.parse(iso)) ? null : iso;
   }, [dateEnabled, defaultTimeValue, hasDueTime, reminderTime, safeScheduledTimeZone, scheduledDate, scheduledTime, systemTimeZone]);
-  const editingReminderTime = !hasDueTime && reminderTimeDetailsOpen;
-  const timePickerParts = useMemo(
-    () =>
-      parseTimePickerValue(
-        editingReminderTime ? reminderTime : scheduledTime,
-        editingReminderTime ? DEFAULT_DATE_REMINDER_TIME : defaultTimeValue,
-      ),
-    [defaultTimeValue, editingReminderTime, reminderTime, scheduledTime],
-  );
-  const timePickerHour = timePickerParts.hour;
-  const timePickerMinute = timePickerParts.minute;
-  const timePickerMeridiem = timePickerParts.meridiem;
   useEffect(() => {
     if (scheduledDate) {
       setCalendarBaseDate(scheduledDate);
@@ -700,53 +669,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   useEffect(() => {
     setReminderTime(initialReminderTime);
   }, [initialReminderTime, task.id]);
-  useEffect(() => {
-    timePickerHourValueRef.current = timePickerHour;
-  }, [timePickerHour]);
-  useEffect(() => {
-    timePickerMinuteValueRef.current = timePickerMinute;
-  }, [timePickerMinute]);
-  useEffect(() => {
-    timePickerMeridiemValueRef.current = timePickerMeridiem;
-  }, [timePickerMeridiem]);
-  useEffect(
-    () => () => {
-      if (timePickerHourScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerHourScrollFrame.current);
-      }
-      if (timePickerMinuteScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerMinuteScrollFrame.current);
-      }
-      if (timePickerMeridiemScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
-      }
-      const snapRefs = [timePickerHourSnapTimeout, timePickerMinuteSnapTimeout, timePickerMeridiemSnapTimeout];
-      for (const ref of snapRefs) {
-        if (ref.current != null) {
-          window.clearTimeout(ref.current);
-          ref.current = null;
-        }
-      }
-    },
-    [],
-  );
-  useLayoutEffect(() => {
-    if ((hasDueTime && !timeDetailsOpen) || (!hasDueTime && !reminderTimeDetailsOpen)) return;
-    const hourIndex = HOURS_12.indexOf(timePickerHour);
-    if (hourIndex >= 0) {
-      // Use "instant" to avoid firing scroll events mid-animation, which would
-      // cause the snap handler to read a stale position and re-snap to the wrong item.
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
-    }
-    const minuteIndex = MINUTES.indexOf(timePickerMinute);
-    if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
-    }
-    const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
-    if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
-    }
-  }, [timeDetailsOpen, hasDueTime, reminderTimeDetailsOpen, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
   useEffect(() => {
     if (hasDueTime && scheduledTime) {
@@ -1062,77 +984,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       return next;
     });
   }
-  const setTimePickerFromParts = useCallback((hour: number, minute: number, meridiem: Meridiem) => {
-    const nextValue = formatTimePickerValue(hour, minute, meridiem);
-    if (editingReminderTime) {
-      setReminderTime((prev) => (prev === nextValue ? prev : nextValue));
-    } else {
-      setScheduledTime((prev) => (prev === nextValue ? prev : nextValue));
-    }
-  }, [editingReminderTime, setReminderTime, setScheduledTime]);
-  const handleTimePickerHourScroll = useCallback(() => {
-    const column = timePickerHourColumnRef.current;
-    if (!column) return;
-    if (timePickerHourScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerHourScrollFrame.current);
-    }
-    timePickerHourScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
-      if (clampedIndex == null) return;
-      const nextHour = HOURS_12[clampedIndex];
-      if (typeof nextHour === "number") {
-        // Update ref immediately for cross-column coordination; defer state commit to avoid
-        // re-rendering the whole modal during active scroll (which disrupts scroll physics).
-        timePickerHourValueRef.current = nextHour;
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-  const handleTimePickerMinuteScroll = useCallback(() => {
-    const column = timePickerMinuteColumnRef.current;
-    if (!column) return;
-    if (timePickerMinuteScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerMinuteScrollFrame.current);
-    }
-    timePickerMinuteScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
-      if (clampedIndex == null) return;
-      const nextMinute = MINUTES[clampedIndex];
-      if (typeof nextMinute === "number") {
-        timePickerMinuteValueRef.current = nextMinute;
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-  const handleTimePickerMeridiemScroll = useCallback(() => {
-    const column = timePickerMeridiemColumnRef.current;
-    if (!column) return;
-    if (timePickerMeridiemScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
-    }
-    timePickerMeridiemScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
-      if (clampedIndex == null) return;
-      const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem) {
-        timePickerMeridiemValueRef.current = nextMeridiem;
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-  const handleTimePickerWheel = useCallback((event: React.WheelEvent<HTMLElement>) => {
-    handleWheelPickerScroll(event, [
-      { ref: timePickerHourColumnRef, optionCount: HOURS_12.length },
-      { ref: timePickerMinuteColumnRef, optionCount: MINUTES.length },
-      { ref: timePickerMeridiemColumnRef, optionCount: MERIDIEMS.length },
-    ]);
-  }, []);
 
   function handleToggleTime() {
     if (hasDueTime) {
@@ -1184,7 +1035,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       : task.dueISO;
     const targetColumnId =
       targetBoardKind === "lists"
-        ? selectedColumnId || selectedBoard?.columns[0]?.id
+        ? selectedColumnId || (selectedBoard?.kind === "lists" ? selectedBoard.columns[0]?.id : undefined)
         : undefined;
     const targetColumn =
       targetBoardKind === "week"
@@ -1248,7 +1099,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           completed: !!subtask.completed,
         };
       })
-      .filter((subtask): subtask is { title: string; completed?: boolean } => !!subtask);
+      .filter((subtask): subtask is { title: string; completed: boolean } => !!subtask);
     return {
       type: "task",
       title,
@@ -1739,71 +1590,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           </div>
           {hasDueTime && timeDetailsOpen && (
             <div className="edit-card__detail space-y-2">
-              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
-                <div
-                  className="edit-time-picker__column"
-                  ref={timePickerHourColumnRef}
-                  onScroll={handleTimePickerHourScroll}
-                  role="listbox"
-                  aria-label="Select hour"
-                >
-                  {HOURS_12.map((hour, idx) => (
-                    <div
-                      key={hour}
-                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-                      data-picker-index={idx}
-                      role="option"
-                      aria-selected={timePickerHour === hour}
-                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-                    >
-                      {String(hour).padStart(2, "0")}
-                    </div>
-                  ))}
-                </div>
-                <div className="edit-time-picker__separator" aria-hidden="true">
-                  :
-                </div>
-                <div
-                  className="edit-time-picker__column"
-                  ref={timePickerMinuteColumnRef}
-                  onScroll={handleTimePickerMinuteScroll}
-                  role="listbox"
-                  aria-label="Select minute"
-                >
-                  {MINUTES.map((minute, idx) => (
-                    <div
-                      key={minute}
-                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-                      data-picker-index={idx}
-                      role="option"
-                      aria-selected={timePickerMinute === minute}
-                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-                    >
-                      {String(minute).padStart(2, "0")}
-                    </div>
-                  ))}
-                </div>
-                <div
-                  className="edit-time-picker__column edit-time-picker__column--meridiem"
-                  ref={timePickerMeridiemColumnRef}
-                  onScroll={handleTimePickerMeridiemScroll}
-                  role="listbox"
-                  aria-label="Select AM or PM"
-                >
-                  {MERIDIEMS.map((label, idx) => (
-                    <div
-                      key={label}
-                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-                      data-picker-index={idx}
-                      role="option"
-                      aria-selected={timePickerMeridiem === label}
-                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-                    >
-                      {label}
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <WheelTimePicker value={scheduledTime} fallback={defaultTimeValue} onChange={setScheduledTime} />
             </div>
           )}
 
@@ -1929,71 +1716,12 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                         {reminderTimeSummary}
                       </button>
                       {reminderTimeDetailsOpen && (
-                        <div className="edit-time-picker" role="group" aria-label="Select reminder time" onWheel={handleTimePickerWheel}>
-                          <div
-                            className="edit-time-picker__column"
-                            ref={timePickerHourColumnRef}
-                            onScroll={handleTimePickerHourScroll}
-                            role="listbox"
-                            aria-label="Select hour"
-                          >
-                            {HOURS_12.map((hour, idx) => (
-                              <div
-                                key={`task-reminder-hour-${hour}`}
-                                className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-                                data-picker-index={idx}
-                                role="option"
-                                aria-selected={timePickerHour === hour}
-                                onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-                              >
-                                {String(hour).padStart(2, "0")}
-                              </div>
-                            ))}
-                          </div>
-                          <div className="edit-time-picker__separator" aria-hidden="true">
-                            :
-                          </div>
-                          <div
-                            className="edit-time-picker__column"
-                            ref={timePickerMinuteColumnRef}
-                            onScroll={handleTimePickerMinuteScroll}
-                            role="listbox"
-                            aria-label="Select minute"
-                          >
-                            {MINUTES.map((minute, idx) => (
-                              <div
-                                key={`task-reminder-minute-${minute}`}
-                                className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-                                data-picker-index={idx}
-                                role="option"
-                                aria-selected={timePickerMinute === minute}
-                                onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-                              >
-                                {String(minute).padStart(2, "0")}
-                              </div>
-                            ))}
-                          </div>
-                          <div
-                            className="edit-time-picker__column edit-time-picker__column--meridiem"
-                            ref={timePickerMeridiemColumnRef}
-                            onScroll={handleTimePickerMeridiemScroll}
-                            role="listbox"
-                            aria-label="Select AM or PM"
-                          >
-                            {MERIDIEMS.map((label, idx) => (
-                              <div
-                                key={`task-reminder-meridiem-${label}`}
-                                className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-                                data-picker-index={idx}
-                                role="option"
-                                aria-selected={timePickerMeridiem === label}
-                                onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-                              >
-                                {label}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
+                        <WheelTimePicker
+                          value={reminderTime}
+                          fallback={DEFAULT_DATE_REMINDER_TIME}
+                          onChange={setReminderTime}
+                          ariaLabel="Select reminder time"
+                        />
                       )}
                     </div>
                   )}

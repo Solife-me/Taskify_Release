@@ -1,5 +1,4 @@
-// @ts-nocheck
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nip19 } from "nostr-tools";
 import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList, todayDateKey } from "taskify-core";
 
@@ -40,15 +39,9 @@ import {
   isoTimePart,
   isoFromDateTime,
   parseDateKey,
-  scrollWheelColumnToIndex,
-  getWheelNearestIndex,
-  scheduleWheelSnap,
-  handleWheelPickerScroll,
   resolveSystemTimeZone,
   normalizeTimeZone,
   formatTimeLabel,
-  parseTimePickerValue,
-  formatTimePickerValue,
   currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
@@ -100,15 +93,12 @@ import { useToast } from "../../context/ToastContext";
 import { Modal } from "../Modal";
 import { ActionSheet } from "../../components/ActionSheet";
 import { DatePickerCalendar } from "../../domains/dateTime/calendarPickerHook";
+import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
 import { readDocumentsFromFiles } from "../../lib/documents";
 
 // Shared primitive constants (appTypes)
 import {
   ISO_DATE_PATTERN,
-  HOURS_12,
-  MINUTES,
-  MERIDIEMS,
-  type Meridiem,
 } from "../../domains/appTypes";
 
 // Local type and helpers originally co-located in App.tsx
@@ -339,21 +329,6 @@ function EventEditModal({
     : currentTimeValue(60, initialStartTzid);
   const [startTime, setStartTime] = useState(initialStartTime);
   const [endTime, setEndTime] = useState(initialEndTime);
-  const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerMinuteColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerMeridiemColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerHourScrollFrame = useRef<number | null>(null);
-  const timePickerMinuteScrollFrame = useRef<number | null>(null);
-  const timePickerMeridiemScrollFrame = useRef<number | null>(null);
-  const timePickerHourSnapTimeout = useRef<number | null>(null);
-  const timePickerMinuteSnapTimeout = useRef<number | null>(null);
-  const timePickerMeridiemSnapTimeout = useRef<number | null>(null);
-  const [timePickerHour, setTimePickerHour] = useState(() => parseTimePickerValue(startTime, "09:00").hour);
-  const [timePickerMinute, setTimePickerMinute] = useState(() => parseTimePickerValue(startTime, "09:00").minute);
-  const [timePickerMeridiem, setTimePickerMeridiem] = useState<Meridiem>(() => parseTimePickerValue(startTime, "09:00").meridiem);
-  const timePickerHourValueRef = useRef(0);
-  const timePickerMinuteValueRef = useRef(0);
-  const timePickerMeridiemValueRef = useRef<Meridiem>("AM");
 
   const [selectedColumnId, setSelectedColumnId] = useState<string>(() => {
     if (!selectedBoard || !isListLikeBoard(selectedBoard)) return "";
@@ -594,144 +569,6 @@ function EventEditModal({
     }
   }, [reminderPickerExpanded]);
 
-  useEffect(() => {
-    if (whenPicker !== "startTime" && whenPicker !== "endTime" && whenPicker !== "reminderTime") return;
-    const source = whenPicker === "endTime" ? endTime : whenPicker === "reminderTime" ? reminderTime : startTime;
-    const fallback = whenPicker === "endTime" ? "10:00" : "09:00";
-    const parsed = parseTimePickerValue(source, fallback);
-    setTimePickerHour(parsed.hour);
-    setTimePickerMinute(parsed.minute);
-    setTimePickerMeridiem(parsed.meridiem);
-  }, [endTime, reminderTime, startTime, whenPicker]);
-
-  useEffect(() => {
-    timePickerHourValueRef.current = timePickerHour;
-  }, [timePickerHour]);
-  useEffect(() => {
-    timePickerMinuteValueRef.current = timePickerMinute;
-  }, [timePickerMinute]);
-  useEffect(() => {
-    timePickerMeridiemValueRef.current = timePickerMeridiem;
-  }, [timePickerMeridiem]);
-
-  useEffect(
-    () => () => {
-      if (timePickerHourScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerHourScrollFrame.current);
-      }
-      if (timePickerMinuteScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerMinuteScrollFrame.current);
-      }
-      if (timePickerMeridiemScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
-      }
-      const snapRefs = [timePickerHourSnapTimeout, timePickerMinuteSnapTimeout, timePickerMeridiemSnapTimeout];
-      for (const ref of snapRefs) {
-        if (ref.current != null) {
-          window.clearTimeout(ref.current);
-          ref.current = null;
-        }
-      }
-    },
-    [],
-  );
-
-  useLayoutEffect(() => {
-    if (whenPicker !== "startTime" && whenPicker !== "endTime" && whenPicker !== "reminderTime") return;
-    const hourIndex = HOURS_12.indexOf(timePickerHour);
-    if (hourIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
-    }
-    const minuteIndex = MINUTES.indexOf(timePickerMinute);
-    if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
-    }
-    const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
-    if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
-    }
-  }, [whenPicker, timePickerHour, timePickerMinute, timePickerMeridiem]);
-
-  const setTimePickerFromParts = useCallback(
-    (hour: number, minute: number, meridiem: Meridiem) => {
-      const nextValue = formatTimePickerValue(hour, minute, meridiem);
-      setTimePickerHour(hour);
-      setTimePickerMinute(minute);
-      setTimePickerMeridiem(meridiem);
-      if (whenPicker === "endTime") {
-        setEndTime(nextValue);
-      } else if (whenPicker === "reminderTime") {
-        setReminderTime(nextValue);
-      } else {
-        setStartTime(nextValue);
-      }
-    },
-    [whenPicker],
-  );
-
-  const handleTimePickerHourScroll = useCallback(() => {
-    const column = timePickerHourColumnRef.current;
-    if (!column) return;
-    if (timePickerHourScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerHourScrollFrame.current);
-    }
-    timePickerHourScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
-      if (clampedIndex == null) return;
-      const nextHour = HOURS_12[clampedIndex];
-      if (nextHour) {
-        timePickerHourValueRef.current = nextHour;
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-
-  const handleTimePickerMinuteScroll = useCallback(() => {
-    const column = timePickerMinuteColumnRef.current;
-    if (!column) return;
-    if (timePickerMinuteScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerMinuteScrollFrame.current);
-    }
-    timePickerMinuteScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
-      if (clampedIndex == null) return;
-      const nextMinute = MINUTES[clampedIndex];
-      if (Number.isFinite(nextMinute)) {
-        timePickerMinuteValueRef.current = nextMinute as number;
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-
-  const handleTimePickerMeridiemScroll = useCallback(() => {
-    const column = timePickerMeridiemColumnRef.current;
-    if (!column) return;
-    if (timePickerMeridiemScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
-    }
-    timePickerMeridiemScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
-      if (clampedIndex == null) return;
-      const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem) {
-        timePickerMeridiemValueRef.current = nextMeridiem;
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-  const handleTimePickerWheel = useCallback((event: React.WheelEvent<HTMLElement>) => {
-    handleWheelPickerScroll(event, [
-      { ref: timePickerHourColumnRef, optionCount: HOURS_12.length },
-      { ref: timePickerMinuteColumnRef, optionCount: MINUTES.length },
-      { ref: timePickerMeridiemColumnRef, optionCount: MERIDIEMS.length },
-    ]);
-  }, []);
 
   useEffect(() => {
     if (endDate < startDate) setEndDate(startDate);
@@ -1265,71 +1102,7 @@ function EventEditModal({
 	          )}
 	          {!allDay && whenPicker === "startTime" && (
 	            <div className="edit-card__detail space-y-2">
-	              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
-	                <div
-	                  className="edit-time-picker__column"
-	                  ref={timePickerHourColumnRef}
-	                  onScroll={handleTimePickerHourScroll}
-	                  role="listbox"
-	                  aria-label="Select hour"
-	                >
-	                  {HOURS_12.map((hour, idx) => (
-	                    <div
-	                      key={`start-hour-${hour}`}
-	                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerHour === hour}
-	                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-	                    >
-	                      {String(hour).padStart(2, "0")}
-	                    </div>
-	                  ))}
-	                </div>
-	                <div className="edit-time-picker__separator" aria-hidden="true">
-	                  :
-	                </div>
-	                <div
-	                  className="edit-time-picker__column"
-	                  ref={timePickerMinuteColumnRef}
-	                  onScroll={handleTimePickerMinuteScroll}
-	                  role="listbox"
-	                  aria-label="Select minute"
-	                >
-	                  {MINUTES.map((minute, idx) => (
-	                    <div
-	                      key={`start-minute-${minute}`}
-	                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerMinute === minute}
-	                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-	                    >
-	                      {String(minute).padStart(2, "0")}
-	                    </div>
-	                  ))}
-	                </div>
-	                <div
-	                  className="edit-time-picker__column edit-time-picker__column--meridiem"
-	                  ref={timePickerMeridiemColumnRef}
-	                  onScroll={handleTimePickerMeridiemScroll}
-	                  role="listbox"
-	                  aria-label="Select AM or PM"
-	                >
-	                  {MERIDIEMS.map((label, idx) => (
-	                    <div
-	                      key={`start-meridiem-${label}`}
-	                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerMeridiem === label}
-	                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-	                    >
-	                      {label}
-	                    </div>
-	                  ))}
-	                </div>
-	              </div>
+	              <WheelTimePicker value={startTime} fallback="09:00" onChange={setStartTime} />
 	              <button
 	                type="button"
 	                className="edit-row edit-row--interactive w-full text-left"
@@ -1383,71 +1156,7 @@ function EventEditModal({
 	          )}
 	          {!allDay && whenPicker === "endTime" && (
 	            <div className="edit-card__detail space-y-2">
-	              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
-	                <div
-	                  className="edit-time-picker__column"
-	                  ref={timePickerHourColumnRef}
-	                  onScroll={handleTimePickerHourScroll}
-	                  role="listbox"
-	                  aria-label="Select hour"
-	                >
-	                  {HOURS_12.map((hour, idx) => (
-	                    <div
-	                      key={`end-hour-${hour}`}
-	                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerHour === hour}
-	                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-	                    >
-	                      {String(hour).padStart(2, "0")}
-	                    </div>
-	                  ))}
-	                </div>
-	                <div className="edit-time-picker__separator" aria-hidden="true">
-	                  :
-	                </div>
-	                <div
-	                  className="edit-time-picker__column"
-	                  ref={timePickerMinuteColumnRef}
-	                  onScroll={handleTimePickerMinuteScroll}
-	                  role="listbox"
-	                  aria-label="Select minute"
-	                >
-	                  {MINUTES.map((minute, idx) => (
-	                    <div
-	                      key={`end-minute-${minute}`}
-	                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerMinute === minute}
-	                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-	                    >
-	                      {String(minute).padStart(2, "0")}
-	                    </div>
-	                  ))}
-	                </div>
-	                <div
-	                  className="edit-time-picker__column edit-time-picker__column--meridiem"
-	                  ref={timePickerMeridiemColumnRef}
-	                  onScroll={handleTimePickerMeridiemScroll}
-	                  role="listbox"
-	                  aria-label="Select AM or PM"
-	                >
-	                  {MERIDIEMS.map((label, idx) => (
-	                    <div
-	                      key={`end-meridiem-${label}`}
-	                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerMeridiem === label}
-	                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-	                    >
-	                      {label}
-	                    </div>
-	                  ))}
-	                </div>
-	              </div>
+	              <WheelTimePicker value={endTime} fallback="10:00" onChange={setEndTime} />
 	              <button
 	                type="button"
 	                className="edit-row edit-row--interactive w-full text-left"
@@ -1645,71 +1354,7 @@ function EventEditModal({
                           {reminderTimeLabel}
                         </button>
                         {whenPicker === "reminderTime" && (
-                          <div className="edit-time-picker" role="group" aria-label="Select reminder time" onWheel={handleTimePickerWheel}>
-                            <div
-                              className="edit-time-picker__column"
-                              ref={timePickerHourColumnRef}
-                              onScroll={handleTimePickerHourScroll}
-                              role="listbox"
-                              aria-label="Select hour"
-                            >
-                              {HOURS_12.map((hour, idx) => (
-                                <div
-                                  key={`reminder-hour-${hour}`}
-                                  className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-                                  data-picker-index={idx}
-                                  role="option"
-                                  aria-selected={timePickerHour === hour}
-                                  onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-                                >
-                                  {String(hour).padStart(2, "0")}
-                                </div>
-                              ))}
-                            </div>
-                            <div className="edit-time-picker__separator" aria-hidden="true">
-                              :
-                            </div>
-                            <div
-                              className="edit-time-picker__column"
-                              ref={timePickerMinuteColumnRef}
-                              onScroll={handleTimePickerMinuteScroll}
-                              role="listbox"
-                              aria-label="Select minute"
-                            >
-                              {MINUTES.map((minute, idx) => (
-                                <div
-                                  key={`reminder-minute-${minute}`}
-                                  className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-                                  data-picker-index={idx}
-                                  role="option"
-                                  aria-selected={timePickerMinute === minute}
-                                  onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-                                >
-                                  {String(minute).padStart(2, "0")}
-                                </div>
-                              ))}
-                            </div>
-                            <div
-                              className="edit-time-picker__column edit-time-picker__column--meridiem"
-                              ref={timePickerMeridiemColumnRef}
-                              onScroll={handleTimePickerMeridiemScroll}
-                              role="listbox"
-                              aria-label="Select AM or PM"
-                            >
-                              {MERIDIEMS.map((label, idx) => (
-                                <div
-                                  key={`reminder-meridiem-${label}`}
-                                  className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-                                  data-picker-index={idx}
-                                  role="option"
-                                  aria-selected={timePickerMeridiem === label}
-                                  onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-                                >
-                                  {label}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
+                          <WheelTimePicker value={reminderTime} fallback="09:00" onChange={setReminderTime} ariaLabel="Select reminder time" />
                         )}
                       </div>
                     )}
