@@ -48,7 +48,7 @@ Constraints carried through every chunk:
 | 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | Done (2026-10-18); one follow-up (event attachments) |
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Done (2026-10-19) |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Done (2026-10-19) |
-| 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Reviewed 2026-10-19, awaiting decisions |
+| 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Done (2026-10-19); code deletion due after Dec 1, 2026 |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Pending |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Pending |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Pending |
@@ -1490,8 +1490,23 @@ should be mirrored on iOS and macOS in chunks 9 and 11.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C6-1 | | | |
-| C6-2 | | | |
-| C6-3 | | | |
-| C6-4 | | | |
-| C6-5 | | | |
+| C6-1 | Approve; end bounty creation | 2026-10-19 | Done (`3ecdf37a`): "Move funds out" replaces Receive and opens from the notice (`/wallet/move-out`). It covers Lightning out, one ecash token per mint (exported without the mint and recorded in History, so an unclaimed token can be taken back), NWC sweep, npub.cash claims, and the 12 words with restore instructions. Removed: the receive sheets (and payment-request creation), the npub.cash address page (`/wallet/address` opens the wallet), redeeming scanned tokens (copied instead) and LNURL withdraw. Bounties: no new ones, and a bounty is never redeemed into the wallet (its token is copied); existing ones keep reveal, sign over, copy, mark claimed and remove. The notice announces December 1, 2026 and shows once more. Not exercised: making a token from real funds |
+| C6-2 | Approve; date December 1, 2026 | 2026-10-19 | Stage 2 switch done (`58ae4cd5`): from local midnight on the date, the full wallet is off. Devices that had it get a recovery view, which reads storage only and loads no Cashu SDK (enforced by `check:startup`). It shows each mint's notes as a V3 token, saved tokens, unclaimed sent tokens, and the 12 words with mints. A hidden switch previews it, and it was checked that way in a production build. **The release must ship before the date.** Still to do after the date: delete the wallet code (about 30,000 lines) and move the debug console out of Wallet settings. Then stage 3, recovery to Settings → Backup |
+| C6-3 | Approve | 2026-10-19 | Done (`eadc4277`): wallet code loads only where wallet data exists (`walletFlags.hasWalletData`), and backups carry a seed only if one exists (never create one). The seed is optional in core's backup snapshot, which iOS and the CLI already allow. BIP39 has its own chunk. Startup 430.8 → 416.9 KB; budget 455 → 440 KB; `check:startup` fails if wallet seed, storage or availability code, or the word list, returns. Checked on a clean profile: no wallet chunk requested |
+| C6-4 | Approve | 2026-10-19 | Done (`f55495c7`): Support development offers a `lightning:` link and a copy button for everyone; the internal-wallet donation is gone |
+| C6-5 | Approve | 2026-10-19 | Done (`11fc0f3f`): the inbox lives in `domains/inbox` (`useInboxEntries`, `InboxEntry`). Lint: `ui/wallet` is wallet code, and the inbox, lib, identity, routing and onboarding code may not import the wallet |
+
+### Follow-ups from chunk 6
+
+- **Ship before December 1, 2026.** On that date the PWA switches to recovery by itself. Users on
+  an older build keep the full wallet until they update.
+- **After the date:**
+  - delete the wallet code (`mint/`, `hooks/wallet`, most of `wallet/`, `ui/wallet` except
+    `WalletRecoveryView`, `CashuWalletModal`, the providers, NWC, npub.cash, solife, the bounty
+    editor extension);
+  - move the debug console to Settings → Advanced;
+  - drop the wallet lint lists.
+
+  Recovery needs only `wallet/storage`, `seed`, `walletRecovery`, `walletPhaseOut`,
+  `mintDisplayName` and `walletFlags`.
+- **iOS and macOS** follow the same policy and date in chunks 9 and 11.
