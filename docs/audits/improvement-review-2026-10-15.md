@@ -1510,3 +1510,8 @@ should be mirrored on iOS and macOS in chunks 9 and 11.
   Recovery needs only `wallet/storage`, `seed`, `walletRecovery`, `walletPhaseOut`,
   `mintDisplayName` and `walletFlags`.
 - **iOS and macOS** follow the same policy and date in chunks 9 and 11.
+- **Fixed after chunk 6 (`262f17ab`, maintainer report):** a saved token already redeemed in
+  another wallet blocked the close-out forever. Close-out now checks saved tokens with their
+  mints (NUT-07), removes spent ones (keeping a copy in History), and lets the user remove one
+  that cannot be checked. The redeemer now also resolves tokens it could not fully decode. iOS
+  has the same close-out, so chunk 9 checks it for the same case.
