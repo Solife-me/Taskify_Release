@@ -89,6 +89,7 @@ import { DatePickerCalendar } from "../../domains/dateTime/calendarPickerHook";
 import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
 import { ReminderChips } from "../editor/fields/ReminderChips";
 import { RepeatField } from "../editor/fields/RepeatField";
+import { AttachmentList } from "../editor/fields/AttachmentList";
 import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import { readDocumentsFromFiles } from "../../lib/documents";
 
@@ -899,35 +900,12 @@ function EventEditModal({
 			                Attach
 			              </button>
 			            </div>
-			            {documents.length > 0 && (
-			              <ul className="space-y-1">
-			                {documents.map((doc) => (
-			                  <li key={doc.id} className="doc-edit-row">
-			                    <div className="doc-edit-row__info">
-			                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
-			                      <div className="doc-edit-row__meta">{doc.kind.toUpperCase()}</div>
-			                    </div>
-			                    <div className="doc-edit-row__actions">
-			                      <button
-			                        type="button"
-			                        className="ghost-button button-sm pressable"
-			                        onClick={() => onPreviewDocument?.(event, doc)}
-			                      >
-			                        Preview
-			                      </button>
-			                      <button
-			                        type="button"
-			                        className="ghost-button button-sm pressable text-rose-500"
-			                        onClick={() => setDocuments((prev) => prev.filter((item) => item.id !== doc.id))}
-			                        disabled={isReadOnly}
-			                      >
-			                        Remove
-			                      </button>
-			                    </div>
-			                  </li>
-			                ))}
-			              </ul>
-			            )}
+			            <AttachmentList
+			              documents={documents}
+			              onPreview={(doc) => onPreviewDocument?.(event, doc)}
+			              onRemove={(id) => setDocuments((prev) => prev.filter((item) => item.id !== id))}
+			              disabled={isReadOnly}
+			            />
 			          </div>
 			        </section>
 

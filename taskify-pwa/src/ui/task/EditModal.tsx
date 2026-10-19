@@ -73,7 +73,7 @@ import {
   type TaskDocument,
 } from "../../lib/documents";
 import { encryptAndUploadAttachment } from "../../lib/attachmentCrypto";
-import { createUploadingDocumentRow, markStaleUploadingRowsIndeterminate, removeUploadingDocumentRow, setUploadingDocumentRowPhase, startUploadingDotsTimer, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
+import { createUploadingDocumentRow, markStaleUploadingRowsIndeterminate, removeUploadingDocumentRow, setUploadingDocumentRowPhase, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
 import { findServerEntry, parseFileServers, type FileServerEntry } from "../../lib/fileStorage";
 import {
   buildTaskShareEnvelope,
@@ -104,6 +104,7 @@ import { TaskBountyToken } from "./TaskBountyToken";
 import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
 import { ReminderChips } from "../editor/fields/ReminderChips";
 import { RepeatField } from "../editor/fields/RepeatField";
+import { AttachmentList } from "../editor/fields/AttachmentList";
 import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import type { TaskBountyExtension } from "./taskBountyExtension";
 
@@ -191,7 +192,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [uploadingCount, setUploadingCount] = useState(0);
   const [uploadingLabel, setUploadingLabel] = useState<string | null>(null);
   const [uploadingDocumentRows, setUploadingDocumentRows] = useState<UploadingDocumentRow[]>([]);
-  const [uploadingDotPhase, setUploadingDotPhase] = useState(0);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
   const [selectedBoardId, setSelectedBoardId] = useState(task.boardId);
@@ -692,10 +692,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     }
     return attached;
   }
-
-  useEffect(() => {
-    return startUploadingDotsTimer(uploadingDocumentRows.length, setUploadingDotPhase);
-  }, [uploadingDocumentRows.length]);
 
   useEffect(() => {
     if (!uploadingDocumentRows.length) return;
@@ -1244,48 +1240,12 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 ))}
               </div>
             )}
-            {(uploadingDocumentRows.length > 0 || documents.length > 0) && (
-              <ul className="space-y-1">
-                {uploadingDocumentRows.map((doc) => (
-                  <li key={doc.id} className="doc-edit-row doc-edit-row--uploading">
-                    <div className="doc-edit-row__info">
-                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
-                      <div className="doc-edit-row__meta">{doc.kind}</div>
-                    </div>
-                    <div className="doc-edit-row__actions">
-                      <span className="doc-edit-row__status">{doc.phase === "processing" ? "Processing" : "Uploading"}<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
-                    </div>
-                    <div className={`doc-edit-row__progress${doc.indeterminate ? " doc-edit-row__progress--indeterminate" : ""}`} aria-hidden="true">
-                      <div className={`doc-edit-row__progress-bar${doc.indeterminate ? " doc-edit-row__progress-bar--indeterminate" : ""}`} style={doc.indeterminate ? undefined : { width: `${Math.max(12, Math.round(doc.progress * 100))}%` }} />
-                    </div>
-                  </li>
-                ))}
-                {documents.map((doc) => (
-                  <li key={doc.id} className="doc-edit-row">
-                    <div className="doc-edit-row__info">
-                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
-                      <div className="doc-edit-row__meta">{doc.kind.toUpperCase()}</div>
-                    </div>
-                    <div className="doc-edit-row__actions">
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable"
-                        onClick={() => onPreviewDocument?.(task, doc)}
-                      >
-                        Preview
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable text-rose-500"
-                        onClick={() => setDocuments((prev) => prev.filter((item) => item.id !== doc.id))}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <AttachmentList
+              documents={documents}
+              uploading={uploadingDocumentRows}
+              onPreview={(doc) => onPreviewDocument?.(task, doc)}
+              onRemove={(id) => setDocuments((prev) => prev.filter((item) => item.id !== id))}
+            />
             <div className="edit-card__detail edit-card__detail--field">
               <button
                 type="button"
