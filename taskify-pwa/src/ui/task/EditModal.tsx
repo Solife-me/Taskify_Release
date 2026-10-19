@@ -7,7 +7,6 @@ import { normalizeTaskAssignmentStatus, todayDateKey } from "taskify-core";
 
 // Sub-sheet components
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
-import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "../recurrence/RecurrencePicker";
 
 // Domain types
 import type { Task, TaskAssignee, Board, TaskPriority, Recurrence, Subtask, ReminderPreset, Weekday } from "../../domains/tasks/taskTypes";
@@ -104,6 +103,7 @@ import { shortenPubkey, toNpubKey } from "./pubkeyLabels";
 import { TaskBountyToken } from "./TaskBountyToken";
 import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
 import { ReminderChips } from "../editor/fields/ReminderChips";
+import { RepeatField } from "../editor/fields/RepeatField";
 import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import type { TaskBountyExtension } from "./taskBountyExtension";
 
@@ -124,34 +124,6 @@ async function fileToDataURL(file: File): Promise<string> {
   });
 }
 
-
-function labelOf(r: Recurrence): string {
-  if (!r || r.type === "none") return "Never";
-  if (r.type === "daily") return "Daily";
-  if (r.type === "weekly") {
-    const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-    if (!r.days?.length) return "Weekly";
-    if (r.days.length === 7) return "Every day";
-    const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5];
-    if (
-      r.days.length === 5 &&
-      WEEKDAYS.every((d) => r.days.includes(d)) &&
-      !r.days.includes(0) &&
-      !r.days.includes(6)
-    ) {
-      return "Weekdays";
-    }
-    return r.days.map((d) => WD_SHORT[d]).join(", ");
-  }
-  if (r.type === "every") {
-    const unitLabel = r.n === 1 ? r.unit : `${r.n} ${r.unit}s`;
-    return `Every ${unitLabel}`;
-  }
-  if (r.type === "monthlyDay") {
-    return r.interval && r.interval > 1 ? `Every ${r.interval} months` : "Monthly";
-  }
-  return "Custom";
-}
 
 function normalizeAssigneePubkey(value: string | null | undefined): string | null {
   const normalized = normalizeNostrPubkey(value);
@@ -228,10 +200,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const documentInputRef = useRef<HTMLInputElement>(null);
   const dragSubtaskIdRef = useRef<string | null>(null);
   const [rule, setRule] = useState<Recurrence>(task.recurrence ?? R_NONE);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [repeatSheetOpen, setRepeatSheetOpen] = useState(false);
-  const [repeatCustomSheetOpen, setRepeatCustomSheetOpen] = useState(false);
-  const [endRepeatSheetOpen, setEndRepeatSheetOpen] = useState(false);
   const initialDateEnabled = task.dueDateEnabled !== false;
   const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
   const initialTimeZone = useMemo(
@@ -578,12 +546,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       ),
     [reminderTime, scheduledDate, systemTimeZone],
   );
-  const endRepeatSummary = useMemo(() => {
-    if (!rule.untilISO) return "Never";
-    const parsed = new Date(rule.untilISO);
-    if (Number.isNaN(parsed.getTime())) return "Custom date";
-    return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-  }, [rule]);
   const reminderRowSummary = useMemo(() => {
     if (!dateEnabled) return "Enable date";
     if (!reminderSelection.length) return "None";
@@ -858,27 +820,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     reorderSubtasks(sourceHint, id, position);
   }, [reorderSubtasks]);
 
-  const handleRepeatSelect = useCallback((next: Recurrence) => {
-    setRule((prev) => {
-      if (prev.untilISO) {
-        return { ...next, untilISO: prev.untilISO };
-      }
-      return next;
-    });
-    setRepeatSheetOpen(false);
-    setRepeatCustomSheetOpen(false);
-  }, []);
-
-  const handleOpenCustomRepeat = useCallback(() => {
-    setRepeatSheetOpen(false);
-    setRepeatCustomSheetOpen(true);
-  }, []);
-
-  const handleOpenAdvancedRepeat = useCallback(() => {
-    setRepeatSheetOpen(false);
-    setRepeatCustomSheetOpen(false);
-    setShowAdvanced(true);
-  }, []);
   function toggleDateSwitch() {
     if (selectedBoardKind === "week") {
       if (!dateEnabled) {
@@ -1550,42 +1491,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             </button>
           )}
 
-          <button
-            type="button"
-            className="edit-row edit-row--interactive"
-            onClick={() => setRepeatSheetOpen(true)}
-          >
-            <span className="edit-row__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
-                <path d="M4 12h16M7 7l-3 5 3 5M17 17l3-5-3-5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </span>
-            <div className="edit-row__content">
-              <div className="edit-row__label">Repeat</div>
-            </div>
-            <div className="edit-row__value">{labelOf(rule)}</div>
-            <span className="edit-row__chevron" aria-hidden="true">›</span>
-          </button>
-
-          {rule.type !== "none" && (
-            <button
-              type="button"
-              className="edit-row edit-row--interactive"
-              onClick={() => setEndRepeatSheetOpen(true)}
-            >
-              <span className="edit-row__icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
-                  <path d="M6 6h12v12H6z" opacity="0.35" />
-                  <path d="M6 12h12" />
-                </svg>
-              </span>
-              <div className="edit-row__content">
-                <div className="edit-row__label">End Repeat</div>
-              </div>
-              <div className="edit-row__value">{endRepeatSummary}</div>
-              <span className="edit-row__chevron" aria-hidden="true">›</span>
-            </button>
-          )}
+          <RepeatField
+            rule={rule}
+            onChange={setRule}
+            anchorDate={scheduledDate}
+            timeZone={safeScheduledTimeZone}
+            showIcons
+          />
 
         {dateEnabled && (
             <>
@@ -1838,16 +1750,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
         </div>
       </div>
 
-      {showAdvanced && (
-        <RecurrenceModal
-          initial={rule}
-          onClose={() => setShowAdvanced(false)}
-          onApply={(r) => {
-            setRule(r);
-            setShowAdvanced(false);
-          }}
-        />
-      )}
     </Modal>
 
     <ActionSheet
@@ -2022,41 +1924,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     </ActionSheet>
 
 
-    <RepeatPickerSheet
-      open={repeatSheetOpen}
-      onClose={() => setRepeatSheetOpen(false)}
-      rule={rule}
-      scheduledDate={scheduledDate}
-      onSelect={handleRepeatSelect}
-      onOpenCustom={handleOpenCustomRepeat}
-      onOpenAdvanced={handleOpenAdvancedRepeat}
-    />
-    <RepeatCustomSheet
-      open={repeatCustomSheetOpen}
-      onClose={() => setRepeatCustomSheetOpen(false)}
-      scheduledDate={scheduledDate}
-      rule={rule}
-      onApply={handleRepeatSelect}
-      onOpenAdvanced={handleOpenAdvancedRepeat}
-    />
-    <EndRepeatSheet
-      open={endRepeatSheetOpen}
-      onClose={() => setEndRepeatSheetOpen(false)}
-      rule={rule}
-      scheduledDate={scheduledDate}
-      timeZone={safeScheduledTimeZone}
-      onSelect={(untilISO) =>
-        setRule((prev) => {
-          const next: Recurrence = { ...prev };
-          if (untilISO) {
-            next.untilISO = untilISO;
-          } else {
-            delete next.untilISO;
-          }
-          return next;
-        })
-      }
-    />
 
     <TimeZoneSheet
       open={timeZoneSheetOpen}

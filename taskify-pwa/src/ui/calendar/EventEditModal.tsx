@@ -4,7 +4,6 @@ import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocat
 
 // Sub-sheet components
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
-import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "../recurrence/RecurrencePicker";
 
 // Domain types
 import type {
@@ -89,13 +88,13 @@ import { ActionSheet } from "../../components/ActionSheet";
 import { DatePickerCalendar } from "../../domains/dateTime/calendarPickerHook";
 import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
 import { ReminderChips } from "../editor/fields/ReminderChips";
+import { RepeatField } from "../editor/fields/RepeatField";
 import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import { readDocumentsFromFiles } from "../../lib/documents";
 
 // Shared primitive constants (appTypes)
-import {
-  ISO_DATE_PATTERN,
-} from "../../domains/appTypes";
+
+
 
 // Local type and helpers originally co-located in App.tsx
 type CalendarRsvpEnvelope = {
@@ -108,14 +107,6 @@ type CalendarRsvpEnvelope = {
 };
 
 const R_NONE: Recurrence = { type: "none" };
-
-function labelOf(r: Recurrence): string {
-  if (r.type === "daily") return "Every day";
-  if (r.type === "weekly") return "Weekly";
-  if (r.type === "every") return `Every ${r.n} ${r.unit}${r.n > 1 ? "s" : ""}`;
-  if (r.type === "monthlyDay") return `Monthly (day ${r.day})`;
-  return "None";
-}
 
 function EventEditModal({
   event,
@@ -160,10 +151,6 @@ function EventEditModal({
   const [whenPicker, setWhenPicker] = useState<EventWhenPicker>(null);
   const [timeZoneSheetOpen, setTimeZoneSheetOpen] = useState(false);
   const [boardLocationExpanded, setBoardLocationExpanded] = useState(false);
-  const [repeatSheetOpen, setRepeatSheetOpen] = useState(false);
-  const [repeatCustomSheetOpen, setRepeatCustomSheetOpen] = useState(false);
-  const [endRepeatSheetOpen, setEndRepeatSheetOpen] = useState(false);
-  const [recurrenceModalOpen, setRecurrenceModalOpen] = useState(false);
   const documentInputRef = useRef<HTMLInputElement>(null);
 
   const participantValidation = useMemo(() => {
@@ -348,17 +335,6 @@ function EventEditModal({
   }, [selectedBoard, selectedColumnId]);
 
   const [rule, setRule] = useState<Recurrence>(event.recurrence ?? R_NONE);
-  const repeatLabel = useMemo(() => (rule.type === "none" ? "Never" : labelOf(rule)), [rule]);
-  const endRepeatSummary = useMemo(() => {
-    if (!rule.untilISO) return "Never";
-    const timeZone = allDay ? "UTC" : (normalizeTimeZone(startTzid) ?? systemTimeZone);
-    const dateKey = isoDatePart(rule.untilISO, timeZone);
-    if (!ISO_DATE_PATTERN.test(dateKey)) return "Custom date";
-    const parsed = new Date(`${dateKey}T00:00:00`);
-    if (Number.isNaN(parsed.getTime())) return "Custom date";
-    return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-  }, [allDay, rule.untilISO, startTzid, systemTimeZone]);
-
   const { options: timeZoneOptions, map: timeZoneOptionMap } = useMemo(() => getTimeZoneOptions(), []);
   const safeStartTzid = useMemo(
     () => normalizeTimeZone(startTzid) ?? systemTimeZone,
@@ -804,28 +780,6 @@ function EventEditModal({
 	    }
 	  };
 
-	  const handleRepeatSelect = useCallback((next: Recurrence) => {
-	    setRule((prev) => {
-	      if (prev.untilISO) {
-	        return { ...next, untilISO: prev.untilISO };
-	      }
-	      return next;
-	    });
-	    setRepeatSheetOpen(false);
-	    setRepeatCustomSheetOpen(false);
-	  }, []);
-
-	  const handleOpenCustomRepeat = useCallback(() => {
-	    setRepeatSheetOpen(false);
-	    setRepeatCustomSheetOpen(true);
-	  }, []);
-
-	  const handleOpenAdvancedRepeat = useCallback(() => {
-	    setRepeatSheetOpen(false);
-	    setRepeatCustomSheetOpen(false);
-	    setRecurrenceModalOpen(true);
-	  }, []);
-
 	  return (
 	    <>
 	      <Modal onClose={onCancel} showClose={false} variant="fullscreen" desktop="pane">
@@ -1105,32 +1059,14 @@ function EventEditModal({
 		        </section>
 
 		        <section className="edit-card">
-		          <button
-		            type="button"
-		            className="edit-row edit-row--interactive w-full text-left"
-		            onClick={() => setRepeatSheetOpen(true)}
+		          <RepeatField
+		            rule={rule}
+		            onChange={setRule}
+		            anchorDate={startDate}
+		            timeZone={allDay ? "UTC" : safeStartTzid}
 		            disabled={isReadOnly}
-		          >
-	            <div className="edit-row__content">
-	              <div className="edit-row__label">Repeat</div>
-	            </div>
-		            <div className="edit-row__value">{repeatLabel}</div>
-		            <span className="edit-row__chevron" aria-hidden="true">›</span>
-		          </button>
-              {rule.type !== "none" && (
-                <button
-                  type="button"
-                  className="edit-row edit-row--interactive w-full text-left"
-                  onClick={() => setEndRepeatSheetOpen(true)}
-                  disabled={isReadOnly}
-                >
-                  <div className="edit-row__content">
-                    <div className="edit-row__label">End Repeat</div>
-                  </div>
-                  <div className="edit-row__value">{endRepeatSummary}</div>
-                  <span className="edit-row__chevron" aria-hidden="true">›</span>
-                </button>
-              )}
+		            rowClassName="edit-row edit-row--interactive w-full text-left"
+		          />
 		        </section>
 
 		        <section className="edit-card">
@@ -1722,51 +1658,6 @@ function EventEditModal({
 		        }}
 		      />
 
-		      <RepeatPickerSheet
-		        open={repeatSheetOpen}
-		        onClose={() => setRepeatSheetOpen(false)}
-		        rule={rule}
-	        scheduledDate={startDate}
-	        onSelect={handleRepeatSelect}
-	        onOpenCustom={handleOpenCustomRepeat}
-	        onOpenAdvanced={handleOpenAdvancedRepeat}
-	      />
-	      <RepeatCustomSheet
-	        open={repeatCustomSheetOpen}
-	        onClose={() => setRepeatCustomSheetOpen(false)}
-	        scheduledDate={startDate}
-	        rule={rule}
-	        onApply={handleRepeatSelect}
-	        onOpenAdvanced={handleOpenAdvancedRepeat}
-	      />
-        <EndRepeatSheet
-          open={endRepeatSheetOpen}
-          onClose={() => setEndRepeatSheetOpen(false)}
-          rule={rule}
-          scheduledDate={startDate}
-          timeZone={allDay ? "UTC" : safeStartTzid}
-          onSelect={(untilISO) =>
-            setRule((prev) => {
-              const next: Recurrence = { ...prev };
-              if (untilISO) {
-                next.untilISO = untilISO;
-              } else {
-                delete next.untilISO;
-              }
-              return next;
-            })
-          }
-        />
-	      {recurrenceModalOpen && (
-	        <RecurrenceModal
-	          initial={rule}
-	          onClose={() => setRecurrenceModalOpen(false)}
-	          onApply={(next) => {
-	            setRule(next);
-	            setRecurrenceModalOpen(false);
-	          }}
-	        />
-	      )}
 	    </>
 	  );
 }
