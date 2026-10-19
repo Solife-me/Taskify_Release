@@ -4,8 +4,9 @@
 // as notes were plain text before they were Markdown, and each skipped row between blocks is
 // kept as a `spacer`, so a note keeps the spacing it was typed with.
 //
-// Mirrors taskify-ios-native/Sources/TaskifyCore/Models/TaskNoteMarkdown.swift; keep the two in
-// step so a note reads and edits the same on every client. Offsets are UTF-16, as in the
+// Mirrors taskify-ios-native/Sources/TaskifyCore/Models/TaskNoteMarkdown.swift; both run the shared
+// vectors in taskify-core/fixtures/note-markdown-vectors.json, so a note reads and edits the same
+// on every client. Offsets are UTF-16, as in the
 // browser's textarea selection.
 
 import type { Subtask } from "./taskTypes";
