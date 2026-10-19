@@ -1,4 +1,3 @@
-import { prepareRelayEvent } from "./nostr/prepareRelayEvent";
 import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
 import { useReminderSync } from "./domains/push/useReminderSync";
 import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
@@ -1161,26 +1160,6 @@ export default function App() {
     },
     [shortenNpub, toNpub],
   );
-  const sendInboxDeletion = useCallback(
-    async (eventId: string) => {
-      if (!eventId || !nostrSkHex) return;
-      if (!inboxRelays.length) return;
-      try {
-        const pool = ensureInboxPool();
-        const deletion: EventTemplate = {
-          kind: 5,
-          content: "Handled shared item",
-          tags: [["e", eventId]],
-          created_at: Math.floor(Date.now() / 1000),
-        };
-        const signed = await prepareRelayEvent(deletion, hexToBytes(nostrSkHex), inboxRelays);
-        await Promise.resolve(pool.publish(inboxRelays, signed));
-      } catch (err) {
-        console.warn("Failed to delete shared inbox DM", err);
-      }
-    },
-    [ensureInboxPool, inboxRelays, nostrSkHex],
-  );
   const addInboxTask = useCallback(
     (item: ShareEnvelope["item"], sender: InboxSender, dmEventId: string) => {
       const existing = tasksRef.current.find((task) => task.inboxItem?.dmEventId === dmEventId);
@@ -1446,12 +1425,10 @@ export default function App() {
       };
       if (envelope.item.type === "event") {
         addInboxCalendarInvite(envelope.item as SharedCalendarEventInvitePayload, sender, event.id);
-        void sendInboxDeletion(event.id);
         return;
       }
       if (envelope.item.type === "task-assignment-response") {
         applyTaskAssignmentResponse(envelope.item as SharedTaskAssignmentResponsePayload, sender);
-        void sendInboxDeletion(event.id);
         return;
       }
       let itemToAdd: ShareEnvelope["item"] = envelope.item;
@@ -1478,7 +1455,6 @@ export default function App() {
         itemToAdd = { type: "contact", contact: enrichedContact } as any;
       }
       addInboxTask(itemToAdd, sender, event.id);
-      void sendInboxDeletion(event.id);
     },
     [
       addInboxCalendarInvite,
@@ -1488,7 +1464,6 @@ export default function App() {
       fetchProfileMetadata,
       nostrPK,
       persistInboxProcessed,
-      sendInboxDeletion,
     ],
   );
 
