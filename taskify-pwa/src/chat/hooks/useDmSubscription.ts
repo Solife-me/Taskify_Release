@@ -5,6 +5,7 @@ import { normalizeNostrPubkey } from "../../lib/nostr";
 import { NostrSession } from "../../nostr/NostrSession";
 import { isImageMime, isVideoMime, isAudioMime } from "../../lib/messengerAttachmentCrypto";
 import { parseShareEnvelope } from "../../lib/shareInbox";
+import type { IncomingShare } from "../../domains/inbox/shareInboxReceiver";
 import { truncatePreview } from "../chatUi";
 import type { Contact, ContactProfile } from "../../lib/contacts";
 import {
@@ -32,6 +33,12 @@ import type { useNostrSession } from "./useNostrSession";
  */
 export type PaymentRequestEventHandler = (event: NostrEvent, options: { updateClock: boolean }) => unknown;
 
+/**
+ * Receives each incoming share (a Taskify share envelope) once, as chat opens it, so the inbox
+ * needs no subscription or decryption of its own. The message counts as handled once it resolves.
+ */
+export type IncomingShareHandler = (share: IncomingShare) => Promise<unknown> | unknown;
+
 export type UseDmSubscriptionOptions = Pick<ReturnType<typeof useDmState>,
   | "dmPeerProfilesRef" | "dmPeerProfileLoadingRef" | "setDmPeerProfilesVersion"
   | "dmDeletedEventsRef" | "dmTempDeletedEventsRef" | "persistTempDeletedDmEvents"
@@ -44,6 +51,7 @@ export type UseDmSubscriptionOptions = Pick<ReturnType<typeof useDmState>,
   | "stopDmSubscription" | "ensureNostrIdentity" | "defaultNostrRelays"
 > & {
   handlePaymentRequestEventRef?: MutableRefObject<PaymentRequestEventHandler | null> | null;
+  onIncomingShareRef?: MutableRefObject<IncomingShareHandler | null> | null;
   contactDisplayLabel: (contact: Contact) => string;
 };
 
@@ -78,6 +86,7 @@ export function useDmSubscription({
   ensureNostrIdentity,
   defaultNostrRelays,
   handlePaymentRequestEventRef = null,
+  onIncomingShareRef = null,
   persistDmPeerProfileCache,
   contactDisplayLabel,
 }: UseDmSubscriptionOptions) {
@@ -514,6 +523,17 @@ export function useDmSubscription({
         ...(replyToEventId ? { replyToEventId } : {}),
       };
 
+      // Shares also go to the inbox, before the message counts as handled.
+      // The sender as the opener reported it (raw hex), which the inbox matches assignees by.
+      if (share && isIncoming && rumorSender) {
+        await onIncomingShareRef?.current?.({
+          eventId: event.id,
+          envelope: share,
+          senderPubkey: rumorSender,
+          recipientPubkeys: rumorRecipients,
+        });
+      }
+
       dmProcessedEventsRef.current.add(event.id);
       setDmMessages((prev) => {
         const existingIndex = prev.findIndex((m) => m.eventId === event.id || (decrypted.rumorId && m.rumorEventId === decrypted.rumorId));
@@ -537,6 +557,7 @@ export function useDmSubscription({
       ensurePeerProfile,
       groupChatsRef,
       handlePaymentRequestEventRef,
+      onIncomingShareRef,
       messageItemsRef,
       parseIncomingPaymentMessage,
       persistTempDeletedDmEvents,

@@ -125,3 +125,73 @@ test('startup discovers iOS inbox relays and recovers old sent DMs despite a rec
     expect(nextRecovery.every(call => call.filters[0].since > 0)).toBe(true);
   } finally { closeRef.current?.(); await act(async () => root.unmount()); }
 });
+
+function renderSubscription(props: any) {
+  let hook: ReturnType<typeof useDmSubscription>;
+  function Harness() { hook = useDmSubscription(props); return null; }
+  const root = createRoot(document.createElement('div'));
+  return {
+    mount: () => act(async () => root.render(<Harness />)),
+    hook: () => hook!,
+    unmount: () => act(async () => root.unmount()),
+  };
+}
+
+const baseProps = (overrides: any) => ({
+  dmProcessedEventsRef: { current: new Set() }, dmDeletedEventsRef: { current: new Set() },
+  dmTempDeletedEventsRef: { current: new Map() }, dmBlockedPeersRef: { current: new Set() },
+  ensureNostrIdentity: () => ({ pubkey: 'a'.repeat(64), secret: 'secret' }),
+  resolvePeerPubkey: () => '', messageItemsRef: { current: [] }, parseIncomingPaymentMessage: () => null,
+  setDmMessages: () => {},
+  ...overrides,
+});
+
+test('a share is handed to the inbox however old it is, before the message counts as handled', async () => {
+  const envelope = { v: 1, kind: 'taskify-share', item: { type: 'task', title: 'Buy milk' } };
+  const fourDaysAgo = Math.floor(Date.now() / 1000) - 4 * 86_400;
+  const processed = new Set<string>();
+  const onIncomingShare = vi.fn(async () => { expect(processed.has('share-wrap')).toBe(false); });
+  const view = renderSubscription(baseProps({
+    dmProcessedEventsRef: { current: processed },
+    decryptNostrPaymentMessage: async () => ({
+      content: JSON.stringify(envelope), createdAt: fourDaysAgo, rumorId: 'r', senderPubkey: 'b'.repeat(64), recipientPubkeys: ['a'.repeat(64)],
+    }),
+    onIncomingShareRef: { current: onIncomingShare },
+  }));
+  await view.mount();
+  try {
+    await view.hook().handleDmEvent({ ...wrap('share-wrap'), created_at: fourDaysAgo });
+    expect(onIncomingShare).toHaveBeenCalledWith({
+      eventId: 'share-wrap',
+      envelope: expect.objectContaining({ item: expect.objectContaining({ type: 'task', title: 'Buy milk' }) }),
+      senderPubkey: 'b'.repeat(64),
+      recipientPubkeys: ['a'.repeat(64)],
+    });
+    expect(processed.has('share-wrap')).toBe(true);
+  } finally { await view.unmount(); }
+});
+
+test('after a reload, a message already opened on this device is not decrypted again', async () => {
+  const { PersistedIdSet } = await import('../seenEvents');
+  let stored: string | null = null;
+  const storage = { load: () => stored, save: (value: string) => { stored = value; } };
+  const decrypt = vi.fn(async () => ({ content: 'hello', createdAt: 500, rumorId: 'r1', senderPubkey: 'b'.repeat(64) }));
+
+  const first = renderSubscription(baseProps({
+    dmProcessedEventsRef: { current: new PersistedIdSet(storage, { schedule: (run) => run() }) },
+    decryptNostrPaymentMessage: decrypt,
+  }));
+  await first.mount();
+  await first.hook().handleDmEvent(wrap('wrap-x'));
+  await first.unmount();
+  expect(decrypt).toHaveBeenCalledTimes(1);
+
+  const second = renderSubscription(baseProps({
+    dmProcessedEventsRef: { current: new PersistedIdSet(storage) },
+    decryptNostrPaymentMessage: decrypt,
+  }));
+  await second.mount();
+  await second.hook().handleDmEvent(wrap('wrap-x'));
+  await second.unmount();
+  expect(decrypt).toHaveBeenCalledTimes(1);
+});

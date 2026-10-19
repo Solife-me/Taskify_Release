@@ -15,7 +15,6 @@ import {
   type SharedTaskAssignmentResponsePayload,
   normalizeRelayList,
   createNip17Rumor,
-  openNip17GiftWrap,
 } from "taskify-core";
 import { nip17Crypto } from "taskify-runtime-nostr";
 import { LocalKeySigner } from "../identity/signer";
@@ -187,26 +186,6 @@ function shareTimestampMode(): "now" | "random" {
     return (kvStorage.getItem("taskify.nip17.timestamp") || "").trim().toLowerCase() === "now" ? "now" : "random";
   } catch {
     return "random";
-  }
-}
-
-/**
- * Opens a kind-1059 gift wrap sent to the share inbox (taskify-core's `openNip17GiftWrap`). The
- * sender is the seal's author, which the rumor must name, so a stranger cannot pass a share off
- * as coming from one of the recipient's contacts. Returns null for anything that does not open
- * or is not a kind-14 message.
- */
-export async function unwrapShareGiftWrap(
-  wrap: NostrEvent,
-  recipientSecretHex: string,
-): Promise<{ content: string; senderPubkey: string; tags: string[][] } | null> {
-  if (wrap?.kind !== 1059) return null;
-  try {
-    const opened = await openNip17GiftWrap(wrap, new LocalKeySigner(recipientSecretHex), nip17Crypto);
-    if (!opened || opened.rumor.kind !== 14) return null;
-    return { content: opened.rumor.content, senderPubkey: opened.senderPubkey, tags: opened.rumor.tags };
-  } catch {
-    return null;
   }
 }
 

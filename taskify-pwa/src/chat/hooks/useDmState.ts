@@ -11,6 +11,8 @@ import {
   LS_DM_DELETED_EVENTS,
   LS_DM_MESSAGE_CACHE,
   LS_DM_SYNC_META,
+  LS_DM_SEEN_EVENTS,
+  LS_DM_REACTIONS,
   LS_DM_TEMP_DELETED_EVENTS,
   LS_DM_THREAD_READ_STATE,
   LS_GROUP_CHATS,
@@ -21,6 +23,7 @@ import type { ContactProfile } from "../../lib/contacts";
 import type { WalletMessageItem } from "../../types/walletMessages";
 import { chatRetentionCutoffMs, type ChatMessageRetention } from "../../domains/tasks/settingsTypes";
 import { findCashuToken } from "../cashuTokenText";
+import { PersistedIdSet } from "../seenEvents";
 import { mergeGroupChats, normalizeGroupChatRecord, type GroupChat } from "../../lib/groupChatState";
 import type { SharedTaskPayload } from "../../lib/shareInbox";
 import { normalizeNostrPubkey } from "../../lib/nostr";
@@ -408,12 +411,48 @@ function readDmCache(): WalletDmMessage[] {
         createdAt: entry.createdAt,
         content: entry.content,
         preview: entry.preview,
+        ...(typeof entry.rumorEventId === "string" && entry.rumorEventId ? { rumorEventId: entry.rumorEventId } : {}),
         ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
         ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
+        ...(typeof entry.replyToEventId === "string" && entry.replyToEventId ? { replyToEventId: entry.replyToEventId } : {}),
       }))
       .sort((a, b) => a.createdAt - b.createdAt);
   } catch {
     return [];
+  }
+}
+
+/** Reactions by the message they react to (rumor id, else event id). */
+function readDmReactions(): Map<string, DmReaction[]> {
+  try {
+    const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_REACTIONS);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object") return new Map();
+    const out = new Map<string, DmReaction[]>();
+    for (const [key, list] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(list)) continue;
+      const reactions = list.filter(
+        (r): r is DmReaction =>
+          !!r && typeof r.emoji === "string" && typeof r.senderPubkey === "string" && typeof r.reactEventId === "string",
+      );
+      if (reactions.length) out.set(key, reactions);
+    }
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+
+function persistDmReactions(reactions: Map<string, DmReaction[]>): void {
+  try {
+    // Optimistic reactions (temp ids) are re-sent and re-learned from their wraps.
+    const stored = Object.fromEntries(
+      Array.from(reactions, ([key, list]) => [key, list.filter((r) => !r.reactEventId.startsWith("temp-"))] as const)
+        .filter(([, list]) => list.length > 0),
+    );
+    idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_REACTIONS, JSON.stringify(stored));
+  } catch {
+    // storage full
   }
 }
 
@@ -527,7 +566,7 @@ export function useDmState({
   const [dmExpandedMessages, setDmExpandedMessages] = useState<Set<string>>(new Set());
   const [dmMessageActions, setDmMessageActions] = useState<{ eventId: string; copyValue: string; msg: WalletDmMessage } | null>(null);
   const [replyToMessage, setReplyToMessage] = useState<WalletDmMessage | null>(null);
-  const [dmReactions, setDmReactions] = useState<Map<string, DmReaction[]>>(new Map());
+  const [dmReactions, setDmReactions] = useState<Map<string, DmReaction[]>>(readDmReactions);
   const [dmInfoMessage, setDmInfoMessage] = useState<WalletDmMessage | null>(null);
   const [dmForwardMessage, setDmForwardMessage] = useState<WalletDmMessage | null>(null);
   const [dmReactionDetail, setDmReactionDetail] = useState<{ eventId: string } | null>(null);
@@ -576,7 +615,15 @@ export function useDmState({
   const dmPeerProfilesRef = useRef<Map<string, ContactProfile>>(initialDmPeerProfiles);
   const dmPeerProfileLoadingRef = useRef<Set<string>>(new Set());
   const [, setDmPeerProfilesVersion] = useState(0);
-  const dmProcessedEventsRef = useRef<Set<string>>(new Set());
+  // Events already opened, kept across reloads (chat/seenEvents.ts): a launch decrypts only new ones.
+  const [seenEvents] = useState<Set<string>>(
+    () =>
+      new PersistedIdSet({
+        load: () => idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_SEEN_EVENTS),
+        save: (value) => idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_DM_SEEN_EVENTS, value),
+      }),
+  );
+  const dmProcessedEventsRef = useRef<Set<string>>(seenEvents);
   const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
   const dmLastSyncRef = useRef<number>(readDmSyncMeta().lastCompletedSyncAt || 0);
   const messageItemsRef = useRef<WalletMessageItem[]>(messageItems);
@@ -751,6 +798,7 @@ export function useDmState({
     const handler = () => {
       setDmMessages([]);
       persistDmMessages([]);
+      setDmReactions(new Map());
     };
     window.addEventListener("taskify:clear-chat-history", handler);
     return () => window.removeEventListener("taskify:clear-chat-history", handler);
@@ -813,6 +861,10 @@ export function useDmState({
   useEffect(() => {
     persistDmMessages(dmMessages);
   }, [dmMessages, persistDmMessages]);
+
+  useEffect(() => {
+    persistDmReactions(dmReactions);
+  }, [dmReactions]);
 
   useEffect(() => {
     if (!isChatPage || !open || chatView !== "threads") return;

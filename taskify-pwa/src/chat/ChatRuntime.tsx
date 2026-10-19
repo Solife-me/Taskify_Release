@@ -51,7 +51,7 @@ import type { WalletMessageItem } from "../types/walletMessages";
 
 import { useDmState, normalizeDmPeerHex } from "./hooks/useDmState";
 import { useContactsState } from "./hooks/useContactsState";
-import { useDmSubscription } from "./hooks/useDmSubscription";
+import { useDmSubscription, type IncomingShareHandler } from "./hooks/useDmSubscription";
 import { useDmSend } from "./hooks/useDmSend";
 import { useContactsSync } from "./hooks/useContactsSync";
 import { useDmThreadActions } from "./hooks/useDmThreadActions";
@@ -125,6 +125,8 @@ export type ChatRuntimeProps = {
   formatCalendarInviteWhen?: (invite: CalendarInvite) => string;
   onDmUnreadCountChange?: (count: number) => void;
   chatMessageRetention?: ChatMessageRetention;
+  /** Each incoming share, once, as chat opens it (the inbox has no subscription of its own). */
+  onIncomingShare?: IncomingShareHandler;
 };
 
 /** Chat's state and actions, as the Chat page reads them. */
@@ -165,8 +167,11 @@ function useChatRuntimeValue({
   formatCalendarInviteWhen,
   onDmUnreadCountChange,
   chatMessageRetention = "forever",
+  onIncomingShare,
 }: Omit<ChatRuntimeProps, "children">) {
   const open = active;
+  const onIncomingShareRef = useRef<IncomingShareHandler | null>(onIncomingShare ?? null);
+  onIncomingShareRef.current = onIncomingShare ?? null;
   const chatDebugEnabled = import.meta.env.DEV && (() => {
     try {
       return kvStorage.getItem("taskify.chat.debug") === "1";
@@ -448,6 +453,7 @@ persistBlockedPeers,
     defaultNostrRelays,
     persistDmPeerProfileCache,
     contactDisplayLabel,
+    onIncomingShareRef,
   });
   const {
 

@@ -9,6 +9,8 @@ import {
   LS_DM_MESSAGE_CACHE,
   LS_DM_THREAD_READ_STATE,
   LS_DM_SYNC_META,
+  LS_DM_SEEN_EVENTS,
+  LS_DM_REACTIONS,
   LS_DM_TEMP_DELETED_EVENTS,
   LS_ECASH_OPEN_REQUESTS,
   LS_LIGHTNING_CONTACTS,
@@ -134,6 +136,8 @@ export async function initializeStorageBoundaries(): Promise<void> {
       LS_DM_MESSAGE_CACHE,
       LS_DM_THREAD_READ_STATE,
       LS_DM_SYNC_META,
+      LS_DM_SEEN_EVENTS, // messages already opened: a launch decrypts only new ones
+      LS_DM_REACTIONS,
       LS_GROUP_CHATS,
       LS_GROUP_MUTED,
       LS_GROUP_LEFT,

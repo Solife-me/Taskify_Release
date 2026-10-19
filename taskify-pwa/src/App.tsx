@@ -20,7 +20,7 @@ import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo
 import { createPortal } from "react-dom";
 
 
-import { type EventTemplate, nip04, nip19 } from "nostr-tools";
+import { type EventTemplate, nip19 } from "nostr-tools";
 import {
   BIBLE_BOARD_ID,
   FASTING_REMINDER_SERIES_ID,
@@ -266,7 +266,7 @@ import {
 } from "./domains/nostr/nostrPool";
 import { useBoardSync, type BoardSyncRelayBatchEntry } from "./nostr/useBoardSync";
 import { useCalendarEventManagement } from "./nostr/useCalendarEventManagement";
-import { useNostrSubscriptions, type CalendarViewSubscriptionTarget, type SubscribeManyPool } from "./nostr/useNostrSubscriptions";
+import { useNostrSubscriptions, type CalendarViewSubscriptionTarget } from "./nostr/useNostrSubscriptions";
 import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
 import { useSelectionMode } from "./ui/selection/useSelectionMode";
 import { useBoardViewScrollState } from "./ui/board/useBoardViewScrollState";
@@ -282,6 +282,7 @@ import {
   pendingCalendarInviteEventIds,
   pendingInboxEventIds,
 } from "./domains/inbox/inboxResponseSync";
+import { receiveIncomingShare, type IncomingShare } from "./domains/inbox/shareInboxReceiver";
 import type { ChatInboxResponse } from "taskify-core";
 import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
 import { useWalletShellState } from "./ui/wallet/useWalletShellState";
@@ -342,9 +343,7 @@ import {
   buildCalendarEventInviteEnvelope,
   buildTaskAssignmentResponseEnvelope,
   buildTaskShareEnvelope,
-  parseShareEnvelope,
   sendShareMessage,
-  unwrapShareGiftWrap,
   type ShareEnvelope,
   type SharedCalendarEventInvitePayload,
   type SharedTaskAssignmentResponsePayload,
@@ -403,7 +402,6 @@ const MONTH_NAMES = [
 
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
 const MESSAGES_COLUMN_ID = "messages-shared";
-const SHARE_DM_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
 
 
 
@@ -1103,45 +1101,6 @@ export default function App() {
     },
     [ensureInboxPool, inboxRelays],
   );
-  const extractPTagPubkeys = useCallback((tags: string[][] | undefined): string[] => {
-    if (!Array.isArray(tags)) return [];
-    return tags
-      .filter((tag) => Array.isArray(tag) && tag[0] === "p" && typeof tag[1] === "string")
-      .map((tag) => tag[1]!.trim())
-      .map((value) => normalizeNostrPubkey(value) || value)
-      .filter((value) => value.length > 0)
-      .map((value) => value.toLowerCase());
-  }, []);
-  const decryptShareMessage = useCallback(
-    async (
-      event: NostrEvent,
-    ): Promise<{ content: string; senderPubkey: string; recipientPubkeys: string[] } | null> => {
-      if (!nostrSkHex) return null;
-      try {
-        if (event.kind === 4) {
-          const content = await nip04.decrypt(nostrSkHex, event.pubkey, event.content);
-          return {
-            content,
-            senderPubkey: event.pubkey,
-            recipientPubkeys: extractPTagPubkeys(event.tags),
-          };
-        }
-        if (event.kind === 1059) {
-          const opened = await unwrapShareGiftWrap(event, nostrSkHex);
-          if (!opened) return null;
-          return {
-            content: opened.content,
-            senderPubkey: opened.senderPubkey,
-            recipientPubkeys: extractPTagPubkeys(opened.tags),
-          };
-        }
-      } catch (err) {
-        console.warn("Failed to decrypt shared inbox message", err);
-      }
-      return null;
-    },
-    [extractPTagPubkeys, nostrSkHex],
-  );
   const formatSenderLabel = useCallback(
     (sender: InboxSender): string => {
       const contacts = loadContactsFromStorage();
@@ -1354,117 +1313,23 @@ export default function App() {
     [formatSenderLabel, setTasks, showToast],
   );
 
-  const handleIncomingShareEvent = useCallback(
-    async (event: NostrEvent) => {
-      if (!event?.id || inboxProcessedRef.current.has(event.id)) return;
-      if (event.kind !== 4 && event.kind !== 1059) return;
-      const decrypted = await decryptShareMessage(event);
-      if (!decrypted) return;
-      const { content, senderPubkey, recipientPubkeys } = decrypted;
-      const normalizedViewer = normalizeNostrPubkey(nostrPK || "") || (nostrPK || "").toLowerCase();
-      if (recipientPubkeys.length && normalizedViewer && !recipientPubkeys.includes(normalizedViewer)) {
-        return;
-      }
-      let envelope = parseShareEnvelope(content);
-      if (!envelope) {
-        // Fallback: try to parse arbitrary JSON with an npub field
-        try {
-          const parsed = JSON.parse(content);
-          if (parsed && typeof parsed === "object") {
-            const npubField =
-              typeof (parsed as any).npub === "string"
-                ? (parsed as any).npub
-                : typeof (parsed as any).pubkey === "string"
-                  ? (parsed as any).pubkey
-                  : undefined;
-            const npubGuess =
-              npubField && (normalizeNostrPubkey(npubField) || (npubField.trim().startsWith("npub") ? npubField.trim() : null));
-            if (npubGuess) {
-              envelope = {
-                v: 1,
-                kind: "taskify-share",
-                item: { type: "contact", npub: npubGuess },
-              };
-            }
-          }
-        } catch {
-          // ignore parse errors
-        }
-      }
-      if (!envelope) {
-        // Fallback: allow raw npub/hex strings to be treated as contact shares.
-        const npubGuess =
-          normalizeNostrPubkey(content) || (content.trim().startsWith("npub") ? content.trim() : null);
-        if (npubGuess) {
-          envelope = {
-            v: 1,
-            kind: "taskify-share",
-            item: {
-              type: "contact",
-              npub: npubGuess,
-            } as any,
-          };
-        }
-      }
-      if (!envelope) return;
-      inboxProcessedRef.current.add(event.id);
-      persistInboxProcessed();
-      let senderName = envelope.sender?.name;
-      if (!senderName) {
-        const senderProfile = await fetchProfileMetadata(senderPubkey);
-        senderName =
-          senderProfile?.displayName ||
-          senderProfile?.name ||
-          senderProfile?.username ||
-          senderProfile?.nip05;
-      }
-      const sender: InboxSender = {
-        pubkey: senderPubkey,
-        name: senderName || envelope.sender?.name,
-        npub: envelope.sender?.npub,
-      };
-      if (envelope.item.type === "event") {
-        addInboxCalendarInvite(envelope.item as SharedCalendarEventInvitePayload, sender, event.id);
-        return;
-      }
-      if (envelope.item.type === "task-assignment-response") {
-        applyTaskAssignmentResponse(envelope.item as SharedTaskAssignmentResponsePayload, sender);
-        return;
-      }
-      let itemToAdd: ShareEnvelope["item"] = envelope.item;
-      if (envelope.item.type === "contact") {
-        const baseContact: SharedContactPayload = (envelope.item as any).contact ?? (envelope.item as any);
-        let enrichedContact = { ...baseContact };
-        if (
-          !enrichedContact.name &&
-          !enrichedContact.displayName &&
-          !enrichedContact.username &&
-          !enrichedContact.nip05
-        ) {
-          const profile = await fetchProfileMetadata(baseContact.npub);
-          if (profile) {
-            enrichedContact = {
-              ...enrichedContact,
-              name: profile.displayName || profile.name || undefined,
-              displayName: profile.displayName,
-              username: profile.username,
-              nip05: profile.nip05,
-            };
-          }
-        }
-        itemToAdd = { type: "contact", contact: enrichedContact } as any;
-      }
-      addInboxTask(itemToAdd, sender, event.id);
-    },
-    [
-      addInboxCalendarInvite,
-      addInboxTask,
-      applyTaskAssignmentResponse,
-      decryptShareMessage,
-      fetchProfileMetadata,
-      nostrPK,
-      persistInboxProcessed,
-    ],
+  // Shares reach the inbox through chat's message pipeline, which opens each message once
+  // (domains/inbox/shareInboxReceiver.ts).
+  const handleIncomingShare = useCallback(
+    (share: IncomingShare) =>
+      receiveIncomingShare(share, {
+        viewerPubkey: normalizeNostrPubkey(nostrPK || "") || (nostrPK || "").toLowerCase(),
+        alreadyHandled: (eventId) => inboxProcessedRef.current.has(eventId),
+        markHandled: (eventId) => {
+          inboxProcessedRef.current.add(eventId);
+          persistInboxProcessed();
+        },
+        fetchProfile: fetchProfileMetadata,
+        addCalendarInvite: addInboxCalendarInvite,
+        applyAssignmentResponse: applyTaskAssignmentResponse,
+        addInboxItem: addInboxTask,
+      }),
+    [addInboxCalendarInvite, addInboxTask, applyTaskAssignmentResponse, fetchProfileMetadata, nostrPK, persistInboxProcessed],
   );
 
   const tagValue = useCallback((ev: NostrEvent, name: string): string | undefined => {
@@ -1638,15 +1503,6 @@ export default function App() {
   });
 
   useNostrSubscriptions({
-    sharedInbox: {
-      enabled: true,
-      ensurePool: ensureInboxPool as unknown as () => SubscribeManyPool,
-      handleEvent: handleIncomingShareEvent,
-      lookbackSeconds: SHARE_DM_LOOKBACK_SECONDS,
-      nostrPK,
-      nostrSkHex,
-      relays: inboxRelays,
-    },
     calendarViews: {
       enabled: true,
       clockRef: calendarViewClockRef,
@@ -6688,6 +6544,7 @@ export default function App() {
           formatCalendarInviteWhen={formatCalendarInviteWhen}
           onDmUnreadCountChange={setDmUnreadCount}
           chatMessageRetention={settings.chatMessageRetention}
+          onIncomingShare={handleIncomingShare}
         >
           {showWalletShell && (
             <CashuWalletShell

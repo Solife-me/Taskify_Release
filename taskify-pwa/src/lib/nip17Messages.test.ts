@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
+import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, nip44, nip59 } from "nostr-tools";
 import { createNip17Rumor, openNip17GiftWrap } from "taskify-core";
 import { nip17Crypto } from "taskify-runtime-nostr";
 import { LocalKeySigner } from "../identity/signer";
@@ -36,5 +36,38 @@ describe("giftWrapNip17Rumor", () => {
     const stamp = nip17TimestampSource("random")();
     expect(stamp).toBeLessThanOrEqual(now);
     expect(stamp).toBeGreaterThan(now - 2 * 86_400 - 1);
+  });
+});
+
+describe("opening wraps built by nostr-tools' NIP-59", () => {
+  const recipientSecret = generateSecretKey();
+  const recipient = new LocalKeySigner(bytesToHex(recipientSecret));
+  const content = JSON.stringify({ v: 1, kind: "taskify-share", item: { type: "task", title: "x" } });
+
+  function genuineWrap(senderSecret: Uint8Array) {
+    const rumor = nip59.createRumor({ kind: 14, content, tags: [["p", recipient.pubkey]] }, senderSecret);
+    return nip59.createWrap(nip59.createSeal(rumor, senderSecret, recipient.pubkey), recipient.pubkey);
+  }
+
+  test("opens, reporting the seal's author as the sender", async () => {
+    const senderSecret = generateSecretKey();
+    const opened = await openNip17GiftWrap(genuineWrap(senderSecret), recipient, nip17Crypto);
+    expect(opened).toMatchObject({ senderPubkey: getPublicKey(senderSecret), rumor: { content, tags: [["p", recipient.pubkey]] } });
+  });
+
+  test("rejects a stranger's seal around a rumor naming someone else", async () => {
+    const attacker = generateSecretKey();
+    const rumorBase = { kind: 14, created_at: 1_790_000_000, tags: [["p", recipient.pubkey]], content, pubkey: getPublicKey(generateSecretKey()) };
+    const rumor = { ...rumorBase, id: getEventHash(rumorBase) };
+    const seal = finalizeEvent(
+      { kind: 13, created_at: 1_790_000_000, tags: [], content: nip44.v2.encrypt(JSON.stringify(rumor), nip44.v2.utils.getConversationKey(attacker, recipient.pubkey)) },
+      attacker,
+    );
+    expect(await openNip17GiftWrap(nip59.createWrap(seal, recipient.pubkey), recipient, nip17Crypto)).toBeNull();
+  });
+
+  test("rejects a wrap addressed to someone else", async () => {
+    const other = new LocalKeySigner(bytesToHex(generateSecretKey()));
+    expect(await openNip17GiftWrap(genuineWrap(generateSecretKey()), other, nip17Crypto)).toBeNull();
   });
 });
