@@ -86,6 +86,21 @@ export function taskEventBody(
     subtasks: typeof task.subtasks === "undefined" ? null : task.subtasks,
     assignees: typeof task.assignees === "undefined" ? null : task.assignees,
     inboxItem: typeof task.inboxItem === "undefined" ? null : task.inboxItem ?? null,
+    ...scriptureMemoryFields(task),
+  };
+}
+
+/**
+ * A Scripture Memory review's link to its passage, as iOS writes it. Only review tasks carry
+ * these; the fields are left out otherwise.
+ */
+function scriptureMemoryFields(task: Task): Record<string, unknown> {
+  if (!task.scriptureMemoryId) return {};
+  return {
+    scriptureMemoryId: task.scriptureMemoryId,
+    ...(typeof task.scriptureMemoryStage === "number" ? { scriptureMemoryStage: task.scriptureMemoryStage } : {}),
+    ...(task.scriptureMemoryPrevReviewISO ? { scriptureMemoryPrevReviewISO: task.scriptureMemoryPrevReviewISO } : {}),
+    ...(task.scriptureMemoryScheduledAt ? { scriptureMemoryScheduledAt: task.scriptureMemoryScheduledAt } : {}),
   };
 }
 

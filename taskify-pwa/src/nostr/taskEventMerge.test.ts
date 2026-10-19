@@ -11,6 +11,41 @@ const STRANGER = "f".repeat(64);
 const ctx = { nostrAt: 200, order: 3, now: NOW.getTime(), eventPubkey: OWNER, incomingIsNewerOnTie: false };
 
 describe("parseTaskEvent", () => {
+  it("carries a Scripture Memory review's link to its passage, under the field names iOS uses", () => {
+    const review = {
+      id: "recurrence:scripture-memory:2026-10-19",
+      boardId: "b1",
+      columnId: "c1",
+      title: "Review John 3:16",
+      dueISO: "2026-10-19T05:00:00.000Z",
+      seriesId: "scripture-memory",
+      recurrence: { type: "daily" },
+      scriptureMemoryId: "entry-1",
+      scriptureMemoryStage: 2,
+      scriptureMemoryPrevReviewISO: "2026-10-12T05:00:00.000Z",
+      scriptureMemoryScheduledAt: "2026-10-19T11:00:00.000Z",
+    } as Task;
+    const payload = JSON.parse(JSON.stringify(taskEventBody(review, { actorPubkey: OWNER, attachments: { images: null, documents: null } })));
+    expect(payload).toMatchObject({
+      scriptureMemoryId: "entry-1",
+      scriptureMemoryStage: 2,
+      scriptureMemoryPrevReviewISO: "2026-10-12T05:00:00.000Z",
+      scriptureMemoryScheduledAt: "2026-10-19T11:00:00.000Z",
+    });
+    const read = parseTaskEvent(payload, { taskId: review.id, status: "open", column: "c1", createdAt: 200 }, lists, NOW);
+    expect(mergeIncomingTask(undefined, read, ctx)).toMatchObject({
+      scriptureMemoryId: "entry-1",
+      scriptureMemoryStage: 2,
+      scriptureMemoryPrevReviewISO: "2026-10-12T05:00:00.000Z",
+      scriptureMemoryScheduledAt: "2026-10-19T11:00:00.000Z",
+    });
+  });
+
+  it("an ordinary task's payload has no Scripture Memory fields", () => {
+    const payload = taskEventBody({ id: "t", boardId: "b1", title: "x", dueISO: NOW.toISOString() } as Task, { attachments: { images: null, documents: null } });
+    expect(Object.keys(payload).filter((key) => key.startsWith("scripture"))).toEqual([]);
+  });
+
   it("reads back what this client writes", () => {
     const written: Task = {
       id: "t1",

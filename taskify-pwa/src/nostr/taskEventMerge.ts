@@ -84,6 +84,13 @@ export function parseTaskEvent(
   if (has(payload, "dueTimeZone")) {
     base.dueTimeZone = typeof payload.dueTimeZone === "string" ? normalizeTimeZone(payload.dueTimeZone) ?? undefined : undefined;
   }
+  // A Scripture Memory review's link to its passage (written by iOS and this client).
+  if (typeof payload.scriptureMemoryId === "string" && payload.scriptureMemoryId) {
+    base.scriptureMemoryId = payload.scriptureMemoryId;
+    if (typeof payload.scriptureMemoryStage === "number") base.scriptureMemoryStage = payload.scriptureMemoryStage;
+    if (typeof payload.scriptureMemoryPrevReviewISO === "string") base.scriptureMemoryPrevReviewISO = payload.scriptureMemoryPrevReviewISO;
+    if (typeof payload.scriptureMemoryScheduledAt === "string") base.scriptureMemoryScheduledAt = payload.scriptureMemoryScheduledAt;
+  }
   if (board.kind === "week") {
     base.column = "day";
     if (event.column === "bounties") base.bountyLists = [PINNED_BOUNTY_LIST_KEY];

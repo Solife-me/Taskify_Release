@@ -131,6 +131,7 @@ import {
 } from "./domains/calendar/calendarCommands";
 import {
   normalizeScriptureReviewTasks,
+  relinkScriptureReviews,
   planFastingReminders,
   planScriptureReviewTask,
   scriptureReviewPlacement,
@@ -515,15 +516,17 @@ export default function App() {
   }, []);
   // Local bookkeeping every device applies to the tasks it holds and to every task it receives
   // (both relay paths call this), so none of it is published: series cutoffs, and review tasks
-  // following the Scripture Memory board and frequency.
+  // following the Scripture Memory board and frequency, linked to their passages.
   const scripturePlacementRef = useRef<ScriptureReviewPlacement | null>(null);
+  const scriptureEntriesRef = useRef<ScriptureMemoryEntry[]>([]);
   scripturePlacementRef.current = settings.scriptureMemoryEnabled
     ? scriptureReviewPlacement(scriptureMemoryBoard, scriptureMemoryFrequencyOption?.days ?? 1)
     : null;
   const sanitizeRecurringTasks = useCallback(<TTask extends Task,>(items: TTask[]): TTask[] => {
     const bounded = applyRecurringSeriesCutoffs(items, recurringCutoffsStore().get());
     const placement = scripturePlacementRef.current;
-    return placement ? normalizeScriptureReviewTasks(bounded, placement) : bounded;
+    if (!placement) return bounded;
+    return relinkScriptureReviews(normalizeScriptureReviewTasks(bounded, placement), scriptureEntriesRef.current);
   }, []);
   const calendarSeriesCutoffsRef = useRef(
     parseCalendarSeriesCutoffs(
@@ -646,6 +649,7 @@ export default function App() {
   const [boardPrintJob, setBoardPrintJob] = useState<BoardPrintJob | null>(null);
   const boardPrintPortal = usePrintPortal("board-print-portal");
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
+  scriptureEntriesRef.current = scriptureMemory.entries;
   const [defaultRelays, setDefaultRelays] = useState<string[]>(() => loadDefaultRelays());
   useEffect(() => { saveDefaultRelays(defaultRelays); }, [defaultRelays]);
   const handleAddScriptureMemory = useCallback((payload: AddScripturePayload) => {
@@ -678,7 +682,11 @@ export default function App() {
   }, [setScriptureMemory]);
   const handleRemoveScriptureMemory = useCallback((id: string) => {
     setScriptureMemory((prev) => updateScriptureMemoryState(prev, prev.entries.filter((entry) => entry.id !== id)));
+    // Its review tasks go on every device: deletions are published like any other.
+    const reviews = tasksStore().get().filter((task) => task.scriptureMemoryId === id);
+    if (!reviews.length) return;
     setTasks((prev) => prev.filter((task) => task.scriptureMemoryId !== id));
+    reviews.forEach((task) => void publishTaskDeletedRef.current?.(task));
   }, [setScriptureMemory, setTasks]);
   const scriptureMemoryItems = useMemo<ScriptureMemoryListItem[]>(() => {
     if (!scriptureMemory.entries.length) return [];

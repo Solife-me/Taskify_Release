@@ -5,6 +5,7 @@
 import { describe, expect, test, vi } from "vitest";
 import type { Board } from "../domains/tasks/taskTypes";
 import { BoardSyncLedger } from "./boardSyncLedger";
+import { taskEventBody } from "./boardWire";
 import { parseTaskEvent } from "./taskEventMerge";
 import {
   addToRelayBatch,
@@ -120,6 +121,26 @@ describe("merging a relay's batch never regresses local data", () => {
 });
 
 describe("collecting a relay's events before EOSE", () => {
+  test("re-syncing a Scripture Memory review from the relays keeps its passage link", () => {
+    const review = task("r1", 300, {
+      seriesId: "scripture-memory",
+      scriptureMemoryId: "entry-1",
+      scriptureMemoryStage: 1,
+    } as Partial<SyncedTask>);
+    const payload = JSON.parse(JSON.stringify(taskEventBody(review, { attachments: { images: null, documents: null } })));
+    const relayBatch = new Map<string, RelayBatchEntry>();
+    addToRelayBatch(relayBatch, "board1::r1", {
+      deleted: false,
+      at: 300,
+      incoming: parseTaskEvent(payload, { taskId: "r1", column: "todo", createdAt: 300 }, BOARD, new Date()),
+      eventPubkey: "b".repeat(64),
+      incomingIsNewerOnTie: true,
+      now: 300_000,
+    });
+    const [after] = mergeRelayBatchIntoTasks([review], relayBatch, noClock);
+    expect(after).toMatchObject({ scriptureMemoryId: "entry-1", scriptureMemoryStage: 1 });
+  });
+
   test("entries carry the event's version, so later merges can compare", () => {
     const relayBatch = new Map<string, RelayBatchEntry>();
     addToRelayBatch(relayBatch, "board1::t1", incoming("t1", 1_700_500_000, "From relay"));

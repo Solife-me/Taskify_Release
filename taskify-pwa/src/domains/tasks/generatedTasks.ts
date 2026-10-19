@@ -116,6 +116,30 @@ export function normalizeScriptureReviewTasks<T extends Task>(tasks: T[], placem
 }
 
 /**
+ * Restores the passage link of open review tasks that lost it: before the PWA carried the link
+ * in task events, a relay re-sync could replace a review with a copy without it, and every later
+ * review in the series inherited the gap. A review whose title names exactly one passage is
+ * linked to it again. Every device does the same, so the result is not published.
+ */
+export function relinkScriptureReviews<T extends Task>(tasks: T[], entries: ScriptureMemoryEntry[]): T[] {
+  let changed = false;
+  const next = tasks.map((task) => {
+    if (task.completed || task.scriptureMemoryId || task.seriesId !== SCRIPTURE_MEMORY_SERIES_ID) return task;
+    const matches = entries.filter((entry) => task.title === `Review ${formatScriptureReference(entry)}`);
+    if (matches.length !== 1) return task;
+    const [entry] = matches;
+    changed = true;
+    return {
+      ...task,
+      scriptureMemoryId: entry.id,
+      scriptureMemoryStage: entry.stage ?? 0,
+      scriptureMemoryPrevReviewISO: entry.lastReviewISO ?? null,
+    };
+  });
+  return changed ? next : tasks;
+}
+
+/**
  * Keeps one open Scripture Memory review task on the chosen board: existing review tasks are
  * normalized (`normalizeScriptureReviewTasks`, never published), and a review for the most due
  * passage is created when none is open. Returns null when nothing changes.
@@ -138,7 +162,7 @@ export function planScriptureReviewTask(
   const selection = chooseNextScriptureEntry(input.entries, input.baseDays, now);
   if (!selection) return null;
 
-  const followed = normalizeScriptureReviewTasks(tasks, placement);
+  const followed = relinkScriptureReviews(normalizeScriptureReviewTasks(tasks, placement), input.entries);
   let changed = followed !== tasks;
   const bounded = applyRecurringSeriesCutoffs(followed, cutoffs);
   if (bounded !== followed) changed = true;

@@ -5,10 +5,12 @@ import {
   normalizeScriptureReviewTasks,
   planFastingReminders,
   planScriptureReviewTask,
+  relinkScriptureReviews,
   scriptureReviewPlacement,
   type FastingReminderSettings,
 } from "./generatedTasks";
 import type { Board, Task } from "./taskTypes";
+import { formatScriptureReference } from "../scripture/scriptureUtils";
 
 const NOW = new Date(2026, 9, 15, 10, 0, 0);
 const week = { id: "w", name: "Week", kind: "week" } as Board;
@@ -200,5 +202,37 @@ describe("Scripture review normalization across two devices", () => {
     expect(w.relay.size).toBe(2);
     w.resync(w.b, lists, 1);
     expect(w.b.tasks).toEqual([expect.objectContaining({ id: completed.id, completed: true })]);
+  });
+});
+
+describe("relinkScriptureReviews", () => {
+  const entries = [
+    { id: "e1", bookId: "JHN", chapter: 3, startVerse: 16, endVerse: 16, addedAtISO: "2026-09-01T00:00:00.000Z", stage: 2, lastReviewISO: "2026-10-10T00:00:00.000Z", totalReviews: 3 },
+    { id: "e2", bookId: "GEN", chapter: 1, startVerse: 1, endVerse: 1, addedAtISO: "2026-09-01T00:00:00.000Z", stage: 0, totalReviews: 0 },
+  ];
+  const orphan = (fields: Partial<Task> = {}) =>
+    ({ id: "r", boardId: "l", title: `Review ${formatScriptureReference(entries[0])}`, dueISO: NOW.toISOString(), seriesId: SCRIPTURE_MEMORY_SERIES_ID, ...fields }) as Task;
+
+  it("links an open review that lost its passage back to the passage its title names", () => {
+    const [relinked] = relinkScriptureReviews([orphan()], entries);
+    expect(relinked).toMatchObject({ scriptureMemoryId: "e1", scriptureMemoryStage: 2, scriptureMemoryPrevReviewISO: "2026-10-10T00:00:00.000Z" });
+  });
+
+  it("leaves linked, completed, unmatched and ordinary tasks alone", () => {
+    const tasks = [
+      orphan({ scriptureMemoryId: "e2" }),
+      orphan({ id: "done", completed: true }),
+      orphan({ id: "other", title: "Review Romans 8:28" }),
+      { id: "x", boardId: "l", title: `Review ${formatScriptureReference(entries[0])}`, dueISO: NOW.toISOString() } as Task,
+    ];
+    expect(relinkScriptureReviews(tasks, entries)).toBe(tasks);
+  });
+
+  it("the planner relinks, so completing the review updates the passage again", () => {
+    const plan = planScriptureReviewTask([orphan({ boardId: "l", columnId: "c1", recurrence: { type: "daily" } })], {}, {
+      targetBoard: lists, entries, baseDays: 1, now: NOW, settings: { weekStart: 0, newTaskPosition: "bottom" },
+    });
+    expect(plan?.tasks[0]).toMatchObject({ scriptureMemoryId: "e1" });
+    expect(plan?.created).toBeNull();
   });
 });
