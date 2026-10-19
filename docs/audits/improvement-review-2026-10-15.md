@@ -49,7 +49,7 @@ Constraints carried through every chunk:
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Done (2026-10-19) |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Done (2026-10-19) |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Done (2026-10-19); code deletion due after Dec 1, 2026 |
-| 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Pending |
+| 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Reviewed 2026-10-19, awaiting decisions |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Pending |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Pending |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Pending |
@@ -1515,3 +1515,132 @@ should be mirrored on iOS and macOS in chunks 9 and 11.
   mints (NUT-07), removes spent ones (keeping a copy in History), and lets the user remove one
   that cannot be checked. The redeemer now also resolves tokens it could not fully decode. iOS
   has the same close-out, so chunk 9 checks it for the same case.
+
+## Chunk 7 — iOS TaskifyCore
+
+The Swift core the iOS, iPadOS, watchOS and macOS apps share: about 32,000 lines (`Nostr` 8,900,
+`Wallet` 6,900, `State` 5,700, `Sync` 3,500), with about 20,000 lines of tests in 88 files. Task
+publishing itself is orchestrated in the app target's `AppModel.swift`, which is part of this
+chunk because the sync rules live there.
+
+What the review found:
+
+- **The transport is well built.** `TaskSyncEngine` is an actor with:
+  - a durable outbox of signed events, per-relay pacing, proof of work and NIP-42 AUTH;
+  - rate-limit and ban backoff, and startup batches.
+
+  Receiving is simple and safe: a strictly newer event wins, and unknown fields are kept
+  (`preservedSyncFields`). The core passes this review's NIP-17 vectors (C5-2), writes the
+  Scripture Memory link fields, keeps received shares, and accepts only real share envelopes.
+- **An edit can be lost before it is queued (confirmed by reading; same class as PWA C4-1).**
+  `synchronizeTasks` stores each task's `publishedFingerprint`, and saves it, before the event
+  is encoded, encrypted and signed in a detached task and queued:
+  - if the app is killed in between, the saved state says "published" while nothing was queued;
+  - if queueing fails, the fingerprint is cleared only in memory, and nothing republishes the
+    task until it is edited again. Meanwhile the empty outbox reads as synced.
+
+  No launch or reconnect pass compares stored fingerprints with the tasks.
+- **The sync rules live in the app target.** `AppModel.swift` is 6,988 lines with 268
+  functions. Stamping, fingerprints, publish ordering, Scripture Memory reconcile and the
+  account backup sit there, out of reach of the TaskifyCore tests.
+- **One JSON file holds all state, rewritten 300 ms after any change.** Boards, tasks
+  (tombstones included), every chat message, contacts, events and inbox items. Measured with
+  2,000 tasks and 5,000 messages: 2.56 MB per save, 27 ms to encode on an M-series Mac (more on
+  a phone), plus the atomic write. The whole file is decoded at launch and read by widgets and
+  intents. Documents can carry inline `dataURL`s, which grow it further.
+- **Cross-client rules are written twice with no shared vectors:**
+  - the task event payload (encode and decode), where the Scripture Memory link fields were
+    missing on the PWA side until this review;
+  - the app-state merges (Bible tracker, Scripture Memory, chat state);
+  - what wins when two versions share a timestamp. iOS keeps its own copy, and so does each PWA
+    device in most paths. Two devices that publish in the same second (for example, both
+    generating the same date-derived reminder) can then disagree until the next edit. Relays
+    keep the lowest event id (NIP-01).
+- **Parity gaps:**
+  - **PWA app backup (found here):** iOS updates the latest verified remote backup and
+    publishes only when it has one. The PWA publishes its own snapshot whenever local state
+    changes, without checking that it has read the remote copy (a failed read still counts as
+    "finished"). A device that starts offline and then changes a board replaces the backup with
+    only its own boards, dropping other devices' boards and, when it has no seed, the wallet
+    seed. That seed is what recovers funds after December 1.
+  - **Scripture Memory relink:** the PWA reconnects review tasks that lost their passage link
+    (`relinkScriptureReviews`); iOS has no equivalent, so such tasks stay unlinked there. iOS
+    also publishes open reviews when it normalizes them, which the PWA does not; that is
+    harmless, because both converge.
+  - **Wallet:** the withdraw-only rules, the December 1 date and the saved-token close-out fix
+    belong to chunk 9.
+- **Language fit:** none. The shared vectors (C7-3) catch drift at a fraction of the cost of a
+  shared Rust core (C1-6).
+
+### C7-1 — iOS: no edit lost before it is queued (bug, architecture)
+
+- **Proposal:** Make the fingerprint mean "queued", and reconcile from it:
+  - a `TaskPublisher` in TaskifyCore owns stamping, fingerprints, encoding and queueing;
+  - the fingerprint is recorded only once the event is in the durable outbox;
+  - on launch, on reconnect, and after a failure (with backoff), every task whose current
+    fingerprint differs from its recorded one is published again.
+
+  This makes the intent state-derived, so there is no second store to keep in step. The
+  "syncing" indicator counts these tasks as well as the outbox. `AppModel` keeps only the call.
+- **Test first:** an edit whose queueing fails, or whose app is killed before queueing, is
+  published on the next launch.
+- **Effort:** M. **Risk:** medium; core publish path, covered by the existing outbox tests.
+
+### C7-2 — Backups update the remote copy, never replace it (bug in the PWA, cross-client contract)
+
+- **Proposal:** Adopt iOS's rule in the PWA's app backup:
+  - read the latest remote backup and publish only after reading it (or confirming there is
+    none);
+  - build each publish from that copy updated with this device's changes;
+  - keep the remote `walletSeed` when this device has none.
+
+  Record the rule in `taskify-core`'s backup contract, with a test on each side.
+- **Test first:** a device that starts offline and then changes a board does not drop another
+  device's boards or the wallet seed.
+- **Effort:** S–M. **Risk:** low. Recommended first, because the seed in the backup is what
+  recovers funds after December 1.
+
+### C7-3 — Shared vectors for the rules both clients implement (interop)
+
+- **Proposal:** Add to `taskify-core/fixtures`, read by Node and Swift tests:
+  - task event payloads (encode and decode, tombstones, unknown fields kept, Scripture Memory
+    links, documents);
+  - the app-state merges (Bible tracker, Scripture Memory, chat state);
+  - the equal-timestamp rule. Both clients adopt NIP-01's: the lowest event id wins.
+
+  Each client gains a vector test.
+- **Effort:** M. **Risk:** low; the tie rule changes behaviour only on exact ties.
+
+### C7-4 — iOS relinks Scripture Memory reviews (parity)
+
+- **Proposal:** Port `relinkScriptureReviews`: an open review with no passage link, whose title
+  names exactly one passage, is linked again in the reconcile and on receive. Covered by a C7-3
+  vector.
+- **Effort:** S. **Risk:** low.
+
+### C7-5 — Split the iOS store (performance)
+
+- **Proposal:** One file per area, each written only when it changed:
+  - tasks, boards and events: the only file widgets and intents read;
+  - chat;
+  - inbox and contacts;
+  - settings and sync state.
+
+  Attachments become files referenced by name rather than inline data URLs. A one-time
+  migration splits the existing file. A benchmark test records the cost before and after.
+- **Effort:** M–L. **Risk:** medium; the migration must be safe to interrupt, and the widget
+  path must stay in step.
+
+### Recommended order
+
+C7-2 (funds recovery, before December 1) → C7-1 (bug) → C7-4 → C7-3 → C7-5.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C7-1 | | | |
+| C7-2 | | | |
+| C7-3 | | | |
+| C7-4 | | | |
+| C7-5 | | | |
