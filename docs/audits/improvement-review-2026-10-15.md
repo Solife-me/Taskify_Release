@@ -45,7 +45,7 @@ Constraints carried through every chunk:
 | --- | --- | --- | --- |
 | 1 | Shared domain core and contract drift | `taskify-core`, and where clients re-implement it | Done |
 | 2 | PWA app shell | `App.tsx` (12.8k lines), navigation, onboarding, settings | Implementing |
-| 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | C3-1 done; C3-2 to C3-9 reviewed 2026-10-18, awaiting decisions |
+| 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | Done (2026-10-18); one follow-up (event attachments) |
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Pending |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `lib/`, `agent/`, `components/` | Pending |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Pending |
@@ -1047,6 +1047,14 @@ What the review found:
   do for recurrence. Drift between the two parsers then fails CI on both sides.
 - **Effort:** S–M. **Risk:** low.
 
+### Follow-up found during C3-5
+
+- **Event attachments are stored inline.** The event editor reads attached files into data URLs
+  that travel inside the event to relays, while task attachments are encrypted and uploaded to
+  the file server (only a link travels). Large files make events large and slow to sync. Moving
+  events to the task path changes what other clients read, so it needs a parity check with iOS
+  first (chunk 8/9).
+
 ### Recommended order
 
 C3-2 (bug) and C3-3 → C3-8 → C3-4 → C3-7 → C3-6 (after the decision) → C3-5 → C3-9. Each
@@ -1060,7 +1068,7 @@ step is one commit, and bugs get a failing test first.
 | C3-2 | Approve | 2026-10-18 | Done: `lib/settleScroll` keeps correcting until the day sits at the top (estimates were 32/120 px against measured 23/70, and StrictMode remounts reset the scroll); tested, checked in dev and a production build |
 | C3-3 | Approve | 2026-10-18 | Done as a clarity change: not a bug (the round-trip already gave the local date). `todayDateKey()` in core with an evening test; 12 call sites use it; lint rejects the round-trip |
 | C3-4 | Approve | 2026-10-18 | Done. New Task drafts live in `ui/board/inlineDrafts` (outside React state), cards are memoized with stable callbacks, and each card selects its own view state from a store. On a 300-task board (`boardRenderIsolation.test.tsx`): a keystroke went from 300 card renders to 0, and a selection toggle from 300 to 1 (entering selection mode still updates every card, which shows a checkbox). Confirmed in the browser: 0 card renders per keystroke |
-| C3-5 | Approve | 2026-10-18 | In progress (recommended order) |
+| C3-5 | Approve | 2026-10-18 | Done. Both editors are type-checked (no `@ts-nocheck`). Shared, typed fields in `ui/editor/fields`: `WheelTimePicker` (was written out five times), `ReminderChips` (with pure `reminderSelection` rules), `RepeatField` (with `recurrenceLabel`/`endRepeatLabel`; events now get the richer labels, and end dates read in the item's zone), `AttachmentList`, `ContactRow` and `ContactShareSheet`. Pure form models with tests: `taskEditorModel` and `eventEditorModel`; untouched event times now keep their exact instants. `EditModal` 3,061 → 1,783 lines (with C3-6); `EventEditModal` 2,236 → 1,486. Checked in a production build: time wheels, reminders, repeat, send sheet, and saving a task and an event |
 | C3-6 | Approve; bounty creation stays as an optional wallet extension until the wallet is removed | 2026-10-18 | Done: bounty editing (attach, lock, sign over, redeem, pin) moved verbatim to `ui/wallet/TaskBountyEditor.tsx`, loaded only where the wallet is enabled through the editor's bounty slot (`ui/task/taskBountyExtension.ts`). Without the wallet the editor shows `TaskBountyToken` (reveal a locked token with Nostr keys, copy the token; tested) and the card checkbox copies an unlocked token. A lint rule keeps task, board, calendar, Upcoming and print code free of wallet imports. `EditModal` 3,061 → ~2,460 lines. Checked in a production build: with the wallet off the editor shows no bounty controls; with it on, "Attach bounty" and "Pin task" load and the attach sheet opens |
 | C3-7 | Approve | 2026-10-18 | Done in four commits: paste-JSON import (`domains/tasks/inlineImport.ts`, tested), Bible tracker commands and store (`bibleTrackerCommands.ts`, `useBibleTrackerActions`, tested; results no longer recorded inside setState updaters), printing and PDF export into the lazy print module (`ui/print/printOutput.ts`), and the fly animations (`ui/task/flyAnimations.ts`, destination logic tested). `App.tsx` 8,388 → 6,881 lines; startup 428.6 → 426.6 KB gzipped. Printing itself could not be exercised in the dev pane (it blocks popups); its code and stylesheets moved verbatim |
 | C3-8 | Approve | 2026-10-18 | Done: `DocumentThumbnail` and `documentAsset` are their own modules; an HTML thumbnail loads the sanitizer on demand (tested). Startup 441.0 → 428.3 KB gzipped; the startup check fails if DOMPurify returns |
