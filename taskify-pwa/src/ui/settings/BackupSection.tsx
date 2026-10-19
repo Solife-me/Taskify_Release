@@ -18,7 +18,7 @@ import {
   getMintList,
   listPendingTokens,
 } from "../../wallet/storage";
-import { getWalletSeedBackup } from "../../wallet/seed";
+import { walletSeedForBackup } from "../../wallet/walletSeedBackup";
 import {
   parseBackupJsonPayload,
   applyBackupDataToStorage,
@@ -90,7 +90,7 @@ export function BackupSection({
         history: cashuHistory,
         trackedMints: getMintList(),
         pendingTokens: listPendingTokens(),
-        walletSeed: getWalletSeedBackup(),
+        walletSeed: walletSeedForBackup() ?? undefined,
       },
     };
   }, []);
@@ -109,7 +109,7 @@ export function BackupSection({
   }
 
   const applyBackupData = useCallback(async (data: Partial<TaskifyBackupPayload>) => {
-    applyBackupDataToStorage(data);
+    await applyBackupDataToStorage(data);
     // Wait for v3 entity-store writes to durably land before reload.
     await Promise.all([
       taskEntityStore.flush(),

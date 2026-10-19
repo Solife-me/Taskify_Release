@@ -47,7 +47,10 @@ export default defineConfig({
               priority: 90,
             },
             { name: "react-vendor", test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 50 },
-            { name: "crypto-primitives", test: /[\\/]node_modules[\\/]@(noble|scure)[\\/]/, priority: 40 },
+            // BIP39 (the wallet seed's word list) is left out: its group comes after this one, so it
+            // holds only BIP39 itself and loads with the wallet seed, not at startup.
+            { name: "crypto-primitives", test: /[\\/]node_modules[\\/]@(noble|scure[\\/](?!bip39[\\/]))/, priority: 40 },
+            { name: "wallet-seed-words", test: /[\\/]node_modules[\\/]@scure[\\/]bip39[\\/]/, priority: 39 },
             {
               name: "nostr-sdk",
               test: /[\\/]node_modules[\\/](@nostr-dev-kit[\\/]ndk|nostr-tools|tseep|light-bolt11-decoder|typescript-lru-cache)[\\/]/,

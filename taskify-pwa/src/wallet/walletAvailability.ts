@@ -1,12 +1,10 @@
-import { useSyncExternalStore } from "react";
 import { kvStorage } from "../storage/kvStorage";
+import { __resetWalletFlagsForTests, isWalletClosed, isWalletEnabled, setWalletEnabled } from "./walletFlags";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_WALLET } from "../storage/taskifyDb";
 import {
   LS_NWC_SWEEP_JOURNAL,
   LS_NWC_TOKEN_SWEEP_JOURNAL,
-  LS_WALLET_CLOSED,
-  LS_WALLET_ENABLED,
   LS_WALLET_MODE,
 } from "../localStorageKeys";
 import { amountToNumber, listPendingMelts, listPendingTokens, loadStore } from "./storage";
@@ -28,15 +26,6 @@ import type { SweepJournal } from "./nwcSweep";
  * recovery). A closed wallet comes back only if funds reappear, not for past activity.
  */
 
-const listeners = new Set<() => void>();
-
-function readStickyEnabled(): boolean {
-  try {
-    return kvStorage.getItem(LS_WALLET_ENABLED) === "1";
-  } catch {
-    return false;
-  }
-}
 
 function nonEmptyJsonCollection(raw: string | null): boolean {
   if (!raw) return false;
@@ -85,13 +74,6 @@ export function hasWalletActivity(): boolean {
   return false;
 }
 
-function readClosed(): boolean {
-  try {
-    return kvStorage.getItem(LS_WALLET_CLOSED) === "1";
-  } catch {
-    return false;
-  }
-}
 
 function proofBalanceSat(): number {
   try {
@@ -175,25 +157,14 @@ export function hasWalletFunds(): boolean {
   return checkWalletCloseOut().blockers.length > 0;
 }
 
-let enabled = readStickyEnabled();
-let closed = readClosed();
-
 /**
  * Re-checks the device and enables the wallet for good if it finds wallet activity (or, for a
  * closed-out wallet, funds).
  */
 export function refreshWalletAvailability(): boolean {
-  if (enabled) return true;
-  if (!(closed ? hasWalletFunds() : hasWalletActivity())) return false;
-  enabled = true;
-  closed = false;
-  try {
-    kvStorage.setItem(LS_WALLET_ENABLED, "1");
-    kvStorage.removeItem(LS_WALLET_CLOSED);
-  } catch {
-    // still enabled for this session
-  }
-  listeners.forEach((listener) => listener());
+  if (isWalletEnabled()) return true;
+  if (!(isWalletClosed() ? hasWalletFunds() : hasWalletActivity())) return false;
+  setWalletEnabled(true);
   return true;
 }
 
@@ -204,35 +175,12 @@ export function refreshWalletAvailability(): boolean {
 export function closeOutWallet(): void {
   const { blockers } = checkWalletCloseOut();
   if (blockers.length) throw new Error(blockers.join(". "));
-  enabled = false;
-  closed = true;
-  try {
-    kvStorage.removeItem(LS_WALLET_ENABLED);
-    kvStorage.setItem(LS_WALLET_CLOSED, "1");
-  } catch {
-    // closed for this session
-  }
-  listeners.forEach((listener) => listener());
+  setWalletEnabled(false);
 }
 
-export function isWalletEnabled(): boolean {
-  return enabled;
-}
-
-function subscribe(listener: () => void) {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-export function useWalletEnabled(): boolean {
-  return useSyncExternalStore(subscribe, isWalletEnabled, isWalletEnabled);
-}
+export { isWalletEnabled, useWalletEnabled } from "./walletFlags";
 
 /** Test-only: forget the in-memory decision and re-read storage. */
 export function __resetWalletAvailabilityForTests(): void {
-  enabled = readStickyEnabled();
-  closed = readClosed();
-  listeners.clear();
+  __resetWalletFlagsForTests();
 }

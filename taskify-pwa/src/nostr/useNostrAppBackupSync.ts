@@ -51,7 +51,7 @@ import {
   mergeBackupBoards,
   sanitizeSettingsForNostrBackup,
 } from "../lib/app/nostrBackupDomain";
-import { getWalletSeedBackup, restoreWalletSeedBackup } from "../wallet/seed";
+import { restoreWalletSeedFromBackup, walletSeedForBackup } from "../wallet/walletSeedBackup";
 import { NostrSession } from "./NostrSession";
 import { useNostrSubscriptions } from "./useNostrSubscriptions";
 import type { NostrPublishFn } from "./useNostrIdentity";
@@ -87,7 +87,7 @@ type NostrBackupSnapshot = {
   boards: NostrAppBackupBoard[];
   settings: Partial<Settings>;
   defaultRelays: string[];
-  walletSeed: ReturnType<typeof getWalletSeedBackup>;
+  walletSeed?: ReturnType<typeof walletSeedForBackup>;
 };
 
 type UseNostrAppBackupSyncParams = {
@@ -182,7 +182,7 @@ export function useNostrAppBackupSync({
         fallbackRelays: Array.from(DEFAULT_NOSTR_RELAYS),
         normalizeRelayList: normalizeNostrRelayList,
         sanitizeSettingsForBackup,
-        walletSeed: getWalletSeedBackup(),
+        walletSeed: walletSeedForBackup(),
       }),
     [boards, defaultRelays, sanitizeSettingsForBackup, settings],
   );
@@ -223,7 +223,7 @@ export function useNostrAppBackupSync({
       }
       if (payload.walletSeed) {
         try {
-          restoreWalletSeedBackup(payload.walletSeed);
+          await restoreWalletSeedFromBackup(payload.walletSeed);
         } catch (error) {
           console.warn("Failed to restore wallet seed from Nostr backup", error);
         }

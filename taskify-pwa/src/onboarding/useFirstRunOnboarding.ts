@@ -78,7 +78,7 @@ export function useFirstRunOnboarding({
   }, [completeFirstRunOnboarding]);
   const handleOnboardingRestoreFromBackupFile = useCallback(async (file: File) => {
     const parsed = parseBackupJsonPayload(await file.text());
-    applyBackupDataToStorage(parsed);
+    await applyBackupDataToStorage(parsed);
     await Promise.all([
       taskEntityStore.flush(),
       boardEntityStore.flush(),

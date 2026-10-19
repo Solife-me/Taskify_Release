@@ -60,7 +60,7 @@ import { type PrintPaperSize } from "./components/printPaper";
 import { type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { useCashu } from "./context/walletContexts";
-import { useWalletEnabled } from "./wallet/walletAvailability";
+import { useWalletEnabled } from "./wallet/walletFlags";
 import { WalletPhaseOutNotice } from "./ui/wallet/WalletPhaseOutNotice";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";

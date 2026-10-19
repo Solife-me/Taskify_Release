@@ -6,7 +6,7 @@ import type { Board, Weekday } from "../../domains/tasks/taskTypes";
 import { prepareBackgroundImage, BackgroundImageError } from "../../theme/palette";
 import { useToast } from "../../context/ToastContext";
 import { pillButtonClass, WD_FULL } from "./settingsConstants";
-import { useWalletEnabled } from "../../wallet/walletAvailability";
+import { useWalletEnabled } from "../../wallet/walletFlags";
 
 export function ViewSection({
   settings,

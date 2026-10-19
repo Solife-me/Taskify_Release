@@ -47,7 +47,7 @@ export function buildNostrBackupSnapshot(options) {
         }).filter((board) => !!board).sort((a, b) => (normalizeOrder(a.order) ?? 0) - (normalizeOrder(b.order) ?? 0) || a.id.localeCompare(b.id))
         : [];
     const settingsPayload = includeMetadata ? sanitizeSettingsForBackup(settings) : {};
-    return { boards: boardsPayload, settings: settingsPayload, walletSeed, defaultRelays: defaultRelayList };
+    return { boards: boardsPayload, settings: settingsPayload, ...(walletSeed ? { walletSeed } : {}), defaultRelays: defaultRelayList };
 }
 export function mergeBackupBoards(options) {
     const { currentBoards, incomingBoards, baseRelays, normalizeRelayList, createId } = options;

@@ -96,7 +96,7 @@ describe("Cashu proof hardening", () => {
     expect(() => assertValidProofsDleq(proofs, () => VALID_MINT_PUBKEY)).toThrow(/invalid dleq\.e hex/i);
   });
 
-  test("sanitizes malformed Cashu proof stores during backup restore", () => {
+  test("sanitizes malformed Cashu proof stores during backup restore", async () => {
     saveStore({});
 
     const cashuBackup = {
@@ -111,7 +111,7 @@ describe("Cashu proof hardening", () => {
       },
     } as Partial<TaskifyBackupPayload["cashu"]> as TaskifyBackupPayload["cashu"];
 
-    applyBackupDataToStorage({
+    await applyBackupDataToStorage({
       cashu: cashuBackup,
     });
 

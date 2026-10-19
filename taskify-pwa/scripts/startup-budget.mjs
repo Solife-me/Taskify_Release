@@ -17,8 +17,10 @@ import { fileURLToPath } from "node:url";
 
 // 604 KB at the start of the improvement review (October 2026); 458 KB once the wallet, QR and
 // share dialogs became lazy and React, the preload helper and the Node polyfills got their own
-// chunks; 441 KB once Upcoming, Chat, the Bible board and voice dictation became lazy. The budget leaves a little room; raise it only with a reason.
-const DEFAULT_BUDGET_KB = 455;
+// chunks; 441 KB once Upcoming, Chat, the Bible board and voice dictation became lazy; 417 KB
+// once wallet seed and storage code stopped loading on devices without a wallet (C6-3). The budget
+// leaves a little room; raise it only with a reason.
+const DEFAULT_BUDGET_KB = 440;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
@@ -101,10 +103,22 @@ if (notLazy.length) {
 }
 if (!args.includes("--json")) console.log(`Lazy features: ${LAZY_FEATURES.length} checked, none in startup.`);
 
+// Wallet code shared between wallet chunks (so not lazy entries itself) loads only on devices
+// that hold wallet data (storageBootstrap) or when a backup brings some, never at startup.
+// (`storage` is src/wallet/storage.ts, the proof store; no other module has that name.)
+const WALLET_SHARED_CHUNKS = /(^|\/)(seed|storage|walletAvailability|nwcWalletCatalog|p2pkKeyStore|wallet-seed-words)-[\w-]+\.js$/;
+const walletAtStartup = rows.filter((row) => WALLET_SHARED_CHUNKS.test(row.file));
+if (walletAtStartup.length) {
+  console.error("Wallet code is part of startup:\n" + walletAtStartup.map((row) => row.file).join("\n"));
+  process.exit(1);
+}
+
 // Libraries that must not reach startup, found by a string their code always contains (they can
 // share a chunk with other code, so the chunk graph alone cannot tell).
 const FORBIDDEN_IN_STARTUP = [
   { name: "DOMPurify (loads with the document viewer and HTML previews)", marker: "SAFE_FOR_TEMPLATES" },
+  // The wallet is phasing out: its seed (and BIP39 word list) loads only on devices with wallet data.
+  { name: "The BIP39 word list (wallet seed)", marker: "abandon\nability\nable" },
 ];
 for (const { name, marker } of FORBIDDEN_IN_STARTUP) {
   const carriers = rows.filter((row) => readFileSync(join(dist, row.file), "utf8").includes(marker));

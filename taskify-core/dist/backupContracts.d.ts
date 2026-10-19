@@ -47,7 +47,8 @@ export type BackupBoardLike = {
 export type NostrBackupSnapshot<TSettings> = {
     boards: NostrAppBackupBoard[];
     settings: Partial<TSettings>;
-    walletSeed: WalletSeedBackupPayload;
+    /** Only when the device has a wallet seed; a backup never creates one. */
+    walletSeed?: WalletSeedBackupPayload | null;
     defaultRelays: string[];
 };
 export declare function sanitizeSettingsForNostrBackup<TSettings extends Record<string, unknown>>(raw: TSettings | Record<string, unknown>, defaultPushPreferences: Record<string, unknown>): Partial<TSettings>;
@@ -59,7 +60,8 @@ export declare function buildNostrBackupSnapshot<TBoard extends BackupBoardLike,
     fallbackRelays: string[];
     normalizeRelayList: RelayNormalizer;
     sanitizeSettingsForBackup: (raw: TSettings | Record<string, unknown>) => Partial<TSettings>;
-    walletSeed: WalletSeedBackupPayload;
+    /** Only when the device has a wallet seed; a backup never creates one. */
+    walletSeed?: WalletSeedBackupPayload | null;
 }): NostrBackupSnapshot<TSettings>;
 export declare function mergeBackupBoards<TBoard extends BackupBoardLike>(options: {
     currentBoards: TBoard[];

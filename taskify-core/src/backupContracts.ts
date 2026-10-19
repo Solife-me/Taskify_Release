@@ -42,7 +42,8 @@ export type BackupBoardLike = {
 export type NostrBackupSnapshot<TSettings> = {
   boards: NostrAppBackupBoard[];
   settings: Partial<TSettings>;
-  walletSeed: WalletSeedBackupPayload;
+  /** Only when the device has a wallet seed; a backup never creates one. */
+  walletSeed?: WalletSeedBackupPayload | null;
   defaultRelays: string[];
 };
 
@@ -84,7 +85,8 @@ export function buildNostrBackupSnapshot<TBoard extends BackupBoardLike, TSettin
   fallbackRelays: string[];
   normalizeRelayList: RelayNormalizer;
   sanitizeSettingsForBackup: (raw: TSettings | Record<string, unknown>) => Partial<TSettings>;
-  walletSeed: WalletSeedBackupPayload;
+  /** Only when the device has a wallet seed; a backup never creates one. */
+  walletSeed?: WalletSeedBackupPayload | null;
 }): NostrBackupSnapshot<TSettings> {
   const { boards, settings, includeMetadata, defaultRelays, fallbackRelays, normalizeRelayList, sanitizeSettingsForBackup, walletSeed } = options;
   const relayFallback = defaultRelays.length ? defaultRelays : fallbackRelays;
@@ -105,7 +107,7 @@ export function buildNostrBackupSnapshot<TBoard extends BackupBoardLike, TSettin
       }).filter((board): board is NostrAppBackupBoard => !!board).sort((a, b) => (normalizeOrder(a.order) ?? 0) - (normalizeOrder(b.order) ?? 0) || a.id.localeCompare(b.id))
     : [];
   const settingsPayload = includeMetadata ? sanitizeSettingsForBackup(settings) : {};
-  return { boards: boardsPayload, settings: settingsPayload, walletSeed, defaultRelays: defaultRelayList };
+  return { boards: boardsPayload, settings: settingsPayload, ...(walletSeed ? { walletSeed } : {}), defaultRelays: defaultRelayList };
 }
 
 export function mergeBackupBoards<TBoard extends BackupBoardLike>(options: {

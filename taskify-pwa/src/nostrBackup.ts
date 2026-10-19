@@ -14,7 +14,7 @@ export type NostrAppBackupPayload = {
   timestamp: number;
   boards: NostrAppBackupBoard[];
   settings: Record<string, unknown>;
-  walletSeed: WalletSeedBackupPayload;
+  walletSeed?: WalletSeedBackupPayload | null;
   defaultRelays?: string[];
 };
 

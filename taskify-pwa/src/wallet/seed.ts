@@ -2,6 +2,7 @@ import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/b
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { kvStorage } from "../storage/kvStorage";
 import { createEncryptedSlot } from "../lib/encryptedSlot";
+import { registerWalletSeedBackupProvider } from "./walletSeedBackup";
 
 // v1 held the seed record as plaintext JSON; v2 holds the same JSON as device-key ciphertext.
 const LS_WALLET_SEED = "cashu_wallet_seed_v1";
@@ -245,8 +246,23 @@ export function persistWalletCounterSnapshot(mintUrl: string, snapshot: Record<s
   persistCounterStore(store);
 }
 
+/** The seed as a backup payload, creating a seed if there is none (the wallet's own export). */
 export function getWalletSeedBackup(): WalletSeedBackupPayload {
-  const record = ensureSeedRecord();
+  return seedBackupPayload(ensureSeedRecord());
+}
+
+/**
+ * The seed as a backup payload, or null when this device has none: backups never create one.
+ * Throws while a stored seed is still locked, so a backup is not published without it.
+ */
+export function getExistingWalletSeedBackup(): WalletSeedBackupPayload | null {
+  const record = seedCache ?? readSeedRecordFromStorage();
+  if (!record) return null;
+  seedCache = record;
+  return seedBackupPayload(record);
+}
+
+function seedBackupPayload(record: WalletSeedRecord): WalletSeedBackupPayload {
   const store = loadCounterStore();
   const counters: Record<string, Record<string, number>> = {};
   for (const [key, value] of Object.entries(store)) {
@@ -338,3 +354,5 @@ export function incrementWalletCounter(mintUrl: string, keysetId: string, delta 
   persistWalletCounter(mintUrl, keysetId, next);
   return next;
 }
+
+registerWalletSeedBackupProvider(getExistingWalletSeedBackup);
