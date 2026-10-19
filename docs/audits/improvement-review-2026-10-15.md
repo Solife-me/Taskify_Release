@@ -47,7 +47,7 @@ Constraints carried through every chunk:
 | 2 | PWA app shell | `App.tsx` (12.8k lines), navigation, onboarding, settings | Implementing |
 | 3 | PWA boards, tasks, Upcoming, calendar, desktop layout | `ui/board`, `ui/task`, `domains/tasks`, `domains/calendar`, `styles/desktop-layout.css` | Done (2026-10-18); one follow-up (event attachments) |
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Done (2026-10-19) |
-| 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Reviewed 2026-10-19, awaiting decisions |
+| 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Done (2026-10-19) |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Pending |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Pending |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Pending |
@@ -1314,9 +1314,33 @@ needs C5-2. The others stand alone.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C5-1 | | | |
-| C5-2 | | | |
-| C5-3 | | | |
-| C5-4 | | | |
-| C5-5 | | | |
-| C5-6 | | | |
+| C5-1 | Approve | 2026-10-19 | Done (`e3fa2159`): the inbox no longer publishes a deletion for a share it handled. Its test ("handling a share publishes nothing") came with C5-3, when the inbox became a command with no way to publish |
+| C5-2 | Approve | 2026-10-19 | Done (`8a2d87fd`): `taskify-core/src/nip17.ts` builds rumors (with group tagging), seals, wraps and opens gift wraps, with crypto injected through a signer, so NIP-07 and NIP-46 can plug in. Opening follows iOS: a signed wrap that tags the receiver; a signed seal with no tags; an unsigned rumor naming the seal's author, with a correct id. `taskify-runtime-nostr` adds the nostr-tools adapter. The four PWA copies and the CLI's are gone. Recipient relays come from the runtime's signature-checked `inboxReadRelays`, which both PWA senders had re-implemented without checking. The CLI now also delivers to the recipient's kind-10050 inbox relays. `fixtures/nip17-vectors.json` holds 12 real wraps (6 open, 6 rejected), checked by PWA vitest and by Swift (`NIP17VectorTests`), which agree. Fixed while testing: a copied event kept nostr-tools' cached "verified" mark after its signature changed, so the adapter verifies a clean copy |
+| C5-3 | Approve | 2026-10-19 | Done (`f08ac5e8`): chat's subscription (kind-10050 relays, watermarked history) is the only one that opens the account's messages. Shares go to the inbox before the message counts as handled; `App`'s second subscription and its decryption are gone. Opened events persist per device (`chat/seenEvents.ts`, newest 10,000), so a launch decrypts only new messages. Reactions are saved too, and the message cache keeps rumor and reply ids; it had been dropping them on load, so older messages lost reply threading and reaction matching. `domains/inbox/shareInboxReceiver.ts` is the inbox as a tested command. Only real envelopes count (the bare-npub fallback is gone, as on iOS), and shares from blocked senders are dropped with their messages. Deleting a chat thread is now permanent across reloads; before, only the 3-day re-decrypt window was guarded. Fixed while testing: chat passed the sender in compressed "02…" form, which the inbox could not match against assignees |
+| C5-4 | Approve | 2026-10-19 | Done (`5e9959c5`): chat state is a configuration of `MergedDocumentSync`. The engine gained general options for it: a payload `codec` (chat keeps the top-level layout iOS reads); `toPublish` (publish a pruned merge only when it adds something, so pruned entries never cause a republish); `debounceMode: "window"`; `flushPending`; and read access to the known relay copy. Storage keys are unchanged, and the hook's five tests pass unchanged. Fixes a change made during an in-flight publish waiting for the next one. Lines: the hook went 282 → 270 and the engine grew by about 70, not the estimated 200-line saving |
+| C5-5 | Approve | 2026-10-19 | Done (`7e8895bf`): `domains/print/scanEngine.ts` holds the image processing once, copied verbatim and working on brightness arrays; `scanCanvas.ts` reads a canvas. The sheets pass only their marks and sampling geometry (board sheet 1,122 → 426 lines, Bible 1,204 → 512, engine 735). Six tests on synthetic photos of real layouts, covering fill detection, a blank page, an upside-down photo, a skewed and unevenly lit photo, a cropped page and Bible boxes. Not checked: a real printed sheet through a camera, which the browser pane blocks |
+| C5-6 | Approve | 2026-10-19 | Done (`d4c9ccc2`): `styles/agent.css` removed; its document and attachment rules moved, in the same cascade position. Startup CSS 37.6 → 36.9 KB gzipped |
+
+### Also fixed during chunk 5 (`feb780f8`)
+
+Found while verifying C5-3 in a production build: **Scripture Memory review tasks lost their
+link to their passage on synced boards.**
+- iOS writes and reads `scriptureMemoryId`, `…Stage`, `…PrevReviewISO` and `…ScheduledAt` in
+  task events; the PWA did neither.
+- A relay re-sync replaced the review with a copy without the link. Completing it then no
+  longer marked the passage reviewed, later reviews in the series inherited the gap, and
+  removing the passage left the task behind.
+
+The fix:
+- The fields now travel both ways (failing tests first).
+- `relinkScriptureReviews` reconnects an open review that already lost its link to the one
+  passage its title names. It runs in the planner and on read, and is not published.
+- Removing a passage now publishes the deletion of its review tasks.
+
+Checked in the build: an orphaned review was relinked, kept the link across a reload, and stayed
+deleted after its passage was removed.
+
+**Follow-ups:**
+- Live two-account messaging verification (from chunk 2) now also covers shares reaching the
+  inbox through chat.
+- The real-camera scan check needs a device.
