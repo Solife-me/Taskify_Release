@@ -1,5 +1,5 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import {
   APP_STATE_SYNC_CLIENT_TAG,
   APP_STATE_SYNC_KIND,
@@ -18,16 +18,43 @@ import { LS_DM_THREAD_READ_STATE } from "../localStorageKeys";
 import { kvStorage } from "../storage/kvStorage";
 import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
-import { loadNostrSyncState, type NostrBackupState, type NostrEvent } from "../domains/nostr/nostrPool";
+import { loadNostrSyncState, type NostrEvent } from "../domains/nostr/nostrPool";
 import { chatStateSyncBus } from "./chatStateSyncBus";
+import { MergedDocumentSync, type MergedDocumentConfig, type SyncEvent, type SyncState } from "./mergedDocumentSync";
 import { normalizeNostrRelayList } from "./useNostrAppBackupSync";
 import { useNostrSubscriptions } from "./useNostrSubscriptions";
 import type { NostrPublishFn } from "./useNostrIdentity";
 
-// Read markers move every time a conversation is viewed, so publishes are coalesced: one
-// replaceable event per quiet period rather than one per message, flushed early when the tab is
-// hidden so the next device picked up already sees it.
-const CHAT_STATE_PUBLISH_DEBOUNCE_MS = 15_000;
+const stateKey = (state: ChatSyncState) =>
+  JSON.stringify([
+    Object.entries(state.readThrough).sort(([a], [b]) => a.localeCompare(b)),
+    Object.entries(state.inboxResponses).sort(([a], [b]) => a.localeCompare(b)),
+  ]);
+
+/**
+ * Chat state (read markers and shared-item responses), synced through the document engine. Read
+ * markers move every time a conversation is viewed, so publishes are coalesced: one replaceable
+ * event per 15-second window rather than one per message, flushed early when the tab is hidden
+ * so the next device picked up already sees it. The payload keeps its top-level layout, which
+ * iOS reads.
+ */
+export const CHAT_STATE_SYNC: MergedDocumentConfig<ChatSyncState> = {
+  dTag: CHAT_STATE_SYNC_D_TAG,
+  kind: APP_STATE_SYNC_KIND,
+  codec: {
+    encode: (state) => ({ readThrough: state.readThrough, inboxResponses: state.inboxResponses }),
+    decode: (payload) => payload,
+  },
+  sanitize: sanitizeChatSyncState,
+  // Read markers only advance and responses keep the latest, so no base is needed.
+  merge: (_base, local, incoming) => mergeChatSyncStates(local, incoming),
+  syncKey: stateKey,
+  // A pruned merge with what the relays hold, and only when it adds something.
+  toPublish: (known, local, nowSeconds) => chatSyncStateToPublish(known ?? emptyChatSyncState(), local, nowSeconds),
+  debounceMs: 15_000,
+  debounceMode: "window",
+  extraTags: [["client", APP_STATE_SYNC_CLIENT_TAG]],
+};
 
 type UseNostrChatStateSyncParams = {
   enabled: boolean;
@@ -60,119 +87,105 @@ function writeStoredReadThrough(readThrough: Record<string, number>) {
   } catch {}
 }
 
-function loadKnownRemote(): ChatSyncState {
-  try {
-    const raw = kvStorage.getItem(LS_NOSTR_CHAT_STATE_SYNC_DATA);
-    return raw ? sanitizeChatSyncState(JSON.parse(raw)) : emptyChatSyncState();
-  } catch {
-    return emptyChatSyncState();
-  }
-}
-
-export function useNostrChatStateSync({
-  enabled,
-  defaultRelays,
-  nostrPK,
-  nostrPublishRef,
-  nostrSK,
-  pool,
-  tagValue,
-  localInboxResponses,
-  pendingInboxEventIds,
-  applyRemoteInboxResponses,
-}: UseNostrChatStateSyncParams) {
-  const syncStateRef = useRef<NostrBackupState>(loadNostrSyncState(LS_NOSTR_CHAT_STATE_SYNC_STATE));
-  /** The newest chat state known to be on the relays (what we last published or received). */
-  const knownRemoteRef = useRef<ChatSyncState>(loadKnownRemote());
+export function useNostrChatStateSync(params: UseNostrChatStateSyncParams) {
+  const { enabled, defaultRelays, nostrPK, pool, tagValue, localInboxResponses, pendingInboxEventIds } = params;
+  const latest = useRef(params);
+  latest.current = params;
   const localReadThroughRef = useRef<Record<string, number>>(readStoredReadThrough());
   const localInboxResponsesRef = useRef(localInboxResponses);
   localInboxResponsesRef.current = localInboxResponses;
-  const applyRemoteInboxResponsesRef = useRef(applyRemoteInboxResponses);
-  applyRemoteInboxResponsesRef.current = applyRemoteInboxResponses;
-  const publishTimerRef = useRef<number | null>(null);
-  const publishInFlightRef = useRef<Promise<void> | null>(null);
-  const settingsRef = useRef({ enabled, defaultRelays, nostrPK, nostrSK });
-  settingsRef.current = { enabled, defaultRelays, nostrPK, nostrSK };
 
-  const persistSyncState = useCallback((next: NostrBackupState) => {
-    syncStateRef.current = next;
-    try { kvStorage.setItem(LS_NOSTR_CHAT_STATE_SYNC_STATE, JSON.stringify(next)); } catch {}
-  }, []);
-  const persistKnownRemote = useCallback((next: ChatSyncState) => {
-    knownRemoteRef.current = next;
-    try { kvStorage.setItem(LS_NOSTR_CHAT_STATE_SYNC_DATA, JSON.stringify(next)); } catch {}
-  }, []);
-
-  useEffect(() => {
-    if (!nostrPK || syncStateRef.current.pubkey === nostrPK) return;
-    const hadAccount = !!syncStateRef.current.pubkey;
-    persistSyncState({ lastEventId: null, lastTimestamp: 0, pubkey: nostrPK });
-    if (hadAccount) {
-      persistKnownRemote(emptyChatSyncState());
-      localReadThroughRef.current = readStoredReadThrough();
-    }
-  }, [nostrPK, persistKnownRemote, persistSyncState]);
-
-  const localState = useCallback(
-    (): ChatSyncState => ({
-      readThrough: localReadThroughRef.current,
-      inboxResponses: localInboxResponsesRef.current,
-    }),
+  const engine = useMemo(
+    () =>
+      new MergedDocumentSync<ChatSyncState>(CHAT_STATE_SYNC, {
+        storage: {
+          loadState: () => loadNostrSyncState(LS_NOSTR_CHAT_STATE_SYNC_STATE),
+          saveState: (state: SyncState) => {
+            try { kvStorage.setItem(LS_NOSTR_CHAT_STATE_SYNC_STATE, JSON.stringify(state)); } catch {}
+          },
+          loadBase: () => {
+            try {
+              const raw = kvStorage.getItem(LS_NOSTR_CHAT_STATE_SYNC_DATA);
+              return raw ? JSON.parse(raw) : null;
+            } catch {
+              return null;
+            }
+          },
+          saveBase: (base) => {
+            try {
+              if (base == null) kvStorage.removeItem(LS_NOSTR_CHAT_STATE_SYNC_DATA);
+              else kvStorage.setItem(LS_NOSTR_CHAT_STATE_SYNC_DATA, JSON.stringify(base));
+            } catch {}
+          },
+        },
+        getLocal: () => ({ readThrough: localReadThroughRef.current, inboxResponses: localInboxResponsesRef.current }),
+        // Another device's markers and responses: applied here, not published back.
+        updateLocal: (update) => {
+          const prev = { readThrough: localReadThroughRef.current, inboxResponses: localInboxResponsesRef.current };
+          const next = update(prev);
+          const advanced: Record<string, number> = {};
+          for (const [key, seconds] of Object.entries(next.readThrough)) {
+            if (seconds > (prev.readThrough[key] ?? 0)) advanced[key] = seconds;
+          }
+          if (Object.keys(advanced).length) {
+            localReadThroughRef.current = { ...prev.readThrough, ...advanced };
+            writeStoredReadThrough({ ...readStoredReadThrough(), ...advanced });
+            chatStateSyncBus.applyRemoteReadThrough(advanced);
+          }
+          const answered: Record<string, ChatInboxResponse> = {};
+          for (const [key, response] of Object.entries(next.inboxResponses)) {
+            const current = prev.inboxResponses[key];
+            if (!current || current.status !== response.status || current.at !== response.at) answered[key] = response;
+          }
+          if (Object.keys(answered).length) latest.current.applyRemoteInboxResponses(answered);
+        },
+        encrypt: (payload) => {
+          const { nostrPK: pk, nostrSK: sk } = latest.current;
+          return encryptNostrSyncPayload(payload, bytesToHex(sk), pk);
+        },
+        decrypt: (content) => {
+          const { nostrPK: pk, nostrSK: sk } = latest.current;
+          return decryptNostrSyncPayload(content, bytesToHex(sk), pk);
+        },
+        publish: async (template) => {
+          const { defaultRelays: configured, nostrSK: sk, nostrPublishRef } = latest.current;
+          const relays = normalizeNostrRelayList(configured.length ? configured : Array.from(DEFAULT_NOSTR_RELAYS));
+          if (!relays.length) throw new Error("No relays for chat state sync.");
+          const result = (await nostrPublishRef.current(relays, template, { sk, returnEvent: true })) as {
+            event?: { id?: string };
+            createdAt?: number;
+          } | undefined;
+          return { eventId: result?.event?.id ?? null, createdAt: result?.createdAt ?? template.created_at };
+        },
+        // The live subscription delivers the newest copy; there is no separate pull.
+        fetchLatest: async () => null,
+        nowSeconds: () => Math.floor(Date.now() / 1000),
+        setTimer: (run, ms) => window.setTimeout(run, ms),
+        clearTimer: (timer) => window.clearTimeout(timer as number),
+        onPublishError: (error) => console.warn("Failed to publish chat state sync", error),
+      }),
     [],
   );
 
-  const publish = useCallback(async () => {
-    const { enabled: isEnabled, defaultRelays: relaysSetting, nostrPK: pk, nostrSK: sk } = settingsRef.current;
-    if (!isEnabled || !pk) return;
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const next = chatSyncStateToPublish(knownRemoteRef.current, localState(), nowSeconds);
-    if (!next) return;
-    const relays = normalizeNostrRelayList(relaysSetting.length ? relaysSetting : Array.from(DEFAULT_NOSTR_RELAYS));
-    if (!relays.length) return;
-    const timestamp = Math.max(nowSeconds, (syncStateRef.current.lastTimestamp || 0) + 1);
-    const content = await encryptNostrSyncPayload({ version: 1, timestamp, ...next }, bytesToHex(sk), pk);
-    const result = await nostrPublishRef.current(
-      relays,
-      {
-        kind: APP_STATE_SYNC_KIND,
-        content,
-        tags: [
-          ["d", CHAT_STATE_SYNC_D_TAG],
-          ["client", APP_STATE_SYNC_CLIENT_TAG],
-        ],
-        created_at: timestamp,
-      },
-      { sk, returnEvent: true },
-    );
-    persistKnownRemote(next);
-    persistSyncState({
-      lastEventId: (result as any)?.event?.id || null,
-      lastTimestamp: (result as any)?.createdAt ?? timestamp,
-      pubkey: pk,
-    });
-  }, [localState, nostrPublishRef, persistKnownRemote, persistSyncState]);
+  useEffect(() => {
+    if (!nostrPK) return;
+    const hadAccount = !!engine.state.pubkey && engine.state.pubkey !== nostrPK;
+    engine.setIdentity(nostrPK);
+    if (hadAccount) localReadThroughRef.current = readStoredReadThrough();
+  }, [engine, nostrPK]);
 
-  const flush = useCallback(() => {
-    if (publishTimerRef.current != null) {
-      window.clearTimeout(publishTimerRef.current);
-      publishTimerRef.current = null;
+  useEffect(() => {
+    if (!enabled) {
+      engine.cancelPending();
+      return;
     }
-    if (publishInFlightRef.current) return;
-    const task = publish()
-      .catch((error) => console.warn("Failed to publish chat state sync", error))
-      .finally(() => { publishInFlightRef.current = null; });
-    publishInFlightRef.current = task;
-  }, [publish]);
+    engine.markPullFinished();
+    engine.noteLocalChange();
+  }, [enabled, engine]);
 
-  const schedulePublish = useCallback(() => {
-    if (!settingsRef.current.enabled || !settingsRef.current.nostrPK) return;
-    if (publishTimerRef.current != null) return;
-    if (!chatSyncStateToPublish(knownRemoteRef.current, localState(), Math.floor(Date.now() / 1000))) return;
-    publishTimerRef.current = window.setTimeout(() => {
-      publishTimerRef.current = null;
-      flush();
-    }, CHAT_STATE_PUBLISH_DEBOUNCE_MS);
-  }, [flush, localState]);
+  const noteLocalChange = useCallback(() => {
+    if (latest.current.enabled && latest.current.nostrPK) engine.noteLocalChange();
+  }, [engine]);
 
   useEffect(() => chatStateSyncBus.onLocalReadThrough((readThrough) => {
     let changed = false;
@@ -185,16 +198,16 @@ export function useNostrChatStateSync({
     }
     if (!changed) return;
     localReadThroughRef.current = next;
-    schedulePublish();
-  }), [schedulePublish]);
+    noteLocalChange();
+  }), [noteLocalChange]);
 
   useEffect(() => {
-    schedulePublish();
-  }, [localInboxResponses, schedulePublish]);
+    noteLocalChange();
+  }, [localInboxResponses, noteLocalChange]);
 
   useEffect(() => {
     const onHide = () => {
-      if (document.visibilityState === "hidden" && publishTimerRef.current != null) flush();
+      if (document.visibilityState === "hidden") engine.flushPending();
     };
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("pagehide", onHide);
@@ -202,69 +215,44 @@ export function useNostrChatStateSync({
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", onHide);
     };
-  }, [flush]);
+  }, [engine]);
 
-  useEffect(() => () => {
-    if (publishTimerRef.current != null) window.clearTimeout(publishTimerRef.current);
-  }, []);
+  useEffect(() => () => engine.cancelPending(), [engine]);
 
   // A shared item can arrive here after another device already answered it.
   const pendingKey = pendingInboxEventIds.join(",");
   useEffect(() => {
     if (!pendingInboxEventIds.length) return;
-    const known = knownRemoteRef.current.inboxResponses;
+    const known = engine.known?.inboxResponses ?? {};
     const matches: Record<string, ChatInboxResponse> = {};
     for (const id of pendingInboxEventIds) {
       const response = known[id.toLowerCase()];
       if (response) matches[id.toLowerCase()] = response;
     }
-    if (Object.keys(matches).length) applyRemoteInboxResponsesRef.current(matches);
+    if (Object.keys(matches).length) latest.current.applyRemoteInboxResponses(matches);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingKey]);
 
-  const handleEvent = useCallback(async (ev: NostrEvent) => {
-    const { enabled: isEnabled, nostrPK: pk, nostrSK: sk } = settingsRef.current;
-    if (!isEnabled || !pk || !ev || ev.kind !== APP_STATE_SYNC_KIND) return;
-    if (tagValue(ev, "d") !== CHAT_STATE_SYNC_D_TAG) return;
-    const state = syncStateRef.current;
-    if (ev.id && ev.id === state.lastEventId) return;
-    if ((ev.created_at || 0) < (state.lastTimestamp || 0)) return;
-    let parsed: any;
-    try {
-      parsed = await decryptNostrSyncPayload(ev.content, bytesToHex(sk), pk);
-    } catch (error) {
-      console.warn("Failed to decrypt chat state sync payload", error);
-      return;
-    }
-    if (!parsed || parsed.version !== 1) return;
-    const incoming = sanitizeChatSyncState(parsed);
-    persistKnownRemote(mergeChatSyncStates(knownRemoteRef.current, incoming));
-    persistSyncState({
-      lastEventId: ev.id || null,
-      lastTimestamp: Math.max(Number(parsed.timestamp) || 0, ev.created_at || 0),
-      pubkey: pk,
-    });
-
-    const localRead = localReadThroughRef.current;
-    const advanced: Record<string, number> = {};
-    for (const [key, seconds] of Object.entries(incoming.readThrough)) {
-      if (seconds > (localRead[key] ?? 0)) advanced[key] = seconds;
-    }
-    if (Object.keys(advanced).length) {
-      const nextRead = { ...localRead, ...advanced };
-      localReadThroughRef.current = nextRead;
-      writeStoredReadThrough({ ...readStoredReadThrough(), ...advanced });
-      chatStateSyncBus.applyRemoteReadThrough(advanced);
-    }
-    if (Object.keys(incoming.inboxResponses).length) {
-      applyRemoteInboxResponsesRef.current(incoming.inboxResponses);
-    }
+  const handleEvent = useCallback(async (event: NostrEvent) => {
+    if (!latest.current.enabled || !latest.current.nostrPK) return;
+    if (event?.kind !== APP_STATE_SYNC_KIND || tagValue(event, "d") !== CHAT_STATE_SYNC_D_TAG) return;
+    await engine.applyEvent(event as unknown as SyncEvent);
     // This device may hold markers or responses the other device has not seen yet.
-    schedulePublish();
-  }, [persistKnownRemote, persistSyncState, schedulePublish, tagValue]);
+    noteLocalChange();
+  }, [engine, noteLocalChange, tagValue]);
 
-  const stateRef = useRef<{ lastTimestamp?: number }>({});
-  stateRef.current = { lastTimestamp: syncStateRef.current.lastTimestamp };
+  const stateRef = useMemo(
+    () =>
+      ({
+        get current() {
+          return { lastTimestamp: engine.state.lastTimestamp };
+        },
+        set current(_value) {
+          // read-only view of the engine's state
+        },
+      }) as MutableRefObject<{ lastTimestamp?: number }>,
+    [engine],
+  );
 
   useNostrSubscriptions({
     chatState: {

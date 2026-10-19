@@ -165,4 +165,54 @@ describe("merged document sync", () => {
     a.sync.setIdentity("someone-else");
     expect(a.sync.state).toEqual({ lastEventId: null, lastTimestamp: 0, pubkey: "someone-else" });
   });
+
+  test("a document can lay out its payload, decide what to publish, and coalesce from the first change", async () => {
+    const shared = relay();
+    let local: Doc = { read: [] };
+    const timers: Array<{ run: () => void; ms: number }> = [];
+    const toPublish = vi.fn((known: Doc | null, mine: Doc) => {
+      // Publish the union, only when it adds something to what the relays hold.
+      const union = [...new Set([...(known?.read ?? []), ...mine.read])].sort();
+      return union.length > (known?.read.length ?? 0) ? { read: union } : null;
+    });
+    const sync = new MergedDocumentSync<Doc>(
+      {
+        ...config,
+        payloadKey: undefined,
+        codec: { encode: (d) => ({ chapters: d.read }), decode: (p) => ({ read: p.chapters }) },
+        toPublish,
+        debounceMode: "window",
+      },
+      {
+        storage: { loadState: () => null, saveState: () => {}, loadBase: () => null, saveBase: () => {} },
+        getLocal: () => local,
+        updateLocal: (update) => { local = update(local); },
+        encrypt: async (payload) => JSON.stringify(payload),
+        decrypt: async (content) => JSON.parse(content),
+        publish: shared.publish,
+        fetchLatest: shared.fetchLatest,
+        nowSeconds: () => 100,
+        setTimer: (run, ms) => { timers.push({ run, ms }); return timers.length; },
+        clearTimer: () => {},
+      },
+    );
+    sync.setIdentity("me");
+    sync.markPullFinished();
+    sync.noteLocalChange();
+    expect(timers).toHaveLength(0); // nothing to add: no publish, not even a first-use one
+
+    local = { read: ["gen1"] };
+    sync.noteLocalChange();
+    local = { read: ["gen1", "gen2"] };
+    sync.noteLocalChange();
+    expect(timers).toHaveLength(1); // the window started at the first change and is not restarted
+
+    sync.flushPending(); // e.g. the tab is hidden
+    await settle();
+    expect(JSON.parse(shared.latest!.content)).toMatchObject({ version: 1, chapters: ["gen1", "gen2"] });
+    expect(sync.known).toEqual({ read: ["gen1", "gen2"] });
+
+    sync.noteLocalChange();
+    expect(timers).toHaveLength(1); // the relays already hold everything
+  });
 });

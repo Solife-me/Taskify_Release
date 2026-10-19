@@ -9,6 +9,10 @@
  * and a change made during one is sent once it finishes. On first use, after the first pull, a
  * device with nothing published yet publishes what it has.
  *
+ * A document can also decide for itself what to publish (`toPublish`): chat state publishes a
+ * pruned merge of what the relays hold and what this device has, and only when that adds
+ * something, so entries pruning drops never cause a republish.
+ *
  * Framework-free, so the rules are tested directly (`mergedDocumentSync.test.ts`).
  */
 
@@ -20,8 +24,16 @@ export type MergedDocumentConfig<T> = {
   /** Event `d` tag. */
   dTag: string;
   kind: number;
-  /** The payload field holding the document. */
-  payloadKey: string;
+  /** The payload field holding the document (unless `codec` lays the payload out). */
+  payloadKey?: string;
+  /**
+   * The document's fields in the payload, beside `version` and the timestamps (for a layout
+   * other clients already read, such as chat state's top-level fields).
+   */
+  codec?: {
+    encode: (state: T) => Record<string, unknown>;
+    decode: (payload: Record<string, unknown>) => unknown;
+  };
   sanitize: (raw: unknown) => T;
   /** Three-way merge; `base` is null when either side never synced. */
   merge: (base: T | null, local: T, incoming: T) => T;
@@ -30,6 +42,17 @@ export type MergedDocumentConfig<T> = {
   /** What goes in the payload (defaults to the state itself). */
   toPayload?: (state: T) => unknown;
   debounceMs?: number;
+  /**
+   * "quiet" (default): publish once changes pause for `debounceMs`. "window": publish
+   * `debounceMs` after the first unpublished change, however many follow.
+   */
+  debounceMode?: "quiet" | "window";
+  /**
+   * What to publish, given the newest copy known on the relays (the base) and the local state,
+   * or null when that adds nothing. Without it, the local state is published whenever it
+   * differs from what was last published.
+   */
+  toPublish?: (known: T | null, local: T, nowSeconds: number) => T | null;
   /** Tags added after the `d` tag (a client tag). */
   extraTags?: string[][];
 };
@@ -85,6 +108,11 @@ export class MergedDocumentSync<T> {
     return this.syncState;
   }
 
+  /** The newest copy known to be on the relays (published or received), if any. */
+  get known(): T | null {
+    return this.base;
+  }
+
   /** The signed-in key changed: everything synced so far belonged to the previous one. */
   setIdentity(pubkey: string | null): void {
     if (this.syncState.pubkey === pubkey) return;
@@ -130,7 +158,7 @@ export class MergedDocumentSync<T> {
     // Our own echo, or older than what this device already has.
     if (event.id && event.id === this.syncState.lastEventId) return;
     if (payloadTs < (this.syncState.lastTimestamp || 0)) return;
-    const incoming = this.config.sanitize(parsed[this.config.payloadKey]);
+    const incoming = this.config.sanitize(this.decode(parsed));
     const base = parsed.baseTimestamp === 0 ? null : this.base;
     this.deps.updateLocal((prev) => this.config.merge(base, prev, incoming));
     this.setBase(incoming);
@@ -146,6 +174,10 @@ export class MergedDocumentSync<T> {
    */
   noteLocalChange(): void {
     if (!this.pullFinished || !this.syncState.pubkey) return;
+    if (this.config.toPublish) {
+      if (this.config.toPublish(this.base, this.deps.getLocal(), this.deps.nowSeconds())) this.schedulePublish();
+      return;
+    }
     if (!this.initialPublishDone && (this.syncState.lastTimestamp || 0) === 0) {
       this.initialPublishDone = true;
       this.publishedKey = this.config.syncKey(this.deps.getLocal());
@@ -158,11 +190,26 @@ export class MergedDocumentSync<T> {
       return;
     }
     if (key === this.publishedKey) return;
-    if (this.debounceTimer != null) this.deps.clearTimer(this.debounceTimer);
+    this.schedulePublish();
+  }
+
+  private schedulePublish(): void {
+    if (this.debounceTimer != null) {
+      if (this.config.debounceMode === "window") return;
+      this.deps.clearTimer(this.debounceTimer);
+    }
     this.debounceTimer = this.deps.setTimer(() => {
       this.debounceTimer = null;
       void this.publishNow();
     }, this.config.debounceMs ?? 1500);
+  }
+
+  /** Publishes a waiting change now (the tab is being hidden, so it reaches other devices). */
+  flushPending(): void {
+    if (this.debounceTimer == null) return;
+    this.deps.clearTimer(this.debounceTimer);
+    this.debounceTimer = null;
+    void this.publishNow();
   }
 
   /** Cancels a pending debounced publish (the hook unmounting or sync turning off). */
@@ -183,7 +230,11 @@ export class MergedDocumentSync<T> {
         this.publishing = null;
         if (!this.publishQueued) return;
         this.publishQueued = false;
-        if (this.publishedKey === this.config.syncKey(this.deps.getLocal())) return;
+        if (this.config.toPublish) {
+          if (!this.config.toPublish(this.base, this.deps.getLocal(), this.deps.nowSeconds())) return;
+        } else if (this.publishedKey === this.config.syncKey(this.deps.getLocal())) {
+          return;
+        }
         void this.publishNow();
       });
     this.publishing = run;
@@ -192,15 +243,17 @@ export class MergedDocumentSync<T> {
 
   private async publishOnce(): Promise<void> {
     if (!this.syncState.pubkey) return;
-    const local = this.deps.getLocal();
+    const now = this.deps.nowSeconds();
+    const local = this.config.toPublish ? this.config.toPublish(this.base, this.deps.getLocal(), now) : this.deps.getLocal();
+    if (!local) return;
     const key = this.config.syncKey(local);
-    const timestamp = Math.max(this.deps.nowSeconds(), (this.syncState.lastTimestamp || 0) + 1);
+    const timestamp = Math.max(now, (this.syncState.lastTimestamp || 0) + 1);
     const payload = {
       version: 1,
       timestamp,
       // 0 tells receivers this device never synced, so its gaps are not deletions.
       baseTimestamp: this.base ? this.syncState.lastTimestamp || 0 : 0,
-      [this.config.payloadKey]: this.config.toPayload ? this.config.toPayload(local) : local,
+      ...this.encode(local),
     };
     const content = await this.deps.encrypt(payload);
     const { eventId, createdAt } = await this.deps.publish({
@@ -212,6 +265,17 @@ export class MergedDocumentSync<T> {
     this.setSyncState({ lastEventId: eventId, lastTimestamp: createdAt || timestamp, pubkey: this.syncState.pubkey });
     this.publishedKey = key;
     this.setBase(local);
+  }
+
+  private encode(state: T): Record<string, unknown> {
+    if (this.config.codec) return this.config.codec.encode(state);
+    const key = this.config.payloadKey ?? "data";
+    return { [key]: this.config.toPayload ? this.config.toPayload(state) : state };
+  }
+
+  private decode(payload: Record<string, unknown>): unknown {
+    if (this.config.codec) return this.config.codec.decode(payload);
+    return payload[this.config.payloadKey ?? "data"];
   }
 
   private setBase(next: T | null): void {
