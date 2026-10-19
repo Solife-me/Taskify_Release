@@ -28,6 +28,7 @@ const walletModules = [
   '**/components/CashuWalletModal*',
   '**/components/EcashGlyph*',
   '**/ui/bounty/**',
+  '**/ui/wallet/**',
 ]
 
 const tsNocheckFiles = [
@@ -137,6 +138,12 @@ export default tseslint.config([
       'src/domains/tasks/**/*.{ts,tsx}',
       'src/domains/calendar/**/*.{ts,tsx}',
       'src/domains/upcoming/**/*.{ts,tsx}',
+      // The inbox and shared plumbing outlive the wallet.
+      'src/domains/inbox/**/*.{ts,tsx}',
+      'src/lib/**/*.{ts,tsx}',
+      'src/identity/**/*.{ts,tsx}',
+      'src/routing/**/*.{ts,tsx}',
+      'src/onboarding/**/*.{ts,tsx}',
     ],
     rules: {
       'no-restricted-imports': [

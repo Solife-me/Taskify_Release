@@ -4,13 +4,8 @@
  * keeps it mounted, so messages sync and the unread badge updates while another page is open; the
  * Chat page reads it through `useChatRuntime()`.
  *
- * Built from the chat half of `CashuWalletModal` (see scripts/chat-extraction). A Cashu token
- * received in a message is only shown and copied: chat has no wallet functions.
+ * A Cashu token received in a message is only shown and copied: chat has no wallet functions.
  */
-// TODO: Continue breaking up this still-large wallet surface. Extract more custom hooks
-// (wallet state, mint management, send/receive flows, payment requests, NWC,
-// nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
-// sub-views into smaller components to reduce this file's size.
 import { useSyncResume } from "../nostr/useSyncResume";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
@@ -44,7 +39,7 @@ import {
   sanitizeUsername,
   saveContactsToStorage,
 } from "../lib/contacts";
-import type { WalletMessageItem } from "../types/walletMessages";
+import type { InboxEntry } from "../domains/inbox/inboxEntries";
 
 
 
@@ -78,12 +73,12 @@ import {
   shortenNpubDisplay,
 } from "./chatUi";
 import {
-  getWalletMessageStatusLabel,
+  getInboxEntryStatusLabel,
   estimateDataUrlSize,
   isDataUrl,
   pickPreferredProfilePhoto,
   dmThreadKeyForThread,
-  buildWalletMessageSyntheticEventId,
+  buildInboxEntrySyntheticEventId,
   buildCalendarInviteSyntheticEventId,
   type SharedContactPreview,
 } from "./chatHelpers";
@@ -110,8 +105,8 @@ export type ChatRuntimeProps = {
   encryptedFileStorageServer?: string;
   encryptedFileServers?: string;
   /** Shared tasks, boards and calendar invites that arrived by message (the inbox). */
-  messageItems: WalletMessageItem[];
-  inboxPendingItems?: WalletMessageItem[];
+  messageItems: InboxEntry[];
+  inboxPendingItems?: InboxEntry[];
   pendingCalendarInvites?: PendingCalendarInvite[];
   onAcceptMessage: (id: string) => void;
   /** Adds a shared task to a board again (from its card in the chat). */
@@ -398,7 +393,7 @@ persistBlockedPeers,
     dmDeletedEventsRef,
     dmTempDeletedEventsRef,
   });
-  const messageItemStatusRef = useRef<Map<string, WalletMessageItem["status"]>>(new Map());
+  const messageItemStatusRef = useRef<Map<string, InboxEntry["status"]>>(new Map());
   useEffect(() => {
     const seenIds = new Set<string>();
     messageItems.forEach((item) => {
@@ -411,7 +406,7 @@ persistBlockedPeers,
       if (prevStatus !== item.status) {
         messageItemStatusRef.current.set(item.id, item.status);
         if (item.status === "accepted") {
-          const label = getWalletMessageStatusLabel(item.type, item.status);
+          const label = getInboxEntryStatusLabel(item.type, item.status);
           if (label) {
             showToast(label);
           }
@@ -577,7 +572,7 @@ persistBlockedPeers,
     sendShareMessage,
     readNostrIdentity,
     defaultNostrRelays,
-    buildWalletMessageSyntheticEventId,
+    buildInboxEntrySyntheticEventId,
     buildCalendarInviteSyntheticEventId,
     normalizeDmPeerHex,
     showToast,

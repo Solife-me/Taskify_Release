@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import type { WalletMessageItem } from "../../types/walletMessages";
+import type { InboxEntry } from "../../domains/inbox/inboxEntries";
 import {
-  buildWalletMessageSyntheticEventId,
+  buildInboxEntrySyntheticEventId,
   buildCalendarInviteSyntheticEventId,
   PAYMENT_HISTORY_EVENT_ID_REGEX,
   type PendingCalendarInvite,
@@ -14,8 +14,8 @@ import {
 import { parseDateLikeToUnixSeconds } from "../chatUi";
 
 export interface UseDmMessageDerivedOptions {
-  messageItems: WalletMessageItem[];
-  inboxPendingItems: WalletMessageItem[] | undefined;
+  messageItems: InboxEntry[];
+  inboxPendingItems: InboxEntry[] | undefined;
   pendingCalendarInvites: PendingCalendarInvite[] | undefined;
   dmDeletedEventsVersion: number;
   dmMessages: WalletDmMessage[];
@@ -42,7 +42,7 @@ export function useDmMessageDerived({
   dmTempDeletedEventsRef,
 }: UseDmMessageDerivedOptions) {
   const messageItemsByEventId = useMemo(() => {
-    const map = new Map<string, WalletMessageItem>();
+    const map = new Map<string, InboxEntry>();
     messageItems.forEach((item) => {
       const key = item.dmEventId?.trim();
       if (key) map.set(key, item);
@@ -51,9 +51,9 @@ export function useDmMessageDerived({
   }, [messageItems]);
 
   const pendingMessageItemsByEventId = useMemo(() => {
-    const map = new Map<string, WalletMessageItem>();
+    const map = new Map<string, InboxEntry>();
     (inboxPendingItems || []).forEach((item) => {
-      map.set(buildWalletMessageSyntheticEventId(item), item);
+      map.set(buildInboxEntrySyntheticEventId(item), item);
     });
     return map;
   }, [inboxPendingItems]);
@@ -74,7 +74,7 @@ export function useDmMessageDerived({
     const existingEventIds = new Set(dmMessages.map((message) => message.eventId));
     const messages: WalletDmMessage[] = [];
     (inboxPendingItems || []).forEach((item) => {
-      const eventId = buildWalletMessageSyntheticEventId(item);
+      const eventId = buildInboxEntrySyntheticEventId(item);
       if (existingEventIds.has(eventId)) return;
       if (isSuppressedEventId(eventId)) return;
       const peerHex = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);

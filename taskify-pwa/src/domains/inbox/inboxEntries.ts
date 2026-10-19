@@ -1,6 +1,7 @@
-import type { SharedTaskPayload } from "../lib/shareInbox";
+/** A shared task, board or contact that arrived by message, as the inbox and chat show it. */
+import type { SharedTaskPayload } from "../../lib/shareInbox";
 
-export type WalletMessageSender = {
+export type InboxEntrySender = {
   name?: string | null;
   npub?: string | null;
   pubkey?: string | null;
@@ -8,7 +9,7 @@ export type WalletMessageSender = {
   lud16?: string | null;
 };
 
-export type WalletMessageContact = {
+export type InboxEntryContact = {
   npub?: string | null;
   name?: string | null;
   displayName?: string | null;
@@ -18,7 +19,7 @@ export type WalletMessageContact = {
   picture?: string | null;
 };
 
-export type WalletMessageItem = {
+export type InboxEntry = {
   id: string;
   title: string;
   note?: string | null;
@@ -28,8 +29,8 @@ export type WalletMessageItem = {
   status?: "pending" | "accepted" | "declined" | "tentative" | "deleted" | "read";
   boardId?: string | null;
   boardName?: string | null;
-  contact?: WalletMessageContact | null;
+  contact?: InboxEntryContact | null;
   task?: SharedTaskPayload | null;
-  sender?: WalletMessageSender | null;
+  sender?: InboxEntrySender | null;
   receivedAt?: string | null;
 };

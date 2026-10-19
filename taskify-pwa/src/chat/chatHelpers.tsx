@@ -13,7 +13,7 @@ import { TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
 
 
 import type { ContactProfile, Contact } from "../lib/contacts";
-import type { WalletMessageItem } from "../types/walletMessages";
+import type { InboxEntry } from "../domains/inbox/inboxEntries";
 import { SessionPool } from "../nostr/SessionPool";
 import type { WalletDmMessage, WalletDmThread } from "./hooks/useDmState";
 
@@ -36,9 +36,9 @@ export function measureDefaultChatAttachTrayHeight(): number {
   );
 }
 
-export function getWalletMessageStatusLabel(
-  type?: WalletMessageItem["type"],
-  status?: WalletMessageItem["status"],
+export function getInboxEntryStatusLabel(
+  type?: InboxEntry["type"],
+  status?: InboxEntry["status"],
 ): string | null {
   if (status === "accepted") {
     if (type === "board") return "Board added";
@@ -437,7 +437,7 @@ export type PendingCalendarInvite = CalendarInvite;
 export type SharedContactPreview = {
   contact: Contact;
   itemId?: string | null;
-  status?: WalletMessageItem["status"] | "dismissed" | null;
+  status?: InboxEntry["status"] | "dismissed" | null;
 };
 
 export type NostrEvent = {
@@ -561,7 +561,7 @@ export function cachedContactProfileToDmProfile(entry: CachedContactProfile): Co
   };
 }
 
-export function buildWalletMessageSyntheticEventId(item: WalletMessageItem): string {
+export function buildInboxEntrySyntheticEventId(item: InboxEntry): string {
   const dmEventId = item.dmEventId?.trim();
   return dmEventId || `wallet-message-${item.id}`;
 }

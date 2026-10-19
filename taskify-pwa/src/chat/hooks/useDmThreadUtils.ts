@@ -8,7 +8,7 @@ import type {
   SharedContactPreview,
 } from "../chatHelpers";
 import type { ShareEnvelope, SharedContactPayload } from "../../lib/shareInbox";
-import type { WalletMessageItem } from "../../types/walletMessages";
+import type { InboxEntry } from "../../domains/inbox/inboxEntries";
 import type { WalletDmAttachment, WalletDmMessage, WalletDmThread } from "./useDmState";
 
 type ChatView =
@@ -47,9 +47,9 @@ type KVStorageLike = {
 };
 
 export interface UseDmThreadUtilsOptions {
-  inboxPendingItems: WalletMessageItem[] | undefined;
-  messageItemsByEventId: Map<string, WalletMessageItem>;
-  pendingMessageItemsByEventId: Map<string, WalletMessageItem>;
+  inboxPendingItems: InboxEntry[] | undefined;
+  messageItemsByEventId: Map<string, InboxEntry>;
+  pendingMessageItemsByEventId: Map<string, InboxEntry>;
   pendingCalendarInvitesByEventId: Map<string, PendingCalendarInvite>;
   pendingCalendarInvites: PendingCalendarInvite[] | undefined;
   paymentHistoryByEventId: Map<string, { summary?: string }>;
@@ -106,7 +106,7 @@ export interface UseDmThreadUtilsOptions {
   ) => Promise<void>;
   readNostrIdentity: () => NostrIdentityInfo;
   defaultNostrRelays: string[];
-  buildWalletMessageSyntheticEventId: (item: WalletMessageItem) => string;
+  buildInboxEntrySyntheticEventId: (item: InboxEntry) => string;
   buildCalendarInviteSyntheticEventId: (invite: PendingCalendarInvite) => string;
   normalizeDmPeerHex: (value: string | null | undefined) => string | null;
   showToast: (message: string, duration?: number) => void;
@@ -173,7 +173,7 @@ export function useDmThreadUtils({
   sendShareMessage,
   readNostrIdentity,
   defaultNostrRelays,
-  buildWalletMessageSyntheticEventId,
+  buildInboxEntrySyntheticEventId,
   buildCalendarInviteSyntheticEventId,
   normalizeDmPeerHex,
   showToast,
@@ -211,7 +211,7 @@ export function useDmThreadUtils({
           if (!isUnreadThreadStatus(item.status)) return;
           const itemPeer = normalizeDmPeerHex(item.sender?.pubkey || item.sender?.npub);
           if (itemPeer !== normalizedPeer) return;
-          unreadIds.add(buildWalletMessageSyntheticEventId(item));
+          unreadIds.add(buildInboxEntrySyntheticEventId(item));
         });
         (pendingCalendarInvites || []).forEach((invite) => {
           if (!isUnreadThreadStatus(invite.status)) return;
@@ -229,7 +229,7 @@ export function useDmThreadUtils({
       pendingCalendarInvites,
       pendingCalendarInvitesByEventId,
       pendingMessageItemsByEventId,
-      buildWalletMessageSyntheticEventId,
+      buildInboxEntrySyntheticEventId,
       buildCalendarInviteSyntheticEventId,
       normalizeDmPeerHex,
     ],
@@ -316,7 +316,7 @@ export function useDmThreadUtils({
   const buildSharedContactPreview = useCallback(
     (
       attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
-      item: WalletMessageItem | null | undefined,
+      item: InboxEntry | null | undefined,
     ): SharedContactPreview | null => {
       const attachmentNpub = attachment?.npub || item?.contact?.npub || "";
       const normalizedNpub = normalizeNostrPubkey(attachmentNpub);
@@ -357,7 +357,7 @@ export function useDmThreadUtils({
   const openSharedContactPreview = useCallback(
     (
       attachment: Extract<WalletDmAttachment, { type: "contact" }> | null | undefined,
-      item: WalletMessageItem | null | undefined,
+      item: InboxEntry | null | undefined,
     ): void => {
       const preview = buildSharedContactPreview(attachment, item);
       if (!preview) {

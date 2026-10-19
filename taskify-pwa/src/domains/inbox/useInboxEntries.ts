@@ -1,11 +1,15 @@
+/**
+ * The inbox: shared items that arrived by message live as tasks on a hidden per-device board.
+ * These hooks list them and count what is unread.
+ */
 import { useMemo, useState } from "react";
 import type { Task } from "taskify-core";
 import { kvStorage } from "../../storage/kvStorage";
-import type { WalletMessageItem } from "../../types/walletMessages";
+import type { InboxEntry } from "./inboxEntries";
 
 const LS_MESSAGES_BOARD_ID = "taskify_messages_board_id_v1";
 
-export function useMessagesBoardId() {
+export function useInboxBoardId() {
   const [messagesBoardId] = useState<string>(() => {
     if (typeof window === "undefined") return crypto.randomUUID();
     try {
@@ -27,7 +31,7 @@ type UseWalletMessagesParams = {
   unreadCalendarInviteCount: number;
 };
 
-export function useWalletMessages({
+export function useInboxEntries({
   messagesBoardId,
   tasks,
   unreadCalendarInviteCount,
@@ -47,7 +51,7 @@ export function useWalletMessages({
       ).length,
     [messagesBoardId, tasks],
   );
-  const walletMessageItems = useMemo<WalletMessageItem[]>(
+  const inboxEntries = useMemo<InboxEntry[]>(
     () =>
       tasks
         .filter((task) => task.boardId === messagesBoardId)
@@ -70,7 +74,7 @@ export function useWalletMessages({
   );
   const inboxPendingItems = useMemo(
     () =>
-      walletMessageItems.filter(
+      inboxEntries.filter(
         (item) =>
           !item.completed &&
           item.status !== "accepted" &&
@@ -78,7 +82,7 @@ export function useWalletMessages({
           item.status !== "tentative" &&
           item.status !== "deleted",
       ),
-    [walletMessageItems],
+    [inboxEntries],
   );
   const [dmUnreadCount, setDmUnreadCount] = useState(0);
   const chatUnreadCount = messagesUnreadCount + unreadCalendarInviteCount + dmUnreadCount;
@@ -89,6 +93,6 @@ export function useWalletMessages({
     inboxPendingItems,
     messagesUnreadCount,
     setDmUnreadCount,
-    walletMessageItems,
+    inboxEntries,
   };
 }

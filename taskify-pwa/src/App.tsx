@@ -285,7 +285,7 @@ import {
 } from "./domains/inbox/inboxResponseSync";
 import { receiveIncomingShare, type IncomingShare } from "./domains/inbox/shareInboxReceiver";
 import type { ChatInboxResponse } from "taskify-core";
-import { useMessagesBoardId, useWalletMessages } from "./ui/wallet/useWalletMessages";
+import { useInboxBoardId, useInboxEntries } from "./domains/inbox/useInboxEntries";
 import { useWalletShellState } from "./ui/wallet/useWalletShellState";
 import { useBoardSort } from "./ui/board/useBoardSort";
 import { WD_SHORT } from "./domains/appTypes";
@@ -475,7 +475,7 @@ export default function App() {
     fallbackWorkerBaseUrl: FALLBACK_WORKER_BASE_URL,
   });
   useClipboardWriteToast(showToast);
-  const messagesBoardId = useMessagesBoardId();
+  const messagesBoardId = useInboxBoardId();
   const [boards, setBoards] = useBoards();
   const {
     currentBoardId,
@@ -629,8 +629,8 @@ export default function App() {
     inboxPendingItems,
     messagesUnreadCount,
     setDmUnreadCount,
-    walletMessageItems,
-  } = useWalletMessages({ messagesBoardId, tasks, unreadCalendarInviteCount });
+    inboxEntries,
+  } = useInboxEntries({ messagesBoardId, tasks, unreadCalendarInviteCount });
   const activeBountyListKey = PINNED_BOUNTY_LIST_KEY;
   const bountyListEnabled = true;
   const [bibleTracker, setBibleTracker] = useBibleTracker();
@@ -6538,7 +6538,7 @@ export default function App() {
           fileServers={settings.fileServers}
           encryptedFileStorageServer={settings.encryptedFileStorageServer}
           encryptedFileServers={settings.encryptedFileServers}
-          messageItems={walletMessageItems}
+          messageItems={inboxEntries}
           inboxPendingItems={inboxPendingItems}
           pendingCalendarInvites={pendingCalendarInvites}
           onAcceptMessage={acceptInboxMessage}

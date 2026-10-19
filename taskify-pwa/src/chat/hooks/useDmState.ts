@@ -20,7 +20,7 @@ import {
   LS_GROUP_MUTED,
 } from "../../localStorageKeys";
 import type { ContactProfile } from "../../lib/contacts";
-import type { WalletMessageItem } from "../../types/walletMessages";
+import type { InboxEntry } from "../../domains/inbox/inboxEntries";
 import { chatRetentionCutoffMs, type ChatMessageRetention } from "../../domains/tasks/settingsTypes";
 import { findCashuToken } from "../cashuTokenText";
 import { PersistedIdSet } from "../seenEvents";
@@ -626,7 +626,7 @@ export function useDmState({
   const dmProcessedEventsRef = useRef<Set<string>>(seenEvents);
   const dmSubscriptionCloseRef = useRef<(() => void) | null>(null);
   const dmLastSyncRef = useRef<number>(readDmSyncMeta().lastCompletedSyncAt || 0);
-  const messageItemsRef = useRef<WalletMessageItem[]>(messageItems);
+  const messageItemsRef = useRef<InboxEntry[]>(messageItems);
   useEffect(() => {
     messageItemsRef.current = messageItems;
   }, [messageItems]);

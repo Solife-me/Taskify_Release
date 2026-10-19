@@ -1,12 +1,12 @@
 import { useMemo, type RefObject } from "react";
-import type { WalletMessageItem } from "../../types/walletMessages";
+import type { InboxEntry } from "../../domains/inbox/inboxEntries";
 import type { PendingCalendarInvite } from "../chatHelpers";
 import type { WalletDmThread } from "./useDmState";
 
 export interface UseThreadUnreadCountsOptions {
   dmThreads: WalletDmThread[];
-  messageItemsByEventId: Map<string, WalletMessageItem>;
-  pendingMessageItemsByEventId: Map<string, WalletMessageItem>;
+  messageItemsByEventId: Map<string, InboxEntry>;
+  pendingMessageItemsByEventId: Map<string, InboxEntry>;
   pendingCalendarInvitesByEventId: Map<string, PendingCalendarInvite>;
   isUnreadThreadStatus: (status: string | null | undefined) => boolean;
   dmMutedGroupsRef: RefObject<Map<string, number>>;

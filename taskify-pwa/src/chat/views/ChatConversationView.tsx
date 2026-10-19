@@ -6,7 +6,7 @@ import {
   isVideoMime,
 } from "../../lib/messengerAttachmentCrypto";
 import { sanitizeUsername } from "../../lib/contacts";
-import type { WalletMessageItem } from "../../types/walletMessages";
+import type { InboxEntry } from "../../domains/inbox/inboxEntries";
 import type { DmReaction } from "../hooks/useDmState";
 import {
   BackIcon,
@@ -25,7 +25,7 @@ import {
   extractDomain,
   extractUrlsFromText,
   getCalendarInviteStatusLabel,
-  getWalletMessageStatusLabel,
+  getInboxEntryStatusLabel,
   renderFormattedText,
   type NostrEvent,
 } from "../chatHelpers";
@@ -374,8 +374,8 @@ export function ChatConversationView() {
                       actionStatus !== "tentative" &&
                       actionStatus !== "deleted" &&
                       actionStatus !== "dismissed";
-                    const contactStatusLabel = getWalletMessageStatusLabel("contact", actionStatus as WalletMessageItem["status"]);
-                    const taskStatusLabel = getWalletMessageStatusLabel("task", actionStatus as WalletMessageItem["status"]);
+                    const contactStatusLabel = getInboxEntryStatusLabel("contact", actionStatus as InboxEntry["status"]);
+                    const taskStatusLabel = getInboxEntryStatusLabel("task", actionStatus as InboxEntry["status"]);
                     const eventStatusLabel = getCalendarInviteStatusLabel(actionStatus);
                     const hasReactions = (dmReactions.get(msg.rumorEventId || msg.eventId)?.length ?? 0) > 0;
 
