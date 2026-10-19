@@ -7,6 +7,7 @@ import { ISO_DATE_PATTERN, isListLikeBoard, type parseCalendarCanonicalPayload }
 import { normalizeTimeZone } from "../domains/dateTime/dateUtils";
 import { normalizeAgentPubkey } from "../domains/tasks/assignmentUtils";
 import { applyHiddenForCalendarEvent } from "../domains/tasks/boardUtils";
+import { applyCalendarSeriesCutoff, type CalendarSeriesCutoffs } from "../domains/calendar/recurrenceCutoffs";
 import type { Board, CalendarEvent, CalendarEventBase, Weekday } from "../domains/tasks/taskTypes";
 import { ensureDocumentPreview, normalizeDocumentList } from "../lib/documents";
 
@@ -97,4 +98,27 @@ export function mergeIncomingCalendarEvent(
     ...(typeof existing?.order === "number" && typeof incoming.order !== "number" ? { order: existing.order } : {}),
   } as CalendarEvent;
   return existing ? merged : applyHiddenForCalendarEvent(merged, context.weekStart, context.boardKind);
+}
+
+/**
+ * Puts an incoming event into the list: merged over the device's copy, or removed when a series
+ * cutoff ("delete this and future") says the occurrence no longer exists.
+ */
+export function upsertIncomingCalendarEvent(
+  events: CalendarEvent[],
+  incoming: CalendarEvent,
+  cutoffs: CalendarSeriesCutoffs,
+  context: { weekStart: Weekday; boardKind: Board["kind"] },
+): CalendarEvent[] {
+  const bounded = applyCalendarSeriesCutoff(incoming, cutoffs);
+  if (!bounded) {
+    const filtered = events.filter((existing) => existing.id !== incoming.id);
+    return filtered.length === events.length ? events : filtered;
+  }
+  const index = events.findIndex((existing) => existing.id === bounded.id);
+  const merged = mergeIncomingCalendarEvent(index >= 0 ? events[index] : null, bounded, context);
+  if (index < 0) return [...events, merged];
+  const copy = events.slice();
+  copy[index] = merged;
+  return copy;
 }

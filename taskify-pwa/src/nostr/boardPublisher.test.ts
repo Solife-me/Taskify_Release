@@ -31,6 +31,7 @@ function setup(overrides: Partial<BoardPublisherDeps> = {}) {
     },
     prepareAttachments: async () => ({ images: null, image: null, documents: null }),
     storedTaskAt: () => 0,
+    recordTaskVersion: vi.fn(),
     metadataFingerprints: {
       isUnchanged: (key, value) => fingerprints.get(key) === JSON.stringify(value),
       record: (key, value) => fingerprints.set(key, JSON.stringify(value)),
@@ -82,7 +83,8 @@ describe("BoardPublisher", () => {
     await publisher.publishTask(task({ title: "Ship it" }));
     expect(sent.map((entry) => entry.template.kind)).toEqual([30300, 30301, 30301]);
     expect(sent[1].template.tags).toEqual([["d", "t1"], ["b", "tag:nb1"], ["col", "c1"], ["status", "open"]]);
-    expect(t._nostrAt).toBe(sent[1].template.created_at);
+    expect(deps.recordTaskVersion).toHaveBeenCalledWith(t, sent[1].template.created_at);
+    expect(t._nostrAt).toBeUndefined(); // the object in the store is not mutated
     expect(ledger.taskAt("tag:nb1", "t1")).toBe(sent[2].template.created_at);
     expect(ledger.isTaskPending("tag:nb1", "t1")).toBe(false);
     expect(deps.onTaskSettled).toHaveBeenCalledWith("t1");

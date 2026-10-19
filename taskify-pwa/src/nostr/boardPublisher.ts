@@ -68,6 +68,12 @@ export type BoardPublisherDeps = {
   }) => Promise<PreparedAttachments & PreparedEventAttachments>;
   /** The version time stored with a task locally (`_nostrAt`), so a reserve moves past it. */
   storedTaskAt: (taskId: string, board: Board) => number;
+  /**
+   * Stores the version a task's publish carries with the task (`_nostrAt`), through the task
+   * store rather than by mutating the object, so it is saved and survives a reload: after one,
+   * it is what keeps an equally old relay copy from replacing the local edit.
+   */
+  recordTaskVersion: (task: Task, at: number) => void;
   /** Equality cache so unchanged board metadata is not re-sent with every task. */
   metadataFingerprints: { isUnchanged: (key: string, value: unknown) => boolean; record: (key: string, value: unknown) => void };
   onTaskPending: (taskId: string) => void;
@@ -167,7 +173,7 @@ export class BoardPublisher {
     const pendingKey = `${tag}::${task.id}`;
     const version = versions.reserve(pendingKey);
     const optimisticAt = this.reserveTaskPublish(task.id, board) ?? this.nowSeconds();
-    task._nostrAt = optimisticAt;
+    this.deps.recordTaskVersion(task, optimisticAt);
     try {
       const keys = await this.deps.deriveBoardKeys(nostrBoardId);
       // Attachments are encrypted and uploaded to the file server before the task is published.
@@ -193,7 +199,7 @@ export class BoardPublisher {
         { sk: keys.sk, republish: options?.republish },
       );
       const confirmedAt = ledger.noteTask(tag, task.id, createdAt);
-      task._nostrAt = Math.max(task._nostrAt ?? 0, confirmedAt);
+      if (confirmedAt > optimisticAt) this.deps.recordTaskVersion(task, confirmedAt);
       if (!sameStringList(published.images, task.images) || !sameDocumentList(published.documents, task.documents)) {
         this.deps.onAttachmentsUploaded(task, published, attachments);
       }

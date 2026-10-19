@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseCalendarCanonicalPayload } from "taskify-core";
 import type { Board, CalendarEvent } from "../domains/tasks/taskTypes";
 import { calendarEventPayload } from "./calendarWire";
-import { mergeIncomingCalendarEvent, parseCalendarEvent, type CanonicalCalendarPayload } from "./calendarEventMerge";
+import { mergeIncomingCalendarEvent, parseCalendarEvent, type CanonicalCalendarPayload, upsertIncomingCalendarEvent } from "./calendarEventMerge";
 
 const lists = { id: "b1", name: "Team", kind: "lists", columns: [{ id: "c1", name: "Todo" }] } as Board;
 const OWNER = "a".repeat(64);
@@ -68,5 +68,36 @@ describe("calendar event reading", () => {
       hiddenUntilISO: "h",
       order: 9,
     });
+  });
+});
+
+describe("upsertIncomingCalendarEvent", () => {
+  const timed = (fields: Record<string, unknown> = {}) =>
+    ({
+      id: "e1",
+      boardId: "b1",
+      kind: "time",
+      title: "Standup",
+      startISO: "2026-10-20T14:00:00.000Z",
+      endISO: "2026-10-20T14:15:00.000Z",
+      ...fields,
+    }) as unknown as CalendarEvent;
+  const context = { weekStart: 0 as const, boardKind: "lists" as const };
+
+  it("adds an event new to this device and replaces a known one", () => {
+    const added = upsertIncomingCalendarEvent([], timed(), {}, context);
+    expect(added.map((event) => event.id)).toEqual(["e1"]);
+    const replaced = upsertIncomingCalendarEvent(added, timed({ title: "Renamed" }), {}, context);
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0].title).toBe("Renamed");
+  });
+
+  it("an occurrence after the series was ended here is removed, not re-added", () => {
+    const occurrence = timed({ id: "e2", seriesId: "s1", recurrence: { type: "daily" }, startISO: "2026-10-25T14:00:00.000Z" });
+    const cutoffs = { b1: { s1: "2026-10-21T00:00:00.000Z" } };
+    const events = [occurrence];
+    expect(upsertIncomingCalendarEvent(events, occurrence, cutoffs, context)).toEqual([]);
+    const none: CalendarEvent[] = [];
+    expect(upsertIncomingCalendarEvent(none, occurrence, cutoffs, context)).toBe(none);
   });
 });
