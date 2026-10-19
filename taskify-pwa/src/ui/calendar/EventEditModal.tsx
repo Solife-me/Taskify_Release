@@ -3,7 +3,6 @@ import { nip19 } from "nostr-tools";
 import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList, todayDateKey } from "taskify-core";
 
 // Sub-sheet components
-import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
 import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "../recurrence/RecurrencePicker";
 
@@ -23,14 +22,9 @@ import type { CalendarRsvpStatus, CalendarRsvpFb } from "../../lib/privateCalend
 // Reminder utilities (from domains)
 import {
   DEFAULT_DATE_REMINDER_TIME,
-  buildReminderOptions,
-  reminderPresetToMinutes,
-  reminderPresetIdForMode,
-  formatReminderLabel,
   normalizeReminderTime,
   type ReminderPreset,
   type ReminderPresetMode,
-  type ReminderOption,
 } from "../../domains/dateTime/reminderUtils";
 
 // Date utilities (from domains)
@@ -94,6 +88,8 @@ import { Modal } from "../Modal";
 import { ActionSheet } from "../../components/ActionSheet";
 import { DatePickerCalendar } from "../../domains/dateTime/calendarPickerHook";
 import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
+import { ReminderChips } from "../editor/fields/ReminderChips";
+import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import { readDocumentsFromFiles } from "../../lib/documents";
 
 // Shared primitive constants (appTypes)
@@ -296,7 +292,6 @@ function EventEditModal({
   });
   const [reminderTime, setReminderTime] = useState(initialReminderTime);
   const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
-  const [customReminderSheetOpen, setCustomReminderSheetOpen] = useState(false);
 
   const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
   const initialStartTzid = event.kind === "time" ? (normalizeTimeZone(event.startTzid) ?? systemTimeZone) : systemTimeZone;
@@ -422,27 +417,10 @@ function EventEditModal({
   }, [participantValidation.normalized.length]);
 
   const reminderPresetMode: ReminderPresetMode = hasEventTime ? "timed" : "date";
-  const reminderOptions = useMemo(
-    () => buildReminderOptions(reminderSelection, reminderPresetMode),
+  const reminderSummary = useMemo(
+    () => reminderSelectionSummary(reminderSelection, reminderPresetMode),
     [reminderPresetMode, reminderSelection],
   );
-  const reminderPresetMap = useMemo(() => {
-    const map = new Map<ReminderPreset, ReminderOption>();
-    for (const opt of reminderOptions) map.set(opt.id, opt);
-    return map;
-  }, [reminderOptions]);
-  const reminderSummary = useMemo(() => {
-    if (!reminderSelection.length) return "";
-    return reminderSelection
-      .map((id) => {
-        const preset = reminderPresetMap.get(id);
-        if (preset) return preset.badge;
-        const minutes = reminderPresetToMinutes(id);
-        if (!Number.isFinite(minutes)) return String(id);
-        return formatReminderLabel(minutes).badge;
-      })
-      .join(", ");
-  }, [reminderPresetMap, reminderSelection]);
   const reminderRowSummary = useMemo(() => {
     if (!reminderSelection.length) return "None";
     return reminderSummary;
@@ -457,48 +435,6 @@ function EventEditModal({
     const iso = isoFromDateTime(startDate, reminderClock, systemTimeZone);
     return Number.isNaN(Date.parse(iso)) ? null : iso;
   }, [hasEventTime, reminderTime, safeStartTzid, startDate, startTime, systemTimeZone]);
-
-  function toggleReminder(id: ReminderPreset) {
-    if (isReadOnly) return;
-    setReminderSelection((prev) => {
-      const exists = prev.includes(id);
-      const targetMinutes = reminderPresetToMinutes(id);
-      const next = exists
-        ? prev.filter((item) => item !== id)
-        : [...prev.filter((item) => reminderPresetToMinutes(item) !== targetMinutes), id];
-      return next.sort((a, b) =>
-        reminderPresetMode === "date"
-          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-      );
-    });
-  }
-
-  const handleAddCustomReminder = useCallback(() => {
-    if (isReadOnly) return;
-    setCustomReminderSheetOpen(true);
-  }, [isReadOnly]);
-
-  const handleApplyCustomReminder = useCallback((minutesBefore: number) => {
-    const id = reminderPresetIdForMode(minutesBefore, reminderPresetMode);
-    setReminderSelection((prev) => {
-      const targetMinutes = reminderPresetToMinutes(id);
-      const nextBase = prev.filter((item) => reminderPresetToMinutes(item) !== targetMinutes || item === id);
-      if (nextBase.includes(id)) {
-        return nextBase.sort((a, b) =>
-          reminderPresetMode === "date"
-            ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-            : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-        );
-      }
-      const next = [...nextBase, id];
-      return next.sort((a, b) =>
-        reminderPresetMode === "date"
-          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-      );
-    });
-  }, [reminderPresetMode]);
 
   const urlValue = useMemo(() => {
     const lines = (referencesText || "")
@@ -562,12 +498,6 @@ function EventEditModal({
     if (!allDay) return;
     setWhenPicker((prev) => (prev === "startTime" || prev === "endTime" ? null : prev));
   }, [allDay]);
-
-  useEffect(() => {
-    if (!reminderPickerExpanded) {
-      setCustomReminderSheetOpen(false);
-    }
-  }, [reminderPickerExpanded]);
 
 
   useEffect(() => {
@@ -1312,53 +1242,24 @@ function EventEditModal({
 		          </button>
 		          {reminderPickerExpanded && (
 		            <div className="edit-card__detail space-y-2">
-		              <div className="flex flex-wrap gap-1.5">
-		                {reminderOptions.map((opt) => {
-		                  const active = reminderSelection.includes(opt.id);
-		                  const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-		                  return (
-			                    <button
-			                      key={opt.id}
-			                      type="button"
-			                      className={cls}
-			                      onClick={() => toggleReminder(opt.id)}
-			                      disabled={isReadOnly}
-			                      title={opt.label}
-			                    >
-			                      {opt.badge}
-			                    </button>
-			                  );
-		                })}
-			                <button
-			                  type="button"
-			                  className="ghost-button button-sm pressable"
-			                  onClick={handleAddCustomReminder}
-			                  disabled={isReadOnly}
-			                  title="Add a custom reminder"
-			                >
-			                  Custom…
-			                </button>
-			              </div>
-                    {allDay && (
-                      <div className="space-y-2">
-                        <div className="text-xs text-secondary">Reminder time (current timezone)</div>
-                        <button
-                          type="button"
-                          className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
-                            whenPicker === "reminderTime" ? "text-primary" : "text-secondary"
-                          }`}
-                          onClick={() => toggleWhenPicker("reminderTime")}
-                          aria-pressed={whenPicker === "reminderTime"}
-                          disabled={isReadOnly}
-                        >
-                          {reminderTimeLabel}
-                        </button>
-                        {whenPicker === "reminderTime" && (
-                          <WheelTimePicker value={reminderTime} fallback="09:00" onChange={setReminderTime} ariaLabel="Select reminder time" />
-                        )}
-                      </div>
-                    )}
-			            </div>
+		              <ReminderChips
+		                selection={reminderSelection}
+		                mode={reminderPresetMode}
+		                onChange={setReminderSelection}
+		                disabled={isReadOnly}
+		                anchorISO={reminderAnchorISO}
+		                anchorTimeZone={hasEventTime ? safeStartTzid : systemTimeZone}
+		                anchorLabel={hasEventTime ? "event start" : "reminder time"}
+		                timeOfDay={allDay ? {
+		                  label: reminderTimeLabel,
+		                  open: whenPicker === "reminderTime",
+		                  onToggle: () => toggleWhenPicker("reminderTime"),
+		                  value: reminderTime,
+		                  fallback: "09:00",
+		                  onChange: setReminderTime,
+		                } : undefined}
+		              />
+		            </div>
 			          )}
 			        </section>
 
@@ -1809,14 +1710,6 @@ function EventEditModal({
         </div>
       </ActionSheet>
 
-      <CustomReminderSheet
-        open={customReminderSheetOpen}
-        onClose={() => setCustomReminderSheetOpen(false)}
-        anchorISO={reminderAnchorISO}
-        anchorTimeZone={hasEventTime ? safeStartTzid : systemTimeZone}
-        anchorLabel={hasEventTime ? "event start" : "reminder time"}
-        onApply={handleApplyCustomReminder}
-      />
 
       <TimeZoneSheet
         open={timeZoneSheetOpen}

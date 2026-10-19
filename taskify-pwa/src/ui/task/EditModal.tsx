@@ -6,7 +6,6 @@ import { nip19 } from "nostr-tools";
 import { normalizeTaskAssignmentStatus, todayDateKey } from "taskify-core";
 
 // Sub-sheet components
-import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
 import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "../recurrence/RecurrencePicker";
 
@@ -53,14 +52,9 @@ import {
 
 // Reminder utilities
 import {
-  buildReminderOptions,
-  reminderPresetToMinutes,
-  reminderPresetIdForMode,
-  formatReminderLabel,
   normalizeReminderTime,
   DEFAULT_DATE_REMINDER_TIME,
   type ReminderPresetMode,
-  type ReminderOption,
 } from "../../domains/dateTime/reminderUtils";
 
 // Calendar picker
@@ -109,6 +103,8 @@ import {
 import { shortenPubkey, toNpubKey } from "./pubkeyLabels";
 import { TaskBountyToken } from "./TaskBountyToken";
 import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
+import { ReminderChips } from "../editor/fields/ReminderChips";
+import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import type { TaskBountyExtension } from "./taskBountyExtension";
 
 // ---- Local types ----
@@ -262,7 +258,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [dateDetailsOpen, setDateDetailsOpen] = useState(false);
   const [calendarBaseDate, setCalendarBaseDate] = useState(initialDate);
   const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
-  const [customReminderSheetOpen, setCustomReminderSheetOpen] = useState(false);
   const [subtasksExpanded, setSubtasksExpanded] = useState(false);
   const [locationExpanded, setLocationExpanded] = useState(false);
   const [assigneesExpanded, setAssigneesExpanded] = useState(false);
@@ -534,10 +529,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   );
 
   const reminderPresetMode: ReminderPresetMode = hasDueTime ? "timed" : "date";
-  const reminderOptions = useMemo(
-    () => buildReminderOptions(reminderSelection, reminderPresetMode),
-    [reminderPresetMode, reminderSelection],
-  );
   const priorityOptions = useMemo(
     () => [
       { value: 0, label: "None" },
@@ -552,24 +543,10 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     [priority, priorityOptions],
   );
 
-  const reminderPresetMap = useMemo(() => {
-    const map = new Map<ReminderPreset, ReminderOption>();
-    for (const opt of reminderOptions) map.set(opt.id, opt);
-    return map;
-  }, [reminderOptions]);
-
-  const reminderSummary = useMemo(() => {
-    if (!reminderSelection.length) return "";
-    return reminderSelection
-      .map((id) => {
-        const preset = reminderPresetMap.get(id);
-        if (preset) return preset.badge;
-        const minutes = reminderPresetToMinutes(id);
-        if (!Number.isFinite(minutes)) return String(id);
-        return formatReminderLabel(minutes).badge;
-      })
-      .join(', ');
-  }, [reminderPresetMap, reminderSelection]);
+  const reminderSummary = useMemo(
+    () => reminderSelectionSummary(reminderSelection, reminderPresetMode),
+    [reminderPresetMode, reminderSelection],
+  );
   const dateSummary = useMemo(() => {
     if (!scheduledDate) return "Not set";
     const parsed = new Date(`${scheduledDate}T00:00:00`);
@@ -657,7 +634,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   useEffect(() => {
     if (!reminderPickerExpanded) {
       setReminderTimeDetailsOpen(false);
-      setCustomReminderSheetOpen(false);
     }
   }, [reminderPickerExpanded]);
   useEffect(() => {
@@ -881,48 +857,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     }
     reorderSubtasks(sourceHint, id, position);
   }, [reorderSubtasks]);
-
-  function toggleReminder(id: ReminderPreset) {
-    if (!dateEnabled) return;
-    setReminderSelection((prev) => {
-      const exists = prev.includes(id);
-      const targetMinutes = reminderPresetToMinutes(id);
-      const next = exists
-        ? prev.filter((item) => item !== id)
-        : [...prev.filter((item) => reminderPresetToMinutes(item) !== targetMinutes), id];
-      return [...next].sort((a, b) =>
-        reminderPresetMode === "date"
-          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-      );
-    });
-  }
-
-  const handleAddCustomReminder = useCallback(() => {
-    if (!dateEnabled) return;
-    setCustomReminderSheetOpen(true);
-  }, [dateEnabled]);
-
-  const handleApplyCustomReminder = useCallback((minutesBefore: number) => {
-    const id = reminderPresetIdForMode(minutesBefore, reminderPresetMode);
-    setReminderSelection((prev) => {
-      const targetMinutes = reminderPresetToMinutes(id);
-      const nextBase = prev.filter((item) => reminderPresetToMinutes(item) !== targetMinutes || item === id);
-      if (nextBase.includes(id)) {
-        return nextBase.sort((a, b) =>
-          reminderPresetMode === "date"
-            ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-            : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-        );
-      }
-      const next = [...nextBase, id];
-      return next.sort((a, b) =>
-        reminderPresetMode === "date"
-          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-      );
-    });
-  }, [reminderPresetMode]);
 
   const handleRepeatSelect = useCallback((next: Recurrence) => {
     setRule((prev) => {
@@ -1674,57 +1608,23 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
               </button>
               {reminderPickerExpanded && (
                 <div className="edit-card__detail space-y-2">
-                  <div className="flex flex-wrap gap-1.5">
-                    {reminderOptions.map((opt) => {
-                      const active = reminderSelection.includes(opt.id);
-                      const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          className={cls}
-                          onClick={() => toggleReminder(opt.id)}
-                          disabled={!dateEnabled}
-                          title={opt.label}
-                        >
-                          {opt.badge}
-                        </button>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={handleAddCustomReminder}
-                      disabled={!dateEnabled}
-                      title="Add a custom reminder"
-                    >
-                      Custom…
-                    </button>
-                  </div>
-                  {!hasDueTime && (
-                    <div className="space-y-2">
-                      <div className="text-xs text-secondary">Reminder time (current timezone)</div>
-                      <button
-                        type="button"
-                        className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
-                          reminderTimeDetailsOpen ? "text-primary" : "text-secondary"
-                        }`}
-                        onClick={() => setReminderTimeDetailsOpen((prev) => !prev)}
-                        aria-pressed={reminderTimeDetailsOpen}
-                        disabled={!dateEnabled}
-                      >
-                        {reminderTimeSummary}
-                      </button>
-                      {reminderTimeDetailsOpen && (
-                        <WheelTimePicker
-                          value={reminderTime}
-                          fallback={DEFAULT_DATE_REMINDER_TIME}
-                          onChange={setReminderTime}
-                          ariaLabel="Select reminder time"
-                        />
-                      )}
-                    </div>
-                  )}
+                  <ReminderChips
+                    selection={reminderSelection}
+                    mode={reminderPresetMode}
+                    onChange={setReminderSelection}
+                    disabled={!dateEnabled}
+                    anchorISO={reminderAnchorISO}
+                    anchorTimeZone={hasDueTime ? safeScheduledTimeZone : systemTimeZone}
+                    anchorLabel={hasDueTime ? "due time" : "reminder time"}
+                    timeOfDay={hasDueTime ? undefined : {
+                      label: reminderTimeSummary,
+                      open: reminderTimeDetailsOpen,
+                      onToggle: () => setReminderTimeDetailsOpen((prev) => !prev),
+                      value: reminderTime,
+                      fallback: DEFAULT_DATE_REMINDER_TIME,
+                      onChange: setReminderTime,
+                    }}
+                  />
                 </div>
               )}
             </>
@@ -2121,14 +2021,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       </div>
     </ActionSheet>
 
-    <CustomReminderSheet
-      open={customReminderSheetOpen}
-      onClose={() => setCustomReminderSheetOpen(false)}
-      anchorISO={reminderAnchorISO}
-      anchorTimeZone={hasDueTime ? safeScheduledTimeZone : systemTimeZone}
-      anchorLabel={hasDueTime ? "due time" : "reminder time"}
-      onApply={handleApplyCustomReminder}
-    />
 
     <RepeatPickerSheet
       open={repeatSheetOpen}
