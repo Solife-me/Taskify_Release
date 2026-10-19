@@ -3,8 +3,8 @@
  * TaskifyCoreTests (Swift, `NoteMarkdownVectorTests`); regenerate them from this module only when
  * a change is intended on both sides.
  */
-import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
+import vectorFile from "../../../../taskify-core/fixtures/note-markdown-vectors.json";
 import {
   applyNoteFormat,
   continueNoteList,
@@ -22,9 +22,7 @@ type Vectors = {
   previews: Array<{ name: string; note: string; expected: string }>;
 };
 
-const vectors = JSON.parse(
-  readFileSync(new URL("../../../../taskify-core/fixtures/note-markdown-vectors.json", import.meta.url), "utf8"),
-) as Vectors;
+const vectors = vectorFile as unknown as Vectors;
 
 describe("note Markdown matches the shared vectors", () => {
   test.each(vectors.blocks)("blocks: $name", ({ note, expected }) => {
