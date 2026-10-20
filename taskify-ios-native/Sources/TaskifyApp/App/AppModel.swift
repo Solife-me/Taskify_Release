@@ -213,7 +213,7 @@ final class AppModel {
     }
 
     init(
-        store: JSONTaskStore = JSONTaskStore(),
+        store: JSONTaskStore = JSONTaskStore(migratesLegacyStore: true),
         identityStore: KeychainIdentityStore = KeychainIdentityStore(),
         syncEngine: TaskSyncEngine = TaskSyncEngine(),
         notificationCoordinator: TaskNotificationCoordinator = TaskNotificationCoordinator()
@@ -2119,17 +2119,15 @@ final class AppModel {
     /// own last write came from elsewhere. Only tasks are merged; nothing else writes the rest.
     private func absorbExternalStoreChanges() async {
         guard !isLoading,
-              let modified = try? FileManager.default.attributesOfItem(
-                  atPath: JSONTaskStore.defaultURL.path
-              )[.modificationDate] as? Date,
+              let modified = await store.tasksModificationDate(),
               modified > lastStoreWriteAt.addingTimeInterval(0.5),
-              let onDisk = try? await store.load() else { return }
+              let onDisk = try? await store.readTasksWrittenElsewhere() else { return }
         let merge = TaskifySnapshot.mergingExternalTaskChanges(
             base: persistedTasks,
             ours: snapshot.tasks,
-            theirs: onDisk.tasks
+            theirs: onDisk
         )
-        persistedTasks = onDisk.tasks
+        persistedTasks = onDisk
         lastStoreWriteAt = Date()
         guard !merge.changedTaskIDs.isEmpty else { return }
         snapshot.tasks = merge.tasks
@@ -4564,6 +4562,7 @@ final class AppModel {
             let loadResult = try await store.loadWithRepairStatus()
             snapshot = loadResult.snapshot
             persistedTasks = loadResult.snapshot.tasks
+            Task { [store] in try? await store.removeUnusedAttachments() }
             let retentionPruneChanged: Bool
             if let cutoff = chatMessageRetention.cutoffTimestamp() {
                 retentionPruneChanged = snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed
@@ -6252,10 +6251,11 @@ final class AppModel {
             guard !Task.isCancelled else { return }
             let snapshotToSave = self.snapshot
             do {
-                try await store.save(snapshotToSave)
+                let written = try await store.save(snapshotToSave)
                 await MainActor.run {
                     self.noteStoreWritten(snapshotToSave)
-                    self.scheduleWidgetReload()
+                    // Widgets show tasks only; a chat or inbox change need not wake them.
+                    if written.contains(.tasks) { self.scheduleWidgetReload() }
                 }
             } catch {
                 guard !Task.isCancelled else { return }

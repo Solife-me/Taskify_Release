@@ -26,7 +26,7 @@ struct CompleteTaskIntent: AppIntent {
 
     func perform() async throws -> some IntentResult {
         let store = JSONTaskStore()
-        var snapshot = try await store.load()
+        var snapshot = try await store.load(areas: [.tasks])
         guard snapshot.toggleCompletion(taskID: taskID) else { return .result() }
         try await store.save(snapshot)
         WidgetCenter.shared.reloadAllTimelines()

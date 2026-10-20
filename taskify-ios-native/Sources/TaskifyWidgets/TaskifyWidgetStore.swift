@@ -10,7 +10,7 @@ import WidgetKit
 enum TaskifyWidgetStore {
     static func loadSnapshot() async -> TaskifySnapshot? {
         guard TaskifySharedContainer.isAvailable() else { return nil }
-        return try? await JSONTaskStore().load()
+        return try? await JSONTaskStore().load(areas: [.tasks])
     }
 
     /// Returns empty data rather than failing when the App Group isn't reachable or the store

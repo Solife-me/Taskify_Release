@@ -211,7 +211,7 @@ enum TaskifyIntentTaskWriter {
         interpretNaturalLanguageTitle: Bool = false
     ) async throws -> TaskifyIntentCreatedTask {
         let store = JSONTaskStore()
-        var snapshot = try await store.load()
+        var snapshot = try await store.load(areas: [.tasks])
 
         let spokenRequest = interpretNaturalLanguageTitle
             ? TaskifySpokenTaskRequestParser.parse(

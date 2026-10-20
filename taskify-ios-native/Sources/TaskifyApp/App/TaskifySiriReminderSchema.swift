@@ -55,7 +55,7 @@ struct TaskifySiriBoardEntity {
 
     struct BoardQuery: EntityStringQuery {
         func entities(for identifiers: [String]) async throws -> [TaskifySiriBoardEntity] {
-            let snapshot = try await JSONTaskStore().load()
+            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
             let boards = TaskifyAddTaskDestination.namedBoards(in: snapshot)
             return identifiers.compactMap { identifier in
                 boards.first(where: { $0.id == identifier }).map(TaskifySiriBoardEntity.init)
@@ -76,7 +76,7 @@ struct TaskifySiriBoardEntity {
         }
 
         private func addableBoards() async throws -> [TaskifySiriBoardEntity] {
-            let snapshot = try await JSONTaskStore().load()
+            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
             return TaskifyAddTaskDestination.namedBoards(in: snapshot)
                 .map(TaskifySiriBoardEntity.init)
         }
@@ -104,7 +104,7 @@ struct TaskifySiriSectionEntity {
 
     struct SectionQuery: EntityStringQuery {
         func entities(for identifiers: [String]) async throws -> [TaskifySiriSectionEntity] {
-            let snapshot = try await JSONTaskStore().load()
+            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
             return identifiers.compactMap { identifier in
                 guard let separator = identifier.range(of: Self.separator) else { return nil }
                 let boardID = String(identifier[..<separator.lowerBound])
@@ -127,7 +127,7 @@ struct TaskifySiriSectionEntity {
         }
 
         func suggestedEntities() async throws -> [TaskifySiriSectionEntity] {
-            let snapshot = try await JSONTaskStore().load()
+            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
             return TaskifyAddTaskDestination.namedBoards(in: snapshot).flatMap { board in
                 let list = TaskifySiriBoardEntity(board: board)
                 return board.columns.map { column in
@@ -261,7 +261,7 @@ struct TaskifySiriTaskEntity {
 
     struct TaskQuery: EntityStringQuery {
         func entities(for identifiers: [String]) async throws -> [TaskifySiriTaskEntity] {
-            let snapshot = try await JSONTaskStore().load()
+            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
             return identifiers.compactMap { identifier in
                 guard let task = snapshot.tasks.first(where: {
                     $0.id == identifier && $0.deleted != true
@@ -289,7 +289,7 @@ struct TaskifySiriTaskEntity {
         }
 
         func suggestedEntities() async throws -> [TaskifySiriTaskEntity] {
-            let snapshot = try await JSONTaskStore().load()
+            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
             return snapshot.tasks
                 .filter { !$0.isDeleted && !$0.completed }
                 .sorted { $0.createdAt > $1.createdAt }
@@ -364,7 +364,7 @@ struct TaskifyUpdateReminderIntent {
 
     func perform() async throws -> some ReturnsValue<TaskifySiriTaskEntity> & ProvidesDialog {
         let store = JSONTaskStore()
-        var snapshot = try await store.load()
+        var snapshot = try await store.load(areas: [.tasks])
         guard var task = snapshot.tasks.first(where: {
             $0.id == target.id && !$0.isDeleted
         }) else {
