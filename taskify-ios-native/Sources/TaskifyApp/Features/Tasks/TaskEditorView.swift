@@ -556,6 +556,8 @@ struct TaskEditorView: View {
                 }
             }
         }
+        // Scrolling the form puts the keyboard away, so the rows under it can be reached.
+        .scrollDismissesKeyboard(.immediately)
     }
 
     /// Copies the task as edited, unsaved changes included, as the PWA's Copy Task does.

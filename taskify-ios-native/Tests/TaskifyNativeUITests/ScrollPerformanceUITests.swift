@@ -437,9 +437,11 @@ final class ScrollPerformanceUITests: XCTestCase {
 
         // The full editor intentionally focuses the title. Dismiss its keyboard so the compact
         // scheduling rows can be reached without the keyboard consuming the lower half of Form.
-        if app.keyboards.element.exists {
-            app.navigationBars["New Task"].tap()
+        // It focuses a moment after opening, so wait for the keyboard before dismissing it.
+        if app.keyboards.element.waitForExistence(timeout: 2) {
+            app.swipeUp() // scrolling the form dismisses the keyboard
         }
+        XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
 
         let repeatMenu = app.buttons["task-editor-repeat-menu"]
         for _ in 0..<4 where !repeatMenu.exists {
