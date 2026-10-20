@@ -51,10 +51,10 @@
             "open"
           ]
         ],
-        "content": "yls2FfWJQC5z9k0ouKqJWInPFIDCpb4mlwnDICUJvKsmS0dd2Bn3oCJ/3zYis6PN2TQRpAGBcfogFCldJ9Hhx9YExdpFHeeHL5W5ydBjBA86Z80e/VUO4Pyme1Stak47hoqxr1ay52VH22OByBLRHSb9gQORBkvCU4vjm7UfxPDgrJOpbe3JzO0j2rHS2Os4mp9W5UAdRn90rvhlQrR18O8SEZaWg0fWL9R/mgJhpCITmNvmAb0aRZBc7nDkd0mqXlOKmzxdIgVpReHqiyo1Y+0S/2ZyOPHdHGRDlMij8pr27ttRPBzpYy+A7vGnNwjfagUPdtxpYnSOWDe/dqQhsFAXDY+JbNB179TIi1k95Wtnd02bTvFovAS7mYZ947sabn4DEqaVDkMIYZAC36nQZU7OCg==",
+        "content": "Vtmi9+Pg9rdBCxINACWJU+RwRsBg+o1vWLw2njERWdUAmsqmlBcRvXKhbCReAGGKx/gF+nx7KIMm7aMwWKKZW6npCUTxyztWsNQi2nStCVSpdj/3MPJ2CVY+vF0BopBAHUNePAqxyNoqaaBm8nL6SZ+px+yyHGYv4o2hzAekXroRS+OqkFfnA/il7tSa/P8/g30wKYdV4yr58yjHdHgPc1r5PiqVj4WkI37PRzS2MHYO0w9la3qK3L69yGGGl1YUY1k7GyL1nrjPXRtlZFqt4eMEeyvUaIluE1g74Fr4S4ei6vP1n04hR8xYXgDf3KCXruDNkvA8lkVwhDZBZdgS6ZCEjpTco8cUX7HvNte540gRZzIpeFNgri+hptuvsyvAUN/ssW/VJYgtFqmROLiUTspy1w==",
         "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "id": "40a45b79a6d0e0b5ca5ecbaf3ee4b7dde6bf79559215dbcf2e35a3ec6989fd9b",
-        "sig": "3a104cf7e48229eb1242e884fc86bb3356eda24ec3792d44f14365d17c9c9359bf2d0b76316d4dc76a32cb337819273467fb12763489302389fccbc8dbf82c2a"
+        "id": "bb31574dd0f0a449fe28247e5ca0b9fe29bece19b51341dc5e76af7d70a94a78",
+        "sig": "dba082b1b93cac4f901c3b93190454bb8b02f7889686fdc2e9d109b788dac951b811f638d9aa10fb0e791974cea60d9af45e14f035a5e14c4e1dfc8b7de55770"
       },
       "expected": {
         "id": "v-open",
@@ -68,6 +68,7 @@
         "seriesId": null,
         "scriptureMemoryId": null,
         "scriptureMemoryStage": null,
+        "documents": null,
         "republishKeeps": {}
       }
     },
@@ -95,10 +96,10 @@
             "done"
           ]
         ],
-        "content": "dZjrasGlBRmQVYtSBIGNIfnRcOwfNLR03csRBS4EFmzUAsispTxLs/Fvz8tnzIh+eFKo1SlcAAuF6eQpuiCvwfPA2gm8FAXFyGyrme9J2cH5KiKT7WDvBxaAfoG2GN2sXSuKDV2LN5jgFdF4B48IZ2EDVVkI4Or6q6RCWb3AUHUzqDBYlMejIQfYUVYnx/B34MGi2hOMJ/owgCeIEdj6/3alqqgP2mXa1LVTTHHj5srH9mabHyQwaf/EROgyTp5Mxhba4y+qBy0BWp5xvZd7zuwJJgI80nQwosbDnXdnia7Wm1N6FYh/R63lqtfTy/JWtRg38rZWROZe8umcrwyI6MOlkaFVri9GFJPFl91aWl+25k1Is9wegBbThAldlZl62ScpeAbFixvAz/9pImGpZAKkE5hP5g96tJQTl4f2Hi4ym+0muyAxhg==",
+        "content": "3yWZTpyXbCk7IIGxwKd1rxHbtJrzAiktWXinq7cZ9hh4bLEcrqxIINlnf33boBoEo04h1CZeadg6v4DZDWZQsXWw21Nk4rqzluw/MOxbzQ/HCjQNdbkI0kCmRqxXvPj6Kbom2ZW+DjlHxRcB3hlAi3b3qR1wX1HHRGpFqep5ZET/QsWXl8ae0RF+iotxMO0eomKHpUw/kcffKztUKUMDeK85YmOPAKy0ufn625blLarlAHvm0efrHWG80rW6CHFXhDmo/wE2jomQQX6iFjMaRy4/5ivNqQeT0ha4wyjm3YjbxIlnAJ9ZgzOB+TsE4lM7B8NaVAgSiXZkVwYO8K6Gls3oGLY+nXDNgh8wuJ+L3+8VD/aWPO2K1zRz6TsQo3fe4GF4jGJq1a3JUTUNFpb0I408rtfb0NBIiYI1QPzLt6o7XezQ3nfjfw==",
         "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "id": "627b3fa6979667738e8a8d4699abc57d4dd6d6973277bb72a5448e7b2f321d70",
-        "sig": "325160286b09a320545a05379b8d45cf48a7ff2d729fc03ece75eb7cf6454ad50b8e5f26277a33a413c4de6fedd805b17117b1ee11b72714a718a4793b32147c"
+        "id": "7a26483d40b43e890b54b74223b941da1398eb7e31a115f916188f458fbad453",
+        "sig": "e95b854b6e95209ad5002b1780807f967e41ebd2b5bc1f61341fccd99a5f278d311a1fd674d4d354b313efb1baa51776a136a6a80badbb50b4e295394b4b8d4b"
       },
       "expected": {
         "id": "v-done",
@@ -112,6 +113,7 @@
         "seriesId": null,
         "scriptureMemoryId": null,
         "scriptureMemoryStage": null,
+        "documents": null,
         "republishKeeps": {}
       }
     },
@@ -139,10 +141,10 @@
             "open"
           ]
         ],
-        "content": "CtXLTljNDgmgKJvKBee260OuH0iAvuTl87CKbGekCJ9vVnZwmMnhiRnt9du+q+13wOhwEz6PbS1wbKuFKAQMLlZmXg7bwZF8wewQB+W6ibOJpCnnPohCXSqXYus6j2HygQmlt4Lq8cRz6/2og5q3XcwZmgiqVw5O7EWmua/uKVxKV7gxDTtCLQ767aF/3YOExrE5wfR+cHfH+LixxILhn9u2PYTJ4/aQCh1S7d8kGv7oNx/osm2vhcIapQe9fxKk1f1zhD2kcu9sV7Fb0iXzdULDzEczapXEK7xvoGEnfV9k0oU08sj5OgvX7yz1xva0mHePgYk2YPtyfuz9IYnXXLitPXcz2MEhyc8QgzgJNZu5BORzY+vzPt60mWGXL2gIlrWoca5ZdTd3c/+MyF0gSOFIinoA4ZwDxdvIdB6vLUwHuDGqtqgBjod2yzqFCxrjU6vJ3ZN4",
+        "content": "f6Y8oh+CY30PVrO2q5yWCqINEVVXWZ1LVm4bvmsl+idGKsYkpCRQ6UAIZyg+1PRC5RyOOPl1QNlwFhhfTv29ht8ueSIqebmIrSkyoLPKtO0hvkI9cg+3Jl85NsX1cn91ZTZhQ1YsBu3NaGMoJZWHtA0MPwVeZzPV2sLKy6ShySBpFfGW+VCfDe+qlgwnKcKVgqks+HARB+kMtWqRL1qiSZuV1uZ39MPlB8oBrXO+Z6373Vi8PW9VvWAUfofOu//evgsOOU46WhnLhaBl4iiRb0mU+3R9xrFqCIfSO41evepHjkOjHr7VSCcJJi/fXIeiG2YmtA6S5Lsob16axS/CGRgLCmZR6fKDKhfc5UpWBymJHVyYdfI/Qoeos3ty7YZJv5iakEYwFvc1PA68NvtuXG2ecvx4L47G8jPxvaYrC49d/RwyQ2KpMIBBRuIiLw7FnqwKpWjG",
         "pubkey": "a0013ac2fec9c934686bea339d6acf90ed6027397f7023b13fab969265fabe4d",
-        "id": "4ebfe79f9b7d824ee574bd19b2bb5a9433cf1ccc0ea07a92f8716bc3133f8e73",
-        "sig": "6a844fcdb523c74e7b3f078c0b58da6e0b16a20fe7da1b9103682e38fb4337c116b765b3bf81518e3317be541f7ffb1544930884ea27897c38717dc67ce9c20f"
+        "id": "6d03540203d8a624158b0a8c3f6b8ee5160819e8d2e07340218f84cc1a5c29ea",
+        "sig": "096cf4eba88dec8e6fb0fab96a025c55f377ca0f9c082736f2b42ede694f26472224fe3d41d32c450a447c43cc59ecfc4a80002815d82ad32931d2f531d72194"
       },
       "expected": {
         "id": "v-daily",
@@ -158,6 +160,7 @@
         "seriesId": "series-stretch",
         "scriptureMemoryId": null,
         "scriptureMemoryStage": null,
+        "documents": null,
         "republishKeeps": {}
       }
     },
@@ -185,10 +188,10 @@
             "open"
           ]
         ],
-        "content": "J6D6mnDxrQVFEeJMPCq0lYsHowixlZp2hsfHkYG1KwcakuAfNJkbiR8VCE9SLBcEUSKeGAd+J1nE08nj8gTWp8moklozrk4rkABPOc858Xixq81ZkMlm7a3zEDYBnw4WiWSoZ8AkAyMUxQczsn67dEdCjqprpYI+YQqgUJ/cJVKTBKqifQkabAqcSP9dryQYQD0Oat/8MolM7Lbg/JzY+8a8F5Nh6HMITqTvXwP5nNIMMnmQTQNSsKkCLmJYrFmonmpBzjGck/STHbleY3+gSeq9+AVcBykHA5f4ssFeqXer8e/XawUmnHs6+qx9RpFnAGeXDF1/oMTFZsnkbRlbPrHn7etS4inZrCqaF4VutOgg0DWJ/Rtf/DX2VEhy7VZ6ZRTGU0NkirIMqXKKP5GzdvAk5NnRE91EP4bqsx7SRHOUunnMq9Jwnjhpx9kWIkcCn44vKOmJv3OEyByTLQ0MbSzQu8tXXOj8hOQiF7BovY6d/AnqEpJDhtx7hH+PZHXrzI2+pd1Y+YDONs8izxWAtyiIf902c04v",
+        "content": "BbZhFfzUEnptRp0Lr9fECZU6WWG/7DiY0YYLnu6n0hxz7XMpBotlMrDZKiogI+4dxzVC1ITpk/DJ7DvC46Mmm/mSknGZUvsF4OJfzvcIzNChBfVOl5Pqp7VFEiWFnIUvgzZp8Rlhp33c24sCumO3u73wAsedbotZ50sAZyfc2Fu5vWd411imQjnOCj69NMWUQd4t05nTSVifLcD7SCg6VgOBJ1dWgARbRYhdy0PwyEMaGBbU9W4cx8RbQovwNodD3kt4tQkMrq4KAXKLHY/BZYTOpDe39nk8lCFuvgZ/ogPZq2iUa/67yMuzeElCSnXyDbEFt4v/KvV1mFiVT6DRHZOnhYkA2i5lvhNZIGZL12TFjVCJ9RzfJ+gJ8UUGEr9eGUaeCqLWVEWxPh9OuMN8ABMtWzaoQ5arbsESczIwxnW5pFfTAjYNb/ouO32XhNWp/pAB/k0cZUX0FXD9HHAEbyPP+KTkU7pQRxprKZzI+VwUCpYa7wk1EmLxYmukEqUHSTQBCDWp0qR3t0MMCA+vcYhZ7swGk3Ya",
         "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "id": "2f7858499fde59270310cfc6d3b66163028ce1360da7cf9c78d836a2f24f4d61",
-        "sig": "083a6c1a58f69cc89089e90dae988333dd0baf8f8cea9adbc6ac791b8e272334310a57dd60cc0fceb7b4f4df439bf5c6aa2301cdfe774bbc38ab8f19b93d424c"
+        "id": "51e0ad4d9c2eb28e1022309ea2e3a18e6e1e00d832e6a041eda6bca579643f3d",
+        "sig": "c9b17a5d42e1e278a2bee53dee2cf862b91f3529e2f84c3b7b78896a109d888d1bd5752d6906bf4f9db866c7067615fcec75047fbe500da0eca3a2a0c4a4a46e"
       },
       "expected": {
         "id": "recurrence:scripture-memory:2026-10-19",
@@ -204,6 +207,7 @@
         "seriesId": "scripture-memory",
         "scriptureMemoryId": "entry-1",
         "scriptureMemoryStage": 2,
+        "documents": null,
         "republishKeeps": {}
       }
     },
@@ -231,10 +235,10 @@
             "open"
           ]
         ],
-        "content": "qmd11QLUTHpf1M7A9AZAVyFF6n+2wJAHi0Zvb2G6ccWov5QD5TM51uM2qPmcTJtJdtJMdB0wHBIZaHioxA4hczVD92fPVHz4d1qhB/QbWfn3trEHn0sxPCcqNM/7zuiL8caWEe073HI1TZwht+OphHgllWDcDUQoCJ9oHyBcwwFmv5saGpNOUGf8++pG9gdeg00GDJF+0KTJcbQ2qOkA8aXO7Y9lFqw7cLyCoK5BHkVzNCds/6xCr1SowFLX8z67fCtwWr4WwDWa5nmV6Y0IPLKWJ2bYnrRhYU0WFpe/0haxHsIYnz++86ZFYq4+5cXk6hUa1/rK4SPCjqxE5bNeJH1IUAsIqc2rhZRyRn67wq+RNkXgS9KeouiPoWd+UIGSH0KuHeJ9dgOgvxslNjn+pRi3qZyH7r2pIT5UhiFDVlkOrM4qrto2",
+        "content": "Y85jDpKHUzD/+kKAfmM4cBu8hu4JBhqSRO9mpLVXvQetoMFXGo8pk5HZVINzP1ow+pfCCswIIbehj2UMHvW7o5fuydo7OplKjxBwBwBmf7ev6g2rBlEJpMNJcmRniy6pCaPbNXxquS5NFDUDNkbgxoqxvVDX3yo5nvK6+Fm8MBlSfhjPpZVV+AW9uvk7eRefyQyG6gRPa9yYBhG81BY+NjLAYGgo9ICuWncaQOeyJPAweAIu6fH68pNN7baHpUSxfV+q3jQMYnqlcdo2j0Ht30Gl0G5xnGxCpAiQFLchrQpHmQCdD/2L8AYSsYSjtR5JXZJB/ZcM38lQjIvafqV+Pn1c9BZmdUmGp1AnkdO0K07/poQNpAtX9fCqpGNYjN3ReA0y9HaElPxlZXx4vJeuc1Pcq9l9lPT4NKWh8LNmifP6SEWeKzFA",
         "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "id": "cefe754fb3d47c52506be1e8d0d49dd4eb63a01f73e4a0faba058d1471d431b3",
-        "sig": "6fb80db3635e111860564fd92cde16c2ffe4237dce6dd98f8464e794ab0e83653bfd3e10ab8342c7203de8b7bece56a0e149fa5f81ea567ec859295f298cc606"
+        "id": "7c995d76d65e141e87d1ab556cadfd82ca47a44eac042c37c97813622f39840a",
+        "sig": "3523f2365ccb899a2e377c8f1606a82d6e0e8d13841a2d67b92c75bab0799706fff2471a57dace90e26df0e6f6f8ec0ebd3f6bd901c1009b4bf91185f45ebee5"
       },
       "expected": {
         "id": "v-extras",
@@ -248,6 +252,7 @@
         "seriesId": null,
         "scriptureMemoryId": null,
         "scriptureMemoryStage": null,
+        "documents": null,
         "republishKeeps": {
           "reminders": [
             "15m"
@@ -257,11 +262,65 @@
       }
     },
     {
-      "name": "deleted task (tombstone)",
+      "name": "uploaded document travels by reference",
       "board": "lists",
       "event": {
         "kind": 30301,
         "created_at": 1792400005,
+        "tags": [
+          [
+            "d",
+            "v-docs"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ],
+        "content": "kA2COV8zNfkVPsqS/PlJyl3wTITAAobV+EAtMaUaKgfIJXD+sb9iD0n7ZarYu3KVmJzs0A4nKjaprD/hScqmRsk1fCSjNB1SzB8ai7oN6ScfISpQqMGpKXDOjokU7dsMvyo4bxp/oYkqTslcJpJlU4IcUjjC29rYSUGsYkA+X75Ica2vGFJTcINOqRJpwxA81xB21JJ8Dvpk7X+2x09vLggZyYWoG44Qo1hrP8oE3kWXxjr3PUHQ0G97mnSZB6JkZUoiwPH7VqFf4d3Sll6WgKMEpft6ksuFNNOvAWaFug9TNKEHe72f8yGGdZm/ovmK4flIpP0M6AcEr9JW4dyegTYAcywUE9otcPhOn55+StOc8lu9dchFUBP01JX35kzO0UU2EjhL/Vw0Rm+QnuSCOS5TH1kA+uG1fzlMNepJMvS6qn9kFvnd6TvpOBBgwFFwE3jdCiTL61Ips78s2iFXtNZgkXxa1W66+67YHzRwuuodz//tjDwxDFr+c21owaq/+T5UWyts/oDfHKbx56h9d7cWoja6qZoKgtSRFlJpXyKqqKxPJXOiGUHLql0bId7SpOTzJGZvkuKvqtWoiqdfZ61GiU1Jf8kaGDfQDWqwS45gofeIpEIxt3RVRhmiAGr8abjz9tEYAQypcT1UagqX72p0CUWO4SMVLQNLB9yzb2pXL5mOUE8SkM5z0reJ+bE=",
+        "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "id": "ae6093f2e6b2a29b808b2e1bc370c2255cf7ee15f6c2fae62b6376f5c8159649",
+        "sig": "24e90263482775f917239116f023be1e1cda873a37cc06029f8b67808d2153dfa58db2b961614b837257e1fd8765c1c1f0b854882965db1c5c239a3d12beda04"
+      },
+      "expected": {
+        "id": "v-docs",
+        "status": "open",
+        "title": "Sign the lease",
+        "note": "",
+        "dueAt": 1792731600,
+        "columnId": "c1",
+        "priority": null,
+        "recurrence": null,
+        "seriesId": null,
+        "scriptureMemoryId": null,
+        "scriptureMemoryStage": null,
+        "documents": [
+          {
+            "id": "doc-1",
+            "name": "Lease.pdf",
+            "mimeType": "application/pdf",
+            "kind": "pdf",
+            "remoteUrl": "https://files.example/7f3a.bin",
+            "encrypted": true
+          }
+        ],
+        "republishKeeps": {}
+      }
+    },
+    {
+      "name": "deleted task (tombstone)",
+      "board": "lists",
+      "event": {
+        "kind": 30301,
+        "created_at": 1792400006,
         "tags": [
           [
             "d",
@@ -280,10 +339,10 @@
             "deleted"
           ]
         ],
-        "content": "5oppTgJOHZZO0cuINwiZP6li15QA1ZBfrgOkXYrK9cS1/cmbz3Qj4Xd8qp9uuhw4bh5PLl+AeYMr1ROIv/rkJV/5BVnnrcFeS+5qInk0G5Bs1jcrk+PryEe/IQEbWXtFhUiX01IQIWG95hWURXC+G/QCtNjsffSJwD3ZaHG/kg==",
+        "content": "ITCKinQ1Rw2IXqQrQz2fZqwq4mjx0W+P91e0/osgq8CdoOPMU8fi85kev6tncB9U4aB8ft9aXfS7Dq30TXFzteZsmmXT02bsS3ydzg67ZTM7Zfm3eL4wyb3T7Mk8EeCyZr6PpOPNr86rrxyt1aEqfqpexMksK07ReUwXtDWoVw==",
         "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "id": "153ba14f060c1877d6aab92b44a4caa2f1cc23f1fb39fcd44d6ec25e514ef397",
-        "sig": "bf362748cda1dce1294a4598641519ad5d7c141326d0685b037e496edfe8e2e28d25774b29615708497c6e09e3e61f94f18707b6449de86bec90cb7e6c4b28c5"
+        "id": "948b2b5059ee389f3e6d9b629eff49e476005d7a9299f4ddd2e31f77f5123fa7",
+        "sig": "cdb00b34bb5886fc4a03b7bed5f72ddd01413b63ff0d98a6a6171153df384582f6537925564331d2b61f31298c57caaf02067524ce586ce2ed4ad31215cc95f0"
       },
       "expected": {
         "id": "v-deleted",
@@ -297,6 +356,7 @@
         "seriesId": null,
         "scriptureMemoryId": null,
         "scriptureMemoryStage": null,
+        "documents": null,
         "republishKeeps": {}
       }
     }

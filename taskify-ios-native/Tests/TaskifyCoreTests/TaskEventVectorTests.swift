@@ -17,6 +17,25 @@ final class TaskEventVectorTests: XCTestCase {
         var nostr: Nostr
     }
 
+    struct VectorDocument: Codable, Equatable {
+        var id: String
+        var name: String
+        var mimeType: String
+        var kind: String
+        var remoteUrl: String?
+        var encrypted: Bool
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(id, forKey: .id)
+            try c.encode(name, forKey: .name)
+            try c.encode(mimeType, forKey: .mimeType)
+            try c.encode(kind, forKey: .kind)
+            try c.encode(remoteUrl, forKey: .remoteUrl)
+            try c.encode(encrypted, forKey: .encrypted)
+        }
+    }
+
     struct Expected: Codable, Equatable {
         var id: String
         var title: String
@@ -29,6 +48,7 @@ final class TaskEventVectorTests: XCTestCase {
         var seriesId: String?
         var scriptureMemoryId: String?
         var scriptureMemoryStage: Int?
+        var documents: [VectorDocument]?
         var republishKeeps: [String: TaskPayloadValue]
 
         // Every field written, nil as null, so the fixture states each expectation explicitly.
@@ -45,6 +65,7 @@ final class TaskEventVectorTests: XCTestCase {
             try c.encode(seriesId, forKey: .seriesId)
             try c.encode(scriptureMemoryId, forKey: .scriptureMemoryId)
             try c.encode(scriptureMemoryStage, forKey: .scriptureMemoryStage)
+            try c.encode(documents, forKey: .documents)
             try c.encode(republishKeeps, forKey: .republishKeeps)
         }
     }
@@ -117,6 +138,10 @@ final class TaskEventVectorTests: XCTestCase {
             seriesId: task.seriesID,
             scriptureMemoryId: task.scriptureMemoryID,
             scriptureMemoryStage: task.scriptureMemoryStage,
+            documents: (task.documents ?? []).isEmpty ? nil : task.documents?.map {
+                VectorDocument(id: $0.id, name: $0.name, mimeType: $0.mimeType, kind: $0.kind,
+                               remoteUrl: $0.remoteURL, encrypted: $0.encrypted == true)
+            },
             republishKeeps: keeps
         )
     }
@@ -191,6 +216,15 @@ final class TaskEventVectorTests: XCTestCase {
         review.scriptureMemoryStage = 1
         review.columnID = "c1"
 
+        var docs = TaskItem(id: "ios-docs", boardID: "lists", title: "Review the contract")
+        docs.dueDate = date("2026-10-24T05:00:00Z")
+        docs.columnID = "c1"
+        docs.documents = [TaskDocument(
+            id: "doc-ios-1", name: "Contract.pdf", mimeType: "application/pdf", kind: "pdf", size: 91_022,
+            createdAt: "2026-10-18T10:00:00.000Z", remoteURL: "https://files.example/c0ffee.bin",
+            encrypted: true, encryptionBoardID: "taskify-vector-lists-board"
+        )]
+
         var deleted = TaskItem(id: "ios-deleted", boardID: "lists", title: "Cancelled plan")
         deleted.dueDate = date("2026-10-02T05:00:00Z")
         deleted.deleted = true
@@ -205,6 +239,7 @@ final class TaskEventVectorTests: XCTestCase {
                 "reminderTime": .string("09:00"),
             ]),
             ("Scripture Memory review keeps its passage link", "lists", review, [:]),
+            ("uploaded document travels by reference", "lists", docs, [:]),
             ("deleted task (tombstone)", "lists", deleted, [:]),
         ]
         var vectors: [Vector] = []
@@ -217,7 +252,7 @@ final class TaskEventVectorTests: XCTestCase {
                 Vector(name: name, board: boardKey, event: event, expected: Expected(
                     id: "", title: "", note: "", dueAt: nil, status: "", columnId: nil, priority: nil,
                     recurrence: nil, seriesId: nil, scriptureMemoryId: nil, scriptureMemoryStage: nil,
-                    republishKeeps: keeps
+                    documents: nil, republishKeeps: keeps
                 )),
                 boards: Self.boards
             )

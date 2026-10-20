@@ -34,12 +34,12 @@
     {
       "board" : "lists",
       "event" : {
-        "content" : "gaOVHZ+5mWBvby2JcxhADfR+G7BfOklKQSAVBcWJR8A7/E68bLWo4DI7egkmm70Al8eUavlCUYpH9MP8aTI74duAXuvGmovoddwQCchl6X8A+sf2qCtTDTLOa0g+lr8wSS+7aU4Xw70lko29ai4Ky6xOx8FBQoPRGRA0s24/G/PtCNnbGSOCybVzFRg1Ben9sXSuBs+ZHlvIuWqskz5Pzav+v2av+BVTEQRknSKTwQQQ5LBAZhCRNy/GTtrZ6vFc",
+        "content" : "8+BM7jnkoFSvvZL+vtI6Vqo/fvHSteepfALpOgd5gMK7T9WPKQIEreIONRI0wUyMEVd2HA5dKQ6CWp0ZlELmDscWV3DlvIILZNjsCDu3WEzHWg1gEgwHNQowxgsJ8N2k+UDKcLAzHXH+FpM0fzLqpx7coMn9Lt4gWxGvjDI+oHrpN44jQHokaCGMPKFEPsynlWrDNHo+aP5GvdjpyclbOG+hsNS6lYI28aPwM2SOvnT0MBBUWisDMgP/AUpSLVBT",
         "created_at" : 1792500000,
-        "id" : "44242b9461aa253d771f0f68d4607af99a77cd989e3ac83dad6e697f8477e5d5",
+        "id" : "e437856664545db0c33ae6f6f0cd55907605a37b2fcff9938822f2d7adb98190",
         "kind" : 30301,
         "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "sig" : "0b1a0bb65fe31848b09c718b84650f1de4aacb9e276d3edbe6d455fbc8ec50ff525cc99b734368c0786dda8779e5b4ce7db472f0706fcfa04aa09419dc5a622b",
+        "sig" : "350a9a697659fec2699d06c73384b86faac461d73677c15c7ee4d3fc43e0e7ce719de3dc9b1e99aba48730b70fea32cca661ec631a76d075a3b29dbe3676a0b0",
         "tags" : [
           [
             "d",
@@ -61,6 +61,7 @@
       },
       "expected" : {
         "columnId" : "c1",
+        "documents" : null,
         "dueAt" : 1792684800,
         "id" : "ios-open",
         "note" : "Window seat",
@@ -80,12 +81,12 @@
     {
       "board" : "lists",
       "event" : {
-        "content" : "ULWpoccAvD3ViSMkbtVKZoJFWhCmq5vHnjr9Sn/1zR4OmagpUdk5m6hyRsqd4eFgd0JuRPW7VtOmC2mYYSQkZzmKYAPEkP5udIjXQIiCieOIvm50U4nsFZF7s55AjdlcaNvEQsbakOw1j8FMvLunX5ApHNhfOlF5WDycDnCY71AF4i1EL/jc/Be9Kze8TV9Q5ifvbn7goHBL37+P6I6bLYOSjbh97wB6EGkggZFHGwocJghlY+C1VIezF6nAGVOHc/4+CSu3O+7aKjo=",
+        "content" : "imdvqWam0p76vvJXbCWJZYSib4UzFMSy2E1NnJ0TV7LAxGoi6J4VicEfHOyRWjSZrBoH7aHWCAiN+jTQtsTV76eb4YGOP0d1orPOddnYn/5O2YgxqNCfJ3l6d100uoWj+fPt911Ijp68XkGEJMaRHhPAdYYgO4pASgicmwiSF0Czfpx4+fwIPnirJuwhZP4wqhw60JiXVX6rGb583hjpkvRtcZyAQoZ/Yh5ISdZ7BXBT3D6CuA+D68b7lbGAksTAIJiROAkANARK5GQ=",
         "created_at" : 1792500001,
-        "id" : "13cdb45e0918f8f536e6e053388c2e107c7d32848e8ce14274ee5535ea744607",
+        "id" : "1ae54e59537b8e7e3d555eea56fccd52ab94516e3612e812d2cb0d562fe8fe01",
         "kind" : 30301,
         "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "sig" : "1605b8be1b74b4f8b4344af06b0afb534c7edec5f34db78c63bab47d2c5975d2926e7435e748759330b539583aaa323d0f9d1aaad08b35c72e52c18131e0bb28",
+        "sig" : "8d0317290dcc3092a2dae7843f5d4d321302a51782746b79c7398513174ff3f5746fe23836eda2f770410bb1774680b04a444567071aa2d0fa51b9a4ce8fc757",
         "tags" : [
           [
             "d",
@@ -107,6 +108,7 @@
       },
       "expected" : {
         "columnId" : "c1",
+        "documents" : null,
         "dueAt" : 1792299600,
         "id" : "ios-done",
         "note" : "",
@@ -126,12 +128,12 @@
     {
       "board" : "week",
       "event" : {
-        "content" : "pEszo2Hae2LJXx1DZVMUBD9sUiW5iGvYTlAJb6r7PZqcALemNRkvmizeMJgac0PVdufMMGSG+vKDtw+uxlx7TyfCLxKt9kqKK+RUXHaG0WgfLKwqGLKm8ZKC+jTzAJEZf+znNDCtUL75/6i1OhUD5VTk59oU3Sa/sdnNkG80nLdJNmuEd1/mZDna3MXOLP0Wb4mPggpDK6WTHlfDs79HlcDT4RkbdLiKlYcrUa2p52udEN9p3aJab4HOKebgD6CviQCpJ7eAhhse2090Tf20GbiUcNNkU/jA4w==",
+        "content" : "9sLuF5hn8DGJFiDwCShEYADkv161gxzYANlofsnBfTMf8ZBENOkIx3D/fLSRN6z9h/mdL1zNoQ2yplUZeGMlT1nKK/nQPEPjZajhKzjtdMt2cv4yE8+hZhIPM92P7MkLqHx8Qm1sp6L1q1cNmQCt4DgwZGUaXTWtQ+NvsHbIgxR27Rho5pPPrLh0FNhQoXEa5467pxR4R+rj4tALE1BSjS1Vnq0VVl151weYIEvzbpwY2tbH5DIckhkjfxMK8Od4FDoz/aI+DJKFKxuh3q4eFgfXFeZgmCq+yA==",
         "created_at" : 1792500002,
-        "id" : "6821b633051e7cc1f72730ecac67d1a16a2ab0ded7890b500e44c3c334835a0a",
+        "id" : "3209908adb0cf591d7abd45c8a26988dcff1b54b3f073dae85931478df83d817",
         "kind" : 30301,
         "pubkey" : "a0013ac2fec9c934686bea339d6acf90ed6027397f7023b13fab969265fabe4d",
-        "sig" : "de19f5122bdb6a7d89febb48cdd400bb644cb79f77e7f938558d25d35ee6ef60edcc3921331d531beaf23ebce0ae11ce0e309051c42cfea197976c477dbac76f",
+        "sig" : "dc71f36fb391ffff97fa9ca6cf0d7a824a9216e8ef76ac235f9a00e1a26f4658fa900a6b6fef05847f9a38bef042c710d157e9fa114ce70b81199469c89d9c60",
         "tags" : [
           [
             "d",
@@ -153,6 +155,7 @@
       },
       "expected" : {
         "columnId" : null,
+        "documents" : null,
         "dueAt" : 1792386000,
         "id" : "ios-daily",
         "note" : "",
@@ -174,12 +177,12 @@
     {
       "board" : "lists",
       "event" : {
-        "content" : "d2gZMBl7Y82+0NYlUXdO0iWKwczMacJH1/K0xIEuLnW+UxP84eXDbSnEPiw4kT+qRWW2+A4lucxJsrbPNXWSuJNHyt8qtMaT/41ikofzModoMerV6QpvRZzJ3xW7sUIqmmbdMuy8cTkPFnh3LTcfadqjuZGp5Q5XHa6F0L6R4DMV6QGfH7m+5JqCO8eV7oefyj+5efXYApqw/7iLRikNrxbbF5EXrua64voeNvAaYo9wni7h8nbHfiBcDqRf890trUJKYkfodQ==",
+        "content" : "Vq7wufgRGFAcf0lhYfAzBBf9bEGXZrSu98RMP9UYwWhxi/Rr22G5gy+c3l1CGkc8KQTeDd+LuPlq6npJHSZOAo96oOgvKooILHL04zRdGhVySbqBx4pJAYKk/d0N/VlvqdFbUB9CQV8GRfOGz7pQxOFjwUxvDgkksiHevkE+jfqd9uUhkQ2PZhNMWRhsUw9LatB9kp+kWeO/HAvP2e9Ewjv5sQzZTddOLY2xMqTYbZgGTR03oQhR/hsqxCLWWrUa5HeQV0WGEw==",
         "created_at" : 1792500003,
-        "id" : "3fc56e48b3037d7496d5e730b954030059818d89820a33c3a65ba610c9a08151",
+        "id" : "3c7d2d05d251aa42f2b0f7ed5125f239ff088725547d89e7694ce55e1713ed5e",
         "kind" : 30301,
         "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "sig" : "21f2deb3061ff5f7f7775db54b7802b053afc38196213b03752f9cc59a63ea921ea5f3e3b49f20cb54bc4c6644c717528575f4697fabd122f4f0cd2c5e6dc4f4",
+        "sig" : "0851b4a4375de3d1cbf0f8f74f22011939a8e58be56cb2eeb22ff905591a4fd2cc1c91bcaf9035adbd7f8d6deee169eda990a58ac86f4541c5f3db49cfd6c01d",
         "tags" : [
           [
             "d",
@@ -201,6 +204,7 @@
       },
       "expected" : {
         "columnId" : "c1",
+        "documents" : null,
         "dueAt" : 1792767600,
         "id" : "ios-reminders",
         "note" : "",
@@ -223,12 +227,12 @@
     {
       "board" : "lists",
       "event" : {
-        "content" : "2qBYOdxxg17xsWPF3oIuTNpGbt+KlX9TkoTlYdrsVhSKZ3kTodj5ii6GzyZSqx3SbtIk2olv5lpv0LQChKqZ+Ph8kl65sbzL9GlUbkYtRW6rrorTK/nOmq5u0s6CqZH5tl+T5Cr0a8bCFoVpCfX6NE3acCamZG5HcNxefhfySZUubk7t/CikKfx7Ic+UJK7uCfbmqBWh2N5V1wAmc4fNjIgw6QuKQtZSLRW3GR+htL0lQ5QYucre+CCNaGSwfGdtb2hRT+PNNwcb+rgbetdZulsi3YL6ghjFDBf63aoV9U+7K1WGbK/gdLHRmKszLdMdJfCcjqUYEaV/DPE6YDdjCNgV7WmNY8yJyGT0jCyJWl0ALTB87CzPJA==",
+        "content" : "D+iiqGPbD+XrhXZjgS4F3bcI8+zK8vbWMm3kRa3HFf7YKPRKVVi64hUdXwSr8h3rnoiIwSiZIGA6hxCbJwYg9T8WlESYEPKPzqtvUanXrWpdpt6IXI5o/7e0joPXTZbFiZh16r+YiwfWys2bF5zi7GliCHWMaAsWV/nBhdDn9EksAGTw1L/f8J0CYWnPfnOhZ8P2iXK5Z9jT9/N5b6k5O6K67/Ip2KqsPRoO7EGWfNsqHXulYLlof3CEgTOkQ1ZWYVeMMKdWDR5lXqb2WPpKkG3QXYuFNlsW4RjcQOpDQAUnQrQcBN7wG5BU4QVR/wyiNFGhzHKhAVOdoW43klat5ayYkebCK5dv/Jpk19a/2VLsGUZXH29gdw==",
         "created_at" : 1792500004,
-        "id" : "429aa55b7a888384086225a280cc8bca0fa4447a1022e13f0cd222f051d1c4e2",
+        "id" : "4af710835f6eebb8929d27bc390b0d0a4ace12084b46909014e15571500dd808",
         "kind" : 30301,
         "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "sig" : "203bf3c07fb8c8e20abdcc7117a1509a60d6f5843c51edaa07fd5911d278a14a9681a3cb617aba30bc6b337882c5cdbac0dac4c7ddcf566e9d50aa07a0741716",
+        "sig" : "52e6593b0d9488846a9a67306a3b8d7d09027ac7a1594e7cda1c175cd419d74b602061e8b54c1bf03430ece71f52cfc6cb50add32bd578606e5be9a0b23fc7cb",
         "tags" : [
           [
             "d",
@@ -250,6 +254,7 @@
       },
       "expected" : {
         "columnId" : "c1",
+        "documents" : null,
         "dueAt" : 1792472400,
         "id" : "recurrence:scripture-memory:2026-10-20",
         "note" : "",
@@ -271,12 +276,68 @@
     {
       "board" : "lists",
       "event" : {
-        "content" : "Gvv3zqK0UUTz43SkMlw1tI7MednhPezSjWgslO7zQRA2P6NNrXqh4Sh/eNC5rxKy8QIdzleYjwCCx2qQ/39NniJ3hwtzT13QLD/6PcAlQIVyZ3t1cngtJhhfE0lj8BHhpxmIY9e6LsBgDE6VKNseVTUblEdd/7y+xwwb+HMBPFeINgRQ0CgLKY8cOlkfBuVjCyA9g3vwFeotNHKP/J9vtNde",
+        "content" : "J2If2/4NQ8iAFx9WzIwLKF5KP70LDrpvXAeANKlBAQgwerXm1aTF6yU0fjaoubJFFHhjphESvvocgV0fjY4hBKj9h3AEiQ1bVzZNZJgf12mzUf3QiGE5lAhxgNAYjoWKD/DVTP3foPzNAz4cJyBunO3xM5p8mmYSxgEjdCk5a8hXCPAro+YT7fPomBYVaUCtnhVizfRP/unqgS/jlXan8yfU/YaB3Ozv3wsV5DEnPgBD0WTJpKzSubMhs5SOLtru2BNM3lVRtrwxJ86LbSHrxcmnUpiEM21nNF3IdZxibyYAKBfLvBg03WFRZ8HvQPIy983O2tVPyjCeYlntaXxh2XBxYoI0RyzPGEl5wgBNuONzWjOqOlwqsHMPbMLnfmy3u9Zvc8zMgyvLmseFjevKWTcIJaQsfSYeR+7RwR+xn3STnpzccyeA5O8N64FMNFgY8cmcD0U6Qi1VC1X9VmvcEfPvk6x0ul94S3eWl0Q9L6VbsqOGwnb85irLaboxLKwm2MlUfYrJfU0gXinAScNK0vxKCzFrez/8s7yVKFJgBv32B4LI7bdm+rI81Q3vzla0Qw==",
         "created_at" : 1792500005,
-        "id" : "e6cd39f3db3529f9c0aae3d82bf03628231131c8bdd1c9cbd05166b249f9a6f2",
+        "id" : "449d69b66a809706497506b1922633a63660ce7d81d798e458e2b51352c411d1",
         "kind" : 30301,
         "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
-        "sig" : "be2c0200af9c5a13b72dfac4f8e64053e7adcb10c9e8419b82e955780891b151da24b35ae7dec0f5fbc09acda58ec862b78d12949e8b6d2cd5d653fea6b8e3c2",
+        "sig" : "c35d487432df1be3f84c6db9a3a98030006c8136ff618ee9dfe658d91b84307a0713c926bc53021d8a086a08b0763a74c6b99a114786c0b1d1c399f374a5580b",
+        "tags" : [
+          [
+            "d",
+            "ios-docs"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "documents" : [
+          {
+            "encrypted" : true,
+            "id" : "doc-ios-1",
+            "kind" : "pdf",
+            "mimeType" : "application/pdf",
+            "name" : "Contract.pdf",
+            "remoteUrl" : "https://files.example/c0ffee.bin"
+          }
+        ],
+        "dueAt" : 1792818000,
+        "id" : "ios-docs",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : null,
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "open",
+        "title" : "Review the contract"
+      },
+      "name" : "uploaded document travels by reference"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "SCSROrCqALaR9PB2Ftfv/QWiQQ/fzbyJwSBuRfGTXwBZmSl7fa3eHBHXDAWps+UDID7SkjEHcnHXuQyk1Jjf39ySH90tt1vj1D6+T47QXV/MQPBCNCN+fvX4RW/oUqPOQwmNhNg2dIlche+vV/N4NI++eD0jQaYfP2QmqRVRLkowvEZflais62Q5jLCdWnqPNxunEfk2KtpacP4Z2qKe9yee",
+        "created_at" : 1792500006,
+        "id" : "b1f07cee93b073134cec1c51c5530be4c542f0c9003b500e651d1e751acbbb77",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "c7019740bc94fe47105ebafc0969ae525addcd802eee4e9b7e353dc3cab21d5825c2f254b226f60c456e36efddd319dc88165f24b8ee437bb5059c7ed98971f9",
         "tags" : [
           [
             "d",
@@ -298,6 +359,7 @@
       },
       "expected" : {
         "columnId" : "c1",
+        "documents" : null,
         "dueAt" : 1790917200,
         "id" : "ios-deleted",
         "note" : "",

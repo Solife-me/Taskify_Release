@@ -14,6 +14,8 @@ export const VECTOR_BOARDS = {
   week: { id: "week", name: "Week", kind: "week", nostr: { boardId: "taskify-vector-week-board", relays: [] } },
 } as unknown as Record<"lists" | "week", Board>;
 
+export type VectorDocument = { id: string; name: string; mimeType: string; kind: string; remoteUrl: string | null; encrypted: boolean };
+
 /** What both clients compare after decoding (dates as epoch seconds). */
 export type Expected = {
   id: string;
@@ -27,6 +29,8 @@ export type Expected = {
   seriesId: string | null;
   scriptureMemoryId: string | null;
   scriptureMemoryStage: number | null;
+  /** Uploaded documents, by the fields both clients read; null for none. */
+  documents: VectorDocument[] | null;
   /**
    * Payload fields a republish of the decoded task must carry unchanged, whether or not this
    * client uses them (iOS reminders on the PWA, for example).
@@ -62,6 +66,16 @@ export async function decodeWithPwa(event: Event, board: Board): Promise<Expecte
     seriesId: task.seriesId ?? null,
     scriptureMemoryId: task.scriptureMemoryId ?? null,
     scriptureMemoryStage: task.scriptureMemoryStage ?? null,
+    documents: task.documents?.length
+      ? task.documents.map((doc) => ({
+          id: doc.id,
+          name: doc.name,
+          mimeType: doc.mimeType,
+          kind: doc.kind,
+          remoteUrl: doc.remoteUrl ?? null,
+          encrypted: doc.encrypted === true,
+        }))
+      : null,
     republishKeeps: keptOnRepublish(task, payload),
   };
 }
@@ -79,7 +93,9 @@ function keptOnRepublish(task: Task, received: Record<string, unknown>): Record<
 export async function pwaEvent(task: Task, board: Board, status: Expected["status"], createdAt: number): Promise<Event> {
   const boardId = board.nostr!.boardId;
   const keys = await deriveBoardNostrKeys(boardId);
-  const body = status === "deleted" ? taskTombstoneBody(task) : taskEventBody(task, { attachments: { images: null, documents: null } });
+  // As BoardPublisher sends it: uploaded documents go out without their local copies.
+  const documents = task.documents ? task.documents.map(({ dataUrl: _d, preview: _p, full: _f, ...rest }) => rest) : null;
+  const body = status === "deleted" ? taskTombstoneBody(task) : taskEventBody(task, { attachments: { images: null, documents } });
   const content = await encryptToBoard(boardId, JSON.stringify(body));
   return finalizeEvent({ kind: TASK_EVENT_KIND, created_at: createdAt, tags: taskEventTags(task, board, boardTag(boardId), status), content }, keys.sk);
 }
@@ -90,42 +106,60 @@ export const CASES: Array<{ name: string; board: "lists" | "week"; task: Task; s
     board: "lists",
     task: { id: "v-open", boardId: "lists", columnId: "c1", title: "Call the plumber", note: "Ask about Tuesday", priority: 2, dueISO: "2026-10-20T15:30:00.000Z", dueDateEnabled: true, dueTimeEnabled: true } as Task,
     status: "open",
-    expected: { title: "Call the plumber", note: "Ask about Tuesday", dueAt: 1792510200, columnId: "c1", priority: 2, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null, republishKeeps: {} },
+    expected: { title: "Call the plumber", note: "Ask about Tuesday", dueAt: 1792510200, columnId: "c1", priority: 2, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null, documents: null, republishKeeps: {} },
   },
   {
     name: "completed task",
     board: "lists",
     task: { id: "v-done", boardId: "lists", columnId: "c1", title: "File taxes", dueISO: "2026-10-19T05:00:00.000Z", completed: true, completedAt: "2026-10-19T12:00:00.000Z" } as Task,
     status: "done",
-    expected: { title: "File taxes", note: "", dueAt: 1792386000, columnId: "c1", priority: null, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null, republishKeeps: {} },
+    expected: { title: "File taxes", note: "", dueAt: 1792386000, columnId: "c1", priority: null, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null, documents: null, republishKeeps: {} },
   },
   {
     name: "daily recurring task on a week board",
     board: "week",
     task: { id: "v-daily", boardId: "week", column: "day", title: "Stretch", dueISO: "2026-10-19T05:00:00.000Z", recurrence: { type: "daily" }, seriesId: "series-stretch" } as Task,
     status: "open",
-    expected: { title: "Stretch", note: "", dueAt: 1792386000, columnId: null, priority: null, recurrence: { type: "daily" }, seriesId: "series-stretch", scriptureMemoryId: null, scriptureMemoryStage: null, republishKeeps: {} },
+    expected: { title: "Stretch", note: "", dueAt: 1792386000, columnId: null, priority: null, recurrence: { type: "daily" }, seriesId: "series-stretch", scriptureMemoryId: null, scriptureMemoryStage: null, documents: null, republishKeeps: {} },
   },
   {
     name: "Scripture Memory review keeps its passage link",
     board: "lists",
     task: { id: "recurrence:scripture-memory:2026-10-19", boardId: "lists", columnId: "c1", title: "Review John 3:16", dueISO: "2026-10-19T05:00:00.000Z", recurrence: { type: "daily" }, seriesId: "scripture-memory", scriptureMemoryId: "entry-1", scriptureMemoryStage: 2 } as Task,
     status: "open",
-    expected: { title: "Review John 3:16", note: "", dueAt: 1792386000, columnId: "c1", priority: null, recurrence: { type: "daily" }, seriesId: "scripture-memory", scriptureMemoryId: "entry-1", scriptureMemoryStage: 2, republishKeeps: {} },
+    expected: { title: "Review John 3:16", note: "", dueAt: 1792386000, columnId: "c1", priority: null, recurrence: { type: "daily" }, seriesId: "scripture-memory", scriptureMemoryId: "entry-1", scriptureMemoryStage: 2, documents: null, republishKeeps: {} },
   },
   {
     name: "fields another client wrote survive this client's republish",
     board: "lists",
     task: { id: "v-extras", boardId: "lists", columnId: "c1", title: "Dentist", dueISO: "2026-10-21T14:00:00.000Z", syncExtras: { reminders: ["15m"], reminderTime: "09:00" } } as Task,
     status: "open",
-    expected: { title: "Dentist", note: "", dueAt: 1792591200, columnId: "c1", priority: null, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null, republishKeeps: { reminders: ["15m"], reminderTime: "09:00" } },
+    expected: { title: "Dentist", note: "", dueAt: 1792591200, columnId: "c1", priority: null, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null, documents: null, republishKeeps: { reminders: ["15m"], reminderTime: "09:00" } },
+  },
+  {
+    name: "uploaded document travels by reference",
+    board: "lists",
+    task: {
+      id: "v-docs", boardId: "lists", columnId: "c1", title: "Sign the lease", dueISO: "2026-10-23T05:00:00.000Z",
+      documents: [{
+        id: "doc-1", name: "Lease.pdf", mimeType: "application/pdf", kind: "pdf", size: 48213, dataUrl: "",
+        createdAt: "2026-10-18T09:00:00.000Z", remoteUrl: "https://files.example/7f3a.bin", encrypted: true,
+        encryptionBoardId: "taskify-vector-lists-board",
+      }],
+    } as Task,
+    status: "open",
+    expected: {
+      title: "Sign the lease", note: "", dueAt: 1792731600, columnId: "c1", priority: null, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null,
+      documents: [{ id: "doc-1", name: "Lease.pdf", mimeType: "application/pdf", kind: "pdf", remoteUrl: "https://files.example/7f3a.bin", encrypted: true }],
+      republishKeeps: {},
+    },
   },
   {
     name: "deleted task (tombstone)",
     board: "lists",
     task: { id: "v-deleted", boardId: "lists", columnId: "c1", title: "Old idea", dueISO: "2026-10-01T05:00:00.000Z" } as Task,
     status: "deleted",
-    expected: { title: "Old idea", note: "", dueAt: 1790830800, columnId: "c1", priority: null, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null, republishKeeps: {} },
+    expected: { title: "Old idea", note: "", dueAt: 1790830800, columnId: "c1", priority: null, recurrence: null, seriesId: null, scriptureMemoryId: null, scriptureMemoryStage: null, documents: null, republishKeeps: {} },
   },
 ];
 
