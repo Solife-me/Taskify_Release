@@ -20,9 +20,9 @@ import TaskifyCore
 /// starts several long-lived background tasks on `init`, all wasted work (and a risk of being
 /// killed mid-flight) for a one-shot "add a task" action that iOS may run and then immediately
 /// suspend. Instead this talks to the same `JSONTaskStore`/`TaskifySnapshot` the app itself
-/// persists through, doing only the minimal load → mutate → save round trip. The new task is
-/// picked up and published to Nostr normally the next time the full app launches and its sync
-/// engine runs.
+/// persists through, doing only the minimal load → mutate → save round trip. The new task is then
+/// sent to its board's relays (`TaskifyExternalActions.commit`); if they can't be reached in a few
+/// seconds, the app publishes it the next time it runs.
 struct TaskifyAddTaskIntent: AppIntent {
     static var title: LocalizedStringResource = "Add Task"
     static var description = IntentDescription(
@@ -256,7 +256,8 @@ enum TaskifyIntentTaskWriter {
             requestedBoardName: spokenRequest.requestedBoardName,
             in: snapshot
         )
-        try await store.save(snapshot)
+        // Sent to the relays now; the app sends it later if they can't be reached (C10-4).
+        try await TaskifyExternalActions.commit(snapshot, changedTaskIDs: [task.id], store: store)
         return TaskifyIntentCreatedTask(task: task, board: board, displayBoard: displayBoard)
     }
 

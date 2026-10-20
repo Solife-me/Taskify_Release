@@ -365,6 +365,7 @@ struct TaskifyUpdateReminderIntent {
     func perform() async throws -> some ReturnsValue<TaskifySiriTaskEntity> & ProvidesDialog {
         let store = JSONTaskStore()
         var snapshot = try await store.load(areas: [.tasks])
+        let existingIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
         guard var task = snapshot.tasks.first(where: {
             $0.id == target.id && !$0.isDeleted
         }) else {
@@ -432,7 +433,9 @@ struct TaskifyUpdateReminderIntent {
             requestedBoardName: list?.name,
             in: snapshot
         )
-        try await store.save(snapshot)
+        // The task, and a next occurrence its completion created, go to the relays now (C10-4).
+        let createdIDs = snapshot.tasks.filter { !$0.isDeleted && !existingIDs.contains($0.id) }.map(\.id)
+        try await TaskifyExternalActions.commit(snapshot, changedTaskIDs: [task.id] + createdIDs, store: store)
 
         return .result(
             value: TaskifySiriTaskEntity(

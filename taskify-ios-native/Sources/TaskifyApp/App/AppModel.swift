@@ -2226,7 +2226,10 @@ final class AppModel {
         // (and their tasks published) before the rest.
         let reconciledIDs = reconcileScriptureMemory()
         let liveIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
-        synchronizeTasks(merge.changedTaskIDs.filter { liveIDs.contains($0) && !reconciledIDs.contains($0) })
+        let changedIDs = merge.changedTaskIDs.filter { liveIDs.contains($0) && !reconciledIDs.contains($0) }
+        // Stamped by the extension but not accepted by every relay: send again (C10-4).
+        let pendingIDs = Set(snapshot.tasks.lazy.filter { $0.publishPending == true }.map(\.id))
+        synchronizeTasks(changedIDs, force: pendingIDs.intersection(changedIDs))
         refreshNotifications(requestPermission: false)
         scheduleSave()
     }
