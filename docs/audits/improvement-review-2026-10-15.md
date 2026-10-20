@@ -52,7 +52,7 @@ Constraints carried through every chunk:
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Done (2026-10-20) |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
-| 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Pending |
+| 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Review written (2026-10-20) |
 | 11 | macOS | `taskify-macos` | Pending |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
@@ -1940,7 +1940,225 @@ iOS beta build, so the phase-out reaches the App Store in time.
 | C9-2 | Approve | 2026-10-20 | Done (`72d31c4e`). From local midnight on December 1 (or with the hidden launch argument `-TaskifyWalletRemovalPreview YES`), the wallet service stops starting and the tab shows `WalletRecoveryView`. It shows each mint's unspent and in-flight notes as one V3 token, read straight from the CDK database with no network and no writes, plus saved and unclaimed sent tokens and the 12 words behind device authentication. Tested with a real CDK database and a UI preview |
 | C9-3 | Approve | 2026-10-20 | Done (`5a99619f`). TaskifyCore `CashuNUT07` implements hash_to_curve (spec vectors) and checkstate for any mint; the request shape was checked against a live mint. Close-out removes saved tokens that were spent elsewhere, keeping a copy in History, and lets the user remove ones that cannot be checked. Tokens that still hold funds block close-out until moved out. The card itself was not exercised with real funds |
 | C9-4 | Approve | 2026-10-20 | Done (`bb0e1469`). Chat accessors read the chat area, the inbox area, or both. The conversation keys its memo on `conversationRevision`. `ChatRenderUITests`: 20 task writes caused 20 timeline rebuilds before and 0 after |
-| C9-5 | Approve | 2026-10-20 | Done (`40bb82d5`). Onboarding offers "Start using Taskify" or "I already use Taskify". `KeyBackupState` uses the PWA's thresholds; a banner shows on Boards and "Unsaved key" in Settings. Reminders already request permission when first set. The invalid-key UI test still fails as before: typing into the secure field doesn't arrive in the simulator |
+| C9-5 | Approve | 2026-10-20 | Done (`40bb82d5`). Onboarding offers "Start using Taskify" or "I already use Taskify". `KeyBackupState` uses the PWA's thresholds; a banner shows on Boards and "Unsaved key" in Settings. Reminders already request permission when first set. The invalid-key UI test failed because a tap on Sign in while the keyboard moved in could miss; Return now signs in (`c58b4fb6`) and the test passes |
 | C9-6 | Approve | 2026-10-20 | Done (`0160d89e`). "Native app status" and the two unused wallet cards are removed (247 lines) |
 
-**Next for the wallet:** an iOS beta build carrying C9-1 to C9-3 must reach the App Store before December 1, 2026. macOS follows in chunk 11.
+**Next for the wallet:** iOS build 173, carrying C9-1 to C9-3, was uploaded to App Store Connect on
+October 20, 2026 (`fb8c1124`). It must be released to the App Store before December 1, 2026.
+macOS follows in chunk 11.
+
+**UI tests (after chunk 9):** the iOS UI suite passes on a clean install, with 74 tests and 8
+skipped. The failures came from state left by earlier tests and from tests that no longer matched
+the UI:
+- the Bible tests start from a fresh store (`634236db`);
+- the task editor puts the keyboard away on scroll (`99235115`);
+- Return signs in (`c58b4fb6`);
+- tests updated to the current UI (`dbc3b8ac`).
+
+---
+
+## Chunk 10 — iOS extensions
+
+Everything that runs outside the iOS app's main screens:
+
+| Part | Lines |
+| --- | --- |
+| Watch app | 7,600 |
+| `TaskifyWatchShared` (Watch models and Nostr code) | 3,600 |
+| Watch complications | 330 |
+| Watch bridge on the iPhone | 680 |
+| Widgets: Today, Upcoming, Lock Screen, Board, and the New Task control | 1,100 |
+| App Intents and Siri (Add Task, Quick Add, the reminders schema) | 790 |
+| Share extension | 630 |
+| Notification service | 150 |
+
+Several parts edit tasks without the app running:
+- the widget's checkbox;
+- Siri and Shortcuts;
+- the Watch, when it is away from the iPhone.
+
+Most findings are about those edits.
+
+What the review found:
+
+- **A widget tap can reopen a finished task (bug, confirmed by reading).** `CompleteTaskIntent`
+  calls `toggleCompletion` and does not check the task's current state. Say a task is completed
+  on another device, or in the app, after the widget last drew. Ticking the stale row then marks
+  it open again.
+- **Completions made outside the app ignore the user's settings.** The widget and the Siri
+  update intent call `toggleCompletion` with its defaults:
+  - streaks are counted even when the user turned them off;
+  - the week starts on the default day, not the user's choice (used for weekly next occurrences);
+  - `completedBy` / `lastEditedBy` is not set.
+
+  The in-app path passes all three. It also reconciles Scripture Memory before anything is
+  published. `absorbExternalStoreChanges` does not run that step when the app later picks up an
+  outside completion.
+- **Edits made outside the app stay on this iPhone until the app runs.** The widget's checkbox and
+  Siri "Add Task" write the shared store and stop. Nothing reaches the relays until one of these
+  happens:
+  - the app comes to the foreground;
+  - iOS grants a background refresh.
+
+  That can take hours, and the PWA, the Mac and the Watch show the old state until then. The
+  app's outbox (`NostrOutboxStore`) is in the app's private container, so an extension cannot add
+  to it.
+- **The Watch ends a recurring series when it completes a task away from the iPhone (bug,
+  confirmed by reading).** This is the C1-1 bug on the Watch. When the iPhone is out of reach, the
+  Watch publishes the completion itself (`directMutations`, `.completeTask`). It only sets
+  `completedAt` and `status: done`. The rule every client follows is that the completing client
+  creates the next occurrence, and the Watch can't, because it has no recurrence code.
+
+  The command it queues for the iPhone doesn't repair this. `completeTasksFromWatch` skips tasks
+  that are already completed. The iPhone usually hears the Watch's relay event before the queued
+  command arrives, so it sees a completed task and creates nothing.
+- **The Watch has a second copy of the protocol.** `TaskifyWatchShared` has its own copies of
+  NIP-44, NIP-17 gift wraps, board encryption, event signing and task payloads, plus Watch-only
+  models. They exist because TaskifyCore can't build for watchOS. Its only watchOS blockers are
+  the wallet's two dependencies, CDK and URKit; nothing else in its 33,000 lines (26,000 without
+  the wallet) needs iOS. NIP-44 is cross-tested against core, but the task payloads and
+  completion rules are not. That is how the recurrence bug above got in.
+- **Extensions load more than they show.**
+  - The notification service loads every store area (all tasks, all messages, all contacts) to
+    decide a DM preview. That decision needs only the chat and inbox areas.
+  - The widgets load the tasks area.
+  - Every load reads each externalized attachment back into memory as an inline data URL.
+    Nothing in the widgets or the notification service shows one.
+
+  iOS limits a notification service to about 24 MB and a widget to about 30 MB. A store with a
+  few large images can push either over the limit:
+  - the preview falls back to the generic alert;
+  - the widget renders blank.
+
+  This was not measured on a device; the proposal below measures it first.
+- **The share sheet can only send to a chat.** Sharing a link, text or photo into Taskify always
+  goes to a conversation. There is no "save as a task", which is the most common share-sheet use
+  for a task app. The PWA has no share target either.
+- **Tasks aren't in Spotlight.** No `IndexedEntity` and no Core Spotlight items. The Siri reminders
+  schema can update and complete tasks, but a user can't search for one from the Home Screen.
+- **What works well and stays:**
+  - the App Intents live in the app target, with the reasons documented;
+  - the New Task control is compiled into both targets;
+  - widget reloads are debounced and fire only on task saves;
+  - the notification service drops action keys a push cannot be trusted with;
+  - the share extension's background uploads are resumable;
+  - the Watch complications read a small cache of their own.
+
+  The Watch also has chat, about 5,000 lines, which is more than the "nothing else" in the table
+  above. It works and is tested; C10-5 shrinks what it duplicates. No change is proposed.
+- **Language fit:** no new language. The duplication is Swift against Swift. One Swift core on
+  the Watch (C10-5) removes it, which is the gain a Rust core (C1-6) would bring here.
+
+### C10-1 — One action layer for edits made outside the app (bug)
+
+- **User:** Everyone using widgets, Siri or Shortcuts.
+- **Proposal:** TaskifyCore gets `TaskifyExternalActions`, the one path for every edit made out
+  of process:
+  - **Actions:** complete, add and update. Complete is idempotent: it never reopens a task, and
+    it does nothing for a task that is already done or deleted.
+  - **Settings:** the actions read the user's streak setting, week start, new-task position and
+    public key from the App Group. The app writes these whenever they change.
+  - **Callers:** the widget checkbox, Siri Add/Quick Add and the reminders schema all use it. Siri
+    keeps its explicit "mark incomplete".
+  - **Pickup:** when the app reads in outside changes, it runs the same steps as an in-app
+    completion: Scripture Memory reconciliation, notifications and publishing.
+- **Test first:**
+  - a widget completion of a task already completed in the store leaves it completed;
+  - a completion with streaks off records no streak;
+  - a weekly task completed through the action layer gets the same next occurrence as one
+    completed in the app.
+- **Effort:** S–M. **Risk:** low.
+
+### C10-2 — The Watch keeps recurring series going (bug, parity with C1-1)
+
+- **User:** Watch users with recurring tasks, and everyone sharing those boards.
+- **Proposal:** Two stages.
+  1. **Now:** when the iPhone processes the Watch's completion command, it makes sure the next
+     occurrence exists, even if the task is already completed. Instance ids come from the date,
+     so this is idempotent, and a second device converges on the same id.
+  2. **With C10-5:** the Watch completes through core's `toggleCompletion` and publishes the
+     next occurrence itself. Then the series continues even if the iPhone never comes back.
+- **Test first:** a recurring task completed by a Watch event, followed by the Watch's command,
+  ends with exactly one next occurrence. Today it ends with none.
+- **Effort:** S (stage 1). **Risk:** low.
+
+### C10-3 — Extensions load only what they show (reliability)
+
+- **Proposal:**
+  - `JSONTaskStore.load` gets a read-only mode that keeps attachments as references and never
+    reads them.
+  - The notification service loads only the chat and inbox areas, in that mode.
+  - The widget timelines use the same mode for the tasks area.
+  - Saves from extensions keep today's full load, since they write back.
+- **Measure first:** the peak memory of the preview decision and of a widget timeline, with a
+  store holding 20 MB of task images. Record the before and after in the report.
+- **Effort:** S. **Risk:** low.
+
+### C10-4 — Outside edits reach the relays at once (sync)
+
+- **User:** Anyone who ticks a task off in a widget or adds one with Siri, then looks at another
+  device.
+- **Proposal:**
+  - The outbox moves to the App Group. The app moves the existing file on first launch.
+  - `TaskifyExternalActions` (C10-1) adds each edit's events to it.
+  - The intent then tries to publish right away, within a few seconds. Board events are signed
+    with the board key, so the extension needs no user key.
+  - The app's sync engine sends whatever is left, as it does today.
+  - The store and the outbox are written under a file lock, so the app and an extension never
+    interleave.
+- **Test first:** an event added to the outbox by a second process is published by the app's
+  engine exactly once. A widget completion is visible on a relay before the app is opened (UI
+  test with a local relay).
+- **Effort:** M–L. **Risk:** medium. Two processes share one outbox, and proof-of-work relays may
+  need more time than an intent gets; those events wait for the app, as now.
+
+### C10-5 — One Swift core on the Watch (architecture, interop)
+
+- **Proposal:**
+  - Move the wallet out of TaskifyCore into its own `TaskifyWallet` target, which only the iOS
+    and macOS apps link. After December 1 that target is deleted anyway.
+  - TaskifyCore then builds for watchOS.
+  - The Watch uses core's models, task codec, recurrence, encryption and gift wraps.
+  - `TaskifyWatchShared` keeps only the Watch's caches and its transfer types. The duplicate
+    protocol code goes, an estimated 1,500–2,000 lines.
+
+  The Watch then follows the cross-client vectors (C1-2, C7-3) by construction.
+- **Measure:** Watch app binary size and launch memory, before and after. Stop if either grows by
+  more than 20%.
+- **Effort:** L. **Risk:** medium. Do it in stages: the wallet target, then crypto, then tasks.
+
+### C10-6 — Save to Taskify from the share sheet (UX)
+
+- **User:** iPhone and iPad users capturing links, text and photos.
+- **Proposal:** The share extension gets a "New task" destination above the chats:
+  - the title comes from the page title or the first line of text;
+  - a link goes in the note;
+  - images go in as task images (C8-5);
+  - the board is chosen like the Add Task intent's.
+
+  It writes through C10-1, and through C10-4 once that lands.
+- **Effort:** M. **Risk:** low.
+
+### C10-7 — Tasks in Spotlight (UX)
+
+- **Proposal:** The Siri reminder entity becomes an `IndexedEntity`. The app indexes open tasks
+  (title, board, due date) and updates the index when it saves. Spotlight finds a task, and opening
+  it shows the task in the app. Completed and deleted tasks leave the index.
+- **Effort:** S–M. **Risk:** low. The index stays on the device.
+
+### Recommended order
+
+C10-1 → C10-2 → C10-3 (bugs and limits first) → C10-4 (builds on C10-1) → C10-6 → C10-5 (wallet
+target first; the rest can wait for the December 1 deletion) → C10-7.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C10-1 | | | |
+| C10-2 | | | |
+| C10-3 | | | |
+| C10-4 | | | |
+| C10-5 | | | |
+| C10-6 | | | |
+| C10-7 | | | |
