@@ -350,6 +350,18 @@ public enum ScriptureMemoryAlgorithm {
     }
 
     /// e.g. "Genesis 1:1-3" or "Genesis 1", matching `formatScriptureReference`.
+    /// The passage an open review task lost its link to, if its title names exactly one (C7-4).
+    /// Before the PWA carried the link in task events, a relay re-sync could leave a review with
+    /// no passage, and every later review in the series inherited the gap. Every client relinks
+    /// the same way (taskify-core's `relinkScriptureReviews`).
+    public static func passageToRelink(_ task: TaskItem, entries: [ScriptureMemoryEntry]) -> ScriptureMemoryEntry? {
+        guard !task.completed, !task.isDeleted, task.scriptureMemoryID == nil, isSeriesID(task.seriesID) else {
+            return nil
+        }
+        let matches = entries.filter { task.title == "Review \(reference(for: $0))" }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     public static func reference(for entry: ScriptureMemoryEntry) -> String {
         guard let book = BibleCatalog.book(withID: entry.bookID) else { return entry.bookID }
         if let start = entry.startVerse, let end = entry.endVerse, start != end {

@@ -3233,6 +3233,14 @@ final class AppModel {
                 task.scriptureMemoryScheduledAtISO = value
                 taskChanged = true
             }
+            // A review that lost its passage link (as PWA copies could before the link was in
+            // task events) is linked again to the one passage its title names (C7-4).
+            if let entry = ScriptureMemoryAlgorithm.passageToRelink(task, entries: scriptureMemoryState.entries) {
+                task.scriptureMemoryID = entry.id
+                task.scriptureMemoryStage = entry.stage
+                task.scriptureMemoryPreviousReviewISO = entry.lastReviewISO
+                taskChanged = true
+            }
             if let entryID = task.scriptureMemoryID,
                let entryIndex = entryIndexByID[entryID] {
                 let entry = scriptureMemoryState.entries[entryIndex]
