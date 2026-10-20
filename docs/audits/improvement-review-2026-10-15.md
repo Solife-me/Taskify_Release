@@ -50,7 +50,7 @@ Constraints carried through every chunk:
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Done (2026-10-19) |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Done (2026-10-19); code deletion due after Dec 1, 2026 |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Done (2026-10-20) |
-| 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Pending |
+| 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Reviewed 2026-10-20, awaiting decisions |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Pending |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Pending |
 | 11 | macOS | `taskify-macos` | Pending |
@@ -1644,3 +1644,161 @@ C7-2 (funds recovery, before December 1) → C7-1 (bug) → C7-4 → C7-3 → C7
 | C7-3 | Approve | 2026-10-19 | Done. Task event vectors in both directions (`2fc119d3`, documents in `98f1e597`); this found the PWA erasing iOS reminders on republish, now fixed by keeping fields it does not use (`syncExtras`). App-state merge vectors (`ce354267`): both clients already agreed. Tie rule (`f909aa5c`): at the same `created_at` the lowest event id wins, on both clients, through a shared `compareEventVersions` with vectors; each client records the id of the event it queued or received, and an edit not yet signed keeps a tie |
 | C7-4 | Approve | 2026-10-19 | Done (`d06efc55`): iOS relinks an open review whose title names exactly one passage, in the Scripture Memory reconcile |
 | C7-5 | Approve | 2026-10-19 | Done (`bd534cf7`): `taskify-store/` holds `tasks.json`, `chat.json` and `inbox.json`, plus content-addressed files for large inline attachments. A save writes only changed areas; widgets, intents and Siri load and write only tasks; widgets reload only when tasks change. The app splits a legacy store at load in an order that is safe to interrupt. Benchmark with 2,000 tasks and 5,000 messages, one task edit: 2.22 MB in 41 ms before, 0.57 MB in 18 ms after. Not yet checked on a device: the first launch after updating |
+
+---
+
+## Chunk 8 — iOS tasks, boards, Upcoming
+
+The SwiftUI screens for boards (`Features/Boards`, 5,700 lines), tasks (`Features/Tasks`,
+5,200) and Upcoming (`Features/Upcoming`, 4,000), with the root tab view and theme. Reviewed
+against what chunk 3 changed on the PWA.
+
+What the review found:
+
+- **Much is already in good shape:**
+  - performance work exists: lookup caches, a card text cache, coalesced completion taps, the
+    `TASKIFY_PERF` on-device monitor and a scroll UI test;
+  - the task card has VoiceOver labels and a context menu with every action;
+  - the task screens carry no wallet code, and note Markdown already shares vectors with the
+    PWA (C3-9).
+- **Every board view redraws on any change, including a chat message.** `AppModel.snapshot` is
+  one observed property, and board, card and Upcoming views read it through helpers such as
+  `board(withID:)`, `tasks(for:)` and `runningStreak(for:)`. So any write re-runs every visible
+  column and card body: a received message, a read marker or a contact update.
+
+  Each write also invalidates the streak lookup. The first card to draw then rebuilds it over
+  every task, which took **3.9 ms with 2,000 tasks** on an M-series Mac, more on a phone.
+  Upcoming keys its whole filter cache on the same revision. Telling a chat change from a task
+  change costs 0.015 ms.
+- **The task editor reverts changes made elsewhere while it is open (confirmed by reading).**
+  `persistChanges` writes every field from the state captured when the editor opened: title,
+  note, due date, subtasks, reminders and attachments. Suppose a subtask is ticked on another
+  device, or by the widget, while the editor is open. Saving the editor, even only to change the
+  priority, unticks it again and publishes that. Completion is not affected, because the editor
+  does not write it. The PWA editor should be checked for the same pattern.
+- **"System" text size ignores the system (accessibility bug).** The app applies
+  `.dynamicTypeSize(.large)` when the in-app scale is "System". The iPhone's own text-size
+  setting, including the accessibility sizes, therefore never reaches the app. The largest
+  in-app choice is `xxxLarge`, and 89 fonts in these screens use fixed point sizes that would not
+  scale anyway.
+
+  VoiceOver users can move a task between days or lists only through selection mode; a card has
+  no "Move to…" action.
+- **A new day does not move the screens to today (confirmed by reading).** Upcoming's selected
+  date and the week board's focused column are set when the view first appears. Return to the
+  app after midnight and Upcoming still shows yesterday as the selected day, and the week board
+  stays on yesterday's column. This is the iOS form of the PWA's C3-2.
+- **Events show no images or documents on iOS (parity).** The PWA attaches both to events.
+  `TaskifyEvent` carries them on iOS, but the event card does not show them and the event editor
+  cannot add or remove them. This joins the chunk 3 follow-up: the PWA stores event attachments
+  inline.
+- **iPad stretches board columns.** `boardColumnWidth` fills the width: about 300–470 pt per
+  column on iPad, against 330 pt on iPhone. On the PWA desktop you asked that lists keep the
+  phone width and that extra space show more lists instead.
+- **`UpcomingView.swift` is 3,489 lines with five sheets inside.** It holds the event editor,
+  the new-item sheet, the calendar and the cards, and its grouping runs on every body
+  evaluation. Most of the logic is view-private, so it is out of reach of tests.
+- **Language fit:** none. These are SwiftUI screens; the shared rules underneath already live in
+  TaskifyCore and taskify-core.
+
+### C8-1 — Views follow only what they show (performance)
+
+- **User:** Everyone with chat activity or large boards, most of all during sync.
+- **Proposal:** Observe by area, the areas of the C7-5 store:
+  - `snapshot` stops being observed directly. Each area gets an observed revision (tasks and
+    boards, chat, inbox), bumped only when that area changed;
+  - every model accessor registers the area it reads, so a board view no longer depends on
+    chat;
+  - cards receive what they derive (streak, board key) from their column. They become
+    `Equatable`, so an unchanged card skips its body when another task changes;
+  - the streak lookup and the Upcoming cache key on the tasks revision.
+- **Measure, don't assume:** with `TASKIFY_PERF`, count card bodies per received message on the
+  140-task performance fixture, before and after. The expected result is that a chat message
+  renders no card, and editing one task renders one card.
+- **Effort:** M. **Risk:** medium; view invalidation must stay complete, so a missed area means
+  a stale view (tests list each accessor's area).
+
+### C8-2 — The editor saves only what the user changed (bug)
+
+- **User:** Anyone using two devices, the widget or Siri while an editor is open.
+- **Proposal:** Record the task as it was when the editor opened. On Save, apply only the
+  fields the user changed to the current task: a pure `TaskEdit` in TaskifyCore, with tests.
+  Untouched fields keep whatever arrived meanwhile. Check the PWA editors and apply the same
+  rule there if they share the pattern.
+- **Test first:** a subtask ticked elsewhere while the editor is open survives saving a
+  priority change.
+- **Effort:** S–M. **Risk:** low.
+
+### C8-3 — Text size follows iOS; VoiceOver can move tasks (accessibility)
+
+- **User:** Everyone who sets a larger or smaller text size, and VoiceOver users.
+- **Proposal:**
+  - "System" leaves Dynamic Type alone, and accessibility sizes are allowed. The in-app choices
+    stay as overrides;
+  - fixed-size fonts in these screens become text styles, or `@ScaledMetric` where a size must
+    stay proportional (the complete button);
+  - cards get a "Move to…" accessibility action that opens the existing move sheet.
+
+  UI tests take screenshots at `accessibility3` on a board, the editor and Upcoming.
+- **Test first:** a UI test that launches with a large content size category and finds the
+  card title larger than at the default size.
+- **Effort:** M (S for the "System" fix alone). **Risk:** low–medium; layouts must hold at
+  large sizes.
+
+### C8-4 — A new day moves the screens to today (bug)
+
+- **User:** Everyone who leaves the app open overnight.
+- **Proposal:** When the app becomes active or the day changes (`significantTimeChange`):
+  - Upcoming moves its selected date to the new today, if it was on the old today;
+  - the week board refocuses on today's column, unless the user moved away from today.
+
+  The rule is a pure function in TaskifyCore with tests.
+- **Test first:** with the clock moved past midnight, a selection on the old today moves to the
+  new today; a selection on another day stays put.
+- **Effort:** S. **Risk:** low.
+
+### C8-5 — Event images and documents on iOS (parity)
+
+- **User:** Anyone who attaches files to events on the PWA, or wants to on iOS.
+- **Proposal:**
+  - the event card shows the attachments, through the task card's media view made generic;
+  - the event editor adds and removes them with the same encrypted upload service as tasks.
+
+  This includes the chunk 3 follow-up: the PWA event editor uploads attachments instead of
+  storing data URLs. Shared vectors cover an event with documents.
+- **Effort:** M. **Risk:** low–medium (uploads, two clients).
+
+### C8-6 — iPad keeps the phone's column width (layout consistency) — decision needed
+
+- **Proposal:** Board columns are 330 pt on every width. Extra width shows more columns, as you
+  asked for the PWA desktop.
+- **Decision needed:** apply the desktop rule to iPad, or keep iPad's stretched columns.
+- **Effort:** S. **Risk:** low.
+
+### C8-7 — Upcoming in parts (architecture)
+
+- **Proposal:**
+  - the event editor, new-item sheet, calendar and cards move to their own files;
+  - grouping and sorting move into TaskifyCore's `UpcomingTaskOrganizer`, with tests;
+  - the grouped result is memoized on the tasks revision (after C8-1).
+
+  This is behaviour-preserving, one commit per move.
+- **Expected:** `UpcomingView.swift` drops to about 1,000 lines.
+- **Effort:** M. **Risk:** low.
+
+### Recommended order
+
+C8-2 (data loss) → C8-4 (bug) → C8-3 (accessibility bug first, then fonts) → C8-1 → C8-7 →
+C8-5 → C8-6 (if approved).
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C8-1 | | | |
+| C8-2 | | | |
+| C8-3 | | | |
+| C8-4 | | | |
+| C8-5 | | | |
+| C8-6 | | | |
+| C8-7 | | | |
