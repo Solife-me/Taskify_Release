@@ -447,10 +447,10 @@ struct BoardsView: View {
                     } label: {
                         HStack(spacing: 8) {
                             Text(model.selectedBoard?.name ?? "Boards")
-                                .font(.system(size: 17, weight: .semibold))
+                                .scaledFont(size: 17, weight: .semibold)
                                 .lineLimit(1)
                             Image(systemName: "chevron.down")
-                                .font(.system(size: 11, weight: .bold))
+                                .scaledFont(size: 11, weight: .bold)
                         }
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .padding(.leading, 16)
@@ -467,7 +467,7 @@ struct BoardsView: View {
                             showingBoardShare = true
                         } label: {
                             Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 15, weight: .semibold))
+                                .scaledFont(size: 15, weight: .semibold)
                                 .frame(width: 42, height: 42)
                                 .contentShape(Rectangle())
                         }

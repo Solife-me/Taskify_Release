@@ -236,7 +236,7 @@ private struct TaskDocumentTile: View {
                             .clipped()
                     } else if let textPreview {
                         Text(textPreview)
-                            .font(.system(size: compact ? 10 : 11, design: .monospaced))
+                            .scaledFont(size: compact ? 10 : 11, design: .monospaced)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                             .lineLimit(compact ? 5 : 7)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -244,7 +244,7 @@ private struct TaskDocumentTile: View {
                     } else {
                         VStack(spacing: 9) {
                             Image(systemName: documentIcon)
-                                .font(.system(size: compact ? 31 : 38, weight: .light))
+                                .scaledFont(size: compact ? 31 : 38, weight: .light)
                                 .foregroundStyle(TaskifyTheme.accent)
                             Text(document.kind.uppercased())
                                 .font(.caption2.weight(.bold))
@@ -581,7 +581,7 @@ private struct TaskLinkPreviewCard: View {
                                     .padding(7)
                             } else {
                                 Image(systemName: "link")
-                                    .font(.system(size: 17, weight: .semibold))
+                                    .scaledFont(size: 17, weight: .semibold)
                                     .foregroundStyle(TaskifyTheme.accent)
                             }
                         }
@@ -632,7 +632,7 @@ private struct TaskLinkPreviewCard: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text(siteLabel.uppercased())
-                .font(.system(size: 9, weight: .semibold))
+                .scaledFont(size: 9, weight: .semibold)
                 .tracking(0.8)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
                 .lineLimit(1)

@@ -27,7 +27,7 @@ struct IndexCardColumnView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Index")
-                .font(.system(size: 17, weight: .semibold))
+                .scaledFont(size: 17, weight: .semibold)
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
             if flatEntries.isEmpty {
@@ -298,13 +298,13 @@ struct CompoundColumnView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if !hideBoardName {
                         Text(reference.board.name.uppercased())
-                            .font(.system(size: 9, weight: .bold))
+                            .scaledFont(size: 9, weight: .bold)
                             .tracking(1)
                             .foregroundStyle(TaskifyTheme.tertiaryText)
                             .lineLimit(1)
                     }
                     Text(reference.column.name)
-                        .font(.system(size: 17, weight: .semibold))
+                        .scaledFont(size: 17, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .lineLimit(1)
                 }
@@ -335,7 +335,7 @@ struct CompoundColumnView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 15, weight: .bold))
+                        .scaledFont(size: 15, weight: .bold)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .frame(width: 34, height: 34)
                         .background(TaskifyTheme.raisedFill, in: Circle())
@@ -433,7 +433,7 @@ struct ListColumnView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(column.name)
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(size: 17, weight: .semibold)
                     .foregroundStyle(TaskifyTheme.secondaryText)
                 Spacer()
                 Text("\(tasks.count + events.count)")
@@ -502,7 +502,7 @@ struct ListColumnView: View {
                     .disabled(orderedColumns.count <= 1)
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 15, weight: .bold))
+                        .scaledFont(size: 15, weight: .bold)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .frame(width: 34, height: 34)
                         .background(TaskifyTheme.raisedFill, in: Circle())
@@ -655,7 +655,7 @@ struct DayColumnView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(weekday.shortName)
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(size: 17, weight: .semibold)
                     .foregroundStyle(TaskifyTheme.secondaryText)
                 Spacer()
                 Menu {
@@ -733,15 +733,24 @@ struct TaskCardView: View {
     @State private var showingTaskShare = false
     @State private var taskShareMode: TaskShareMode = .share
     @State private var confirmingRecurringDeletion = false
+    @State private var showingMove = false
 
     init(task: TaskItem, allowsDragging: Bool = false) {
         self.task = task
         self.allowsDragging = allowsDragging
     }
 
-    /// Centres the title's first line on the 30pt complete button, which is where a one-line
-    /// card had it when the row was centre-aligned.
-    private static let titleLineInset = (30 - UIFont.systemFont(ofSize: 16, weight: .semibold).lineHeight) / 2
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// The complete button, 30 pt at the default text size, grows with the title (C8-3).
+    private var completeButtonSize: CGFloat { ScaledSize.scaled(30, relativeTo: .callout, for: dynamicTypeSize) }
+
+    /// Centres the title's first line on the complete button, which is where a one-line card had
+    /// it when the row was centre-aligned.
+    private var titleLineInset: CGFloat {
+        let titleSize = ScaledSize.scaled(16, for: dynamicTypeSize)
+        return max(0, (completeButtonSize - UIFont.systemFont(ofSize: titleSize, weight: .semibold).lineHeight) / 2)
+    }
 
     private var subtaskProgress: String? {
         guard let subtasks = task.subtasks, !subtasks.isEmpty else { return nil }
@@ -824,11 +833,11 @@ struct TaskCardView: View {
                         Image(systemName: isSelectionMode
                             ? (isSelected ? "checkmark.circle.fill" : "circle")
                             : (task.completed ? "checkmark.circle.fill" : "circle"))
-                            .font(.system(size: 22, weight: .medium))
+                            .scaledFont(size: 22, weight: .medium)
                             .foregroundStyle((isSelectionMode ? isSelected : task.completed)
                                 ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
                             .contentTransition(.symbolEffect(.replace))
-                            .frame(width: 30, height: 30)
+                            .frame(width: completeButtonSize, height: completeButtonSize)
                     }
                     .buttonStyle(TaskCompletionToggleButtonStyle {
                         handleCompletionPressDown(origin: proxy.flightOrigin,
@@ -838,13 +847,13 @@ struct TaskCardView: View {
                         ? (isSelected ? "Deselect task" : "Select task")
                         : (task.completed ? "Mark incomplete" : "Complete task"))
                 }
-                .frame(width: 30, height: 30)
+                .frame(width: completeButtonSize, height: completeButtonSize)
 
                 // Title and details open the editor; the note opens the note viewer.
                 VStack(alignment: .leading, spacing: 3) {
                     Button(action: editTapped) {
                         Text(displayTitle)
-                            .font(.system(size: 16, weight: .semibold))
+                            .scaledFont(size: 16, weight: .semibold)
                             .foregroundStyle(task.completed ? TaskifyTheme.tertiaryText : TaskifyTheme.primaryText)
                             .strikethrough(task.completed)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -951,7 +960,7 @@ struct TaskCardView: View {
                 // offscreen pass covers glyphs rather than the whole row.
                 .taskifyLegibilityShadow(overPhoto)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, Self.titleLineInset)
+                .padding(.top, titleLineInset)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -977,7 +986,7 @@ struct TaskCardView: View {
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Image(systemName: subtask.completed ? "checkmark.square.fill" : "square")
-                                    .font(.system(size: 14, weight: .semibold))
+                                    .scaledFont(size: 14, weight: .semibold)
                                     .foregroundStyle(
                                         subtask.completed
                                             ? TaskifyTheme.accent
@@ -1082,12 +1091,23 @@ struct TaskCardView: View {
                 showingEditor = true
             }
         }
+        // Dragging is the visual way to move a card; VoiceOver gets the move sheet (C8-3).
+        .accessibilityAction(named: "Move to…") { showingMove = true }
+        .sheet(isPresented: $showingMove) {
+            SelectionMoveSheet(selection: TaskSelectionController.single(task.id)) {}
+                .environment(model)
+        }
         .contextMenu {
             if !isSelectionMode {
                 Button {
                     showingEditor = true
                 } label: {
                     Label("Edit", systemImage: "pencil")
+                }
+                Button {
+                    showingMove = true
+                } label: {
+                    Label("Move to…", systemImage: "arrow.right.square")
                 }
                 Button {
                     if model.copyTask(task.id) {

@@ -78,10 +78,7 @@ struct TaskifyNativeApp: App {
                 .environmentObject(wallet)
                 .tint(appAccent)
                 .preferredColorScheme(.dark)
-                .dynamicTypeSize(
-                    TaskifyInterfaceScale(rawValue: interfaceScaleRaw)?.dynamicTypeSize
-                        ?? TaskifyInterfaceScale.system.dynamicTypeSize
-                )
+                .taskifyInterfaceScale(TaskifyInterfaceScale(rawValue: interfaceScaleRaw) ?? .system)
                 .task(id: model.isLoading) {
                     guard !model.isLoading else { return }
                     await model.refreshShareState(retry: true)

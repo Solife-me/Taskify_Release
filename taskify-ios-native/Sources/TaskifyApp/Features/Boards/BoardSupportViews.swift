@@ -69,7 +69,7 @@ struct SharedTaskInboxSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .semibold))
+                            .scaledFont(size: 14, weight: .semibold)
                             .foregroundStyle(TaskifyTheme.primaryText)
                             .frame(width: 32, height: 32)
                             .background(TaskifyTheme.raisedFill, in: Circle())
@@ -109,7 +109,7 @@ struct SharedTaskInboxCard: View {
                     item.task.isAssignment ? "ASSIGNMENT" : "SHARED TASK",
                     systemImage: item.task.isAssignment ? "person.crop.circle.badge.checkmark" : "paperplane.fill"
                 )
-                .font(.system(size: 10, weight: .bold))
+                .scaledFont(size: 10, weight: .bold)
                 .tracking(0.8)
                 .foregroundStyle(TaskifyTheme.accent)
 
@@ -122,7 +122,7 @@ struct SharedTaskInboxCard: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.task.title)
-                    .font(.system(size: 18, weight: .semibold))
+                    .scaledFont(size: 18, weight: .semibold)
                     .foregroundStyle(TaskifyTheme.primaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -278,7 +278,7 @@ struct BoardSortOptionsSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("SORT TASKS BY")
-                        .font(.system(size: 11, weight: .bold))
+                        .scaledFont(size: 11, weight: .bold)
                         .tracking(1)
                         .foregroundStyle(TaskifyTheme.tertiaryText)
 
@@ -330,7 +330,7 @@ struct BoardUpcomingView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 9) {
                 Label("Upcoming", systemImage: "calendar")
-                    .font(.system(size: 18, weight: .semibold))
+                    .scaledFont(size: 18, weight: .semibold)
                     .foregroundStyle(TaskifyTheme.primaryText)
                     .padding(.bottom, 7)
 
@@ -345,7 +345,7 @@ struct BoardUpcomingView: View {
                         switch row {
                         case .header(let date):
                             Text(dayLabel(date).uppercased())
-                                .font(.system(size: 12, weight: .bold))
+                                .scaledFont(size: 12, weight: .bold)
                                 .tracking(0.6)
                                 .foregroundStyle(TaskifyTheme.tertiaryText)
                                 .padding(.top, row.id == rows.first?.id ? 0 : 9)
@@ -384,7 +384,7 @@ struct BoardCompletedView: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
                     Label("Completed", systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 18, weight: .semibold))
+                        .scaledFont(size: 18, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
 
                     Spacer()
@@ -589,7 +589,7 @@ struct BoardAddSheet: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 Text("BOARD TYPE")
-                    .font(.system(size: 10, weight: .bold))
+                    .scaledFont(size: 10, weight: .bold)
                     .tracking(1.2)
                     .foregroundStyle(TaskifyTheme.tertiaryText)
                 Picker("Board type", selection: $boardKind) {
@@ -620,7 +620,7 @@ struct BoardAddSheet: View {
     private var compoundBoardPicker: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("LINKED LIST BOARDS")
-                .font(.system(size: 10, weight: .bold))
+                .scaledFont(size: 10, weight: .bold)
                 .tracking(1.2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
 
@@ -884,7 +884,7 @@ struct FloatingQuickAddBar: View {
             if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button(action: onVoice) {
                     Image(systemName: "mic.fill")
-                        .font(.system(size: 17, weight: .semibold))
+                        .scaledFont(size: 17, weight: .semibold)
                         .frame(width: 48, height: 48)
                         .contentShape(Circle())
                         .foregroundStyle(.white)
@@ -900,7 +900,7 @@ struct FloatingQuickAddBar: View {
 
             Button(action: onAddButton) {
                 Image(systemName: "plus")
-                    .font(.system(size: 19, weight: .bold))
+                    .scaledFont(size: 19, weight: .bold)
                     .frame(width: 48, height: 48)
                     .contentShape(Circle())
                     .foregroundStyle(.white)
@@ -1163,9 +1163,9 @@ struct SelectionBarAction: View {
         Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: systemName)
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(size: 17, weight: .semibold)
                 Text(label)
-                    .font(.system(size: 10, weight: .semibold))
+                    .scaledFont(size: 10, weight: .semibold)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
@@ -1410,7 +1410,7 @@ struct BoardShareSheet: View {
                                     Text("Creating a template snapshot…")
                                 } else {
                                     Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
-                                        .font(.system(size: 34, weight: .medium))
+                                        .scaledFont(size: 34, weight: .medium)
                                     Text(templateError ?? "The template isn't ready yet.")
                                     Button("Try again", action: generateTemplate)
                                         .buttonStyle(.bordered)
@@ -1443,7 +1443,7 @@ struct BoardShareSheet: View {
                         if let activeShareBoard {
                             VStack(alignment: .leading, spacing: 7) {
                                 Text(shareMode == .board ? "BOARD ID" : "TEMPLATE BOARD ID")
-                                    .font(.system(size: 10, weight: .bold))
+                                    .scaledFont(size: 10, weight: .bold)
                                     .tracking(1.2)
                                     .foregroundStyle(TaskifyTheme.tertiaryText)
                                 Text(activeShareBoard.effectiveNostrBoardID)
@@ -1532,7 +1532,7 @@ struct BoardShareSheet: View {
             }
 
             Image(systemName: "printer")
-                .font(.system(size: 44, weight: .medium))
+                .scaledFont(size: 44, weight: .medium)
                 .foregroundStyle(TaskifyTheme.secondaryText)
                 .frame(width: 270, height: 200)
                 .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))

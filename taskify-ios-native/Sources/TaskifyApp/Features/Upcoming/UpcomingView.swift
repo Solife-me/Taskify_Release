@@ -585,7 +585,7 @@ struct UpcomingView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(groups) { group in
                         Text(group.date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
-                            .font(.system(size: 16, weight: .bold))
+                            .scaledFont(size: 16, weight: .bold)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                             .taskifyLegibilityShadow(overPhoto)
                             .padding(.top, 4)
@@ -910,7 +910,7 @@ struct UpcomingView: View {
                 showingSortOptions = true
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 16, weight: .semibold))
+                    .scaledFont(size: 16, weight: .semibold)
                     .foregroundStyle(controlsAreCustomized ? TaskifyTheme.accent : TaskifyTheme.primaryText)
                     .frame(width: 42, height: 42)
                     .contentShape(Rectangle())
@@ -926,7 +926,7 @@ struct UpcomingView: View {
                 showingSharedInbox = true
             } label: {
                 Image(systemName: model.pendingSharedInboxCount > 0 ? "tray.full.fill" : "tray")
-                    .font(.system(size: 16, weight: .semibold))
+                    .scaledFont(size: 16, weight: .semibold)
                     .foregroundStyle(model.pendingSharedInboxCount > 0 ? TaskifyTheme.accent : TaskifyTheme.primaryText)
                     .frame(width: 42, height: 42)
                     .contentShape(Rectangle())
@@ -949,7 +949,7 @@ struct UpcomingView: View {
             }
         } label: {
             Text("Today")
-                .font(.system(size: 14, weight: .semibold))
+                .scaledFont(size: 14, weight: .semibold)
                 .foregroundStyle(TaskifyTheme.primaryText)
                 .padding(.horizontal, 18)
                 .frame(height: 42)
@@ -963,8 +963,7 @@ struct UpcomingView: View {
         TaskifyGlassControlGroup(spacing: 10) {
             HStack(spacing: 10) {
                 Text("Upcoming")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .taskifyScreenTitle()
 
                 Spacer()
 
@@ -1200,7 +1199,7 @@ private struct UpcomingCompactCalendar: View {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                     Text(symbol.uppercased())
-                        .font(.system(size: 11, weight: .bold))
+                        .scaledFont(size: 11, weight: .bold)
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                         .frame(maxWidth: .infinity)
                         .frame(height: 22)
@@ -1267,7 +1266,7 @@ private struct UpcomingCompactCalendar: View {
             } label: {
                 HStack(spacing: 6) {
                     Text(visibleMonth.formatted(.dateTime.month(.wide).year()))
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .scaledFont(size: 17, weight: .bold, design: .rounded)
                         .foregroundStyle(
                             showingMonthPicker
                                 ? TaskifyTheme.accent
@@ -1277,7 +1276,7 @@ private struct UpcomingCompactCalendar: View {
                         .contentTransition(.numericText())
 
                     Image(systemName: showingMonthPicker ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 16, weight: .semibold))
+                        .scaledFont(size: 16, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.accent)
                         .contentTransition(.symbolEffect(.replace))
                 }
@@ -1439,7 +1438,7 @@ private struct UpcomingCompactCalendar: View {
             changeMonth(by: offset)
         } label: {
             Image(systemName: systemName)
-                .font(.system(size: 17, weight: .semibold))
+                .scaledFont(size: 17, weight: .semibold)
                 .foregroundStyle(TaskifyTheme.accent)
                 .frame(width: 38, height: 38)
                 .contentShape(Rectangle())
@@ -1658,7 +1657,7 @@ private struct DeviceReminderCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(reminder.title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .scaledFont(size: 16, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1763,13 +1762,13 @@ struct TaskifyEventCard: View {
         HStack(alignment: .top, spacing: 12) {
             if isSelecting {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 22, weight: .semibold))
+                    .scaledFont(size: 22, weight: .semibold)
                     .foregroundStyle(isSelected ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
                     .frame(width: 24, height: 38)
             }
 
             Image(systemName: "calendar.badge.clock")
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(size: 16, weight: .semibold)
                 .foregroundStyle(Color.green)
                 .frame(width: 38, height: 38)
                 .background(Color.green.opacity(0.16), in: Circle())
@@ -1777,7 +1776,7 @@ struct TaskifyEventCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(event.title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .scaledFont(size: 16, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -1888,7 +1887,7 @@ private struct DeviceCalendarEventCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "calendar")
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(size: 16, weight: .semibold)
                 .foregroundStyle(Color(uiColor: event.color))
                 .frame(width: 38, height: 38)
                 .background(Color(uiColor: event.color).opacity(0.16), in: Circle())
@@ -1896,7 +1895,7 @@ private struct DeviceCalendarEventCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(event.title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .scaledFont(size: 16, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1948,14 +1947,14 @@ private struct UsHolidayCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "star.fill")
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(size: 16, weight: .semibold)
                 .foregroundStyle(Color.pink)
                 .frame(width: 38, height: 38)
                 .background(Color.pink.opacity(0.16), in: Circle())
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(holiday.title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .scaledFont(size: 16, weight: .semibold)
                     .foregroundStyle(TaskifyTheme.primaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(holiday.summary)
