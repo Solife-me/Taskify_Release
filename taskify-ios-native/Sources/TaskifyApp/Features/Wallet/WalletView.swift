@@ -80,7 +80,8 @@ enum WalletPhaseOut {
     /// Read with `@AppStorage` so views can follow it without observing `WalletViewModel`.
     static let walletEnabledKey = "taskify.wallet.enabled.v1"
     static let walletClosedKey = "taskify.wallet.closed.v1"
-    static let noticeSeenKey = "taskify.wallet.phaseOutNoticeSeen.v1"
+    /// v2 names the closing date, so it shows once more to users who saw v1 (C9-1).
+    static let noticeSeenKey = "taskify.wallet.phaseOutNoticeSeen.v2"
 
     static var isWalletEnabled: Bool {
         UserDefaults.standard.bool(forKey: walletEnabledKey)
@@ -95,6 +96,8 @@ enum WalletPhaseOut {
     Dear Taskify User,
 
     We appreciate you choosing to use our app and are committed to providing the best possible user experience. As a result of this commitment we have decided to phase out the Taskify wallet. Removing the wallet will allow us to spend more time improving the core app experience and can improve the app performance.
+
+    The wallet no longer takes in new funds, and it closes on \(TaskifyWalletPhaseOut.removalDateText). After that, Taskify only shows how to recover what is left.
 
     We encourage you to move any remaining funds immediately. If you're looking for another ecash wallet, Minibits and Cashu.me are both great options.
 
@@ -125,7 +128,7 @@ struct WalletPhaseOutNoticePresenter: View {
                 )
             ) {
                 Button("Got it", role: .cancel) { noticeSeen = true }
-                Button("Open Wallet") {
+                Button("Move Funds Out") {
                     noticeSeen = true
                     openWallet()
                 }
@@ -142,14 +145,9 @@ struct WalletCloseOutError: LocalizedError {
 
 @MainActor
 final class WalletViewModel: ObservableObject {
-    /// Desktop and tablet wallets must not race the phone to redeem shared DMs.
-    var automaticallyRedeemsIncomingPayments: Bool {
-        #if os(iOS)
-        UIDevice.current.userInterfaceIdiom == .phone
-        #else
-        false
-        #endif
-    }
+    /// The wallet is withdraw-only (C9-1): tokens that arrive are saved, never redeemed into it,
+    /// and wait in Move funds out to be copied to another wallet.
+    var automaticallyRedeemsIncomingPayments: Bool { false }
 
     @Published private(set) var incomingTokensAwaitingRedemption: [CashuIncomingTokenDelivery] = []
     @Published private(set) var incomingRequestsAwaitingRedemption: [CashuNostrPaymentDelivery] = []
@@ -1961,69 +1959,6 @@ final class WalletViewModel: ObservableObject {
     }
 }
 
-/// Shared by the iPad and Mac wallets. Rendering only decodes local token metadata.
-struct ManualIncomingPaymentsView: View {
-    @ObservedObject var wallet: WalletViewModel
-    @State private var redemptionError: String?
-
-    var body: some View {
-        if !wallet.automaticallyRedeemsIncomingPayments {
-            GroupBox("Incoming Payments") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Payments are not automatically redeemed on this device. Choose Redeem to add one here, or leave it for your phone.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    ForEach(wallet.incomingTokensAwaitingRedemption) { delivery in
-                        HStack {
-                            paymentLabel(token: delivery.token, date: delivery.receivedAt)
-                            Spacer()
-                            Button("Redeem") {
-                                Task {
-                                    redemptionError = nil
-                                    do { try await wallet.redeemIncomingPayment(delivery) }
-                                    catch { redemptionError = WalletViewModel.message(for: error) }
-                                }
-                            }
-                            .disabled(wallet.isWorking || wallet.isLoading || wallet.isNWCWalletActive)
-                        }
-                    }
-                    ForEach(wallet.incomingRequestsAwaitingRedemption) { delivery in
-                        HStack {
-                            paymentLabel(
-                                token: (try? CashuPaymentRequestContract.tokenString(fromPaymentPayload: delivery.payloadJSON)) ?? "",
-                                date: delivery.receivedAt
-                            )
-                            Spacer()
-                            Button("Redeem") {
-                                Task {
-                                    redemptionError = nil
-                                    do { try await wallet.redeemIncomingPayment(delivery) }
-                                    catch { redemptionError = WalletViewModel.message(for: error) }
-                                }
-                            }
-                            .disabled(wallet.isWorking || wallet.isLoading || wallet.isNWCWalletActive)
-                        }
-                    }
-                    if let redemptionError {
-                        Text(redemptionError).font(.caption).foregroundStyle(.red)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-            }
-        }
-    }
-
-    private func paymentLabel(token: String, date: Date) -> some View {
-        let summary = CashuWalletService.offlineTokenSummary(token)
-        return VStack(alignment: .leading, spacing: 4) {
-            Text(summary.map { wallet.formattedSats($0.amount) } ?? "Ecash payment")
-            if let summary { Text(summary.mintURL).font(.caption).foregroundStyle(.secondary) }
-            Text(date.formatted(date: .abbreviated, time: .shortened))
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-}
-
 #if os(iOS)
 struct WalletView: View {
     @Environment(AppModel.self) private var model
@@ -2031,19 +1966,12 @@ struct WalletView: View {
     @EnvironmentObject private var wallet: WalletViewModel
     @State private var showingMints = false
     @State private var showingHistory = false
-    @State private var showingReceive = false
-    @State private var showingLightningReceive = false
-    @State private var showingScanner = false
+    @State private var showingMoveOut = false
     @State private var showingSend = false
     @State private var showingLightningSend = false
     @State private var showingPaymentRequest = false
-    @State private var showingCreatePaymentRequest = false
-    @State private var showingPendingEcash = false
     @State private var showingRecovery = false
-    @State private var scannedRedeemable: RedeemableCashuToken?
-    @State private var isInspectingScan = false
     @State private var showingWalletMode = false
-    @State private var showingNWCReceive = false
     @State private var showingNWCSend = false
     @State private var showingNWCTokens = false
     @State private var showingNWCHistory = false
@@ -2061,24 +1989,14 @@ struct WalletView: View {
                         utilityToolbar
                             .padding(.top, 14)
 
-                        if !wallet.automaticallyRedeemsIncomingPayments {
-                            ManualIncomingPaymentsView(wallet: wallet)
-                                .padding(.top, 14)
-                        }
+                        // Withdraw-only (C9-1): the balance and the ways out, nothing that takes funds in.
+                        VStack(spacing: 20) {
+                            balanceCard
+                            actionRow
 
-                        Group {
-                            if wallet.snapshot.mints.isEmpty && !wallet.isLoading && !wallet.isNWCWalletActive {
-                                setupCard
-                            } else {
-                                VStack(spacing: 20) {
-                                    balanceCard
-                                    actionRow
-
-                                    if !wallet.pendingEcashReceives.isEmpty {
-                                        pendingEcashCard
-                                            .padding(.top, 4)
-                                    }
-                                }
+                            if !wallet.savedTokens.isEmpty {
+                                pendingEcashCard
+                                    .padding(.top, 4)
                             }
                         }
                         .frame(
@@ -2124,32 +2042,8 @@ struct WalletView: View {
         .sheet(isPresented: $showingHistory) {
             WalletHistorySheet(wallet: wallet)
         }
-        // Clearing the scanned token on dismiss keeps it a one-shot hand-off. It used to persist,
-        // so every later visit to Receive eCash replayed the last scan through the scanner path --
-        // which reports failures -- and a token since redeemed greeted the user with an
-        // "already spent" alert they never asked for.
-        .sheet(isPresented: $showingReceive) {
-            ReceiveCashuSheet(wallet: wallet, onSwitchMode: {
-                showingReceive = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingLightningReceive = true }
-            })
-        }
-        .sheet(isPresented: $showingLightningReceive) {
-            ReceiveLightningSheet(wallet: wallet, onSwitchMode: {
-                showingLightningReceive = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showingReceive = true }
-            })
-        }
-        .sheet(isPresented: $showingScanner) {
-            CashuTokenScannerSheet(onToken: { token in
-                showingScanner = false
-                // Scanning a token says exactly what the user wants. Opening Receive eCash first
-                // put a page about handing out requests in front of the thing they asked for.
-                Task { await redeemScannedToken(token) }
-            })
-        }
-        .sheet(item: $scannedRedeemable) { item in
-            RedeemCashuTokenSheet(wallet: wallet, redeemable: item)
+        .sheet(isPresented: $showingMoveOut) {
+            WalletMoveFundsOutSheet(wallet: wallet)
         }
         .sheet(isPresented: $showingSend) {
             SendCashuSheet(wallet: wallet, onSwitchMode: {
@@ -2166,13 +2060,6 @@ struct WalletView: View {
         .sheet(isPresented: $showingPaymentRequest) {
             PayCashuRequestSheet(wallet: wallet)
         }
-        .sheet(isPresented: $showingCreatePaymentRequest) {
-            ReceiveCashuRequestSheet(wallet: wallet)
-                .environment(model)
-        }
-        .sheet(isPresented: $showingPendingEcash) {
-            PendingEcashSheet(wallet: wallet)
-        }
         .sheet(isPresented: $showingRecovery) {
             WalletRecoverySheet(wallet: wallet)
         }
@@ -2181,9 +2068,6 @@ struct WalletView: View {
         }
         .sheet(isPresented: $showingWalletSettings) {
             WalletSettingsSheet(wallet: wallet).environment(model)
-        }
-        .sheet(isPresented: $showingNWCReceive) {
-            NWCReceiveSheet(wallet: wallet).environment(model)
         }
         .sheet(isPresented: $showingNWCSend) {
             NWCSendSheet(wallet: wallet).environment(model)
@@ -2259,25 +2143,6 @@ struct WalletView: View {
         }
     }
 
-    /// Verifies a scanned token with its mint and opens the redeem page. Scanning is a deliberate
-    /// act, so an unusable token says so rather than failing quietly the way a clipboard read does.
-    private func redeemScannedToken(_ token: String) async {
-        guard !isInspectingScan else { return }
-        isInspectingScan = true
-        defer { isInspectingScan = false }
-
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = trimmed.lowercased().hasPrefix("cashu:")
-            ? String(trimmed.dropFirst("cashu:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            : trimmed
-        do {
-            let preview = try await wallet.previewUnspentToken(normalized)
-            scannedRedeemable = RedeemableCashuToken(token: normalized, preview: preview)
-        } catch {
-            wallet.errorMessage = WalletViewModel.message(for: error)
-        }
-    }
-
     private var balanceCard: some View {
         let nwcActive = wallet.isNWCWalletActive
         let nwcBalance = wallet.nwcStatus?.balanceSat
@@ -2345,19 +2210,9 @@ struct WalletView: View {
 
     private var actionRow: some View {
         HStack(spacing: 12) {
-            WalletActionButton(title: "Receive", icon: "arrow.down", accent: true) {
-                if wallet.isNWCWalletActive { showingNWCReceive = true } else { showingLightningReceive = true }
+            WalletActionButton(title: "Move funds out", icon: "arrow.up.right", accent: true) {
+                showingMoveOut = true
             }
-
-            Button { showingScanner = true } label: {
-                Image(systemName: "qrcode.viewfinder")
-                    .font(.system(size: 20, weight: .semibold))
-                    .frame(width: 52, height: 52)
-                    .foregroundStyle(TaskifyTheme.primaryText)
-                    .taskifyGlassControl(in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Scan a Cashu token")
 
             WalletActionButton(title: "Send", icon: "arrow.up", accent: false) {
                 if wallet.isNWCWalletActive { showingNWCSend = true } else { showingLightningSend = true }
@@ -2367,47 +2222,9 @@ struct WalletView: View {
         }
     }
 
-    private var setupCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("Set up your wallet", systemImage: "sparkles")
-                .font(.headline)
-                .foregroundStyle(TaskifyTheme.primaryText)
-
-            Text("Add a Cashu mint to receive and send ecash. Taskify suggests the same mint used by the PWA, but you can choose another.")
-                .font(.subheadline)
-                .foregroundStyle(TaskifyTheme.secondaryText)
-
-            Button {
-                Task {
-                    do {
-                        try await wallet.addMint(WalletViewModel.suggestedMintURL)
-                    } catch {
-                        wallet.errorMessage = WalletViewModel.message(for: error)
-                    }
-                }
-            } label: {
-                Label(wallet.isWorking ? "Connecting…" : "Add Taskify mint", systemImage: "plus")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .foregroundStyle(.white)
-                    .taskifyGlassControl(in: Capsule(), tint: TaskifyTheme.accent.opacity(0.75))
-            }
-            .buttonStyle(.plain)
-            .disabled(wallet.isWorking)
-
-            Button("Choose a different mint") { showingMints = true }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(TaskifyTheme.accent)
-                .frame(maxWidth: .infinity)
-        }
-        .padding(20)
-        .taskifyGlass(cornerRadius: 24)
-    }
-
     private var pendingEcashCard: some View {
         Button {
-            if wallet.isNWCWalletActive { showingNWCTokens = true } else { showingPendingEcash = true }
+            if wallet.isNWCWalletActive { showingNWCTokens = true } else { showingMoveOut = true }
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: wallet.recoverablePendingEcashReceives.isEmpty
@@ -2423,7 +2240,7 @@ struct WalletView: View {
                     )
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(wallet.isNWCWalletActive ? "Ecash tokens" : "Saved ecash")
+                    Text(wallet.isNWCWalletActive ? "Ecash tokens" : "Saved tokens")
                         .font(.headline)
                         .foregroundStyle(TaskifyTheme.primaryText)
                     Text(pendingEcashDescription)
@@ -2434,7 +2251,7 @@ struct WalletView: View {
 
                 Spacer()
 
-                Text(wallet.pendingEcashReceives.count.formatted())
+                Text((wallet.isNWCWalletActive ? wallet.pendingEcashReceives.count : wallet.savedTokens.count).formatted())
                     .font(.headline.monospacedDigit())
                     .foregroundStyle(TaskifyTheme.primaryText)
 
@@ -2453,15 +2270,7 @@ struct WalletView: View {
             let total = wallet.pendingEcashReceives.reduce(UInt64(0)) { $0 + $1.amount }
             return "\(wallet.formattedSats(total)) to move to \(wallet.nwcWalletLabel) or redeem elsewhere"
         }
-        if wallet.recoverablePendingEcashReceives.isEmpty {
-            return "A token needs your attention"
-        }
-        if !wallet.automaticallyRedeemsIncomingPayments {
-            return "Choose when to redeem these saved tokens"
-        }
-        return wallet.recoverablePendingEcashReceives.count == 1
-            ? "Waiting for its mint — retrying automatically"
-            : "Waiting for their mints — retrying automatically"
+        return "Copy these to another Cashu wallet"
     }
 }
 

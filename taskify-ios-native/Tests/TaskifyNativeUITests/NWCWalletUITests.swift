@@ -58,16 +58,8 @@ final class NWCWalletUITests: XCTestCase {
         waitForExpectations(timeout: 20)
         attach(app, "nwc-home")
 
-        // Receive 21 sats: the fake wallet settles the invoice on its own.
-        app.buttons["Receive"].tap()
-        XCTAssertTrue(app.staticTexts["fakewallet@example.com"].waitForExistence(timeout: 10))
-        app.buttons["Create invoice"].firstMatch.tap()
-        for digit in ["2", "1"] { app.buttons[digit].tap() }
-        app.buttons["Create invoice"].firstMatch.tap()
-        let received = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Received' AND label CONTAINS '21'")).firstMatch
-        XCTAssertTrue(received.waitForExistence(timeout: 45), "invoice never settled")
-        attach(app, "nwc-received")
-        app.buttons["Done"].firstMatch.tap()
+        // No Receive while the wallet is phased out (C9-1).
+        XCTAssertFalse(app.buttons["Receive"].exists)
 
         // Pay a real mint invoice through the NWC wallet.
         let invoice = try createInvoice(amount: 50)

@@ -50,8 +50,11 @@ struct RootTabView: View {
 
     init() {
 #if DEBUG
-        // Wallet UI tests run on fresh installs, which otherwise get no wallet.
-        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_WALLET"] == "enabled" {
+        // Wallet UI tests run on fresh installs, which otherwise get no wallet. Written once: this
+        // init runs on every parent update, and each write re-renders the @AppStorage readers,
+        // which made an endless update loop (the app never idled, so wallet UI tests timed out).
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_WALLET"] == "enabled",
+           !UserDefaults.standard.bool(forKey: WalletPhaseOut.walletEnabledKey) {
             UserDefaults.standard.set(true, forKey: WalletPhaseOut.walletEnabledKey)
         }
         let requestedTab = ProcessInfo.processInfo.environment["TASKIFY_INITIAL_TAB"]

@@ -19,7 +19,6 @@ struct WalletHistorySheet: View {
     @ObservedObject var wallet: WalletViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var selectedOutgoing: CashuOutgoingToken?
-    @State private var selectedLightningQuote: CashuLightningReceiveQuote?
     @State private var selectedTransaction: CashuTransactionSummary?
     @State private var filter: Filter = .all
 
@@ -77,10 +76,8 @@ struct WalletHistorySheet: View {
                                     }
                                     .buttonStyle(.plain)
                                 case .lightningInvoice(let quote):
-                                    Button { selectedLightningQuote = quote } label: {
-                                        WalletLightningInvoiceRow(quote: quote)
-                                    }
-                                    .buttonStyle(.plain)
+                                    // Status only: invoices are no longer shown for paying (C9-1).
+                                    WalletLightningInvoiceRow(quote: quote)
                                 }
                             }
                         }
@@ -102,9 +99,6 @@ struct WalletHistorySheet: View {
             }
             .sheet(item: $selectedOutgoing) { outgoing in
                 OutgoingTokenSheet(wallet: wallet, outgoing: outgoing)
-            }
-            .sheet(item: $selectedLightningQuote) { quote in
-                ReceiveLightningSheet(wallet: wallet, initialQuote: quote)
             }
             .sheet(item: $selectedTransaction) { transaction in
                 WalletTransactionDetailSheet(wallet: wallet, transaction: transaction)
