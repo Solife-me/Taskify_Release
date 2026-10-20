@@ -47,6 +47,25 @@ function optionalField<T>(payload: Record<string, unknown>, key: string, read: (
  * The task a decrypted event describes on local board `board`. `now` fills a missing due date
  * and creation time.
  */
+/**
+ * The task event payload fields this client reads or writes. Anything else in a received payload
+ * belongs to another client (iOS reminders, newer fields) and is kept in `syncExtras`.
+ */
+export const KNOWN_TASK_PAYLOAD_FIELDS = new Set([
+  "title", "priority", "note", "dueISO", "completedAt", "completedBy", "recurrence", "hiddenUntilISO",
+  "createdBy", "lastEditedBy", "createdAt", "streak", "longestStreak", "seriesId", "dueDateEnabled",
+  "dueTimeEnabled", "dueTimeZone", "images", "documents", "bounty", "subtasks", "assignees", "inboxItem",
+  "scriptureMemoryId", "scriptureMemoryStage", "scriptureMemoryPrevReviewISO", "scriptureMemoryScheduledAt",
+]);
+
+function payloadExtras(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  const extras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (!KNOWN_TASK_PAYLOAD_FIELDS.has(key) && value !== undefined) extras[key] = value;
+  }
+  return Object.keys(extras).length ? extras : undefined;
+}
+
 export function parseTaskEvent(
   payload: Record<string, unknown>,
   event: { taskId: string; status?: string; column?: string; createdAt?: number },
@@ -77,6 +96,8 @@ export function parseTaskEvent(
     seriesId: payload.seriesId as string | undefined,
     subtasks: Array.isArray(payload.subtasks) ? (payload.subtasks as Subtask[]) : undefined,
   };
+  // Another client's fields, replaced by each version (a field it removed goes too).
+  base.syncExtras = payloadExtras(payload);
   const bool = (value: unknown) => (typeof value === "boolean" ? value : undefined);
   if (has(payload, "priority")) base.priority = payload.priority === null ? undefined : normalizeTaskPriority(payload.priority);
   if (has(payload, "dueDateEnabled")) base.dueDateEnabled = bool(payload.dueDateEnabled);

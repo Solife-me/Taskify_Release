@@ -1,0 +1,304 @@
+{
+  "description": "Task events made by the PWA, and what every client must decode them to. Checked by PWA vitest and Swift TaskEventVectorTests.",
+  "boards": {
+    "lists": {
+      "id": "lists",
+      "name": "Lists",
+      "kind": "lists",
+      "columns": [
+        {
+          "id": "c1",
+          "name": "Todo"
+        }
+      ],
+      "nostr": {
+        "boardId": "taskify-vector-lists-board",
+        "relays": []
+      }
+    },
+    "week": {
+      "id": "week",
+      "name": "Week",
+      "kind": "week",
+      "nostr": {
+        "boardId": "taskify-vector-week-board",
+        "relays": []
+      }
+    }
+  },
+  "vectors": [
+    {
+      "name": "open task with a note, priority and a timed due date",
+      "board": "lists",
+      "event": {
+        "kind": 30301,
+        "created_at": 1792400000,
+        "tags": [
+          [
+            "d",
+            "v-open"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ],
+        "content": "yls2FfWJQC5z9k0ouKqJWInPFIDCpb4mlwnDICUJvKsmS0dd2Bn3oCJ/3zYis6PN2TQRpAGBcfogFCldJ9Hhx9YExdpFHeeHL5W5ydBjBA86Z80e/VUO4Pyme1Stak47hoqxr1ay52VH22OByBLRHSb9gQORBkvCU4vjm7UfxPDgrJOpbe3JzO0j2rHS2Os4mp9W5UAdRn90rvhlQrR18O8SEZaWg0fWL9R/mgJhpCITmNvmAb0aRZBc7nDkd0mqXlOKmzxdIgVpReHqiyo1Y+0S/2ZyOPHdHGRDlMij8pr27ttRPBzpYy+A7vGnNwjfagUPdtxpYnSOWDe/dqQhsFAXDY+JbNB179TIi1k95Wtnd02bTvFovAS7mYZ947sabn4DEqaVDkMIYZAC36nQZU7OCg==",
+        "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "id": "40a45b79a6d0e0b5ca5ecbaf3ee4b7dde6bf79559215dbcf2e35a3ec6989fd9b",
+        "sig": "3a104cf7e48229eb1242e884fc86bb3356eda24ec3792d44f14365d17c9c9359bf2d0b76316d4dc76a32cb337819273467fb12763489302389fccbc8dbf82c2a"
+      },
+      "expected": {
+        "id": "v-open",
+        "status": "open",
+        "title": "Call the plumber",
+        "note": "Ask about Tuesday",
+        "dueAt": 1792510200,
+        "columnId": "c1",
+        "priority": 2,
+        "recurrence": null,
+        "seriesId": null,
+        "scriptureMemoryId": null,
+        "scriptureMemoryStage": null,
+        "republishKeeps": {}
+      }
+    },
+    {
+      "name": "completed task",
+      "board": "lists",
+      "event": {
+        "kind": 30301,
+        "created_at": 1792400001,
+        "tags": [
+          [
+            "d",
+            "v-done"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "done"
+          ]
+        ],
+        "content": "dZjrasGlBRmQVYtSBIGNIfnRcOwfNLR03csRBS4EFmzUAsispTxLs/Fvz8tnzIh+eFKo1SlcAAuF6eQpuiCvwfPA2gm8FAXFyGyrme9J2cH5KiKT7WDvBxaAfoG2GN2sXSuKDV2LN5jgFdF4B48IZ2EDVVkI4Or6q6RCWb3AUHUzqDBYlMejIQfYUVYnx/B34MGi2hOMJ/owgCeIEdj6/3alqqgP2mXa1LVTTHHj5srH9mabHyQwaf/EROgyTp5Mxhba4y+qBy0BWp5xvZd7zuwJJgI80nQwosbDnXdnia7Wm1N6FYh/R63lqtfTy/JWtRg38rZWROZe8umcrwyI6MOlkaFVri9GFJPFl91aWl+25k1Is9wegBbThAldlZl62ScpeAbFixvAz/9pImGpZAKkE5hP5g96tJQTl4f2Hi4ym+0muyAxhg==",
+        "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "id": "627b3fa6979667738e8a8d4699abc57d4dd6d6973277bb72a5448e7b2f321d70",
+        "sig": "325160286b09a320545a05379b8d45cf48a7ff2d729fc03ece75eb7cf6454ad50b8e5f26277a33a413c4de6fedd805b17117b1ee11b72714a718a4793b32147c"
+      },
+      "expected": {
+        "id": "v-done",
+        "status": "done",
+        "title": "File taxes",
+        "note": "",
+        "dueAt": 1792386000,
+        "columnId": "c1",
+        "priority": null,
+        "recurrence": null,
+        "seriesId": null,
+        "scriptureMemoryId": null,
+        "scriptureMemoryStage": null,
+        "republishKeeps": {}
+      }
+    },
+    {
+      "name": "daily recurring task on a week board",
+      "board": "week",
+      "event": {
+        "kind": 30301,
+        "created_at": 1792400002,
+        "tags": [
+          [
+            "d",
+            "v-daily"
+          ],
+          [
+            "b",
+            "2e29380396d4e5d265384977361f730d9c6fd31b01cf9ef932938e5411ba9588"
+          ],
+          [
+            "col",
+            "day"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ],
+        "content": "CtXLTljNDgmgKJvKBee260OuH0iAvuTl87CKbGekCJ9vVnZwmMnhiRnt9du+q+13wOhwEz6PbS1wbKuFKAQMLlZmXg7bwZF8wewQB+W6ibOJpCnnPohCXSqXYus6j2HygQmlt4Lq8cRz6/2og5q3XcwZmgiqVw5O7EWmua/uKVxKV7gxDTtCLQ767aF/3YOExrE5wfR+cHfH+LixxILhn9u2PYTJ4/aQCh1S7d8kGv7oNx/osm2vhcIapQe9fxKk1f1zhD2kcu9sV7Fb0iXzdULDzEczapXEK7xvoGEnfV9k0oU08sj5OgvX7yz1xva0mHePgYk2YPtyfuz9IYnXXLitPXcz2MEhyc8QgzgJNZu5BORzY+vzPt60mWGXL2gIlrWoca5ZdTd3c/+MyF0gSOFIinoA4ZwDxdvIdB6vLUwHuDGqtqgBjod2yzqFCxrjU6vJ3ZN4",
+        "pubkey": "a0013ac2fec9c934686bea339d6acf90ed6027397f7023b13fab969265fabe4d",
+        "id": "4ebfe79f9b7d824ee574bd19b2bb5a9433cf1ccc0ea07a92f8716bc3133f8e73",
+        "sig": "6a844fcdb523c74e7b3f078c0b58da6e0b16a20fe7da1b9103682e38fb4337c116b765b3bf81518e3317be541f7ffb1544930884ea27897c38717dc67ce9c20f"
+      },
+      "expected": {
+        "id": "v-daily",
+        "status": "open",
+        "title": "Stretch",
+        "note": "",
+        "dueAt": 1792386000,
+        "columnId": null,
+        "priority": null,
+        "recurrence": {
+          "type": "daily"
+        },
+        "seriesId": "series-stretch",
+        "scriptureMemoryId": null,
+        "scriptureMemoryStage": null,
+        "republishKeeps": {}
+      }
+    },
+    {
+      "name": "Scripture Memory review keeps its passage link",
+      "board": "lists",
+      "event": {
+        "kind": 30301,
+        "created_at": 1792400003,
+        "tags": [
+          [
+            "d",
+            "recurrence:scripture-memory:2026-10-19"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ],
+        "content": "J6D6mnDxrQVFEeJMPCq0lYsHowixlZp2hsfHkYG1KwcakuAfNJkbiR8VCE9SLBcEUSKeGAd+J1nE08nj8gTWp8moklozrk4rkABPOc858Xixq81ZkMlm7a3zEDYBnw4WiWSoZ8AkAyMUxQczsn67dEdCjqprpYI+YQqgUJ/cJVKTBKqifQkabAqcSP9dryQYQD0Oat/8MolM7Lbg/JzY+8a8F5Nh6HMITqTvXwP5nNIMMnmQTQNSsKkCLmJYrFmonmpBzjGck/STHbleY3+gSeq9+AVcBykHA5f4ssFeqXer8e/XawUmnHs6+qx9RpFnAGeXDF1/oMTFZsnkbRlbPrHn7etS4inZrCqaF4VutOgg0DWJ/Rtf/DX2VEhy7VZ6ZRTGU0NkirIMqXKKP5GzdvAk5NnRE91EP4bqsx7SRHOUunnMq9Jwnjhpx9kWIkcCn44vKOmJv3OEyByTLQ0MbSzQu8tXXOj8hOQiF7BovY6d/AnqEpJDhtx7hH+PZHXrzI2+pd1Y+YDONs8izxWAtyiIf902c04v",
+        "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "id": "2f7858499fde59270310cfc6d3b66163028ce1360da7cf9c78d836a2f24f4d61",
+        "sig": "083a6c1a58f69cc89089e90dae988333dd0baf8f8cea9adbc6ac791b8e272334310a57dd60cc0fceb7b4f4df439bf5c6aa2301cdfe774bbc38ab8f19b93d424c"
+      },
+      "expected": {
+        "id": "recurrence:scripture-memory:2026-10-19",
+        "status": "open",
+        "title": "Review John 3:16",
+        "note": "",
+        "dueAt": 1792386000,
+        "columnId": "c1",
+        "priority": null,
+        "recurrence": {
+          "type": "daily"
+        },
+        "seriesId": "scripture-memory",
+        "scriptureMemoryId": "entry-1",
+        "scriptureMemoryStage": 2,
+        "republishKeeps": {}
+      }
+    },
+    {
+      "name": "fields another client wrote survive this client's republish",
+      "board": "lists",
+      "event": {
+        "kind": 30301,
+        "created_at": 1792400004,
+        "tags": [
+          [
+            "d",
+            "v-extras"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ],
+        "content": "qmd11QLUTHpf1M7A9AZAVyFF6n+2wJAHi0Zvb2G6ccWov5QD5TM51uM2qPmcTJtJdtJMdB0wHBIZaHioxA4hczVD92fPVHz4d1qhB/QbWfn3trEHn0sxPCcqNM/7zuiL8caWEe073HI1TZwht+OphHgllWDcDUQoCJ9oHyBcwwFmv5saGpNOUGf8++pG9gdeg00GDJF+0KTJcbQ2qOkA8aXO7Y9lFqw7cLyCoK5BHkVzNCds/6xCr1SowFLX8z67fCtwWr4WwDWa5nmV6Y0IPLKWJ2bYnrRhYU0WFpe/0haxHsIYnz++86ZFYq4+5cXk6hUa1/rK4SPCjqxE5bNeJH1IUAsIqc2rhZRyRn67wq+RNkXgS9KeouiPoWd+UIGSH0KuHeJ9dgOgvxslNjn+pRi3qZyH7r2pIT5UhiFDVlkOrM4qrto2",
+        "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "id": "cefe754fb3d47c52506be1e8d0d49dd4eb63a01f73e4a0faba058d1471d431b3",
+        "sig": "6fb80db3635e111860564fd92cde16c2ffe4237dce6dd98f8464e794ab0e83653bfd3e10ab8342c7203de8b7bece56a0e149fa5f81ea567ec859295f298cc606"
+      },
+      "expected": {
+        "id": "v-extras",
+        "status": "open",
+        "title": "Dentist",
+        "note": "",
+        "dueAt": 1792591200,
+        "columnId": "c1",
+        "priority": null,
+        "recurrence": null,
+        "seriesId": null,
+        "scriptureMemoryId": null,
+        "scriptureMemoryStage": null,
+        "republishKeeps": {
+          "reminders": [
+            "15m"
+          ],
+          "reminderTime": "09:00"
+        }
+      }
+    },
+    {
+      "name": "deleted task (tombstone)",
+      "board": "lists",
+      "event": {
+        "kind": 30301,
+        "created_at": 1792400005,
+        "tags": [
+          [
+            "d",
+            "v-deleted"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "deleted"
+          ]
+        ],
+        "content": "5oppTgJOHZZO0cuINwiZP6li15QA1ZBfrgOkXYrK9cS1/cmbz3Qj4Xd8qp9uuhw4bh5PLl+AeYMr1ROIv/rkJV/5BVnnrcFeS+5qInk0G5Bs1jcrk+PryEe/IQEbWXtFhUiX01IQIWG95hWURXC+G/QCtNjsffSJwD3ZaHG/kg==",
+        "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "id": "153ba14f060c1877d6aab92b44a4caa2f1cc23f1fb39fcd44d6ec25e514ef397",
+        "sig": "bf362748cda1dce1294a4598641519ad5d7c141326d0685b037e496edfe8e2e28d25774b29615708497c6e09e3e61f94f18707b6449de86bec90cb7e6c4b28c5"
+      },
+      "expected": {
+        "id": "v-deleted",
+        "status": "deleted",
+        "title": "Old idea",
+        "note": "",
+        "dueAt": 1790830800,
+        "columnId": "c1",
+        "priority": null,
+        "recurrence": null,
+        "seriesId": null,
+        "scriptureMemoryId": null,
+        "scriptureMemoryStage": null,
+        "republishKeeps": {}
+      }
+    }
+  ]
+}

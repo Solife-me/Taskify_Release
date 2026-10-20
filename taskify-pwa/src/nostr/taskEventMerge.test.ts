@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Board, Task } from "../domains/tasks/taskTypes";
 import { PINNED_BOUNTY_LIST_KEY } from "../domains/tasks/taskUtils";
 import { taskEventBody } from "./boardWire";
-import { mergeIncomingBounty, mergeIncomingTask, parseTaskEvent } from "./taskEventMerge";
+import { KNOWN_TASK_PAYLOAD_FIELDS, mergeIncomingBounty, mergeIncomingTask, parseTaskEvent } from "./taskEventMerge";
 
 const lists = { id: "b1", name: "Team", kind: "lists", columns: [{ id: "c1", name: "Todo" }] } as Board;
 const NOW = new Date("2026-10-15T12:00:00.000Z");
@@ -11,6 +11,41 @@ const STRANGER = "f".repeat(64);
 const ctx = { nostrAt: 200, order: 3, now: NOW.getTime(), eventPubkey: OWNER, incomingIsNewerOnTie: false };
 
 describe("parseTaskEvent", () => {
+  it("keeps fields another client wrote and writes them back, so editing here never erases them", () => {
+    // As iOS publishes it: reminders and a field from a newer client this one does not know.
+    const fromIos = {
+      title: "Dentist",
+      dueISO: "2026-10-20T14:00:00.000Z",
+      reminders: [{ id: "r1", minutesBefore: 30 }],
+      reminderTime: "09:00",
+      futureField: { x: 1 },
+    };
+    const read = parseTaskEvent(fromIos, { taskId: "t1", status: "open", column: "c1", createdAt: 200 }, lists, NOW);
+    const local = mergeIncomingTask(undefined, read, ctx);
+    expect(local.syncExtras).toEqual({ reminders: [{ id: "r1", minutesBefore: 30 }], reminderTime: "09:00", futureField: { x: 1 } });
+    expect(local.reminders).toBeUndefined(); // this client's reminders stay per device
+
+    const edited = { ...local, title: "Dentist (moved)" } as Task;
+    const republished = taskEventBody(edited, { actorPubkey: OWNER, attachments: { images: null, documents: null } });
+    expect(republished).toMatchObject({ title: "Dentist (moved)", reminders: [{ id: "r1", minutesBefore: 30 }], reminderTime: "09:00", futureField: { x: 1 } });
+
+    // The other client removed its reminders: they go here too.
+    const later = parseTaskEvent({ title: "Dentist (moved)", dueISO: fromIos.dueISO }, { taskId: "t1", status: "open", column: "c1", createdAt: 300 }, lists, NOW);
+    expect(mergeIncomingTask(local, later, { ...ctx, nostrAt: 300 }).syncExtras).toBeUndefined();
+  });
+
+  it("every field this client writes is one it reads, so none lands in syncExtras", () => {
+    const full = {
+      id: "t", boardId: "b1", columnId: "c1", title: "x", note: "n", dueISO: NOW.toISOString(), priority: 1,
+      recurrence: { type: "daily" }, seriesId: "s", subtasks: [], assignees: [], streak: 1, longestStreak: 2,
+      createdBy: OWNER, createdAt: 1, completedAt: "2026-10-15T00:00:00.000Z", completedBy: OWNER, hiddenUntilISO: NOW.toISOString(),
+      dueDateEnabled: true, dueTimeEnabled: true, dueTimeZone: "UTC", scriptureMemoryId: "e", scriptureMemoryStage: 1,
+      scriptureMemoryPrevReviewISO: NOW.toISOString(), scriptureMemoryScheduledAt: NOW.toISOString(),
+    } as Task;
+    const body = taskEventBody(full, { actorPubkey: OWNER, attachments: { images: null, documents: null } });
+    expect(Object.keys(body).filter((key) => !KNOWN_TASK_PAYLOAD_FIELDS.has(key))).toEqual([]);
+  });
+
   it("carries a Scripture Memory review's link to its passage, under the field names iOS uses", () => {
     const review = {
       id: "recurrence:scripture-memory:2026-10-19",

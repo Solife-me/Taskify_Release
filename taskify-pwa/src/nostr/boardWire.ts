@@ -53,7 +53,8 @@ export type PreparedAttachments = { images: string[] | null; documents: unknown[
 
 /**
  * A task's published payload. Absent optional fields go out as explicit nulls so other devices
- * clear them. Reminders are per device and never published.
+ * clear them. Reminders are per device and never published (another client's published reminders
+ * travel in `syncExtras`).
  */
 export function taskEventBody(
   task: Task,
@@ -63,6 +64,9 @@ export function taskEventBody(
   const lastEditedBy = normalizeAgentPubkey(task.lastEditedBy || options.actorPubkey || task.createdBy) ?? createdBy;
   const normalizedBounty = normalizeBounty(task.bounty);
   return {
+    // Fields other clients wrote that this client does not use go back out unchanged (C7-3);
+    // everything below takes precedence over them.
+    ...(task.syncExtras ?? {}),
     title: task.title,
     priority: task.priority ?? null,
     note: task.note || "",

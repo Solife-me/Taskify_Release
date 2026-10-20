@@ -1,0 +1,318 @@
+{
+  "boards" : {
+    "lists" : {
+      "columns" : [
+        {
+          "id" : "c1",
+          "name" : "Todo"
+        }
+      ],
+      "id" : "lists",
+      "kind" : "lists",
+      "name" : "Lists",
+      "nostr" : {
+        "boardId" : "taskify-vector-lists-board",
+        "relays" : [
+
+        ]
+      }
+    },
+    "week" : {
+      "id" : "week",
+      "kind" : "week",
+      "name" : "Week",
+      "nostr" : {
+        "boardId" : "taskify-vector-week-board",
+        "relays" : [
+
+        ]
+      }
+    }
+  },
+  "description" : "Task events made by iOS, and what every client must decode them to. Checked by Swift TaskEventVectorTests and PWA vitest.",
+  "vectors" : [
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "gaOVHZ+5mWBvby2JcxhADfR+G7BfOklKQSAVBcWJR8A7/E68bLWo4DI7egkmm70Al8eUavlCUYpH9MP8aTI74duAXuvGmovoddwQCchl6X8A+sf2qCtTDTLOa0g+lr8wSS+7aU4Xw70lko29ai4Ky6xOx8FBQoPRGRA0s24/G/PtCNnbGSOCybVzFRg1Ben9sXSuBs+ZHlvIuWqskz5Pzav+v2av+BVTEQRknSKTwQQQ5LBAZhCRNy/GTtrZ6vFc",
+        "created_at" : 1792500000,
+        "id" : "44242b9461aa253d771f0f68d4607af99a77cd989e3ac83dad6e697f8477e5d5",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "0b1a0bb65fe31848b09c718b84650f1de4aacb9e276d3edbe6d455fbc8ec50ff525cc99b734368c0786dda8779e5b4ce7db472f0706fcfa04aa09419dc5a622b",
+        "tags" : [
+          [
+            "d",
+            "ios-open"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "dueAt" : 1792684800,
+        "id" : "ios-open",
+        "note" : "Window seat",
+        "priority" : 3,
+        "recurrence" : null,
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "open",
+        "title" : "Book flights"
+      },
+      "name" : "open task with a note, priority and a timed due date"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "ULWpoccAvD3ViSMkbtVKZoJFWhCmq5vHnjr9Sn/1zR4OmagpUdk5m6hyRsqd4eFgd0JuRPW7VtOmC2mYYSQkZzmKYAPEkP5udIjXQIiCieOIvm50U4nsFZF7s55AjdlcaNvEQsbakOw1j8FMvLunX5ApHNhfOlF5WDycDnCY71AF4i1EL/jc/Be9Kze8TV9Q5ifvbn7goHBL37+P6I6bLYOSjbh97wB6EGkggZFHGwocJghlY+C1VIezF6nAGVOHc/4+CSu3O+7aKjo=",
+        "created_at" : 1792500001,
+        "id" : "13cdb45e0918f8f536e6e053388c2e107c7d32848e8ce14274ee5535ea744607",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "1605b8be1b74b4f8b4344af06b0afb534c7edec5f34db78c63bab47d2c5975d2926e7435e748759330b539583aaa323d0f9d1aaad08b35c72e52c18131e0bb28",
+        "tags" : [
+          [
+            "d",
+            "ios-done"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "done"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "dueAt" : 1792299600,
+        "id" : "ios-done",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : null,
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "done",
+        "title" : "Renew passport"
+      },
+      "name" : "completed task"
+    },
+    {
+      "board" : "week",
+      "event" : {
+        "content" : "pEszo2Hae2LJXx1DZVMUBD9sUiW5iGvYTlAJb6r7PZqcALemNRkvmizeMJgac0PVdufMMGSG+vKDtw+uxlx7TyfCLxKt9kqKK+RUXHaG0WgfLKwqGLKm8ZKC+jTzAJEZf+znNDCtUL75/6i1OhUD5VTk59oU3Sa/sdnNkG80nLdJNmuEd1/mZDna3MXOLP0Wb4mPggpDK6WTHlfDs79HlcDT4RkbdLiKlYcrUa2p52udEN9p3aJab4HOKebgD6CviQCpJ7eAhhse2090Tf20GbiUcNNkU/jA4w==",
+        "created_at" : 1792500002,
+        "id" : "6821b633051e7cc1f72730ecac67d1a16a2ab0ded7890b500e44c3c334835a0a",
+        "kind" : 30301,
+        "pubkey" : "a0013ac2fec9c934686bea339d6acf90ed6027397f7023b13fab969265fabe4d",
+        "sig" : "de19f5122bdb6a7d89febb48cdd400bb644cb79f77e7f938558d25d35ee6ef60edcc3921331d531beaf23ebce0ae11ce0e309051c42cfea197976c477dbac76f",
+        "tags" : [
+          [
+            "d",
+            "ios-daily"
+          ],
+          [
+            "b",
+            "2e29380396d4e5d265384977361f730d9c6fd31b01cf9ef932938e5411ba9588"
+          ],
+          [
+            "col",
+            "day"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : null,
+        "dueAt" : 1792386000,
+        "id" : "ios-daily",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : {
+          "type" : "daily"
+        },
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : "series-plants",
+        "status" : "open",
+        "title" : "Water plants"
+      },
+      "name" : "daily recurring task on a week board"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "d2gZMBl7Y82+0NYlUXdO0iWKwczMacJH1/K0xIEuLnW+UxP84eXDbSnEPiw4kT+qRWW2+A4lucxJsrbPNXWSuJNHyt8qtMaT/41ikofzModoMerV6QpvRZzJ3xW7sUIqmmbdMuy8cTkPFnh3LTcfadqjuZGp5Q5XHa6F0L6R4DMV6QGfH7m+5JqCO8eV7oefyj+5efXYApqw/7iLRikNrxbbF5EXrua64voeNvAaYo9wni7h8nbHfiBcDqRf890trUJKYkfodQ==",
+        "created_at" : 1792500003,
+        "id" : "3fc56e48b3037d7496d5e730b954030059818d89820a33c3a65ba610c9a08151",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "21f2deb3061ff5f7f7775db54b7802b053afc38196213b03752f9cc59a63ea921ea5f3e3b49f20cb54bc4c6644c717528575f4697fabd122f4f0cd2c5e6dc4f4",
+        "tags" : [
+          [
+            "d",
+            "ios-reminders"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "dueAt" : 1792767600,
+        "id" : "ios-reminders",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : null,
+        "republishKeeps" : {
+          "reminderTime" : "09:00",
+          "reminders" : [
+            "15m"
+          ]
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "open",
+        "title" : "Team call"
+      },
+      "name" : "reminders survive another client's republish"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "2qBYOdxxg17xsWPF3oIuTNpGbt+KlX9TkoTlYdrsVhSKZ3kTodj5ii6GzyZSqx3SbtIk2olv5lpv0LQChKqZ+Ph8kl65sbzL9GlUbkYtRW6rrorTK/nOmq5u0s6CqZH5tl+T5Cr0a8bCFoVpCfX6NE3acCamZG5HcNxefhfySZUubk7t/CikKfx7Ic+UJK7uCfbmqBWh2N5V1wAmc4fNjIgw6QuKQtZSLRW3GR+htL0lQ5QYucre+CCNaGSwfGdtb2hRT+PNNwcb+rgbetdZulsi3YL6ghjFDBf63aoV9U+7K1WGbK/gdLHRmKszLdMdJfCcjqUYEaV/DPE6YDdjCNgV7WmNY8yJyGT0jCyJWl0ALTB87CzPJA==",
+        "created_at" : 1792500004,
+        "id" : "429aa55b7a888384086225a280cc8bca0fa4447a1022e13f0cd222f051d1c4e2",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "203bf3c07fb8c8e20abdcc7117a1509a60d6f5843c51edaa07fd5911d278a14a9681a3cb617aba30bc6b337882c5cdbac0dac4c7ddcf566e9d50aa07a0741716",
+        "tags" : [
+          [
+            "d",
+            "recurrence:scripture-memory:2026-10-20"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "dueAt" : 1792472400,
+        "id" : "recurrence:scripture-memory:2026-10-20",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : {
+          "type" : "daily"
+        },
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : "entry-9",
+        "scriptureMemoryStage" : 1,
+        "seriesId" : "scripture-memory",
+        "status" : "open",
+        "title" : "Review Psalm 23:1"
+      },
+      "name" : "Scripture Memory review keeps its passage link"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "Gvv3zqK0UUTz43SkMlw1tI7MednhPezSjWgslO7zQRA2P6NNrXqh4Sh/eNC5rxKy8QIdzleYjwCCx2qQ/39NniJ3hwtzT13QLD/6PcAlQIVyZ3t1cngtJhhfE0lj8BHhpxmIY9e6LsBgDE6VKNseVTUblEdd/7y+xwwb+HMBPFeINgRQ0CgLKY8cOlkfBuVjCyA9g3vwFeotNHKP/J9vtNde",
+        "created_at" : 1792500005,
+        "id" : "e6cd39f3db3529f9c0aae3d82bf03628231131c8bdd1c9cbd05166b249f9a6f2",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "be2c0200af9c5a13b72dfac4f8e64053e7adcb10c9e8419b82e955780891b151da24b35ae7dec0f5fbc09acda58ec862b78d12949e8b6d2cd5d653fea6b8e3c2",
+        "tags" : [
+          [
+            "d",
+            "ios-deleted"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "deleted"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "dueAt" : 1790917200,
+        "id" : "ios-deleted",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : null,
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "deleted",
+        "title" : "Cancelled plan"
+      },
+      "name" : "deleted task (tombstone)"
+    }
+  ]
+}

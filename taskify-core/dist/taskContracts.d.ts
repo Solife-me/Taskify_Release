@@ -150,6 +150,12 @@ export type Task = {
     bountyLists?: string[];
     bountyDeletedAt?: string;
     inboxItem?: InboxItem;
+    /**
+     * Task event payload fields other clients write that this client does not use (iOS publishes
+     * reminders, for example). Kept as received and written back on every publish, so editing a
+     * task here never erases them. Local reminders stay per device and are not among them.
+     */
+    syncExtras?: Record<string, unknown>;
     bounty?: {
         id: string;
         token: string;
