@@ -41,6 +41,25 @@ final class WalletMoveFundsOutUITests: XCTestCase {
         attach(app, name: "wallet-03-settings")
     }
 
+    /// C9-2: from December 1, 2026 (previewed here with the hidden flag) the tab shows recovery.
+    func testAfterTheRemovalDateTheWalletTabShowsRecovery() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_WALLET"] = "enabled"
+        app.launchArguments += ["-TaskifyWalletRemovalPreview", "YES"]
+        app.launch()
+
+        let walletTab = app.buttons["Wallet"].firstMatch
+        XCTAssertTrue(walletTab.waitForExistence(timeout: 10))
+        walletTab.tap()
+        XCTAssertTrue(app.navigationBars["Recover your wallet"].waitForExistence(timeout: 10))
+        let closed = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "closed on December 1, 2026")).firstMatch
+        XCTAssertTrue(closed.exists)
+        XCTAssertTrue(app.buttons["Show the 12 words"].exists)
+        XCTAssertFalse(app.buttons["Move funds out"].exists, "the full wallet is off")
+        attach(app, name: "wallet-04-recovery")
+    }
+
     private func attach(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

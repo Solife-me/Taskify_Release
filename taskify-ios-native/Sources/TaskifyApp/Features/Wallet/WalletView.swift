@@ -91,6 +91,15 @@ enum WalletPhaseOut {
         UserDefaults.standard.bool(forKey: walletClosedKey)
     }
 
+    /// Previews the recovery view before the date. Hidden: set with the launch argument
+    /// `-TaskifyWalletRemovalPreview YES` (C9-2, like the PWA's removal preview).
+    static let removalPreviewKey = "TaskifyWalletRemovalPreview"
+
+    /// From December 1, 2026 the full wallet is off; devices that had it show recovery instead.
+    static var isRecoveryMode: Bool {
+        TaskifyWalletPhaseOut.isWalletRemoved() || UserDefaults.standard.bool(forKey: removalPreviewKey)
+    }
+
     static let noticeTitle = "The Taskify wallet is being phased out"
     static let noticeMessage = """
     Dear Taskify User,
@@ -115,7 +124,7 @@ struct WalletPhaseOutNoticePresenter: View {
     let openWallet: () -> Void
 
     private var isPresented: Bool {
-        !noticeSeen && !suppressed && walletEnabled && wallet.phaseOutBalance > 0
+        !noticeSeen && !suppressed && walletEnabled && !WalletPhaseOut.isRecoveryMode && wallet.phaseOutBalance > 0
     }
 
     var body: some View {
@@ -251,6 +260,8 @@ final class WalletViewModel: ObservableObject {
     }
 
     func start(recoverLightningReceives: Bool = true) async {
+        // After the removal date nothing talks to a mint; the recovery view reads storage only.
+        guard !WalletPhaseOut.isRecoveryMode else { return }
         guard !hasStarted else {
             while isLoading && service == nil {
                 try? await Task.sleep(for: .milliseconds(50))
@@ -1881,6 +1892,20 @@ final class WalletViewModel: ObservableObject {
             databaseURL: databaseURL,
             outgoingTokensURL: outgoingURL,
             mnemonic: mnemonic
+        )
+    }
+
+    /// The files the recovery view reads (C9-2): the wallet database and its JSON stores, for
+    /// this device's seed. Nil when the device has no seed.
+    nonisolated static func recoveryFileURLs() throws -> (database: URL, outgoing: URL, pending: URL)? {
+        guard let mnemonic = try KeychainWalletSeedStore().load() else { return nil }
+        let directory = try walletDirectory()
+        let identifier = try CashuWalletService.walletIdentifier(for: mnemonic)
+        let outgoing = directory.appendingPathComponent("outgoing-\(identifier).json")
+        return (
+            directory.appendingPathComponent("cashu-\(identifier).sqlite"),
+            outgoing,
+            CashuWalletRecovery.pendingReceivesURL(forOutgoingTokensURL: outgoing)
         )
     }
 

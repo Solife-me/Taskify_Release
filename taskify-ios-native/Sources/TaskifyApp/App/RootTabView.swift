@@ -334,8 +334,13 @@ struct RootTabView: View {
         .tabViewStyle(.sidebarAdaptable)
     }
 
+    @ViewBuilder
     private var walletView: some View {
-        WalletView()
+        if WalletPhaseOut.isRecoveryMode {
+            WalletRecoveryView()
+        } else {
+            WalletView()
+        }
     }
 
 }
