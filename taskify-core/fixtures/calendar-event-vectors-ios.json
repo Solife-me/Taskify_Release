@@ -1,0 +1,110 @@
+{
+  "boards" : {
+    "lists" : {
+      "columns" : [
+        {
+          "id" : "c1",
+          "name" : "Todo"
+        }
+      ],
+      "id" : "lists",
+      "kind" : "lists",
+      "name" : "Lists",
+      "nostr" : {
+        "boardId" : "taskify-vector-lists-board",
+        "relays" : [
+
+        ]
+      }
+    },
+    "week" : {
+      "id" : "week",
+      "kind" : "week",
+      "name" : "Week",
+      "nostr" : {
+        "boardId" : "taskify-vector-week-board",
+        "relays" : [
+
+        ]
+      }
+    }
+  },
+  "description" : "Calendar events (canonical copies) made by iOS, and what every client must decode them to. Checked by Swift CalendarEventVectorTests and PWA vitest.",
+  "vectors" : [
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "AmU5dw/J8atUCZ5VWEmyS6hHw9ox4HjbrV5HK+mPCSmGqa3Pd7SmKQYe8/nC06vEqUPetOA7YUpPQl3KkaLziMI7JKSaDl8dyGOEWct3y0zUgkyFE7Y6xGngAjpamwSHrHhx2kkekI7HYEGr/gltdBuxPclHxaq4A4/AtflrTUYRPcmfg9QsjV9Ncx2yYkR58noapQGI64kJDgKyJbnDYFOOE080oesRH9T0K8zmtQOLhdcXn/17+pzO9Mq8x2uCilmyuGpA+y4qCXlWQBgwhEw1r/ML4pQMI8bw+3ymluuetIJvNEMMc/fL6csaAUdbN8j041s1rVAcKsyRE9LBwCa+4jevsEgGphrjileysthdQW4cTWvmVGjuqcMXE8gxnJOq5gyhm6f4mrYsO/UE6HQCHM8Rmx7rGRCRWXnkN+iJNr5N6TsBeu5IF8ePzO+SejDYGLqkKJgcIiSgoQjNSlLCIMVtUh+CuInYF9FTk+1vdebNnIGixtWf6ixaLp6nbfpn2kmcidiMEuvUu1BjojS3uRv1M0mc+VmIbd9VAo7O+i9WsrxZgBoHxDTCf5MGzZu9WH+1zU/K1Zzl1uWatPN2LUwXRKJe9mKqHu9jeckF4bmQzv87GdpeySuBetewt8Wc3LfajtgDVJGOiw6L1QFUnhvfZc4ogWZRYAmXJsDhTWvK4p9JCawTftmp1NWa2KX6BvaFkKdXMS9oBD4j4ZYYulKdWQkMvbBaAYbiZWBaJ1AP8ZtqfL4Y8Y01LPiYd5bBXOYIjshkdhv0pa0RjQ0I8+3qdfV4vPxp10s/7ZZu4L2m5Zd8xlkQdtuNv7N6fIsGJM6AG7J6StE4udd4GMEJQoTsBwZZ+lvyDYuFpi8xT7i0k35oyPiW2JSalFT5euCwcBo+9dEaz5fkFuupzrb1w8FxFONJKH3GpI/lQAi8fsE=",
+        "created_at" : 1792460000,
+        "id" : "287929b09db18b6f4c905312b401d0da7002de0a61ed7b8b8d863a1fcead0acc",
+        "kind" : 30310,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "fc802ac000f9bc922ce44716b3e5300e03ff917972638613c2a7fb1b2c9b7803243dc2f9493329a597d355f54d2d12e08b71d4afa3ffd5f8d8dbb1c065c1f61c",
+        "tags" : [
+          [
+            "d",
+            "ios-cal-docs"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ]
+        ]
+      },
+      "expected" : {
+        "documents" : [
+          {
+            "encrypted" : true,
+            "id" : "ios-cal-doc-1",
+            "kind" : "pdf",
+            "mimeType" : "application/pdf",
+            "name" : "Plans.pdf",
+            "remoteUrl" : "https://files.example/ios-cal-doc-1.bin"
+          }
+        ],
+        "id" : "ios-cal-docs",
+        "image" : "https://files.example/ios-cal-image.bin",
+        "start" : "1793197800",
+        "title" : "Site visit"
+      },
+      "name" : "timed event with an image and documents"
+    },
+    {
+      "board" : "week",
+      "event" : {
+        "content" : "AvB8EyRiOQ7izFcFyXNvuMneqDLSAjC6dxM3oEP7EdHH3ELKuqSJdeK4s+BFWfC6cAMz9groWghacr1k7r5vKBnfv/FNhuov21F0tzVvOIhI4HiAJIiVWGPivLhQ88XRpYycI1m+XWSIBpC/z2QY5bGU1Nty+W5IkXtH+CW60MzmmmLVlMpPbkf4DIbmCSq07l6MHgc4LPCq7Ft98LwsLPdlEm+Uf6kImjYxyWYEIra5Q+dwzc4NweVjFzvblPmRiuQfvT65CTCYrB6lOIOLma5cl0FIoRxcq/rQBqmmV9+/vxQ=",
+        "created_at" : 1792460001,
+        "id" : "908a4b43b8079ba04da0811f7bbe753f18344fb7142b6189faaa744e5c73c284",
+        "kind" : 30310,
+        "pubkey" : "a0013ac2fec9c934686bea339d6acf90ed6027397f7023b13fab969265fabe4d",
+        "sig" : "ff94dfc9fba8772fa249e82d9fe7ec6aff1d2b66050db70ddec048e40c90e3f9c40687dd6db4bfed0d60a427f4728a07b6ce8b849ea7f3e9ca4f32ee98e133cc",
+        "tags" : [
+          [
+            "d",
+            "ios-cal-plain"
+          ],
+          [
+            "b",
+            "2e29380396d4e5d265384977361f730d9c6fd31b01cf9ef932938e5411ba9588"
+          ],
+          [
+            "col",
+            "day"
+          ]
+        ]
+      },
+      "expected" : {
+        "documents" : null,
+        "id" : "ios-cal-plain",
+        "image" : null,
+        "start" : "2026-11-26",
+        "title" : "Thanksgiving"
+      },
+      "name" : "all-day event without attachments"
+    }
+  ]
+}

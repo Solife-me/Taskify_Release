@@ -119,25 +119,41 @@ struct TaskifyEventCard: View {
     }
 
     var body: some View {
-        Group {
-            if isSelecting {
-                Button {
-                    selection?.toggleEvent(event.id)
-                } label: {
+        VStack(alignment: .leading, spacing: 10) {
+            Group {
+                if isSelecting {
+                    Button {
+                        selection?.toggleEvent(event.id)
+                    } label: {
+                        cardContent
+                    }
+                    .buttonStyle(.plain)
+                } else if event.isReadOnly {
                     cardContent
+                } else {
+                    Button {
+                        showingEditor = true
+                    } label: {
+                        cardContent
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-            } else if event.isReadOnly {
-                cardContent
-            } else {
-                Button {
-                    showingEditor = true
-                } label: {
-                    cardContent
-                }
-                .buttonStyle(.plain)
+            }
+            // Outside the card's button, so an image or document opens itself (C8-5).
+            if hasMedia, !isSelecting {
+                TaskMediaView(
+                    images: event.imageURL.map { [$0] } ?? [],
+                    documents: event.documents ?? [],
+                    linkTitle: "",
+                    linkNote: "",
+                    boardID: event.boardID.flatMap { model.board(withID: $0)?.effectiveNostrBoardID } ?? "",
+                    compact: true
+                )
             }
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .taskifyGlass(cornerRadius: 20)
         .sheet(isPresented: $showingEditor) {
             TaskifyEventEditorSheet(event: event)
                 .environment(model)
@@ -220,9 +236,8 @@ struct TaskifyEventCard: View {
                 .foregroundStyle(Color.green)
             }
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .taskifyGlass(cornerRadius: 20)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(isSelecting
             ? "\(event.title), \(isSelected ? "selected" : "not selected")"
@@ -232,6 +247,10 @@ struct TaskifyEventCard: View {
             : (event.isReadOnly
                 ? "A read-only Taskify event shared through Nostr"
                 : "Opens the Taskify event editor"))
+    }
+
+    private var hasMedia: Bool {
+        event.imageURL?.isEmpty == false || event.documents?.isEmpty == false
     }
 
     private var timeText: String {

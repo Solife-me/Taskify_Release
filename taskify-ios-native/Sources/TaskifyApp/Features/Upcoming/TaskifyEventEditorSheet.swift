@@ -1,4 +1,5 @@
 import EventKit
+import PhotosUI
 import SwiftUI
 import TaskifyCore
 import UIKit
@@ -25,6 +26,8 @@ struct TaskifyEventEditorSheet: View {
     @State private var showingEventShare = false
     @State private var selectedAttendeePublicKeys: Set<String>
     @State private var showingAttendeePicker = false
+    @State private var imageURL: String?
+    @State private var documents: [TaskDocument]
     let event: TaskifyEvent
 
     init(event: TaskifyEvent) {
@@ -48,6 +51,8 @@ struct TaskifyEventEditorSheet: View {
                 ?? Calendar.current.date(byAdding: .month, value: 6, to: start)
                 ?? start
         )
+        _imageURL = State(initialValue: event.imageURL)
+        _documents = State(initialValue: event.documents ?? [])
         _selectedAttendeePublicKeys = State(initialValue: Set(
             (event.participants ?? []).compactMap {
                 NostrPublicKey.parse($0.publicKey)?.hexString
@@ -188,6 +193,12 @@ struct TaskifyEventEditorSheet: View {
                         .frame(minHeight: 100)
                 }
 
+                TaskifyEventAttachmentsSection(
+                    imageURL: $imageURL,
+                    documents: $documents,
+                    boardKey: selectedEventBoard?.effectiveNostrBoardID
+                )
+
                 Section("Sharing") {
                     Button {
                         showingEventShare = true
@@ -227,7 +238,8 @@ struct TaskifyEventEditorSheet: View {
                             reminders: reminders,
                             reminderTime: formattedReminderTime,
                             recurrence: recurrence,
-                            participants: selectedEventParticipants
+                            participants: selectedEventParticipants,
+                            attachments: .init(imageURL: imageURL, documents: documents)
                         ) {
                             dismiss()
                         }
@@ -865,4 +877,115 @@ func taskifyRebasedWallClock(_ date: Date, from oldZoneID: String, to newZoneID:
     var newCalendar = Calendar(identifier: .gregorian)
     newCalendar.timeZone = newZone
     return newCalendar.date(from: components) ?? date
+}
+
+/// An event's image and documents in its editor (C8-5): shown, removable, and added through the
+/// same encrypted upload as task attachments, keyed to the event's board.
+struct TaskifyEventAttachmentsSection: View {
+    @Binding var imageURL: String?
+    @Binding var documents: [TaskDocument]
+    let boardKey: String?
+    @State private var photos: [PhotosPickerItem] = []
+    @State private var importingFiles = false
+    @State private var uploadStatus: String?
+    @State private var uploadError: String?
+
+    var body: some View {
+        Section("Attachments") {
+            if imageURL?.isEmpty == false || !documents.isEmpty {
+                TaskMediaView(
+                    images: imageURL.map { [$0] } ?? [],
+                    documents: documents,
+                    linkTitle: "",
+                    linkNote: "",
+                    boardID: boardKey ?? "",
+                    compact: true
+                )
+            }
+            if imageURL?.isEmpty == false {
+                Button(role: .destructive) {
+                    imageURL = nil
+                } label: {
+                    Label("Remove image", systemImage: "photo.badge.minus")
+                }
+            }
+            ForEach(documents) { document in
+                Button(role: .destructive) {
+                    documents.removeAll { $0.id == document.id }
+                } label: {
+                    Label("Remove \(document.name)", systemImage: "minus.circle")
+                }
+            }
+            PhotosPicker(selection: $photos, maxSelectionCount: 5, matching: .images) {
+                Label("Add photos", systemImage: "photo.on.rectangle")
+            }
+            .disabled(boardKey == nil || uploadStatus != nil)
+            Button {
+                importingFiles = true
+            } label: {
+                Label("Add files", systemImage: "paperclip")
+            }
+            .disabled(boardKey == nil || uploadStatus != nil)
+            if let uploadStatus {
+                ProgressView(uploadStatus)
+            }
+            if let uploadError {
+                Text(uploadError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+        }
+        .fileImporter(isPresented: $importingFiles, allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                Task { await upload(files: urls) }
+            case .failure(let error):
+                uploadError = error.localizedDescription
+            }
+        }
+        .onChange(of: photos) { _, items in
+            guard !items.isEmpty else { return }
+            Task { await upload(photos: items) }
+        }
+    }
+
+    @MainActor
+    private func upload(photos items: [PhotosPickerItem]) async {
+        defer { photos = [] }
+        guard let boardKey else { return }
+        uploadError = nil
+        defer { uploadStatus = nil }
+        do {
+            for (index, item) in items.enumerated() {
+                uploadStatus = "Encrypting and uploading photo \(index + 1) of \(items.count)…"
+                guard let file = try await item.loadTransferable(type: TaskifyPhotoFile.self) else {
+                    throw TaskAttachmentUploadError.unsupportedFile
+                }
+                defer { try? FileManager.default.removeItem(at: file.url) }
+                let type = item.supportedContentTypes.first ?? .image
+                let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
+                let name = "event-photo-\(timestamp)-\(index + 1).\(type.preferredFilenameExtension ?? "jpg")"
+                documents.append(try await TaskAttachmentUploadService.shared.uploadDocument(
+                    fileURL: file.url, name: name, mimeType: type.preferredMIMEType ?? "image/jpeg", boardID: boardKey
+                ))
+            }
+        } catch {
+            uploadError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func upload(files urls: [URL]) async {
+        guard let boardKey, !urls.isEmpty else { return }
+        uploadError = nil
+        defer { uploadStatus = nil }
+        do {
+            for (index, url) in urls.enumerated() {
+                uploadStatus = "Encrypting and uploading \(url.lastPathComponent) (\(index + 1) of \(urls.count))…"
+                documents.append(try await TaskAttachmentUploadService.shared.uploadDocument(fileURL: url, boardID: boardKey))
+            }
+        } catch {
+            uploadError = error.localizedDescription
+        }
+    }
 }

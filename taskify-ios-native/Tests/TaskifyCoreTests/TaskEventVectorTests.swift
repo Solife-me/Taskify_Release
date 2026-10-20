@@ -90,6 +90,8 @@ final class TaskEventVectorTests: XCTestCase {
         .deletingLastPathComponent() // repository root
         .appendingPathComponent("taskify-core/fixtures")
 
+    static var vectorBoards: [String: VectorBoard] { boards }
+
     private static let boards: [String: VectorBoard] = [
         "lists": VectorBoard(id: "lists", name: "Lists", kind: "lists", columns: [.init(id: "c1", name: "Todo")],
                              nostr: .init(boardId: "taskify-vector-lists-board", relays: [])),

@@ -6,21 +6,42 @@ import SwiftUI
 import TaskifyCore
 import UIKit
 
+/// A task's or an event's attachments (images and documents) and the first link in its text.
 struct TaskMediaView: View {
-    let task: TaskItem
+    private let rawImages: [String]
+    private let documents: [TaskDocument]
+    private let linkTitle: String
+    private let linkNote: String
     let boardID: String
     var compact = false
 
-    private var images: [String] {
-        task.images?.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? []
+    init(task: TaskItem, boardID: String, compact: Bool = false) {
+        self.init(
+            images: task.images ?? [],
+            documents: task.documents ?? [],
+            linkTitle: task.title,
+            linkNote: task.note,
+            boardID: boardID,
+            compact: compact
+        )
     }
 
-    private var documents: [TaskDocument] {
-        task.documents ?? []
+    /// Events use this (C8-5): an event's image and documents, with its title and details.
+    init(images: [String], documents: [TaskDocument], linkTitle: String, linkNote: String, boardID: String, compact: Bool = false) {
+        rawImages = images
+        self.documents = documents
+        self.linkTitle = linkTitle
+        self.linkNote = linkNote
+        self.boardID = boardID
+        self.compact = compact
+    }
+
+    private var images: [String] {
+        rawImages.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     private var firstLink: URL? {
-        TaskContentLinks.firstURL(title: task.title, note: task.note)
+        TaskContentLinks.firstURL(title: linkTitle, note: linkNote)
     }
 
     var body: some View {

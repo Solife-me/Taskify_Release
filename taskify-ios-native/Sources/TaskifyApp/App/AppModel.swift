@@ -1309,6 +1309,12 @@ final class AppModel {
         return true
     }
 
+    /// An event's image and documents, as its editor saves them (C8-5).
+    struct TaskifyEventAttachments: Equatable {
+        var imageURL: String?
+        var documents: [TaskDocument]
+    }
+
     @discardableResult
     func updateTaskifyEvent(
         eventID: String,
@@ -1324,7 +1330,8 @@ final class AppModel {
         reminders: [TaskReminder]? = nil,
         reminderTime: String? = nil,
         recurrence: TaskRecurrence? = nil,
-        participants: [TaskifyEventParticipant]? = nil
+        participants: [TaskifyEventParticipant]? = nil,
+        attachments: TaskifyEventAttachments? = nil
     ) -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty,
@@ -1403,6 +1410,10 @@ final class AppModel {
         events[index].seriesID = normalizedRecurrence == nil
             ? nil
             : (previousSeriesID ?? events[index].id)
+        if let attachments {
+            events[index].imageURL = attachments.imageURL?.nilIfEmpty
+            events[index].documents = attachments.documents.isEmpty ? nil : attachments.documents
+        }
         events[index].lastEditedBy = identityPublicKey.nilIfEmpty
         events[index].deleted = false
         let invitationPlan = TaskifyEventInvitationPlanner.prepare(
@@ -4796,6 +4807,27 @@ final class AppModel {
                 title: "Move me",
                 columnID: "ui-test-list-todo"
             ))
+        }
+        // An event with a document, for the event attachment UI (C8-5).
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_EVENT_ATTACHMENT"] == "1" {
+            let start = Calendar.current.date(byAdding: .hour, value: 2, to: Date()) ?? Date()
+            snapshot.taskifyEvents = [TaskifyEvent(
+                id: "ui-test-event",
+                boardID: board.id,
+                title: "Event with attachments",
+                documents: [TaskDocument(
+                    id: "ui-test-doc", name: "Agenda.pdf", mimeType: "application/pdf", kind: "pdf",
+                    remoteURL: "https://files.example/agenda.bin", encrypted: true,
+                    encryptionBoardID: board.effectiveNostrBoardID
+                )],
+                schedule: .time,
+                startISO: ISO8601DateFormatter().string(from: start),
+                endISO: ISO8601DateFormatter().string(from: start.addingTimeInterval(3600)),
+                startTimeZoneID: TimeZone.current.identifier,
+                canonicalAddress: "", viewAddress: "",
+                eventKey: TaskifyCalendarEventCodec.generateEventKey(),
+                inviteToken: "", rsvpStatus: .accepted
+            )]
         }
         errorMessage = nil
         return true
