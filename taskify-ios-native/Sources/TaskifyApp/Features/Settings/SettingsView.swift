@@ -60,6 +60,7 @@ struct SettingsView: View {
     /// collapsed-by-default accordions, so opening Settings shows a scannable list of category
     /// headers instead of every card's full contents at once.
     @State private var expandedSettingsGroups: Set<String> = []
+    @AppStorage(KeyBackupSettings.storageKey) private var keyBackupRaw = ""
     @AppStorage(TaskPresentationSettings.completedTabKey)
     private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
@@ -383,6 +384,14 @@ struct SettingsView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 10) {
+                if KeyBackupSettings.decode(keyBackupRaw).isUnsaved {
+                    Label("Unsaved key", systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text("Your account key exists only on this device. Copy your nsec into a password manager so you can sign in elsewhere or recover your tasks if this device is lost.")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
                 Text("Private key (nsec)")
                     .font(.subheadline.weight(.semibold))
                 Text("Anyone with this key can act as you on Nostr and control this account's boards, chat, and sync. Keep it private.")
@@ -2208,6 +2217,7 @@ struct SettingsView: View {
 
     private func copyNsec() {
         guard let revealedNsec else { return }
+        KeyBackupSettings.markSaved()
         UIPasteboard.general.setItems(
             [[UTType.plainText.identifier: revealedNsec]],
             options: [

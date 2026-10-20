@@ -64,6 +64,9 @@ struct BoardsView: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 6)
 
+            KeyBackupBanner()
+                .padding(.horizontal, 18)
+
             boardContent
                 .environment(selection)
                 .environment(completionAnimations)

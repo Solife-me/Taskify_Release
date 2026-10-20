@@ -15,6 +15,7 @@
 		0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */; };
 		DE03707800A9FDC91E489014 /* IPadKeyboardUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */; };
 		0B64CE2D2E8DC2C381D5DFA2 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */; };
+		C95100000000000000000F01 /* Sources/TaskifyApp/Features/Onboarding/KeyBackupBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C95100000000000000000F00 /* Sources/TaskifyApp/Features/Onboarding/KeyBackupBanner.swift */; };
 		0F0D02A663DD9FC10DEA44B1 /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE60E2576148EFF86B5FB8E /* Sources/TaskifyApp/Features/Tasks/TimeZonePickerSheet.swift */; };
 		204177419B8968CC8C904B29 /* ScrollPerformanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12239A0D89265BA5F111C0D7 /* ScrollPerformanceUITests.swift */; };
 		45B0FD54A518483096597A9F /* Sources/TaskifyApp/App/FastingRemindersSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50694F99A59C46F29A34D542 /* Sources/TaskifyApp/App/FastingRemindersSettings.swift */; };
@@ -278,6 +279,7 @@
 		C81000000000000000000F00 /* BoardRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BoardRenderUITests.swift; sourceTree = "<group>"; };
 		C83300000000000000000F00 /* DynamicTypeUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DynamicTypeUITests.swift; sourceTree = "<group>"; };
 		CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift; sourceTree = SOURCE_ROOT; };
+		C95100000000000000000F00 /* Sources/TaskifyApp/Features/Onboarding/KeyBackupBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Onboarding/KeyBackupBanner.swift; sourceTree = SOURCE_ROOT; };
 		D5B511EBD86443B28B6EF5F8 /* Sources/TaskifyApp/App/ScriptureMemorySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/ScriptureMemorySettings.swift; sourceTree = SOURCE_ROOT; };
 		D13000000000000000000001 /* Sources/TaskifyApp/Features/Tasks/TaskAttachmentCaptureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Tasks/TaskAttachmentCaptureViews.swift; sourceTree = SOURCE_ROOT; };
 		DF2D5621648AA754EA642832 /* FirstRunOnboardingUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FirstRunOnboardingUITests.swift; sourceTree = "<group>"; };
@@ -456,6 +458,7 @@
 				B00000000000000000009A14 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift */,
 				FF90D06B99BC2A3790D9DC41 /* Sources/TaskifyApp/App/OnboardingSettings.swift */,
 				CCE007C31807FA08E790E365 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift */,
+				C95100000000000000000F00 /* Sources/TaskifyApp/Features/Onboarding/KeyBackupBanner.swift */,
 				B00000000000000000000223 /* Sources/TaskifyApp/Features/Boards/BibleTrackerStore.swift */,
 				B00000000000000000000224 /* Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift */,
 				50694F99A59C46F29A34D542 /* Sources/TaskifyApp/App/FastingRemindersSettings.swift */,
@@ -914,6 +917,7 @@
 				A20000000000000000000201 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift in Sources */,
 				E5E7AD72EBBDFE980998BBE4 /* Sources/TaskifyApp/App/OnboardingSettings.swift in Sources */,
 				0B64CE2D2E8DC2C381D5DFA2 /* Sources/TaskifyApp/Features/Onboarding/FirstRunOnboardingView.swift in Sources */,
+				C95100000000000000000F01 /* Sources/TaskifyApp/Features/Onboarding/KeyBackupBanner.swift in Sources */,
 				B00000000000000000000103 /* Sources/TaskifyApp/App/RootTabView.swift in Sources */,
 				B00000000000000000000104 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift in Sources */,
 				B00000000000000000000199 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift in Sources */,
