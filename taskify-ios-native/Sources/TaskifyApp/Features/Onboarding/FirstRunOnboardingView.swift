@@ -122,6 +122,8 @@ struct FirstRunOnboardingView: View {
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
             SecureField("nsec1... or 64-character key", text: $existingKeyInput)
+                .submitLabel(.go)
+                .onSubmit { handleUseExistingKey() }
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .padding(.horizontal, 16)

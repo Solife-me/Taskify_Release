@@ -101,9 +101,9 @@ final class FirstRunOnboardingUITests: XCTestCase {
         field.tap()
         // Typing before the keyboard is up drops the text in a secure field.
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        field.typeText("not-a-valid-key")
-
-        app.buttons["Sign in"].tap()
+        // Return signs in (the keyboard's Go key). A tap on Sign in while the keyboard animates
+        // in can land where the button was before the layout moved.
+        field.typeText("not-a-valid-key\n")
 
         let error = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "invalid")).firstMatch
         XCTAssertTrue(error.waitForExistence(timeout: 3))
