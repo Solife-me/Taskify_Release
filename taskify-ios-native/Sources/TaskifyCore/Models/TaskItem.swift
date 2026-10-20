@@ -114,6 +114,10 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     /// published or received (`TaskEventCodec.publishFingerprint`). Local only. A publish whose
     /// fingerprint matches carries nothing new and is skipped.
     public var publishedFingerprint: String? = nil
+    /// Stamped for publishing but not yet in the durable outbox. Saved with the task before any
+    /// encoding or signing, cleared once the event is queued, so a publish interrupted by a
+    /// failure or by the app being closed is sent again (`TaskPublishPlanner`). Local only.
+    public var publishPending: Bool? = nil
 
     public init(
         id: String = UUID().uuidString,

@@ -146,6 +146,8 @@ final class AppModel {
     @ObservationIgnored private var widgetReloadTask: Task<Void, Never>?
     @ObservationIgnored private var syncListenerTask: Task<Void, Never>?
     @ObservationIgnored private var taskPublicationTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingTaskRepublishTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingTaskRepublishAttempt = 0
     @ObservationIgnored private var notificationTask: Task<Void, Never>?
     @ObservationIgnored private var accountBackupSearchTask: Task<Void, Never>?
     @ObservationIgnored private var accountBackupPublishTask: Task<Void, Never>?
@@ -4612,6 +4614,7 @@ final class AppModel {
                 self.ensureFullWeekTaskRecurrences()
             }
             self.startSync()
+            self.republishPendingTasks()
             await self.ensureNIP17InboxRelayPreference()
 
             try? await Task.sleep(for: .milliseconds(350))
@@ -5621,6 +5624,9 @@ final class AppModel {
     private func applySyncReport(_ report: TaskSyncReport) {
         // Status reports arrive frequently during initial sync; skip writes when nothing
         // changed so observation doesn't invalidate views for identical values.
+        if report.state == .online, syncState != .online {
+            republishPendingTasks()
+        }
         syncState = report.state
         if relayStatuses != report.relays {
             relayStatuses = report.relays
@@ -5681,40 +5687,21 @@ final class AppModel {
     /// board events would have.
     private func synchronizeTasks(
         _ taskIDs: [String],
-        deletionTaskIDs: [String] = []
+        deletionTaskIDs: [String] = [],
+        force: Set<String> = []
     ) {
         guard !taskIDs.isEmpty || !deletionTaskIDs.isEmpty else { return }
-
-        var updated = snapshot
-        let taskIndexByID = Dictionary(
-            updated.tasks.indices.map { (updated.tasks[$0].id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        let boardByID = Dictionary(updated.boards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-
-        var stamps: [(board: Board, task: TaskItem, timestamp: Int)] = []
 
         // A deleted task publishes only its tombstone. The tombstone replaces the task at its
         // address on every relay, and every client reads it; a NIP-09 deletion on top doubled
         // each delete, and made strfry refuse the tombstone ("deleted:") when it arrived first.
-        // A task whose publishable state matches what relays last saw is skipped: whatever asked
-        // for it (a reconcile, a re-home, a repeated deletion) changed nothing another client
+        // A task whose publishable state matches what relays last saw is skipped (unless still
+        // pending from an earlier attempt): whatever asked for it changed nothing another client
         // can see. This is what keeps a settings change from republishing years of tombstones.
-        func stamp(_ taskID: String) {
-            guard let index = taskIndexByID[taskID],
-                  let board = boardByID[updated.tasks[index].boardID] else {
-                return
-            }
-            let fingerprint = TaskEventCodec.publishFingerprint(task: updated.tasks[index], board: board)
-            if let fingerprint, fingerprint == updated.tasks[index].publishedFingerprint { return }
-            let timestamp = NostrEvent.nextTimestamp(after: updated.tasks[index].nostrUpdatedAt)
-            updated.tasks[index].nostrUpdatedAt = timestamp
-            updated.tasks[index].publishedFingerprint = fingerprint
-            stamps.append((board, updated.tasks[index], timestamp))
-        }
-
-        taskIDs.forEach { stamp($0) }
-        deletionTaskIDs.forEach { stamp($0) }
+        // Stamped tasks are marked pending in the snapshot saved below, before any slow work, so
+        // an interrupted publish is sent again (TaskPublishPlanner, C7-1).
+        var updated = snapshot
+        let stamps = TaskPublishPlanner.stamp(&updated, taskIDs: taskIDs + deletionTaskIDs, force: force)
 
         guard !stamps.isEmpty else {
             // Matches synchronizeTask: even when nothing is publishable, persist what the caller
@@ -5759,21 +5746,42 @@ final class AppModel {
                     return requests
                 }.value
                 try await syncEngine.enqueueForPublish(requests)
+                self?.markTasksQueued(stamps)
             } catch {
-                self?.errorMessage = "Taskify could not queue these tasks for Nostr sync."
-                // Nothing was queued: forget the fingerprints so the next sync publishes again.
-                self?.forgetPublishedFingerprints(Set(stamps.map(\.task.id)))
+                self?.errorMessage = "Taskify could not queue these tasks for Nostr sync. It will try again."
+                // Nothing was queued: the tasks stay pending and are published again shortly.
+                self?.schedulePendingTaskRepublish()
             }
         }
     }
 
-    private func forgetPublishedFingerprints(_ taskIDs: Set<String>) {
-        guard !taskIDs.isEmpty else { return }
+    private func markTasksQueued(_ stamps: [TaskPublishStamp]) {
         var updated = snapshot
-        for index in updated.tasks.indices where taskIDs.contains(updated.tasks[index].id) {
-            updated.tasks[index].publishedFingerprint = nil
+        TaskPublishPlanner.markQueued(&updated, stamps: stamps)
+        guard updated != snapshot else { return }
+        snapshot = updated
+        scheduleSave()
+        pendingTaskRepublishAttempt = 0
+    }
+
+    /// Publishes tasks stamped but never queued: at launch, on reconnecting and after a failure.
+    func republishPendingTasks() {
+        let pending = TaskPublishPlanner.pendingTaskIDs(in: snapshot)
+        guard !pending.isEmpty else { return }
+        synchronizeTasks(pending, force: Set(pending))
+    }
+
+    /// 5 s, 15 s, 60 s, then every 5 minutes, as on the PWA.
+    private func schedulePendingTaskRepublish() {
+        let delays: [Int] = [5, 15, 60, 300]
+        let delay = delays[min(pendingTaskRepublishAttempt, delays.count - 1)]
+        pendingTaskRepublishAttempt += 1
+        pendingTaskRepublishTask?.cancel()
+        pendingTaskRepublishTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.republishPendingTasks()
         }
-        if updated != snapshot { snapshot = updated }
     }
 
     private func synchronizeTaskifyEvents(_ eventIDs: [String]) {
