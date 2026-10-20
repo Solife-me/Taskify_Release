@@ -100,18 +100,18 @@ final class TimeZonePickerUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(timeZoneRow.waitForExistence(timeout: 5))
 
+        // The reminders sit below the date fields; the form builds rows as they scroll in.
         let reminderToggle = app.switches["15 minutes before"]
+        for _ in 0..<4 where !reminderToggle.exists { app.swipeUp() }
         XCTAssertTrue(reminderToggle.waitForExistence(timeout: 5))
         setSwitch(reminderToggle, on: true)
         XCTAssertEqual(reminderToggle.value as? String, "1")
 
+        // The picker reports its choice as the value ("Repeat" / "Never"); older iOS joined them.
         let repeatPicker = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Repeat,")
+            NSPredicate(format: "label BEGINSWITH[c] %@ OR (label ==[c] %@ AND value != nil)", "Repeat,", "Repeat")
         ).firstMatch
-        if !repeatPicker.waitForExistence(timeout: 2) {
-            app.swipeUp()
-            app.swipeUp()
-        }
+        for _ in 0..<6 where !repeatPicker.exists { app.swipeUp() }
         XCTAssertTrue(repeatPicker.waitForExistence(timeout: 5))
         repeatPicker.tap()
         let dailyOption = app.buttons["Daily"]
@@ -119,7 +119,7 @@ final class TimeZonePickerUITests: XCTestCase {
         dailyOption.tap()
         XCTAssertTrue(
             app.buttons.matching(
-                NSPredicate(format: "label CONTAINS[c] %@", "Repeat, Daily")
+                NSPredicate(format: "label CONTAINS[c] %@ OR (label ==[c] %@ AND value ==[c] %@)", "Repeat, Daily", "Repeat", "Daily")
             ).firstMatch.waitForExistence(timeout: 5)
         )
         attach(app, name: "timezone-02-taskify-event-scheduling")

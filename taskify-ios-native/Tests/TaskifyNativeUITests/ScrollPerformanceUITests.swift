@@ -74,8 +74,11 @@ final class ScrollPerformanceUITests: XCTestCase {
         app.launchEnvironment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] = "1"
         app.launch()
 
-        let firstTask = app.buttons["Edit Performance task 1"]
-        XCTAssertTrue(firstTask.waitForExistence(timeout: 10))
+        // The week board opens on today's column, so which fixture tasks are on screen depends on
+        // the weekday. Any one of them means the populated board is showing.
+        let fixtureTasks = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Edit Performance task "))
+        XCTAssertTrue(fixtureTasks.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(fixtureTasks.allElementsBoundByIndex.contains { app.frame.intersects($0.frame) })
 
         let options = XCTMeasureOptions()
         options.iterationCount = 5
@@ -811,7 +814,8 @@ final class ScrollPerformanceUITests: XCTestCase {
         let message = Array(repeating: "Long outgoing layout check", count: 24).joined(separator: " ")
             + " SENTMARKER"
         composer.typeText(message)
-        composer.typeText("\n")
+        // Return adds a newline in the composer; Send sends.
+        app.buttons["Send message"].tap()
         let cleared = NSPredicate(format: "value == %@", "")
         expectation(for: cleared, evaluatedWith: composer)
         waitForExpectations(timeout: 5)
