@@ -50,7 +50,7 @@ Constraints carried through every chunk:
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Done (2026-10-19) |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Done (2026-10-19); code deletion due after Dec 1, 2026 |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Done (2026-10-20) |
-| 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Reviewed 2026-10-20, awaiting decisions |
+| 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Pending |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Pending |
 | 11 | macOS | `taskify-macos` | Pending |
@@ -1795,10 +1795,12 @@ C8-5 → C8-6 (if approved).
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C8-1 | | | |
-| C8-2 | | | |
-| C8-3 | | | |
-| C8-4 | | | |
-| C8-5 | | | |
-| C8-6 | | | |
-| C8-7 | | | |
+| C8-1 | Approve | 2026-10-20 | Done (`35396677`). The snapshot is stored outside observation, with one observed revision per area (tasks, chat, inbox). Board, card and Upcoming accessors read only the tasks area. Cards take their streak and board key from their column and are `Equatable`. Measured with `BoardRenderUITests` on the 140-task fixture: 20 chat writes re-rendered 1,200 cards before and 0 after; one task edit re-rendered 60 before and 1 after |
+| C8-2 | Approve | 2026-10-20 | Done (`a0e334e4`), on both clients. TaskifyCore `TaskEditorFields` and core `mergeTaskEdit` apply only the fields the user changed. The schedule, reminders and attachments move as groups, and subtasks merge item by item. The PWA editor had the same bug and passes the task as it opened |
+| C8-3 | Approve | 2026-10-20 | Done (`a07d26e6`). "System" follows the iPhone's text size, accessibility sizes included. 70 fixed sizes now scale through `.scaledFont`, which is identical at the default size. Cards have a "Move to…" VoiceOver action and context-menu item. `DynamicTypeUITests` checks that titles grow and saves screenshots at AX3 |
+| C8-4 | Approve | 2026-10-20 | Done (`d327ed5c`). `DayRollover` (tested) and `.onNewDay` move a selection on the old today to the new today. Not exercised live: the simulator clock can't be moved |
+| C8-5 | Approve | 2026-10-20 | Done (`83227608`). iOS event cards show the image and documents. The event editor removes them and adds photos or files through the encrypted upload. Calendar event vectors cover both directions, and `EventAttachmentUITests` checks the card and editor. The chunk 3 follow-up needed no change: since `fb0341a1` the PWA uploads event attachments at publish and sends links |
+| C8-6 | Approve; phone width on iPad | 2026-10-20 | Done (`d9b41dc9`). Columns are 330 pt on every screen, and the focused column anchors at the leading edge. Checked by screenshots on iPad and iPhone |
+| C8-7 | Approve | 2026-10-20 | Done (`9ff48526`). `UpcomingView.swift` went from 3,489 to 1,167 lines, with the calendar, cards, sort sheet, new-item sheet and event editor in their own files. Day grouping is `UpcomingTaskOrganizer.tasksByDay` (tested) and memoized on the tasks revision. The split and the grouping are one commit, not one per move |
+
+**Found while verifying:** 14 of the 71 iOS UI tests fail on a clean install at the commit before chunk 8 too. They are pre-existing, not caused by this chunk: six Bible tracker, fasting and relay tests, three wallet keypad sheets, onboarding sign-in, selection bulk delete, the event time zone check and two scroll tests. Several also depend on what earlier tests left in the simulator. They need their own pass.
