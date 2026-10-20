@@ -1675,7 +1675,22 @@ final class AppModel {
             snapshot.tasks.first(where: { $0.id == taskID }).map { $0.completed && !$0.isDeleted } ?? false
         }
         completeTasks(taskIDs)
-        if !alreadyCompleted.isEmpty { synchronizeTasks(alreadyCompleted) }
+        guard !alreadyCompleted.isEmpty else { return }
+        // Away from the iPhone, the Watch publishes the completion itself, without the next
+        // occurrence, so the task is often completed by the time its command arrives (C10-2).
+        var updated = snapshot
+        let created = alreadyCompleted.compactMap {
+            updated.ensureNextRecurrence(afterCompleted: $0, weekStartsOn: weekStart)?.id
+        }
+        var reconciledIDs: Set<String> = []
+        if !created.isEmpty {
+            snapshot = updated
+            scheduleSave()
+            // As in `toggleCompletion`: a Scripture Memory review is reconciled before publishing.
+            reconciledIDs = reconcileScriptureMemory()
+            refreshNotifications(requestPermission: false)
+        }
+        synchronizeTasks((alreadyCompleted + created).filter { !reconciledIDs.contains($0) })
     }
 
     func completeTasks<S: Sequence>(_ taskIDs: S) where S.Element == String {

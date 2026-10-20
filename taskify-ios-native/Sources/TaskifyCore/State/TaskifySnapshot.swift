@@ -1475,14 +1475,29 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return (created, updatedIDs)
     }
 
-    private mutating func appendNextRecurrence(
-        afterCompletingAt index: Int,
-        weekStartsOn: WeekdayColumn?,
-        now: Date
-    ) {
-        let completedTask = tasks[index]
+    /// Makes sure a recurring task completed elsewhere has its next occurrence. The Watch, away
+    /// from the iPhone, publishes a completion without one; when its command then reaches the
+    /// iPhone the task is already completed (C10-2). Ids come from the date, so this is
+    /// idempotent and converges with any device that created the occurrence. An occurrence that
+    /// exists, or was deleted, is left alone. Returns the occurrence created, if any.
+    @discardableResult
+    public mutating func ensureNextRecurrence(
+        afterCompleted taskID: String,
+        weekStartsOn: WeekdayColumn? = nil,
+        now: Date = Date()
+    ) -> TaskItem? {
+        guard let index = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }),
+              tasks[index].completed,
+              let next = nextRecurrenceSlot(for: tasks[index], now: now),
+              !tasks.contains(where: { $0.id == next.id }) else { return nil }
+        appendNextRecurrence(afterCompletingAt: index, weekStartsOn: weekStartsOn, now: now)
+        return tasks.first { $0.id == next.id && !$0.isDeleted }
+    }
+
+    /// When and under which id a completed task's series continues.
+    private func nextRecurrenceSlot(for completedTask: TaskItem, now: Date) -> (dueDate: Date, id: String)? {
         guard let recurrence = completedTask.recurrence,
-              let dueDate = completedTask.dueDate else { return }
+              let dueDate = completedTask.dueDate else { return nil }
         // A Scripture Memory review is spaced from when it was done: completing one left overdue
         // since July scheduled the next for the day after it, still in July, so catching up took
         // a completion per missed day.
@@ -1493,16 +1508,27 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                   after: scheduledFrom,
                   dueTimeEnabled: completedTask.dueTimeEnabled,
                   timeZoneIdentifier: completedTask.dueTimeZone
-              ) else { return }
-
-        let seriesID = completedTask.seriesID ?? completedTask.id
-        tasks[index].seriesID = seriesID
+              ) else { return nil }
         let nextID = Self.recurringInstanceID(
-            seriesID: seriesID,
+            seriesID: completedTask.seriesID ?? completedTask.id,
             dueDate: nextDueDate,
             recurrence: recurrence,
             timeZoneIdentifier: completedTask.dueTimeZone
         )
+        return (nextDueDate, nextID)
+    }
+
+    private mutating func appendNextRecurrence(
+        afterCompletingAt index: Int,
+        weekStartsOn: WeekdayColumn?,
+        now: Date
+    ) {
+        let completedTask = tasks[index]
+        guard let recurrence = completedTask.recurrence,
+              let (nextDueDate, nextID) = nextRecurrenceSlot(for: completedTask, now: now) else { return }
+
+        let seriesID = completedTask.seriesID ?? completedTask.id
+        tasks[index].seriesID = seriesID
         guard !tasks.contains(where: { $0.id == nextID && !$0.isDeleted }) else { return }
         // Ids are date-derived, so a deleted record of this occurrence (deleted here, or synced
         // from another device) can already hold the id. The new occurrence replaces it in place:
