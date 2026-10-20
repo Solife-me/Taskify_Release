@@ -51,7 +51,7 @@ Constraints carried through every chunk:
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Done (2026-10-19); code deletion due after Dec 1, 2026 |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Done (2026-10-20) |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
-| 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Pending |
+| 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Reviewed 2026-10-20, awaiting decisions |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Pending |
 | 11 | macOS | `taskify-macos` | Pending |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
@@ -1804,3 +1804,141 @@ C8-5 → C8-6 (if approved).
 | C8-7 | Approve | 2026-10-20 | Done (`9ff48526`). `UpcomingView.swift` went from 3,489 to 1,167 lines, with the calendar, cards, sort sheet, new-item sheet and event editor in their own files. Day grouping is `UpcomingTaskOrganizer.tasksByDay` (tested) and memoized on the tasks revision. The split and the grouping are one commit, not one per move |
 
 **Found while verifying:** 14 of the 71 iOS UI tests fail on a clean install at the commit before chunk 8 too. They are pre-existing, not caused by this chunk: six Bible tracker, fasting and relay tests, three wallet keypad sheets, onboarding sign-in, selection bulk delete, the event time zone check and two scroll tests. Several also depend on what earlier tests left in the simulator. They need their own pass.
+
+---
+
+## Chunk 9 — iOS chat, settings, onboarding, wallet phase-out
+
+The rest of the iOS app:
+- the wallet (17,000 lines: 6,900 in TaskifyCore, 10,400 in the app);
+- chat and contacts (8,400);
+- settings and onboarding (4,000).
+
+The wallet comes first because of the fixed date. The PWA has been withdraw-only since chunk 6,
+and switches to recovery by itself on December 1, 2026. iOS must follow the same policy, and an
+App Store release has to be live before that date.
+
+What the review found:
+
+- **The iOS wallet is at the first stage of the phase-out only.** It is hidden on devices that
+  never used it. A one-time notice goes to users with a balance, and a close-out returns an
+  emptied wallet to the no-wallet state. That matches what the PWA had before chunk 6.
+
+  Still on iOS, all removed from the PWA in C6-1:
+  - **Receive:** Lightning invoices, pasted or scanned ecash, and payment requests, including
+    the Nostr payment inbox.
+  - **Lightning addresses:** the npub.cash address manager, and a sheet that sells a custom
+    solife address.
+  - **Moving money between mints:** mint transfers and swaps.
+  - **The notice:** it asks users to move funds "immediately" and names no date.
+
+  There is no recovery view, and nothing switches off on December 1.
+- **The stuck-token bug the PWA had is also on iOS (confirmed by reading).** On devices that
+  redeem manually, and in NWC mode, received tokens are saved unredeemed. Every saved token blocks
+  close-out ("Received ecash is still waiting to be redeemed"). A token already redeemed in
+  another wallet is removed only in auto-redeem mode, or if the user finds it in the Receive
+  screens and discards it. The close-out card names the blocker but offers no way to clear it.
+  Once Receive goes, nothing could clear it. This is the case fixed on the PWA in `262f17ab`.
+- **Chat is already wallet-free.** A received Cashu token is copy-only, and chat has no payment
+  flows.
+- **An open conversation rebuilds on every task change (measured).** The conversation memoizes
+  its timeline on `snapshotRevision`, which every write bumps. With the 300-message chat fixture
+  open, 20 task writes rebuilt the timeline 20 times, about 1.6 ms each on the simulator, plus the
+  view diffing. During a sync burst this repeats for every merged batch. This is the chat side of
+  C8-1, which scoped boards and cards to the tasks area.
+- **First run still starts with keys.** Onboarding offers "Sign in with nsec" or "Create new
+  login". It shows the private key to copy, then asks for notification permission before the
+  user has a reminder. C2-5 changed the PWA to "Start using Taskify", with key backup and
+  permission asked later. iOS was left for this chunk. The onboarding sign-in UI test already
+  fails on a clean install (see chunk 8).
+- **Settings shows a porting checklist to everyone.** "Native app status" lists 15 features as
+  "Active" with green checks. All but two are hard-coded, and "Wallet: Active" is now wrong.
+  Two wallet cards in `SettingsView` ("Wallet currency" and "Recipient keys", about 120 lines)
+  are defined but never shown.
+- **Language fit:** none. This chunk mostly removes code; the chat fix reuses C8-1.
+
+### C9-1 — Withdraw-only iOS wallet with one "Move funds out" path (parity with C6-1)
+
+- **User:** Everyone with a Taskify wallet on iOS.
+- **Proposal:** The same policy as the PWA:
+  - "Move funds out" replaces Receive. It covers:
+    - Lightning out;
+    - one ecash token per mint, recorded in History so an unclaimed token can be taken back;
+    - NWC sweep;
+    - npub.cash claims for funds already owed;
+    - the 12 words.
+  - Receiving, payment requests, the Lightning address manager, the solife address sale, mint
+    transfers and swaps are removed. A scanned token is copied, not redeemed.
+  - The notice names December 1, 2026 and shows once more.
+- **Test first:** with funds, the wallet offers only ways out. The UI tests for the keypad
+  sheets, which already fail, are replaced by move-out tests.
+- **Effort:** M. **Risk:** medium; funds must stay reachable (tested per path).
+- **Decision needed:** existing solife address owners keep their address until it expires, with
+  no new sales. Or the sheet goes entirely.
+
+### C9-2 — December 1: a recovery view instead of the wallet (parity with C6-2)
+
+- **Proposal:** From local midnight on December 1, 2026 the full wallet is off on iOS too.
+  Devices that had it get a recovery view that reads storage only. Like the PWA's, it shows:
+  - each mint's notes as a token;
+  - saved and unclaimed sent tokens;
+  - the 12 words with their mints.
+
+  A hidden switch previews it, as on the PWA. TaskifyCore gains the date and the token export
+  from stored proofs, with tests.
+- **Effort:** M. **Risk:** medium. **The App Store release must be live before December 1**,
+  so this goes into the next beta.
+
+### C9-3 — Close-out clears saved tokens (bug, parity with `262f17ab`)
+
+- **Proposal:** Close-out checks saved and inbox tokens with their mints (NUT-07). Spent ones
+  are removed, with a copy kept in History. One that cannot be checked can be removed by the
+  user from the close-out card, which lists each token with Copy and Remove.
+- **Test first:** a saved token already redeemed in another wallet no longer blocks close-out,
+  on a manual-redeem device and in NWC mode.
+- **Effort:** S–M. **Risk:** low; nothing is removed while a mint says it is unspent.
+
+### C9-4 — Chat follows chat state (performance)
+
+- **Proposal:** The C8-1 pattern for chat:
+  - chat accessors read only the chat area (messages, groups, read state) and the inbox area
+    (contacts, shared items);
+  - the conversation timeline and the chat list memoize on those revisions.
+- **Measure:** the chat probe and `ChatRenderUITests` were written for this review. They are
+  kept as a patch and become the regression test. Today 20 task writes cause 20 rebuilds; the
+  target is 0.
+- **Effort:** S–M. **Risk:** low–medium; the same care as C8-1 (complete invalidation).
+
+### C9-5 — First run that starts with tasks (parity with C2-5)
+
+- **Proposal:** iOS onboarding follows the PWA:
+  - "Start using Taskify" creates the key silently and opens a starter board;
+  - "I already use Taskify" holds sign-in and restore;
+  - key backup is asked for once the user has something to lose, with an "Unsaved key" reminder
+    in Settings;
+  - notification permission is asked at the first reminder.
+
+  The onboarding UI tests are rewritten for the new order.
+- **Effort:** M. **Risk:** low.
+
+### C9-6 — Settings without the porting checklist (cleanup)
+
+- **Proposal:** Remove "Native app status". The one live status, Nostr sync, already has its
+  own card. Delete the two unused wallet cards. Wallet settings stay inside the wallet.
+- **Effort:** S. **Risk:** low.
+
+### Recommended order
+
+C9-3 (stuck funds) → C9-1 → C9-2 (must ship before December 1) → C9-4 → C9-6 → C9-5. Then an
+iOS beta build, so the phase-out reaches the App Store in time.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C9-1 | | | |
+| C9-2 | | | |
+| C9-3 | | | |
+| C9-4 | | | |
+| C9-5 | | | |
+| C9-6 | | | |
