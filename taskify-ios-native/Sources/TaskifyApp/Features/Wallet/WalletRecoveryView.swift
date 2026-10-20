@@ -1,6 +1,7 @@
 import LocalAuthentication
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 
 /// The Wallet tab from December 1, 2026 (C9-2, matching the PWA's `WalletRecoveryView`): what is
 /// left, as tokens any Cashu wallet can redeem, and the 12 words. It reads storage only.

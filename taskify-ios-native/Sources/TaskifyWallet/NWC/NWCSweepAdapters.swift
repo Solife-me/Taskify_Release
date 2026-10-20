@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 /// Sweeps one mint's balance from the Cashu wallet. With `limitSat`, at most that many sats
 /// are spent (used to move just a received token, not other ecash at the same mint); run

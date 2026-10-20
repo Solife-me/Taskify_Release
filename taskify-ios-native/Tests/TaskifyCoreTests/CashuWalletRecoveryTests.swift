@@ -2,6 +2,7 @@ import Cdk
 import Foundation
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 /// C9-2: the recovery view's tokens are standard and complete, made from storage alone.
 final class CashuWalletRecoveryTests: XCTestCase {

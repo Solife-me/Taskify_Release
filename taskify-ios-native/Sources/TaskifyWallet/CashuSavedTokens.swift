@@ -1,6 +1,7 @@
 import Cdk
 import CryptoKit
 import Foundation
+import TaskifyCore
 import P256K
 
 /// Asking a mint whether a token's proofs are spent (NUT-07), for any mint, without adding it to

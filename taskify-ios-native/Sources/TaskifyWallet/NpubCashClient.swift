@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 /// A Lightning address of the form `<npub>@npub.cash` that resolves deterministically from a
 /// Nostr identity — no signup step, matching the PWA's `deriveNpubCashIdentity`.

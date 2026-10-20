@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 public enum CoinbasePriceError: LocalizedError, Equatable {
     case invalidResponse

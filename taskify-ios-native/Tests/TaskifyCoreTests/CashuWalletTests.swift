@@ -1,6 +1,7 @@
 import Cdk
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 final class CashuWalletTests: XCTestCase {
     func testMintURLNormalizationRequiresSecureCompleteURL() throws {

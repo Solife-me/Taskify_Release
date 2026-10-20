@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 /// C9-3: saved tokens no longer block close-out forever. A token already redeemed in another
 /// wallet is found with its mint (NUT-07) and removed, keeping a copy; one that cannot be checked

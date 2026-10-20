@@ -1,5 +1,6 @@
 import Cdk
 import Foundation
+import TaskifyCore
 
 /// What is left of the Taskify wallet after December 1, 2026 (C9-2), read from this device's
 /// storage alone: no mint is asked and nothing is written. Matches the PWA's `walletRecovery`:

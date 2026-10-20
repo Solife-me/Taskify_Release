@@ -1,5 +1,6 @@
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 /// The wallet's end date, as the PWA has it: local midnight starting December 1, 2026.
 final class TaskifyWalletPhaseOutTests: XCTestCase {

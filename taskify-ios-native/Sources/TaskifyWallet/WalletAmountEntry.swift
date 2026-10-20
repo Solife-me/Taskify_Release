@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 public enum WalletAmountKeypadKey: Equatable, Sendable {
     case digit(Character)

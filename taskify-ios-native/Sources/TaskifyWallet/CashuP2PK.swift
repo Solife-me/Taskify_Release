@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 public enum CashuP2PKError: LocalizedError, Equatable {
     case invalidKey

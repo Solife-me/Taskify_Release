@@ -1,5 +1,6 @@
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 
 /// The wallet's only way forward while it is phased out (C9-1, matching the PWA's
 /// `MoveFundsOutSheet`): every route out of the Taskify wallet, and none in.

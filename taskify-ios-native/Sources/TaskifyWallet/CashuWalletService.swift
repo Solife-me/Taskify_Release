@@ -1,6 +1,7 @@
 import Cdk
 import CryptoKit
 import Foundation
+import TaskifyCore
 
 public enum CashuWalletError: LocalizedError, Equatable {
     case invalidMintURL

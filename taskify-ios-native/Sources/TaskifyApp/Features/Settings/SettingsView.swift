@@ -1,6 +1,7 @@
 import LocalAuthentication
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 import UIKit
 import UniformTypeIdentifiers
 import VisionKit

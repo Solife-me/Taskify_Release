@@ -1,5 +1,6 @@
 import XCTest
 import TaskifyCore
+import TaskifyWallet
 @testable import MacPresentation
 
 final class MacPresentationTests: XCTestCase {

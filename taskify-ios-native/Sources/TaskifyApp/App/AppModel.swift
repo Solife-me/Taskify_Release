@@ -3,6 +3,7 @@ import os
 import Security
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 import TaskifyWatchShared
 import WidgetKit
 

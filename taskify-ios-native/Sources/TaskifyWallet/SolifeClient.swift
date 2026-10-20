@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 public struct SolifeConfig: Equatable, Sendable {
     public let domain: String

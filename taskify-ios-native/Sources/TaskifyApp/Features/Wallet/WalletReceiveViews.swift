@@ -1,6 +1,7 @@
 import LocalAuthentication
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 #if canImport(UIKit)
 import UIKit
 #endif

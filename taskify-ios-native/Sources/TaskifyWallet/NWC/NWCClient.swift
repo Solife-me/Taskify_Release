@@ -1,5 +1,6 @@
 import TaskifyWatchShared
 import Foundation
+import TaskifyCore
 
 public struct NWCWalletInfo: Equatable, Sendable {
     public let alias: String?

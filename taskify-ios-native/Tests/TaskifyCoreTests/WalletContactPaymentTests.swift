@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 final class WalletContactPaymentTests: XCTestCase {
     private let npub = "npub1exampleexampleexampleexampleexampleexampleexampleexam"

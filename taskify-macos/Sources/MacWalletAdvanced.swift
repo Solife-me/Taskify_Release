@@ -1,5 +1,6 @@
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 
 enum MacWalletAdvancedSheet: Identifiable, Equatable {
     case paymentRequests

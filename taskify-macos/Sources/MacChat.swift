@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 
 struct MacChatView: View {
     let search: String

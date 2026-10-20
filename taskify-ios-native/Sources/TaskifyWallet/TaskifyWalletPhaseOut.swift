@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 /// When the Taskify wallet ends, shared by every Apple client (C9-1, C9-2). Matches the PWA's
 /// `WALLET_REMOVAL_DATE_ISO`: from local midnight on December 1, 2026 the full wallet is off and

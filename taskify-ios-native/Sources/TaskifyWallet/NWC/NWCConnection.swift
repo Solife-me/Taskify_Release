@@ -1,6 +1,7 @@
 import CommonCrypto
 import CryptoKit
 import Foundation
+import TaskifyCore
 import P256K
 
 public enum NWCError: LocalizedError, Equatable {

@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 final class NpubCashClientTests: XCTestCase {
     private let senderPrivateKey = String(repeating: "0", count: 63) + "1"

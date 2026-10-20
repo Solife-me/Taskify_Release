@@ -62,8 +62,8 @@ public extension TaskifySnapshot {
     func savedNonPaymentInboxEventIDs() -> Set<String> {
         var result = Set((directMessages ?? []).compactMap { message -> String? in
             guard message.isIncoming || message.deliveryState == .sent,
-                  CashuPaymentRequestContract.paymentPayloadJSON(from: message.content) == nil,
-                  CashuPaymentRequestContract.structuredPaymentToken(from: message.content) == nil else {
+                  // Covers NUT-18 payment payloads too: each is a structured payment.
+                  CashuTokenText.structuredPaymentToken(from: message.content) == nil else {
                 return nil
             }
             return message.wrapEventID

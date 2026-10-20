@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import TaskifyCore
 
 // Moves ecash to a Nostr Wallet Connect wallet by paying invoices the NWC wallet creates.
 // Port of the PWA's nwcSweep.ts. Funds-safety rules:

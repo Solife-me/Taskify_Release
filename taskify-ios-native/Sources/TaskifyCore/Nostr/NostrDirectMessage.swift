@@ -1288,6 +1288,6 @@ public extension NostrDirectMessage {
     /// An incoming message carrying a Cashu token in its text. The app no longer redeems these,
     /// so the message itself is where the user's funds live until they copy the token out.
     var holdsReceivedCashuToken: Bool {
-        isIncoming && CashuPaymentRequestContract.firstTokenSubstring(in: content) != nil
+        isIncoming && CashuTokenText.firstTokenSubstring(in: content) != nil
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 /// Pay metadata for a Lightning Address, fetched from its `/.well-known/lnurlp/<name>` endpoint.
 public struct LnurlPayInfo: Equatable, Sendable {

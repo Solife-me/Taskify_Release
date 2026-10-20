@@ -7,7 +7,7 @@ let package = Package(
     products: [.library(name: "MacPresentation", targets: ["MacPresentation"])],
     dependencies: [.package(path: "../taskify-ios-native")],
     targets: [
-        .target(name: "MacPresentation", dependencies: [.product(name: "TaskifyCore", package: "taskify-ios-native")], path: "Sources/Presentation"),
+        .target(name: "MacPresentation", dependencies: [.product(name: "TaskifyCore", package: "taskify-ios-native"), .product(name: "TaskifyWallet", package: "taskify-ios-native")], path: "Sources/Presentation"),
         .testTarget(name: "MacPresentationTests", dependencies: ["MacPresentation"], path: "Tests"),
     ]
 )

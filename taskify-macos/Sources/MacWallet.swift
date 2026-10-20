@@ -1,5 +1,6 @@
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 
 struct MacWalletView: View {
     @EnvironmentObject private var wallet: WalletViewModel

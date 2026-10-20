@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 /// Wire formats for paying a Nostr contact.
 ///

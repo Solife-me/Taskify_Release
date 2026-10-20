@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 import URKit
 
 public struct CashuAnimatedQRAnimation: Equatable, Sendable {

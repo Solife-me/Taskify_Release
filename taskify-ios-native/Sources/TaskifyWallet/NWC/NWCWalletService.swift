@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 import Security
 
 /// Which wallet the app sends and receives with.

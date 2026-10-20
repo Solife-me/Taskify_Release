@@ -1,5 +1,6 @@
 import Foundation
 import TaskifyCore
+import TaskifyWallet
 #if canImport(UIKit)
 import UIKit
 #endif

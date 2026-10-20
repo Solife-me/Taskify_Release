@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 import UniformTypeIdentifiers
 
 /// The wallet page while an NWC wallet replaces the ecash wallet: lightning only.

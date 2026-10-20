@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyCore
 
 /// Matches the PWA's `walletPrimaryCurrency` setting (`taskify-pwa/src/domains/tasks/settingsTypes.ts`).
 public enum WalletPrimaryCurrency: String, Codable, CaseIterable, Sendable {
