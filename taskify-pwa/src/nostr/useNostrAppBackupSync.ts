@@ -8,6 +8,8 @@ import {
   normalizeRelayListSorted,
   scriptureMemorySyncKey,
   type Board,
+  type NostrBackupContent,
+  updateRemoteNostrBackup,
 } from "taskify-core";
 import {
   sanitizeBibleTrackerState,
@@ -59,6 +61,26 @@ import type { MergedDocumentConfig } from "./mergedDocumentSync";
 import { useMergedDocumentSync } from "./useMergedDocumentSync";
 
 const NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS = 1500;
+const NOSTR_BACKUP_RETRY_MS = 60_000;
+const LS_NOSTR_BACKUP_MANAGED_BOARDS = "taskify_nostr_backup_managed_boards_v1";
+
+/** The boards this device has put in the account backup (so it removes them when they go). */
+function loadManagedBackupBoardIds(pubkey: string): string[] {
+  try {
+    const parsed = JSON.parse(kvStorage.getItem(LS_NOSTR_BACKUP_MANAGED_BOARDS) || "null");
+    return parsed && parsed.pubkey === pubkey && Array.isArray(parsed.ids) ? parsed.ids.filter((id: unknown) => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveManagedBackupBoardIds(pubkey: string, ids: string[]): void {
+  try {
+    kvStorage.setItem(LS_NOSTR_BACKUP_MANAGED_BOARDS, JSON.stringify({ pubkey, ids }));
+  } catch {
+    // storage full: the next publish keeps these boards, which only errs on the safe side
+  }
+}
 
 const BIBLE_TRACKER_SYNC: MergedDocumentConfig<BibleTrackerState> = {
   dTag: NOSTR_BIBLE_TRACKER_D_TAG,
@@ -145,6 +167,11 @@ export function useNostrAppBackupSync({
   const nostrBackupPullFinishedRef = useRef(false);
   const nostrBackupInitialPublishRef = useRef(false);
   const nostrBackupPublishRef = useRef<Promise<void> | null>(null);
+  // The latest backup on the relays, once read (null inside: the relays confirmed there is none).
+  // Several devices write this backup, so this device publishes only an update of it
+  // (taskify-core's updateRemoteNostrBackup), never its own snapshot over it.
+  const remoteBackupRef = useRef<{ content: NostrBackupContent | null; timestamp: number } | null>(null);
+  const nostrBackupRetryTimerRef = useRef<number | null>(null);
   const [nostrBackupHold, setNostrBackupHold] = useState(false);
   const nostrBackupHoldRef = useRef(nostrBackupHold);
   useEffect(() => { nostrBackupHoldRef.current = nostrBackupHold; }, [nostrBackupHold]);
@@ -154,6 +181,7 @@ export function useNostrAppBackupSync({
       if (prev.pubkey === nostrPK) return prev;
       nostrBackupInitialPublishRef.current = false;
       nostrBackupPullFinishedRef.current = false;
+      remoteBackupRef.current = null;
       return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
     });
   }, [nostrPK]);
@@ -265,6 +293,9 @@ export function useNostrAppBackupSync({
       }
       if (!payload || payload.version !== 1) return;
       const payloadTs = Math.max(Number(payload.timestamp) || 0, ev.created_at || 0);
+      if (!remoteBackupRef.current || payloadTs >= remoteBackupRef.current.timestamp) {
+        remoteBackupRef.current = { content: payload, timestamp: payloadTs };
+      }
       const lastTs = nostrBackupStateRef.current.lastTimestamp || 0;
       if (payloadTs <= lastTs) {
         if (!nostrBackupStateRef.current.lastEventId && ev.id) {
@@ -283,6 +314,8 @@ export function useNostrAppBackupSync({
     [applyNostrBackupPayload, nostrPK, nostrSK, settings.nostrBackupEnabled, tagValue],
   );
 
+  const pullNostrBackupOnceRef = useRef<() => Promise<boolean>>(async () => false);
+  const publishLatestNostrBackupRef = useRef<() => Promise<void>>(async () => {});
   const pullNostrBackupOnce = useCallback(async (): Promise<boolean> => {
     if (!settings.nostrBackupEnabled) return false;
     if (!nostrPK) return false;
@@ -301,29 +334,62 @@ export function useNostrAppBackupSync({
         await handleIncomingNostrBackupEvent(latest as unknown as NostrEvent);
         return true;
       }
+      // Nothing found. Trust that only for an account that has never backed up from here: one that
+      // has is more likely looking at relays that do not have it.
+      if (!remoteBackupRef.current && (nostrBackupStateRef.current.lastTimestamp || 0) === 0) {
+        remoteBackupRef.current = { content: null, timestamp: 0 };
+      }
       return false;
     } catch (error) {
       console.warn("Failed to fetch Nostr backup", error);
       return false;
     }
   }, [defaultRelays, handleIncomingNostrBackupEvent, nostrList, nostrPK, settings.nostrBackupEnabled]);
+  pullNostrBackupOnceRef.current = pullNostrBackupOnce;
 
   const publishNostrBackup = useCallback(async () => {
     if (!settings.nostrBackupEnabled) return;
     if (!nostrPK) return;
     const relays = normalizeNostrRelayList(defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS));
     if (!relays.length) return;
+    if (!remoteBackupRef.current) await pullNostrBackupOnceRef.current();
+    const remote = remoteBackupRef.current;
+    if (!remote) {
+      // The remote backup could not be read: publishing now could drop what other devices put
+      // there (their boards, the wallet seed). Try again shortly.
+      if (nostrBackupRetryTimerRef.current == null) {
+        nostrBackupRetryTimerRef.current = window.setTimeout(() => {
+          nostrBackupRetryTimerRef.current = null;
+          void publishLatestNostrBackupRef.current();
+        }, NOSTR_BACKUP_RETRY_MS);
+      }
+      return;
+    }
     const snapshot = buildNostrBackupSnapshot();
     const snapshotString = serializeNostrBackupSnapshotRef.current();
+    const updated = updateRemoteNostrBackup(
+      remote.content,
+      {
+        boards: snapshot.boards,
+        settings: snapshot.settings as Record<string, unknown>,
+        walletSeed: snapshot.walletSeed,
+        defaultRelays: snapshot.defaultRelays,
+      },
+      { managedNostrIds: loadManagedBackupBoardIds(nostrPK), includeMetadata: settings.nostrBackupEnabled },
+    );
     const nowSeconds = Math.floor(Date.now() / 1000);
-    const timestamp = Math.max(nowSeconds, (nostrBackupStateRef.current.lastTimestamp || 0) + 1);
+    const timestamp = Math.max(
+      nowSeconds,
+      (nostrBackupStateRef.current.lastTimestamp || 0) + 1,
+      remote.timestamp + 1,
+    );
     const payload: NostrAppBackupPayload = {
       version: 1,
       timestamp,
-      boards: snapshot.boards,
-      settings: snapshot.settings as Record<string, unknown>,
-      walletSeed: snapshot.walletSeed,
-      defaultRelays: snapshot.defaultRelays,
+      boards: updated.boards,
+      settings: updated.settings,
+      walletSeed: updated.walletSeed,
+      defaultRelays: updated.defaultRelays,
     };
     const skHex = bytesToHex(nostrSK);
     const content = await encryptNostrBackupPayload(payload, skHex, nostrPK);
@@ -354,6 +420,8 @@ export function useNostrAppBackupSync({
     nostrBackupStateRef.current = nextState;
     setNostrBackupState(nextState);
     nostrBackupPublishedSnapshotRef.current = snapshotString;
+    remoteBackupRef.current = { content: payload, timestamp: publishedTs };
+    saveManagedBackupBoardIds(nostrPK, updated.managedNostrIds);
   }, [buildNostrBackupSnapshot, defaultRelays, nostrPK, nostrPublishRef, nostrSK, settings.nostrBackupEnabled]);
 
   const enqueueNostrBackupPublish = useCallback(() => {
@@ -386,7 +454,11 @@ export function useNostrAppBackupSync({
     } catch {}
   }, [enqueueNostrBackupPublish, nostrPK, serializeNostrBackupSnapshot, settings.nostrBackupEnabled]);
 
+  publishLatestNostrBackupRef.current = publishLatestNostrBackup;
   const nostrBackupPublishedSnapshotRef = useRef<string | null>(null);
+  useEffect(() => () => {
+    if (nostrBackupRetryTimerRef.current != null) window.clearTimeout(nostrBackupRetryTimerRef.current);
+  }, []);
   const nostrBackupDebounceTimerRef = useRef<number | null>(null);
   useEffect(() => {
     nostrBackupPullFinishedRef.current = false;
