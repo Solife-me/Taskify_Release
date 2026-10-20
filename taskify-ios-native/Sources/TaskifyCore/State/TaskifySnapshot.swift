@@ -1861,6 +1861,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     public mutating func mergeRemoteTasks(
         _ records: [(task: TaskItem, eventCreatedAt: Int)]
     ) -> Bool {
+        mergeRemoteTasks(records.map { TaskRelayRecord(task: $0.task, eventCreatedAt: $0.eventCreatedAt) })
+    }
+
+    /// Applies relay versions that win over what this device holds, in relays' order (NIP-01, C7-3):
+    /// a later `created_at`, or the same one with a lower event id.
+    @discardableResult
+    public mutating func mergeRemoteTasks(_ records: [TaskRelayRecord]) -> Bool {
         guard !records.isEmpty else { return false }
 
         let needsOccurrenceRepair = records.contains {
@@ -1901,15 +1908,29 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             let remoteTask = taskApplyingRecurringSeriesCutoff(record.task)
             if let index = indexByID[remoteTask.id] {
                 let localClock = tasks[index].nostrUpdatedAt ?? 0
+                let local = tasks[index].localEventVersion
                 // Our own version echoed back by a relay: record what the relays hold.
-                if record.eventCreatedAt == localClock, tasks[index].publishedFingerprint == nil {
+                if record.eventCreatedAt == localClock, tasks[index].publishedFingerprint == nil,
+                   local.id == nil || local.id == record.eventID {
                     let relayFingerprint = fingerprint(record.task)
                     if relayFingerprint != nil {
                         tasks[index].publishedFingerprint = relayFingerprint
                         changed = true
                     }
                 }
-                guard record.eventCreatedAt > localClock else { continue }
+                // Stamped here and not yet signed: the id that decides a same-second tie is not
+                // known yet, so the local edit stays until it is queued.
+                if record.eventCreatedAt == localClock, tasks[index].publishPending == true { continue }
+                guard record.version.wins(over: local) else { continue }
+                if record.eventCreatedAt == localClock, local.id == nil,
+                   let relayFingerprint = fingerprint(record.task),
+                   relayFingerprint == fingerprint(tasks[index]) {
+                    // The same content at the same second: most likely the very event this device
+                    // holds, from before ids were kept. Learn its id rather than replace the task.
+                    tasks[index].nostrEventVersion = record.version
+                    changed = true
+                    continue
+                }
                 var merged = remoteTask
                 var preservedFields = tasks[index].preservedSyncFields ?? [:]
                 for (name, value) in remoteTask.preservedSyncFields ?? [:] {
@@ -1917,12 +1938,14 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 }
                 merged.preservedSyncFields = preservedFields.isEmpty ? nil : preservedFields
                 merged.nostrUpdatedAt = record.eventCreatedAt
+                merged.nostrEventVersion = record.eventID == nil ? nil : record.version
                 merged.publishedFingerprint = fingerprint(record.task)
                 tasks[index] = merged
                 changed = true
             } else {
                 var inserted = remoteTask
                 inserted.nostrUpdatedAt = record.eventCreatedAt
+                inserted.nostrEventVersion = record.eventID == nil ? nil : record.version
                 inserted.publishedFingerprint = fingerprint(record.task)
                 indexByID[inserted.id] = tasks.count
                 tasks.append(inserted)
@@ -1935,8 +1958,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func mergeRemoteTask(_ remoteTask: TaskItem, eventCreatedAt: Int) -> Bool {
-        mergeRemoteTasks([(task: remoteTask, eventCreatedAt: eventCreatedAt)])
+    public mutating func mergeRemoteTask(_ remoteTask: TaskItem, eventCreatedAt: Int, eventID: String? = nil) -> Bool {
+        mergeRemoteTasks([TaskRelayRecord(task: remoteTask, eventCreatedAt: eventCreatedAt, eventID: eventID)])
     }
 
     private static func stableRecurringSeriesID(for task: TaskItem) -> String {

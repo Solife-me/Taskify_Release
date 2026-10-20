@@ -184,7 +184,15 @@ function pick<T>(incoming: T | null | undefined, current: T | undefined): T | un
 export function mergeIncomingTask(
   current: Task | undefined,
   incoming: IncomingTask,
-  context: { nostrAt: number; order: number; now: number; eventPubkey: string; incomingIsNewerOnTie: boolean },
+  context: {
+    nostrAt: number;
+    /** The event's id, recorded with `_nostrAt` (C7-3); absent when unknown. */
+    nostrId?: string;
+    order: number;
+    now: number;
+    eventPubkey: string;
+    incomingIsNewerOnTie: boolean;
+  },
 ): Task {
   const { base, fields } = incoming;
   return {
@@ -200,5 +208,6 @@ export function mergeIncomingTask(
     subtasks: pick(fields.subtasks, current?.subtasks),
     assignees: pick(fields.assignees, current?.assignees),
     _nostrAt: context.nostrAt,
+    _nostrId: context.nostrId,
   };
 }

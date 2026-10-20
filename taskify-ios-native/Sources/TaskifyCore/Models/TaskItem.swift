@@ -118,6 +118,19 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     /// encoding or signing, cleared once the event is queued, so a publish interrupted by a
     /// failure or by the app being closed is sent again (`TaskPublishPlanner`). Local only.
     public var publishPending: Bool? = nil
+    /// The event behind `nostrUpdatedAt`, once known: the one this device queued or received for
+    /// the task. Local only. It counts only while its `createdAt` equals `nostrUpdatedAt`, so
+    /// stamping a new version makes the id unknown without clearing it (`localEventVersion`).
+    public var nostrEventVersion: EventVersion? = nil
+
+    /// The version this device holds, compared with incoming events by `EventVersion` (C7-3).
+    public var localEventVersion: EventVersion {
+        let createdAt = nostrUpdatedAt ?? 0
+        return EventVersion(
+            createdAt: createdAt,
+            id: nostrEventVersion?.createdAt == createdAt ? nostrEventVersion?.id : nil
+        )
+    }
 
     public init(
         id: String = UUID().uuidString,

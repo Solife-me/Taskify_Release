@@ -27,7 +27,7 @@ function setup(overrides: Partial<BoardPublisherDeps> = {}) {
     encryptCalendarForInvitees: async (payload, eventKey) => `view:${eventKey}(${JSON.stringify(payload)})`,
     publish: async (relays, template) => {
       sent.push({ relays, template });
-      return template.created_at;
+      return { createdAt: template.created_at, id: `id-${sent.length}` };
     },
     prepareAttachments: async () => ({ images: null, image: null, documents: null }),
     storedTaskAt: () => 0,
@@ -84,8 +84,11 @@ describe("BoardPublisher", () => {
     expect(sent.map((entry) => entry.template.kind)).toEqual([30300, 30301, 30301]);
     expect(sent[1].template.tags).toEqual([["d", "t1"], ["b", "tag:nb1"], ["col", "c1"], ["status", "open"]]);
     expect(deps.recordTaskVersion).toHaveBeenCalledWith(t, sent[1].template.created_at);
+    // Once signed, the version is stored with its event id (C7-3).
+    expect(deps.recordTaskVersion).toHaveBeenCalledWith(t, sent[1].template.created_at, "id-2");
     expect(t._nostrAt).toBeUndefined(); // the object in the store is not mutated
     expect(ledger.taskAt("tag:nb1", "t1")).toBe(sent[2].template.created_at);
+    expect(ledger.taskVersion("tag:nb1", "t1")).toEqual({ createdAt: sent[2].template.created_at, id: "id-3" });
     expect(ledger.isTaskPending("tag:nb1", "t1")).toBe(false);
     expect(deps.onTaskSettled).toHaveBeenCalledWith("t1");
   });

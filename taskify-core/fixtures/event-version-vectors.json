@@ -1,0 +1,125 @@
+{
+  "description": "Which version of a replaceable item wins: later created_at, then the lowest id (NIP-01); a known id wins a tie with an unknown one. expected is the sign of compare(a, b). Written by taskify-core tests/event-version-vectors.test.ts (WRITE_EVENT_VERSION_VECTORS=1); checked there and by Swift EventVersionVectorTests.",
+  "vectors": [
+    {
+      "name": "a later created_at wins",
+      "a": {
+        "createdAt": 101,
+        "id": "f022222222222222222222222222222222222222222222222222222222222222"
+      },
+      "b": {
+        "createdAt": 100,
+        "id": "0a11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "expected": 1
+    },
+    {
+      "name": "an earlier created_at loses",
+      "a": {
+        "createdAt": 99,
+        "id": "0a11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "b": {
+        "createdAt": 100,
+        "id": "f022222222222222222222222222222222222222222222222222222222222222"
+      },
+      "expected": -1
+    },
+    {
+      "name": "at the same created_at the lower id wins",
+      "a": {
+        "createdAt": 100,
+        "id": "0a11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "b": {
+        "createdAt": 100,
+        "id": "f022222222222222222222222222222222222222222222222222222222222222"
+      },
+      "expected": 1
+    },
+    {
+      "name": "at the same created_at the higher id loses",
+      "a": {
+        "createdAt": 100,
+        "id": "f022222222222222222222222222222222222222222222222222222222222222"
+      },
+      "b": {
+        "createdAt": 100,
+        "id": "0a11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "expected": -1
+    },
+    {
+      "name": "ids compare case-insensitively",
+      "a": {
+        "createdAt": 100,
+        "id": "0A11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "b": {
+        "createdAt": 100,
+        "id": "0a11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "expected": 0
+    },
+    {
+      "name": "the same event is the same version",
+      "a": {
+        "createdAt": 100,
+        "id": "0a11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "b": {
+        "createdAt": 100,
+        "id": "0a11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "expected": 0
+    },
+    {
+      "name": "a known id wins a tie with an unknown one",
+      "a": {
+        "createdAt": 100,
+        "id": "f022222222222222222222222222222222222222222222222222222222222222"
+      },
+      "b": {
+        "createdAt": 100,
+        "id": null
+      },
+      "expected": 1
+    },
+    {
+      "name": "an unknown id loses a tie with a known one",
+      "a": {
+        "createdAt": 100,
+        "id": null
+      },
+      "b": {
+        "createdAt": 100,
+        "id": "f022222222222222222222222222222222222222222222222222222222222222"
+      },
+      "expected": -1
+    },
+    {
+      "name": "two unknown ids are the same version",
+      "a": {
+        "createdAt": 100,
+        "id": null
+      },
+      "b": {
+        "createdAt": 100,
+        "id": null
+      },
+      "expected": 0
+    },
+    {
+      "name": "created_at decides before an unknown id",
+      "a": {
+        "createdAt": 101,
+        "id": null
+      },
+      "b": {
+        "createdAt": 100,
+        "id": "0a11111111111111111111111111111111111111111111111111111111111111"
+      },
+      "expected": 1
+    }
+  ]
+}

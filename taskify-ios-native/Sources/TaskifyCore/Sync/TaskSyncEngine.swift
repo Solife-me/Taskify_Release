@@ -162,10 +162,11 @@ struct TaskRelayStartupBatch: Sendable {
     private var sharedInboxEventsByID: [String: NostrEvent] = [:]
 
     mutating func insert(_ record: TaskRelayRecord) {
-        let existingClock = recordsByTaskID[record.task.id]?.eventCreatedAt ?? 0
-        if record.eventCreatedAt >= existingClock {
-            recordsByTaskID[record.task.id] = record
+        // Relays' order (NIP-01): a later event, or a same-second one with a lower id.
+        if let existing = recordsByTaskID[record.task.id], EventVersion.compare(record.version, existing.version) < 0 {
+            return
         }
+        recordsByTaskID[record.task.id] = record
     }
 
     mutating func drain() -> [TaskRelayRecord] {
@@ -2777,9 +2778,7 @@ extension TaskSyncEngine {
 
     /// NIP-01 replaceable ordering: the newer event wins; on a tie, the lower id.
     static func replaces(_ candidate: NostrEvent, _ current: NostrEvent) -> Bool {
-        candidate.createdAt != current.createdAt
-            ? candidate.createdAt > current.createdAt
-            : candidate.id < current.id
+        EventVersion(candidate).wins(over: EventVersion(current))
     }
 
     /// Whether a relay whose latest version of the address is `relayLatest` gains nothing from
@@ -2805,6 +2804,8 @@ extension TaskSyncEngine {
         var rhs = theirs.task
         lhs.nostrUpdatedAt = nil
         rhs.nostrUpdatedAt = nil
+        lhs.nostrEventVersion = nil
+        rhs.nostrEventVersion = nil
         return lhs == rhs
     }
 

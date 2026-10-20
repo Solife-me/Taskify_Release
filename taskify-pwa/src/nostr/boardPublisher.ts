@@ -53,12 +53,12 @@ export type BoardPublisherDeps = {
   /** Calendar copies: the canonical one to the board's key, the view one with the event key. */
   encryptCalendarForBoard: (payload: Record<string, unknown>, boardSkHex: string, boardPk: string) => Promise<string>;
   encryptCalendarForInvitees: (payload: Record<string, unknown>, eventKey: string) => Promise<string>;
-  /** Sends a signed event; resolves to the `created_at` the relays hold. */
+  /** Sends a signed event; resolves to the `created_at` the relays hold and the event's id. */
   publish: (
     relays: string[],
     template: EventTemplate,
     options: { sk: Uint8Array | string; republish?: boolean },
-  ) => Promise<number>;
+  ) => Promise<{ createdAt: number; id: string }>;
   /** Encrypts and uploads attachments for a shared board; `null` fields mean nothing changed. */
   prepareAttachments: (params: {
     images?: string[];
@@ -69,11 +69,12 @@ export type BoardPublisherDeps = {
   /** The version time stored with a task locally (`_nostrAt`), so a reserve moves past it. */
   storedTaskAt: (taskId: string, board: Board) => number;
   /**
-   * Stores the version a task's publish carries with the task (`_nostrAt`), through the task
-   * store rather than by mutating the object, so it is saved and survives a reload: after one,
-   * it is what keeps an equally old relay copy from replacing the local edit.
+   * Stores the version a task's publish carries with the task (`_nostrAt`, and `_nostrId` once
+   * signed), through the task store rather than by mutating the object, so it is saved and
+   * survives a reload: after one, it is what keeps an equally old relay copy from replacing the
+   * local edit, and what decides a same-second tie (C7-3).
    */
-  recordTaskVersion: (task: Task, at: number) => void;
+  recordTaskVersion: (task: Task, at: number, eventId?: string) => void;
   /** Equality cache so unchanged board metadata is not re-sent with every task. */
   metadataFingerprints: { isUnchanged: (key: string, value: unknown) => boolean; record: (key: string, value: unknown) => void };
   onTaskPending: (taskId: string) => void;
@@ -128,7 +129,7 @@ export class BoardPublisher {
     const fingerprint = { relays, tags, payload };
     if (this.deps.metadataFingerprints.isUnchanged(tag, fingerprint)) return;
     const content = await this.deps.encrypt(board.nostr.boardId, JSON.stringify(payload));
-    const createdAt = await this.deps.publish(
+    const { createdAt } = await this.deps.publish(
       relays,
       { kind: BOARD_METADATA_KIND, tags, content, created_at: this.nowSeconds() },
       { sk: keys.sk },
@@ -188,7 +189,7 @@ export class BoardPublisher {
       if (!options?.skipBoardMetadata) await this.publishBoardMetadataForItem(board);
       const content = await this.deps.encrypt(nostrBoardId, JSON.stringify(body));
       if (!versions.isCurrent(pendingKey, version)) return;
-      const createdAt = await this.deps.publish(
+      const { createdAt, id: eventId } = await this.deps.publish(
         relays,
         {
           kind: TASK_EVENT_KIND,
@@ -198,8 +199,11 @@ export class BoardPublisher {
         },
         { sk: keys.sk, republish: options?.republish },
       );
-      const confirmedAt = ledger.noteTask(tag, task.id, createdAt);
-      if (confirmedAt > optimisticAt) this.deps.recordTaskVersion(task, confirmedAt);
+      ledger.noteTask(tag, task.id, createdAt, eventId);
+      // Stored with the task while this event is the version the ledger holds; a same-second
+      // event with a lower id, already received, stays the winner (C7-3).
+      const held = ledger.taskVersion(tag, task.id);
+      if (held.createdAt === createdAt && held.id === eventId) this.deps.recordTaskVersion(task, createdAt, eventId);
       if (!sameStringList(published.images, task.images) || !sameDocumentList(published.documents, task.documents)) {
         this.deps.onAttachmentsUploaded(task, published, attachments);
       }
@@ -229,12 +233,12 @@ export class BoardPublisher {
       await this.publishBoardMetadataForItem(board);
       const content = await this.deps.encrypt(nostrBoardId, JSON.stringify(taskTombstoneBody(task)));
       if (!versions.isCurrent(pendingKey, version)) return;
-      const createdAt = await this.deps.publish(
+      const { createdAt, id: eventId } = await this.deps.publish(
         relays,
         { kind: TASK_EVENT_KIND, tags: taskEventTags(task, board, tag, "deleted"), content, created_at: optimisticAt },
         { sk: keys.sk },
       );
-      ledger.noteTask(tag, task.id, createdAt);
+      ledger.noteTask(tag, task.id, createdAt, eventId);
       ledger.recordTombstone(tag, task.id, createdAt);
     } finally {
       if (versions.finish(pendingKey, version)) {
@@ -278,7 +282,7 @@ export class BoardPublisher {
   ): Promise<number> {
     const relays = this.deps.relaysFor(board);
     const tag = this.deps.boardTag(board.nostr.boardId);
-    const createdAt = await this.deps.publish(
+    const { createdAt } = await this.deps.publish(
       relays,
       {
         kind: TASKIFY_CALENDAR_EVENT_KIND,

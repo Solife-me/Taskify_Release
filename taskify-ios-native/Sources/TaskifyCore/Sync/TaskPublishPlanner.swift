@@ -48,7 +48,13 @@ public enum TaskPublishPlanner {
     }
 
     /// The stamped versions are in the durable outbox. A task stamped again since keeps its mark.
-    public static func markQueued(_ snapshot: inout TaskifySnapshot, stamps: [TaskPublishStamp]) {
+    /// `events` (task id -> queued event) records each version's id, which decides a same-second
+    /// tie with another device's version (`EventVersion`, C7-3).
+    public static func markQueued(
+        _ snapshot: inout TaskifySnapshot,
+        stamps: [TaskPublishStamp],
+        events: [String: NostrEvent] = [:]
+    ) {
         guard !stamps.isEmpty else { return }
         let timestampByID = Dictionary(stamps.map { ($0.task.id, $0.timestamp) }, uniquingKeysWith: { _, last in last })
         for index in snapshot.tasks.indices {
@@ -56,6 +62,17 @@ public enum TaskPublishPlanner {
                   snapshot.tasks[index].publishPending == true,
                   snapshot.tasks[index].nostrUpdatedAt == timestamp else { continue }
             snapshot.tasks[index].publishPending = nil
+        }
+        recordQueuedEvents(&snapshot, events: events)
+    }
+
+    /// Records the ids of task events this device queued, for tasks still at that version.
+    public static func recordQueuedEvents(_ snapshot: inout TaskifySnapshot, events: [String: NostrEvent]) {
+        guard !events.isEmpty else { return }
+        for index in snapshot.tasks.indices {
+            guard let event = events[snapshot.tasks[index].id],
+                  snapshot.tasks[index].nostrUpdatedAt == event.createdAt else { continue }
+            snapshot.tasks[index].nostrEventVersion = EventVersion(event)
         }
     }
 

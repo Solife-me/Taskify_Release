@@ -5,21 +5,30 @@
  * - During a board's first sync, each relay's events collect in a batch; when the relay says it
  *   has sent everything (EOSE), its batch merges into the task list.
  * - A merge never lets relay data regress what this device holds: an entry older than the task's
- *   stored version (`_nostrAt`) or than the ledger's clock (in-flight edits, deletion
- *   tombstones) is skipped. Equal versions apply, so a re-sync is idempotent.
+ *   stored version (`_nostrAt`, `_nostrId`) or than the ledger's (in-flight edits, deletion
+ *   tombstones) is skipped. Versions compare as on relays: a later `created_at`, then the lower
+ *   event id (`compareEventVersions`, C7-3). The same version applies again, so a re-sync is
+ *   idempotent.
  * - After the first sync, live events are applied as they come, rechecked against the ledger at
  *   apply time and coalesced so a burst renders once.
  */
+import { compareEventVersions, type EventVersion } from "taskify-core";
 import type { Task } from "../domains/tasks/taskTypes";
 import { mergeIncomingTask, type IncomingTask } from "./taskEventMerge";
 
-export type SyncedTask = Task & { _nostrAt?: number };
-export type RelayBatchEntry = SyncedTask | { _deleted: true; _nostrAt: number };
+/** `_nostrAt` / `_nostrId`: the version (event `created_at` and id) the task was last published or received at. */
+export type SyncedTask = Task & { _nostrAt?: number; _nostrId?: string };
+export type RelayBatchEntry = SyncedTask | { _deleted: true; _nostrAt: number; _nostrId?: string };
 
-/** The version an entry carries (-1 for none). */
-export function relayBatchEventAt(entry: RelayBatchEntry | undefined): number {
-  if (!entry) return -1;
-  return "_deleted" in entry ? entry._nostrAt : entry._nostrAt ?? 0;
+/** The version a task holds. */
+export function syncedTaskVersion(task: { _nostrAt?: number; _nostrId?: string } | undefined): EventVersion {
+  return { createdAt: task?._nostrAt ?? 0, id: task?._nostrId };
+}
+
+/** The version an entry carries (created_at -1 for none). */
+export function relayBatchVersion(entry: RelayBatchEntry | undefined): EventVersion {
+  if (!entry) return { createdAt: -1 };
+  return syncedTaskVersion(entry);
 }
 
 /**
@@ -34,9 +43,8 @@ export function mergeRelayBatches(
   for (const relayBatch of batches.values()) {
     for (const [key, entry] of relayBatch) {
       const existing = combined.get(key);
-      const incomingAt = relayBatchEventAt(entry);
-      const existingAt = relayBatchEventAt(existing);
-      if (!existing || incomingAt > existingAt || (replaceOnEqual && incomingAt >= existingAt)) {
+      const order = compareEventVersions(relayBatchVersion(entry), relayBatchVersion(existing));
+      if (!existing || order > 0 || (replaceOnEqual && order >= 0)) {
         combined.set(key, entry);
       }
     }
@@ -45,20 +53,23 @@ export function mergeRelayBatches(
 }
 
 /**
- * Merges a relay batch (keyed `boardId::taskId`) into the task list. `clockAt` is the ledger's
- * version for a task: in-flight local edits and deletion tombstones raise it.
+ * Merges a relay batch (keyed `boardId::taskId`) into the task list. `isCurrent` applies the
+ * ledger's rule to an entry's version (`BoardSyncLedger.isTaskEventCurrent`): in-flight local
+ * edits and deletion tombstones make older versions stale.
  */
 export function mergeRelayBatchIntoTasks(
   tasks: SyncedTask[],
   relayBatch: Map<string, RelayBatchEntry>,
-  clockAt: (taskId: string) => number,
+  isCurrent: (taskId: string, version: EventVersion) => boolean,
 ): SyncedTask[] {
   const merged = new Map<string, SyncedTask>(tasks.map((task) => [`${task.boardId}::${task.id}`, task]));
   for (const [key, entry] of relayBatch) {
     const taskId = key.split("::")[1] ?? "";
-    const incomingAt = "_deleted" in entry ? entry._nostrAt : entry._nostrAt ?? clockAt(taskId);
-    const existingAt = Math.max(merged.get(key)?._nostrAt ?? 0, clockAt(taskId));
-    if (incomingAt < existingAt) continue;
+    const existing = merged.get(key);
+    // An entry without a version (never from relays) counts as the version this device holds.
+    const incoming = typeof entry._nostrAt === "number" ? relayBatchVersion(entry) : syncedTaskVersion(existing);
+    if (existing && compareEventVersions(incoming, syncedTaskVersion(existing)) < 0) continue;
+    if (!isCurrent(taskId, incoming)) continue;
     if ("_deleted" in entry) merged.delete(key);
     else merged.set(key, entry);
   }
@@ -66,10 +77,11 @@ export function mergeRelayBatchIntoTasks(
 }
 
 export type IncomingTaskUpdate =
-  | { deleted: true; at: number }
+  | { deleted: true; at: number; eventId?: string }
   | {
       deleted: false;
       at: number;
+      eventId?: string;
       incoming: IncomingTask;
       eventPubkey: string;
       /** The event is newer than anything the ledger had for the task. */
@@ -80,7 +92,7 @@ export type IncomingTaskUpdate =
 /** Adds an event to a relay's batch, merged over what that relay already sent for the task. */
 export function addToRelayBatch(batch: Map<string, RelayBatchEntry>, key: string, update: IncomingTaskUpdate): void {
   if (update.deleted) {
-    batch.set(key, { _deleted: true, _nostrAt: update.at });
+    batch.set(key, { _deleted: true, _nostrAt: update.at, ...(update.eventId ? { _nostrId: update.eventId } : {}) });
     return;
   }
   const existing = batch.get(key);
@@ -89,6 +101,7 @@ export function addToRelayBatch(batch: Map<string, RelayBatchEntry>, key: string
     key,
     mergeIncomingTask(current, update.incoming, {
       nostrAt: update.at,
+      nostrId: update.eventId,
       order: current?.order ?? 0,
       now: update.now,
       eventPubkey: update.eventPubkey,
@@ -116,6 +129,7 @@ export function applyIncomingTask(
   const current = index >= 0 ? tasks[index] : undefined;
   const merged = mergeIncomingTask(current, update.incoming, {
     nostrAt: update.at,
+    nostrId: update.eventId,
     order: typeof current?.order === "number" ? current.order : nextOrder(tasks),
     now: update.now,
     eventPubkey: update.eventPubkey,

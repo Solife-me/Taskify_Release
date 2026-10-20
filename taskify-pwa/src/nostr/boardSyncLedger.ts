@@ -5,14 +5,17 @@
  *
  * Both directions use it. A publish reserves a timestamp newer than anything seen and marks the
  * item pending; an incoming event is applied only if it is newer, or as new and nothing local is
- * in flight. Deletions are kept across reloads as tombstones, so a slow relay replaying an old
+ * in flight. For tasks the version includes the event id, so a same-second tie goes to the lower
+ * id, as on relays (NIP-01, `compareEventVersions`). Deletions are kept across reloads as tombstones, so a slow relay replaying an old
  * version cannot bring a deleted task back.
  *
  * Board ids here are board tags (`boardTag(nostrBoardId)`), as the events carry them.
  */
+import { compareEventVersions, latestEventVersion, type EventVersion } from "taskify-core";
 import { reserveTaskMutationTimestamp } from "../domains/tasks/taskMovePersistence";
 
 type Clock = Map<string, Map<string, number>>;
+type VersionClock = Map<string, Map<string, EventVersion>>;
 
 export type TombstoneStorage = {
   load: () => string | null;
@@ -32,6 +35,22 @@ function raise(clock: Clock, boardTag: string, id: string, at: number): number {
     clock.set(boardTag, entries);
   }
   const next = Math.max(entries.get(id) ?? 0, at);
+  entries.set(id, next);
+  return next;
+}
+
+function versionAt(clock: VersionClock, boardTag: string, id: string): EventVersion {
+  return clock.get(boardTag)?.get(id) ?? { createdAt: 0 };
+}
+
+/** Keeps the winning version; returns it. */
+function raiseVersion(clock: VersionClock, boardTag: string, id: string, version: EventVersion): EventVersion {
+  let entries = clock.get(boardTag);
+  if (!entries) {
+    entries = new Map();
+    clock.set(boardTag, entries);
+  }
+  const next = latestEventVersion(version, entries.get(id) ?? { createdAt: 0 });
   entries.set(id, next);
   return next;
 }
@@ -58,7 +77,7 @@ function parseTombstones(raw: string | null): Clock {
 
 export class BoardSyncLedger {
   private readonly boardMeta = new Map<string, number>();
-  private readonly tasks: Clock = new Map();
+  private readonly tasks: VersionClock = new Map();
   private readonly events: Clock = new Map();
   private readonly pendingTasks = new Set<string>();
   private readonly pendingEvents = new Set<string>();
@@ -72,19 +91,27 @@ export class BoardSyncLedger {
     this.tombstones = parseTombstones(storage.load());
     // A deleted task's clock starts at its deletion, so older versions are rejected after a reload.
     for (const [boardTag, entries] of this.tombstones) {
-      for (const [taskId, at] of entries) raise(this.tasks, boardTag, taskId, at);
+      for (const [taskId, at] of entries) raiseVersion(this.tasks, boardTag, taskId, { createdAt: at });
     }
   }
 
   // ---- Tasks ----
 
   taskAt(boardTag: string, taskId: string): number {
-    return clockAt(this.tasks, boardTag, taskId);
+    return versionAt(this.tasks, boardTag, taskId).createdAt;
   }
 
-  /** Records a version of the task (published or seen); the clock never moves back. */
-  noteTask(boardTag: string, taskId: string, at: number): number {
-    return raise(this.tasks, boardTag, taskId, at);
+  /** The newest version known for the task, with its event id when known. */
+  taskVersion(boardTag: string, taskId: string): EventVersion {
+    return versionAt(this.tasks, boardTag, taskId);
+  }
+
+  /**
+   * Records a version of the task (published or seen); the clock never moves back. Returns the
+   * `created_at` of the version now held.
+   */
+  noteTask(boardTag: string, taskId: string, at: number, eventId?: string | null): number {
+    return raiseVersion(this.tasks, boardTag, taskId, { createdAt: at, id: eventId }).createdAt;
   }
 
   /**
@@ -94,7 +121,7 @@ export class BoardSyncLedger {
   reserveTaskPublish(boardTag: string, taskId: string, storedAt: number, nowSeconds: number): number {
     const current = Math.max(this.taskAt(boardTag, taskId), storedAt);
     const at = reserveTaskMutationTimestamp(nowSeconds, current);
-    raise(this.tasks, boardTag, taskId, at);
+    raiseVersion(this.tasks, boardTag, taskId, { createdAt: at });
     this.pendingTasks.add(key(boardTag, taskId));
     return at;
   }
@@ -107,17 +134,21 @@ export class BoardSyncLedger {
     this.pendingTasks.delete(key(boardTag, taskId));
   }
 
-  /** Whether an incoming task event is current: newer, or as new while nothing local is pending. */
-  isTaskEventCurrent(boardTag: string, taskId: string, createdAt: number): boolean {
-    const last = this.taskAt(boardTag, taskId);
-    if (createdAt < last) return false;
-    return !(createdAt === last && this.isTaskPending(boardTag, taskId));
+  /**
+   * Whether an incoming task event is current: it wins over the version known, or is that very
+   * version. A local publish reserved but not yet signed has no id to decide a same-second tie
+   * with, so it keeps the tie until its id is known.
+   */
+  isTaskEventCurrent(boardTag: string, taskId: string, createdAt: number, eventId?: string | null): boolean {
+    const known = this.taskVersion(boardTag, taskId);
+    if (compareEventVersions({ createdAt, id: eventId }, known) < 0) return false;
+    return !(createdAt === known.createdAt && !known.id && this.isTaskPending(boardTag, taskId));
   }
 
   /** Applies the acceptance rule and, when the event is current, records it. */
-  acceptTaskEvent(boardTag: string, taskId: string, createdAt: number): boolean {
-    if (!this.isTaskEventCurrent(boardTag, taskId, createdAt)) return false;
-    raise(this.tasks, boardTag, taskId, createdAt);
+  acceptTaskEvent(boardTag: string, taskId: string, createdAt: number, eventId?: string | null): boolean {
+    if (!this.isTaskEventCurrent(boardTag, taskId, createdAt, eventId)) return false;
+    raiseVersion(this.tasks, boardTag, taskId, { createdAt, id: eventId });
     return true;
   }
 

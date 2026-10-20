@@ -3763,6 +3763,7 @@ final class AppModel {
                 updated.tasks[index] = refreshed
             }
         }
+        TaskPublishPlanner.recordQueuedEvents(&updated, events: Self.queuedTaskEvents(requests))
         refreshedEvents.forEach { _ = updated.upsertTaskifyEvent($0) }
         if let index = updated.boards.firstIndex(where: { $0.id == boardID }) {
             updated.boards[index].nostrUpdatedAt = boardTimestamp
@@ -5082,7 +5083,7 @@ final class AppModel {
         case .task(let record):
             lastNostrCreatedAt = max(lastNostrCreatedAt, record.eventCreatedAt)
             var updated = snapshot
-            if updated.mergeRemoteTask(record.task, eventCreatedAt: record.eventCreatedAt) {
+            if updated.mergeRemoteTask(record.task, eventCreatedAt: record.eventCreatedAt, eventID: record.eventID) {
                 snapshot = updated
                 if showFullWeekRecurring {
                     ensureFullWeekTaskRecurrences()
@@ -5168,7 +5169,7 @@ final class AppModel {
 
         var baseRevision = snapshotRevision
         var baseSnapshot = snapshot
-        let taskInputs = taskRecords.map { (task: $0.task, eventCreatedAt: $0.eventCreatedAt) }
+        let taskInputs = taskRecords
 
         while !Task.isCancelled {
             // Initial relay history can contain hundreds of encrypted records. Merge and
@@ -5754,7 +5755,7 @@ final class AppModel {
                     return requests
                 }.value
                 try await syncEngine.enqueueForPublish(requests)
-                self?.markTasksQueued(stamps)
+                self?.markTasksQueued(stamps, requests: requests)
             } catch {
                 self?.errorMessage = "Taskify could not queue these tasks for Nostr sync. It will try again."
                 // Nothing was queued: the tasks stay pending and are published again shortly.
@@ -5763,13 +5764,30 @@ final class AppModel {
         }
     }
 
-    private func markTasksQueued(_ stamps: [TaskPublishStamp]) {
+    private func markTasksQueued(_ stamps: [TaskPublishStamp], requests: [TaskSyncPublishRequest]) {
         var updated = snapshot
-        TaskPublishPlanner.markQueued(&updated, stamps: stamps)
+        TaskPublishPlanner.markQueued(&updated, stamps: stamps, events: Self.queuedTaskEvents(requests))
         guard updated != snapshot else { return }
         snapshot = updated
         scheduleSave()
         pendingTaskRepublishAttempt = 0
+    }
+
+    private func recordQueuedTaskEvents(_ events: [String: NostrEvent]) {
+        var updated = snapshot
+        TaskPublishPlanner.recordQueuedEvents(&updated, events: events)
+        guard updated != snapshot else { return }
+        snapshot = updated
+        scheduleSave()
+    }
+
+    /// Task id -> the task event queued for it (board events left out).
+    private static func queuedTaskEvents(_ requests: [TaskSyncPublishRequest]) -> [String: NostrEvent] {
+        Dictionary(
+            requests.filter { $0.taskID != "_board" && $0.event.kind == TaskEventCodec.taskEventKind }
+                .map { ($0.taskID, $0.event) },
+            uniquingKeysWith: { _, last in last }
+        )
     }
 
     /// Publishes tasks stamped but never queued: at launch, on reconnecting and after a failure.
@@ -6060,6 +6078,9 @@ final class AppModel {
                     board: targetBoard,
                     taskID: targetTask.id
                 )
+                await MainActor.run {
+                    self.recordQueuedTaskEvents([targetTask.id: targetTaskEvent])
+                }
             } catch {
                 await MainActor.run {
                     self.errorMessage = "Taskify could not queue this task move for Nostr sync."

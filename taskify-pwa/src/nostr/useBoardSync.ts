@@ -56,7 +56,7 @@ type UseBoardSyncParams = {
   pool: BoardSyncNostrPool;
   getBoardRelays: (board: Board) => string[];
   /** Version clocks and in-flight publishes for every shared board. */
-  ledger: Pick<BoardSyncLedger, "taskAt" | "isTaskPending">;
+  ledger: Pick<BoardSyncLedger, "taskAt" | "isTaskPending" | "isTaskEventCurrent">;
   boardSyncCursorsRef: MutableRef<Record<string, number>>;
   relayBatchRef: MutableRef<Map<string, Map<string, Map<string, BoardSyncRelayBatchEntry>>>>;
   pendingRelaysByBoardRef: MutableRef<Map<string, Set<string>>>;
@@ -202,7 +202,8 @@ export function useBoardSync({
     (bTag: string, relayBatch: Map<string, BoardSyncRelayBatchEntry>) => {
       if (!relayBatch.size) return;
       setTasks((prev) => {
-        const merged = mergeRelayBatchIntoTasks(prev, relayBatch, (taskId) => ledger.taskAt(bTag, taskId));
+        const merged = mergeRelayBatchIntoTasks(prev, relayBatch, (taskId, version) =>
+          ledger.isTaskEventCurrent(bTag, taskId, version.createdAt, version.id));
         const deduped = dedupeRecurringInstances(merged) as BoardSyncTask[];
         return sanitizeTasks ? sanitizeTasks(deduped) : deduped;
       });

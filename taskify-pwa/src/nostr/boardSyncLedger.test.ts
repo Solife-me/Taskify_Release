@@ -27,6 +27,34 @@ describe("BoardSyncLedger", () => {
     expect(ledger.acceptTaskEvent("b", "t", reserved)).toBe(true);
   });
 
+  it("resolves a same-second tie as relays do: the lower event id wins (C7-3)", () => {
+    const low = "0a".repeat(32);
+    const high = "f0".repeat(32);
+    const ledger = new BoardSyncLedger(memoryStorage());
+    expect(ledger.acceptTaskEvent("b", "t", 100, low)).toBe(true);
+    expect(ledger.acceptTaskEvent("b", "t", 100, high)).toBe(false);
+    expect(ledger.acceptTaskEvent("b", "t", 100, low)).toBe(true);
+    expect(ledger.taskVersion("b", "t")).toEqual({ createdAt: 100, id: low });
+
+    const other = new BoardSyncLedger(memoryStorage());
+    other.acceptTaskEvent("b", "t", 100, high);
+    expect(other.acceptTaskEvent("b", "t", 100, low)).toBe(true);
+    expect(other.taskVersion("b", "t")).toEqual({ createdAt: 100, id: low });
+  });
+
+  it("keeps a reserved publish over a same-second event until its own id is known", () => {
+    const low = "0a".repeat(32);
+    const high = "f0".repeat(32);
+    const ledger = new BoardSyncLedger(memoryStorage());
+    const at = ledger.reserveTaskPublish("b", "t", 0, 100);
+    expect(ledger.isTaskEventCurrent("b", "t", at, low)).toBe(false);
+    ledger.noteTask("b", "t", at, high);
+    expect(ledger.isTaskEventCurrent("b", "t", at, low)).toBe(true);
+    ledger.noteTask("b", "t", at, low);
+    expect(ledger.taskVersion("b", "t")).toEqual({ createdAt: at, id: low });
+    expect(ledger.isTaskEventCurrent("b", "t", at, high)).toBe(false);
+  });
+
   it("reserves past both the known clock and the version stored with the task", () => {
     const ledger = new BoardSyncLedger(memoryStorage());
     ledger.noteTask("b", "t", 50);

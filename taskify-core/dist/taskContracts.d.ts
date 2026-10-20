@@ -120,7 +120,9 @@ export type Task = {
     lastEditedBy?: string;
     createdAt?: number;
     updatedAt?: string;
+    /** Local only: the version (event `created_at` and, once known, id) last published or received. */
     _nostrAt?: number;
+    _nostrId?: string;
     priority?: TaskPriority;
     note?: string;
     images?: string[];

@@ -148,7 +148,7 @@ describe("Scripture review normalization across two devices", () => {
     /** A relay sync as App runs it: merge the batch, then the on-read bookkeeping. */
     const resync = (on: { tasks: SyncedTask[] }, board: Board, baseDays: number) => {
       const batch = new Map<string, RelayBatchEntry>(relay);
-      const merged = mergeRelayBatchIntoTasks(on.tasks, batch, () => 0);
+      const merged = mergeRelayBatchIntoTasks(on.tasks, batch, () => true);
       on.tasks = normalizeScriptureReviewTasks(merged, scriptureReviewPlacement(board, baseDays)!);
     };
     /** The planner effect, as App runs it when settings change. */

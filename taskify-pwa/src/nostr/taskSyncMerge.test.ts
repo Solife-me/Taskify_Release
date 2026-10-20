@@ -25,8 +25,10 @@ const task = (id: string, at: number, extra: Partial<SyncedTask> = {}): SyncedTa
   ({ id, boardId: "board1", title: `Task ${id}`, dueISO: "2026-10-19T12:00:00.000Z", _nostrAt: at, ...extra }) as SyncedTask;
 const deletion = (at: number): RelayBatchEntry => ({ _deleted: true, _nostrAt: at });
 const batch = (entries: Array<[string, RelayBatchEntry]>) => new Map<string, RelayBatchEntry>(entries);
-const noClock = () => 0;
-const clockOf = (entries: Record<string, number>) => (taskId: string) => entries[taskId] ?? 0;
+// Stand-ins for the ledger's rule: no known version, or a clock per task.
+const noClock = () => true;
+const clockOf = (entries: Record<string, number>) => (taskId: string, version: { createdAt: number }) =>
+  version.createdAt >= (entries[taskId] ?? 0);
 
 function incoming(id: string, at: number, title: string, columnId = "todo"): IncomingTaskUpdate {
   return {
@@ -69,7 +71,7 @@ describe("merging a relay's batch never regresses local data", () => {
 
   test("tombstones loaded at startup block resurrection after a reload", () => {
     const ledger = new BoardSyncLedger({ load: () => JSON.stringify({ [TAG]: { gone: 800 } }), save: () => {} });
-    expect(mergeRelayBatchIntoTasks([], batch([["board1::gone", task("gone", 300)]]), (id) => ledger.taskAt(TAG, id))).toEqual([]);
+    expect(mergeRelayBatchIntoTasks([], batch([["board1::gone", task("gone", 300)]]), (id, version) => ledger.isTaskEventCurrent(TAG, id, version.createdAt, version.id))).toEqual([]);
   });
 
   test("undo after delete survives the old tombstone", () => {
@@ -108,6 +110,27 @@ describe("merging a relay's batch never regresses local data", () => {
     const result = mergeRelayBatchIntoTasks([], combined, noClock);
     expect(result.find((t) => t.id === "t1")?.title).toBe("Newer from B");
     expect(result).toHaveLength(2);
+  });
+
+  test("a same-second version replaces the held one only when its id is lower (C7-3)", () => {
+    const low = "0a".repeat(32);
+    const high = "f0".repeat(32);
+    const held = task("t1", 100, { title: "Held", _nostrId: low } as Partial<SyncedTask>);
+    const higher = task("t1", 100, { title: "Higher id", _nostrId: high } as Partial<SyncedTask>);
+    expect(mergeRelayBatchIntoTasks([held], batch([["board1::t1", higher]]), noClock)[0].title).toBe("Held");
+    const heldHigh = task("t1", 100, { title: "Held", _nostrId: high } as Partial<SyncedTask>);
+    const lower = task("t1", 100, { title: "Lower id", _nostrId: low } as Partial<SyncedTask>);
+    expect(mergeRelayBatchIntoTasks([heldHigh], batch([["board1::t1", lower]]), noClock)[0].title).toBe("Lower id");
+  });
+
+  test("two relays' same-second versions: the lower id wins whichever relay sent it", () => {
+    const low = "0a".repeat(32);
+    const high = "f0".repeat(32);
+    const relays = new Map([
+      ["wss://a", batch([["board1::t1", task("t1", 100, { title: "Low", _nostrId: low } as Partial<SyncedTask>)]])],
+      ["wss://b", batch([["board1::t1", task("t1", 100, { title: "High", _nostrId: high } as Partial<SyncedTask>)]])],
+    ]);
+    expect((mergeRelayBatches(relays, true).get("board1::t1") as SyncedTask).title).toBe("Low");
   });
 
   test("equal versions from two relays: the later relay wins only when asked to", () => {

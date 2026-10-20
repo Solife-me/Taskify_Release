@@ -81,7 +81,8 @@ export type TaskAssignee = { pubkey: string; relay?: string; status?: TaskAssign
 export type Task = {
   id: string; boardId: string; title: string; dueISO: string;
   createdBy?: string; lastEditedBy?: string; createdAt?: number; updatedAt?: string;
-  _nostrAt?: number;
+  /** Local only: the version (event `created_at` and, once known, id) last published or received. */
+  _nostrAt?: number; _nostrId?: string;
   priority?: TaskPriority; note?: string; images?: string[]; documents?: TaskDocument[]; dueDateEnabled?: boolean;
   completed?: boolean; completedAt?: string; completedBy?: string; recurrence?: Recurrence; column?: "day"; columnId?: string;
   hiddenUntilISO?: string; order?: number; streak?: number; longestStreak?: number; seriesId?: string; subtasks?: Subtask[];

@@ -222,6 +222,7 @@ import { ShareBoardIcon } from "./ui/icons";
 import {
   ensureWeekRecurrencesForCurrentWeek,
   buildRunningStreakLookup,
+  compareEventVersions,
   isoForWeekdayLocal,
   tasksInSameSeries,
 } from "taskify-core";
@@ -316,7 +317,7 @@ import { BoardSyncLedger } from "./nostr/boardSyncLedger";
 import { BoardPublisher } from "./nostr/boardPublisher";
 import { DurablePublisher } from "./nostr/durablePublisher";
 import { applyBoardMetadata } from "./nostr/boardEventMerge";
-import { addToRelayBatch, applyIncomingTask, LiveUpdateBatcher, type IncomingTaskUpdate } from "./nostr/taskSyncMerge";
+import { addToRelayBatch, applyIncomingTask, LiveUpdateBatcher, syncedTaskVersion, type IncomingTaskUpdate } from "./nostr/taskSyncMerge";
 import { LS_PUBLISH_INTENTS } from "./localStorageKeys";
 import { sameDocumentList, sameStringList } from "./nostr/boardWire";
 import { mergeInviteTokens } from "./nostr/calendarWire";
@@ -2978,20 +2979,25 @@ export default function App() {
     encrypt: encryptToBoard,
     encryptCalendarForBoard: encryptCalendarPayloadForBoard,
     encryptCalendarForInvitees: encryptCalendarPayloadWithEventKey,
-    publish: (relays, template, options) => publisherLatestRef.current.nostrPublish(relays, template, options),
+    publish: async (relays, template, options) => {
+      const { createdAt, event } = await publisherLatestRef.current.nostrPublish(relays, template, { ...options, returnEvent: true });
+      return { createdAt, id: event.id };
+    },
     prepareAttachments: (params) => publisherLatestRef.current.prepareAttachmentsForPublish(params),
     storedTaskAt: (taskId, board) =>
       tasksRef.current.find((task) => (
         task.id === taskId &&
         (task.boardId === board.id || task.boardId === board.nostr?.boardId)
       ))?._nostrAt ?? 0,
-    recordTaskVersion: (task, at) =>
+    recordTaskVersion: (task, at, eventId) =>
       setTasks((prev) => {
         let changed = false;
+        const version = { createdAt: at, id: eventId };
         const next = prev.map((current) => {
-          if (current.id !== task.id || current.boardId !== task.boardId || (current._nostrAt ?? 0) >= at) return current;
+          if (current.id !== task.id || current.boardId !== task.boardId) return current;
+          if (compareEventVersions(version, syncedTaskVersion(current)) <= 0) return current;
           changed = true;
-          return { ...current, _nostrAt: at };
+          return { ...current, _nostrAt: at, _nostrId: eventId };
         });
         return changed ? next : prev;
       }),
@@ -3445,7 +3451,7 @@ export default function App() {
       return;
     }
     // Newer wins; as new wins too (rapid consecutive updates), unless a local publish is pending.
-    if (!ledger.acceptTaskEvent(bTag, taskId, ev.created_at)) return;
+    if (!ledger.acceptTaskEvent(bTag, taskId, ev.created_at, ev.id)) return;
     // Advance the in-memory cursor for this board so we know the high-water mark.
     // Key by bTag (SHA256 of nostrBoardId) — must match the lookup in the
     // subscription setup where it.id = boardTag(b.nostr!.boardId) = bTag.
@@ -3486,10 +3492,11 @@ export default function App() {
     if (status === "deleted") recordTaskTombstone(bTag, taskId, ev.created_at);
 
     const update: IncomingTaskUpdate = status === "deleted"
-      ? { deleted: true, at: ev.created_at }
+      ? { deleted: true, at: ev.created_at, eventId: ev.id }
       : {
           deleted: false,
           at: ev.created_at,
+          eventId: ev.id,
           incoming,
           eventPubkey: ev.pubkey,
           incomingIsNewerOnTie: ev.created_at > ledger.taskAt(bTag, taskId),
@@ -3514,7 +3521,7 @@ export default function App() {
         prev,
         { boardId: lb.id, taskId },
         update,
-        () => ledger.isTaskEventCurrent(bTag, taskId, ev.created_at),
+        () => ledger.isTaskEventCurrent(bTag, taskId, ev.created_at, ev.id),
         (tasks) => nextOrderForBoard(base.boardId, tasks, settings.newTaskPosition),
       );
       return next === prev ? prev : dedupeRecurringInstances(next);

@@ -23,11 +23,16 @@ public enum TaskEventCodecError: LocalizedError {
 public struct TaskRelayRecord: Equatable, Sendable {
     public let task: TaskItem
     public let eventCreatedAt: Int
+    /// The event's id; nil only for records built without an event (tests, older call sites).
+    public let eventID: String?
 
-    public init(task: TaskItem, eventCreatedAt: Int) {
+    public init(task: TaskItem, eventCreatedAt: Int, eventID: String? = nil) {
         self.task = task
         self.eventCreatedAt = eventCreatedAt
+        self.eventID = eventID
     }
+
+    public var version: EventVersion { EventVersion(createdAt: eventCreatedAt, id: eventID) }
 }
 
 public struct BoardRelayRecord: Equatable, Sendable {
@@ -619,7 +624,7 @@ public enum TaskEventCodec {
             deleted: status == "deleted",
             preservedSyncFields: payload.preservedFields.isEmpty ? nil : payload.preservedFields
         )
-        return TaskRelayRecord(task: task, eventCreatedAt: event.createdAt)
+        return TaskRelayRecord(task: task, eventCreatedAt: event.createdAt, eventID: event.id)
     }
 }
 
