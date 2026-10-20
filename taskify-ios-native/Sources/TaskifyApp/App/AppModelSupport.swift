@@ -137,6 +137,11 @@ enum AppRelaySettings {
     static func setURLs(_ urls: [String]) {
         UserDefaults.standard.set(TaskifyRelayURL.normalizedList(urls), forKey: key)
     }
+
+    /// Back to the built-in defaults (UI tests).
+    static func reset() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
 }
 
 /// Relays the user removed from this device's sync list. Device-local: nothing is published and

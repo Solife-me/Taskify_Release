@@ -11,9 +11,10 @@ final class BibleTrackerUITests: XCTestCase {
     func testBibleTrackerFlow() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
         app.launch()
 
-        app.buttons["Settings"].tap()
+        openSettings(app, group: "Bible")
 
         let toggle = app.switches["Bible Reading Tracker"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
@@ -21,7 +22,7 @@ final class BibleTrackerUITests: XCTestCase {
             toggle.tap()
         }
 
-        app.buttons["Boards"].tap()
+        openTab(app, "Boards")
 
         // Open the board switcher menu (its label is the current board's name).
         let menuButton = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Week")).firstMatch
@@ -119,9 +120,10 @@ final class BibleTrackerUITests: XCTestCase {
     func testBoardSortAndUpcomingFilterSmoke() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
         app.launch()
 
-        app.buttons["Boards"].tap()
+        openTab(app, "Boards")
 
         // The previously selected board persists across launches; make sure we're on the
         // (non-Bible) Week board, which has a sort button, before proceeding.
@@ -178,16 +180,17 @@ final class BibleTrackerUITests: XCTestCase {
     func testChapterGridScrollsWhenTouchStartsOnAChapter() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
         app.launch()
 
-        app.buttons["Settings"].tap()
+        openSettings(app, group: "Bible")
         let bibleToggle = app.switches["Bible Reading Tracker"]
         XCTAssertTrue(bibleToggle.waitForExistence(timeout: 10))
         if let value = bibleToggle.value as? String, value == "0" {
             bibleToggle.tap()
         }
 
-        app.buttons["Boards"].tap()
+        openTab(app, "Boards")
 
         let bibleMenuButton = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Bible")).firstMatch
         if bibleMenuButton.waitForExistence(timeout: 5) {
@@ -240,9 +243,10 @@ final class BibleTrackerUITests: XCTestCase {
     func testFastingRemindersFlow() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
         app.launch()
 
-        app.buttons["Settings"].tap()
+        openSettings(app, group: "Bible")
 
         let toggle = app.switches["Fasting Reminders"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
@@ -264,7 +268,7 @@ final class BibleTrackerUITests: XCTestCase {
         }
         attach(app, name: "fasting-01-settings-configured")
 
-        app.buttons["Boards"].tap()
+        openTab(app, "Boards")
 
         // Make sure we're on a week board (previous tests may have left a different board selected).
         let weekMenuButton = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Week")).firstMatch
@@ -280,16 +284,19 @@ final class BibleTrackerUITests: XCTestCase {
         }
 
         let fastingTask = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Fasting")).firstMatch
-        XCTAssertTrue(fastingTask.waitForExistence(timeout: 10))
+        // Generation waits for relay history and the account-sync lookup, which take longer when
+        // the relays are slow to answer.
+        XCTAssertTrue(fastingTask.waitForExistence(timeout: 30))
         attach(app, name: "fasting-02-task-visible-on-week-board")
     }
 
     func testScriptureMemoryFlow() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
         app.launch()
 
-        app.buttons["Settings"].tap()
+        openSettings(app, group: "Bible")
 
         let bibleToggle = app.switches["Bible Reading Tracker"]
         XCTAssertTrue(bibleToggle.waitForExistence(timeout: 10))
@@ -314,7 +321,7 @@ final class BibleTrackerUITests: XCTestCase {
         }
         attach(app, name: "scripture-01-settings-configured")
 
-        app.buttons["Boards"].tap()
+        openTab(app, "Boards")
 
         let bibleMenuButton = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Bible")).firstMatch
         if bibleMenuButton.waitForExistence(timeout: 5) {
@@ -366,7 +373,7 @@ final class BibleTrackerUITests: XCTestCase {
         attach(app, name: "scripture-02-entry-added")
 
         // A review task should now exist on the Week board.
-        app.buttons["Boards"].tap()
+        openTab(app, "Boards")
         let switcherBack = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Bible")).firstMatch
         if switcherBack.waitForExistence(timeout: 5) {
             switcherBack.tap()
@@ -384,9 +391,10 @@ final class BibleTrackerUITests: XCTestCase {
     func testAppRelaysAreEditableAndDoNotChangeBoardRelays() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
         app.launch()
 
-        app.buttons["Settings"].tap()
+        openSettings(app, group: "Nostr & Sync")
 
         let relayField = app.textFields["app-relay-input"]
         var scrolls = 0
@@ -419,9 +427,16 @@ final class BibleTrackerUITests: XCTestCase {
             "An added app relay should appear in the list"
         )
 
-        // The edits above must not have touched any board's own relay list.
-        while app.buttons["Manage Week"].exists == false, scrolls < 24 {
+        // The edits above must not have touched any board's own relay list. Boards is its own
+        // Settings group, above Nostr & Sync.
+        let boardsHeader = app.buttons.matching(NSPredicate(format: "label == %@ AND value IN {'Collapsed', 'Expanded'}", "Boards")).firstMatch
+        while !boardsHeader.isHittable, scrolls < 24 {
             app.swipeDown()
+            scrolls += 1
+        }
+        if (boardsHeader.value as? String) == "Collapsed" { boardsHeader.tap() }
+        while app.buttons["Manage Week"].exists == false, scrolls < 30 {
+            app.swipeUp()
             scrolls += 1
         }
         let manageWeek = app.buttons["Manage Week"]
@@ -445,9 +460,10 @@ final class BibleTrackerUITests: XCTestCase {
     func testReorderBoards() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
         app.launch()
 
-        app.buttons["Settings"].tap()
+        openSettings(app, group: "Boards")
 
         // Create a second board so there's something to reorder against "Week".
         let boardNameField = app.textFields["Board name"]
@@ -484,7 +500,7 @@ final class BibleTrackerUITests: XCTestCase {
 
         // Confirm via the board switcher on the Boards tab that ordering changed: "Reorder Test
         // List" should now open before "Week" is reachable as a separate, still-present option.
-        app.buttons["Boards"].tap()
+        openTab(app, "Boards")
         let switcher = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Reorder Test List")).firstMatch
         XCTAssertTrue(switcher.waitForExistence(timeout: 10))
     }
@@ -493,9 +509,10 @@ final class BibleTrackerUITests: XCTestCase {
     func testTaskStreakBadge() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
         app.launch()
 
-        app.buttons["Boards"].tap()
+        openTab(app, "Boards")
 
         let quickAddField = app.textFields["New Task"]
         XCTAssertTrue(quickAddField.waitForExistence(timeout: 10))
@@ -550,6 +567,19 @@ final class BibleTrackerUITests: XCTestCase {
         let disappeared = !streakBadgeAfterUndo.waitForExistence(timeout: 5)
         XCTAssertTrue(disappeared, "Streak badge should disappear once the streak drops back to 0")
         attach(app, name: "streak-03-badge-hidden-after-undo")
+    }
+
+    /// The tab bar's button, not a Settings group header of the same name.
+    private func openTab(_ app: XCUIApplication, _ name: String) {
+        app.buttons.matching(NSPredicate(format: "label == %@ AND NOT (value IN {'Collapsed', 'Expanded'})", name)).firstMatch.tap()
+    }
+
+    /// Settings opens with its groups collapsed; expands `group` so its controls exist.
+    private func openSettings(_ app: XCUIApplication, group: String) {
+        openTab(app, "Settings")
+        let header = app.buttons.matching(NSPredicate(format: "label == %@ AND (value == 'Collapsed' OR value == 'Expanded')", group)).firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 10), "Settings group \(group)")
+        if (header.value as? String) == "Collapsed" { header.tap() }
     }
 
     private func attach(_ app: XCUIApplication, name: String) {

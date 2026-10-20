@@ -4654,7 +4654,8 @@ final class AppModel {
             errorMessage = "Your native data could not be loaded. A fresh local workspace is being shown."
         }
 #if DEBUG
-        let fixtureApplied = applyChatUITestFixtureIfRequested()
+        let fixtureApplied = applyFreshStoreForUITestIfRequested()
+            || applyChatUITestFixtureIfRequested()
             || applyBoardUITestFixtureIfRequested()
             || applyPerformanceUITestFixtureIfRequested()
         if fixtureApplied {
@@ -4911,6 +4912,18 @@ final class AppModel {
             tasks: tasks,
             selectedBoardID: board.id
         )
+        errorMessage = nil
+        return true
+    }
+
+    /// UI tests that assume a new install's single "Week" board start from it, whatever earlier
+    /// tests left in the simulator. Returns true when applied.
+    private func applyFreshStoreForUITestIfRequested() -> Bool {
+        guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_FRESH_STORE"] == "1" else { return false }
+        snapshot = .empty
+        // Device relay edits from earlier tests would otherwise carry over.
+        AppRelaySettings.reset()
+        appRelays = AppRelaySettings.urls
         errorMessage = nil
         return true
     }
