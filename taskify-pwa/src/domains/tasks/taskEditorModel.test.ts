@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { mergeTaskEdit } from "taskify-core";
 import type { Board, Task } from "./taskTypes";
 import { buildTaskFromEditor, normalizeAssigneeList, taskEditorStart, type TaskEditorDraft } from "./taskEditorModel";
 
@@ -106,5 +107,19 @@ describe("task editor model", () => {
   test("assignees are de-duplicated and invalid keys dropped", () => {
     const hex = "a".repeat(64);
     expect(normalizeAssigneeList([{ pubkey: hex }, { pubkey: hex.toUpperCase() }, { pubkey: "nope" }])).toEqual([{ pubkey: hex }]);
+  });
+
+  test("a save keeps a subtask ticked elsewhere while the editor was open (C8-2)", () => {
+    const task = { ...timedTask, subtasks: [{ id: "s1", title: "Agenda", completed: false }] } as Task;
+    const subtasks = task.subtasks!;
+    const start = taskEditorStart(task, CHICAGO);
+    const opened = buildTaskFromEditor(task, start, draftFrom(task, listBoard, { subtasks }), 0);
+    const edited = buildTaskFromEditor(task, start, draftFrom(task, listBoard, { subtasks, priority: 3 }), 0);
+    const current = { ...task, subtasks: [{ id: "s1", title: "Agenda", completed: true }] } as Task;
+
+    const saved = mergeTaskEdit(opened, edited, current);
+    expect(saved.priority).toBe(3);
+    expect(saved.subtasks).toEqual([{ id: "s1", title: "Agenda", completed: true }]);
+    expect(saved.dueISO).toBe(task.dueISO);
   });
 });

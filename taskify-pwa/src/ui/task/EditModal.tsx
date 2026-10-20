@@ -135,7 +135,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
-  onSave: (t: Task)=>void | Promise<void>;
+  /** `opened` is the task as the editor built it on opening, so the save can apply only what changed (C8-2). */
+  onSave: (t: Task, opened: Task | null)=>void | Promise<void>;
   onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
@@ -860,6 +861,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     });
   }
 
+  // The task as built from the untouched editor, recorded on opening (C8-2).
+  const openedTaskRef = useRef<Task | null>(null);
+  useEffect(() => {
+    // Only the first render's values describe the task as opened.
+    openedTaskRef.current ??= buildTask();
+  }, []);
+
   function buildTask(overrides: Partial<Task> = {}): Task {
     const saved = buildTaskFromEditor(
       task,
@@ -894,7 +902,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     setSaving(true);
     setSaveError(null);
     try {
-      await onSave(normalizeTaskBounty(buildTask(overrides)));
+      const opened = openedTaskRef.current ? normalizeTaskBounty(openedTaskRef.current) : null;
+      await onSave(normalizeTaskBounty(buildTask(overrides)), opened);
     } catch (err: any) {
       console.error("Failed to save task", err);
       setSaveError(err?.message || "Failed to save task.");

@@ -52,6 +52,9 @@ struct TaskEditorView: View {
     @State private var showingTaskShare = false
     @State private var confirmingRecurringDeletion = false
     @State private var didAutoFocusTitle = false
+    /// The fields as they stood when the editor opened, so a save applies only what the user
+    /// changed and keeps what changed elsewhere meanwhile (`TaskEditorFields`, C8-2).
+    @State private var openedFields: TaskEditorFields?
     @FocusState private var titleIsFocused: Bool
 
     init(task: TaskItem) {
@@ -234,6 +237,9 @@ struct TaskEditorView: View {
         .preferredColorScheme(.dark)
         .tint(TaskifyTheme.accent)
         .interactiveDismissDisabled(isUploadingAttachment)
+        .onAppear {
+            if openedFields == nil, taskID != nil { openedFields = editorFields() }
+        }
         .onChange(of: dueDate) { _, newDueDate in
             // Moving a task past its series' end date would leave nothing to save; the series
             // now ends with this occurrence instead.
@@ -728,25 +734,51 @@ struct TaskEditorView: View {
         dueTimeZone = newIdentifier
     }
 
-    @discardableResult
-    private func persistChanges() -> Bool {
-        let normalizedDueDate: Date?
-        if dueDateEnabled {
-            normalizedDueDate = dueTimeEnabled ? dueDate : Calendar.current.startOfDay(for: dueDate)
-        } else {
-            normalizedDueDate = nil
-        }
+    private var normalizedDueDate: Date? {
+        guard dueDateEnabled else { return nil }
+        return dueTimeEnabled ? dueDate : Calendar.current.startOfDay(for: dueDate)
+    }
 
-        let destination = targetBoard
+    /// The week-board column the due date files the task under.
+    private var dayColumnID: String {
         var dueCalendar = Calendar.current
         if dueTimeEnabled, let timeZone = TimeZone(identifier: dueTimeZone) { dueCalendar.timeZone = timeZone }
-        let dayColumnID = WeekdayColumn.containing(normalizedDueDate ?? Date(), calendar: dueCalendar).rawValue
+        return WeekdayColumn.containing(normalizedDueDate ?? Date(), calendar: dueCalendar).rawValue
+    }
+
+    /// Everything a save writes, as the editor currently has it.
+    private func editorFields() -> TaskEditorFields {
+        let destination = targetBoard
         let columnID: String?
         switch destination?.kind {
         case .list: columnID = selectedColumnID
         case .week: columnID = destination?.id == task?.boardID ? task?.columnID : dayColumnID
         default: columnID = task?.columnID
         }
+        return TaskEditorFields(
+            title: title,
+            note: note,
+            schedule: .init(
+                dueDate: normalizedDueDate,
+                dueDateEnabled: dueDateEnabled,
+                dueTimeEnabled: dueTimeEnabled,
+                dueTimeZone: dueTimeZone,
+                recurrence: makeRecurrence()
+            ),
+            priority: priority,
+            columnID: columnID,
+            subtasks: subtasks,
+            reminders: .init(reminders: reminders, reminderTime: dueTimeEnabled ? nil : formattedReminderTime),
+            attachments: .init(images: images, documents: documents)
+        )
+    }
+
+    @discardableResult
+    private func persistChanges() -> Bool {
+        let destination = targetBoard
+        let dayColumnID = dayColumnID
+        let edited = editorFields()
+        let columnID = edited.columnID
         let normalizedUrgent = dueDateEnabled && dueTimeEnabled && urgent
         if let taskID {
             // A new board is a move (source tombstone, target publish); the edits follow on the
@@ -759,23 +791,28 @@ struct TaskEditorView: View {
                ) {
                 return false
             }
+            // Only what the user changed; the rest stays as it is now (C8-2).
+            var fields = edited
+            if let opened = openedFields, let current = model.task(withID: taskID) {
+                fields = .merging(opened: opened, edited: edited, current: TaskEditorFields(task: current))
+            }
             return model.updateTask(
                 taskID: taskID,
-                title: title,
-                note: note,
-                dueDate: normalizedDueDate,
-                dueDateEnabled: dueDateEnabled,
-                dueTimeEnabled: dueTimeEnabled,
-                dueTimeZone: dueTimeZone,
+                title: fields.title,
+                note: fields.note,
+                dueDate: fields.schedule.dueDate,
+                dueDateEnabled: fields.schedule.dueDateEnabled,
+                dueTimeEnabled: fields.schedule.dueTimeEnabled,
+                dueTimeZone: fields.schedule.dueTimeZone,
                 urgent: normalizedUrgent,
-                priority: priority,
-                columnID: columnID,
-                subtasks: subtasks,
-                recurrence: makeRecurrence(),
-                reminders: reminders,
-                reminderTime: dueTimeEnabled ? nil : formattedReminderTime,
-                images: images,
-                documents: documents
+                priority: fields.priority,
+                columnID: fields.columnID,
+                subtasks: fields.subtasks,
+                recurrence: fields.schedule.recurrence,
+                reminders: fields.reminders.reminders,
+                reminderTime: fields.reminders.reminderTime,
+                images: fields.attachments.images,
+                documents: fields.attachments.documents
             )
         }
 

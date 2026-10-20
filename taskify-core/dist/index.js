@@ -22,6 +22,7 @@ export * from "./entityResolution.js";
 export * from "./locationContracts.js";
 export * from "./appStateSync.js";
 export * from "./eventVersion.js";
+export * from "./taskEditMerge.js";
 export * from "./botCommands.js";
 export * from "./nip51Contacts.js";
 export * from "./taskifyLinks.js";

@@ -223,6 +223,7 @@ import {
   ensureWeekRecurrencesForCurrentWeek,
   buildRunningStreakLookup,
   compareEventVersions,
+  mergeTaskEdit,
   isoForWeekdayLocal,
   tasksInSameSeries,
 } from "taskify-core";
@@ -4554,8 +4555,13 @@ export default function App() {
     enablePush: enablePushNotifications,
   });
 
-  async function saveEdit(updated: Task) {
-    const previous = tasksStore().get().find((task) => task.id === updated.id);
+  /**
+   * Saves an editor's task. With `opened`, only the fields the user changed are applied to the
+   * task as it is now, so changes that arrived while the editor was open survive (C8-2).
+   */
+  async function saveEdit(edited: Task, opened: Task | null = null) {
+    const previous = tasksStore().get().find((task) => task.id === edited.id);
+    const updated = opened && previous ? mergeTaskEdit(opened, edited, previous) : edited;
     const plan = planSaveTask(tasksStore().get(), updated, {
       now: new Date(),
       actorPubkey: nostrPK || undefined,
@@ -6330,9 +6336,9 @@ export default function App() {
               else deleteTask(editing.originalId);
               setEditing(null);
             }}
-            onSave={(updated) => {
+            onSave={(updated, opened) => {
               if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
-              saveEdit(updated);
+              saveEdit(updated, opened);
             }}
             onSwitchToEvent={(draftTask) => {
               const nextEvent = convertTaskToCalendarEvent(draftTask);
