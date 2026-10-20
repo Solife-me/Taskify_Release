@@ -545,6 +545,12 @@ struct UpcomingView: View {
         .onAppear {
             refreshAppleSources()
         }
+        .onNewDay { previousToday, today in
+            let next = DayRollover.selectedDay(selectedDate, previousToday: previousToday, today: today)
+            guard next != selectedDate else { return }
+            selectedDate = next
+            calendarTodayRequest += 1
+        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             let year = Calendar.current.component(.year, from: Date())

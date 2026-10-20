@@ -186,6 +186,10 @@ struct BoardsView: View {
         }
         .onAppear(perform: resetFocusedPage)
         .onAppear(perform: TaskCompletionHaptics.warmUp)
+        .onNewDay { previousToday, today in
+            guard model.selectedBoard?.kind == .week else { return }
+            focusedPageID = DayRollover.weekColumn(focusedPageID, previousToday: previousToday, today: today)
+        }
         .onChange(of: focusQuickAdd, initial: true) { _, requested in
             guard requested else { return }
             // A beat after the tab switch: focusing while the view is still appearing gets

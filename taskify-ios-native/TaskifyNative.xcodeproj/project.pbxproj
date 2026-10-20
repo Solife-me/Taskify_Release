@@ -27,6 +27,7 @@
 		B00000000000000000000103 /* Sources/TaskifyApp/App/RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000203 /* Sources/TaskifyApp/App/RootTabView.swift */; };
 		B00000000000000000000104 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */; };
 		B00000000000000000000199 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */; };
+		C80400000000000000000F01 /* Sources/TaskifyApp/DesignSystem/NewDayModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80400000000000000000F00 /* Sources/TaskifyApp/DesignSystem/NewDayModifier.swift */; };
 		B00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */; };
 		B00000000000000000009A0F /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */; };
 		B00000000000000000009A11 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A12 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift */; };
@@ -192,6 +193,7 @@
 		B00000000000000000000203 /* Sources/TaskifyApp/App/RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/RootTabView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift; sourceTree = SOURCE_ROOT; };
+		C80400000000000000000F00 /* Sources/TaskifyApp/DesignSystem/NewDayModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/NewDayModifier.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardsView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A12 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardContentViews.swift; sourceTree = SOURCE_ROOT; };
@@ -420,6 +422,7 @@
 				B00000000000000000000203 /* Sources/TaskifyApp/App/RootTabView.swift */,
 				B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */,
 				B00000000000000000000299 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift */,
+				C80400000000000000000F00 /* Sources/TaskifyApp/DesignSystem/NewDayModifier.swift */,
 				B00000000000000000000205 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift */,
 				B00000000000000000009A10 /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift */,
 				B00000000000000000009A12 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift */,
@@ -871,6 +874,7 @@
 				B00000000000000000000103 /* Sources/TaskifyApp/App/RootTabView.swift in Sources */,
 				B00000000000000000000104 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift in Sources */,
 				B00000000000000000000199 /* Sources/TaskifyApp/DesignSystem/TaskifyPerfMonitor.swift in Sources */,
+				C80400000000000000000F01 /* Sources/TaskifyApp/DesignSystem/NewDayModifier.swift in Sources */,
 				B00000000000000000000105 /* Sources/TaskifyApp/Features/Boards/BoardsView.swift in Sources */,
 				B00000000000000000009A0F /* Sources/TaskifyApp/Features/Boards/BoardInteractionSupport.swift in Sources */,
 				B00000000000000000009A11 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift in Sources */,
