@@ -115,6 +115,30 @@ public actor JSONTaskStore {
         return LoadResult(snapshot: snapshot, wasRepaired: snapshot != decodedSnapshot)
     }
 
+    /// Reads `areas` for display only, leaving each externalized attachment as its
+    /// `taskify-file:` reference instead of reading it into memory (C10-3). For extensions that
+    /// show tasks or decide a notification but never show an attachment, within their memory
+    /// limits. It leaves what this store saves next unchanged; save what `load` returns, not this.
+    public func read(areas: Set<TaskifyStoreArea>) throws -> TaskifySnapshot {
+        var loaded = TaskifySnapshotAreas(.empty)
+        if isSplit {
+            let decoder = JSONDecoder()
+            for area in areas {
+                guard let data = FileManager.default.contents(atPath: areaURL(area).path) else { continue }
+                switch area {
+                case .tasks: loaded.tasks = try decoder.decode(TaskifyTasksArea.self, from: data)
+                case .chat: loaded.chat = try decoder.decode(TaskifyChatArea.self, from: data)
+                case .inbox: loaded.inbox = try decoder.decode(TaskifyInboxArea.self, from: data)
+                }
+            }
+        } else if let data = FileManager.default.contents(atPath: legacyURL.path) {
+            loaded = TaskifySnapshotAreas(try JSONDecoder().decode(TaskifySnapshot.self, from: data))
+        }
+        var snapshot = loaded.snapshot
+        snapshot.repairSelection()
+        return snapshot
+    }
+
     /// The tasks on disk, for merging changes another process made. Unlike `load`, it leaves what
     /// this store saves next unchanged.
     public func readTasksWrittenElsewhere() throws -> [TaskItem] {

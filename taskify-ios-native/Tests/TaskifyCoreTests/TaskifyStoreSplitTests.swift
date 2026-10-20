@@ -154,6 +154,54 @@ final class TaskifyStoreSplitTests: XCTestCase {
         XCTAssertEqual(reloaded.directMessages?.count, 3, "the widget's save left the app's new message alone")
     }
 
+    /// C10-3: the widgets and the notification service read without attachments.
+    func testReadingForDisplayLeavesAttachmentsOnDisk() async throws {
+        let store = JSONTaskStore(fileURL: legacyURL, migratesLegacyStore: true)
+        var snapshot = populated()
+        // 20 MB of task images: about what a widget or notification service may hold in total.
+        snapshot.tasks = (0..<20).map { index in
+            var task = TaskItem(id: "t\(index)", boardID: snapshot.selectedBoardID, title: "Photo \(index)")
+            task.images = ["data:image/jpeg;base64," + Data(repeating: UInt8(index), count: 750_000).base64EncodedString()]
+            return task
+        }
+        try await store.save(snapshot)
+        func attachmentBytes(_ snapshot: TaskifySnapshot) -> Int {
+            snapshot.tasks.reduce(0) { $0 + ($1.images ?? []).reduce(0) { $0 + $1.utf8.count } }
+        }
+
+        let before = Self.footprint()
+        let loaded = try await JSONTaskStore(fileURL: legacyURL).load(areas: [.tasks])
+        let afterLoad = Self.footprint()
+        let read = try await JSONTaskStore(fileURL: legacyURL).read(areas: [.tasks])
+        let afterRead = Self.footprint()
+        print("C10-3 load(.tasks): \(attachmentBytes(loaded)) attachment bytes, footprint +\((afterLoad - before) >> 20) MB")
+        print("C10-3 read(.tasks): \(attachmentBytes(read)) attachment bytes, footprint +\((afterRead - afterLoad) >> 20) MB")
+        XCTAssertGreaterThan(attachmentBytes(loaded), 19_000_000)
+        XCTAssertLessThan(attachmentBytes(read), 2_000, "only the references")
+        XCTAssertEqual(read.tasks.map(\.title), loaded.tasks.map(\.title))
+
+        // The notification service needs chat and contacts, not tasks.
+        let preview = try await JSONTaskStore(fileURL: legacyURL).read(areas: [.chat, .inbox])
+        XCTAssertTrue(preview.tasks.isEmpty)
+        XCTAssertEqual(preview.directMessageBlockedPeers, ["blocked"])
+        XCTAssertEqual(preview.directMessages?.count, 2)
+
+        // Reading changes nothing a later save of a full load writes.
+        let full = try await JSONTaskStore(fileURL: legacyURL).load()
+        XCTAssertEqual(attachmentBytes(full), attachmentBytes(loaded))
+    }
+
+    private static func footprint() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
+    }
+
     func testLargeInlineAttachmentsAreKeptAsFiles() async throws {
         let store = JSONTaskStore(fileURL: legacyURL, migratesLegacyStore: true)
         var snapshot = populated()
