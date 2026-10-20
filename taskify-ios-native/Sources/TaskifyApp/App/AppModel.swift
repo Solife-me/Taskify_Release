@@ -59,6 +59,24 @@ final class AppModel {
         return storedSnapshot
     }
 
+    /// The snapshot for reads that use only the chat area (messages, groups, their state).
+    var chatSnapshot: TaskifySnapshot {
+        _ = chatAreaRevision
+        return storedSnapshot
+    }
+
+    /// The snapshot for chat reads that also show shared items or contacts (C9-4).
+    var chatAndInboxSnapshot: TaskifySnapshot {
+        _ = chatAreaRevision
+        _ = inboxAreaRevision
+        return storedSnapshot
+    }
+
+    /// Changes whenever chat or inbox content does: the memo key for conversation views.
+    var conversationRevision: Int {
+        chatAreaRevision &* 1_000_003 &+ inboxAreaRevision
+    }
+
     /// Bumped when that area's content changes; what views observe (see `snapshot`).
     private(set) var tasksAreaRevision = 0
     private(set) var chatAreaRevision = 0
@@ -313,12 +331,12 @@ final class AppModel {
         snapshotLookupCache.activeTaskIDs(snapshot: tasksSnapshot)
     }
     var recentSharedTaskRecipients: [SharedTaskRecipient] { tasksSnapshot.recentSharedTaskRecipients }
-    var nostrContacts: [NostrContact] { snapshot.contactDirectory }
+    var nostrContacts: [NostrContact] { inboxSnapshot.contactDirectory }
     var directMessageThreads: [NostrDirectMessageThread] {
-        snapshotLookupCache.directMessageThreads(snapshot: snapshot)
+        snapshotLookupCache.directMessageThreads(snapshot: chatAndInboxSnapshot)
     }
-    var storedDirectMessageCount: Int { snapshot.directMessages?.count ?? 0 }
-    var groupConversations: [NostrGroupConversation] { snapshot.groupConversations }
+    var storedDirectMessageCount: Int { chatSnapshot.directMessages?.count ?? 0 }
+    var groupConversations: [NostrGroupConversation] { chatSnapshot.groupConversations }
     var syncIsOnline: Bool {
         if case .online = syncState { return true }
         return false
@@ -468,7 +486,7 @@ final class AppModel {
     }
 
     func directMessages(with peerPublicKey: String) -> [NostrDirectMessage] {
-        snapshotLookupCache.directMessages(with: peerPublicKey, snapshot: snapshot)
+        snapshotLookupCache.directMessages(with: peerPublicKey, snapshot: chatSnapshot)
     }
 
     private func dmPushSenderName(publicKey: String) -> String {
@@ -481,14 +499,14 @@ final class AppModel {
     }
 
     func directMessageReactions(for message: NostrDirectMessage) -> [NostrDirectMessageReaction] {
-        snapshot.directMessageReactions(for: message)
+        chatSnapshot.directMessageReactions(for: message)
     }
 
     func directMessageReactionLookup(
         peerPublicKey: String
     ) -> [String: [NostrDirectMessageReaction]] {
         Dictionary(
-            grouping: (snapshot.directMessageReactions ?? []).filter {
+            grouping: (chatSnapshot.directMessageReactions ?? []).filter {
                 !$0.isRemoval && $0.peerPublicKey == peerPublicKey
             },
             by: \.targetEventID
@@ -496,23 +514,23 @@ final class AppModel {
     }
 
     func isDirectMessageThreadArchived(_ peerPublicKey: String) -> Bool {
-        snapshot.isDirectMessageThreadArchived(peerPublicKey)
+        chatAndInboxSnapshot.isDirectMessageThreadArchived(peerPublicKey)
     }
 
     func isDirectMessagePeerBlocked(_ peerPublicKey: String) -> Bool {
-        snapshot.isDirectMessagePeerBlocked(peerPublicKey)
+        chatSnapshot.isDirectMessagePeerBlocked(peerPublicKey)
     }
 
     func isDirectMessageGroupMuted(_ groupID: String) -> Bool {
-        snapshot.isDirectMessageGroupMuted(groupID)
+        chatSnapshot.isDirectMessageGroupMuted(groupID)
     }
 
     func hasLeftDirectMessageGroup(_ groupID: String) -> Bool {
-        snapshot.hasLeftDirectMessageGroup(groupID)
+        chatSnapshot.hasLeftDirectMessageGroup(groupID)
     }
 
     func groupConversation(id: String) -> NostrGroupConversation? {
-        snapshotLookupCache.group(id: id, snapshot: snapshot)
+        snapshotLookupCache.group(id: id, snapshot: chatSnapshot)
     }
 
     @discardableResult
@@ -637,7 +655,7 @@ final class AppModel {
     }
 
     func nostrContact(publicKey: String) -> NostrContact? {
-        snapshotLookupCache.contact(publicKey: publicKey, snapshot: snapshot)
+        snapshotLookupCache.contact(publicKey: publicKey, snapshot: inboxSnapshot)
     }
 
     // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands). The

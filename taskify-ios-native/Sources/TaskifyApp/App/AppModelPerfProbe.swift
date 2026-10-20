@@ -8,6 +8,7 @@ import TaskifyCore
 /// the card bodies each step evaluated in `perfProbeResult`.
 extension AppModel {
     func runPerformanceProbeIfRequested() {
+        runChatPerformanceProbeIfRequested()
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_PERF_PROBE"] == "1" else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(4))
@@ -32,6 +33,28 @@ extension AppModel {
             try? await Task.sleep(for: .milliseconds(600))
             let edit = monitor.totalCardBodies - before
             perfProbeResult = "chat=\(chat) edit=\(edit)"
+        }
+    }
+
+    /// With `TASKIFY_UI_TEST_CHAT_PERF_PROBE=1` and the chat fixture: once the test has opened
+    /// the conversation, 20 task writes, reporting the conversation timeline rebuilds they caused.
+    private func runChatPerformanceProbeIfRequested() {
+        guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_PERF_PROBE"] == "1" else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(10))
+            let monitor = TaskifyPerfMonitor.shared
+            let before = monitor.totalChatTimelineBuilds
+            let secondsBefore = monitor.totalChatTimelineBuildSeconds
+            let boardID = snapshot.selectedBoardID
+            for step in 0..<20 {
+                var updated = snapshot
+                updated.tasks.append(TaskItem(id: "chat-probe-\(step)", boardID: boardID, title: "Probe \(step)"))
+                snapshot = updated
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let builds = monitor.totalChatTimelineBuilds - before
+            let milliseconds = (monitor.totalChatTimelineBuildSeconds - secondsBefore) * 1000
+            perfProbeResult = "tasks=\(builds) ms=\(Int(milliseconds.rounded()))"
         }
     }
 }
