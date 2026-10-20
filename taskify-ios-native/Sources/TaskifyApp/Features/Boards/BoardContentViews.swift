@@ -350,7 +350,7 @@ struct CompoundColumnView: View {
                         TaskifyEventCard(event: event, showDate: true, allowsSelection: true)
                     }
                     ForEach(tasks) { task in
-                        TaskCardView(task: task, allowsDragging: true)
+                        TaskCardView(task: task, context: model.cardContext(for: task), allowsDragging: true).equatable()
                             .taskDropTarget(
                                 boardID: reference.board.id,
                                 columnID: reference.column.id,
@@ -517,7 +517,7 @@ struct ListColumnView: View {
                         TaskifyEventCard(event: event, showDate: true, allowsSelection: true)
                     }
                     ForEach(tasks) { task in
-                        TaskCardView(task: task, allowsDragging: true)
+                        TaskCardView(task: task, context: model.cardContext(for: task), allowsDragging: true).equatable()
                             .taskDropTarget(
                                 boardID: model.selectedBoardID,
                                 columnID: column.id,
@@ -686,7 +686,7 @@ struct DayColumnView: View {
                         TaskifyEventCard(event: event, allowsSelection: true)
                     }
                     ForEach(tasks) { task in
-                        TaskCardView(task: task, allowsDragging: true)
+                        TaskCardView(task: task, context: model.cardContext(for: task), allowsDragging: true).equatable()
                             .taskDropTarget(
                                 boardID: model.selectedBoardID,
                                 columnID: weekday.rawValue,
@@ -727,6 +727,7 @@ struct TaskCardView: View {
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
     private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
     let task: TaskItem
+    let context: TaskCardContext
     let allowsDragging: Bool
     @State private var showingEditor = false
     @State private var showingNoteViewer = false
@@ -734,9 +735,12 @@ struct TaskCardView: View {
     @State private var taskShareMode: TaskShareMode = .share
     @State private var confirmingRecurringDeletion = false
     @State private var showingMove = false
+    /// Read when the delete dialog opens, so the card body does not depend on the whole series.
+    @State private var missedForDeletion: Int?
 
-    init(task: TaskItem, allowsDragging: Bool = false) {
+    init(task: TaskItem, context: TaskCardContext, allowsDragging: Bool = false) {
         self.task = task
+        self.context = context
         self.allowsDragging = allowsDragging
     }
 
@@ -762,25 +766,9 @@ struct TaskCardView: View {
         return hideCompletedSubtasks ? subtasks.filter { !$0.completed } : subtasks
     }
 
-    /// Streaks are tracked for any "frequent" recurrence (daily/weekly, or every N days/weeks —
-    /// see `TaskifySnapshot.toggleCompletion`), but only *displayed* for the simple daily/weekly
-    /// cases, matching the PWA's narrower badge condition.
-    private var visibleStreak: Int? {
-        guard model.streaksEnabled else { return nil }
-        switch task.recurrence {
-        case .daily, .weekly:
-            break
-        default:
-            return nil
-        }
-        let streak = model.runningStreak(for: task)
-        guard streak > 0 else { return nil }
-        return streak
-    }
+    private var visibleStreak: Int? { context.streak }
 
-    private var mediaBoardID: String {
-        model.board(withID: task.boardID)?.effectiveNostrBoardID ?? task.boardID
-    }
+    private var mediaBoardID: String { context.mediaBoardID }
 
     private var cardText: TaskCardTextCache.Derived {
         TaskCardTextCache.derived(title: task.title, note: task.note)
@@ -1129,13 +1117,7 @@ struct TaskCardView: View {
                 } label: {
                     Label("Assign Task", systemImage: "person.badge.plus")
                 }
-                if let missed = model.missedOccurrenceCount(for: task.id) {
-                    Button {
-                        model.catchUpRecurringTask(task.id)
-                    } label: {
-                        Label(catchUpLabel(missed: missed), systemImage: "arrow.uturn.forward.circle")
-                    }
-                }
+                TaskCardCatchUpMenuItem(taskID: task.id)
                 if task.dueDateEnabled, task.dueDate != nil {
                     Button {
                         model.postponeTask(task.id, byDays: 1)
@@ -1150,6 +1132,7 @@ struct TaskCardView: View {
                 }
                 Button(role: .destructive) {
                     if task.recurrence?.isActive == true {
+                        missedForDeletion = model.missedOccurrenceCount(for: task.id)
                         confirmingRecurringDeletion = true
                     } else {
                         model.deleteTask(task.id, scope: .single)
@@ -1164,7 +1147,7 @@ struct TaskCardView: View {
             isPresented: $confirmingRecurringDeletion,
             titleVisibility: .visible
         ) {
-            if let missed = model.missedOccurrenceCount(for: task.id) {
+            if let missed = missedForDeletion {
                 Button(catchUpLabel(missed: missed)) {
                     model.catchUpRecurringTask(task.id)
                 }
@@ -1177,7 +1160,7 @@ struct TaskCardView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(model.missedOccurrenceCount(for: task.id) == nil
+            Text(missedForDeletion == nil
                 ? "Choose whether to delete only this occurrence or end the recurring series here."
                 : "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series.")
         }
@@ -1323,4 +1306,61 @@ func boardColumnWidth(in width: CGFloat) -> CGFloat {
     let available = width - 36
     let count = max(2, floor((available + 16) / 316))
     return (available - (count - 1) * 16) / count
+}
+
+/// What a card shows that comes from outside its task (C8-1). The column looks it up, so the
+/// card depends only on its inputs and, being `Equatable`, skips its body when another task
+/// changes.
+struct TaskCardContext: Equatable {
+    /// The running streak to show; nil when none is shown.
+    var streak: Int?
+    /// The board key attachments are encrypted with.
+    var mediaBoardID: String
+}
+
+extension AppModel {
+    func cardContext(for task: TaskItem) -> TaskCardContext {
+        TaskCardContext(
+            streak: visibleStreak(for: task),
+            mediaBoardID: board(withID: task.boardID)?.effectiveNostrBoardID ?? task.boardID
+        )
+    }
+
+    /// Streaks are tracked for any "frequent" recurrence (daily/weekly, or every N days/weeks —
+    /// see `TaskifySnapshot.toggleCompletion`), but only *displayed* for the simple daily/weekly
+    /// cases, matching the PWA's narrower badge condition.
+    private func visibleStreak(for task: TaskItem) -> Int? {
+        guard streaksEnabled else { return nil }
+        switch task.recurrence {
+        case .daily, .weekly:
+            break
+        default:
+            return nil
+        }
+        let streak = runningStreak(for: task)
+        return streak > 0 ? streak : nil
+    }
+}
+
+extension TaskCardView: Equatable {
+    nonisolated static func == (lhs: TaskCardView, rhs: TaskCardView) -> Bool {
+        lhs.task == rhs.task && lhs.context == rhs.context && lhs.allowsDragging == rhs.allowsDragging
+    }
+}
+
+/// The context menu's "Catch Up" item. Its own view, so the series lookup it needs is a
+/// dependency of the menu rather than of the card.
+private struct TaskCardCatchUpMenuItem: View {
+    @Environment(AppModel.self) private var model
+    let taskID: String
+
+    var body: some View {
+        if let missed = model.missedOccurrenceCount(for: taskID) {
+            Button {
+                model.catchUpRecurringTask(taskID)
+            } label: {
+                Label(catchUpLabel(missed: missed), systemImage: "arrow.uturn.forward.circle")
+            }
+        }
+    }
 }

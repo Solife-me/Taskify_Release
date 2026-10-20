@@ -28,34 +28,73 @@ final class AppModel {
         let relayURLs: [String]
     }
     private static let profileOutboxScope = "__taskify-profile__"
-    var snapshot = TaskifySnapshot.empty {
-        didSet {
-            snapshotLookupCache.invalidate(from: oldValue, to: snapshot)
-            snapshotRevision &+= 1
-            if snapshot.directMessages != oldValue.directMessages
-                || snapshot.directMessageReadAt != oldValue.directMessageReadAt
-                || snapshot.directMessageReactions != oldValue.directMessageReactions
-                || snapshot.nostrGroupConversations != oldValue.nostrGroupConversations
-                || snapshot.directMessageArchivedAt != oldValue.directMessageArchivedAt
-                || snapshot.directMessageDeletedEventIDs != oldValue.directMessageDeletedEventIDs
-                || snapshot.directMessageBlockedPeers != oldValue.directMessageBlockedPeers
-                || snapshot.directMessageMutedGroups != oldValue.directMessageMutedGroups
-                || snapshot.directMessageLeftGroups != oldValue.directMessageLeftGroups
-                || snapshot.contacts != oldValue.contacts {
-                directMessageRevision &+= 1
-            }
-            // Read markers and shared-item responses sync to the user's other devices.
-            if snapshot.directMessageReadAt != oldValue.directMessageReadAt
-                || snapshot.sharedInboxItems != oldValue.sharedInboxItems
-                || snapshot.sharedContactInboxItems != oldValue.sharedContactInboxItems
-                || snapshot.sharedBoardInboxItems != oldValue.sharedBoardInboxItems
-                || snapshot.sharedCalendarInviteItems != oldValue.sharedCalendarInviteItems {
-                scheduleAppStatePublish(AppStateSyncContract.chatStateDTag)
-            }
-#if os(iOS)
-            TaskifyPerfMonitor.shared.recordSnapshotWrite()
-#endif
+    /// The app's state, stored outside observation (C8-1). Views depend on it by area: reading
+    /// `snapshot` depends on every area; the board, card and Upcoming accessors below read
+    /// `tasksSnapshot`, so a chat or inbox change does not redraw them.
+    @ObservationIgnored private var storedSnapshot = TaskifySnapshot.empty
+
+    var snapshot: TaskifySnapshot {
+        get {
+            _ = tasksAreaRevision
+            _ = chatAreaRevision
+            _ = inboxAreaRevision
+            return storedSnapshot
         }
+        set {
+            let oldValue = storedSnapshot
+            storedSnapshot = newValue
+            snapshotDidChange(from: oldValue)
+        }
+    }
+
+    /// The snapshot for reads that use only the tasks area (boards, tasks, events, selection).
+    var tasksSnapshot: TaskifySnapshot {
+        _ = tasksAreaRevision
+        return storedSnapshot
+    }
+
+    /// The snapshot for reads that use only the inbox area (shared items, contacts).
+    var inboxSnapshot: TaskifySnapshot {
+        _ = inboxAreaRevision
+        return storedSnapshot
+    }
+
+    /// Bumped when that area's content changes; what views observe (see `snapshot`).
+    private(set) var tasksAreaRevision = 0
+    private(set) var chatAreaRevision = 0
+    private(set) var inboxAreaRevision = 0
+
+    private func snapshotDidChange(from oldValue: TaskifySnapshot) {
+        let snapshot = storedSnapshot
+        let changedAreas = snapshot.changedAreas(from: oldValue)
+        if changedAreas.contains(.tasks) { tasksAreaRevision &+= 1 }
+        if changedAreas.contains(.chat) { chatAreaRevision &+= 1 }
+        if changedAreas.contains(.inbox) { inboxAreaRevision &+= 1 }
+        snapshotLookupCache.invalidate(from: oldValue, to: snapshot)
+        snapshotRevision &+= 1
+        if snapshot.directMessages != oldValue.directMessages
+            || snapshot.directMessageReadAt != oldValue.directMessageReadAt
+            || snapshot.directMessageReactions != oldValue.directMessageReactions
+            || snapshot.nostrGroupConversations != oldValue.nostrGroupConversations
+            || snapshot.directMessageArchivedAt != oldValue.directMessageArchivedAt
+            || snapshot.directMessageDeletedEventIDs != oldValue.directMessageDeletedEventIDs
+            || snapshot.directMessageBlockedPeers != oldValue.directMessageBlockedPeers
+            || snapshot.directMessageMutedGroups != oldValue.directMessageMutedGroups
+            || snapshot.directMessageLeftGroups != oldValue.directMessageLeftGroups
+            || snapshot.contacts != oldValue.contacts {
+            directMessageRevision &+= 1
+        }
+        // Read markers and shared-item responses sync to the user's other devices.
+        if snapshot.directMessageReadAt != oldValue.directMessageReadAt
+            || snapshot.sharedInboxItems != oldValue.sharedInboxItems
+            || snapshot.sharedContactInboxItems != oldValue.sharedContactInboxItems
+            || snapshot.sharedBoardInboxItems != oldValue.sharedBoardInboxItems
+            || snapshot.sharedCalendarInviteItems != oldValue.sharedCalendarInviteItems {
+            scheduleAppStatePublish(AppStateSyncContract.chatStateDTag)
+        }
+#if os(iOS)
+        TaskifyPerfMonitor.shared.recordSnapshotWrite()
+#endif
     }
 
     /// Bumped on every snapshot write. Views that memoize derived data can use this as an O(1)
@@ -128,6 +167,10 @@ final class AppModel {
     private(set) var unavailableTaskifyEventRSVPIDs: Set<String> = []
     var errorMessage: String?
     private(set) var showsFirstRunOnboarding = false
+#if DEBUG
+    /// Set by the UI-test performance probe (`AppModelPerfProbe.swift`).
+    var perfProbeResult: String?
+#endif
 
     private var weekCalendar: Calendar {
         var calendar = Calendar.current
@@ -200,16 +243,16 @@ final class AppModel {
     /// The series' running streak for a task (see `TaskifySnapshot.runningStreakLookup`); instances
     /// generated ahead of time show it instead of the streak stored when they were made.
     func runningStreak(for task: TaskItem) -> Int {
-        if let cache = runningStreakCache, cache.revision == snapshotRevision {
+        if let cache = runningStreakCache, cache.revision == tasksAreaRevision {
             return cache.lookup(task)
         }
-        let lookup = TaskifySnapshot.runningStreakLookup(snapshot.tasks)
-        runningStreakCache = (snapshotRevision, lookup)
+        let lookup = TaskifySnapshot.runningStreakLookup(tasksSnapshot.tasks)
+        runningStreakCache = (tasksAreaRevision, lookup)
         return lookup(task)
     }
     /// Local-only boards can't conflict with another device's copy, so they never wait.
     private var canGenerateSharedTasks: Bool {
-        relayHistorySettled || snapshot.boardsForSync.isEmpty
+        relayHistorySettled || tasksSnapshot.boardsForSync.isEmpty
     }
 
     init(
@@ -243,32 +286,33 @@ final class AppModel {
     }
 
     var visibleBoards: [Board] {
-        snapshotLookupCache.visibleBoards(snapshot: snapshot)
+        snapshotLookupCache.visibleBoards(snapshot: tasksSnapshot)
     }
     var boardsForManagement: [Board] {
-        snapshot.boards.filter { !$0.hidden && $0.kind != .bible }
+        tasksSnapshot.boards.filter { !$0.hidden && $0.kind != .bible }
     }
     var selectedBoard: Board? {
+        let snapshot = tasksSnapshot
         let boards = snapshotLookupCache.visibleBoards(snapshot: snapshot)
         return boards.first { $0.id == snapshot.selectedBoardID } ?? boards.first
     }
-    var selectedBoardID: String { snapshot.selectedBoardID }
-    var sharedInboxItems: [SharedInboxItem] { snapshot.sharedInbox }
-    var sharedContactInboxItems: [SharedContactInboxItem] { snapshot.sharedContactInbox }
-    var sharedCalendarInviteItems: [SharedCalendarInviteInboxItem] { snapshot.sharedCalendarInvites }
-    var sharedBoardInboxItems: [SharedBoardInboxItem] { snapshot.sharedBoardInbox }
+    var selectedBoardID: String { tasksSnapshot.selectedBoardID }
+    var sharedInboxItems: [SharedInboxItem] { inboxSnapshot.sharedInbox }
+    var sharedContactInboxItems: [SharedContactInboxItem] { inboxSnapshot.sharedContactInbox }
+    var sharedCalendarInviteItems: [SharedCalendarInviteInboxItem] { inboxSnapshot.sharedCalendarInvites }
+    var sharedBoardInboxItems: [SharedBoardInboxItem] { inboxSnapshot.sharedBoardInbox }
     var taskifyEvents: [TaskifyEvent] {
-        snapshotLookupCache.acceptedTaskifyEvents(snapshot: snapshot)
+        snapshotLookupCache.acceptedTaskifyEvents(snapshot: tasksSnapshot)
     }
     var taskifyEventIDs: Set<String> {
-        snapshotLookupCache.taskifyEventIDs(snapshot: snapshot)
+        snapshotLookupCache.taskifyEventIDs(snapshot: tasksSnapshot)
     }
     var walletPaymentRequestRelayURLs: [String] { sharedInboxRelayURLs }
-    var pendingSharedInboxCount: Int { snapshot.pendingSharedInboxCount }
+    var pendingSharedInboxCount: Int { inboxSnapshot.pendingSharedInboxCount }
     var activeTaskIDs: Set<String> {
-        snapshotLookupCache.activeTaskIDs(snapshot: snapshot)
+        snapshotLookupCache.activeTaskIDs(snapshot: tasksSnapshot)
     }
-    var recentSharedTaskRecipients: [SharedTaskRecipient] { snapshot.recentSharedTaskRecipients }
+    var recentSharedTaskRecipients: [SharedTaskRecipient] { tasksSnapshot.recentSharedTaskRecipients }
     var nostrContacts: [NostrContact] { snapshot.contactDirectory }
     var directMessageThreads: [NostrDirectMessageThread] {
         snapshotLookupCache.directMessageThreads(snapshot: snapshot)
@@ -416,11 +460,11 @@ final class AppModel {
     }
 
     func task(withID taskID: String) -> TaskItem? {
-        snapshotLookupCache.task(id: taskID, snapshot: snapshot)
+        snapshotLookupCache.task(id: taskID, snapshot: tasksSnapshot)
     }
 
     func board(withID boardID: String) -> Board? {
-        snapshotLookupCache.board(id: boardID, snapshot: snapshot)
+        snapshotLookupCache.board(id: boardID, snapshot: tasksSnapshot)
     }
 
     func directMessages(with peerPublicKey: String) -> [NostrDirectMessage] {
@@ -745,7 +789,7 @@ final class AppModel {
     }
 
     func taskCount(forBoardID boardID: String) -> Int {
-        snapshotLookupCache.taskCount(boardID: boardID, snapshot: snapshot)
+        snapshotLookupCache.taskCount(boardID: boardID, snapshot: tasksSnapshot)
     }
 
     func completedTaskCount(forBoardID boardID: String) -> Int {
@@ -755,15 +799,15 @@ final class AppModel {
         } else {
             scopeIDs = [boardID]
         }
-        return snapshotLookupCache.completedTaskCount(boardIDs: scopeIDs, snapshot: snapshot)
+        return snapshotLookupCache.completedTaskCount(boardIDs: scopeIDs, snapshot: tasksSnapshot)
     }
 
     func boardUpcomingRows(for board: Board, now: Date = Date()) -> [BoardUpcomingRow] {
-        snapshotLookupCache.boardUpcomingRows(boardID: board.id, snapshot: snapshot, now: now)
+        snapshotLookupCache.boardUpcomingRows(boardID: board.id, snapshot: tasksSnapshot, now: now)
     }
 
     func boardCompletedTasks(for board: Board) -> [TaskItem] {
-        snapshotLookupCache.boardCompletedTasks(boardID: board.id, snapshot: snapshot)
+        snapshotLookupCache.boardCompletedTasks(boardID: board.id, snapshot: tasksSnapshot)
     }
 
     func boardEvents(boardID: String, columnID: String, weekday: WeekdayColumn? = nil) -> [TaskifyEvent] {
@@ -771,7 +815,7 @@ final class AppModel {
             boardID: boardID,
             columnID: columnID,
             weekday: weekday,
-            snapshot: snapshot,
+            snapshot: tasksSnapshot,
             weekStartsOn: weekStart
         )
     }
@@ -789,7 +833,7 @@ final class AppModel {
             includeCompleted: includeCompleted,
             sortMode: sortMode,
             sortDirection: sortDirection,
-            snapshot: snapshot,
+            snapshot: tasksSnapshot,
             weekStartsOn: weekStart,
             calendar: weekCalendar
         )
@@ -808,7 +852,7 @@ final class AppModel {
             includeCompleted: includeCompleted,
             sortMode: sortMode,
             sortDirection: sortDirection,
-            snapshot: snapshot,
+            snapshot: tasksSnapshot,
             weekStartsOn: weekStart,
             calendar: weekCalendar
         )
@@ -827,18 +871,18 @@ final class AppModel {
             includeCompleted: includeCompleted,
             sortMode: sortMode,
             sortDirection: sortDirection,
-            snapshot: snapshot,
+            snapshot: tasksSnapshot,
             weekStartsOn: weekStart,
             calendar: weekCalendar
         )
     }
 
     func compoundChildBoards(for boardID: String) -> [Board] {
-        snapshot.compoundChildBoards(for: boardID)
+        tasksSnapshot.compoundChildBoards(for: boardID)
     }
 
     func upcomingTasks(searchText: String = "") -> [TaskItem] {
-        let tasks = snapshot.upcomingTasks(from: Date())
+        let tasks = tasksSnapshot.upcomingTasks(from: Date())
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return tasks }
         return tasks.filter {
@@ -1781,7 +1825,7 @@ final class AppModel {
     /// How many missed occurrences "Catch Up to Today" would clear from `taskID`'s recurring
     /// series; nil when it doesn't apply (not recurring, not overdue, or the series has ended).
     func missedOccurrenceCount(for taskID: String) -> Int? {
-        let count = snapshot.missedOccurrences(ofSeriesContaining: taskID, calendar: weekCalendar).count
+        let count = tasksSnapshot.missedOccurrences(ofSeriesContaining: taskID, calendar: weekCalendar).count
         return count > 0 ? count : nil
     }
 
@@ -3078,7 +3122,7 @@ final class AppModel {
     /// Boards a scripture-memory review task can be created on. Compound boards are excluded:
     /// their "columns" belong to child list boards, so a task can't be unambiguously placed there.
     var scriptureMemoryEligibleBoards: [Board] {
-        snapshot.boards.filter { $0.isVisible && ($0.kind == .week || $0.kind == .list) }
+        tasksSnapshot.boards.filter { $0.isVisible && ($0.kind == .week || $0.kind == .list) }
     }
 
     func addScriptureMemoryEntry(bookID: String, chapter: Int, startVerse: Int?, endVerse: Int?) {
@@ -4593,6 +4637,7 @@ final class AppModel {
             try? await store.save(snapshot)
             noteStoreWritten(snapshot)
         }
+        runPerformanceProbeIfRequested()
 #endif
         applyStartupBoardPreference()
         refreshNotifications(requestPermission: false)

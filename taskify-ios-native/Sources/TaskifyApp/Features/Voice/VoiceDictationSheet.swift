@@ -162,7 +162,7 @@ struct VoiceDictationSheet: View {
                             }
                             .font(.caption)
                             // The actual board card, populated by the same creation routine as Save.
-                            TaskCardView(task: approval.task)
+                            TaskCardView(task: approval.task, context: model.cardContext(for: approval.task)).equatable()
                                 .allowsHitTesting(false)
                         }
                         .opacity(selectedApprovalIDs.contains(approval.id) ? 1 : 0.55)

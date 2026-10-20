@@ -235,3 +235,17 @@ extension TaskifySnapshotAreas {
         value.utf8.count >= TaskifyAttachmentFiles.minimumBytes || value.hasPrefix(TaskifyAttachmentFiles.referencePrefix)
     }
 }
+
+public extension TaskifySnapshot {
+    /// The areas whose content differs from `old` (C8-1): what views and the store need to redo.
+    /// Unchanged arrays compare by identity, so this is cheap after a small change.
+    func changedAreas(from old: TaskifySnapshot) -> Set<TaskifyStoreArea> {
+        let new = TaskifySnapshotAreas(self)
+        let previous = TaskifySnapshotAreas(old)
+        var changed: Set<TaskifyStoreArea> = []
+        if new.tasks != previous.tasks { changed.insert(.tasks) }
+        if new.chat != previous.chat { changed.insert(.chat) }
+        if new.inbox != previous.inbox { changed.insert(.inbox) }
+        return changed
+    }
+}

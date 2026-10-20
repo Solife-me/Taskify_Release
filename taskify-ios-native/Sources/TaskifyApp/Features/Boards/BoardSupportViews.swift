@@ -352,7 +352,7 @@ struct BoardUpcomingView: View {
                         case .event(_, let event):
                             TaskifyEventCard(event: event)
                         case .task(_, let task):
-                            TaskCardView(task: task)
+                            TaskCardView(task: task, context: model.cardContext(for: task)).equatable()
                         }
                     }
                 }
@@ -428,7 +428,7 @@ struct BoardCompletedTaskEntry: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            TaskCardView(task: task)
+            TaskCardView(task: task, context: model.cardContext(for: task)).equatable()
 
             HStack(spacing: 8) {
                 Text(completionLabel)

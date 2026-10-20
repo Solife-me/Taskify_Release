@@ -35,7 +35,7 @@ private struct UpcomingTaskFilterScope {
 @MainActor
 final class UpcomingDataCache {
     struct Key: Equatable {
-        let snapshotRevision: Int
+        let tasksRevision: Int
         let minute: Int
         let searchText: String
         let boardFilterRaw: String
@@ -163,7 +163,7 @@ struct UpcomingView: View {
     /// the whole point — switching days must not invalidate any of this.
     private var dataCacheKey: UpcomingDataCache.Key {
         UpcomingDataCache.Key(
-            snapshotRevision: model.snapshotRevision,
+            tasksRevision: model.tasksAreaRevision,
             minute: Int(Date().timeIntervalSince1970 / 60),
             searchText: searchText,
             boardFilterRaw: boardFilterRaw,
@@ -2003,7 +2003,7 @@ private struct UpcomingTaskList: View {
                     .padding(.top, 2)
 
                 ForEach(section.tasks) { task in
-                    TaskCardView(task: task)
+                    TaskCardView(task: task, context: model.cardContext(for: task)).equatable()
                 }
             }
         } else {
@@ -2017,7 +2017,7 @@ private struct UpcomingTaskList: View {
                         .foregroundStyle(overPhoto ? TaskifyTheme.secondaryText : TaskifyTheme.tertiaryText)
                         .taskifyLegibilityShadow(overPhoto)
                         .padding(.leading, 10)
-                    TaskCardView(task: task)
+                    TaskCardView(task: task, context: model.cardContext(for: task)).equatable()
                 }
             }
         }

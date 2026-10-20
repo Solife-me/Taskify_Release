@@ -54,6 +54,20 @@ final class TaskifyStoreSplitTests: XCTestCase {
         XCTAssertEqual(areaFields.joined().count, snapshotFields.count, "no field may be in two areas")
     }
 
+    func testChangedAreasNameOnlyWhatChanged() {
+        let base = populated()
+        var chat = base
+        chat.directMessageArchivedAt = ["peer": 5]
+        XCTAssertEqual(chat.changedAreas(from: base), [.chat])
+        var task = base
+        task.tasks[0].title = "Buy bread"
+        XCTAssertEqual(task.changedAreas(from: base), [.tasks])
+        var contacts = base
+        contacts.contactsListUpdatedAt = 99
+        XCTAssertEqual(contacts.changedAreas(from: base), [.inbox])
+        XCTAssertEqual(base.changedAreas(from: base), [])
+    }
+
     func testASnapshotRoundTripsThroughTheSplitStore() async throws {
         let store = JSONTaskStore(fileURL: legacyURL, migratesLegacyStore: true)
         let snapshot = populated()

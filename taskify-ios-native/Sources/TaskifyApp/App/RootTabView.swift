@@ -236,6 +236,15 @@ struct RootTabView: View {
                 .padding(.leading, 8)
                 .padding(.bottom, 96)
         }
+#if DEBUG
+        .overlay(alignment: .top) {
+            if let result = model.perfProbeResult {
+                Text(result)
+                    .font(.caption2)
+                    .accessibilityIdentifier("perf-probe")
+            }
+        }
+#endif
         .task {
             TaskifyPerfMonitor.shared.start()
         }

@@ -217,7 +217,7 @@ struct BoardsView: View {
         // meant building a set of every event id and hashing all ~500 task ids on *every* body
         // evaluation, including the ones a horizontal page change triggers, when the ids can only
         // have moved if the snapshot was written.
-        .onChange(of: model.snapshotRevision) { _, _ in
+        .onChange(of: model.tasksAreaRevision) { _, _ in
             guard selection.isActive, !selection.isEmpty else { return }
             selection.retainOnlyTasks(model.activeTaskIDs)
             selection.retainOnlyEvents(model.taskifyEventIDs)
