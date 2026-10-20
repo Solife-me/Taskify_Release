@@ -125,7 +125,7 @@ final class AppModel {
     /// that cycle indefinitely.
     private(set) var directMessageRevision = 0
     private(set) var isLoading = true
-    private(set) var identityPublicKey = ""
+    private(set) var identityPublicKey = "" { didSet { mirrorDeviceTaskSettings() } }
     private(set) var identityNpub = ""
     /// When this process last wrote the store, so a newer file can be recognised as someone
     /// else's write rather than an echo of our own.
@@ -157,9 +157,10 @@ final class AppModel {
     private(set) var scriptureMemoryBoardID = ScriptureMemorySettings.boardID
     private(set) var scriptureMemoryFrequency = ScriptureMemorySettings.frequency
     private(set) var scriptureMemorySort = ScriptureMemorySettings.sort
-    private(set) var streaksEnabled = TaskStreakSettings.enabled
-    private(set) var newTaskPosition = TaskOrderingSettings.position
-    private(set) var weekStart = WeekLayoutSettings.start
+    // Mirrored to the App Group for the widget, Siri and Shortcuts (C10-1).
+    private(set) var streaksEnabled = TaskStreakSettings.enabled { didSet { mirrorDeviceTaskSettings() } }
+    private(set) var newTaskPosition = TaskOrderingSettings.position { didSet { mirrorDeviceTaskSettings() } }
+    private(set) var weekStart = WeekLayoutSettings.start { didSet { mirrorDeviceTaskSettings() } }
     private(set) var showFullWeekRecurring = (UserDefaults.standard.object(
         forKey: TaskPresentationSettings.showFullWeekRecurringKey
     ) as? Bool) ?? TaskPresentationSettings.showFullWeekRecurringDefault
@@ -286,6 +287,8 @@ final class AppModel {
         bibleTrackerStore.onLocalChange = { [weak self] _ in
             self?.scheduleAppStatePublish(AppStateSyncContract.bibleTrackerDTag)
         }
+        // Settings chosen before they were mirrored reach the App Group on the next launch.
+        mirrorDeviceTaskSettings()
         Task { await load() }
     }
 
@@ -2204,8 +2207,11 @@ final class AppModel {
         lastStoreWriteAt = Date()
         guard !merge.changedTaskIDs.isEmpty else { return }
         snapshot.tasks = merge.tasks
+        // The same steps as a completion in the app: Scripture Memory reviews are reconciled
+        // (and their tasks published) before the rest.
+        let reconciledIDs = reconcileScriptureMemory()
         let liveIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
-        synchronizeTasks(merge.changedTaskIDs.filter(liveIDs.contains))
+        synchronizeTasks(merge.changedTaskIDs.filter { liveIDs.contains($0) && !reconciledIDs.contains($0) })
         refreshNotifications(requestPermission: false)
         scheduleSave()
     }
@@ -3628,6 +3634,18 @@ final class AppModel {
         scheduleSave()
         publishBoard(board)
         return true
+    }
+
+    /// Lets edits made outside the app (`TaskifyExternalActions`) use this device's settings.
+    private func mirrorDeviceTaskSettings() {
+        let editor = identityPublicKey.nilIfEmpty
+        let streaks = streaksEnabled, weekStart = weekStart, position = newTaskPosition
+        TaskifyDeviceTaskSettings.update {
+            $0.streaksEnabled = streaks
+            $0.weekStart = weekStart
+            $0.newTaskPosition = position
+            $0.editorPublicKey = editor
+        }
     }
 
     func setStreaksEnabled(_ enabled: Bool) {

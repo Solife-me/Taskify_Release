@@ -416,7 +416,9 @@ struct TaskifyUpdateReminderIntent {
         if let isCompleted,
            let current = snapshot.tasks.first(where: { $0.id == task.id }),
            current.completed != isCompleted {
-            guard snapshot.toggleCompletion(taskID: task.id) else {
+            guard TaskifyExternalActions.setCompleted(
+                isCompleted, taskID: task.id, in: &snapshot, settings: .load()
+            ) else {
                 throw TaskifyAddTaskIntentError.taskNotCreated
             }
         }

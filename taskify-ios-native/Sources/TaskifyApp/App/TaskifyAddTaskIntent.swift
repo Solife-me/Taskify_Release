@@ -212,6 +212,8 @@ enum TaskifyIntentTaskWriter {
     ) async throws -> TaskifyIntentCreatedTask {
         let store = JSONTaskStore()
         var snapshot = try await store.load(areas: [.tasks])
+        // The app's settings, mirrored to the App Group; an intent must not construct `AppModel`.
+        let settings = TaskifyDeviceTaskSettings.load()
 
         let spokenRequest = interpretNaturalLanguageTitle
             ? TaskifySpokenTaskRequestParser.parse(
@@ -242,7 +244,9 @@ enum TaskifyIntentTaskWriter {
             dueDate: dueDate ?? destination.dueDate,
             note: note,
             priority: priority,
-            newTaskPosition: newTaskPosition
+            authorPublicKey: settings.editorPublicKey,
+            newTaskPosition: settings.newTaskPosition,
+            weekStartsOn: settings.weekStart
         ), let board = snapshot.boards.first(where: { $0.id == task.boardID }) else {
             throw TaskifyAddTaskIntentError.taskNotCreated
         }
@@ -256,11 +260,6 @@ enum TaskifyIntentTaskWriter {
         return TaskifyIntentCreatedTask(task: task, board: board, displayBoard: displayBoard)
     }
 
-    /// A local copy of the app's `TaskOrderingSettings.position` read (same UserDefaults key and
-    /// default), kept separate because an intent must not construct the heavyweight `AppModel`.
-    private static var newTaskPosition: NewTaskPosition {
-        UserDefaults.standard.string(forKey: "taskify.newTaskPosition").flatMap(NewTaskPosition.init(rawValue:)) ?? .top
-    }
 }
 
 enum TaskifyAddTaskIntentError: Swift.Error, CustomLocalizedStringResourceConvertible {
