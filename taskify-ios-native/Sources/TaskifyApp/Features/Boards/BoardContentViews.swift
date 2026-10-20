@@ -145,7 +145,7 @@ struct ListBoardView: View {
             }
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
-            .scrollPosition(id: $focusedPageID)
+            .scrollPosition(id: $focusedPageID, anchor: .leading)
             .horizontalTaskDragAutoScroll(
                 pageIDs: columns.map(\.id),
                 focusedPageID: $focusedPageID,
@@ -240,7 +240,7 @@ struct CompoundBoardView: View {
                 }
                 .scrollIndicators(.hidden)
                 .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
-                .scrollPosition(id: $focusedPageID)
+                .scrollPosition(id: $focusedPageID, anchor: .leading)
                 .horizontalTaskDragAutoScroll(
                     pageIDs: columns.map(\.id),
                     focusedPageID: $focusedPageID,
@@ -618,7 +618,7 @@ struct WeekBoardView: View {
             }
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
-            .scrollPosition(id: $focusedPageID)
+            .scrollPosition(id: $focusedPageID, anchor: .leading)
             .horizontalTaskDragAutoScroll(
                 pageIDs: orderedWeekdays.map(\.rawValue),
                 focusedPageID: $focusedPageID,
@@ -1301,11 +1301,11 @@ func catchUpLabel(missed: Int) -> String {
     missed > 1 ? "Catch Up to Today (\(missed) missed)" : "Catch Up to Today"
 }
 
+/// A board column is the phone's width on every screen (C8-6): a wider screen shows more
+/// columns instead of stretching them, as on the PWA desktop. On a narrow phone the column
+/// leaves the next one peeking in.
 func boardColumnWidth(in width: CGFloat) -> CGFloat {
-    guard width >= 700 else { return max(1, min(330, width - 50)) }
-    let available = width - 36
-    let count = max(2, floor((available + 16) / 316))
-    return (available - (count - 1) * 16) / count
+    max(1, min(330, width - 50))
 }
 
 /// What a card shows that comes from outside its task (C8-1). The column looks it up, so the
