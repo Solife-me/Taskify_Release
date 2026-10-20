@@ -51,7 +51,7 @@ Constraints carried through every chunk:
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Done (2026-10-19); code deletion due after Dec 1, 2026 |
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Done (2026-10-20) |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
-| 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Reviewed 2026-10-20, awaiting decisions |
+| 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Pending |
 | 11 | macOS | `taskify-macos` | Pending |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
@@ -1936,9 +1936,11 @@ iOS beta build, so the phase-out reaches the App Store in time.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C9-1 | | | |
-| C9-2 | | | |
-| C9-3 | | | |
-| C9-4 | | | |
-| C9-5 | | | |
-| C9-6 | | | |
+| C9-1 | Approve; remove the solife sale entirely | 2026-10-20 | Done (`6f1cbd1b`). "Move funds out" replaces Receive. It offers Lightning out, an ecash token, a move to the NWC wallet, npub.cash claims, saved tokens to copy, and the 12 words, and names December 1, 2026 (`TaskifyWalletPhaseOut`, tested). Removed: receiving, payment requests, scanning to redeem, the setup card, adding mints, mint transfers, NWC → ecash swaps, the Lightning address manager, the solife sale, recipient keys and NWC receive (about 2,700 lines). Incoming tokens are saved, never redeemed. The notice (v2) names the date. **Found and fixed:** a DEBUG-only update loop with `TASKIFY_UI_TEST_WALLET` kept the app busy, which is why every wallet UI test timed out. `WalletMoveFundsOutUITests` replaces the keypad tests |
+| C9-2 | Approve | 2026-10-20 | Done (`72d31c4e`). From local midnight on December 1 (or with the hidden launch argument `-TaskifyWalletRemovalPreview YES`), the wallet service stops starting and the tab shows `WalletRecoveryView`. It shows each mint's unspent and in-flight notes as one V3 token, read straight from the CDK database with no network and no writes, plus saved and unclaimed sent tokens and the 12 words behind device authentication. Tested with a real CDK database and a UI preview |
+| C9-3 | Approve | 2026-10-20 | Done (`5a99619f`). TaskifyCore `CashuNUT07` implements hash_to_curve (spec vectors) and checkstate for any mint; the request shape was checked against a live mint. Close-out removes saved tokens that were spent elsewhere, keeping a copy in History, and lets the user remove ones that cannot be checked. Tokens that still hold funds block close-out until moved out. The card itself was not exercised with real funds |
+| C9-4 | Approve | 2026-10-20 | Done (`bb0e1469`). Chat accessors read the chat area, the inbox area, or both. The conversation keys its memo on `conversationRevision`. `ChatRenderUITests`: 20 task writes caused 20 timeline rebuilds before and 0 after |
+| C9-5 | Approve | 2026-10-20 | Done (`40bb82d5`). Onboarding offers "Start using Taskify" or "I already use Taskify". `KeyBackupState` uses the PWA's thresholds; a banner shows on Boards and "Unsaved key" in Settings. Reminders already request permission when first set. The invalid-key UI test still fails as before: typing into the secure field doesn't arrive in the simulator |
+| C9-6 | Approve | 2026-10-20 | Done (`0160d89e`). "Native app status" and the two unused wallet cards are removed (247 lines) |
+
+**Next for the wallet:** an iOS beta build carrying C9-1 to C9-3 must reach the App Store before December 1, 2026. macOS follows in chunk 11.
