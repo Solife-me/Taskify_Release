@@ -49,7 +49,7 @@ Constraints carried through every chunk:
 | 4 | PWA sync and storage | `nostr/`, `storage/`, `domains/nostr` | Done (2026-10-19) |
 | 5 | PWA chat, contacts, sharing, agent mode, voice, Bible tracker | `chat/`, `lib/`, `components/` (agent mode was removed earlier) | Done (2026-10-19) |
 | 6 | PWA wallet phase-out | `wallet/`, `mint/`, `context/Cashu*` — what can be deleted or lazy-loaded | Done (2026-10-19); code deletion due after Dec 1, 2026 |
-| 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Reviewed 2026-10-19, awaiting decisions |
+| 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Done (2026-10-20) |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Pending |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Pending |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Pending |
@@ -1639,8 +1639,8 @@ C7-2 (funds recovery, before December 1) → C7-1 (bug) → C7-4 → C7-3 → C7
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C7-1 | | | |
-| C7-2 | | | |
-| C7-3 | | | |
-| C7-4 | | | |
-| C7-5 | | | |
+| C7-1 | Approve | 2026-10-19 | Done (`89e18311`): `TaskPublishPlanner` in TaskifyCore stamps tasks and marks them `publishPending`, saved before encoding and signing; the mark clears only once the event is in the durable outbox. Pending tasks are published again after deferred startup, on reconnecting, and after a failure (5 s, 15 s, 1 min, 5 min) |
+| C7-2 | Approve | 2026-10-19 | Done (`83fb1717`): the PWA publishes its app backup only after reading the remote copy, builds it from that copy (`updateRemoteNostrBackup` in core), keeps the remote seed when it has none, and retries a failed read after 60 s. Other devices' boards survive |
+| C7-3 | Approve | 2026-10-19 | Done. Task event vectors in both directions (`2fc119d3`, documents in `98f1e597`); this found the PWA erasing iOS reminders on republish, now fixed by keeping fields it does not use (`syncExtras`). App-state merge vectors (`ce354267`): both clients already agreed. Tie rule (`f909aa5c`): at the same `created_at` the lowest event id wins, on both clients, through a shared `compareEventVersions` with vectors; each client records the id of the event it queued or received, and an edit not yet signed keeps a tie |
+| C7-4 | Approve | 2026-10-19 | Done (`d06efc55`): iOS relinks an open review whose title names exactly one passage, in the Scripture Memory reconcile |
+| C7-5 | Approve | 2026-10-19 | Done (`bd534cf7`): `taskify-store/` holds `tasks.json`, `chat.json` and `inbox.json`, plus content-addressed files for large inline attachments. A save writes only changed areas; widgets, intents and Siri load and write only tasks; widgets reload only when tasks change. The app splits a legacy store at load in an order that is safe to interrupt. Benchmark with 2,000 tasks and 5,000 messages, one task edit: 2.22 MB in 41 ms before, 0.57 MB in 18 ms after. Not yet checked on a device: the first launch after updating |
