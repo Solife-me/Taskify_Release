@@ -84,6 +84,10 @@ struct WalletHistorySheet: View {
                                 }
                             }
                         }
+
+                        if filter != .pending, !wallet.removedSavedTokens.isEmpty {
+                            WalletRemovedTokensSection(entries: wallet.removedSavedTokens, wallet: wallet)
+                        }
                     }
                     .padding(18)
                     .padding(.bottom, 30)
@@ -149,6 +153,44 @@ struct WalletHistorySheet: View {
         .taskifyGlass(cornerRadius: 18)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Filter wallet history")
+    }
+}
+
+/// Saved tokens removed at close-out (C9-3), kept so one removed by mistake can still be copied
+/// and redeemed in another wallet.
+struct WalletRemovedTokensSection: View {
+    let entries: [CashuRemovedTokenLog.Entry]
+    @ObservedObject var wallet: WalletViewModel
+    @State private var copiedID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Removed saved tokens")
+                .font(.headline)
+                .foregroundStyle(TaskifyTheme.primaryText)
+            ForEach(entries) { entry in
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.amount.map { wallet.formattedSats($0) } ?? "Cashu token")
+                            .font(.subheadline.weight(.semibold))
+                        Text(entry.reason == .spentElsewhere
+                            ? "Already redeemed elsewhere · \(entry.removedAt.formatted(date: .abbreviated, time: .omitted))"
+                            : "Removed by you · \(entry.removedAt.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    Spacer()
+                    Button(copiedID == entry.id ? "Copied" : "Copy") {
+                        UIPasteboard.general.string = entry.token
+                        copiedID = entry.id
+                    }
+                    .font(.caption)
+                }
+                .padding(12)
+                .taskifyGlass(cornerRadius: 16)
+            }
+        }
+        .padding(.top, 8)
     }
 }
 

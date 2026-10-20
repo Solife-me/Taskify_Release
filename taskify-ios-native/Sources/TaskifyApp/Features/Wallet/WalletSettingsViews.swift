@@ -79,6 +79,64 @@ struct WalletSettingsSheet: View {
 }
 
 /// Lets a user who has moved everything out return this device to the no-wallet state.
+/// Saved tokens in the close-out card (C9-3): each with what its mint said, a Copy button, and
+/// Remove for one that holds no funds or could not be checked (a copy stays in History).
+private struct WalletSavedTokensList: View {
+    @ObservedObject var wallet: WalletViewModel
+    var onError: (String) -> Void
+    @State private var copiedID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Saved tokens").font(.caption.weight(.semibold))
+                Spacer()
+                if wallet.isCheckingSavedTokens {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Check again") { Task { await wallet.checkSavedTokens() } }
+                        .font(.caption)
+                }
+            }
+            ForEach(wallet.savedTokens) { token in
+                let state = wallet.savedTokenStates[token.id]
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(token.amount.map { wallet.formattedSats($0) } ?? "Cashu token")
+                        .font(.caption.weight(.semibold))
+                    Text(Self.describe(state, mint: token.mintURL))
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                    HStack(spacing: 16) {
+                        Button(copiedID == token.id ? "Copied" : "Copy") {
+                            UIPasteboard.general.string = token.token
+                            copiedID = token.id
+                        }
+                        if state != .unspent {
+                            Button("Remove", role: .destructive) {
+                                Task {
+                                    do { try await wallet.removeSavedToken(token) } catch { onError(error.localizedDescription) }
+                                }
+                            }
+                        }
+                    }
+                    .font(.caption)
+                }
+                .accessibilityElement(children: .contain)
+            }
+        }
+        .foregroundStyle(TaskifyTheme.secondaryText)
+    }
+
+    private static func describe(_ state: CashuNUT07.TokenState?, mint: String?) -> String {
+        let mintName = mint.flatMap { URL(string: $0)?.host } ?? "its mint"
+        switch state {
+        case .unspent: return "Still holds funds at \(mintName). Copy it and redeem it in another Cashu wallet."
+        case .unknown: return "\(mintName) could not be asked about it. Copy it to keep it, then remove it."
+        case .spent, nil: return "Not checked yet."
+        }
+    }
+}
+
 private struct WalletCloseOutCard: View {
     @ObservedObject var wallet: WalletViewModel
     var onClosed: () -> Void
@@ -102,6 +160,9 @@ private struct WalletCloseOutCard: View {
                 }
                 .foregroundStyle(TaskifyTheme.secondaryText)
             }
+            if !wallet.savedTokens.isEmpty {
+                WalletSavedTokensList(wallet: wallet) { errorMessage = $0 }
+            }
             if let errorMessage {
                 Text(errorMessage).font(.caption).foregroundStyle(.red)
             }
@@ -119,6 +180,8 @@ private struct WalletCloseOutCard: View {
         .padding(17)
         .frame(maxWidth: .infinity, alignment: .leading)
         .taskifyGlass(cornerRadius: 20)
+        // A saved token redeemed elsewhere is found and removed as soon as the card shows (C9-3).
+        .task { await wallet.checkSavedTokens() }
         .confirmationDialog("Close out the Taskify wallet?", isPresented: $confirming, titleVisibility: .visible) {
             Button("Close Wallet", role: .destructive) {
                 isClosing = true

@@ -171,6 +171,12 @@ final class WalletViewModel: ObservableObject {
     @Published private(set) var activeMintURL: String
     @Published private(set) var lightningReceiveQuotes: [CashuLightningReceiveQuote] = []
     @Published private(set) var pendingEcashReceives: [CashuPendingReceive] = []
+    /// What each saved token's mint said at the last close-out check (C9-3), by token id.
+    @Published private(set) var savedTokenStates: [String: CashuNUT07.TokenState] = [:]
+    @Published private(set) var isCheckingSavedTokens = false
+    /// Saved tokens removed from this device, newest first; History offers each for copying.
+    @Published private(set) var removedSavedTokens: [CashuRemovedTokenLog.Entry] =
+        (try? CashuRemovedTokenLog.defaultURL()).map(CashuRemovedTokenLog.load(from:)) ?? []
     @Published private(set) var createdPaymentRequests: [CashuCreatedPaymentRequest] = []
     @Published private(set) var solifeAddress: String?
     @Published private(set) var solifeAccount: SolifeAccount?
@@ -343,11 +349,19 @@ final class WalletViewModel: ObservableObject {
         var blockers: [String] = []
         let balance = snapshot.available + snapshot.pending + snapshot.reserved
         if balance > 0 { blockers.append("\(formattedSats(balance)) are still in the wallet") }
-        if !pendingEcashReceives.isEmpty {
-            blockers.append("Received ecash is still waiting to be redeemed")
+        // Saved tokens block until each is known to be spent, moved out, or removed (C9-3).
+        let saved = savedTokens
+        let holdingFunds = saved.filter { savedTokenStates[$0.id] == .unspent }
+        let unchecked = saved.filter { savedTokenStates[$0.id] != .unspent }
+        if !holdingFunds.isEmpty {
+            blockers.append(holdingFunds.count == 1
+                ? "A saved token still holds funds. Copy it and redeem it in another wallet"
+                : "\(holdingFunds.count) saved tokens still hold funds. Copy them and redeem them in another wallet")
         }
-        if !incomingTokensAwaitingRedemption.isEmpty || !incomingRequestsAwaitingRedemption.isEmpty {
-            blockers.append("Incoming payments are waiting to be redeemed")
+        if !unchecked.isEmpty {
+            blockers.append(unchecked.count == 1
+                ? "A saved token could not be checked with its mint. Copy it, or remove it"
+                : "\(unchecked.count) saved tokens could not be checked with their mints. Copy them, or remove them")
         }
         if isMovingToNWC || nwcMigrationJournal.map({ journal in
             journal.status == .running
@@ -369,12 +383,101 @@ final class WalletViewModel: ObservableObject {
     /// funds. Wallet data and the seed are kept so anything left behind stays recoverable.
     func closeOutWallet() async throws {
         await refresh()
+        await checkSavedTokens()
         let blockers = closeOutBlockers
         guard blockers.isEmpty else {
             throw WalletCloseOutError(message: blockers.joined(separator: ". "))
         }
         UserDefaults.standard.set(true, forKey: WalletPhaseOut.walletClosedKey)
         UserDefaults.standard.set(false, forKey: WalletPhaseOut.walletEnabledKey)
+    }
+
+    /// Every token saved on this device instead of redeemed: received ecash waiting to be
+    /// redeemed, tokens in the inbox, and payments to requests this device made.
+    var savedTokens: [CashuSavedToken] {
+        var tokens = pendingEcashReceives.map {
+            CashuSavedToken(id: "receive-\($0.id)", source: .pendingReceive, token: $0.token, amount: $0.amount, mintURL: $0.mintURL)
+        }
+        tokens += incomingTokensAwaitingRedemption.map { delivery in
+            let summary = CashuWalletService.offlineTokenSummary(delivery.token)
+            return CashuSavedToken(id: "inbox-\(delivery.eventID)", source: .incomingToken, token: delivery.token,
+                                   amount: summary?.amount, mintURL: summary?.mintURL)
+        }
+        tokens += incomingRequestsAwaitingRedemption.compactMap { delivery in
+            guard let token = try? CashuPaymentRequestContract.tokenString(fromPaymentPayload: delivery.payloadJSON) else { return nil }
+            let summary = CashuWalletService.offlineTokenSummary(token)
+            return CashuSavedToken(id: "request-\(delivery.eventID)", source: .paymentDelivery, token: token,
+                                   amount: summary?.amount, mintURL: summary?.mintURL)
+        }
+        return tokens
+    }
+
+    /// Asks each saved token's mint about it (NUT-07). Tokens redeemed elsewhere are removed,
+    /// with a copy kept in History; the rest keep their state for the close-out card (C9-3).
+    func checkSavedTokens() async {
+        guard !isCheckingSavedTokens else { return }
+        isCheckingSavedTokens = true
+        defer { isCheckingSavedTokens = false }
+        await refreshSavedTokenSources()
+        let tokens = savedTokens
+        var states: [String: CashuNUT07.TokenState] = [:]
+        for token in tokens {
+            states[token.id] = await CashuNUT07.state(ofToken: token.token)
+        }
+        let plan = CashuSavedTokenCloseOutPlan(tokens: tokens, states: states)
+        for token in plan.removeAsSpent {
+            try? await removeSavedTokenFromItsStore(token, reason: .spentElsewhere)
+        }
+        savedTokenStates = states.filter { state in !plan.removeAsSpent.contains { $0.id == state.key } }
+        await refreshSavedTokenSources()
+    }
+
+    /// Removes a saved token the user chose to give up on, keeping a copy in History.
+    func removeSavedToken(_ token: CashuSavedToken) async throws {
+        guard savedTokenStates[token.id] != .unspent else {
+            throw WalletCloseOutError(message: "This token still holds funds. Copy it and redeem it in another wallet first.")
+        }
+        try await removeSavedTokenFromItsStore(token, reason: .removedByUser)
+        savedTokenStates[token.id] = nil
+        await refreshSavedTokenSources()
+    }
+
+    private func removeSavedTokenFromItsStore(_ token: CashuSavedToken, reason: CashuRemovedTokenLog.Reason) async throws {
+        let logURL = try CashuRemovedTokenLog.defaultURL()
+        try CashuRemovedTokenLog.append(token, reason: reason, to: logURL)
+        switch token.source {
+        case .pendingReceive:
+            if let pending = pendingEcashReceives.first(where: { "receive-\($0.id)" == token.id }) {
+                try await service?.discardPendingReceive(id: pending.id)
+            }
+        case .incomingToken:
+            let eventID = String(token.id.dropFirst("inbox-".count))
+            try CashuIncomingTokenInboxStore.remove(eventIDs: [eventID], at: CashuIncomingTokenInboxStore.defaultURL())
+        case .paymentDelivery:
+            let eventID = String(token.id.dropFirst("request-".count))
+            try CashuNostrPaymentInboxStore.remove(eventIDs: [eventID], at: CashuNostrPaymentInboxStore.defaultURL())
+        }
+        removedSavedTokens = CashuRemovedTokenLog.load(from: logURL)
+    }
+
+    /// Reloads saved tokens from their stores, the inbox ones even on auto-redeem devices.
+    private func refreshSavedTokenSources() async {
+        if let url = try? CashuRemovedTokenLog.defaultURL() {
+            removedSavedTokens = CashuRemovedTokenLog.load(from: url)
+        }
+        if let service {
+            let saved = await service.savedPendingReceives()
+            if saved != pendingEcashReceives { pendingEcashReceives = saved }
+        }
+        if let url = try? CashuIncomingTokenInboxStore.defaultURL() {
+            let deliveries = CashuIncomingTokenInboxStore.load(from: url)
+            if deliveries != incomingTokensAwaitingRedemption { incomingTokensAwaitingRedemption = deliveries }
+        }
+        if let url = try? CashuNostrPaymentInboxStore.defaultURL() {
+            let tokenEventIDs = Set(incomingTokensAwaitingRedemption.map(\.eventID))
+            let deliveries = CashuNostrPaymentInboxStore.load(from: url).filter { !tokenEventIDs.contains($0.eventID) }
+            if deliveries != incomingRequestsAwaitingRedemption { incomingRequestsAwaitingRedemption = deliveries }
+        }
     }
 
     func appDidBecomeActive() {
