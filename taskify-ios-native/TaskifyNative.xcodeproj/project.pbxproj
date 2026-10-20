@@ -34,6 +34,11 @@
 		B00000000000000000009A11 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A12 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift */; };
 		B00000000000000000009A13 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A14 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift */; };
 		B00000000000000000000106 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */; };
+		C80700000000000000000F09 /* Sources/TaskifyApp/Features/Upcoming/TaskifyEventEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80700000000000000000F08 /* Sources/TaskifyApp/Features/Upcoming/TaskifyEventEditorSheet.swift */; };
+		C80700000000000000000F07 /* Sources/TaskifyApp/Features/Upcoming/NewUpcomingItemSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80700000000000000000F06 /* Sources/TaskifyApp/Features/Upcoming/NewUpcomingItemSheet.swift */; };
+		C80700000000000000000F05 /* Sources/TaskifyApp/Features/Upcoming/UpcomingSortOptionsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80700000000000000000F04 /* Sources/TaskifyApp/Features/Upcoming/UpcomingSortOptionsSheet.swift */; };
+		C80700000000000000000F03 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80700000000000000000F02 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCards.swift */; };
+		C80700000000000000000F01 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80700000000000000000F00 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCalendar.swift */; };
 		B00000000000000000000107 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */; };
 		B00000000000000000009A0B /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */; };
 		B00000000000000000000108 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */; };
@@ -204,6 +209,11 @@
 		B00000000000000000009A12 /* Sources/TaskifyApp/Features/Boards/BoardContentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardContentViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A14 /* Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BoardSupportViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift; sourceTree = SOURCE_ROOT; };
+		C80700000000000000000F08 /* Sources/TaskifyApp/Features/Upcoming/TaskifyEventEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/TaskifyEventEditorSheet.swift; sourceTree = SOURCE_ROOT; };
+		C80700000000000000000F06 /* Sources/TaskifyApp/Features/Upcoming/NewUpcomingItemSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/NewUpcomingItemSheet.swift; sourceTree = SOURCE_ROOT; };
+		C80700000000000000000F04 /* Sources/TaskifyApp/Features/Upcoming/UpcomingSortOptionsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingSortOptionsSheet.swift; sourceTree = SOURCE_ROOT; };
+		C80700000000000000000F02 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingCards.swift; sourceTree = SOURCE_ROOT; };
+		C80700000000000000000F00 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCalendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Upcoming/UpcomingCalendar.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift; sourceTree = SOURCE_ROOT; };
@@ -447,6 +457,11 @@
 				8578A541E8A9F26924788981 /* Sources/TaskifyApp/App/StartupViewSettings.swift */,
 				A0009C830AAB8965BF019980 /* Sources/TaskifyApp/App/NpubCashSettings.swift */,
 				B00000000000000000000206 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift */,
+				C80700000000000000000F08 /* Sources/TaskifyApp/Features/Upcoming/TaskifyEventEditorSheet.swift */,
+				C80700000000000000000F06 /* Sources/TaskifyApp/Features/Upcoming/NewUpcomingItemSheet.swift */,
+				C80700000000000000000F04 /* Sources/TaskifyApp/Features/Upcoming/UpcomingSortOptionsSheet.swift */,
+				C80700000000000000000F02 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCards.swift */,
+				C80700000000000000000F00 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCalendar.swift */,
 				B00000000000000000000207 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift */,
 				B00000000000000000009A0C /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift */,
 				B00000000000000000000208 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift */,
@@ -903,6 +918,11 @@
 				614C954B821CAA17D51AA24B /* Sources/TaskifyApp/App/StartupViewSettings.swift in Sources */,
 				796D1AE211EE8CD2720A10F9 /* Sources/TaskifyApp/App/NpubCashSettings.swift in Sources */,
 				B00000000000000000000106 /* Sources/TaskifyApp/Features/Upcoming/UpcomingView.swift in Sources */,
+				C80700000000000000000F09 /* Sources/TaskifyApp/Features/Upcoming/TaskifyEventEditorSheet.swift in Sources */,
+				C80700000000000000000F07 /* Sources/TaskifyApp/Features/Upcoming/NewUpcomingItemSheet.swift in Sources */,
+				C80700000000000000000F05 /* Sources/TaskifyApp/Features/Upcoming/UpcomingSortOptionsSheet.swift in Sources */,
+				C80700000000000000000F03 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCards.swift in Sources */,
+				C80700000000000000000F01 /* Sources/TaskifyApp/Features/Upcoming/UpcomingCalendar.swift in Sources */,
 				B00000000000000000000107 /* Sources/TaskifyApp/Features/Settings/SettingsView.swift in Sources */,
 				B00000000000000000009A0B /* Sources/TaskifyApp/Features/Settings/SettingsSupportViews.swift in Sources */,
 				B00000000000000000000108 /* Sources/TaskifyApp/Features/Placeholder/MigrationPlaceholderView.swift in Sources */,

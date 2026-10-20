@@ -83,6 +83,26 @@ public enum UpcomingTaskOrganizer {
         }
     }
 
+    /// Upcoming's days: each task under the local day it is due (today when undated), sorted
+    /// within the day as `sort` does.
+    public static func tasksByDay(
+        _ tasks: [TaskItem],
+        mode: UpcomingSortMode,
+        direction: UpcomingSortDirection,
+        boardGrouping: UpcomingBoardGrouping,
+        boardOrder: [String],
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> [Date: [TaskItem]] {
+        let today = calendar.startOfDay(for: now)
+        return Dictionary(grouping: tasks) { task in
+            task.dueDate.map { calendar.startOfDay(for: $0) } ?? today
+        }
+        .mapValues {
+            sort($0, mode: mode, direction: direction, boardGrouping: boardGrouping, boardOrder: boardOrder)
+        }
+    }
+
     public static func sort(
         _ tasks: [TaskItem],
         mode: UpcomingSortMode,
