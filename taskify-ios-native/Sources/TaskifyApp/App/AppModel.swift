@@ -207,6 +207,7 @@ final class AppModel {
     @ObservationIgnored private let snapshotLookupCache = SnapshotLookupCache()
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var widgetReloadTask: Task<Void, Never>?
+    @ObservationIgnored private var searchIndexTask: Task<Void, Never>?
     @ObservationIgnored private var syncListenerTask: Task<Void, Never>?
     @ObservationIgnored private var taskPublicationTask: Task<Void, Never>?
     @ObservationIgnored private var pendingTaskRepublishTask: Task<Void, Never>?
@@ -4655,6 +4656,8 @@ final class AppModel {
 
     private func load() async {
         defer { isLoading = false }
+        // Brings Spotlight up to date with what was loaded (and with earlier installs).
+        defer { scheduleSearchIndexUpdate() }
         // Before the first read: if the App Group capability has just been enabled, bring the
         // existing store into the shared container so enabling it doesn't look like data loss.
         // No-ops once migrated, and when the capability isn't in effect.
@@ -6400,7 +6403,10 @@ final class AppModel {
                 await MainActor.run {
                     self.noteStoreWritten(snapshotToSave)
                     // Widgets show tasks only; a chat or inbox change need not wake them.
-                    if written.contains(.tasks) { self.scheduleWidgetReload() }
+                    if written.contains(.tasks) {
+                        self.scheduleWidgetReload()
+                        self.scheduleSearchIndexUpdate()
+                    }
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -6417,6 +6423,20 @@ final class AppModel {
     /// change) while collapsing the burst into one reload. `persistImmediately` deliberately
     /// reloads directly: it runs right before background suspension, where a delayed reload
     /// could be dropped and leave a widget stale for up to an hour.
+    /// Spotlight's copy of the open tasks follows saves the same way, debounced (C10-7).
+    private func scheduleSearchIndexUpdate() {
+#if os(iOS)
+        searchIndexTask?.cancel()
+        searchIndexTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(2500))
+            guard !Task.isCancelled, let self else { return }
+            searchIndexTask = nil
+            let items = TaskifySpotlightIndex.items(in: tasksSnapshot)
+            await TaskifySpotlightIndexer.shared.update(with: items)
+        }
+#endif
+    }
+
     private func scheduleWidgetReload() {
         widgetReloadTask?.cancel()
         widgetReloadTask = Task { [weak self] in

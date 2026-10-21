@@ -92,6 +92,7 @@
 		B0000000000000000000S02 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */; };
 		B0000000000000000000S03 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */; };
 		B00000000000000000000124 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */; };
+		C1A700000000000000000F01 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */; };
 		B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */; };
 		B00000000000000000000125 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */; };
 		B00000000000000000000126 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */; };
@@ -115,6 +116,7 @@
 		B0B1638B8F63CC397381704D /* WalletMoveFundsOutUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57F458985178452A2D282E74 /* WalletMoveFundsOutUITests.swift */; };
 		B00000000000000000009A03 /* NWCWalletUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A04 /* NWCWalletUITests.swift */; };
 		BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */; };
+		C1A7000000000000000000B2 /* SpotlightUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A7000000000000000000B1 /* SpotlightUITests.swift */; };
 		C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94100000000000000000F00 /* ChatRenderUITests.swift */; };
 		C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80500000000000000000F00 /* EventAttachmentUITests.swift */; };
 		C81000000000000000000F01 /* BoardRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C81000000000000000000F00 /* BoardRenderUITests.swift */; };
@@ -273,10 +275,12 @@
 		B00000000000000000000224 /* Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift; sourceTree = SOURCE_ROOT; };
 		B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Shared/TaskifyQuickAddIntent.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift; sourceTree = SOURCE_ROOT; };
+		C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift; sourceTree = SOURCE_ROOT; };
 		B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TaskSelectionUITests.swift; sourceTree = "<group>"; };
+		C1A7000000000000000000B1 /* SpotlightUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SpotlightUITests.swift; sourceTree = "<group>"; };
 		C94100000000000000000F00 /* ChatRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatRenderUITests.swift; sourceTree = "<group>"; };
 		C80500000000000000000F00 /* EventAttachmentUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EventAttachmentUITests.swift; sourceTree = "<group>"; };
 		C81000000000000000000F00 /* BoardRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BoardRenderUITests.swift; sourceTree = "<group>"; };
@@ -446,6 +450,7 @@
 				B00000000000000000000201 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift */,
 				B00000000000000000000202 /* Sources/TaskifyApp/App/AppModel.swift */,
 				B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */,
+				C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */,
 				B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */,
 				B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */,
 				B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */,
@@ -571,6 +576,7 @@
 				58CCC7B6E02E12A1FD9558AE /* TimeZonePickerUITests.swift */,
 				126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */,
 				B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */,
+				C1A7000000000000000000B1 /* SpotlightUITests.swift */,
 				C94100000000000000000F00 /* ChatRenderUITests.swift */,
 				C80500000000000000000F00 /* EventAttachmentUITests.swift */,
 				C81000000000000000000F00 /* BoardRenderUITests.swift */,
@@ -901,6 +907,7 @@
 				0881B708444F8FB34253487F /* TimeZonePickerUITests.swift in Sources */,
 				DE03707800A9FDC91E489014 /* IPadKeyboardUITests.swift in Sources */,
 				BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */,
+				C1A7000000000000000000B2 /* SpotlightUITests.swift in Sources */,
 				C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */,
 				C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */,
 				C81000000000000000000F01 /* BoardRenderUITests.swift in Sources */,
@@ -916,6 +923,7 @@
 				B00000000000000000000101 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift in Sources */,
 				B00000000000000000000102 /* Sources/TaskifyApp/App/AppModel.swift in Sources */,
 				B00000000000000000000124 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift in Sources */,
+				C1A700000000000000000F01 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift in Sources */,
 				B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */,
 				B0000000000000000000S02 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */,
 				B00000000000000000000125 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift in Sources */,

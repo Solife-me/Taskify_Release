@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 import TaskifyCore
 
@@ -43,6 +44,8 @@ struct RootTabView: View {
     @State private var pendingQuickAdd = false
     @State private var pendingQuickAddColumnID: String?
     @State private var pendingWatchSetupRequestID: UUID?
+    /// A task opened from Spotlight, shown in its editor over its board.
+    @State private var searchedTask: SearchedTask?
     /// Reading the revision here — rather than the raw appearance flag in each card — is what makes
     /// `taskifyOverPhoto` update the moment a background is chosen or cleared in Settings.
     @AppStorage(TaskifyAppearanceSettings.revisionKey) private var appearanceRevision = ""
@@ -83,6 +86,21 @@ struct RootTabView: View {
             .onOpenURL { url in
                 guard let link = TaskifyWidgetLink(url: url) else { return }
                 handle(link)
+            }
+            // A Spotlight result opens its task, as a widget row does (C10-7).
+            .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+                      let task = model.task(withID: id) else { return }
+                handle(.task(id: id, boardID: task.boardID))
+                searchedTask = SearchedTask(id: id)
+            }
+            .sheet(item: $searchedTask) { searched in
+                if let task = model.task(withID: searched.id) {
+                    TaskEditorView(task: task)
+                        .environment(model)
+                        .presentationDetents([.large])
+                        .presentationDragIndicator(.visible)
+                }
             }
             // The Control Center button leaves its request in shared defaults rather than opening
             // a URL, so it has to be picked up on launch as well as on every return to the front.
@@ -521,3 +539,7 @@ struct TaskifyKeyboardCommands: Commands {
     }
 }
 
+/// A task opened from a Spotlight result.
+private struct SearchedTask: Identifiable {
+    let id: String
+}
