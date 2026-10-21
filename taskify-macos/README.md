@@ -15,13 +15,22 @@ xcodebuild -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
   -configuration Local -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath /tmp/taskify-macos CODE_SIGNING_ALLOWED=NO build
 swift test --package-path taskify-macos --scratch-path /tmp/taskify-macos-tests
+xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
+  -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath /tmp/taskify-macos-ui-tests \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink
 ```
 
 Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 14 presentation tests, and the unsigned app build on the Xcode 27 runner. `Local` retains
+the 19 presentation/runtime tests, the unsigned app build and the isolated app-host smoke test on
+the Xcode 27 runner. The smoke test uses the `UITest` configuration: a separate bundle identifier,
+a session-scoped temporary store/outbox and Keychain service, and no relay or wallet startup. It
+injects fixtures and an initial URL through immutable runtime dependencies rather than changing
+process-global environment. A developer Mac must allow Xcode UI automation before the test runner
+can execute. `Local` retains
 app debugging while Swift package dependencies use their release configuration;
 use it for attachment performance work. Debug is useful for dependency debugging,
 but unoptimized cryptography can make large attachments very slow. Release is

@@ -34,6 +34,12 @@ jobs:
             -configuration Local -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath "$RUNNER_TEMP/taskify-macos-derived" \
             CODE_SIGNING_ALLOWED=NO build
+      - name: Test the isolated Mac app host
+        run: |
+          xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/taskify-macos-ui-derived" \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink
 
   secrets:
     name: Secret scan (full history)

@@ -48,7 +48,8 @@ Taskify_Release/
 ├── taskify-macos/        # Native SwiftUI/AppKit Mac target sharing iOS services
 │   ├── Sources/         # Desktop UI and pure presentation helpers
 │   ├── Scripts/         # Deterministic Xcode-project generator and read-only CI check
-│   └── Tests/           # Mac presentation regression tests
+│   ├── Tests/           # Mac presentation and runtime-configuration regression tests
+│   └── UITests/         # Isolated app-host smoke tests; never use a production identity/store
 │
 ├── taskify-push-relay/   # Dedicated NIP-17 inbox relay, APNs/FCM/Web Push bridge, StartOS package
 │   ├── src/              # Relay, NIP-42/NIP-98 auth, store, APNs provider
@@ -189,9 +190,11 @@ npx wrangler dev
   the provider modules.
 - The committed Mac Xcode project is generated. Run
   `python3 taskify-macos/Scripts/generate-project.py --check`, the Mac package tests with a
-  scratch path outside the repository, and the unsigned `Local` app build after changing Mac
-  sources or any shared iOS-app source in the generator manifest. CI runs those three gates on
-  the Xcode 27 runner.
+  scratch path outside the repository, the unsigned `Local` app build, and the isolated Mac UI
+  smoke test after changing Mac sources or any shared iOS-app source in the generator manifest.
+  The UI-test configuration has a different bundle id, session-scoped temporary store/outbox and
+  Keychain service, and starts neither relays nor the wallet. CI runs all four gates on the Xcode
+  27 runner.
 - Chat typing debt is tracked by explicit paths in `eslint.config.js`. When removing a Chat file's
   `@ts-nocheck`, remove that path from the allowlist too; do not restore a broad `src/chat/**` glob.
   Thread actions and utilities now expose typed hook contracts; preserve cached-data normalization
@@ -264,7 +267,7 @@ npx wrangler dev
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
 | `taskify-ios-native/Tests/TaskifyCoreTests/ShareTaskDraftTests.swift`, `taskify-ios-native/Tests/TaskifyNativeUITests/ShareToTaskUITests.swift` | Native share sheet to tasks | Draft title/note rules and isolated file persistence; Safari page-title capture; real image upload and attachment when the app imports the draft |
-| `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift` | Mac build and presentation | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 14 tests cover DST-aware placement, list drafts, pending wallet outcomes, recovery consent, payment-request mint selection, recurrence, and the Mac Keychain access group |
+| `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift`, `taskify-macos/UITests/TaskifyMacUITests.swift` | Mac build, presentation and isolated app host | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 19 package tests cover DST-aware placement, list drafts, pending wallet outcomes, recovery consent, payment-request mint selection, recurrence, deep-link selection, runtime isolation and entitlements; the separately identified UI host opens a fixture task through the production deep-link path without production relays or wallet startup |
 | `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, authenticated WebSocket delivery, and Web Push (RFC 8291 payload a browser decrypts, VAPID signature, push-service-only endpoints) |
 
 Additional PWA regression tests include `src/nostr/startupStability.test.ts`, which is

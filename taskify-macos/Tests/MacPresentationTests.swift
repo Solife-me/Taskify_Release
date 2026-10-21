@@ -4,6 +4,79 @@ import TaskifyWallet
 @testable import MacPresentation
 
 final class MacPresentationTests: XCTestCase {
+    func testDeepLinkSelectionSurvivesItsBoardDestinationChange() {
+        XCTAssertEqual(
+            MacNavigationSelection.retainedTaskID(
+                selectedTaskID: "deep-link-task",
+                selectedTaskBoardID: "linked-board",
+                destination: "linked-board"
+            ),
+            "deep-link-task"
+        )
+        XCTAssertNil(
+            MacNavigationSelection.retainedTaskID(
+                selectedTaskID: "old-task",
+                selectedTaskBoardID: "old-board",
+                destination: "new-board"
+            )
+        )
+    }
+
+    func testProductionRuntimeIgnoresUITestArguments() {
+        let configuration = MacRuntimeConfiguration.resolve(
+            isUITestHost: false,
+            arguments: [
+                "Taskify", "--taskify-ui-test-session", "pretend-session",
+                "--taskify-ui-test-open-url", "taskify://task?id=private&board=private",
+            ],
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/tests"),
+            bundleIdentifier: "solife.me.Taskify.Mac"
+        )
+
+        XCTAssertEqual(configuration, .production)
+    }
+
+    func testUITestRuntimeIsSessionScopedAndOffline() throws {
+        let configuration = MacRuntimeConfiguration.resolve(
+            isUITestHost: true,
+            arguments: [
+                "Taskify", "--taskify-ui-test-session", "deep-link 42",
+                "--taskify-ui-test-open-url",
+                "taskify://task?id=ui-test-deep-link-task&board=ui-test-board",
+            ],
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/tests"),
+            bundleIdentifier: "solife.me.Taskify.Mac.UITests"
+        )
+        let test = try XCTUnwrap(configuration.uiTest)
+
+        XCTAssertEqual(test.sessionID, "deep-link-42")
+        XCTAssertEqual(test.rootDirectory.path, "/tmp/tests/TaskifyMacUITests/deep-link-42")
+        XCTAssertEqual(test.storeURL.lastPathComponent, "taskify-ui-test.json")
+        XCTAssertEqual(test.outboxURL.lastPathComponent, "taskify-ui-test-outbox.json")
+        XCTAssertEqual(test.identityService, "solife.me.Taskify.Mac.UITests.identity.deep-link-42")
+        XCTAssertFalse(configuration.startsDeferredServices)
+        XCTAssertFalse(configuration.startsWallet)
+        XCTAssertEqual(
+            test.initialLink,
+            URL(string: "taskify://task?id=ui-test-deep-link-task&board=ui-test-board")
+        )
+        XCTAssertTrue(test.resetsStore)
+    }
+
+    func testUITestRuntimeCanPreserveItsTemporaryStoreAcrossRelaunch() throws {
+        let configuration = MacRuntimeConfiguration.resolve(
+            isUITestHost: true,
+            arguments: [
+                "Taskify", "--taskify-ui-test-session", "relaunch",
+                "--taskify-ui-test-preserve-store",
+            ],
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/tests"),
+            bundleIdentifier: "solife.me.Taskify.Mac.UITests"
+        )
+
+        XCTAssertFalse(try XCTUnwrap(configuration.uiTest).resetsStore)
+    }
+
     func testMacAppDeclaresDataProtectionKeychainAccessGroup() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let entitlementsURL = testsDirectory.deletingLastPathComponent().appendingPathComponent("TaskifyMac.entitlements")
@@ -16,6 +89,19 @@ final class MacPresentationTests: XCTestCase {
             entitlements["keychain-access-groups"] as? [String],
             ["$(AppIdentifierPrefix)solife.me.Taskify.Mac"]
         )
+    }
+
+    func testMacUITestHostCannotUseProductionKeychainOrNetworkEntitlements() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let entitlementsURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("TaskifyMacUITests.entitlements")
+        let data = try Data(contentsOf: entitlementsURL)
+        let entitlements = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+
+        XCTAssertNil(entitlements["keychain-access-groups"])
+        XCTAssertNil(entitlements["com.apple.security.network.client"])
     }
 
     func testNewWeekTaskAppearsInTodayColumnAcrossDaylightSavingBoundary() throws {

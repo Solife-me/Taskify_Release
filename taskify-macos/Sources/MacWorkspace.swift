@@ -17,6 +17,7 @@ private enum MacDestination: String, CaseIterable {
 
 struct MacWorkspace: View {
     @Environment(AppModel.self) private var model
+    let initialLink: URL?
     @SceneStorage("mac.destination") private var destination = "today"
     @State private var search = ""
     @State private var selectedTaskID: String?
@@ -31,7 +32,13 @@ struct MacWorkspace: View {
     @State private var chatScrollPositions: [String: String] = [:]
     @State private var chatSelection: String?
     @State private var printingChecklist = false
+    @State private var pendingLink: URL?
+    @State private var didHandleInitialLink = false
     @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
+
+    init(initialLink: URL? = nil) {
+        self.initialLink = initialLink
+    }
 
     private var board: Board? { model.board(withID: destination) }
     private var title: String { board?.name ?? MacDestination(rawValue: destination)?.title ?? "Taskify" }
@@ -137,7 +144,14 @@ struct MacWorkspace: View {
         .alert("Taskify", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
-        .onChange(of: destination) { _, _ in selectedTaskID = nil; search = "" }
+        .onChange(of: destination) { _, newDestination in
+            selectedTaskID = MacNavigationSelection.retainedTaskID(
+                selectedTaskID: selectedTaskID,
+                selectedTaskBoardID: selectedTask?.boardID,
+                destination: newDestination
+            )
+            search = ""
+        }
         .onChange(of: model.identityPublicKey) { oldValue, newValue in
             // Empty-to-real is ordinary startup (identity loads after the window already exists)
             // and must not disturb the @SceneStorage-restored destination; only a real account
@@ -172,6 +186,13 @@ struct MacWorkspace: View {
         .onAppear {
             // A window restored onto the Wallet page of a device that never used the wallet.
             if destination == MacDestination.wallet.rawValue && !walletEnabled { destination = "today" }
+            guard !didHandleInitialLink, let initialLink else { return }
+            didHandleInitialLink = true
+            openWhenReady(initialLink)
+        }
+        .onChange(of: model.isLoading) { _, isLoading in
+            guard !isLoading, let pendingLink else { return }
+            openWhenReady(pendingLink)
         }
         .background {
             WalletPhaseOutNoticePresenter(
@@ -179,15 +200,26 @@ struct MacWorkspace: View {
                 openWallet: { destination = MacDestination.wallet.rawValue }
             )
         }
-        .onOpenURL { url in
-            guard let link = TaskifyWidgetLink(url: url) else { return }
-            switch link {
-            case .upcoming: destination = "upcoming"
-            case .event(_, let boardID): destination = boardID
-            case .boards: destination = model.selectedBoardID
-            case .task(let id, let boardID): destination = boardID; selectedTaskID = id
-            case .quickAdd(let boardID, _): destination = boardID ?? model.selectedBoardID; creatingTask = true
-            }
+        .onOpenURL(perform: openWhenReady)
+    }
+
+    private func openWhenReady(_ url: URL) {
+        guard !model.isLoading else {
+            pendingLink = url
+            return
+        }
+        pendingLink = nil
+        open(url)
+    }
+
+    private func open(_ url: URL) {
+        guard let link = TaskifyWidgetLink(url: url) else { return }
+        switch link {
+        case .upcoming: destination = "upcoming"
+        case .event(_, let boardID): destination = boardID
+        case .boards: destination = model.selectedBoardID
+        case .task(let id, let boardID): destination = boardID; selectedTaskID = id
+        case .quickAdd(let boardID, _): destination = boardID ?? model.selectedBoardID; creatingTask = true
         }
     }
 

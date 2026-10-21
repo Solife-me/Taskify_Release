@@ -13,14 +13,26 @@ enum KeychainIdentityError: LocalizedError {
 }
 
 struct KeychainIdentityStore {
-    #if os(macOS)
-    private let service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
-#else
-    private let service = "solife.me.Taskify.Native"
-#endif
+    private let service: String
     private let account = "nostr-identity-private-key"
+    private let usesSharedAccessGroup: Bool
+
+    init(service: String? = nil, usesSharedAccessGroup: Bool = true) {
+        self.usesSharedAccessGroup = usesSharedAccessGroup
+        if let service {
+            self.service = service
+        } else {
+#if os(macOS)
+            self.service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
+#else
+            self.service = "solife.me.Taskify.Native"
+#endif
+        }
+    }
+
     private var sharedAccessGroup: String? {
-        Bundle.main.object(forInfoDictionaryKey: "TaskifyKeychainAccessGroup") as? String
+        guard usesSharedAccessGroup else { return nil }
+        return Bundle.main.object(forInfoDictionaryKey: "TaskifyKeychainAccessGroup") as? String
     }
 
     func loadOrCreate() throws -> NostrIdentity {

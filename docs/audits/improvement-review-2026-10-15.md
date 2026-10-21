@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stage 1 next |
+| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stage 1 implemented, C11-2 next |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2367,7 +2367,7 @@ Explore. C11-8 requires no feature work.
 | --- | --- | --- | --- |
 | C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
 | C11-2 | Approve | 2026-10-21 | Not started; must ship before December 1 |
-| C11-3 | Approve | 2026-10-21 | Stage 1 next |
+| C11-3 | Approve | 2026-10-21 | Stage 1 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. This Mac timed out enabling XCTest automation before the smoke method began, so the same deep-link smoke is now an Xcode 27 CI gate and remains a local release check on a host with UI automation enabled. |
 | C11-4 | Approve | 2026-10-21 | Not started |
 | C11-5 | Approve | 2026-10-21 | Not started |
 | C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
@@ -2389,5 +2389,39 @@ Everything through C11-1 is implemented locally on `Beta`; nothing has been push
   `TaskifyCoreTests` passed 866 tests with 14 integration tests skipped; and the unsigned Mac
   `Local` app build succeeded. The app was not launched because the isolated C11-3 host does not
   exist yet.
-- Next: C11-3 stage 1 — create the isolated UI-test host and cover its recovery preview and one
-  deep-link smoke flow — then implement C11-2 against that safe host.
+- Next at this point was C11-3 stage 1; its implementation and verification continue in the
+  checkpoint below.
+
+### Checkpoint — October 21, 2026 (C11-3 stage 1)
+
+Everything through the first C11-3 host stage is implemented locally on `Beta`; nothing has been
+pushed.
+
+- `UITest` is a generated Xcode configuration with bundle id `solife.me.Taskify.Mac.UITests` and
+  sandbox-only app entitlements. Runtime selection is compile-time gated, so production ignores
+  every UI-test launch argument. A test session receives its own temporary snapshot/outbox and
+  Keychain service and starts neither relay/account services nor the wallet.
+- Fixture preparation is compiled only into the test host. It creates a local-only board/task, and
+  an injected `taskify://task` URL enters the same `TaskifyWidgetLink` navigation function as a
+  real open-URL event. The first smoke test asserts the board, opened task inspector and completion
+  action without onboarding.
+- Test-first/runtime verification: the new configuration tests failed to compile before the
+  boundary existed. A live launch then exposed that the destination-change observer cleared the
+  cold-start deep-link selection before the inspector appeared; the new selection regression test
+  failed to compile before its policy existed, then all 19 Mac package tests passed. Cold-start
+  links now wait for the local snapshot to finish loading and preserve a task only when it belongs
+  to the destination board. Generator `--check` failed before the
+  regenerated target/configuration was committed and passed afterwards. The normal unsigned
+  `Local` app build still passes.
+- The clean `xcodebuild test` built and ad-hoc signed the isolated app and UI runner. XCTest then
+  timed out while enabling macOS automation mode, before invoking the test method (0 passed,
+  1 runner-initialization failure). This is recorded as a host-permission limitation, not a green
+  UI result. CI now runs the exact smoke command on its Xcode 27 runner; developers can run it
+  locally after allowing Xcode UI automation.
+- A direct launch of the same isolated, ad-hoc-signed app passed the user-visible check: only the
+  fixture board/task appeared, onboarding stayed closed, and the `taskify://task` link visibly
+  opened `TASK DETAILS` with the Edit and Complete actions. No production account or relay was
+  used.
+- Next: C11-2. Add the removal-preview smoke assertion first, make production recovery mode skip
+  wallet startup, then reduce the live Mac wallet to iOS's withdraw-only surface. Do not exercise
+  real funds in automation.

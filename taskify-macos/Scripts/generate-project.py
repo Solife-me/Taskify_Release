@@ -69,6 +69,10 @@ def source_paths() -> list[Path]:
     return sorted((ROOT / "Sources").rglob("*.swift")) + shared_paths
 
 
+def ui_test_source_paths() -> list[Path]:
+    return sorted((ROOT / "UITests").rglob("*.swift"))
+
+
 def render_project() -> str:
     objects: list[str] = []
 
@@ -100,6 +104,28 @@ def render_project() -> str:
         "isa = PBXFileReference; explicitFileType = wrapper.application; "
         "path = Taskify.app; sourceTree = BUILT_PRODUCTS_DIR;",
     )
+    ui_test_files: list[str] = []
+    ui_test_builds: list[str] = []
+    for path in ui_test_source_paths():
+        relative_path = os.path.relpath(path, ROOT)
+        ui_test_files.append(
+            obj(
+                relative_path,
+                "isa = PBXFileReference; lastKnownFileType = sourcecode.swift; "
+                f"path = {quote(relative_path)}; sourceTree = SOURCE_ROOT;",
+            )
+        )
+        ui_test_builds.append(
+            obj(
+                relative_path + "build",
+                f"isa = PBXBuildFile; fileRef = {ident(relative_path)};",
+            )
+        )
+    ui_test_product = obj(
+        "ui-test-product",
+        "isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; "
+        "path = TaskifyMacUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR;",
+    )
     resource_builds: list[str] = []
     for relative_path, file_type in RESOURCES:
         files.append(
@@ -118,12 +144,28 @@ def render_project() -> str:
 
     obj(
         "group",
-        f'isa = PBXGroup; children = ({",".join(files + [product])}); sourceTree = "<group>";',
+        f'isa = PBXGroup; children = ({",".join(files + ui_test_files + [product, ui_test_product])}); '
+        'sourceTree = "<group>";',
     )
     obj(
         "sources",
         "isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; "
         f'files = ({",".join(builds)}); runOnlyForDeploymentPostprocessing = 0;',
+    )
+    obj(
+        "ui-test-sources",
+        "isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; "
+        f'files = ({",".join(ui_test_builds)}); runOnlyForDeploymentPostprocessing = 0;',
+    )
+    obj(
+        "ui-test-frameworks",
+        "isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; "
+        "files = (); runOnlyForDeploymentPostprocessing = 0;",
+    )
+    obj(
+        "ui-test-resources",
+        "isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; "
+        "files = (); runOnlyForDeploymentPostprocessing = 0;",
     )
     package = obj(
         "package",
@@ -151,7 +193,7 @@ def render_project() -> str:
 
     for scope in ("project", "target"):
         configurations: list[str] = []
-        for name in ("Debug", "Local", "Release"):
+        for name in ("Debug", "Local", "UITest", "Release"):
             settings = {
                 "SWIFT_VERSION": "5.0",
                 "MACOSX_DEPLOYMENT_TARGET": "14.0",
@@ -175,10 +217,21 @@ def render_project() -> str:
                         "COMBINE_HIDPI_IMAGES": "YES",
                     }
                 )
+                if name == "UITest":
+                    settings.update(
+                        {
+                            "PRODUCT_BUNDLE_IDENTIFIER": "solife.me.Taskify.Mac.UITests",
+                            "CODE_SIGN_ENTITLEMENTS": "TaskifyMacUITests.entitlements",
+                        }
+                    )
             settings.update(
                 {
                     "SWIFT_OPTIMIZATION_LEVEL": "-Onone" if name != "Release" else "-O",
-                    "SWIFT_ACTIVE_COMPILATION_CONDITIONS": "DEBUG" if name != "Release" else "",
+                    "SWIFT_ACTIVE_COMPILATION_CONDITIONS": (
+                        "DEBUG TASKIFY_MAC_UI_TEST" if name == "UITest"
+                        else "DEBUG" if name != "Release"
+                        else ""
+                    ),
                 }
             )
             build_settings = " ".join(
@@ -197,6 +250,47 @@ def render_project() -> str:
             "defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;",
         )
 
+    ui_test_configurations: list[str] = []
+    for name in ("Debug", "Local", "UITest", "Release"):
+        settings = {
+            "CLANG_ENABLE_OBJC_WEAK": "NO",
+            "CODE_SIGN_STYLE": "Automatic",
+            "GENERATE_INFOPLIST_FILE": "YES",
+            "MACOSX_DEPLOYMENT_TARGET": "14.0",
+            "PRODUCT_BUNDLE_IDENTIFIER": "solife.me.Taskify.Mac.UITestsRunner",
+            "PRODUCT_NAME": "$(TARGET_NAME)",
+            "SDKROOT": "macosx",
+            "SUPPORTED_PLATFORMS": "macosx",
+            "SWIFT_VERSION": "5.0",
+            "TEST_TARGET_NAME": "TaskifyMac",
+        }
+        build_settings = " ".join(
+            f"{key} = {quote(value)};" for key, value in settings.items()
+        )
+        ui_test_configurations.append(
+            obj(
+                "ui-test-" + name,
+                f"isa = XCBuildConfiguration; buildSettings = {{{build_settings}}}; name = {name};",
+            )
+        )
+    obj(
+        "ui-test-configs",
+        "isa = XCConfigurationList; "
+        f'buildConfigurations = ({",".join(ui_test_configurations)}); '
+        "defaultConfigurationIsVisible = 0; defaultConfigurationName = UITest;",
+    )
+
+    obj(
+        "ui-test-app-proxy",
+        f"isa = PBXContainerItemProxy; containerPortal = {ident('project')}; proxyType = 1; "
+        f"remoteGlobalIDString = {ident('target')}; remoteInfo = TaskifyMac;",
+    )
+    ui_test_dependency = obj(
+        "ui-test-app-dependency",
+        f"isa = PBXTargetDependency; target = {ident('target')}; "
+        f"targetProxy = {ident('ui-test-app-proxy')};",
+    )
+
     obj(
         "target",
         f'isa = PBXNativeTarget; buildConfigurationList = {ident("targetconfigs")}; '
@@ -206,12 +300,21 @@ def render_project() -> str:
         f'packageProductDependencies = ({",".join(products)});',
     )
     obj(
+        "ui-test-target",
+        f'isa = PBXNativeTarget; buildConfigurationList = {ident("ui-test-configs")}; '
+        f'buildPhases = ({ident("ui-test-sources")},{ident("ui-test-frameworks")},'
+        f'{ident("ui-test-resources")}); buildRules = (); dependencies = ({ui_test_dependency}); '
+        "name = TaskifyMacUITests; productName = TaskifyMacUITests; "
+        f"productReference = {ui_test_product}; "
+        'productType = "com.apple.product-type.bundle.ui-testing"; packageProductDependencies = ();',
+    )
+    obj(
         "project",
         "isa = PBXProject; attributes = { LastUpgradeCheck = 2700; }; "
         f'buildConfigurationList = {ident("projectconfigs")}; compatibilityVersion = "Xcode 14.0"; '
         f"developmentRegion = en; knownRegions = (en,Base); mainGroup = {ident('group')}; "
         f'packageReferences = ({package}); projectDirPath = ""; projectRoot = ""; '
-        f'targets = ({ident("target")});',
+        f'targets = ({ident("target")},{ident("ui-test-target")});',
     )
     return (
         "// !$*UTF8*$!\n"
@@ -227,9 +330,16 @@ def render_scheme() -> str:
         f'BlueprintIdentifier="{ident("target")}" BuildableName="Taskify.app" '
         'BlueprintName="TaskifyMac" ReferencedContainer="container:TaskifyMac.xcodeproj"/>'
     )
+    ui_test_reference = (
+        '<BuildableReference BuildableIdentifier="primary" '
+        f'BlueprintIdentifier="{ident("ui-test-target")}" '
+        'BuildableName="TaskifyMacUITests.xctest" BlueprintName="TaskifyMacUITests" '
+        'ReferencedContainer="container:TaskifyMac.xcodeproj"/>'
+    )
     return f'''<?xml version="1.0" encoding="UTF-8"?>
 <Scheme LastUpgradeVersion="2700" version="1.3">
-<BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">{reference}</BuildActionEntry></BuildActionEntries></BuildAction>
+<BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">{reference}</BuildActionEntry><BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">{ui_test_reference}</BuildActionEntry></BuildActionEntries></BuildAction>
+<TestAction buildConfiguration="UITest" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO">{ui_test_reference}</TestableReference></Testables></TestAction>
 <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" allowLocationSimulation="YES"><BuildableProductRunnable runnableDebuggingMode="0">{reference}</BuildableProductRunnable></LaunchAction>
 <ProfileAction buildConfiguration="Release"><BuildableProductRunnable runnableDebuggingMode="0">{reference}</BuildableProductRunnable></ProfileAction>
 <AnalyzeAction buildConfiguration="Debug"/><ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
