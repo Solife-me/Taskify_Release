@@ -240,4 +240,42 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertEqual(app.textFields.matching(identifier: "task-title-field").count, 0)
         XCTAssertFalse(app.staticTexts["TASK DETAILS"].exists)
     }
+
+    func testCommandQPersistsAnImmediateTaskEdit() {
+        let sessionID = UUID().uuidString
+        let editedTitle = "Quit-safe edit \(UUID().uuidString.prefix(6))"
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", sessionID]
+        app.launch()
+
+        let board = app.staticTexts["UI Test Board"].firstMatch
+        XCTAssertTrue(board.waitForExistence(timeout: 10))
+        board.click()
+        app.staticTexts["Open this task from a deep link"].firstMatch.click()
+        XCTAssertTrue(app.buttons["edit-task-button"].waitForExistence(timeout: 5))
+        app.buttons["edit-task-button"].click()
+
+        let titleField = app.textFields["task-title-field"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 5))
+        titleField.click()
+        titleField.typeKey("a", modifierFlags: .command)
+        titleField.typeText(editedTitle)
+        app.buttons["save-task-button"].click()
+        XCTAssertTrue(app.staticTexts[editedTitle].firstMatch.waitForExistence(timeout: 5))
+
+        app.typeKey("q", modifierFlags: .command)
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
+
+        app.launchArguments = [
+            "--taskify-ui-test-session", sessionID,
+            "--taskify-ui-test-preserve-store",
+            "--taskify-ui-test-open-url",
+            "taskify://task?id=ui-test-deep-link-task&board=ui-test-board",
+        ]
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts[editedTitle].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["TASK DETAILS"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Open this task from a deep link"].exists)
+    }
 }
