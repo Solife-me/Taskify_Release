@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Pending |
+| 11 | macOS | `taskify-macos` | Review complete (2026-10-20); decisions pending |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2189,3 +2189,187 @@ December 1, 2026.
 
 Chunk 11 (macOS) is next. Review and bring C11-n proposals before implementation. Its Mac wallet
 phase-out must follow iOS's December 1 date.
+
+---
+
+## Chunk 11 — macOS
+
+The native Mac client is a real SwiftUI/AppKit application, not Catalyst. It is about 5,100 lines
+of Mac source and compiles selected iOS application services directly beside `TaskifyCore` and
+`TaskifyWallet`. Its desktop foundation is stronger than the old port checklist suggests:
+multi-window navigation, week/list/compound boards, a sortable task table, task and event editors,
+Today/Upcoming, EventKit, chat and groups, the shared inbox, contacts, encrypted attachments,
+printing, devotional tools, settings, relays and offline publication all exist. Task mutations,
+recurrence, sync, encryption and wire formats already go through the same Swift core and `AppModel`
+as iOS; no separate Mac protocol implementation should be introduced.
+
+What the review found:
+
+- **The Mac app does not build at the current Beta head.** Its 14 presentation tests pass, but the
+  package target compiles only four small files under `Sources/Presentation`. The real app target
+  fails because the shared `TaskNoteViews.swift` now uses `ScaledSize` / `.scaledFont`, while
+  `DesignSystem/ScaledFont.swift` is not in the Mac project's shared-file list. `AppModel.swift`
+  also calls `runPerformanceProbeIfRequested()`, while `AppModelPerfProbe.swift` is absent. Both
+  arrived in the iOS chunk after the last successful Mac build.
+- **The project generator is no longer its own source of truth.** The committed project was patched
+  in C10-5 to add `TaskifyWallet` and `WalletKeychainStores.swift`; `generate-project.py` contains
+  neither. Running the documented generator would erase those fixes, and still would not add the
+  two files above. The README currently claims deterministic regeneration and a clean build, which
+  is no longer true.
+- **CI compiles no Swift at all.** `.github/workflows/ci.yml` says so explicitly. The October 2
+  audit already recommended an unsigned Mac build and Swift tests on a macOS runner; this failure
+  is the exact regression that gate would have caught.
+- **The Mac wallet is still the pre-phase-out product.** About 1,700 Mac-specific lines expose
+  Receive, add/remove mint, mint transfer, payment-request creation/payment, NWC receive and
+  NWC↔ecash moves. `MacRuntime.start()` starts `WalletViewModel` on every ordinary launch. Although
+  the shared `WalletPhaseOut` knows the December 1 recovery date, `MacWorkspace` always renders
+  `MacWalletView`; it neither stops the wallet service nor shows recovery. Without a Mac release,
+  December 1 would close the PWA and iOS wallets while the Mac continues accepting funds.
+- **The app UI has no automated coverage.** The presentation tests do not launch the app. The old
+  preview smoke method is intentionally retired in the README because its development build shares
+  the production bundle id and Keychain-backed identity; preview mode isolates the JSON store but
+  not identity. Important desktop-only guarantees (multi-window account reset, quit-save, stale
+  editor protection, drag/drop, paste, deep links and sandbox access) are therefore assertions by
+  reading or old manual notes, not regressions a test can catch.
+- **Spotlight stops at iOS even though the Mac is ready for it.** `TaskifySpotlightIndex` is already
+  platform-neutral, and the Mac already parses the same `taskify://task` links. Only the indexer
+  call is guarded to iOS and its source is absent from the Mac target.
+- **One normal Mac attachment path is missing.** Finder file copy/paste and drag/drop work. Browser
+  “Copy Image” data without a backing file does not, because both composers accept only
+  `Transferable` URLs. The README correctly refuses to call a data-transfer implementation done
+  without a launched UI test.
+- **Several checklist gaps are phone concepts, not Mac defects.** The Mac's explicit “Show
+  Completed” checkbox is clearer in a dense board than iOS's global completed-tab mode. Per-window
+  `SceneStorage` restoration is more useful than one fixed startup tab. The sidebar/table replace
+  the list-index card, and camera scan-back-in does not belong on a desktop without a camera flow.
+- **Closed-app chat push is honestly disabled.** The coordinator rejects Mac registration rather
+  than sending a Mac token to the iOS APNs topic. Supporting it needs a separate topic,
+  entitlements, push-relay contract and end-to-end device verification; it is not a local UI port.
+- **Language fit:** no new language. Mac and iOS already share Swift behavior directly. Rust/WASM
+  would add a bridge without removing an implementation here; the useful simplification is to make
+  the existing Swift target boundary and build gate reliable.
+
+### C11-1 — Reproducible Mac project and a CI build gate — recommend **Approve**
+
+- **User:** Every Mac user; this is currently a release blocker.
+- **Proposal:**
+  1. Add a generator `--check` mode that renders in memory and fails when the committed project is
+     stale. Keep one declarative manifest for shared source files and Swift package products.
+  2. Restore the current build by including the support files the shared app sources actually use,
+     including `ScaledFont.swift`, `AppModelPerfProbe.swift`, `WalletKeychainStores.swift` and the
+     `TaskifyWallet` product. Regeneration must produce no diff.
+  3. Add a macOS CI job that runs generator check, Mac presentation tests in a temporary scratch
+     path, and the unsigned `Local` app build in temporary derived data. This is the first stage of
+     the broader Swift CI job already proposed in the full-stack audit.
+  4. Update the README's generated-file and validation claims from the commands' actual results.
+- **Test first:** the current app build is the failing regression. A generator test also proves that
+  omitting a source/product makes `--check` fail before Xcode runs.
+- **Effort:** S–M. **Risk:** low.
+
+### C11-2 — The same wallet end state on Mac — recommend **Approve**
+
+- **User:** Anyone who ever used the Taskify wallet on a Mac. This must ship before December 1.
+- **Proposal:** Follow C6 and C9, without adding a Mac-only wallet policy:
+  - now, replace the full Mac wallet with the same withdraw-only “Move funds out” paths and wording
+    as iOS; remove Receive, payment requests, new mints, mint transfers, NWC receive, NWC→ecash and
+    the other ways to bring money in;
+  - from local midnight on December 1 (and under the same hidden preview switch), do not start the
+    wallet service. Show a read-only recovery view for stored proofs, saved/unclaimed tokens and
+    the 12 words;
+  - after the date, delete the Mac wallet screens and stop linking `TaskifyWallet` when the shared
+    iOS recovery deletion happens. Keep the small recovery path under Account/Backup until its
+    separate removal decision.
+- **Tests first:** a Mac UI test with the removal preview must show Recovery and no Receive action;
+  a runtime test must show that recovery mode never calls wallet start. Existing `TaskifyWallet`
+  tests remain the authority for token export and close-out semantics.
+- **Effort:** M before the date; a large code deletion after it. **Risk:** medium because funds must
+  remain recoverable. Do not exercise real funds in automation.
+
+### C11-3 — An isolated Mac UI-test host for desktop guarantees — recommend **Approve**
+
+- **User:** Mac users, especially people with multiple windows or offline edits.
+- **Proposal:** Add a UI-test configuration with a different bundle id, a temporary store/outbox,
+  a throwaway Keychain namespace and no production relays or wallet startup. Build the fixture
+  injection into dependencies rather than process-global `setenv` calls. Start with:
+  - launch/onboard, create/edit/complete a task and reopen it through a deep link;
+  - stale editor conflict and account-switch reset with two windows;
+  - quit after an edit persists locally, and a publish-pending edit survives an offline relaunch;
+  - file drop/paste and the wallet-recovery preview needed by C11-2.
+
+  Keep signed sandbox/Keychain, print, EventKit and real cross-client relay checks as a separate
+  release checklist; a UI fixture cannot prove provisioning.
+- **Effort:** M. **Risk:** low. Stage 1 is the isolated host plus the wallet/deep-link smoke tests;
+  add the rest one behavior at a time.
+
+### C11-4 — Open Mac tasks in Spotlight — recommend **Approve**
+
+- **User:** Desktop users finding a task without first navigating Taskify.
+- **Proposal:** Compile the existing `TaskifySpotlightIndexer` on macOS, run it after task-area
+  saves as iOS does, and attach the shared `taskify://task` content link. Open results in the right
+  board with the task selected/inspected. Completed, deleted and archived-board tasks leave the
+  index by the same `TaskifyCore` rules and tests as iOS.
+- **Test first:** in the isolated host, index a fixture task, open its searchable item, and assert
+  the Mac selects that task; completing it removes the item.
+- **Effort:** S. **Risk:** low; the index remains local.
+
+### C11-5 — Paste copied image data as an attachment — recommend **Approve**
+
+- **User:** People collecting a browser screenshot/image into a task or chat.
+- **Proposal:** Give `MacAttachmentQueue` one import boundary for file URLs and raw transferable
+  image data. Materialize raw data into the attachment directory with a safe generated name and
+  detected type, then use the existing encrypt/upload path; do not add a second upload format.
+  Use it from both the task editor and chat composer.
+- **Test first:** put PNG data with no file URL on the isolated test pasteboard, paste it into each
+  composer, and assert the staged attachment and encrypted upload input. Keep the existing file-URL
+  path covered too.
+- **Effort:** S–M. **Risk:** low, but runtime type negotiation is why the UI test is required.
+
+### C11-6 — Capture when the main window is not frontmost — recommend **Explore**
+
+- **User:** Desktop power users capturing work from another app.
+- **Question:** Which native surface earns its permanent cost: a small menu-bar quick-add,
+  Shortcuts/App Intents, a macOS Share extension/Services item, or a combination backed by one
+  `TaskifyExternalActions` call? A global hotkey alone brings conflicts and Accessibility concerns.
+- **Exploration:** prototype the smallest menu-bar and Shortcuts paths against the isolated store,
+  measure launch time and packaged size, and verify that an out-of-process addition is saved and
+  marked for publication exactly like C10-1/C10-4. Return with one concrete proposal; do not port
+  the entire iOS extension graph by checklist.
+- **Effort:** S to explore, M–L to ship. **Risk:** medium (extension storage and signing).
+
+### C11-7 — Closed-app DM push on Mac — recommend **Explore**
+
+- **User:** People who expect desktop messages while Taskify is closed.
+- **Question:** Is demand high enough to own another APNs topic and deployment path? The safe shape
+  is a Mac-specific token/topic in the push relay, the same privacy-only preview policy, and a
+  separate opt-in registration. Never reuse the iOS token contract.
+- **Exploration:** document Apple provisioning and relay changes, estimate ongoing operational
+  cost, and prove one development push end to end on a real Mac before proposing product UI.
+- **Effort:** M to explore/verify, L to release. **Risk:** medium–high.
+
+### C11-8 — Do not copy phone-only parity controls — recommend **Decline**
+
+- **Decline:** direct ports of iOS's global Completed layout toggle, fixed Startup View,
+  list-index card, camera scan UI, phone widgets and the whole iOS share-extension surface.
+- **Keep:** the Mac's explicit Show Completed control, per-window destination restoration,
+  sidebar/table navigation, print-only scan workflow and desktop capture exploration in C11-6.
+  Revisit an individual feature only with a Mac workflow and acceptance test, not to make a parity
+  checklist green. Remove unused microphone/speech declarations if C11-6 does not choose voice.
+
+### Recommended order
+
+C11-1 (the app must build) → C11-3 stage 1 → C11-2 (must ship before December 1) → the rest of
+C11-3 → C11-4 → C11-5. C11-6 and C11-7 return as concrete proposals only if the maintainer chooses
+Explore. C11-8 requires no feature work.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C11-1 | Pending; recommend Approve | 2026-10-20 | Not started. Current app build fails; 14 presentation tests pass |
+| C11-2 | Pending; recommend Approve | 2026-10-20 | Not started; must ship before December 1 |
+| C11-3 | Pending; recommend Approve | 2026-10-20 | Not started |
+| C11-4 | Pending; recommend Approve | 2026-10-20 | Not started |
+| C11-5 | Pending; recommend Approve | 2026-10-20 | Not started |
+| C11-6 | Pending; recommend Explore | 2026-10-20 | Not started |
+| C11-7 | Pending; recommend Explore | 2026-10-20 | Not started |
+| C11-8 | Pending; recommend Decline | 2026-10-20 | Not started |
