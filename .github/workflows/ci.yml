@@ -41,7 +41,8 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/taskify-macos-ui-derived" \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWalletRemovalPreviewShowsRecoveryWithoutReceive \
-            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCreateEditCompleteAndReopenTaskThroughDeepLink
 
   secrets:
     name: Secret scan (full history)

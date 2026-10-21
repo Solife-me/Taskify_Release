@@ -54,4 +54,67 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Make an ecash token"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Receive"].exists)
     }
+
+    func testCreateEditCompleteAndReopenTaskThroughDeepLink() {
+        let sessionID = UUID().uuidString
+        let initialTitle = "Task \(UUID().uuidString.prefix(6))"
+        let editedTitle = "Edited \(initialTitle)"
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", sessionID]
+        app.launch()
+
+        let board = app.staticTexts["UI Test Board"]
+        XCTAssertTrue(board.waitForExistence(timeout: 10))
+        board.click()
+
+        let newTask = app.buttons["new-task-button"]
+        XCTAssertTrue(newTask.waitForExistence(timeout: 5))
+        newTask.click()
+
+        let titleField = app.textFields["task-title-field"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 5))
+        titleField.click()
+        titleField.typeText(initialTitle)
+        app.buttons["save-task-button"].click()
+
+        let createdTitle = app.staticTexts[initialTitle].firstMatch
+        XCTAssertTrue(createdTitle.waitForExistence(timeout: 5))
+        createdTitle.click()
+
+        let editTask = app.buttons["edit-task-button"]
+        XCTAssertTrue(editTask.waitForExistence(timeout: 5))
+        editTask.click()
+
+        let editField = app.textFields["task-title-field"]
+        XCTAssertTrue(editField.waitForExistence(timeout: 5))
+        editField.click()
+        editField.typeKey("a", modifierFlags: .command)
+        editField.typeText(editedTitle)
+        app.buttons["save-task-button"].click()
+
+        let editedTitleElement = app.staticTexts[editedTitle].firstMatch
+        XCTAssertTrue(editedTitleElement.waitForExistence(timeout: 5))
+        let taskID = editedTitleElement.identifier
+        XCTAssertFalse(taskID.isEmpty)
+        editedTitleElement.click()
+
+        let complete = app.buttons["complete-task-button"]
+        XCTAssertTrue(complete.waitForExistence(timeout: 5))
+        complete.click()
+
+        app.terminate()
+        let relaunched = XCUIApplication()
+        relaunched.launchArguments = [
+            "--taskify-ui-test-session", sessionID,
+            "--taskify-ui-test-preserve-store",
+            "--taskify-ui-test-open-url",
+            "taskify://task?id=\(taskID)&board=ui-test-board",
+        ]
+        relaunched.launch()
+
+        XCTAssertTrue(relaunched.staticTexts[editedTitle].firstMatch.waitForExistence(timeout: 10))
+        let reopenedComplete = relaunched.buttons["complete-task-button"]
+        XCTAssertTrue(reopenedComplete.waitForExistence(timeout: 5))
+        XCTAssertEqual(reopenedComplete.label, "Mark Incomplete")
+    }
 }

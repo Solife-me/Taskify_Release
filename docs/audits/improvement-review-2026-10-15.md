@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stage 1 implemented, C11-2 stages 1–2 implemented |
+| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stages 1–2 implemented, C11-2 stages 1–2 implemented |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2367,7 +2367,7 @@ Explore. C11-8 requires no feature work.
 | --- | --- | --- | --- |
 | C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
 | C11-2 | Approve | 2026-10-21 | Stages 1–2 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view; the live pre-removal wallet now consumes the same shared withdraw-only route policy as iOS and exposes no receive/incoming route. Post-date screen deletion remains scheduled with the shared iOS cleanup |
-| C11-3 | Approve | 2026-10-21 | Stage 1 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. This Mac timed out enabling XCTest automation before the smoke method began, so the same deep-link smoke is now an Xcode 27 CI gate and remains a local release check on a host with UI automation enabled. |
+| C11-3 | Approve | 2026-10-21 | Stages 1–2 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Four CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, and create/edit/complete/reopen. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
 | C11-4 | Approve | 2026-10-21 | Not started |
 | C11-5 | Approve | 2026-10-21 | Not started |
 | C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
@@ -2484,3 +2484,24 @@ has been pushed.
   assertions remain CI/local release checks rather than green local results.
 - No real funds were used. The remaining C11-2 work is the scheduled post-December-1 deletion of
   the full wallet screens and `TaskifyWallet` linkage once the shared iOS recovery cleanup happens.
+
+### Checkpoint — October 21, 2026 (C11-3 stage 2)
+
+Everything through the task-lifecycle isolated-host stage is implemented locally on `Beta`; nothing
+has been pushed.
+
+- The production Mac controls now expose stable accessibility identifiers for the board row, New
+  Task button, task title field, Save button, task card, task title, Edit Task button and Complete
+  Task button. No behavior changed; this only makes the real UI testable.
+- The new isolated smoke launches the fixture board, creates a unique task, edits its title,
+  completes it, preserves the temporary store, relaunches, and opens the same task through a
+  `taskify://task` deep link. It asserts the edited title and completed state after relaunch.
+- CI now runs four isolated UI smokes: the original deep-link smoke, wallet recovery mode, the live
+  withdraw-only wallet, and create/edit/complete/reopen. The package suite remains 22 tests.
+- Verification: the 22 Mac presentation tests passed, the unsigned `Local` app build succeeded,
+  and `build-for-testing` compiled and ad-hoc signed both the isolated app and UI runner. The local
+  host still cannot enable XCTest automation, so the new lifecycle smoke is a CI/local release
+  check rather than a green local UI result.
+- Next: cover the remaining C11-3 guarantees one at a time — stale editor conflict and account-switch
+  reset with two windows, then quit persistence and publish-pending offline relaunch. After that,
+  continue to C11-4 Spotlight and C11-5 image paste.

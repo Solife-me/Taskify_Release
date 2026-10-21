@@ -36,11 +36,13 @@ struct MacTaskEditor: View {
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
                 Button("Save") { saveTask = Task { await save() } }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
                     .disabled(saving || attachments.importing || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("save-task-button")
             }.padding(22)
             Divider()
             Form {
                 Section("Task") {
                     TextField("Title", text: $draft.title, axis: .vertical).lineLimit(1...4)
+                        .accessibilityIdentifier("task-title-field")
                     LabeledContent("Notes") {
                         Button { editingNote = true } label: {
                             Group {

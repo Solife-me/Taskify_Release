@@ -59,6 +59,8 @@ struct MacWorkspace: View {
                     ForEach(model.visibleBoards) { board in
                         Label(board.name, systemImage: board.kind == .week ? "rectangle.split.3x1" : "square.grid.2x2")
                             .tag(board.id)
+                            .accessibilityIdentifier(board.id)
+                            .accessibilityLabel(board.name)
                             .contextMenu {
                                 Button("Board Settings…") { boardToManage = board }
                                 Button("Move Up") { _ = model.moveBoard(boardID: board.id, direction: -1) }
@@ -109,6 +111,7 @@ struct MacWorkspace: View {
                         ToolbarItem {
                             Button { creatingTask = true } label: { Label("New Task", systemImage: "plus") }
                                 .help("New Task (⇧⌘N)")
+                                .accessibilityIdentifier("new-task-button")
                         }
                         ToolbarItem {
                             Button { creatingEvent = true } label: { Label("New Event", systemImage: "calendar.badge.plus") }
@@ -269,6 +272,7 @@ struct MacTaskInspector: View {
                 Text(task.title).font(.title2.bold()).textSelection(.enabled)
                 Button(task.completed ? "Mark Incomplete" : "Complete Task", systemImage: task.completed ? "arrow.uturn.backward" : "checkmark.circle") { model.toggleCompletion(task.id) }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("complete-task-button")
                 Divider()
                 if let date = task.dueDate, task.dueDateEnabled { Label(date.formatted(date: .abbreviated, time: task.dueTimeEnabled ? .shortened : .omitted), systemImage: "calendar") }
                 if let priority = task.priority { Label(String(describing: priority).capitalized, systemImage: "flag") }
@@ -289,6 +293,7 @@ struct MacTaskInspector: View {
                     }
                 }
                 Button("Edit Task…", action: edit)
+                    .accessibilityIdentifier("edit-task-button")
                 Button("Share Task…") { sharing = true }
                 Spacer()
                 Text("Created \(task.createdAt.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.tertiary)

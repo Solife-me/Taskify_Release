@@ -148,11 +148,16 @@ struct MacTaskCard: View {
                 Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(task.completed ? Color.accentColor : Color.secondary)
                     .font(.title3)
-            }.buttonStyle(.plain).help(task.completed ? "Mark Incomplete" : "Complete Task")
+            }
+            .buttonStyle(.plain)
+            .help(task.completed ? "Mark Incomplete" : "Complete Task")
+            .accessibilityIdentifier("complete-\(task.id)")
+            .accessibilityLabel(task.completed ? "Mark Incomplete" : "Complete Task")
             VStack(alignment: .leading, spacing: 8) {
                 Text(task.title).font(.body.weight(.medium)).strikethrough(task.completed)
                     .foregroundStyle(task.completed ? .secondary : .primary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier(task.id)
                 if !task.note.isEmpty { Text(TaskNoteMarkdown.previewText(task.note)).font(.caption).foregroundStyle(.secondary).lineLimit(5) }
                 HStack(spacing: 9) {
                     if let date = task.dueDate, task.dueDateEnabled {
@@ -172,6 +177,8 @@ struct MacTaskCard: View {
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? Color.accentColor : Color.primary.opacity(0.06), lineWidth: selected ? 2 : 1))
             .contentShape(Rectangle())
             .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(task.id)
+            .accessibilityLabel(task.title)
     }
 }
 
