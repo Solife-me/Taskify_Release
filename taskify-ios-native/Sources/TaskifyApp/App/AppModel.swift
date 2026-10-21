@@ -4710,6 +4710,7 @@ final class AppModel {
             try? await store.save(snapshot)
             noteStoreWritten(snapshot)
         }
+        prepareSharePhotoUITestDraftIfRequested()
         runPerformanceProbeIfRequested()
 #endif
         applyStartupBoardPreference()
@@ -4969,6 +4970,31 @@ final class AppModel {
         appRelays = AppRelaySettings.urls
         errorMessage = nil
         return true
+    }
+
+    /// Leaves a real image draft in the share extension's isolated App Group. The UI test then
+    /// exercises the normal importer and configured media server instead of relying on a photo
+    /// that happens to be present in the simulator's library (C10-6).
+    private func prepareSharePhotoUITestDraftIfRequested() {
+        guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_SHARE_PHOTO_DRAFT"] == "1",
+              !identityPublicKey.isEmpty,
+              let image = Data(base64Encoded:
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4xQAAAAASUVORK5CYII=")
+        else { return }
+        let id = UUID(uuidString: "C1060000-0000-4000-8000-000000000001")!
+        let draft = ShareTaskDraft(
+            id: id,
+            account: identityPublicKey,
+            title: "Shared photo",
+            note: "",
+            boardName: nil
+        )
+        guard let source = try? AttachmentFiles.write(image) else { return }
+        defer { try? FileManager.default.removeItem(at: source) }
+        try? ShareTaskDraftStore.save(
+            draft,
+            files: [(source, "Shared photo.png", "image/png")]
+        )
     }
 
     /// Returns true when the fixture was applied.

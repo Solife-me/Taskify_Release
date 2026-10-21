@@ -39,6 +39,11 @@ final class ShareToTaskUITests: XCTestCase {
 
         let newTask = safari.buttons["New task"]
         XCTAssertTrue(newTask.waitForExistence(timeout: 10))
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "isEnabled == true"),
+            object: newTask
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
         newTask.tap()
         attach(safari, name: "share-02-new-task")
         safari.buttons["Save"].tap()
@@ -48,6 +53,35 @@ final class ShareToTaskUITests: XCTestCase {
         let saved = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Edit Example Domain")).firstMatch
         XCTAssertTrue(saved.waitForExistence(timeout: 15), "the app adds the shared page as a task")
         attach(app, name: "share-03-task-added")
+    }
+
+    func testASharedPhotoIsUploadedAndAttachedToTheTask() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_SHARE_PHOTO_DRAFT"] = "1"
+        app.launch()
+
+        let saved = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Edit Shared photo")
+        ).firstMatch
+        XCTAssertTrue(
+            saved.waitForExistence(timeout: 60),
+            "the app uploads the shared image and adds its task"
+        )
+        saved.tap()
+
+        let removePhoto = app.buttons["Remove Shared photo.png"]
+        var scrolls = 0
+        while !removePhoto.exists, scrolls < 8 {
+            app.swipeUp()
+            scrolls += 1
+        }
+        XCTAssertTrue(
+            removePhoto.waitForExistence(timeout: 10),
+            "the imported task keeps the shared image as an attachment"
+        )
+        attach(app, name: "share-04-photo-attached")
     }
 
     private func attach(_ app: XCUIApplication, name: String) {

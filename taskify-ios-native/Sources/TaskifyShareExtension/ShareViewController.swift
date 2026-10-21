@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 import Intents
+import LinkPresentation
 import TaskifyCore
 
 @MainActor
@@ -102,6 +103,11 @@ private final class ShareComposer: ObservableObject {
             }
             var seen = Set<String>()
             text = textParts.filter { seen.insert($0).inserted }.joined(separator: "\n")
+            if pageTitle == nil,
+               let pageURL = textParts.compactMap(URL.init(string:)).first(where: { $0.host != nil }),
+               let fetchedTitle = await fetchPageTitle(for: pageURL) {
+                pageTitle = fetchedTitle
+            }
             guard !inputs.isEmpty || !text.isEmpty else { throw AttachmentFileError.empty }
         } catch {
             self.error = account == nil ? "Open Taskify once to prepare sharing for your account, then try again." : error.localizedDescription
@@ -125,6 +131,17 @@ private final class ShareComposer: ObservableObject {
             provider.loadItem(forTypeIdentifier: type) { value, error in
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume(returning: value) }
+            }
+        }
+    }
+    private func fetchPageTitle(for url: URL) async -> String? {
+        await withCheckedContinuation { continuation in
+            let provider = LPMetadataProvider()
+            provider.shouldFetchSubresources = false
+            provider.timeout = 5
+            provider.startFetchingMetadata(for: url) { metadata, _ in
+                let title = metadata?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+                continuation.resume(returning: title?.isEmpty == false ? title : nil)
             }
         }
     }
