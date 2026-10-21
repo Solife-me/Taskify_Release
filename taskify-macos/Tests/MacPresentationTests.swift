@@ -110,6 +110,22 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(configuration.uiTest).walletRecoveryPreview)
     }
 
+    func testUITestRuntimeCanShowTheLiveWalletWithoutRecoveryPreview() throws {
+        let configuration = MacRuntimeConfiguration.resolve(
+            isUITestHost: true,
+            arguments: [
+                "Taskify", "--taskify-ui-test-session", "live-wallet",
+                "--taskify-ui-test-wallet-enabled",
+            ],
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/tests"),
+            bundleIdentifier: "solife.me.Taskify.Mac.UITests"
+        )
+        let test = try XCTUnwrap(configuration.uiTest)
+
+        XCTAssertTrue(test.walletEnabled)
+        XCTAssertFalse(test.walletRecoveryPreview)
+    }
+
     func testMacAppDeclaresDataProtectionKeychainAccessGroup() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let entitlementsURL = testsDirectory.deletingLastPathComponent().appendingPathComponent("TaskifyMac.entitlements")

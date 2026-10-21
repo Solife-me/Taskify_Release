@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stage 1 implemented, C11-2 next |
+| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stage 1 implemented, C11-2 stages 1–2 implemented |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2366,7 +2366,7 @@ Explore. C11-8 requires no feature work.
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
 | C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
-| C11-2 | Approve | 2026-10-21 | Stage 1 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view. The live pre-removal Mac wallet still needs to be reduced to iOS's withdraw-only surface before the date |
+| C11-2 | Approve | 2026-10-21 | Stages 1–2 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view; the live pre-removal wallet now consumes the same shared withdraw-only route policy as iOS and exposes no receive/incoming route. Post-date screen deletion remains scheduled with the shared iOS cleanup |
 | C11-3 | Approve | 2026-10-21 | Stage 1 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. This Mac timed out enabling XCTest automation before the smoke method began, so the same deep-link smoke is now an Xcode 27 CI gate and remains a local release check on a host with UI automation enabled. |
 | C11-4 | Approve | 2026-10-21 | Not started |
 | C11-5 | Approve | 2026-10-21 | Not started |
@@ -2454,3 +2454,33 @@ pushed.
 - Next: reduce the live pre-removal Mac wallet to iOS's withdraw-only “Move funds out” surface and
   remove Receive, payment requests, new mints, mint transfers, NWC receive and the other ways to
   bring money in. Do not exercise real funds in automation.
+
+### Checkpoint — October 21, 2026 (C11-2 stage 2)
+
+Everything through the live pre-removal wallet reduction is implemented locally on `Beta`; nothing
+has been pushed.
+
+- `TaskifyWallet` now owns a pure `WalletMoveOutContent` policy: the introduction and balance wording,
+  the route order, section titles, details, icons and availability rules. It explicitly contains
+  `receive` in the route ID set so tests can prove that route is never emitted. The four move-out
+  routes are pay an invoice/address, make an ecash token, move to a connected NWC wallet, and show
+  the 12 words; npub.cash remains a claim-and-move-out route only when that provider is selected.
+- iOS's existing `WalletMoveFundsOutSheet` now renders that shared policy instead of keeping a
+  private route list. The new Mac wallet page does the same. It replaces the full wallet destination
+  with withdraw-only routes, saved tokens and the 12 words; Receive, payment requests, mint
+  management/transfers, P2PK management and NWC receive/NWC→ecash are no longer reachable from the
+  wallet page.
+- The Mac move-to-NWC sheet is move-only: it reuses `WalletViewModel.migrateToNWC()` and the existing
+  sweep journal UI, but does not expose wallet switching, disconnect or receive. The recovery-words
+  sheet uses the existing authenticated phrase API and macOS secure clipboard.
+- Test-first/verification: the new shared policy tests first failed to compile, then passed. The
+  Mac presentation suite expanded to 22 tests and passed. The shared native suite expanded to 870
+  tests and passed with 14 environment-dependent skips. The iOS simulator app build and unsigned
+  Mac `Local` app build succeeded. Generator `--check` failed before the new Mac source was
+  regenerated and passed afterwards.
+- The isolated UI-test fixture gained a separate `--taskify-ui-test-wallet-enabled` flag so the live
+  wallet can be shown without entering recovery mode. CI now gates the deep-link, recovery and
+  live-withdraw-only UI smokes. This host still cannot execute local XCTest automation, so the UI
+  assertions remain CI/local release checks rather than green local results.
+- No real funds were used. The remaining C11-2 work is the scheduled post-December-1 deletion of
+  the full wallet screens and `TaskifyWallet` linkage once the shared iOS recovery cleanup happens.

@@ -16,55 +16,39 @@ struct WalletMoveFundsOutSheet: View {
 
     private var balance: UInt64 { wallet.snapshot.available }
 
+    private var routes: [WalletMoveOutRoute] {
+        WalletMoveOutContent.routes(
+            balanceSats: balance,
+            hasNWCWallet: !wallet.nwcWallets.isEmpty,
+            usesNpubCashProvider: LightningAddressSettings.provider == .npubCash,
+            claimMessage: claimMessage,
+            isBusy: wallet.isWorking
+        )
+    }
+
+    private var sections: [WalletMoveOutRoute.Section] {
+        WalletMoveOutRoute.Section.allCases
+            .filter { section in routes.contains { $0.section == section } }
+    }
+
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    Text("The wallet no longer takes in new funds, and it closes on \(TaskifyWalletPhaseOut.removalDateText). Move what is left to a wallet you keep.")
+                    Text(WalletMoveOutContent.intro)
                         .font(.subheadline)
                         .foregroundStyle(TaskifyTheme.secondaryText)
-                    Text(balance > 0 ? "\(wallet.formattedSats(balance)) to move" : "Nothing left to move.")
-                        .font(.headline)
+                    Text(WalletMoveOutContent.balanceText(
+                        formattedBalance: wallet.formattedSats(balance),
+                        hasFunds: balance > 0
+                    ))
+                    .font(.headline)
                 }
 
-                Section("To a Lightning wallet") {
-                    route(
-                        "Pay an invoice or Lightning address",
-                        detail: "From your own wallet's receive screen.",
-                        icon: "bolt.fill",
-                        enabled: balance > 0
-                    ) { showingLightning = true }
-                }
-
-                Section("As ecash, to another Cashu wallet") {
-                    route(
-                        "Make an ecash token",
-                        detail: "Redeem it in Minibits, Cashu.me or another Cashu wallet. It stays in History until claimed.",
-                        icon: "banknote",
-                        enabled: balance > 0
-                    ) { showingEcash = true }
-                    if !wallet.nwcWallets.isEmpty {
-                        route(
-                            "Move to your NWC wallet",
-                            detail: "Pays your connected wallet over Lightning.",
-                            icon: "arrow.right.circle",
-                            enabled: balance > 0
-                        ) { showingNWC = true }
-                    }
-                }
-
-                if LightningAddressSettings.provider == .npubCash {
-                    Section("npub.cash") {
-                        route(
-                            "Claim payments waiting at npub.cash",
-                            detail: claimMessage ?? "Payments to your old address arrive here first; move them out after claiming.",
-                            icon: "tray.and.arrow.down",
-                            enabled: !wallet.isWorking
-                        ) {
-                            Task {
-                                let claimed = await wallet.claimNpubCash(auto: false)
-                                claimMessage = claimed > 0 ? "Claimed \(claimed) payment\(claimed == 1 ? "" : "s")." : "Nothing to claim."
-                            }
+                ForEach(sections, id: \.rawValue) { section in
+                    Section(WalletMoveOutContent.sectionTitle(for: section)) {
+                        ForEach(routes.filter { $0.section == section }) { route in
+                            routeRow(route)
                         }
                     }
                 }
@@ -73,15 +57,6 @@ struct WalletMoveFundsOutSheet: View {
                     Section("Saved tokens") {
                         WalletSavedTokensList(wallet: wallet) { errorMessage = $0 }
                     }
-                }
-
-                Section("Restore in another Cashu wallet") {
-                    route(
-                        "Show the 12 words",
-                        detail: "A NUT-13 wallet can restore most of these funds from them.",
-                        icon: "key.viewfinder",
-                        enabled: true
-                    ) { showingWords = true }
                 }
 
                 if let errorMessage {
@@ -113,20 +88,44 @@ struct WalletMoveFundsOutSheet: View {
         .tint(TaskifyTheme.accent)
     }
 
-    private func route(_ title: String, detail: String, icon: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    private func routeRow(_ route: WalletMoveOutRoute) -> some View {
+        Button {
+            open(route.id)
+        } label: {
             HStack(spacing: 14) {
-                Image(systemName: icon)
+                Image(systemName: route.systemImage)
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(TaskifyTheme.accent)
                     .frame(width: 30)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title).foregroundStyle(TaskifyTheme.primaryText)
-                    Text(detail).font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
+                    Text(route.title).foregroundStyle(TaskifyTheme.primaryText)
+                    Text(route.detail).font(.caption).foregroundStyle(TaskifyTheme.secondaryText)
                 }
             }
         }
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.45)
+        .disabled(!route.isEnabled)
+        .opacity(route.isEnabled ? 1 : 0.45)
+    }
+
+    private func open(_ id: WalletMoveOutRoute.ID) {
+        switch id {
+        case .receive:
+            break
+        case .payLightning:
+            showingLightning = true
+        case .makeEcashToken:
+            showingEcash = true
+        case .moveToNWC:
+            showingNWC = true
+        case .claimNpubCash:
+            Task {
+                let claimed = await wallet.claimNpubCash(auto: false)
+                claimMessage = claimed > 0
+                    ? "Claimed \(claimed) payment\(claimed == 1 ? "" : "s")."
+                    : "Nothing to claim."
+            }
+        case .showRecoveryWords:
+            showingWords = true
+        }
     }
 }

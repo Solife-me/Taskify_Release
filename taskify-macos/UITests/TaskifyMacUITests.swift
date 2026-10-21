@@ -36,4 +36,22 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Recover your wallet"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Receive"].exists)
     }
+
+    func testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "--taskify-ui-test-session", UUID().uuidString,
+            "--taskify-ui-test-wallet-enabled",
+        ]
+        app.launch()
+
+        let wallet = app.staticTexts["Wallet"]
+        XCTAssertTrue(wallet.waitForExistence(timeout: 10))
+        wallet.click()
+
+        XCTAssertTrue(app.staticTexts["Move funds out"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Pay an invoice or Lightning address"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Make an ecash token"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Receive"].exists)
+    }
 }

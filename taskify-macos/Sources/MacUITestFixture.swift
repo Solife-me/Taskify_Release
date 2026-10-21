@@ -10,7 +10,7 @@ enum MacUITestFixture {
     static func prepare(_ configuration: MacUITestRuntimeConfiguration) throws {
         let files = FileManager.default
         UserDefaults.standard.set(
-            configuration.walletRecoveryPreview,
+            configuration.walletEnabled || configuration.walletRecoveryPreview,
             forKey: WalletPhaseOut.walletEnabledKey
         )
         UserDefaults.standard.set(

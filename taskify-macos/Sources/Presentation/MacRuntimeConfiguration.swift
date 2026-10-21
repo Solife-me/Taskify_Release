@@ -49,6 +49,7 @@ enum MacRuntimeConfiguration: Equatable {
             identityService: "\(bundleIdentifier).identity.\(sessionID)",
             initialLink: initialLink,
             resetsStore: !arguments.contains("--taskify-ui-test-preserve-store"),
+            walletEnabled: arguments.contains("--taskify-ui-test-wallet-enabled"),
             walletRecoveryPreview: arguments.contains("--taskify-ui-test-wallet-recovery")
         ))
     }
@@ -79,6 +80,7 @@ struct MacUITestRuntimeConfiguration: Equatable {
     let identityService: String
     let initialLink: URL?
     let resetsStore: Bool
+    let walletEnabled: Bool
     let walletRecoveryPreview: Bool
 }
 
