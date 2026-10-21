@@ -52,7 +52,7 @@ Constraints carried through every chunk:
 | 7 | iOS TaskifyCore | Swift sync, state and Nostr engine | Done (2026-10-20) |
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
-| 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Review written (2026-10-20) |
+| 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Implemented (2026-10-20) except C10-6 (decision) and C10-5 stages 2–3 |
 | 11 | macOS | `taskify-macos` | Pending |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
@@ -2155,10 +2155,15 @@ target first; the rest can wait for the December 1 deletion) → C10-7.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C10-1 | | | |
-| C10-2 | | | |
-| C10-3 | | | |
-| C10-4 | | | |
-| C10-5 | | | |
-| C10-6 | | | |
-| C10-7 | | | |
+| C10-1 | Approve ("Continue") | 2026-10-20 | Done (`bb60d4ce`). `TaskifyExternalActions` is the one path for edits made outside the app. Completion is idempotent, so a stale widget row no longer reopens a task. It uses `TaskifyDeviceTaskSettings` (streaks, week start, new-task position, the account), which the app mirrors to the App Group whenever they change; Siri's Add Task uses the same settings. When the app picks up outside changes it reconciles Scripture Memory first |
+| C10-2 | Approve | 2026-10-20 | Stage 1 done (`3604a0a1`). `ensureNextRecurrence` creates the next occurrence of a completed task when it is missing (idempotent, date-derived id; a deleted occurrence stays deleted). The iPhone calls it for Watch completions that arrived before the Watch's command. Stage 2 waits for C10-5 |
+| C10-3 | Approve | 2026-10-20 | Done (`51331334`). `JSONTaskStore.read(areas:)` reads for display and leaves attachments on disk. Widget timelines read the tasks area; the notification service reads only chat and inbox. Measured with 20 MB of task images: a load grew the footprint by 19 MB, a read by 0 MB. Not checked on a device |
+| C10-4 | Approve | 2026-10-20 | Done (`ca2d2a52`), with a simpler design than proposed. The store's existing publish-pending marks (C7-1) are the durable record instead of an outbox shared through the App Group, so no two processes share an outbox. `TaskifyExternalActions.commit` stamps and saves first, then `TaskifyExternalPublisher` tries each board's relays for up to 6 s and clears the mark only for events every relay accepted. The app sends anything left at launch and when it picks up the change. Tested with a fake sender and a local WebSocket relay; not yet tried against the production relays from a real widget. A relay that asks for authentication is left to the app |
+| C10-5 | Approve | 2026-10-20 | Stage 1 done (`d9922120`). The wallet is the `TaskifyWallet` target, linked only by the iPhone and Mac apps, and TaskifyCore builds for watchOS. Chat's token detection moved to core (`CashuTokenText`). Stages 2–3 (the Watch using core's crypto, then its task code) are not started: they need the binary-size and memory measurement first, and can follow the December 1 deletion |
+| C10-6 | Approve; design question | 2026-10-20 | Not started. The share extension was given its own App Group and only the messaging key on purpose (least privilege; it parses untrusted files). Saving a task needs either access to the task store, or a hand-off through the share group that the app imports. Waiting for the maintainer's choice |
+| C10-7 | Approve | 2026-10-20 | Done (`d55370e9`). Open tasks on boards that aren't archived are in Spotlight with their board and due date, and leave it when completed or deleted. Each save sends only what changed (`TaskifySpotlightIndex`). A result opens the task's editor. `SpotlightUITests` finds a new task from the Home Screen and opens it |
+
+**Next for chunk 10:**
+- C10-6 needs a choice: give the share extension the task store, or hand new tasks to the app through the share group.
+- C10-5 stages 2–3 start with a Watch size and memory measurement, after the December 1 wallet deletion.
+- None of the extension changes have been tried on a device yet: widget taps, relay publishing from an intent, and the memory saved in the notification service.
