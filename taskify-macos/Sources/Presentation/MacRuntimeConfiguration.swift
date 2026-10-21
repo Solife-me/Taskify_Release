@@ -15,7 +15,15 @@ enum MacRuntimeConfiguration: Equatable {
     }
 
     var startsDeferredServices: Bool { self == .production }
-    var startsWallet: Bool { self == .production }
+
+    /// Resolve every startup side effect before executing one. Recovery mode deliberately keeps
+    /// the ordinary task/sync services but never opens the wallet database or starts its monitors.
+    func startPlan(isWalletRecoveryMode: Bool) -> MacRuntimeStartPlan {
+        MacRuntimeStartPlan(
+            startsDeferredServices: startsDeferredServices,
+            startsWallet: self == .production && !isWalletRecoveryMode
+        )
+    }
 
     static func resolve(
         isUITestHost: Bool,
@@ -40,7 +48,8 @@ enum MacRuntimeConfiguration: Equatable {
             outboxURL: root.appendingPathComponent("taskify-ui-test-outbox.json", isDirectory: false),
             identityService: "\(bundleIdentifier).identity.\(sessionID)",
             initialLink: initialLink,
-            resetsStore: !arguments.contains("--taskify-ui-test-preserve-store")
+            resetsStore: !arguments.contains("--taskify-ui-test-preserve-store"),
+            walletRecoveryPreview: arguments.contains("--taskify-ui-test-wallet-recovery")
         ))
     }
 
@@ -70,4 +79,24 @@ struct MacUITestRuntimeConfiguration: Equatable {
     let identityService: String
     let initialLink: URL?
     let resetsStore: Bool
+    let walletRecoveryPreview: Bool
+}
+
+struct MacRuntimeStartPlan: Equatable {
+    let startsDeferredServices: Bool
+    let startsWallet: Bool
+}
+
+/// Executes the resolved startup plan. Keeping the decision outside `MacRuntime` makes the
+/// “recovery never starts the wallet” guarantee testable without constructing the app graph.
+@MainActor
+enum MacRuntimeStartExecutor {
+    static func run(
+        plan: MacRuntimeStartPlan,
+        startDeferredServices: () -> Void,
+        startWallet: () async -> Void
+    ) async {
+        if plan.startsDeferredServices { startDeferredServices() }
+        if plan.startsWallet { await startWallet() }
+    }
 }

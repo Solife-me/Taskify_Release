@@ -9,6 +9,7 @@ final class MacRuntime: ObservableObject {
     let calendar = DeviceCalendarStore()
     let wallet = WalletViewModel()
     let configuration: MacRuntimeConfiguration
+    let isWalletRecoveryMode: Bool
     private var started = false
     private var dayChangeObservers: [NSObjectProtocol] = []
 
@@ -37,6 +38,7 @@ final class MacRuntime: ObservableObject {
             preconditionFailure("The UI-test runtime is available only in the UI-test build configuration.")
 #endif
         }
+        self.isWalletRecoveryMode = WalletPhaseOut.isRecoveryMode
         model.registerWalletPaymentReceiver(wallet)
         TaskNotificationActionRouter.shared.register(model: model)
 
@@ -59,8 +61,11 @@ final class MacRuntime: ObservableObject {
     func start() async {
         guard !started, !model.isLoading else { return }
         started = true
-        if configuration.startsDeferredServices { model.initialContentDidAppear() }
-        if configuration.startsWallet { await wallet.start() }
+        await MacRuntimeStartExecutor.run(
+            plan: configuration.startPlan(isWalletRecoveryMode: isWalletRecoveryMode),
+            startDeferredServices: { model.initialContentDidAppear() },
+            startWallet: { await wallet.start() }
+        )
     }
 
     func resume() {
@@ -113,7 +118,10 @@ struct TaskifyMacApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MacWorkspace(initialLink: runtime.configuration.uiTest?.initialLink)
+            MacWorkspace(
+                initialLink: runtime.configuration.uiTest?.initialLink,
+                isWalletRecoveryMode: runtime.isWalletRecoveryMode
+            )
                 .environment(runtime.model)
                 .environmentObject(runtime.wallet)
                 .environmentObject(runtime.bible)

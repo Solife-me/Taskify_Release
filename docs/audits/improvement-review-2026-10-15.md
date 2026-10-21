@@ -2366,7 +2366,7 @@ Explore. C11-8 requires no feature work.
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
 | C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
-| C11-2 | Approve | 2026-10-21 | Not started; must ship before December 1 |
+| C11-2 | Approve | 2026-10-21 | Stage 1 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view. The live pre-removal Mac wallet still needs to be reduced to iOS's withdraw-only surface before the date |
 | C11-3 | Approve | 2026-10-21 | Stage 1 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. This Mac timed out enabling XCTest automation before the smoke method began, so the same deep-link smoke is now an Xcode 27 CI gate and remains a local release check on a host with UI automation enabled. |
 | C11-4 | Approve | 2026-10-21 | Not started |
 | C11-5 | Approve | 2026-10-21 | Not started |
@@ -2425,3 +2425,32 @@ pushed.
 - Next: C11-2. Add the removal-preview smoke assertion first, make production recovery mode skip
   wallet startup, then reduce the live Mac wallet to iOS's withdraw-only surface. Do not exercise
   real funds in automation.
+
+### Checkpoint — October 21, 2026 (C11-2 stage 1)
+
+Everything through the first C11-2 stage is implemented locally on `Beta`; nothing has been
+pushed.
+
+- `MacRuntimeConfiguration` now resolves a startup plan before executing side effects. A production
+  runtime in recovery mode still starts ordinary task/sync services, but never calls
+  `WalletViewModel.start()`. The package test constructs the plan and proves the wallet-start
+  closure is not invoked.
+- Mac recovery mode now uses the shared `WalletPhaseOut.isRecoveryMode` policy rather than a
+  Mac-only preview rule. The isolated host's `--taskify-ui-test-wallet-recovery` flag is fixture
+  state: it sets wallet visibility and the same hidden removal-preview key iOS uses before the
+  runtime resolves recovery mode.
+- The Mac wallet destination renders the existing shared `WalletRecoveryView`. That view now has
+  platform-safe pasteboard and color paths: iOS keeps `TaskifyTheme` and `UIPasteboard`; macOS uses
+  native secondary text, a dark background, and `NSPasteboard`. It remains storage-only and still
+  loads through the shared wallet recovery file APIs.
+- Test-first/verification: the new startup test failed to compile before the startup plan and
+  executor existed, then all 21 Mac presentation tests passed. The shared native `TaskifyCoreTests`
+  passed 866 tests with 14 environment-dependent skips. Generator `--check` failed before adding
+  `WalletRecoveryView.swift` to the shared-source manifest and passed after regeneration. The
+  unsigned `Local` Mac app build succeeds.
+- The new isolated recovery UI smoke is present and CI runs it with the deep-link smoke. This Mac
+  again timed out enabling XCTest automation before either local runner reached its test method,
+  so these remain CI/local release checks rather than green local UI results.
+- Next: reduce the live pre-removal Mac wallet to iOS's withdraw-only “Move funds out” surface and
+  remove Receive, payment requests, new mints, mint transfers, NWC receive and the other ways to
+  bring money in. Do not exercise real funds in automation.

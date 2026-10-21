@@ -20,4 +20,20 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Edit Task…"].exists)
         XCTAssertFalse(app.staticTexts["Welcome to Taskify"].exists)
     }
+
+    func testWalletRemovalPreviewShowsRecoveryWithoutReceive() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "--taskify-ui-test-session", UUID().uuidString,
+            "--taskify-ui-test-wallet-recovery",
+        ]
+        app.launch()
+
+        let wallet = app.staticTexts["Wallet"]
+        XCTAssertTrue(wallet.waitForExistence(timeout: 10))
+        wallet.click()
+
+        XCTAssertTrue(app.staticTexts["Recover your wallet"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Receive"].exists)
+    }
 }

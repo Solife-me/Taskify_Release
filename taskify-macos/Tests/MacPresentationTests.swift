@@ -55,12 +55,13 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertEqual(test.outboxURL.lastPathComponent, "taskify-ui-test-outbox.json")
         XCTAssertEqual(test.identityService, "solife.me.Taskify.Mac.UITests.identity.deep-link-42")
         XCTAssertFalse(configuration.startsDeferredServices)
-        XCTAssertFalse(configuration.startsWallet)
+        XCTAssertFalse(configuration.startPlan(isWalletRecoveryMode: false).startsWallet)
         XCTAssertEqual(
             test.initialLink,
             URL(string: "taskify://task?id=ui-test-deep-link-task&board=ui-test-board")
         )
         XCTAssertTrue(test.resetsStore)
+        XCTAssertFalse(test.walletRecoveryPreview)
     }
 
     func testUITestRuntimeCanPreserveItsTemporaryStoreAcrossRelaunch() throws {
@@ -75,6 +76,38 @@ final class MacPresentationTests: XCTestCase {
         )
 
         XCTAssertFalse(try XCTUnwrap(configuration.uiTest).resetsStore)
+    }
+
+    @MainActor
+    func testRecoveryModeProductionRuntimeNeverCallsWalletStart() async {
+        let plan = MacRuntimeConfiguration.production.startPlan(isWalletRecoveryMode: true)
+        var deferredServiceStarts = 0
+        var walletStarts = 0
+
+        await MacRuntimeStartExecutor.run(
+            plan: plan,
+            startDeferredServices: { deferredServiceStarts += 1 },
+            startWallet: { walletStarts += 1 }
+        )
+
+        XCTAssertTrue(plan.startsDeferredServices)
+        XCTAssertFalse(plan.startsWallet)
+        XCTAssertEqual(deferredServiceStarts, 1)
+        XCTAssertEqual(walletStarts, 0)
+    }
+
+    func testWalletRemovalPreviewIsExplicitlyPassedToTheIsolatedHost() throws {
+        let configuration = MacRuntimeConfiguration.resolve(
+            isUITestHost: true,
+            arguments: [
+                "Taskify", "--taskify-ui-test-session", "wallet-recovery",
+                "--taskify-ui-test-wallet-recovery",
+            ],
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/tests"),
+            bundleIdentifier: "solife.me.Taskify.Mac.UITests"
+        )
+
+        XCTAssertTrue(try XCTUnwrap(configuration.uiTest).walletRecoveryPreview)
     }
 
     func testMacAppDeclaresDataProtectionKeychainAccessGroup() throws {

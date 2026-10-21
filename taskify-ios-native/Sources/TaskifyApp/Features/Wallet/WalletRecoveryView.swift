@@ -2,6 +2,11 @@ import LocalAuthentication
 import SwiftUI
 import TaskifyCore
 import TaskifyWallet
+#if canImport(UIKit)
+import UIKit
+#else
+import AppKit
+#endif
 
 /// The Wallet tab from December 1, 2026 (C9-2, matching the PWA's `WalletRecoveryView`): what is
 /// left, as tokens any Cashu wallet can redeem, and the 12 words. It reads storage only.
@@ -11,18 +16,34 @@ struct WalletRecoveryView: View {
     @State private var copiedID: String?
     @State private var errorMessage: String?
 
+    private var secondaryText: Color {
+        #if canImport(UIKit)
+        TaskifyTheme.secondaryText
+        #else
+        .secondary
+        #endif
+    }
+
+    private var background: some View {
+        #if canImport(UIKit)
+        TaskifyTheme.background
+        #else
+        Color.black.opacity(0.92)
+        #endif
+    }
+
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     Text("The Taskify wallet closed on \(TaskifyWalletPhaseOut.removalDateText). Copy each token below into another Cashu wallet, such as Minibits or Cashu.me, to redeem it. A NUT-13 wallet can also restore most funds from the 12 words.")
                         .font(.subheadline)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .foregroundStyle(secondaryText)
                 }
 
                 if let snapshot {
                     if snapshot.isEmpty {
-                        Section { Text("Nothing is left in this wallet.").foregroundStyle(TaskifyTheme.secondaryText) }
+                        Section { Text("Nothing is left in this wallet.").foregroundStyle(secondaryText) }
                     }
                     if !snapshot.mints.isEmpty {
                         Section("Your notes, one token per mint") {
@@ -68,7 +89,7 @@ struct WalletRecoveryView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(TaskifyTheme.background.ignoresSafeArea())
+            .background(background.ignoresSafeArea())
             .navigationTitle("Recover your wallet")
             .task { await load() }
         }
@@ -80,11 +101,11 @@ struct WalletRecoveryView: View {
                 Text(amount.map { "\($0.formatted()) sats" } ?? "Cashu token").font(.headline)
                 Text(mintURL.flatMap { URL(string: $0)?.host } ?? "Unknown mint")
                     .font(.caption)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .foregroundStyle(secondaryText)
             }
             Spacer()
             Button(copiedID == id ? "Copied" : "Copy token") {
-                UIPasteboard.general.string = token
+                copy(token)
                 copiedID = id
             }
             .buttonStyle(.bordered)
@@ -120,5 +141,13 @@ struct WalletRecoveryView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func copy(_ token: String) {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = token
+        #else
+        NSPasteboard.general.setString(token, forType: .string)
+        #endif
     }
 }

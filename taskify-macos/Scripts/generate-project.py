@@ -35,6 +35,7 @@ SHARED_SOURCES = (
     "Security/KeychainIdentityStore.swift",
     "Features/Wallet/WalletKeychainStores.swift",
     "Features/Wallet/WalletView.swift",
+    "Features/Wallet/WalletRecoveryView.swift",
     "Features/Wallet/WalletViewModel+NWC.swift",
     "Features/Boards/BibleTrackerStore.swift",
     "Features/Upcoming/DeviceCalendarStore.swift",

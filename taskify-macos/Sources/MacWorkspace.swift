@@ -18,6 +18,7 @@ private enum MacDestination: String, CaseIterable {
 struct MacWorkspace: View {
     @Environment(AppModel.self) private var model
     let initialLink: URL?
+    let isWalletRecoveryMode: Bool
     @SceneStorage("mac.destination") private var destination = "today"
     @State private var search = ""
     @State private var selectedTaskID: String?
@@ -36,8 +37,9 @@ struct MacWorkspace: View {
     @State private var didHandleInitialLink = false
     @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
 
-    init(initialLink: URL? = nil) {
+    init(initialLink: URL? = nil, isWalletRecoveryMode: Bool = false) {
         self.initialLink = initialLink
+        self.isWalletRecoveryMode = isWalletRecoveryMode
     }
 
     private var board: Board? { model.board(withID: destination) }
@@ -233,7 +235,11 @@ struct MacWorkspace: View {
             case .chat: MacChatView(search: search, drafts: $chatDrafts, scrollPositions: $chatScrollPositions, selection: $chatSelection)
             case .wallet:
                 if walletEnabled {
-                    MacWalletView()
+                    if isWalletRecoveryMode {
+                        WalletRecoveryView()
+                    } else {
+                        MacWalletView()
+                    }
                 } else {
                     MacAgendaView(todayOnly: true, search: search, selectedTaskID: $selectedTaskID, edit: { editingTask = $0 })
                 }
