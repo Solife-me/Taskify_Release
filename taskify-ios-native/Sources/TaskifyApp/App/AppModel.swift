@@ -4711,7 +4711,9 @@ final class AppModel {
             noteStoreWritten(snapshot)
         }
         prepareSharePhotoUITestDraftIfRequested()
+#if os(iOS)
         runPerformanceProbeIfRequested()
+#endif
 #endif
         applyStartupBoardPreference()
         refreshNotifications(requestPermission: false)

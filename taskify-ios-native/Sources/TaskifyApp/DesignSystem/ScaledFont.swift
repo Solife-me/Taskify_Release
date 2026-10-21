@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Point sizes that follow Dynamic Type (C8-3). Each size scales with the text style nearest to
 /// it, so at the default text size every screen looks exactly as designed, and at larger or
@@ -20,7 +22,8 @@ enum ScaledSize {
         }
     }
 
-    static func uiTextStyle(_ style: Font.TextStyle) -> UIFont.TextStyle {
+#if canImport(UIKit)
+    private static func uiTextStyle(_ style: Font.TextStyle) -> UIFont.TextStyle {
         switch style {
         case .caption2: .caption2
         case .caption: .caption1
@@ -35,13 +38,20 @@ enum ScaledSize {
         default: .body
         }
     }
+#endif
 
     /// `size` at the given Dynamic Type size, scaled like `style` (by default its nearest text
     /// style). Pass the style of the text a control sits beside to keep the two in proportion.
     static func scaled(_ size: CGFloat, relativeTo style: Font.TextStyle? = nil, for dynamicTypeSize: DynamicTypeSize) -> CGFloat {
+#if canImport(UIKit)
         let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
         return UIFontMetrics(forTextStyle: uiTextStyle(style ?? textStyle(for: size)))
             .scaledValue(for: size, compatibleWith: traits)
+#else
+        // UIKit supplies the explicit point-size metrics used on iOS. macOS applies its own
+        // accessibility display scaling, so preserve the design point size there.
+        return size
+#endif
     }
 }
 

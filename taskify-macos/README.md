@@ -10,36 +10,31 @@ Open `TaskifyMac.xcodeproj`, choose `TaskifyMac` and My Mac. Configure your own
 signing team for a signed sandboxed build. No Catalyst runtime is used.
 
 ```sh
-python3 taskify-macos/Scripts/generate-project.py
+python3 taskify-macos/Scripts/generate-project.py --check
 xcodebuild -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
   -configuration Local -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath /tmp/taskify-macos CODE_SIGNING_ALLOWED=NO build
-swift test --package-path taskify-macos --build-system native
+swift test --package-path taskify-macos --scratch-path /tmp/taskify-macos-tests
 ```
 
 Commands run from the repository root. Project generation is deterministic and
-requires Python 3 only. Regenerate after adding Swift sources. `Local` retains
+requires Python 3 only. `--check` is read-only and fails if the committed project
+does not match the source/product manifest; run the script without `--check` after
+adding a Mac source or changing the explicit shared-source list. CI runs the check,
+the 14 presentation tests, and the unsigned app build on the Xcode 27 runner. `Local` retains
 app debugging while Swift package dependencies use their release configuration;
 use it for attachment performance work. Debug is useful for dependency debugging,
 but unoptimized cryptography can make large attachments very slow. Release is
 intended for distribution builds. Unsigned command-line builds verify compilation;
 they do not verify sandbox, Keychain provisioning or distribution signing.
 
-The files `generate-project.py` compiles into this target — `App/AppModel.swift`,
-`Features/Wallet/WalletView.swift` and the rest of the whitelist at the top of
-that script — are also compiled into the iOS app, and iOS-only work regularly
-lands in them without anyone rebuilding Mac. An iOS-only symbol used outside an
-`#if os(iOS)` (or `#if canImport(UIKit)`) guard there breaks this target
-silently until the next Mac build. This session found and fixed several
-(an unused `import UIKit`, `UIBackgroundFetchResult`, `TaskifyPerfMonitor`,
-`TaskifyWatchBridge`, `TaskifyTheme.watchAccent`, and the Share-extension
-runtime types), plus a genuinely missing `AppModel.persistBeforeTermination()`
-that this target's quit path had been calling without an implementation. Run
-the build above after pulling upstream changes to `AppModel.swift` or the other
-shared files, not only after editing Mac-specific sources. Moving `AppModel`
-code into a new extension file means adding that file to the whitelist too:
-the `AppModelAppStateSync`, `AppModelDirectMessages` and `AppModelSupport`
-splits broke this target until they were added.
+The `SHARED_SOURCES` and `PACKAGE_PRODUCTS` manifests in `generate-project.py`
+are the reviewable boundary between the two app targets. Their files — including
+`AppModel.swift`, `ScaledFont.swift`, the app-model extension splits and the
+temporary wallet sources — are also compiled into the iOS app. An iOS-only symbol
+used outside an `#if os(iOS)` or `#if canImport(UIKit)` guard therefore breaks the
+Mac gate. Moving shared app code into a new extension file means adding it to the
+manifest in the same change; CI rejects a project that was not regenerated.
 
 ## Current desktop implementation
 
@@ -119,9 +114,8 @@ splits broke this target until they were added.
   isn't the phone, `WalletViewModel.automaticallyRedeemsIncomingPayments` is
   false here: incoming shared-DM tokens, NUT-18 payment requests and
   npub.cash claims are not auto-redeemed, avoiding a race with the phone over
-  the same payment. They collect in an Incoming Payments list
-  (`ManualIncomingPaymentsView`, shared with iPad) with an explicit Redeem
-  action per item instead.
+  the same payment. Incoming-payment redemption was removed with iOS's
+  withdraw-only wallet transition; the remaining Mac wallet is retired in C11-2.
 - Contact payments: pay a contact's Lightning address (falling back to
   `npub@solife.me`) or send them locked ecash as an encrypted message, using
   the same wire format as the PWA. P2PK key generation/import/removal for
@@ -485,7 +479,7 @@ already on file for the iOS package. Use `swift test --package-path
 taskify-macos --scratch-path /tmp/taskify-macos-build` instead. The
 `xcodebuild` build of the app target itself was unaffected.
 
-## Manual incoming-payment redemption (September 23, 2026)
+## Manual incoming-payment redemption (September 23, 2026; retired October 21)
 
 Landed from a concurrent session's working tree, committed here after this
 file's own account-switch and chat-state passes: Mac (and iPad) no longer
@@ -501,6 +495,10 @@ Verified after committing, since this file didn't write the change: a clean
 Not verified by running either app, for the same reason as everywhere else
 in this file — and doubly so here, since actually exercising a Redeem tap
 needs a real pending payment, which means live funds.
+
+The shared view was deleted when iOS became withdraw-only. Its stale Mac call was
+removed when the generated-project gate was added; restoring a receive path that
+is scheduled for deletion would have moved the wallet phase-out backwards.
 
 ## Contacts directory (September 23, 2026)
 

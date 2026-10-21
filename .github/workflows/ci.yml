@@ -1,5 +1,5 @@
 # Runs every package's checks on pushes and pull requests to main and Beta.
-# Swift targets are not covered here; run their tests from Xcode or `swift test`.
+# The macOS job is the first native Swift gate; iOS/Watch device and UI suites remain local.
 name: CI
 
 on:
@@ -19,6 +19,22 @@ env:
   NODE_VERSION: "22"
 
 jobs:
+  macos:
+    name: Native macOS
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify the generated Xcode project
+        run: python3 taskify-macos/Scripts/generate-project.py --check
+      - name: Test Mac presentation logic
+        run: swift test --package-path taskify-macos --scratch-path "$RUNNER_TEMP/taskify-macos-tests"
+      - name: Build the unsigned Mac app
+        run: |
+          xcodebuild -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
+            -configuration Local -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/taskify-macos-derived" \
+            CODE_SIGNING_ALLOWED=NO build
+
   secrets:
     name: Secret scan (full history)
     runs-on: ubuntu-latest

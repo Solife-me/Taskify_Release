@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Review complete (2026-10-20); decisions pending |
+| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stage 1 next |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2365,11 +2365,29 @@ Explore. C11-8 requires no feature work.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C11-1 | Pending; recommend Approve | 2026-10-20 | Not started. Current app build fails; 14 presentation tests pass |
-| C11-2 | Pending; recommend Approve | 2026-10-20 | Not started; must ship before December 1 |
-| C11-3 | Pending; recommend Approve | 2026-10-20 | Not started |
-| C11-4 | Pending; recommend Approve | 2026-10-20 | Not started |
-| C11-5 | Pending; recommend Approve | 2026-10-20 | Not started |
-| C11-6 | Pending; recommend Explore | 2026-10-20 | Not started |
-| C11-7 | Pending; recommend Explore | 2026-10-20 | Not started |
-| C11-8 | Pending; recommend Decline | 2026-10-20 | Not started |
+| C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
+| C11-2 | Approve | 2026-10-21 | Not started; must ship before December 1 |
+| C11-3 | Approve | 2026-10-21 | Stage 1 next |
+| C11-4 | Approve | 2026-10-21 | Not started |
+| C11-5 | Approve | 2026-10-21 | Not started |
+| C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
+| C11-7 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
+| C11-8 | Decline | 2026-10-21 | No phone-only parity work will be added |
+
+### Checkpoint — October 21, 2026 (C11-1)
+
+Everything through C11-1 is implemented locally on `Beta`; nothing has been pushed.
+
+- `generate-project.py --check` first failed against the hand-edited project, then passed after
+  regeneration from one explicit shared-source/package-product manifest. It now retains
+  `TaskifyWallet` and `WalletKeychainStores.swift` and includes the shared font and performance
+  support files that arrived during the iOS work.
+- The first clean app build found one more stale cross-target call:
+  `ManualIncomingPaymentsView` had been deleted when iOS became withdraw-only. Mac no longer
+  calls it; reintroducing receive UI for a wallet being retired would be the wrong dependency fix.
+- Verification: generator check passed; Mac presentation tests passed 14/14; native
+  `TaskifyCoreTests` passed 866 tests with 14 integration tests skipped; and the unsigned Mac
+  `Local` app build succeeded. The app was not launched because the isolated C11-3 host does not
+  exist yet.
+- Next: C11-3 stage 1 — create the isolated UI-test host and cover its recovery preview and one
+  deep-link smoke flow — then implement C11-2 against that safe host.

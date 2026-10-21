@@ -70,7 +70,6 @@ struct MacWalletView: View {
                         }.padding(10)
                     }
                 }
-                ManualIncomingPaymentsView(wallet: wallet)
                 GroupBox("Mints") {
                     VStack(spacing: 12) {
                         ForEach(wallet.snapshot.mints) { mint in
