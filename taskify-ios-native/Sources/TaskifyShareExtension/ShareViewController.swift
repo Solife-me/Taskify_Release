@@ -42,6 +42,10 @@ private final class ShareComposer: ObservableObject {
     @Published var status = "Preparing…"
     @Published var progress: AttachmentTransferProgress?
     @Published var error: String?
+    /// The board a new task goes to, from `ShareAccount.taskBoards`; nil for the default board.
+    @Published var taskBoard: String?
+    /// The shared page's title, for a task's title.
+    private var pageTitle: String?
     private let context: NSExtensionContext?
     private var operation: Task<Void, Never>?
     private var pendingIDs: [UUID] = []
@@ -59,11 +63,13 @@ private final class ShareComposer: ObservableObject {
             let account = try ShareTransferStore.account()
             _ = try TaskifyShareIdentity.load(account: account.publicKey)
             self.account = account
+            taskBoard = account.taskBoards?.first
             if let intent = context?.intent as? INSendMessageIntent,
                let id = intent.conversationIdentifier {
                 selectedID = account.recipients.first { $0.suggestionID(account: account.publicKey) == id }?.id
             }
             let items = context?.inputItems.compactMap { $0 as? NSExtensionItem } ?? []
+            pageTitle = items.lazy.compactMap { $0.attributedTitle?.string }.first
             let providers = items.flatMap { $0.attachments ?? [] }
             guard providers.count <= 10 else { throw ShareError.tooMany }
             var textParts: [String] = []
@@ -122,7 +128,31 @@ private final class ShareComposer: ObservableObject {
             }
         }
     }
+    static let newTaskID = "taskify.new-task"
+    var isSavingTask: Bool { selectedID == Self.newTaskID }
+
+    /// Saves what was shared as a task draft for the app (C10-6). The extension never opens the
+    /// task store; the app adds and publishes the task the next time it runs.
+    private func saveTask() {
+        guard !busy, let account else { return }
+        busy = true; error = nil; status = "Saving…"
+        do {
+            guard inputs.allSatisfy({ TaskDocumentContract.inferKind(name: $0.name, mimeType: $0.mimeType) != nil }) else {
+                throw ShareError.unsupportedTaskFile
+            }
+            let split = ShareTaskDraft.titleAndNote(text: text, pageTitle: pageTitle, fileNames: inputs.map(\.name))
+            let draft = ShareTaskDraft(account: account.publicKey, title: split.title, note: split.note, boardName: taskBoard)
+            try ShareTaskDraftStore.save(draft, files: inputs.map { ($0.file, $0.name, $0.mimeType) })
+            cleanup()
+            context?.completeRequest(returningItems: nil)
+        } catch {
+            self.error = error.localizedDescription
+            busy = false
+        }
+    }
+
     func send() {
+        if isSavingTask { saveTask(); return }
         guard !busy, let selectedID, let account,
               let recipient = account.recipients.first(where: { $0.id == selectedID }) else { return }
         busy = true; error = nil
@@ -211,11 +241,12 @@ private final class ShareComposer: ObservableObject {
         for input in inputs { try? FileManager.default.removeItem(at: input.file) }
     }
     enum ShareError: LocalizedError {
-        case tooMany, textTooLong
+        case tooMany, textTooLong, unsupportedTaskFile
         var errorDescription: String? {
             switch self {
             case .tooMany: "Share up to 10 items at a time."
             case .textTooLong: "This message is too long. Share long text as a file instead."
+            case .unsupportedTaskFile: "One of these files can't be attached to a task. Send it in a chat instead."
             }
         }
     }
@@ -241,11 +272,31 @@ private struct ShareComposerView: View {
                         }
                         .scrollIndicators(.hidden)
                     }
-                    TextField(model.inputs.isEmpty ? "Message" : "Add comment or Send", text: $model.text, axis: .vertical)
+                    TextField(model.isSavingTask ? "Title and notes" : (model.inputs.isEmpty ? "Message" : "Add comment or Send"),
+                              text: $model.text, axis: .vertical)
                         .lineLimit(2...6)
                         .disabled(model.busy)
                 } footer: {
-                    if model.inputs.count > 1 { Text("Your comment replies to the last attachment.") }
+                    if model.inputs.count > 1 && !model.isSavingTask { Text("Your comment replies to the last attachment.") }
+                }
+                Section {
+                    Button { model.selectedID = ShareComposer.newTaskID } label: {
+                        HStack {
+                            Image(systemName: "checklist")
+                            Text("New task").foregroundStyle(.primary)
+                            Spacer()
+                            if model.isSavingTask { Image(systemName: "checkmark.circle.fill") }
+                        }
+                    }.disabled(model.busy || model.account == nil)
+                    if model.isSavingTask, let boards = model.account?.taskBoards, boards.count > 1 {
+                        Picker("Board", selection: $model.taskBoard) {
+                            ForEach(boards, id: \.self) { Text($0).tag(Optional($0)) }
+                        }.disabled(model.busy)
+                    }
+                } header: {
+                    Text("Save to Taskify")
+                } footer: {
+                    if model.isSavingTask { Text("Taskify adds the task the next time it runs.") }
                 }
                 Section("Send to") {
                     TextField("Search chats", text: $model.query).disabled(model.busy)
@@ -275,7 +326,7 @@ private struct ShareComposerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: model.cancel) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Send", action: model.send).bold()
+                    Button(model.isSavingTask ? "Save" : "Send", action: model.send).bold()
                         .disabled(model.busy || model.selectedID == nil || (model.inputs.isEmpty && model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }
             }

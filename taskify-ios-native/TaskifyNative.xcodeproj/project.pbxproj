@@ -117,6 +117,7 @@
 		B00000000000000000009A03 /* NWCWalletUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A04 /* NWCWalletUITests.swift */; };
 		BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */; };
 		C1A7000000000000000000B2 /* SpotlightUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A7000000000000000000B1 /* SpotlightUITests.swift */; };
+		C1A6000000000000000000B2 /* ShareToTaskUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A6000000000000000000B1 /* ShareToTaskUITests.swift */; };
 		C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94100000000000000000F00 /* ChatRenderUITests.swift */; };
 		C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80500000000000000000F00 /* EventAttachmentUITests.swift */; };
 		C81000000000000000000F01 /* BoardRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C81000000000000000000F00 /* BoardRenderUITests.swift */; };
@@ -281,6 +282,7 @@
 		B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift; sourceTree = SOURCE_ROOT; };
 		B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TaskSelectionUITests.swift; sourceTree = "<group>"; };
 		C1A7000000000000000000B1 /* SpotlightUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SpotlightUITests.swift; sourceTree = "<group>"; };
+		C1A6000000000000000000B1 /* ShareToTaskUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ShareToTaskUITests.swift; sourceTree = "<group>"; };
 		C94100000000000000000F00 /* ChatRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatRenderUITests.swift; sourceTree = "<group>"; };
 		C80500000000000000000F00 /* EventAttachmentUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EventAttachmentUITests.swift; sourceTree = "<group>"; };
 		C81000000000000000000F00 /* BoardRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BoardRenderUITests.swift; sourceTree = "<group>"; };
@@ -577,6 +579,7 @@
 				126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */,
 				B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */,
 				C1A7000000000000000000B1 /* SpotlightUITests.swift */,
+				C1A6000000000000000000B1 /* ShareToTaskUITests.swift */,
 				C94100000000000000000F00 /* ChatRenderUITests.swift */,
 				C80500000000000000000F00 /* EventAttachmentUITests.swift */,
 				C81000000000000000000F00 /* BoardRenderUITests.swift */,
@@ -908,6 +911,7 @@
 				DE03707800A9FDC91E489014 /* IPadKeyboardUITests.swift in Sources */,
 				BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */,
 				C1A7000000000000000000B2 /* SpotlightUITests.swift in Sources */,
+				C1A6000000000000000000B2 /* ShareToTaskUITests.swift in Sources */,
 				C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */,
 				C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */,
 				C81000000000000000000F01 /* BoardRenderUITests.swift in Sources */,

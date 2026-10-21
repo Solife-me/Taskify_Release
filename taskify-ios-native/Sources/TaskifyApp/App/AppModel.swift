@@ -208,6 +208,7 @@ final class AppModel {
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var widgetReloadTask: Task<Void, Never>?
     @ObservationIgnored private var searchIndexTask: Task<Void, Never>?
+    @ObservationIgnored private var isImportingSharedTaskDrafts = false
     @ObservationIgnored private var syncListenerTask: Task<Void, Never>?
     @ObservationIgnored private var taskPublicationTask: Task<Void, Never>?
     @ObservationIgnored private var pendingTaskRepublishTask: Task<Void, Never>?
@@ -3013,6 +3014,8 @@ final class AppModel {
         guard !Task.isCancelled, !isLoading else { return false }
 
         backgroundSyncStatus = "Refreshing"
+        // Tasks saved from the share sheet are added here too, so they publish without a launch.
+        await importSharedTaskDrafts()
         await persistImmediately()
         if accountBackupPublishPending {
             accountBackupPublishTask?.cancel()
@@ -6275,6 +6278,71 @@ final class AppModel {
         }
     }
 
+    /// Boards the share sheet offers for a new task, by name, the default first (C10-6).
+    private func shareTaskBoardNames() -> [String] {
+        let tasks = tasksSnapshot
+        var names: [String] = []
+        if let defaultName = TaskifyAddTaskDestination.resolve(in: tasks, requestedBoardName: nil)?.boardName {
+            names.append(defaultName)
+        }
+        for board in TaskifyAddTaskDestination.namedBoards(in: tasks)
+        where [.week, .list, .compound].contains(board.kind) && !names.contains(board.name) {
+            names.append(board.name)
+        }
+        return names
+    }
+
+    /// Adds the tasks saved from the share sheet (C10-6). Each draft's files are uploaded and
+    /// attached, the task is added and published like one made in the app, and the draft goes.
+    /// A draft whose upload fails stays for the next run; its task id is fixed, so a draft
+    /// interrupted after its task was added is only removed.
+    func importSharedTaskDrafts() async {
+#if os(iOS)
+        guard !isLoading, !isImportingSharedTaskDrafts else { return }
+        let drafts = ShareTaskDraftStore.all()
+        guard !drafts.isEmpty else { return }
+        isImportingSharedTaskDrafts = true
+        defer { isImportingSharedTaskDrafts = false }
+        for draft in drafts {
+            guard draft.account == identityPublicKey else {
+                ShareTaskDraftStore.remove(draft)
+                continue
+            }
+            if task(withID: draft.taskID) != nil {
+                ShareTaskDraftStore.remove(draft)
+                continue
+            }
+            let tasks = tasksSnapshot
+            guard let destination = TaskifyAddTaskDestination.resolve(in: tasks, requestedBoardName: draft.boardName)
+                    ?? TaskifyAddTaskDestination.resolve(in: tasks, requestedBoardName: nil),
+                  let board = board(withID: destination.boardID) else { continue }
+            var documents: [TaskDocument] = []
+            do {
+                for file in draft.files {
+                    documents.append(try await TaskAttachmentUploadService.shared.uploadDocument(
+                        fileURL: ShareTaskDraftStore.fileURL(file, of: draft),
+                        name: file.name, mimeType: file.mimeType, boardID: board.effectiveNostrBoardID))
+                }
+            } catch {
+                continue
+            }
+            guard task(withID: draft.taskID) == nil else {
+                ShareTaskDraftStore.remove(draft)
+                continue
+            }
+            let added = addDetailedTask(
+                id: draft.taskID, title: draft.title, note: draft.note,
+                boardID: destination.boardID, columnID: destination.columnID,
+                dueDate: destination.dueDate, dueDateEnabled: destination.dueDate != nil,
+                dueTimeEnabled: false, dueTimeZone: nil, urgent: false, priority: nil,
+                subtasks: [], recurrence: nil, reminders: [], reminderTime: nil,
+                images: [], documents: documents
+            )
+            if added != nil { ShareTaskDraftStore.remove(draft) }
+        }
+#endif
+    }
+
     func refreshShareState(retry: Bool = false) async {
         guard !isLoading, let identity = try? identityStore.load() else { return }
         do {
@@ -6320,7 +6388,8 @@ final class AppModel {
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
             let account = ShareAccount(publicKey: identity.publicKeyHex, recipients: recipients,
-                server: TaskifyMediaServerSettings.configuredEntry, senderRelays: effectiveNIP17InboxRelayURLs)
+                server: TaskifyMediaServerSettings.configuredEntry, senderRelays: effectiveNIP17InboxRelayURLs,
+                taskBoards: shareTaskBoardNames())
             if account != old { try ShareTransferStore.saveAccount(account) }
 #if os(iOS)
             for removed in old?.recipients ?? [] where !recipients.contains(where: { $0.id == removed.id }) {
