@@ -117,4 +117,62 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(reopenedComplete.waitForExistence(timeout: 5))
         XCTAssertEqual(reopenedComplete.label, "Mark Incomplete")
     }
+
+    func testStaleEditorCannotOverwriteNewerWindowEdit() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        let board = app.staticTexts["UI Test Board"].firstMatch
+        XCTAssertTrue(board.waitForExistence(timeout: 10))
+        board.click()
+        app.staticTexts["Open this task from a deep link"].firstMatch.click()
+        XCTAssertTrue(app.buttons["edit-task-button"].waitForExistence(timeout: 5))
+        app.buttons["edit-task-button"].click()
+
+        let staleTitle = "Stale draft \(UUID().uuidString.prefix(6))"
+        let staleField = app.textFields["task-title-field"]
+        XCTAssertTrue(staleField.waitForExistence(timeout: 5))
+        staleField.click()
+        staleField.typeKey("a", modifierFlags: .command)
+        staleField.typeText(staleTitle)
+
+        let oldWindowCount = app.windows.count
+        app.typeKey("n", modifierFlags: .command)
+        XCTAssertTrue(app.windows.element(boundBy: oldWindowCount).waitForExistence(timeout: 5))
+
+        let freshWindow = try XCTUnwrap((0..<app.windows.count).lazy.compactMap { index in
+            let window = app.windows.element(boundBy: index)
+            return window.staticTexts["UI Test Board"].exists
+                && !window.textFields["task-title-field"].exists ? window : nil
+        }.first)
+        freshWindow.click()
+        freshWindow.staticTexts["UI Test Board"].firstMatch.click()
+        let fixtureTask = freshWindow.staticTexts["Open this task from a deep link"].firstMatch
+        XCTAssertTrue(fixtureTask.waitForExistence(timeout: 5))
+        fixtureTask.click()
+        XCTAssertTrue(freshWindow.buttons["edit-task-button"].waitForExistence(timeout: 5))
+        freshWindow.buttons["edit-task-button"].click()
+
+        let freshTitle = "Fresh edit \(UUID().uuidString.prefix(6))"
+        let freshField = freshWindow.textFields["task-title-field"]
+        XCTAssertTrue(freshField.waitForExistence(timeout: 5))
+        freshField.click()
+        freshField.typeKey("a", modifierFlags: .command)
+        freshField.typeText(freshTitle)
+        freshWindow.buttons["save-task-button"].click()
+        XCTAssertTrue(freshWindow.staticTexts[freshTitle].firstMatch.waitForExistence(timeout: 5))
+
+        freshWindow.typeKey("w", modifierFlags: .command)
+        let staleSave = app.buttons["save-task-button"].firstMatch
+        XCTAssertTrue(staleSave.waitForExistence(timeout: 5))
+        staleSave.click()
+
+        let conflict = app.staticTexts["task-editor-error"]
+        XCTAssertTrue(conflict.waitForExistence(timeout: 5))
+        XCTAssertTrue(conflict.label.contains("changed in another window"))
+        app.buttons["Cancel"].firstMatch.click()
+        XCTAssertTrue(app.staticTexts[freshTitle].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts[staleTitle].exists)
+    }
 }

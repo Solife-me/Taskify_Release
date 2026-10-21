@@ -42,7 +42,8 @@ jobs:
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWalletRemovalPreviewShowsRecoveryWithoutReceive \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive \
-            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCreateEditCompleteAndReopenTaskThroughDeepLink
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCreateEditCompleteAndReopenTaskThroughDeepLink \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testStaleEditorCannotOverwriteNewerWindowEdit
 
   secrets:
     name: Secret scan (full history)

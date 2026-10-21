@@ -163,7 +163,14 @@ struct MacTaskEditor: View {
                         }.disabled(subtask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-                if let error { Section { Text(error).foregroundStyle(.red).textSelection(.enabled) } }
+                if let error {
+                    Section {
+                        Text(error)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("task-editor-error")
+                    }
+                }
                 if original != nil {
                     Section { Button("Delete Task…", role: .destructive) { deleteConfirmation = true } }
                 }

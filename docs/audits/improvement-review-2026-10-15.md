@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stages 1–2 implemented, C11-2 stages 1–2 implemented |
+| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stages 1–3 implemented, C11-2 stages 1–2 implemented |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2367,7 +2367,7 @@ Explore. C11-8 requires no feature work.
 | --- | --- | --- | --- |
 | C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
 | C11-2 | Approve | 2026-10-21 | Stages 1–2 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view; the live pre-removal wallet now consumes the same shared withdraw-only route policy as iOS and exposes no receive/incoming route. Post-date screen deletion remains scheduled with the shared iOS cleanup |
-| C11-3 | Approve | 2026-10-21 | Stages 1–2 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Four CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, and create/edit/complete/reopen. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
+| C11-3 | Approve | 2026-10-21 | Stages 1–3 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Five CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, and two-window stale-editor protection. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
 | C11-4 | Approve | 2026-10-21 | Not started |
 | C11-5 | Approve | 2026-10-21 | Not started |
 | C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
@@ -2505,3 +2505,22 @@ has been pushed.
 - Next: cover the remaining C11-3 guarantees one at a time — stale editor conflict and account-switch
   reset with two windows, then quit persistence and publish-pending offline relaunch. After that,
   continue to C11-4 Spotlight and C11-5 image paste.
+
+### Checkpoint — October 21, 2026 (C11-3 stage 3)
+
+Everything through the two-window stale-editor regression is implemented locally on `Beta`;
+nothing has been pushed.
+
+- The existing production editor conflict remains the behavior under test: an editor retains the
+  `TaskItem` revision it opened, compares that revision before uploading and again before saving,
+  and leaves the sheet open with a stable error when another window or sync changed the task.
+- The fifth isolated smoke opens one task editor with a stale draft, opens a real second Taskify
+  window with Command-N, saves a different title there, closes that window, and proves the first
+  editor cannot overwrite it. Closing the newer window before the final assertions avoids relying
+  on XCTest's window z-order.
+- CI and the documented local command now include the stale-editor smoke. The 22 Mac package tests,
+  generator check, unsigned `Local` app build and UI `build-for-testing` all pass. A direct run again
+  reached the runner but timed out while enabling automation mode before the test method began, so
+  the behavior remains a CI/local release check on a Mac that grants Xcode UI automation.
+- Next: prove account-switch reset across two windows, then cover quit persistence and a
+  publish-pending offline relaunch before moving to C11-4 Spotlight and C11-5 image paste.
