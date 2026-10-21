@@ -84,7 +84,10 @@ struct MacSettingsView: View {
                     Text(model.identityNpub).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     Button("Copy Public Key") { macCopy(model.identityNpub) }
                     SecureField("Import nsec or secret key", text: $identity)
-                    Button("Switch Account…") { importConfirmation = true }.disabled(identity.isEmpty)
+                        .accessibilityIdentifier("account-private-key-field")
+                    Button("Switch Account…") { importConfirmation = true }
+                        .disabled(identity.isEmpty)
+                        .accessibilityIdentifier("switch-account-button")
                     Text("Switching accounts replaces this Mac's task and chat state. The wallet has its own recovery phrase.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Backup") {
@@ -99,8 +102,14 @@ struct MacSettingsView: View {
                         }
                     }
                 }
-                if let message { Text(message).font(.caption).textSelection(.enabled) }
-            }.formStyle(.grouped).tabItem { Label("Account", systemImage: "person.crop.circle") }
+                if let message {
+                    Text(message).font(.caption).textSelection(.enabled)
+                        .accessibilityIdentifier("account-import-message")
+                }
+            }.formStyle(.grouped).tabItem {
+                Label("Account", systemImage: "person.crop.circle")
+                    .accessibilityIdentifier("account-settings-tab")
+            }
             Form {
                 Section("Public Profile") {
                     TextField("Display Name", text: profileBinding(\.displayName))
@@ -149,7 +158,13 @@ struct MacSettingsView: View {
                 Button("Cancel", role: .cancel) { restoreCandidate = nil }
             }
             .confirmationDialog("Switch the account on this Mac?", isPresented: $importConfirmation) {
-                Button("Switch Account", role: .destructive) { if model.importIdentity(identity) { identity = ""; message = "Account imported." } }
+                Button("Switch Account", role: .destructive) {
+                    if model.importIdentity(identity) {
+                        identity = ""
+                        message = "Account imported."
+                    }
+                }
+                .accessibilityIdentifier("confirm-switch-account-button")
                 Button("Cancel", role: .cancel) {}
             }
     }

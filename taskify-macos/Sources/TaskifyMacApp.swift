@@ -32,7 +32,10 @@ final class MacRuntime: ObservableObject {
                     service: test.identityService,
                     usesSharedAccessGroup: false
                 ),
-                syncEngine: TaskSyncEngine(outbox: NostrOutboxStore(fileURL: test.outboxURL))
+                syncEngine: TaskSyncEngine(
+                    outbox: NostrOutboxStore(fileURL: test.outboxURL),
+                    networkingEnabled: false
+                )
             )
 #else
             preconditionFailure("The UI-test runtime is available only in the UI-test build configuration.")

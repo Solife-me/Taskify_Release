@@ -563,6 +563,7 @@ public actor TaskSyncEngine {
     private let outbox: NostrOutboxStore
     private let connectionFactory: @Sendable (String) -> any TaskSyncRelayTransport
     let oneShotFallback: any NostrOneShotFetching
+    private let networkingEnabled: Bool
     struct OneShotRequest {
         let relayURL: String
         var events: [NostrEvent]
@@ -689,8 +690,19 @@ public actor TaskSyncEngine {
     private var scheduledRelayOutboxFlushRequests: Set<String> = []
     private var lastEmittedReport: TaskSyncReport?
 
-    public init(outbox: NostrOutboxStore = NostrOutboxStore()) {
-        self.init(outbox: outbox, connectionFactory: { NostrRelayConnection(relayURL: $0, automaticallyAuthenticate: false) })
+    /// `networkingEnabled: false` keeps durable outbox behavior while making configuration and
+    /// one-shot reads strictly local. Isolated app hosts use it so no UI action can open a socket.
+    public init(
+        outbox: NostrOutboxStore = NostrOutboxStore(),
+        networkingEnabled: Bool = true
+    ) {
+        self.init(
+            outbox: outbox,
+            connectionFactory: {
+                NostrRelayConnection(relayURL: $0, automaticallyAuthenticate: false)
+            },
+            networkingEnabled: networkingEnabled
+        )
     }
 
     init(
@@ -703,7 +715,8 @@ public actor TaskSyncEngine {
         makePublishPacer: @escaping @Sendable (String) -> RelayPublishPacer = RelayPublishPacer.forRelay,
         proofOfWorkRequirement: @escaping @Sendable (String) async -> Int = {
             await TaskifyRelayRequirements.shared.difficulty(for: [$0])
-        }
+        },
+        networkingEnabled: Bool = true
     ) {
         self.outbox = outbox
         self.unreachableRelayGrace = unreachableRelayGrace
@@ -712,6 +725,7 @@ public actor TaskSyncEngine {
         self.publishAcknowledgementTimeout = publishAcknowledgementTimeout
         self.connectionFactory = connectionFactory
         self.oneShotFallback = oneShotFallback
+        self.networkingEnabled = networkingEnabled
         self.auxiliaryRelayLinger = auxiliaryRelayLinger
         let pair = AsyncStream.makeStream(
             of: TaskSyncUpdate.self,
@@ -779,6 +793,7 @@ public actor TaskSyncEngine {
         inboxRelayURLs: [String]? = nil,
         excludedRelayURLs: Set<String> = []
     ) async {
+        guard networkingEnabled else { return }
         lastConfigureRequest = (boards, auxiliaryRelayURLs, inboxPublicKey, inboxRelayURLs, excludedRelayURLs)
         let now = Date()
         for relayURL in TaskifyRelayURL.normalizedList(auxiliaryRelayURLs) {
@@ -2819,6 +2834,7 @@ extension TaskSyncEngine: NostrOneShotFetching {
     /// fresh socket per relay per lookup (their connections are also NIP-42 authenticated). Relays
     /// without an open connection, or that can't take the request, go to the fallback fetcher.
     public func fetchOnce(filter: NostrRelayFilter, relayURLs: [String], timeout: TimeInterval) async -> [NostrEvent] {
+        guard networkingEnabled else { return [] }
         let relays = TaskifyRelayURL.normalizedList(relayURLs)
         var reused: [(String, any TaskSyncRelayTransport)] = []
         var unreached: [String] = []

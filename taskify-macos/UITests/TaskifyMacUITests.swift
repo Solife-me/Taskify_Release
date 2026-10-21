@@ -175,4 +175,69 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[freshTitle].firstMatch.waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts[staleTitle].exists)
     }
+
+    func testAccountSwitchClosesEditorsAndResetsEveryWindow() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        let board = app.staticTexts["UI Test Board"].firstMatch
+        XCTAssertTrue(board.waitForExistence(timeout: 10))
+        board.click()
+        app.staticTexts["Open this task from a deep link"].firstMatch.click()
+        XCTAssertTrue(app.buttons["edit-task-button"].waitForExistence(timeout: 5))
+        app.buttons["edit-task-button"].click()
+
+        let firstDraft = app.textFields["task-title-field"]
+        XCTAssertTrue(firstDraft.waitForExistence(timeout: 5))
+        firstDraft.click()
+        firstDraft.typeKey("a", modifierFlags: .command)
+        firstDraft.typeText("First account draft")
+
+        let oldWindowCount = app.windows.count
+        app.typeKey("n", modifierFlags: .command)
+        XCTAssertTrue(app.windows.element(boundBy: oldWindowCount).waitForExistence(timeout: 5))
+
+        let secondWindow = try XCTUnwrap((0..<app.windows.count).lazy.compactMap { index in
+            let window = app.windows.element(boundBy: index)
+            return window.staticTexts["UI Test Board"].exists
+                && !window.textFields["task-title-field"].exists ? window : nil
+        }.first)
+        secondWindow.click()
+        secondWindow.staticTexts["UI Test Board"].firstMatch.click()
+        let fixtureTask = secondWindow.staticTexts["Open this task from a deep link"].firstMatch
+        XCTAssertTrue(fixtureTask.waitForExistence(timeout: 5))
+        fixtureTask.click()
+        XCTAssertTrue(secondWindow.buttons["edit-task-button"].waitForExistence(timeout: 5))
+        secondWindow.buttons["edit-task-button"].click()
+
+        let secondDraft = secondWindow.textFields["task-title-field"]
+        XCTAssertTrue(secondDraft.waitForExistence(timeout: 5))
+        secondDraft.click()
+        secondDraft.typeKey("a", modifierFlags: .command)
+        secondDraft.typeText("Second account draft")
+        XCTAssertEqual(app.textFields.matching(identifier: "task-title-field").count, 2)
+
+        app.typeKey(",", modifierFlags: .command)
+        let accountTab = app.buttons["account-settings-tab"]
+        XCTAssertTrue(accountTab.waitForExistence(timeout: 5))
+        accountTab.click()
+
+        let keyField = app.secureTextFields["account-private-key-field"]
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5))
+        keyField.click()
+        keyField.typeText(String(repeating: "0", count: 63) + "2")
+        app.buttons["switch-account-button"].click()
+
+        let confirmSwitch = app.buttons["confirm-switch-account-button"]
+        XCTAssertTrue(confirmSwitch.waitForExistence(timeout: 5))
+        confirmSwitch.click()
+        XCTAssertTrue(app.staticTexts["account-import-message"].waitForExistence(timeout: 5))
+
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(app.descendants(matching: .any)["taskify-workspace-today"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "taskify-workspace-today").count, 2)
+        XCTAssertEqual(app.textFields.matching(identifier: "task-title-field").count, 0)
+        XCTAssertFalse(app.staticTexts["TASK DETAILS"].exists)
+    }
 }

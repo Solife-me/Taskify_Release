@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stages 1–3 implemented, C11-2 stages 1–2 implemented |
+| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stages 1–4 implemented, C11-2 stages 1–2 implemented |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2367,7 +2367,7 @@ Explore. C11-8 requires no feature work.
 | --- | --- | --- | --- |
 | C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
 | C11-2 | Approve | 2026-10-21 | Stages 1–2 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view; the live pre-removal wallet now consumes the same shared withdraw-only route policy as iOS and exposes no receive/incoming route. Post-date screen deletion remains scheduled with the shared iOS cleanup |
-| C11-3 | Approve | 2026-10-21 | Stages 1–3 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Five CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, and two-window stale-editor protection. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
+| C11-3 | Approve | 2026-10-21 | Stages 1–4 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Six CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, two-window stale-editor protection and two-window account-switch reset. Its injected sync engine still accepts durable local outbox work but cannot create relay transports or fresh one-shot sockets, so no Settings path can escape the isolation boundary. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
 | C11-4 | Approve | 2026-10-21 | Not started |
 | C11-5 | Approve | 2026-10-21 | Not started |
 | C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
@@ -2524,3 +2524,25 @@ nothing has been pushed.
   the behavior remains a CI/local release check on a Mac that grants Xcode UI automation.
 - Next: prove account-switch reset across two windows, then cover quit persistence and a
   publish-pending offline relaunch before moving to C11-4 Spotlight and C11-5 image paste.
+
+### Checkpoint — October 21, 2026 (C11-3 stage 4)
+
+Everything through the two-window account-switch regression is implemented locally on `Beta`;
+nothing has been pushed.
+
+- The sixth isolated smoke opens unsaved task editors in two real Taskify windows, switches to a
+  deterministic throwaway identity through the production Settings confirmation, and proves both
+  editors and task inspectors close while both windows return to Today.
+- The test surfaced an isolation bug before the account switch could be exercised safely:
+  `AppModel.importIdentity` launches relay configuration plus account/contact fetches, and other
+  manual Settings actions can do the same. The isolated host now injects an offline
+  `TaskSyncEngine`: it still records durable outbox work but cannot create either configured relay
+  transports or fresh one-shot sockets. Production behavior is unchanged, and a new core test
+  locks both no-network paths while the UI test still performs the real Keychain replacement and
+  local account cleanup.
+- CI and the documented local command include the account-switch smoke. The generator check, 22
+  Mac package tests, 871 native `TaskifyCoreTests` (14 expected opt-in skips), unsigned `Local` app
+  build, and UI `build-for-testing` pass. The direct UI run again reached the runner but timed out
+  enabling automation before the test method began.
+- Next: prove an edit survives app termination, then prove a publish-pending edit survives an
+  offline relaunch. After that, continue to C11-4 Spotlight and C11-5 image paste.

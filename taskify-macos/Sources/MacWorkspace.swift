@@ -133,6 +133,7 @@ struct MacWorkspace: View {
                 }
 
         }
+        .accessibilityIdentifier("taskify-workspace-\(destination)")
         .focusedSceneValue(\.taskifyActions, MacWindowActions(
             newTask: { creatingTask = true }, newBoard: { creatingBoard = true }, sync: { model.retrySync() }
         ))
