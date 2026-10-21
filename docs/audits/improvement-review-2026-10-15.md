@@ -2160,10 +2160,55 @@ target first; the rest can wait for the December 1 deletion) → C10-7.
 | C10-3 | Approve | 2026-10-20 | Done (`51331334`). `JSONTaskStore.read(areas:)` reads for display and leaves attachments on disk. Widget timelines read the tasks area; the notification service reads only chat and inbox. Measured with 20 MB of task images: a load grew the footprint by 19 MB, a read by 0 MB. Not checked on a device |
 | C10-4 | Approve | 2026-10-20 | Done (`ca2d2a52`), with a simpler design than proposed. The store's existing publish-pending marks (C7-1) are the durable record instead of an outbox shared through the App Group, so no two processes share an outbox. `TaskifyExternalActions.commit` stamps and saves first, then `TaskifyExternalPublisher` tries each board's relays for up to 6 s and clears the mark only for events every relay accepted. The app sends anything left at launch and when it picks up the change. Tested with a fake sender and a local WebSocket relay; not yet tried against the production relays from a real widget. A relay that asks for authentication is left to the app |
 | C10-5 | Approve | 2026-10-20 | Stage 1 done (`d9922120`). The wallet is the `TaskifyWallet` target, linked only by the iPhone and Mac apps, and TaskifyCore builds for watchOS. Chat's token detection moved to core (`CashuTokenText`). Stages 2–3 (the Watch using core's crypto, then its task code) are not started: they need the binary-size and memory measurement first, and can follow the December 1 deletion |
-| C10-6 | Approve; design question | 2026-10-20 | Not started. The share extension was given its own App Group and only the messaging key on purpose (least privilege; it parses untrusted files). Saving a task needs either access to the task store, or a hand-off through the share group that the app imports. Waiting for the maintainer's choice |
+| C10-6 | Approve; hand-off design (maintainer: "do what you recommend") | 2026-10-20 | In progress, checkpoint `b9a9899e`. The share extension stays isolated: it writes a `ShareTaskDraft` to the share group, and the app imports it at launch, on becoming active and in background refresh. Core tests pass; the end-to-end UI test has not passed yet (see the checkpoint below) |
 | C10-7 | Approve | 2026-10-20 | Done (`d55370e9`). Open tasks on boards that aren't archived are in Spotlight with their board and due date, and leave it when completed or deleted. Each save sends only what changed (`TaskifySpotlightIndex`). A result opens the task's editor. `SpotlightUITests` finds a new task from the Home Screen and opens it |
 
-**Next for chunk 10:**
-- C10-6 needs a choice: give the share extension the task store, or hand new tasks to the app through the share group.
-- C10-5 stages 2–3 start with a Watch size and memory measurement, after the December 1 wallet deletion.
-- None of the extension changes have been tried on a device yet: widget taps, relay publishing from an intent, and the memory saved in the notification service.
+### Checkpoint — October 20, 2026 (handoff)
+
+Everything is committed on Beta. Nothing is pushed: the maintainer pushes.
+
+**Done in chunk 10:**
+- C10-1 (`bb60d4ce`), C10-2 stage 1 (`3604a0a1`), C10-3 (`51331334`) and C10-4 (`ca2d2a52`);
+- C10-5 stage 1 (`d9922120`): the wallet is the `TaskifyWallet` target. App, Mac and test files
+  that use wallet types need `import TaskifyWallet`;
+- C10-7 (`d55370e9`).
+
+iOS build 173 is uploaded to App Store Connect. It must be released to the App Store before
+December 1, 2026.
+
+**Unfinished: C10-6 (checkpoint `b9a9899e`).** The code is written and builds:
+- `TaskifyCore/Media/ShareTaskDrafts.swift`;
+- the "New task" row in `TaskifyShareExtension/ShareViewController.swift`;
+- `AppModel.importSharedTaskDrafts()` and `shareTaskBoardNames()`;
+- the calls in `TaskifyNativeApp.swift` and `performBackgroundRefresh`.
+
+What is left:
+1. Make `Tests/TaskifyNativeUITests/ShareToTaskUITests.swift` pass on the iPhone 17 Pro
+   simulator (`BA8E6385-BE6D-47D2-A2CB-CFDAFD707696`). Last state:
+   - Safari loads example.com. The web view's label is the page title, "Example Domain"; it is
+     not a static text.
+   - The current Safari has no toolbar Share button. The test now opens the page menu
+     (`MoreMenuButton`) and looks for "Share"; this step has not run yet.
+   - Still to check after that:
+     - that the share sheet lists "Taskify" by that label (it may need "More");
+     - that the extension shows "New task" and "Save";
+     - that `attributedTitle` gives the page title. If it doesn't, the task title is the URL, and
+       the test's `Edit Example Domain` check needs to change, or the extension needs to read the
+       title another way.
+   - Run it alone:
+     `xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative -destination 'platform=iOS Simulator,id=BA8E6385-BE6D-47D2-A2CB-CFDAFD707696' -only-testing:TaskifyNativeUITests/ShareToTaskUITests test`.
+     Screenshots go to `/tmp/taskify_screens`.
+   - Pipe xcodebuild into a file, not into `head`: `head` closes the pipe and kills the run.
+2. Test a draft with a photo. Files are uploaded through `TaskAttachmentUploadService`, which
+   needs the network and the media server.
+3. Then commit as "Save to Taskify from the share sheet (C10-6)", and complete the C10-6 row
+   above.
+
+**Later:**
+- C10-5 stages 2–3 (the Watch uses core): measure Watch binary size and memory first, after the
+  December 1 wallet deletion.
+- C10-2 stage 2 depends on them.
+- On a device: widget taps, relay publishing from an intent, memory saved in the notification
+  service, and Spotlight. None of these has been tried yet.
+- Chunk 11 (macOS) is next. It includes the Mac wallet phase-out, which must follow iOS's
+  December 1 date.
