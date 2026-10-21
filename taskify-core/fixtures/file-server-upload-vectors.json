@@ -1,0 +1,44 @@
+{
+  "routes": [
+    {
+      "name": "Originless current multipart endpoint",
+      "type": "originless",
+      "serverURL": "https://originless.example",
+      "method": "POST",
+      "uploadURL": "https://originless.example/up"
+    },
+    {
+      "name": "Blossom BUD-01 endpoint",
+      "type": "blossom",
+      "serverURL": "https://blossom.example/base/",
+      "method": "PUT",
+      "uploadURL": "https://blossom.example/base/upload"
+    }
+  ],
+  "responses": [
+    {
+      "name": "Originless CID uses the shared public gateway",
+      "serverURL": "https://originless.example",
+      "payload": {
+        "cid": "QmS5cF4AsRFFvHZW8pRRVk7XxN516jqcTeXMYwFJwRgWc1"
+      },
+      "remoteURL": "https://dweb.link/ipfs/QmS5cF4AsRFFvHZW8pRRVk7XxN516jqcTeXMYwFJwRgWc1"
+    },
+    {
+      "name": "Originless direct URL is retained",
+      "serverURL": "https://originless.example",
+      "payload": {
+        "url": "https://files.example/encrypted.bin"
+      },
+      "remoteURL": "https://files.example/encrypted.bin"
+    },
+    {
+      "name": "Originless relative path uses the server",
+      "serverURL": "https://originless.example/base",
+      "payload": {
+        "path": "/objects/encrypted.bin"
+      },
+      "remoteURL": "https://originless.example/base/objects/encrypted.bin"
+    }
+  ]
+}

@@ -26,4 +26,5 @@ export * from "./taskEditMerge.js";
 export * from "./botCommands.js";
 export * from "./nip51Contacts.js";
 export * from "./taskifyLinks.js";
+export * from "./fileServers.js";
 export * from "./nip17.js";

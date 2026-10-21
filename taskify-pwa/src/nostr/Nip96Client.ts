@@ -1,7 +1,8 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { finalizeEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
-import { DEFAULT_FILE_STORAGE_SERVER, IPFS_GATEWAY_BASE, normalizeFileServerUrl, type FileServerEntry } from "../lib/fileStorage";
+import { fixedFileUploadURL, resolveOriginlessUploadURL } from "taskify-core";
+import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, type FileServerEntry } from "../lib/fileStorage";
 
 export type Nip96ServerInfo = {
   baseUrl: string;
@@ -353,31 +354,6 @@ export async function uploadFileToBlossom(options: {
 }
 
 
-/** Deliberately shallow -- enough to tell a CID from a path or a sentence, not full validation. */
-function isPlausibleCid(value: string): boolean {
-  if (!(value.length >= 46 || value.startsWith("b"))) return false;
-  return /^[A-Za-z0-9]+$/.test(value);
-}
-
-function resolveOriginlessUrl(serverUrl: string, data: any): string {
-  const direct = [data?.url, data?.cidUrl, data?.gatewayUrl, data?.fileUrl, data?.ipfs];
-  for (const value of direct) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  const cid = typeof data?.cid === "string" ? data.cid.trim() : "";
-  if (cid && isPlausibleCid(cid)) {
-    // Originless does not serve blobs itself -- `{server}/ipfs/{cid}` is not a route on it and
-    // 404s -- so retrieval goes through a public gateway, as its README recommends.
-    return `${IPFS_GATEWAY_BASE}/ipfs/${cid}`;
-  }
-  const path = typeof data?.path === "string" ? data.path.trim() : "";
-  if (path) {
-    const base = normalizeFileServerUrl(serverUrl) || serverUrl;
-    return path.startsWith("http") ? path : `${base}${path.startsWith("/") ? "" : "/"}${path}`;
-  }
-  return "";
-}
-
 // ── Originless ────────────────────────────────────────────────────────────────
 
 export async function uploadFileToOriginless(options: {
@@ -386,7 +362,8 @@ export async function uploadFileToOriginless(options: {
   filename?: string;
   signal?: AbortSignal;
 }): Promise<{ url: string; nip94: null }> {
-  const uploadUrl = `${normalizeFileServerUrl(options.serverUrl) || options.serverUrl}/upload`;
+  const base = normalizeFileServerUrl(options.serverUrl) || options.serverUrl;
+  const uploadUrl = fixedFileUploadURL(base, "originless");
   const attempts: Array<{ label: string; init: RequestInit }> = [];
 
   const form = new FormData();
@@ -438,7 +415,7 @@ export async function uploadFileToOriginless(options: {
         data: flattenDebugError(data),
       });
       if (!res.ok) throw new Error(data?.message || `Originless upload failed (${res.status})`);
-      const url = resolveOriginlessUrl(options.serverUrl, data);
+      const url = resolveOriginlessUploadURL(base, data);
       if (!url) throw new Error(`Originless upload response did not include a url. Response: ${JSON.stringify(flattenDebugError(data))}`);
       return { url, nip94: null };
     } catch (err) {

@@ -230,7 +230,7 @@ describe("uploadAvatar dispatcher", () => {
     expect(MockXhr.lastCall?.url).toBe("https://blossom.band/upload");
   });
 
-  test("routes originless type to POST /upload with no auth", async () => {
+  test("routes originless type to POST /up with no auth", async () => {
     const { uploadAvatar } = await import("./Nip96Client");
     const entry: FileServerEntry = { url: "https://originless.solife.me", type: "originless" };
     const file = new Blob(["test"], { type: "image/jpeg" });
@@ -246,7 +246,7 @@ describe("uploadAvatar dispatcher", () => {
     expect(result.url).toBe("https://ipfs.io/ipfs/Qmabc123");
     expect(result.nip94).toBeNull();
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://originless.solife.me/upload",
+      "https://originless.solife.me/up",
       expect.objectContaining({ method: "POST" }),
     );
     // No Authorization header for originless

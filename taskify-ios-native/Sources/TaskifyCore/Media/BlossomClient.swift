@@ -125,6 +125,15 @@ public enum TaskifyFileServerType: String, Codable, CaseIterable, Equatable, Sen
         case .originless: "Originless"
         }
     }
+
+    /// Static upload routes. NIP-96 is intentionally absent because its endpoint is discovered.
+    var fixedUploadRoute: (path: String, method: String)? {
+        switch self {
+        case .originless: ("up", "POST")
+        case .blossom: ("upload", "PUT")
+        case .nip96: nil
+        }
+    }
 }
 
 /// Mirrors the PWA's `FileServerEntry` (`taskify-pwa/src/lib/fileStorage.ts`) field-for-field, so

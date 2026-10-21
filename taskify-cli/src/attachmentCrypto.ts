@@ -1,6 +1,7 @@
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
+import { fixedFileUploadURL, resolveOriginlessUploadURL } from "taskify-core";
 import { uploadImageToNip96 } from "./nip96Upload.js";
 import type { TaskifyConfig } from "./config.js";
 
@@ -27,7 +28,7 @@ function inferServerType(url: string): "nip96" | "originless" | "blossom" {
 
 async function uploadBlobToOriginless(serverUrl: string, bytes: Uint8Array, filename: string, mimeType: string): Promise<string> {
   const base = serverUrl.replace(/\/+$/, "");
-  const uploadUrl = `${base}/upload`;
+  const uploadUrl = fixedFileUploadURL(base, "originless");
   const payload = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const blobPart: ArrayBuffer = payload.buffer as ArrayBuffer;
   const attempts: RequestInit[] = [
@@ -40,14 +41,8 @@ async function uploadBlobToOriginless(serverUrl: string, bytes: Uint8Array, file
       const res = await fetch(uploadUrl, init);
       const data = await res.json().catch(() => ({} as any));
       if (!res.ok) throw new Error(data?.message || `Originless upload failed (${res.status})`);
-      const direct = [data?.url, data?.cidUrl, data?.gatewayUrl, data?.fileUrl, data?.ipfs];
-      for (const value of direct) {
-        if (typeof value === "string" && value.trim()) return value.trim();
-      }
-      const cid = typeof data?.cid === "string" ? data.cid.trim() : "";
-      if (cid) return `${base}/ipfs/${cid}`;
-      const path = typeof data?.path === "string" ? data.path.trim() : "";
-      if (path) return path.startsWith('http') ? path : `${base}${path.startsWith('/') ? '' : '/'}${path}`
+      const remoteURL = resolveOriginlessUploadURL(base, data);
+      if (remoteURL) return remoteURL;
       throw new Error("Originless upload response did not include a url.");
     } catch (err) {
       lastErr = err;
