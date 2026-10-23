@@ -196,6 +196,11 @@ npx wrangler dev
   Keychain service, and starts neither relays nor the wallet. CI runs all four gates on the Xcode
   27 runner; the UI gate currently contains ten isolated smoke tests, including the local
   Spotlight-index/open/remove lifecycle and raw-image paste in both attachment composers.
+- The Mac app currently publishes neither App Shortcuts nor remote-push registration. C11-6's
+  compile prototype proved the iOS Add Task intents extract on macOS, but their writer still
+  hard-codes the default store; require an injectable isolated-store test and a signed
+  terminated-app Shortcuts run before enabling them. Mac DM push must use an explicit `macos`
+  registration and its own APNs topic; never send a Mac token through the iOS default.
 - Chat typing debt is tracked by explicit paths in `eslint.config.js`. When removing a Chat file's
   `@ts-nocheck`, remove that path from the allowlist too; do not restore a broad `src/chat/**` glob.
   Thread actions and utilities now expose typed hook contracts; preserve cached-data normalization

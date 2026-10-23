@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stages 1–6 implemented, C11-2 stages 1–2 implemented |
+| 11 | macOS | `taskify-macos` | Approved implementation done (2026-10-23); C11-6A/C11-7A returned for maintainer decision; shared wallet deletion remains due after Dec 1 |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2336,6 +2336,53 @@ What the review found:
   the entire iOS extension graph by checklist.
 - **Effort:** S to explore, M–L to ship. **Risk:** medium (extension storage and signing).
 
+#### Exploration result — October 23, 2026
+
+Two compile-only prototypes used the current `Local` app and were removed afterwards:
+
+- A `MenuBarExtra` with one task-name field called the existing `AppModel` quick-add path. It
+  built and added about 40 KB to the 151,368 KB Local product. The size is not its real cost: the
+  full app, task model, deferred services and (until the scheduled deletion) wallet remain a
+  resident process. It works when the main window is behind another app, but not while Taskify is
+  closed.
+- The existing iOS `TaskifyAddTaskIntent` plus a Mac `AppShortcutsProvider` built unchanged for
+  macOS. Xcode emitted discoverable Add Task and Quick Add Task metadata and both phrase sets. The
+  Local product was 151,560 KB, 192 KB above the same baseline; `Metadata.appintents` itself was
+  6,845 bytes. This surface has no permanently resident UI and is available through Shortcuts,
+  Siri and system search.
+
+The prototype deliberately was not invoked. `TaskifyIntentTaskWriter` constructs
+`JSONTaskStore()` internally, while the isolated Mac host injects a session store into
+`AppModel`; invoking the unsigned prototype could therefore have written the production store.
+The existing `ExternalPublishTests` prove that the underlying external-action boundary saves a
+mutation and its pending-publication mark before trying the network, but they do not prove that
+macOS launches the intent in the expected signed sandbox or container. That missing seam is the
+first production task, not something to bypass in an exploration.
+
+##### C11-6A — Add Task through Mac Shortcuts — recommend **Approve**
+
+- Move the add-task mutation into an injectable `TaskifyExternalActions.addTask` core operation;
+  the App Intent remains a thin app-target shell. Unit-test an isolated `JSONTaskStore`, device
+  settings and disabled/refusing publisher, including the task's pending mark and destination.
+- Extract the existing iOS `TaskifyShortcuts` provider from the iOS `@main` file into a shared
+  app-target source, compile the provider and intents in both app targets, and call
+  `updateAppShortcutParameters()` from each app. Do not add a Mac-only copy.
+- Before calling this shipped, run the shortcut from Shortcuts with Taskify terminated in a
+  signed development build. Verify that the new task appears on the requested board, remains
+  pending while offline, and publishes after the app opens. Add a Mac App Group only if that
+  signed test proves the system host cannot use the app's own container.
+- Record ten ordinary signed launches before and after on the same machine/configuration. The
+  implementation must stay within measurement noise (proposed gate: median launch-to-first-board
+  regression below 5%); the compile-only prototype cannot honestly supply that runtime number.
+- **Effort:** M. **Risk:** low–medium, concentrated in signing/container behavior.
+
+##### C11-6B — Menu-bar quick add or a Mac share extension — recommend **Decline for now**
+
+The menu item pays permanent process/startup cost without covering the closed-app case. A share
+extension adds another signed target and App Group transfer queue before there is evidence that
+Shortcuts plus the existing paste/drop workflow is insufficient. Revisit either only from usage
+evidence after C11-6A, and keep any future surface on the same external-action operation.
+
 ### C11-7 — Closed-app DM push on Mac — recommend **Explore**
 
 - **User:** People who expect desktop messages while Taskify is closed.
@@ -2345,6 +2392,58 @@ What the review found:
 - **Exploration:** document Apple provisioning and relay changes, estimate ongoing operational
   cost, and prove one development push end to end on a real Mac before proposing product UI.
 - **Effort:** M to explore/verify, L to release. **Risk:** medium–high.
+
+#### Exploration result — October 23, 2026
+
+Apple's current registration flow requires the Push Notifications capability and the macOS
+`com.apple.developer.aps-environment` entitlement from the provisioning profile. The app calls
+`NSApplication.registerForRemoteNotifications()` on every launch and receives an app-and-device
+specific token through `NSApplicationDelegate`; the provider sends to that token with the Mac
+app's topic. See Apple's [registration](https://developer.apple.com/documentation/usernotifications/registering-your-app-with-apns),
+[provider](https://developer.apple.com/documentation/usernotifications/setting-up-a-remote-notification-server),
+[request](https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns)
+and [macOS entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.aps-environment)
+documentation.
+
+Taskify currently stops at every required boundary, intentionally rather than accidentally:
+
+- the Mac entitlements have no APNs environment, `MacApplicationDelegate` has no token or remote
+  notification callbacks, and the shared coordinator's Mac branch rejects registration;
+- `DMPushRegistrationClient` sends no platform, so the server treats it as iOS;
+- the relay accepts only `ios` and `watchos` APNs registrations, lowercases only those tokens and
+  selects only iPhone/Watch/Snapstr topics;
+- hosted and StartOS configuration have no Mac topic or migration/default; and
+- there is no signed Mac development build/profile available in this review with which to prove
+  Apple's delivery. An unsigned build cannot answer the provisioning question.
+
+The incremental service cost should be low: the existing APNs token-auth connection and push
+relay can send another topic, so no second provider service is implied. The ongoing cost is
+operational—another App ID/profile and topic configuration, registration-contract compatibility,
+self-hosted migration, and a real-device release check. This is an estimate, not a delivered-push
+measurement.
+
+##### C11-7A — Signed Mac DM-push provisioning spike — recommend **Approve**
+
+- Add a typed registration platform to the shared Swift client (`ios` remains the explicit
+  default; Mac sends `macos`) and relay contract. Cover old omitted-platform registrations plus
+  iOS, Watch and Mac routing in client/server tests.
+- Add an independently configured Mac topic to the relay, environment/file config and StartOS
+  model/action migration. Route Mac to the existing metadata-free generic Taskify alert; do not
+  create a rich-preview extension or put message metadata in APNs.
+- Enable the capability only on the signed production Mac target, add AppKit registration
+  callbacks, and use the existing opt-in setting. Register every launch rather than treating a
+  cached token as canonical.
+- Stop at a developer-only end-to-end proof: with Taskify terminated on a real Mac, one encrypted
+  gift wrap produces one generic alert and opening it enters Chat. Do not expose new product UI
+  or claim completion until that passes. Return its delivery/operational result before a release
+  proposal.
+- **Effort:** M. **Risk:** medium; blocked on Apple signing/provisioning access and a real Mac.
+
+##### C11-7B — Ship closed-app Mac push before that proof — recommend **Decline**
+
+Local mocks can verify the HTTP and routing contracts, but they cannot verify APNs entitlement,
+topic and terminated-app delivery. Reusing the iOS topic/token shape or shipping an unproven
+toggle would turn an honest unsupported state into a silent reliability bug.
 
 ### C11-8 — Do not copy phone-only parity controls — recommend **Decline**
 
@@ -2370,8 +2469,8 @@ Explore. C11-8 requires no feature work.
 | C11-3 | Approve | 2026-10-21 | Stages 1–6 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Eight CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, two-window stale-editor protection, two-window account-switch reset, graceful-quit persistence, and a publish-pending edit across an offline relaunch. Its injected sync engine still accepts durable local outbox work but cannot create relay transports or fresh one-shot sockets, so no Settings path can escape the isolation boundary. The app model now observes sync reports before deferred relay startup and restores the durable outbox count during load, keeping queue state truthful even while offline. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
 | C11-4 | Approve | 2026-10-21 | Done. The shared Spotlight indexer now builds on macOS, updates after the same task-area saves as iOS, and gives every result the shared `taskify://task` content link. Mac opens that link through its production router, while bundle-scoped Mac domains keep the isolated host out of the production index. A ninth CI smoke covers index, open, complete and removal; `TaskifyCore` remains the single authority for which tasks are searchable. |
 | C11-5 | Approve | 2026-10-21 | Done. `MacAttachmentQueue` now has one import boundary for file URLs and raw transferable image bytes. It detects the actual image type from the bytes, writes a protected temporary file with a safe generated name and real extension, and sends that file through the unchanged task/chat encryption and upload services. Both composers accept the same payload. Package regressions cover file import, invalid bytes, CoreTransferable PNG negotiation and round trips through both encryption inputs; a tenth isolated-host smoke puts PNG data with no file URL on the pasteboard and stages it in each composer. |
-| C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
-| C11-7 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
+| C11-6 | Explore | 2026-10-21 | Complete. Compile prototypes favor shared App Intents/Shortcuts over a resident menu item. Returned C11-6A (Approve) and C11-6B (Decline) for maintainer decision. |
+| C11-7 | Explore | 2026-10-21 | Complete as far as an unsigned review can go. Returned C11-7A (Approve a signed provisioning spike) and C11-7B (Decline release before its real-Mac proof) for maintainer decision. |
 | C11-8 | Decline | 2026-10-21 | No phone-only parity work will be added |
 
 ### Checkpoint — October 21, 2026 (C11-1)
@@ -2634,3 +2733,30 @@ Everything through raw-image paste in both Mac attachment composers is implement
   boundary; Rust/UniFFI would add a bridge to platform pasteboard APIs without removing a second
   implementation. Next: complete the recorded C11-6 and C11-7 explorations; no approved Mac
   implementation remains before the scheduled shared wallet deletion after December 1.
+
+### Checkpoint — October 23, 2026 (C11-6/C11-7 explorations)
+
+Everything through the approved Chunk 11 implementation and both explorations is committed or
+ready to commit locally on `Beta`; nothing has been pushed. The two temporary capture prototypes
+were removed and the generated project again matches its manifest.
+
+- C11-6 measured a 40 KB Local-product delta for a same-process menu-bar field and a 192 KB delta
+  for the shared iOS App Intents/Shortcuts path (6,845 bytes of extracted intent metadata), against
+  the same 151,368 KB baseline. The menu item does not cover app-closed capture. The Shortcuts
+  path does, but its hard-coded default store prevents a safe isolated invocation today.
+- C11-6A is the concrete recommendation: first make add-task an injectable external core action,
+  then share the app-target intent/provider and require a signed, terminated-app Shortcuts test
+  plus a same-machine launch benchmark. C11-6B declines a resident menu item/share target until
+  evidence shows Shortcuts and current paste/drop are insufficient.
+- C11-7 mapped the complete Mac APNs gap: capability/profile, entitlement, AppKit callbacks,
+  explicit `macos` registration platform, relay topic routing, hosted/StartOS config and a real
+  terminated-app delivery. Existing APNs infrastructure keeps likely incremental service cost
+  low, but signing and release-check cost remain.
+- C11-7A recommends only the signed provisioning spike and generic privacy-preserving alert;
+  C11-7B declines product release before one real development push succeeds.
+- No runtime, wire contract or product behavior changed, so no cross-client vector or full test
+  run is warranted for this documentation step. No Rust/UniFFI boundary helps either feature:
+  both are Apple lifecycle/signing surfaces around existing Swift core behavior.
+- Next: the maintainer decides C11-6A/C11-6B and C11-7A/C11-7B. Do not implement either approved
+  candidate by inference. After those decisions (and any approved work), mark Chunk 11 done and
+  review Chunk 12 with C12-n proposals before implementation.
