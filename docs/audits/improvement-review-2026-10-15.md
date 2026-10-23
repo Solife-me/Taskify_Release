@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stages 1–5 implemented, C11-2 stages 1–2 implemented |
+| 11 | macOS | `taskify-macos` | Implementing (2026-10-21); C11-1 done, C11-3 stages 1–6 implemented, C11-2 stages 1–2 implemented |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2367,7 +2367,7 @@ Explore. C11-8 requires no feature work.
 | --- | --- | --- | --- |
 | C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
 | C11-2 | Approve | 2026-10-21 | Stages 1–2 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view; the live pre-removal wallet now consumes the same shared withdraw-only route policy as iOS and exposes no receive/incoming route. Post-date screen deletion remains scheduled with the shared iOS cleanup |
-| C11-3 | Approve | 2026-10-21 | Stages 1–5 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Seven CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, two-window stale-editor protection, two-window account-switch reset, and an immediate edit saved through the real Command-Q termination path. Its injected sync engine still accepts durable local outbox work but cannot create relay transports or fresh one-shot sockets, so no Settings path can escape the isolation boundary. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
+| C11-3 | Approve | 2026-10-21 | Stages 1–6 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Eight CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, two-window stale-editor protection, two-window account-switch reset, graceful-quit persistence, and a publish-pending edit across an offline relaunch. Its injected sync engine still accepts durable local outbox work but cannot create relay transports or fresh one-shot sockets, so no Settings path can escape the isolation boundary. The app model now observes sync reports before deferred relay startup and restores the durable outbox count during load, keeping queue state truthful even while offline. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
 | C11-4 | Approve | 2026-10-21 | Not started |
 | C11-5 | Approve | 2026-10-21 | Not started |
 | C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
@@ -2563,3 +2563,22 @@ pushed.
   and `build-for-testing` is the relevant compile/sign gate for the new UI assertion.
 - Next: prove a publish-pending edit survives an offline relaunch. After that, continue to C11-4
   Spotlight and C11-5 image paste.
+
+### Checkpoint — October 21, 2026 (C11-3 stage 6)
+
+Everything through offline outbox relaunch persistence is implemented locally on `Beta`; nothing
+has been pushed.
+
+- A regression smoke edits the shared fixture task while the isolated host's sync engine is
+  offline, proves the board and task events appear as two queued changes, quits through Command-Q,
+  then preserves the temporary store/outbox and proves both the edit and queue count survive the
+  relaunch.
+- The app model now installs its passive sync-report listener during load and restores the durable
+  outbox count and diagnostics before the first populated frame. Socket configuration and relay
+  replay remain deferred, so this does not move network work back onto startup.
+- The generator check, all 22 Mac presentation tests, all 871 native core tests (14 expected
+  opt-in skips), the unsigned Local app build and the isolated UI `build-for-testing` gate pass.
+  The targeted UI execution was attempted before the fix, but this Mac again timed out while
+  enabling XCTest automation before entering the test method.
+- C11-3 is complete. Next: C11-4 Spotlight indexing and deep-link opening on macOS, then C11-5
+  raw-image paste in the task editor.

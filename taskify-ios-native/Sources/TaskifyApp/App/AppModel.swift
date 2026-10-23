@@ -4715,6 +4715,17 @@ final class AppModel {
         runPerformanceProbeIfRequested()
 #endif
 #endif
+        // Queue state is local, durable app data, not a network service. Observe it before the
+        // first frame even when relay startup is deliberately deferred (or disabled by the Mac
+        // UI-test host), and restore an outbox left by the previous process immediately.
+        startSyncListenerIfNeeded()
+        let queuedChangeCount = await syncEngine.pendingPublishCount()
+        if pendingSyncChangeCount != queuedChangeCount {
+            pendingSyncChangeCount = queuedChangeCount
+        }
+        if queuedChangeCount > 0 {
+            await refreshPendingPublishRecords()
+        }
         applyStartupBoardPreference()
         refreshNotifications(requestPermission: false)
         reconcileFastingReminders()
@@ -5175,17 +5186,23 @@ final class AppModel {
     }
 
     private func startSync() {
+        startSyncListenerIfNeeded()
+        reconfigureSync()
+        // Unreachable relays never send a backlog; generate anyway after this long.
+        scheduleRelayHistorySettle(after: .seconds(25))
+    }
+
+    /// Listening is passive: it creates no sockets and is also required by intentionally offline
+    /// hosts so durable outbox changes reach the UI. Relay configuration remains in `startSync`.
+    private func startSyncListenerIfNeeded() {
+        guard syncListenerTask == nil else { return }
         let updates = syncEngine.updates()
-        syncListenerTask?.cancel()
         syncListenerTask = Task { [weak self] in
             for await update in updates {
                 guard !Task.isCancelled else { return }
                 await self?.handleSyncUpdate(update)
             }
         }
-        reconfigureSync()
-        // Unreachable relays never send a backlog; generate anyway after this long.
-        scheduleRelayHistorySettle(after: .seconds(25))
     }
 
     private func scheduleRelayHistorySettle(after delay: Duration) {

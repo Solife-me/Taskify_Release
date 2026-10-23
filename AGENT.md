@@ -194,7 +194,7 @@ npx wrangler dev
   smoke test after changing Mac sources or any shared iOS-app source in the generator manifest.
   The UI-test configuration has a different bundle id, session-scoped temporary store/outbox and
   Keychain service, and starts neither relays nor the wallet. CI runs all four gates on the Xcode
-  27 runner; the UI gate currently contains seven isolated smoke tests.
+  27 runner; the UI gate currently contains eight isolated smoke tests.
 - Chat typing debt is tracked by explicit paths in `eslint.config.js`. When removing a Chat file's
   `@ts-nocheck`, remove that path from the allowlist too; do not restore a broad `src/chat/**` glob.
   Thread actions and utilities now expose typed hook contracts; preserve cached-data normalization
