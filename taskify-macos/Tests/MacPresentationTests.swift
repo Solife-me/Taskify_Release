@@ -1,9 +1,97 @@
+import CoreTransferable
 import XCTest
 import TaskifyCore
 import TaskifyWallet
 @testable import MacPresentation
 
 final class MacPresentationTests: XCTestCase {
+    func testPNGItemProviderNegotiatesTheRawImageTransferRepresentation() async throws {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(
+            forTypeIdentifier: "public.png",
+            visibility: .all
+        ) { completion in
+            completion(Self.onePixelPNG, nil)
+            return nil
+        }
+
+        let payload: MacAttachmentTransferPayload = try await withCheckedThrowingContinuation { continuation in
+            _ = provider.loadTransferable(type: MacAttachmentTransferPayload.self) {
+                continuation.resume(with: $0)
+            }
+        }
+
+        guard case .rawImage(let bytes) = payload.source else {
+            return XCTFail("PNG data unexpectedly loaded as a file URL")
+        }
+        XCTAssertEqual(bytes, Self.onePixelPNG)
+    }
+
+    func testRawPNGMaterializesWithDetectedTypeAndFeedsBothEncryptionPaths() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskifyMacAttachmentTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let imported = try MacAttachmentImporter.materialize(
+            .rawImage(Self.onePixelPNG),
+            into: root
+        )
+        defer { try? FileManager.default.removeItem(at: imported.url) }
+
+        XCTAssertEqual(imported.name, "Pasted Image.png")
+        XCTAssertEqual(imported.mimeType, "image/png")
+        XCTAssertEqual(imported.url.pathExtension, "png")
+        XCTAssertEqual(try Data(contentsOf: imported.url), Self.onePixelPNG)
+
+        let taskCiphertext = try AttachmentFileCrypto.encryptTask(imported.url, boardID: "board")
+        defer { try? FileManager.default.removeItem(at: taskCiphertext) }
+        let taskPlaintext = try AttachmentFileCrypto.decryptTask(taskCiphertext, boardID: "board")
+        defer { try? FileManager.default.removeItem(at: taskPlaintext) }
+        XCTAssertEqual(try Data(contentsOf: taskPlaintext), Self.onePixelPNG)
+
+        let chatCiphertext = try AttachmentFileCrypto.encryptChat(imported.url)
+        defer { try? FileManager.default.removeItem(at: chatCiphertext.url) }
+        let attachment = try XCTUnwrap(NostrDirectMessageAttachment(
+            url: "https://files.example/image.bin",
+            mimeType: imported.mimeType,
+            filename: imported.name,
+            size: chatCiphertext.plaintextSize,
+            keyHex: chatCiphertext.keyHex,
+            nonceHex: chatCiphertext.nonceHex,
+            sha256: chatCiphertext.sha256
+        ))
+        let chatPlaintext = try AttachmentFileCrypto.decryptChat(chatCiphertext.url, attachment: attachment)
+        defer { try? FileManager.default.removeItem(at: chatPlaintext) }
+        XCTAssertEqual(try Data(contentsOf: chatPlaintext), Self.onePixelPNG)
+    }
+
+    func testFileURLImportStillPreservesNameTypeAndBytes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskifyMacAttachmentTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let imports = root.appendingPathComponent("imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: imports, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("notes.txt")
+        let bytes = Data("keep the file path".utf8)
+        try bytes.write(to: source)
+
+        let imported = try MacAttachmentImporter.materialize(.file(source), into: imports)
+
+        XCTAssertEqual(imported.name, "notes.txt")
+        XCTAssertEqual(imported.mimeType, "text/plain")
+        XCTAssertEqual(try Data(contentsOf: imported.url), bytes)
+        XCTAssertNotEqual(imported.url, source)
+    }
+
+    func testRawNonImageDataIsRejected() throws {
+        XCTAssertThrowsError(
+            try MacAttachmentImporter.materialize(.rawImage(Data("not an image".utf8)))
+        )
+    }
+
     func testDeepLinkSelectionSurvivesItsBoardDestinationChange() {
         XCTAssertEqual(
             MacNavigationSelection.retainedTaskID(
@@ -261,4 +349,8 @@ final class MacPresentationTests: XCTestCase {
             interval: 3, intervalUnit: .hour, until: until, existing: nil)
         XCTAssertEqual(result, .every(3, .hour, until: until))
     }
+
+    private static let onePixelPNG = Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )!
 }

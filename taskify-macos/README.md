@@ -26,18 +26,20 @@ xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testAccountSwitchClosesEditorsAndResetsEveryWindow \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCommandQPersistsAnImmediateTaskEdit \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testPendingPublicationSurvivesOfflineRelaunch \
-  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testSpotlightTaskOpensAndCompletionRemovesIt
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testSpotlightTaskOpensAndCompletionRemovesIt \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testRawPNGCanBePastedIntoTaskAndChatComposers
 ```
 
 Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 22 presentation/runtime tests, the unsigned app build and the nine isolated app-host smoke tests on
+the 26 presentation/runtime tests, the unsigned app build and the ten isolated app-host smoke tests on
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
 a session-scoped temporary store/outbox and Keychain service, and no relay or wallet startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing
-process-global environment. A developer Mac must allow Xcode UI automation before the test runner
+process-global environment. The attachment smoke puts raw PNG data without a file URL on the real
+pasteboard and stages it in both task and chat composers. A developer Mac must allow Xcode UI automation before the test runner
 can execute. `Local` retains
 app debugging while Swift package dependencies use their release configuration;
 use it for attachment performance work. Debug is useful for dependency debugging,

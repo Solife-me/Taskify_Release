@@ -6,6 +6,7 @@ enum MacUITestFixture {
     static let boardID = "ui-test-board"
     static let taskID = "ui-test-deep-link-task"
     static let taskTitle = "Open this task from a deep link"
+    static let chatPeerPublicKey = String(repeating: "2", count: 64)
 
     static func prepare(_ configuration: MacUITestRuntimeConfiguration) throws {
         let files = FileManager.default
@@ -46,10 +47,25 @@ enum MacUITestFixture {
             order: 0,
             columnID: column.id
         )
+        let contact = NostrContact(
+            publicKeyValue: chatPeerPublicKey,
+            petname: "Paste Test Contact"
+        )!
+        let message = NostrDirectMessage(
+            rumorEventID: String(repeating: "3", count: 64),
+            wrapEventID: String(repeating: "4", count: 64),
+            peerPublicKey: chatPeerPublicKey,
+            senderPublicKey: chatPeerPublicKey,
+            content: "Paste an image here",
+            createdAt: 1_700_000_000,
+            isIncoming: true
+        )
         let snapshot = TaskifySnapshot(
             boards: [board],
             tasks: [task],
-            selectedBoardID: board.id
+            selectedBoardID: board.id,
+            contacts: [contact],
+            directMessages: [message]
         )
         try JSONEncoder().encode(snapshot).write(to: configuration.storeURL, options: .atomic)
     }

@@ -132,8 +132,11 @@ struct MacTaskEditor: View {
                     MacAttachmentQueueView(queue: attachments, busy: saving, onCancel: { saveTask?.cancel() })
                     HStack {
                         Button("Attach Files…") { attachments.chooseFiles() }.disabled(saving || attachments.importing)
-                        PasteButton(payloadType: URL.self) { urls in attachments.stage(urls) }
+                        PasteButton(payloadType: MacAttachmentTransferPayload.self) { payloads in
+                            attachments.stage(payloads.map(\.source))
+                        }
                             .labelStyle(.iconOnly).disabled(saving || attachments.importing).help("Paste Files")
+                            .accessibilityIdentifier("task-attachment-paste-button")
                     }
                     .padding(6)
                     .background(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 6))

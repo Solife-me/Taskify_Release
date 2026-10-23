@@ -1,3 +1,4 @@
+import AppKit
 import CoreSpotlight
 import XCTest
 
@@ -346,6 +347,38 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["2 changes waiting to sync"].waitForExistence(timeout: 5))
     }
 
+    func testRawPNGCanBePastedIntoTaskAndChatComposers() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        let board = app.staticTexts["UI Test Board"].firstMatch
+        XCTAssertTrue(board.waitForExistence(timeout: 10))
+        board.click()
+        app.buttons["new-task-button"].click()
+        XCTAssertTrue(app.textFields["task-title-field"].waitForExistence(timeout: 5))
+
+        putRawPNGOnPasteboard()
+        let taskPaste = app.buttons["task-attachment-paste-button"]
+        XCTAssertTrue(taskPaste.waitForExistence(timeout: 5))
+        taskPaste.click()
+        XCTAssertTrue(app.staticTexts["Pasted Image.png"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].click()
+
+        let chat = app.staticTexts["Chat"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 5))
+        chat.click()
+        let fixturePeer = app.staticTexts["Paste Test Contact"]
+        XCTAssertTrue(fixturePeer.waitForExistence(timeout: 5))
+        fixturePeer.click()
+
+        putRawPNGOnPasteboard()
+        let chatPaste = app.buttons["chat-attachment-paste-button"]
+        XCTAssertTrue(chatPaste.waitForExistence(timeout: 5))
+        chatPaste.click()
+        XCTAssertTrue(app.staticTexts["Pasted Image.png"].waitForExistence(timeout: 5))
+    }
+
     private func waitForSpotlightItem(
         present: Bool,
         timeout: TimeInterval = 15
@@ -371,4 +404,15 @@ final class TaskifyMacUITests: XCTestCase {
         }
         return nil
     }
+
+    private func putRawPNGOnPasteboard() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setData(Self.onePixelPNG, forType: .png))
+        XCTAssertNil(pasteboard.propertyList(forType: .fileURL))
+    }
+
+    private static let onePixelPNG = Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )!
 }

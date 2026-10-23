@@ -216,9 +216,12 @@ private struct MacConversation: View {
                 MacAttachmentQueueView(queue: attachments, busy: sending, onCancel: { sendTask?.cancel() })
                 HStack(alignment: .bottom, spacing: 12) {
                     Button { attachments.chooseFiles() } label: { Image(systemName: "paperclip") }.disabled(sending || attachments.importing)
-                    PasteButton(payloadType: URL.self) { urls in attachments.stage(urls) }
+                    PasteButton(payloadType: MacAttachmentTransferPayload.self) { payloads in
+                        attachments.stage(payloads.map(\.source))
+                    }
                         .labelStyle(.iconOnly).disabled(sending || attachments.importing || model.isDirectMessagePeerBlocked(peer))
                         .help("Paste Files")
+                        .accessibilityIdentifier("chat-attachment-paste-button")
                     ZStack(alignment: .topLeading) {
                         if composer.isEmpty {
                             Text("Message").font(.body).foregroundStyle(.secondary)

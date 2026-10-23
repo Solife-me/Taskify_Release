@@ -2369,7 +2369,7 @@ Explore. C11-8 requires no feature work.
 | C11-2 | Approve | 2026-10-21 | Stages 1–2 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view; the live pre-removal wallet now consumes the same shared withdraw-only route policy as iOS and exposes no receive/incoming route. Post-date screen deletion remains scheduled with the shared iOS cleanup |
 | C11-3 | Approve | 2026-10-21 | Stages 1–6 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Eight CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, two-window stale-editor protection, two-window account-switch reset, graceful-quit persistence, and a publish-pending edit across an offline relaunch. Its injected sync engine still accepts durable local outbox work but cannot create relay transports or fresh one-shot sockets, so no Settings path can escape the isolation boundary. The app model now observes sync reports before deferred relay startup and restores the durable outbox count during load, keeping queue state truthful even while offline. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
 | C11-4 | Approve | 2026-10-21 | Done. The shared Spotlight indexer now builds on macOS, updates after the same task-area saves as iOS, and gives every result the shared `taskify://task` content link. Mac opens that link through its production router, while bundle-scoped Mac domains keep the isolated host out of the production index. A ninth CI smoke covers index, open, complete and removal; `TaskifyCore` remains the single authority for which tasks are searchable. |
-| C11-5 | Approve | 2026-10-21 | Not started |
+| C11-5 | Approve | 2026-10-21 | Done. `MacAttachmentQueue` now has one import boundary for file URLs and raw transferable image bytes. It detects the actual image type from the bytes, writes a protected temporary file with a safe generated name and real extension, and sends that file through the unchanged task/chat encryption and upload services. Both composers accept the same payload. Package regressions cover file import, invalid bytes, CoreTransferable PNG negotiation and round trips through both encryption inputs; a tenth isolated-host smoke puts PNG data with no file URL on the pasteboard and stages it in each composer. |
 | C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
 | C11-7 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
 | C11-8 | Decline | 2026-10-21 | No phone-only parity work will be added |
@@ -2607,3 +2607,30 @@ Everything through Mac Spotlight search is implemented locally on `Beta`; nothin
 - No new language boundary is warranted: the searchable-task projection is already shared Swift
   across iOS and macOS, and a Rust/UniFFI layer would add bridging without removing another
   implementation. Next: C11-5 raw-image paste in the task editor and chat composer.
+
+### Checkpoint — October 23, 2026 (C11-5)
+
+Everything through raw-image paste in both Mac attachment composers is implemented locally on
+`Beta`; nothing has been pushed.
+
+- The regression was written first and failed because the shared importer did not exist. The new
+  presentation tests prove a PNG-only `NSItemProvider` selects the raw-data Transferable
+  representation, byte-sniffed PNG data becomes `Pasted Image.png`, non-image bytes are rejected,
+  and the staged file round-trips through both `AttachmentFileCrypto` task and chat paths. The
+  original file-URL path remains covered.
+- `MacAttachmentQueue` is still the single staging boundary. Both task and chat `PasteButton`s now
+  accept one payload whose source is either a file URL or raw image data; drop and file-picker URLs
+  enter the same importer. Raw bytes are written as owner-only temporary attachment files with a
+  detected extension and MIME type, then the existing `TaskAttachmentUploadService` handles the
+  encryption and upload format unchanged.
+- The isolated fixture now contains a deterministic local conversation. A tenth CI smoke places
+  PNG data with no file URL on `NSPasteboard`, stages it in a new task, then stages it in that chat.
+  The test runner and app still have no relay or wallet startup.
+- Verification passed: deterministic project check; all 26 Mac package tests; unsigned `Local`
+  app build; and isolated UI `build-for-testing`. The targeted UI execution was attempted, but this
+  Mac again timed out while enabling XCTest automation before entering the test method.
+- No cross-client wire or behavioral contract changed, so no core JSON vector is appropriate.
+  Swift's native Transferable, ImageIO and existing shared attachment crypto already cover the
+  boundary; Rust/UniFFI would add a bridge to platform pasteboard APIs without removing a second
+  implementation. Next: complete the recorded C11-6 and C11-7 explorations; no approved Mac
+  implementation remains before the scheduled shared wallet deletion after December 1.
