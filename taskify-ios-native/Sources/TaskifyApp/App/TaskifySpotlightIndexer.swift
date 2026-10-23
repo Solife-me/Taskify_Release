@@ -3,12 +3,20 @@ import Foundation
 import TaskifyCore
 import UniformTypeIdentifiers
 
-/// Keeps open tasks in Spotlight (C10-7). `TaskifySpotlightIndex` decides what changed since the
-/// last update; only that is sent. The index is on this device only, and the user can turn it off
-/// in iOS Settings under Siri & Search. A result opens the task (`RootTabView`).
+/// Keeps open tasks in Spotlight (C10-7/C11-4). `TaskifySpotlightIndex` decides what changed since
+/// the last update; only that is sent. The index is on this device only. A result opens the task
+/// through the shared `taskify://task` link on both iOS and macOS.
 actor TaskifySpotlightIndexer {
     static let shared = TaskifySpotlightIndexer()
+#if os(macOS)
+    /// The bundle-scoped domain keeps the isolated Mac UI host out of the production Mac index.
+    static var domain: String {
+        "\(Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac").tasks"
+    }
+#else
+    /// Preserve the established iOS domain so upgrades continue removing earlier indexed items.
     static let domain = "solife.me.Taskify.tasks"
+#endif
 
     private let index = CSSearchableIndex.default()
     /// Task id -> fingerprint of what the index holds. Nil until read from disk.
@@ -58,6 +66,7 @@ actor TaskifySpotlightIndexer {
                 : due.formatted(date: .abbreviated, time: .omitted))
         }
         attributes.contentDescription = details.filter { !$0.isEmpty }.joined(separator: " · ")
+        attributes.contentURL = TaskifyWidgetLink.task(id: item.id, boardID: item.boardID).url
         // Spotlight shows a due date with its time; an all-day task's is in the description.
         if item.dueTimeEnabled { attributes.dueDate = item.dueDate }
         return CSSearchableItem(uniqueIdentifier: item.id, domainIdentifier: domain, attributeSet: attributes)

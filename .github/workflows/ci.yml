@@ -46,7 +46,8 @@ jobs:
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testStaleEditorCannotOverwriteNewerWindowEdit \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testAccountSwitchClosesEditorsAndResetsEveryWindow \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCommandQPersistsAnImmediateTaskEdit \
-            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testPendingPublicationSurvivesOfflineRelaunch
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testPendingPublicationSurvivesOfflineRelaunch \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testSpotlightTaskOpensAndCompletionRemovesIt
 
   secrets:
     name: Secret scan (full history)

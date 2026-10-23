@@ -28,6 +28,7 @@ SHARED_SOURCES = (
     "App/ScriptureMemorySettings.swift",
     "App/TaskStreakSettings.swift",
     "App/TaskOrderingSettings.swift",
+    "App/TaskifySpotlightIndexer.swift",
     "App/StartupViewSettings.swift",
     "App/OnboardingSettings.swift",
     "App/NpubCashSettings.swift",

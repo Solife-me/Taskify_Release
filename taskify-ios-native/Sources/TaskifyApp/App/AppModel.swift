@@ -6539,7 +6539,7 @@ final class AppModel {
     /// could be dropped and leave a widget stale for up to an hour.
     /// Spotlight's copy of the open tasks follows saves the same way, debounced (C10-7).
     private func scheduleSearchIndexUpdate() {
-#if os(iOS)
+#if os(iOS) || os(macOS)
         searchIndexTask?.cancel()
         searchIndexTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(2500))

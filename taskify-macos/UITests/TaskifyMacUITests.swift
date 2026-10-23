@@ -1,6 +1,11 @@
+import CoreSpotlight
 import XCTest
 
 final class TaskifyMacUITests: XCTestCase {
+    private static let fixtureTaskID = "ui-test-deep-link-task"
+    private static let fixtureBoardID = "ui-test-board"
+    private static let spotlightDomain = "solife.me.Taskify.Mac.UITests.tasks"
+
     override func setUpWithError() throws {
         continueAfterFailure = false
     }
@@ -19,6 +24,31 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["TASK DETAILS"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Edit Task…"].exists)
         XCTAssertFalse(app.staticTexts["Welcome to Taskify"].exists)
+    }
+
+    @MainActor
+    func testSpotlightTaskOpensAndCompletionRemovesIt() async throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["UI Test Board"].waitForExistence(timeout: 10))
+        let indexedItem = try await waitForSpotlightItem(present: true)
+        XCTAssertEqual(
+            indexedItem?.attributeSet.contentURL?.absoluteString,
+            "taskify://task?id=\(Self.fixtureTaskID)&board=\(Self.fixtureBoardID)"
+        )
+
+        let contentURL = try XCTUnwrap(indexedItem?.attributeSet.contentURL)
+        app.open(contentURL)
+        XCTAssertTrue(app.staticTexts["TASK DETAILS"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Open this task from a deep link"].exists)
+
+        let complete = app.buttons["complete-task-button"]
+        XCTAssertTrue(complete.waitForExistence(timeout: 5))
+        complete.click()
+        let removedItem = try await waitForSpotlightItem(present: false)
+        XCTAssertNil(removedItem)
     }
 
     func testWalletRemovalPreviewShowsRecoveryWithoutReceive() {
@@ -314,5 +344,31 @@ final class TaskifyMacUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts[editedTitle].firstMatch.waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["2 changes waiting to sync"].waitForExistence(timeout: 5))
+    }
+
+    private func waitForSpotlightItem(
+        present: Bool,
+        timeout: TimeInterval = 15
+    ) async throws -> CSSearchableItem? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let item = try await spotlightItem()
+            if (item != nil) == present { return item }
+            try await Task.sleep(for: .milliseconds(500))
+        } while Date() < deadline
+        return try await spotlightItem()
+    }
+
+    private func spotlightItem() async throws -> CSSearchableItem? {
+        let query = CSSearchQuery(
+            queryString: "uniqueIdentifier == '\(Self.fixtureTaskID)'",
+            queryContext: nil
+        )
+        for try await result in query.results {
+            if result.item.domainIdentifier == Self.spotlightDomain {
+                return result.item
+            }
+        }
+        return nil
     }
 }

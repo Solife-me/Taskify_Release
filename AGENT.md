@@ -194,7 +194,8 @@ npx wrangler dev
   smoke test after changing Mac sources or any shared iOS-app source in the generator manifest.
   The UI-test configuration has a different bundle id, session-scoped temporary store/outbox and
   Keychain service, and starts neither relays nor the wallet. CI runs all four gates on the Xcode
-  27 runner; the UI gate currently contains eight isolated smoke tests.
+  27 runner; the UI gate currently contains nine isolated smoke tests, including the local
+  Spotlight-index/open/remove lifecycle.
 - Chat typing debt is tracked by explicit paths in `eslint.config.js`. When removing a Chat file's
   `@ts-nocheck`, remove that path from the allowlist too; do not restore a broad `src/chat/**` glob.
   Thread actions and utilities now expose typed hook contracts; preserve cached-data normalization
@@ -267,7 +268,7 @@ npx wrangler dev
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift` | Native push registration | NIP-98 method, URL, and payload binding plus safe endpoint construction |
 | `taskify-ios-native/Tests/TaskifyCoreTests/ShareTaskDraftTests.swift`, `taskify-ios-native/Tests/TaskifyNativeUITests/ShareToTaskUITests.swift` | Native share sheet to tasks | Draft title/note rules and isolated file persistence; Safari page-title capture; real image upload and attachment when the app imports the draft |
-| `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift`, `taskify-macos/UITests/TaskifyMacUITests.swift` | Mac build, presentation and isolated app host | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 22 package tests cover DST-aware placement, list drafts, pending wallet outcomes, recovery consent, payment-request mint selection, recurrence, deep-link selection, runtime isolation, live withdraw-only routes, recovery-mode wallet startup and entitlements; the separately identified UI host opens a fixture task through the production deep-link path, and its five isolated smokes cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, and stale-editor protection across two windows without production relays or wallet startup |
+| `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift`, `taskify-macos/UITests/TaskifyMacUITests.swift` | Mac build, presentation and isolated app host | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 22 package tests cover DST-aware placement, list drafts, pending wallet outcomes, recovery consent, payment-request mint selection, recurrence, deep-link selection, runtime isolation, live withdraw-only routes, recovery-mode wallet startup and entitlements; nine isolated host smokes cover deep-link navigation, wallet close-out surfaces, task editing and completion, two-window conflicts/account switching, quit/outbox persistence, and the local Spotlight index/open/remove lifecycle without production relays or wallet startup |
 | `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy, retries, authenticated WebSocket delivery, and Web Push (RFC 8291 payload a browser decrypts, VAPID signature, push-service-only endpoints) |
 
 Additional PWA regression tests include `src/nostr/startupStability.test.ts`, which is

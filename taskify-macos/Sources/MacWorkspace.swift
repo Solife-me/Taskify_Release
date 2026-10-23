@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 import TaskifyCore
 
@@ -206,7 +207,19 @@ struct MacWorkspace: View {
                 openWallet: { destination = MacDestination.wallet.rawValue }
             )
         }
+        .onContinueUserActivity(CSSearchableItemActionType, perform: openSearchableItem)
         .onOpenURL(perform: openWhenReady)
+    }
+
+    private func openSearchableItem(_ activity: NSUserActivity) {
+        if let url = activity.contentAttributeSet?.contentURL {
+            openWhenReady(url)
+            return
+        }
+        // Compatibility fallback for an item produced before C11-4 attached a content URL.
+        guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+              let task = model.task(withID: id) else { return }
+        openWhenReady(TaskifyWidgetLink.task(id: id, boardID: task.boardID).url)
     }
 
     private func openWhenReady(_ url: URL) {

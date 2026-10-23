@@ -2368,7 +2368,7 @@ Explore. C11-8 requires no feature work.
 | C11-1 | Approve | 2026-10-21 | Done. The generator owns shared sources and products, has a read-only stale check, and CI runs that check, 14 presentation tests and an unsigned full app build on Xcode 27. The app build is green again. `ScaledFont` is platform-safe, the iOS-only probe stays out of Mac runtime code, and the stale call to iOS's deleted incoming-payment view is gone rather than restoring a receive path during wallet phase-out. |
 | C11-2 | Approve | 2026-10-21 | Stages 1–2 implemented: recovery mode uses the shared phase-out policy, never starts the wallet service, and shows the shared storage-only recovery view; the live pre-removal wallet now consumes the same shared withdraw-only route policy as iOS and exposes no receive/incoming route. Post-date screen deletion remains scheduled with the shared iOS cleanup |
 | C11-3 | Approve | 2026-10-21 | Stages 1–6 implemented. The separately identified test build uses a session-scoped temporary store/outbox and Keychain service, starts neither deferred network services nor the wallet, and shares production deep-link navigation. The package tests verify the boundary and entitlements; the app and UI runner build and sign; a live isolated launch opened the fixture task inspector. Eight CI-gated smokes now cover deep-link navigation, recovery mode, the live withdraw-only wallet, create/edit/complete/reopen, two-window stale-editor protection, two-window account-switch reset, graceful-quit persistence, and a publish-pending edit across an offline relaunch. Its injected sync engine still accepts durable local outbox work but cannot create relay transports or fresh one-shot sockets, so no Settings path can escape the isolation boundary. The app model now observes sync reports before deferred relay startup and restores the durable outbox count during load, keeping queue state truthful even while offline. This host still cannot enable local XCTest automation, so those UI assertions remain CI/local release checks |
-| C11-4 | Approve | 2026-10-21 | Not started |
+| C11-4 | Approve | 2026-10-21 | Done. The shared Spotlight indexer now builds on macOS, updates after the same task-area saves as iOS, and gives every result the shared `taskify://task` content link. Mac opens that link through its production router, while bundle-scoped Mac domains keep the isolated host out of the production index. A ninth CI smoke covers index, open, complete and removal; `TaskifyCore` remains the single authority for which tasks are searchable. |
 | C11-5 | Approve | 2026-10-21 | Not started |
 | C11-6 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
 | C11-7 | Explore | 2026-10-21 | Exploration deferred until the approved implementation work is done |
@@ -2582,3 +2582,28 @@ has been pushed.
   enabling XCTest automation before entering the test method.
 - C11-3 is complete. Next: C11-4 Spotlight indexing and deep-link opening on macOS, then C11-5
   raw-image paste in the task editor.
+
+### Checkpoint — October 23, 2026 (C11-4)
+
+Everything through Mac Spotlight search is implemented locally on `Beta`; nothing has been pushed.
+
+- The regression was written first against the isolated host. It waits for the fixed open-task
+  fixture in Core Spotlight, verifies the shared `taskify://task` content link, opens that item
+  into the real Mac workspace/inspector path, completes it and waits for the item to leave the
+  index. It is the ninth Mac UI smoke in CI.
+- The existing iOS `TaskifySpotlightIndexer` is now an explicit shared source in the generated Mac
+  project. `AppModel` schedules it after task-area saves on both platforms, so the existing
+  `TaskifyCore` projection still removes completed, deleted and archived-board tasks. Searchable
+  items now carry `TaskifyWidgetLink.task`, and the Mac handles Spotlight activities through the
+  same deep-link router used by widgets and injected links.
+- iOS retains its established domain so an upgrade can remove older indexed items. Mac domains
+  derive from the bundle identifier, keeping `solife.me.Taskify.Mac.UITests` isolated from the
+  production Mac index.
+- Verification passed: deterministic project check; 22/22 Mac package tests; 871 TaskifyCoreTests
+  with 14 expected opt-in skips; unsigned Local Mac build; isolated UI `build-for-testing`; and an
+  unsigned iOS Simulator app build. Targeted UI execution was attempted both before and after the
+  implementation, but this Mac timed out while enabling XCTest automation before entering the
+  test method.
+- No new language boundary is warranted: the searchable-task projection is already shared Swift
+  across iOS and macOS, and a Rust/UniFFI layer would add bridging without removing another
+  implementation. Next: C11-5 raw-image paste in the task editor and chat composer.
