@@ -73,6 +73,20 @@ const inputSpec = InputSpec.of({
       },
     ],
   }),
+  macTopic: Value.text({
+    name: i18n('Mac App Bundle ID'),
+    description: i18n(
+      'The Mac APNs topic. It must match the signed Taskify Mac app bundle identifier.',
+    ),
+    default: 'solife.me.Taskify.Mac',
+    required: true,
+    patterns: [
+      {
+        regex: '^[A-Za-z0-9.-]+$',
+        description: 'Must be a valid Apple bundle identifier.',
+      },
+    ],
+  }),
   snapstrTopic: Value.text({
     name: i18n('Snapstr App Bundle ID'),
     description: i18n(
@@ -110,6 +124,7 @@ export const configureAPNs = sdk.Action.withInput(
       return {
         topic: 'solife.me.Taskify.Native',
         watchTopic: 'solife.me.Taskify.Native.watchkitapp',
+        macTopic: 'solife.me.Taskify.Mac',
         snapstrTopic: 'app.snapstr.ios',
       }
     }
@@ -118,6 +133,7 @@ export const configureAPNs = sdk.Action.withInput(
       keyID: current.keyID,
       topic: current.topic,
       watchTopic: current.watchTopic ?? 'solife.me.Taskify.Native.watchkitapp',
+      macTopic: current.macTopic ?? 'solife.me.Taskify.Mac',
       snapstrTopic: current.snapstrTopic ?? 'app.snapstr.ios',
     }
   },
@@ -126,6 +142,7 @@ export const configureAPNs = sdk.Action.withInput(
     const keyID = input.keyID.trim().toUpperCase()
     const topic = input.topic.trim()
     const watchTopic = input.watchTopic.trim()
+    const macTopic = input.macTopic.trim()
     const snapstrTopic = input.snapstrTopic.trim()
     const privateKey = normalizePrivateKey(input.privateKey)
     createPrivateKey(privateKey)
@@ -135,6 +152,7 @@ export const configureAPNs = sdk.Action.withInput(
       privateKey,
       topic,
       watchTopic,
+      macTopic,
       snapstrTopic,
     })
     await chmod(apnsConfigJson.path, 0o600)

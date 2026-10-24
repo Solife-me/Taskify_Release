@@ -2473,7 +2473,7 @@ Explore. C11-8 requires no feature work.
 | C11-6A | Approve | 2026-10-23 | In progress. Stage 1 moved Add Task's complete mutation into an injected `TaskifyExternalActions.addTask` core operation. Stage 2 shares the intent/provider with the Mac `UITest` configuration and adds an isolated terminated-app `AppIntentsTesting` gate. Production configurations remain disabled until that gate passes with Apple development signing. |
 | C11-6B | Decline | 2026-10-23 | Do not add a resident menu-bar process or Mac share extension without evidence that Shortcuts plus the existing paste/drop capture paths are insufficient. |
 | C11-7 | Explore | 2026-10-21 | Complete as far as an unsigned review can go. Returned C11-7A (Approve a signed provisioning spike) and C11-7B (Decline release before its real-Mac proof) for maintainer decision. |
-| C11-7A | Approve | 2026-10-23 | In progress. Stage 1 adds the shared explicit Apple-platform registration contract and distinct metadata-free Mac routing. Relay configuration, signed app registration and the real terminated-app delivery proof remain. |
+| C11-7A | Approve | 2026-10-23 | In progress. Stages 1–2 add the shared explicit Apple-platform registration contract, distinct metadata-free Mac routing, and backward-compatible hosted/StartOS topic configuration. Signed app registration and the real terminated-app delivery proof remain. |
 | C11-7B | Decline | 2026-10-23 | Do not ship closed-app Mac push until a real development push reaches a terminated signed app and the release provisioning path is verified. |
 | C11-8 | Decline | 2026-10-21 | No phone-only parity work will be added |
 
@@ -2842,3 +2842,25 @@ The cross-service Mac push contract is implemented locally on `Beta`; nothing ha
   backward-compatible default and migration. Production Mac capability and callbacks remain
   disabled until the independently configured topic is in place; release remains blocked on one
   real terminated-app development push.
+
+### Checkpoint — October 24, 2026 (C11-7A stage 2 configuration)
+
+The relay-side Mac topic is independently configurable locally on `Beta`; nothing has been pushed.
+
+- Failing-first configuration tests now cover the hosted environment, a legacy `apns.json` with no
+  Mac field, and an explicit file override. `APNS_MAC_TOPIC`/`macTopic` default to
+  `solife.me.Taskify.Mac` without borrowing the iOS topic.
+- The StartOS file model accepts old files through an optional field. **Configure Apple Push**
+  presents an independent required Mac App Bundle ID, fills the default when an old file is read,
+  and persists it on the next save. This is the configuration migration; no destructive rewrite
+  is required during service startup.
+- Documentation names all four independent Apple topics and makes clear that configuring the Mac
+  topic does not enable Mac registration or constitute delivery proof.
+- Verification passed for the four focused configuration/action tests and the TypeScript check.
+  The complete relay suite is the commit gate for this step.
+- This is deployment configuration around the existing Node provider. Rust/UniFFI would add no
+  useful shared behavior.
+- Next: commit the configuration step, then prepare the signed Mac app side—production-only APNs
+  entitlement/callbacks, explicit `.macOS` registration through the existing opt-in, and a
+  developer-only proof path. Keep the feature unavailable unless a valid signed profile is used,
+  and do not mark C11-7A complete until one terminated-app alert opens Chat on a real Mac.

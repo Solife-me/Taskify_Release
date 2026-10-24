@@ -7,6 +7,7 @@ const shape = z.looseObject({
   privateKey: z.string(),
   topic: z.string(),
   watchTopic: z.string().optional(),
+  macTopic: z.string().optional(),
   snapstrTopic: z.string().optional(),
 })
 

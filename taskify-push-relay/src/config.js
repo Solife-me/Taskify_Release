@@ -24,6 +24,12 @@ export async function loadConfig(environment = process.env) {
         ?? 'solife.me.Taskify.Native.watchkitapp',
       'APNS_WATCH_TOPIC',
     ),
+    macTopic: required(
+      environment.APNS_MAC_TOPIC
+        ?? fileConfig.macTopic
+        ?? 'solife.me.Taskify.Mac',
+      'APNS_MAC_TOPIC',
+    ),
     snapstrTopic: required(
       environment.APNS_SNAPSTR_TOPIC
         ?? fileConfig.snapstrTopic

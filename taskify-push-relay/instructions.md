@@ -14,6 +14,9 @@ file private; Apple only lets you download it once.
    private-key field. Leave the App Bundle ID as `solife.me.Taskify.Native` unless the iOS target is
    signed with a different bundle identifier. Leave the Watch App Bundle ID as
    `solife.me.Taskify.Native.watchkitapp` unless the watchOS target uses a different identifier.
+   Leave the Mac App Bundle ID as `solife.me.Taskify.Mac` unless the signed macOS target uses a
+   different identifier. Mac delivery remains a developer provisioning check until its
+   terminated-app test passes; configuring the topic does not enable Mac registration by itself.
    Leave the Snapstr App Bundle ID as `app.snapstr.ios` unless that target uses a different identifier.
 3. Open the **NIP-17 Push Relay** interface and expose it through your StartOS HTTPS gateway at
    `push.solife.me`. The same endpoint must be reachable as both `https://push.solife.me` and

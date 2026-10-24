@@ -47,8 +47,11 @@ asked for a list of everyone who uses it.
   are accepted until `REQUIRE_SIGNED_PREVIEWS=true`
 - Persistent state: `/data/state.json`
 - APNs configuration: `/data/apns.json`
-- Separate Taskify iOS, Taskify watchOS, and Snapstr iOS APNs topics; the defaults are
-  `solife.me.Taskify.Native`, `solife.me.Taskify.Native.watchkitapp`, and `app.snapstr.ios`
+- Separate Taskify iOS, Taskify watchOS, Taskify macOS, and Snapstr iOS APNs topics; the defaults
+  are `solife.me.Taskify.Native`, `solife.me.Taskify.Native.watchkitapp`,
+  `solife.me.Taskify.Mac`, and `app.snapstr.ios`. Hosted deployments can override them with
+  `APNS_TOPIC`, `APNS_WATCH_TOPIC`, `APNS_MAC_TOPIC`, and `APNS_SNAPSTR_TOPIC`; an existing
+  `/data/apns.json` without `macTopic` safely receives the Mac default.
 - Taskify web app (PWA) chat alerts through Web Push, when configured with the Taskify Worker's
   VAPID key pair (`WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY`,
   `WEB_PUSH_VAPID_SUBJECT`, or the Configure Web Push action). Each browser holds one push

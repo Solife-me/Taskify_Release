@@ -35,6 +35,8 @@ const english = {
   31: 'The Worker VAPID_PRIVATE_KEY: base64url or PEM.',
   32: 'VAPID Subject',
   33: 'A mailto: or https:// contact for push services, usually the Worker VAPID_SUBJECT.',
+  34: 'Mac App Bundle ID',
+  35: 'The Mac APNs topic. It must match the signed Taskify Mac app bundle identifier.',
 } satisfies LangDict
 
 export default {

@@ -35,6 +35,8 @@ const dict = {
   'The Worker VAPID_PRIVATE_KEY: base64url or PEM.': 31,
   'VAPID Subject': 32,
   'A mailto: or https:// contact for push services, usually the Worker VAPID_SUBJECT.': 33,
+  'Mac App Bundle ID': 34,
+  'The Mac APNs topic. It must match the signed Taskify Mac app bundle identifier.': 35,
 } as const
 
 export type I18nKey = keyof typeof dict
