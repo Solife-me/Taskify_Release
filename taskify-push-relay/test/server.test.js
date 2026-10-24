@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -9,6 +9,11 @@ import WebSocket from 'ws'
 import { createHash } from 'node:crypto'
 import { clientAddressKey, createTaskifyPushServer } from '../src/server.js'
 import { RelayStore } from '../src/store.js'
+
+const registrationVectors = JSON.parse(await readFile(
+  new URL('../../taskify-core/fixtures/dm-push-registration-vectors.json', import.meta.url),
+  'utf8',
+)).vectors
 
 function nextFrame(socket, predicate = () => true) {
   return new Promise((resolve, reject) => {
@@ -346,6 +351,41 @@ async function serverForTest(t, options = {}) {
   t.after(() => server.stop())
   return { store, port: address.port }
 }
+
+test('APNs registration accepts legacy, iOS, Watch and Mac platforms', async (t) => {
+  const { store, port } = await serverForTest(t)
+  const secretKey = generateSecretKey()
+  const pubkey = getPublicKey(secretKey)
+  for (const [index, vector] of registrationVectors.entries()) {
+    const installationID = `apple-${index}`
+    const path = `/v1/registrations/${installationID}`
+    const payload = { deviceToken: vector.deviceToken, environment: 'sandbox' }
+    if (vector.requestPlatform) payload.platform = vector.requestPlatform
+    const body = Buffer.from(JSON.stringify(payload))
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      method: 'PUT',
+      headers: {
+        authorization: nip98(secretKey, `https://push.solife.me${path}`, 'PUT', body),
+        'content-type': 'application/json',
+      },
+      body,
+    })
+    assert.equal(response.status, 200, `${vector.name}: ${await response.text()}`)
+  }
+
+  assert.deepEqual(
+    store.registrationsFor(pubkey).map(({ installationID, platform, deviceToken }) => ({
+      installationID,
+      platform,
+      deviceToken,
+    })),
+    registrationVectors.map((vector, index) => ({
+      installationID: `apple-${index}`,
+      platform: vector.storedPlatform,
+      deviceToken: vector.storedDeviceToken,
+    })),
+  )
+})
 
 test('a request target that URL parsing rejects gets 400 and the server keeps running', async (t) => {
   const { port } = await serverForTest(t)

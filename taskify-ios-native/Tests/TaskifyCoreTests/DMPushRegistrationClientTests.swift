@@ -4,13 +4,65 @@ import XCTest
 @testable import TaskifyCore
 
 final class DMPushRegistrationClientTests: XCTestCase {
+    private struct VectorFile: Decodable {
+        let vectors: [Vector]
+    }
+
+    private struct Vector: Decodable {
+        let name: String
+        let requestPlatform: String?
+        let deviceToken: String
+        let swiftClient: Bool
+    }
+
     private let privateKey = try! Data(hex: String(repeating: "0", count: 63) + "1")
+
+    private static let vectorsURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent() // TaskifyCoreTests
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // taskify-ios-native
+        .deletingLastPathComponent() // repository root
+        .appendingPathComponent("taskify-core/fixtures/dm-push-registration-vectors.json")
 
     func testRegistrationURLUsesAnEscapedInstallationPath() throws {
         let baseURL = try XCTUnwrap(URL(string: "https://push.solife.me"))
         XCTAssertEqual(
             DMPushRegistrationClient.registrationURL(baseURL: baseURL, installationID: "phone one").absoluteString,
             "https://push.solife.me/v1/registrations/phone%20one"
+        )
+    }
+
+    func testRegistrationBodyMatchesSharedApplePlatformVectors() throws {
+        let fixture = try JSONDecoder().decode(
+            VectorFile.self,
+            from: Data(contentsOf: Self.vectorsURL)
+        )
+        for vector in fixture.vectors where vector.swiftClient {
+            let expectedPlatform = try XCTUnwrap(vector.requestPlatform)
+            let platform = try XCTUnwrap(DMPushRegistrationPlatform(rawValue: expectedPlatform))
+            let body = try DMPushRegistrationClient.registrationBody(
+                deviceToken: vector.deviceToken,
+                environment: "production",
+                platform: platform
+            )
+            XCTAssertEqual(
+                try JSONSerialization.jsonObject(with: body) as? [String: String],
+                [
+                    "deviceToken": vector.deviceToken,
+                    "environment": "production",
+                    "platform": expectedPlatform,
+                ],
+                vector.name
+            )
+        }
+
+        let defaultBody = try DMPushRegistrationClient.registrationBody(
+            deviceToken: "aabb",
+            environment: "production"
+        )
+        XCTAssertEqual(
+            (try JSONSerialization.jsonObject(with: defaultBody) as? [String: String])?["platform"],
+            "ios"
         )
     }
 

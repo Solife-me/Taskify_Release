@@ -17,6 +17,10 @@ const TASK_EVENT_KINDS = new Set([30_300, 30_301])
 const HEX_EVENT_ID = /^[0-9a-f]{64}$/
 const HEX_PUBLIC_KEY = /^[0-9a-f]{64}$/
 
+function registrationUsesPreview(registration) {
+  return registration != null && !['watchos', 'macos', 'web'].includes(registration.platform)
+}
+
 function eventCoordinate(event) {
   const pubkey = event?.pubkey?.toLowerCase()
   if (!HEX_PUBLIC_KEY.test(pubkey ?? '')) return null
@@ -162,7 +166,7 @@ export class RelayStore {
       })
       for (const job of this.state.pushJobs) {
         const registration = this.registrationByKey(job.registrationKey)
-        if (registration?.platform === 'watchos') {
+        if (registration && !registrationUsesPreview(registration)) {
           delete job.previewToken
           continue
         }
@@ -219,7 +223,7 @@ export class RelayStore {
       installationID,
       // APNs tokens are hex, compared without case; FCM tokens and Web Push endpoints are
       // case-sensitive. A web registration's token is its subscription endpoint.
-      deviceToken: platform === 'ios' || platform === 'watchos' ? deviceToken.toLowerCase() : deviceToken,
+      deviceToken: ['ios', 'watchos', 'macos'].includes(platform) ? deviceToken.toLowerCase() : deviceToken,
       environment,
       platform,
       application,
@@ -347,9 +351,9 @@ export class RelayStore {
       for (const registration of this.registrationsToNotify(recipient, application)) {
         const id = `${event.id}:${registration.key}`
         if (this.state.pushJobs.some((job) => job.id === id)) continue
-        // The Watch fetches the wrap itself, and the web app shows a generic alert, so neither
+        // Watch and Mac fetch the wrap themselves, and the web app shows a generic alert, so none
         // needs a preview link.
-        const previewToken = registration.platform === 'watchos' || registration.platform === 'web'
+        const previewToken = !registrationUsesPreview(registration)
           ? undefined
           : randomBytes(32).toString('base64url')
         // One unsent alert per device at a time, and a minimum gap after the last one sent,
@@ -581,7 +585,7 @@ export class RelayStore {
     this.state.previews = this.state.previews.filter(
       (preview) => preview.expiresAt >= this.now()
         && retainedEventIDs.has(preview.eventID)
-        && registrationsByKey.get(preview.registrationKey)?.platform !== 'watchos',
+        && registrationUsesPreview(registrationsByKey.get(preview.registrationKey)),
     )
     if (this.state.events.length > this.maxEventsTotal) {
       this.state.events.sort((left, right) => left.storedAt - right.storedAt)

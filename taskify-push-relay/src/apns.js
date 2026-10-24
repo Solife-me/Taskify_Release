@@ -56,15 +56,16 @@ export function genericWatchDMPayload() {
 
 export function apnsDeliveryProfile(
   registration,
-  { topic, watchTopic, snapstrTopic, previewURL = null },
+  { topic, watchTopic, macTopic, snapstrTopic, previewURL = null },
 ) {
   const isWatch = registration.platform === 'watchos'
+  const isMac = registration.platform === 'macos'
   const isSnapstr = registration.application === 'snapstr'
   return {
-    payload: isWatch
+    payload: isWatch || isMac
       ? genericWatchDMPayload()
       : isSnapstr ? genericSnapstrPayload(previewURL) : genericDMPayload(previewURL),
-    topic: isWatch ? watchTopic : isSnapstr ? snapstrTopic : topic,
+    topic: isWatch ? watchTopic : isMac ? macTopic : isSnapstr ? snapstrTopic : topic,
     pushType: 'alert',
     priority: '10',
   }
@@ -77,6 +78,7 @@ export class APNsClient {
     privateKey,
     topic,
     watchTopic = 'solife.me.Taskify.Native.watchkitapp',
+    macTopic = 'solife.me.Taskify.Mac',
     snapstrTopic = 'app.snapstr.ios',
     requestTimeoutMs = 10_000,
     now = () => Date.now(),
@@ -86,6 +88,7 @@ export class APNsClient {
     this.privateKey = createPrivateKey(privateKey.replaceAll('\\n', '\n'))
     this.topic = topic
     this.watchTopic = watchTopic
+    this.macTopic = macTopic
     this.snapstrTopic = snapstrTopic
     this.requestTimeoutMs = requestTimeoutMs
     this.now = now
@@ -120,6 +123,7 @@ export class APNsClient {
     const delivery = apnsDeliveryProfile(registration, {
       topic: this.topic,
       watchTopic: this.watchTopic,
+      macTopic: this.macTopic,
       snapstrTopic: this.snapstrTopic,
       previewURL,
     })

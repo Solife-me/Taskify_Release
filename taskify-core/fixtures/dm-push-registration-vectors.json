@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "vectors": [
+    {
+      "name": "legacy Apple registration",
+      "requestPlatform": null,
+      "storedPlatform": "ios",
+      "deviceToken": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "storedDeviceToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "swiftClient": false
+    },
+    {
+      "name": "iOS registration",
+      "requestPlatform": "ios",
+      "storedPlatform": "ios",
+      "deviceToken": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "storedDeviceToken": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "swiftClient": true
+    },
+    {
+      "name": "watchOS registration",
+      "requestPlatform": "watchos",
+      "storedPlatform": "watchos",
+      "deviceToken": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "storedDeviceToken": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "swiftClient": false
+    },
+    {
+      "name": "macOS registration",
+      "requestPlatform": "macos",
+      "storedPlatform": "macos",
+      "deviceToken": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "storedDeviceToken": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "swiftClient": true
+    }
+  ]
+}

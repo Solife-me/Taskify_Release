@@ -357,15 +357,15 @@ export function createTaskifyPushServer({
       } else {
         if (!DEVICE_TOKEN.test(payload.deviceToken ?? '')) throw new Error('Invalid APNs device token')
         if (!['production', 'sandbox'].includes(payload.environment)) throw new Error('Invalid APNs environment')
-        if (payload.platform != null && !['ios', 'watchos'].includes(payload.platform)) {
+        if (payload.platform != null && !['ios', 'watchos', 'macos'].includes(payload.platform)) {
           throw new Error('Invalid APNs platform')
         }
       }
       if (payload.application != null && !['taskify', 'snapstr'].includes(payload.application)) {
         throw new Error('Invalid application')
       }
-      if (payload.application === 'snapstr' && payload.platform === 'watchos') {
-        throw new Error('Snapstr does not support watchOS registrations')
+      if (payload.application === 'snapstr' && ['watchos', 'macos'].includes(payload.platform)) {
+        throw new Error('Snapstr supports only iOS APNs registrations')
       }
       await store.putRegistration(auth.pubkey, installationID, payload)
       sendJSON(response, 200, {

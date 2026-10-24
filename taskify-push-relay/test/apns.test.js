@@ -12,6 +12,7 @@ const previewURL = `https://push.solife.me/v1/previews/${'A'.repeat(43)}`
 const topics = {
   topic: 'solife.me.Taskify.Native',
   watchTopic: 'solife.me.Taskify.Native.watchkitapp',
+  macTopic: 'solife.me.Taskify.Mac',
   snapstrTopic: 'app.snapstr.ios',
 }
 
@@ -63,6 +64,15 @@ test('Watch APNs delivery uses its own topic and never carries a preview URL', (
   assert.deepEqual(apnsDeliveryProfile({ platform: 'watchos' }, { ...topics, previewURL }), {
     payload: genericWatchDMPayload(),
     topic: 'solife.me.Taskify.Native.watchkitapp',
+    pushType: 'alert',
+    priority: '10',
+  })
+})
+
+test('Mac APNs delivery uses its own topic and the metadata-free generic alert', () => {
+  assert.deepEqual(apnsDeliveryProfile({ platform: 'macos' }, { ...topics, previewURL }), {
+    payload: genericWatchDMPayload(),
+    topic: 'solife.me.Taskify.Mac',
     pushType: 'alert',
     priority: '10',
   })

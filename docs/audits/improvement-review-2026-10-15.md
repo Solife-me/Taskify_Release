@@ -2473,7 +2473,7 @@ Explore. C11-8 requires no feature work.
 | C11-6A | Approve | 2026-10-23 | In progress. Stage 1 moved Add Task's complete mutation into an injected `TaskifyExternalActions.addTask` core operation. Stage 2 shares the intent/provider with the Mac `UITest` configuration and adds an isolated terminated-app `AppIntentsTesting` gate. Production configurations remain disabled until that gate passes with Apple development signing. |
 | C11-6B | Decline | 2026-10-23 | Do not add a resident menu-bar process or Mac share extension without evidence that Shortcuts plus the existing paste/drop capture paths are insufficient. |
 | C11-7 | Explore | 2026-10-21 | Complete as far as an unsigned review can go. Returned C11-7A (Approve a signed provisioning spike) and C11-7B (Decline release before its real-Mac proof) for maintainer decision. |
-| C11-7A | Approve | 2026-10-23 | Not started. Run the limited signed provisioning spike with an explicit `macos` registration, distinct APNs topic and generic privacy-preserving alert. |
+| C11-7A | Approve | 2026-10-23 | In progress. Stage 1 adds the shared explicit Apple-platform registration contract and distinct metadata-free Mac routing. Relay configuration, signed app registration and the real terminated-app delivery proof remain. |
 | C11-7B | Decline | 2026-10-23 | Do not ship closed-app Mac push until a real development push reaches a terminated signed app and the release provisioning path is verified. |
 | C11-8 | Decline | 2026-10-21 | No phone-only parity work will be added |
 
@@ -2818,3 +2818,27 @@ C11-6A now has the production-enable gate prepared locally on `Beta`; nothing ha
   shared in Swift core; this stage is specifically Apple's signed App Intents lifecycle.
 - Next: commit this safely disabled gate, then begin C11-7A with a typed `ios`/`macos` registration
   contract while keeping Mac push unavailable until a real terminated-app delivery succeeds.
+
+### Checkpoint — October 24, 2026 (C11-7A stage 1 contract)
+
+The cross-service Mac push contract is implemented locally on `Beta`; nothing has been pushed.
+
+- A failing-first Swift regression established that the registration client had no typed platform
+  or testable request body. `DMPushRegistrationPlatform` now emits explicit `ios` by default and
+  `macos` for Mac without changing existing iOS call sites.
+- `taskify-core/fixtures/dm-push-registration-vectors.json` is the shared compatibility contract.
+  Both the Swift client test and Node relay test read its legacy omitted-platform, iOS, watchOS and
+  macOS cases. Omitted platform still stores as iOS, preserving old clients; all Apple APNs tokens
+  normalize case-insensitively.
+- The relay accepts Taskify Mac registrations, routes them to an independent `macTopic`, and sends
+  the existing metadata-free generic Taskify alert. Like Watch and Web, Mac receives no opaque
+  preview URL or preview token; it must fetch and decrypt its inbox after opening. Snapstr remains
+  limited to its iOS APNs registration.
+- Verification passed: four focused Swift registration tests; all 875 `TaskifyCoreTests` with 14
+  existing environment-dependent skips; all 105 push-relay tests; and all 168 Node core tests.
+- This is a small cross-service wire vocabulary, so the JSON vectors are more useful than a new
+  language boundary. Rust/UniFFI would not simplify APNs platform routing or Apple provisioning.
+- Next: commit this contract, then add `macTopic` to environment/file/StartOS configuration with a
+  backward-compatible default and migration. Production Mac capability and callbacks remain
+  disabled until the independently configured topic is in place; release remains blocked on one
+  real terminated-app development push.

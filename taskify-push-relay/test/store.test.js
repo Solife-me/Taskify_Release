@@ -309,6 +309,21 @@ test('Watch wake jobs do not allocate unnecessary preview tokens', async () => {
   assert.equal(store.state.previews.length, 0)
 })
 
+test('Mac wake jobs do not allocate unnecessary preview tokens', async () => {
+  const { store } = await storeForTest()
+  await store.putRegistration(bob, 'mac-1', {
+    deviceToken: 'AB'.repeat(32),
+    environment: 'production',
+    platform: 'macos',
+  })
+  await store.putGiftWrap(giftWrap('a'.repeat(64), bob), { notify: true })
+
+  const [job] = store.duePushJobs(Number.MAX_SAFE_INTEGER)
+  assert.equal(job.previewToken, undefined)
+  assert.equal(store.state.previews.length, 0)
+  assert.equal(store.registrationsFor(bob)[0].deviceToken, 'ab'.repeat(32))
+})
+
 test('loading an older pending push job creates a usable preview token', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-store-'))
   const event = giftWrap('8'.repeat(64), bob, 1_700_000_000)
