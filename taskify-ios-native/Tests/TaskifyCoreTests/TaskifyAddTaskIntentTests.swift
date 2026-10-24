@@ -5,6 +5,16 @@ import XCTest
 final class TaskifyAddTaskIntentTests: XCTestCase {
     private let fixedNow = Date(timeIntervalSince1970: 1_700_000_000) // Tuesday 2023-11-14 22:13:20 UTC
 
+    private func temporaryStore() throws -> (JSONTaskStore, URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return (
+            JSONTaskStore(fileURL: directory.appendingPathComponent("taskify.json")),
+            directory
+        )
+    }
+
     func testResolvesToTodaysColumnOnTheSelectedWeekBoard() throws {
         let snapshot = TaskifySnapshot.empty // starts with a single visible Week board, selected.
 
@@ -175,6 +185,127 @@ final class TaskifyAddTaskIntentTests: XCTestCase {
         XCTAssertEqual(task?.boardID, list.id)
         XCTAssertEqual(task?.columnID, "col")
         XCTAssertEqual(snapshot.tasks.count, 1)
+    }
+
+    func testExternalAddTaskSavesSettingsAndPendingPublicationInTheInjectedStore() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let list = Board(name: "Groceries", kind: .list, columns: [
+            BoardColumn(id: "to-buy", name: "To Buy", order: 0),
+        ])
+        let existing = TaskItem(
+            id: "existing",
+            boardID: list.id,
+            title: "Bread",
+            order: 8,
+            columnID: "to-buy"
+        )
+        try await store.save(TaskifySnapshot(
+            boards: [list],
+            tasks: [existing],
+            selectedBoardID: list.id
+        ))
+
+        let created = try await TaskifyExternalActions.addTask(
+            title: "  Buy milk  ",
+            requestedBoardName: "groceries",
+            note: "Two cartons",
+            priority: .high,
+            interpretNaturalLanguageTitle: false,
+            store: store,
+            settings: TaskifyDeviceTaskSettings(
+                weekStart: .monday,
+                newTaskPosition: .bottom,
+                editorPublicKey: String(repeating: "a", count: 64)
+            ),
+            publisher: .disabled,
+            now: fixedNow
+        )
+
+        let saved = try await store.load(areas: [.tasks])
+        let task = try XCTUnwrap(saved.tasks.first { $0.id == created.task.id })
+        XCTAssertEqual(task.title, "Buy milk")
+        XCTAssertEqual(task.note, "Two cartons")
+        XCTAssertEqual(task.priority, .high)
+        XCTAssertEqual(task.boardID, list.id)
+        XCTAssertEqual(task.columnID, "to-buy")
+        XCTAssertEqual(task.order, 9)
+        XCTAssertEqual(task.createdAt, fixedNow)
+        XCTAssertEqual(task.createdBy, String(repeating: "a", count: 64))
+        XCTAssertEqual(task.lastEditedBy, String(repeating: "a", count: 64))
+        XCTAssertEqual(task.publishPending, true)
+        XCTAssertEqual(created.board.id, list.id)
+        XCTAssertEqual(created.displayBoard.id, list.id)
+    }
+
+    func testExternalAddTaskParsesNaturalTitleAndPresentsItsCompoundParent() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let child = Board(
+            id: "home-tasks",
+            name: "Home Tasks",
+            kind: .list,
+            columns: [BoardColumn(id: "todo", name: "To Do", order: 0)],
+            hidden: true
+        )
+        let compound = Board(
+            id: "home",
+            name: "Home",
+            kind: .compound,
+            children: [child.id]
+        )
+        try await store.save(TaskifySnapshot(
+            boards: [compound, child],
+            tasks: [],
+            selectedBoardID: compound.id
+        ))
+
+        let publisher = TaskifyExternalPublisher(
+            prepare: { stamp in
+                try TaskEventCodec.taskEvent(
+                    task: stamp.task,
+                    board: stamp.board,
+                    createdAt: stamp.timestamp
+                )
+            },
+            send: { _, _ in false }
+        )
+        let created = try await TaskifyExternalActions.addTask(
+            title: "Add vacuum to my Home board",
+            requestedBoardName: nil,
+            interpretNaturalLanguageTitle: true,
+            store: store,
+            settings: TaskifyDeviceTaskSettings(),
+            publisher: publisher,
+            now: fixedNow
+        )
+
+        XCTAssertEqual(created.task.title, "vacuum")
+        XCTAssertEqual(created.board.id, child.id)
+        XCTAssertEqual(created.displayBoard.id, compound.id)
+        let saved = try await store.load(areas: [.tasks])
+        XCTAssertEqual(saved.tasks.first?.publishPending, true)
+    }
+
+    func testExternalAddTaskRejectsEmptyTitlesWithoutSaving() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await store.save(.empty)
+
+        do {
+            _ = try await TaskifyExternalActions.addTask(
+                title: "   ",
+                requestedBoardName: nil,
+                store: store,
+                publisher: .disabled,
+                now: fixedNow
+            )
+            XCTFail("Expected an empty-title error")
+        } catch {
+            XCTAssertEqual(error as? TaskifyExternalAddTaskError, .emptyTitle)
+        }
+        let saved = try await store.load(areas: [.tasks])
+        XCTAssertTrue(saved.tasks.isEmpty)
     }
 
     func testSpokenFollowUpSeparatesQuotedTitleAndExistingBoard() {

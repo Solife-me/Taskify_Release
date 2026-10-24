@@ -53,10 +53,98 @@ public struct TaskifyDeviceTaskSettings: Codable, Equatable, Sendable {
     }
 }
 
+public enum TaskifyExternalAddTaskError: LocalizedError, Equatable, Sendable {
+    case emptyTitle
+    case noAddableBoard
+    case taskNotCreated
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyTitle: "Enter a task title."
+        case .noAddableBoard: "Add a board in Taskify first."
+        case .taskNotCreated: "Taskify couldn't add that task."
+        }
+    }
+}
+
+public struct TaskifyExternalCreatedTask: Sendable {
+    public let task: TaskItem
+    public let board: Board
+    public let displayBoard: Board
+
+    public init(task: TaskItem, board: Board, displayBoard: Board) {
+        self.task = task
+        self.board = board
+        self.displayBoard = displayBoard
+    }
+}
+
 /// Task edits made outside the app (C10-1). They go through the same snapshot operations as the
 /// app, with the user's settings, so the result matches the app's. The app reads them in from
 /// the store later and publishes them.
 public enum TaskifyExternalActions {
+    /// Adds a task without constructing the app runtime, then durably marks and publishes it.
+    public static func addTask(
+        title: String,
+        requestedBoardName: String?,
+        note: String = "",
+        dueDate: Date? = nil,
+        priority: TaskPriority? = nil,
+        interpretNaturalLanguageTitle: Bool = false,
+        store: JSONTaskStore = JSONTaskStore(),
+        settings: TaskifyDeviceTaskSettings = .load(),
+        publisher: TaskifyExternalPublisher = TaskifyExternalPublisher(),
+        now: Date = Date()
+    ) async throws -> TaskifyExternalCreatedTask {
+        var snapshot = try await store.load(areas: [.tasks])
+        let spokenRequest = interpretNaturalLanguageTitle
+            ? TaskifySpokenTaskRequestParser.parse(
+                title,
+                explicitlyRequestedBoardName: requestedBoardName,
+                visibleBoardNames: TaskifyAddTaskDestination.namedBoards(in: snapshot).map(\.name)
+            )
+            : TaskifySpokenTaskRequest(
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                requestedBoardName: requestedBoardName
+            )
+        let trimmedTitle = spokenRequest.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { throw TaskifyExternalAddTaskError.emptyTitle }
+        guard let destination = TaskifyAddTaskDestination.resolve(
+            in: snapshot,
+            requestedBoardName: spokenRequest.requestedBoardName,
+            now: now
+        ) else {
+            throw TaskifyExternalAddTaskError.noAddableBoard
+        }
+        guard let task = snapshot.addTask(
+            title: trimmedTitle,
+            boardID: destination.boardID,
+            columnID: destination.columnID,
+            dueDate: dueDate ?? destination.dueDate,
+            note: note,
+            priority: priority,
+            authorPublicKey: settings.editorPublicKey,
+            newTaskPosition: settings.newTaskPosition,
+            now: now,
+            weekStartsOn: settings.weekStart
+        ), let board = snapshot.boards.first(where: { $0.id == task.boardID }) else {
+            throw TaskifyExternalAddTaskError.taskNotCreated
+        }
+        let displayBoard = TaskifyAddTaskDestination.displayBoard(
+            for: board,
+            requestedBoardName: spokenRequest.requestedBoardName,
+            in: snapshot
+        )
+        try await commit(
+            snapshot,
+            changedTaskIDs: [task.id],
+            store: store,
+            publisher: publisher,
+            now: Int(now.timeIntervalSince1970)
+        )
+        return TaskifyExternalCreatedTask(task: task, board: board, displayBoard: displayBoard)
+    }
+
     /// Marks a task complete or incomplete. Does nothing when it already is: a widget drawn
     /// before the task was completed elsewhere must not reopen it. Returns whether it changed.
     @discardableResult

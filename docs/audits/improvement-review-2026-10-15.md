@@ -2470,7 +2470,11 @@ Explore. C11-8 requires no feature work.
 | C11-4 | Approve | 2026-10-21 | Done. The shared Spotlight indexer now builds on macOS, updates after the same task-area saves as iOS, and gives every result the shared `taskify://task` content link. Mac opens that link through its production router, while bundle-scoped Mac domains keep the isolated host out of the production index. A ninth CI smoke covers index, open, complete and removal; `TaskifyCore` remains the single authority for which tasks are searchable. |
 | C11-5 | Approve | 2026-10-21 | Done. `MacAttachmentQueue` now has one import boundary for file URLs and raw transferable image bytes. It detects the actual image type from the bytes, writes a protected temporary file with a safe generated name and real extension, and sends that file through the unchanged task/chat encryption and upload services. Both composers accept the same payload. Package regressions cover file import, invalid bytes, CoreTransferable PNG negotiation and round trips through both encryption inputs; a tenth isolated-host smoke puts PNG data with no file URL on the pasteboard and stages it in each composer. |
 | C11-6 | Explore | 2026-10-21 | Complete. Compile prototypes favor shared App Intents/Shortcuts over a resident menu item. Returned C11-6A (Approve) and C11-6B (Decline) for maintainer decision. |
+| C11-6A | Approve | 2026-10-23 | In progress. Stage 1 moved Add Task's complete mutation into an injected `TaskifyExternalActions.addTask` core operation and kept the iOS intent as a thin production adapter. Stage 2 must share the intent/provider with Mac and prove a signed terminated-app invocation before enabling the surface. |
+| C11-6B | Decline | 2026-10-23 | Do not add a resident menu-bar process or Mac share extension without evidence that Shortcuts plus the existing paste/drop capture paths are insufficient. |
 | C11-7 | Explore | 2026-10-21 | Complete as far as an unsigned review can go. Returned C11-7A (Approve a signed provisioning spike) and C11-7B (Decline release before its real-Mac proof) for maintainer decision. |
+| C11-7A | Approve | 2026-10-23 | Not started. Run the limited signed provisioning spike with an explicit `macos` registration, distinct APNs topic and generic privacy-preserving alert. |
+| C11-7B | Decline | 2026-10-23 | Do not ship closed-app Mac push until a real development push reaches a terminated signed app and the release provisioning path is verified. |
 | C11-8 | Decline | 2026-10-21 | No phone-only parity work will be added |
 
 ### Checkpoint — October 21, 2026 (C11-1)
@@ -2760,3 +2764,26 @@ were removed and the generated project again matches its manifest.
 - Next: the maintainer decides C11-6A/C11-6B and C11-7A/C11-7B. Do not implement either approved
   candidate by inference. After those decisions (and any approved work), mark Chunk 11 done and
   review Chunk 12 with C12-n proposals before implementation.
+
+### Checkpoint — October 23, 2026 (C11-6A stage 1)
+
+The maintainer approved C11-6A and C11-7A and declined C11-6B and C11-7B. C11-6A stage 1 is
+implemented locally on `Beta`; nothing has been pushed.
+
+- A failing-first `TaskifyAddTaskIntentTests` pass established the missing core API. Three isolated
+  regressions now cover the requested board, note, priority, device identity, task position, fixed
+  clock, pending-publication durability, natural spoken-title parsing, compound-board presentation,
+  failed relay publication and empty-title rejection without a write.
+- `TaskifyExternalActions.addTask` now owns the entire external Add Task transaction. It accepts an
+  injected `JSONTaskStore`, device settings, publisher and clock, while the iOS App Intent adapter
+  supplies the production defaults. Board presentation moved beside destination resolution in
+  `TaskifyCore`, so iOS and the forthcoming Mac shortcut cannot drift.
+- Verification passed for the 20 focused Add Task tests, all 874 `TaskifyCoreTests` (14 environment-
+  dependent skips) and an unsigned iOS-simulator app build, including App Intents metadata
+  extraction.
+- This is Apple external-action orchestration, not a cross-client deterministic or wire contract,
+  so a shared JSON vector would give the Node clients no usable contract. Rust/UniFFI would add a
+  bridge around App Intents and Swift persistence without removing another implementation.
+- Next: commit stage 1; then share the App Shortcut intent/provider with the generated Mac target,
+  verify extracted metadata, and attempt the required signed terminated-app invocation in an
+  isolated build before enabling C11-6A.
