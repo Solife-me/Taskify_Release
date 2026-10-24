@@ -134,7 +134,7 @@ Backups
 | **NIP-17** | Private DMs, kind-10050 inbox relay preferences, sender/recipient delivery copies | `taskify-ios-native/Sources/TaskifyCore/Nostr/NostrSharedInbox.swift`, `taskify-ios-native/Sources/TaskifyCore/Nostr/NIP17InboxRelayResolver.swift` |
 | **NIP-59** | Gift-wrapped Nostr events with randomized timestamps and ephemeral outer keys | `taskify-ios-native/Sources/TaskifyCore/Nostr/NostrSharedInbox.swift` |
 | **NIP-42** | Relay authentication | `nostr/RelayAuth.ts`, `taskify-ios-native/Sources/TaskifyCore/Sync/TaskSyncEngine.swift`, `taskify-push-relay/src/server.js` |
-| **NIP-98** | Authenticated chat-push device registration (iOS and PWA) | `taskify-ios-native/Sources/TaskifyCore/Nostr/DMPushRegistrationClient.swift`, `taskify-pwa/src/domains/push/chatPush.ts`, `taskify-push-relay/src/auth.js` |
+| **NIP-98** | Authenticated chat-push device registration (Apple native apps and PWA) | `taskify-ios-native/Sources/TaskifyCore/Nostr/DMPushRegistrationClient.swift`, `taskify-pwa/src/domains/push/chatPush.ts`, `taskify-push-relay/src/auth.js` |
 | **NIP-47** | Nostr Wallet Connect (NWC) | `wallet/nwc.ts` |
 | **NIP-61** | Nutzap / P2PK Cashu | `wallet/p2pk.ts` |
 | **NIP-96** | File/backup storage over Nostr | `nostr/Nip96Client.ts` |
@@ -198,11 +198,15 @@ npx wrangler dev
   Spotlight-index/open/remove lifecycle and raw-image paste in both attachment composers. The
   first smoke also terminates the app, invokes Add Task out of process through
   `AppIntentsTesting`, relaunches, and verifies the saved task.
-- Production Mac builds currently publish neither App Shortcuts nor remote-push registration.
-  C11-6A compiles the shared intent/provider only in the `UITest` configuration behind
-  `TASKIFY_MAC_SHORTCUTS`; do not add that flag to Local, Debug, or Release until the signed
-  terminated-app test passes on a host with Apple development signing. Mac DM push must use an explicit `macos`
-  registration and its own APNs topic; never send a Mac token through the iOS default.
+- Production Mac builds still publish no App Shortcuts. C11-6A compiles the shared intent/provider
+  only in the `UITest` configuration behind `TASKIFY_MAC_SHORTCUTS`; do not add that flag to Local,
+  Debug, or Release until the signed terminated-app test passes on a host with Apple development
+  signing. The production Mac target now has the APNs entitlement and app-delegate lifecycle for
+  the C11-7A provisioning gate, but registers only after the existing push opt-in succeeds. A
+  `DEBUG` build can exercise that opt-in with `--taskify-dm-push-provisioning-spike`; Release has no
+  product toggle yet. Mac DM push must use an explicit `macos` registration and its own APNs topic;
+  never send a Mac token through the iOS default, and do not call C11-7A complete until a generic
+  alert reaches a terminated signed Mac app and opens Chat.
 - Chat typing debt is tracked by explicit paths in `eslint.config.js`. When removing a Chat file's
   `@ts-nocheck`, remove that path from the allowlist too; do not restore a broad `src/chat/**` glob.
   Thread actions and utilities now expose typed hook contracts; preserve cached-data normalization
@@ -275,7 +279,7 @@ npx wrangler dev
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-core/fixtures/dm-push-registration-vectors.json`, `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift`, `taskify-push-relay/test/{server,apns,store}.test.js` | Apple push registration across native clients and relay | Shared legacy/iOS/Watch/Mac platform and token-normalization vectors; NIP-98 request binding; distinct metadata-free Mac topic routing with no preview capability |
 | `taskify-ios-native/Tests/TaskifyCoreTests/ShareTaskDraftTests.swift`, `taskify-ios-native/Tests/TaskifyNativeUITests/ShareToTaskUITests.swift` | Native share sheet to tasks | Draft title/note rules and isolated file persistence; Safari page-title capture; real image upload and attachment when the app imports the draft |
-| `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift`, `taskify-macos/UITests/TaskifyMacUITests.swift` | Mac build, presentation and isolated app host | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 27 package tests cover DST-aware placement, list drafts, pending wallet outcomes, recovery consent, payment-request mint selection, recurrence, deep-link selection, runtime isolation, live withdraw-only routes, recovery-mode wallet startup, entitlements, file/raw-image import, Transferable type negotiation, both encrypted attachment inputs, and the isolated no-relay external-action store; ten isolated host smokes cover deep-link navigation plus terminated-app App Intent capture, wallet close-out surfaces, task editing and completion, two-window conflicts/account switching, quit/outbox persistence, local Spotlight index/open/remove, and raw PNG paste in both composers without production relays or wallet startup |
+| `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift`, `taskify-macos/UITests/TaskifyMacUITests.swift` | Mac build, presentation and isolated app host | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 28 package tests cover DST-aware placement, list drafts, pending wallet outcomes, recovery consent, payment-request mint selection, recurrence, deep-link selection, runtime isolation, live withdraw-only routes, recovery-mode wallet startup, production-only APNs lifecycle/entitlements, the explicit signed-push proof gate, file/raw-image import, Transferable type negotiation, both encrypted attachment inputs, and the isolated no-relay external-action store; ten isolated host smokes cover deep-link navigation plus terminated-app App Intent capture, wallet close-out surfaces, task editing and completion, two-window conflicts/account switching, quit/outbox persistence, local Spotlight index/open/remove, and raw PNG paste in both composers without production relays, APNs registration or wallet startup |
 | `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy and per-platform topic configuration/migration, retries, authenticated WebSocket delivery, and Web Push (RFC 8291 payload a browser decrypts, VAPID signature, push-service-only endpoints) |
 
 Additional PWA regression tests include `src/nostr/startupStability.test.ts`, which is

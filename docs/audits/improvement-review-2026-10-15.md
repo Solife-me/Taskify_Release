@@ -53,7 +53,7 @@ Constraints carried through every chunk:
 | 8 | iOS tasks, boards, Upcoming UI | `TaskifyApp/Features` (tasks side) | Done (2026-10-20) |
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
-| 11 | macOS | `taskify-macos` | Approved implementation done (2026-10-23); C11-6A/C11-7A returned for maintainer decision; shared wallet deletion remains due after Dec 1 |
+| 11 | macOS | `taskify-macos` | Approved implementation done (2026-10-23); C11-6A/C11-7A signed proof gates in progress; shared wallet deletion remains due after Dec 1 |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
@@ -2473,7 +2473,7 @@ Explore. C11-8 requires no feature work.
 | C11-6A | Approve | 2026-10-23 | In progress. Stage 1 moved Add Task's complete mutation into an injected `TaskifyExternalActions.addTask` core operation. Stage 2 shares the intent/provider with the Mac `UITest` configuration and adds an isolated terminated-app `AppIntentsTesting` gate. Production configurations remain disabled until that gate passes with Apple development signing. |
 | C11-6B | Decline | 2026-10-23 | Do not add a resident menu-bar process or Mac share extension without evidence that Shortcuts plus the existing paste/drop capture paths are insufficient. |
 | C11-7 | Explore | 2026-10-21 | Complete as far as an unsigned review can go. Returned C11-7A (Approve a signed provisioning spike) and C11-7B (Decline release before its real-Mac proof) for maintainer decision. |
-| C11-7A | Approve | 2026-10-23 | In progress. Stages 1–2 add the shared explicit Apple-platform registration contract, distinct metadata-free Mac routing, and backward-compatible hosted/StartOS topic configuration. Signed app registration and the real terminated-app delivery proof remain. |
+| C11-7A | Approve | 2026-10-23 | In progress. Stages 1–3 add the shared explicit Apple-platform registration contract, distinct metadata-free Mac routing, backward-compatible hosted/StartOS topic configuration, and a production-target app lifecycle plus developer-only signed proof gate. One real terminated-app development delivery and the Release provisioning check remain. |
 | C11-7B | Decline | 2026-10-23 | Do not ship closed-app Mac push until a real development push reaches a terminated signed app and the release provisioning path is verified. |
 | C11-8 | Decline | 2026-10-21 | No phone-only parity work will be added |
 
@@ -2864,3 +2864,46 @@ The relay-side Mac topic is independently configurable locally on `Beta`; nothin
   entitlement/callbacks, explicit `.macOS` registration through the existing opt-in, and a
   developer-only proof path. Keep the feature unavailable unless a valid signed profile is used,
   and do not mark C11-7A complete until one terminated-app alert opens Chat on a real Mac.
+
+### Checkpoint — October 24, 2026 (C11-7A stage 3 signed-app gate)
+
+The Mac app side of the signed provisioning spike is prepared locally on `Beta`; nothing has been
+pushed. C11-7A and Chunk 11 are not complete because this host cannot perform the Apple-signed
+delivery proof.
+
+- The real Mac app target now owns `com.apple.developer.aps-environment`: Debug and Local expand it
+  to `development`, while Release expands it to `production`. The separately identified `UITest`
+  host keeps its own entitlements file with no APNs capability and its runtime never asks AppKit
+  for a device token.
+- `MacApplicationDelegate` forwards AppKit's token and failure callbacks to the shared coordinator.
+  An already opted-in production app registers on every launch so a cached token is never treated
+  as canonical. Initial opt-in and token refresh both call the shared NIP-98 client with explicit
+  `.macOS`; iOS continues to send explicit `.iOS`.
+- The relay's generic Mac payload already carries `taskify.type = dm-preview`. The shared
+  notification delegate maps that vocabulary to `TaskNotificationNavigationRouter.chat`, which
+  the Mac workspace observes, so opening an alert enters Chat without a second navigation dialect
+  or message metadata in APNs.
+- A `DEBUG` production-host launch can request the proof with
+  `--taskify-dm-push-provisioning-spike`. It runs the existing opt-in operation with the saved (or
+  default) selection, relay and server, and cannot activate in the isolated host. Release never
+  consults the argument and exposes no product toggle before proof.
+- Failing-first package passes established both missing boundaries: the production/test runtime
+  registration split and the explicit developer proof gate. Verification then passed all 28 Mac
+  package tests, deterministic project generation, unsigned Local and isolated UITest app builds,
+  the unsigned generic iOS app build, and all 875 `TaskifyCoreTests` with the 14 existing
+  environment-dependent skips. The targeted Mac UI smoke again stalled in Xcode before a worker
+  materialized or the test method began; it was interrupted after 129 seconds, so it is not
+  reported as a pass.
+- `security find-identity -v -p codesigning` reports `0 valid identities found`. Therefore this
+  host cannot obtain an APNs token or prove topic, environment, terminated-app delivery or alert
+  navigation. Unsigned compilation deliberately does not substitute for that evidence.
+- The next developer-Mac gate is: enable Push Notifications for App ID
+  `solife.me.Taskify.Mac`; install an Apple development identity/profile; configure the relay's
+  `macTopic` as that bundle ID with matching sandbox credentials; run a signed Debug/Local build
+  with `--taskify-dm-push-provisioning-spike` and allow notifications; confirm the relay stores a
+  `macos`/sandbox registration without logging the token; terminate Taskify; deliver one encrypted
+  NIP-17 gift wrap; and verify one generic alert opens Chat. Then repeat the provisioning check on
+  an archived Release build against production APNs before proposing product UI or release.
+- This is Apple framework lifecycle and provisioning glue around the shared fixture-backed wire
+  contract. Rust/UniFFI or WASM would add a bridge without making signing, AppKit callbacks or APNs
+  delivery testable, so no language port is warranted.

@@ -140,6 +140,29 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertEqual(configuration, .production)
     }
 
+    func testDMPushProvisioningSpikeRequiresTheRealMacHostAndExplicitArgument() {
+        let argument = MacDMPushProvisioningSpike.launchArgument
+        let testConfiguration = MacRuntimeConfiguration.resolve(
+            isUITestHost: true,
+            arguments: ["Taskify", argument],
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/tests"),
+            bundleIdentifier: "solife.me.Taskify.Mac.UITests"
+        )
+
+        XCTAssertTrue(MacDMPushProvisioningSpike.isRequested(
+            configuration: .production,
+            arguments: ["Taskify", argument]
+        ))
+        XCTAssertFalse(MacDMPushProvisioningSpike.isRequested(
+            configuration: .production,
+            arguments: ["Taskify"]
+        ))
+        XCTAssertFalse(MacDMPushProvisioningSpike.isRequested(
+            configuration: testConfiguration,
+            arguments: ["Taskify", argument]
+        ))
+    }
+
     func testUITestRuntimeIsSessionScopedAndOffline() throws {
         let configuration = MacRuntimeConfiguration.resolve(
             isUITestHost: true,
@@ -159,6 +182,7 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertEqual(test.outboxURL.lastPathComponent, "taskify-ui-test-outbox.json")
         XCTAssertEqual(test.identityService, "solife.me.Taskify.Mac.UITests.identity.deep-link-42")
         XCTAssertFalse(configuration.startsDeferredServices)
+        XCTAssertFalse(configuration.registersForRemoteNotifications)
         XCTAssertFalse(configuration.startPlan(isWalletRecoveryMode: false).startsWallet)
         XCTAssertEqual(
             test.initialLink,
@@ -195,6 +219,7 @@ final class MacPresentationTests: XCTestCase {
         )
 
         XCTAssertTrue(plan.startsDeferredServices)
+        XCTAssertTrue(MacRuntimeConfiguration.production.registersForRemoteNotifications)
         XCTAssertFalse(plan.startsWallet)
         XCTAssertEqual(deferredServiceStarts, 1)
         XCTAssertEqual(walletStarts, 0)
@@ -242,6 +267,7 @@ final class MacPresentationTests: XCTestCase {
             entitlements["keychain-access-groups"] as? [String],
             ["$(AppIdentifierPrefix)solife.me.Taskify.Mac"]
         )
+        XCTAssertEqual(entitlements["com.apple.developer.aps-environment"] as? String, "$(APS_ENVIRONMENT)")
     }
 
     func testMacUITestHostCannotUseProductionKeychainOrNetworkEntitlements() throws {
@@ -255,6 +281,7 @@ final class MacPresentationTests: XCTestCase {
 
         XCTAssertNil(entitlements["keychain-access-groups"])
         XCTAssertNil(entitlements["com.apple.security.network.client"])
+        XCTAssertNil(entitlements["com.apple.developer.aps-environment"])
     }
 
     func testNewWeekTaskAppearsInTodayColumnAcrossDaylightSavingBoundary() throws {

@@ -228,6 +228,10 @@ def render_project() -> str:
                             "CODE_SIGN_ENTITLEMENTS": "TaskifyMacUITests.entitlements",
                         }
                     )
+                else:
+                    settings["APS_ENVIRONMENT"] = (
+                        "production" if name == "Release" else "development"
+                    )
             settings.update(
                 {
                     "SWIFT_OPTIMIZATION_LEVEL": "-Onone" if name != "Release" else "-O",

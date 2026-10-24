@@ -16,6 +16,11 @@ enum MacRuntimeConfiguration: Equatable {
 
     var startsDeferredServices: Bool { self == .production }
 
+    /// Only the real app may touch APNs. The UI-test host deliberately has a separate bundle ID,
+    /// no network entitlement and no push entitlement, so a UI launch can never register a token
+    /// or contact the production relay as a side effect.
+    var registersForRemoteNotifications: Bool { self == .production }
+
     /// Resolve every startup side effect before executing one. Recovery mode deliberately keeps
     /// the ordinary task/sync services but never opens the wallet database or starts its monitors.
     func startPlan(isWalletRecoveryMode: Bool) -> MacRuntimeStartPlan {
@@ -82,6 +87,20 @@ struct MacUITestRuntimeConfiguration: Equatable {
     let resetsStore: Bool
     let walletEnabled: Bool
     let walletRecoveryPreview: Bool
+}
+
+/// A developer-only entry point for the signed APNs provisioning proof. It exercises the same
+/// opt-in operation the eventual product control will use, but cannot be activated in the
+/// isolated host. Release builds never consult it.
+enum MacDMPushProvisioningSpike {
+    static let launchArgument = "--taskify-dm-push-provisioning-spike"
+
+    static func isRequested(
+        configuration: MacRuntimeConfiguration,
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> Bool {
+        configuration == .production && arguments.contains(launchArgument)
+    }
 }
 
 /// The one-shot App Intent runs in a separate system-launched process. The isolated test target

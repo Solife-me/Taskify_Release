@@ -10,11 +10,19 @@ final class MacRuntime: ObservableObject {
     let wallet = WalletViewModel()
     let configuration: MacRuntimeConfiguration
     let isWalletRecoveryMode: Bool
+    private let requestsDMPushProvisioningSpike: Bool
     private var started = false
     private var dayChangeObservers: [NSObjectProtocol] = []
 
     init(configuration: MacRuntimeConfiguration = .production) {
         self.configuration = configuration
+#if DEBUG
+        requestsDMPushProvisioningSpike = MacDMPushProvisioningSpike.isRequested(
+            configuration: configuration
+        )
+#else
+        requestsDMPushProvisioningSpike = false
+#endif
         switch configuration {
         case .production:
             model = AppModel()
@@ -44,6 +52,9 @@ final class MacRuntime: ObservableObject {
         self.isWalletRecoveryMode = WalletPhaseOut.isRecoveryMode
         model.registerWalletPaymentReceiver(wallet)
         TaskNotificationActionRouter.shared.register(model: model)
+        if configuration.registersForRemoteNotifications {
+            TaskifyDMPushCoordinator.shared.register(model: model)
+        }
 
         // Unlike a phone, a Mac routinely stays open and active straight through midnight
         // instead of backgrounding and resuming with a fresh Date() of its own accord, so the
@@ -64,6 +75,15 @@ final class MacRuntime: ObservableObject {
     func start() async {
         guard !started, !model.isLoading else { return }
         started = true
+#if DEBUG
+        if requestsDMPushProvisioningSpike {
+            await model.enableDMPushNotifications(
+                selection: TaskifyDMPushSettings.selection,
+                relayURL: TaskifyDMPushSettings.relayURL,
+                serverURL: TaskifyDMPushSettings.serverURL
+            )
+        }
+#endif
         await MacRuntimeStartExecutor.run(
             plan: configuration.startPlan(isWalletRecoveryMode: isWalletRecoveryMode),
             startDeferredServices: { model.initialContentDidAppear() },
@@ -89,6 +109,20 @@ final class MacRuntime: ObservableObject {
 final class MacApplicationDelegate: NSObject, NSApplicationDelegate {
     weak var runtime: MacRuntime?
     private var terminating = false
+
+    func application(
+        _ application: NSApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        TaskifyDMPushCoordinator.shared.didRegister(deviceToken: deviceToken)
+    }
+
+    func application(
+        _ application: NSApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        TaskifyDMPushCoordinator.shared.didFailRegistration(error)
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtime, !terminating else { return .terminateNow }

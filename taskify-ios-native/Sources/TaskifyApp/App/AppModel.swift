@@ -1964,6 +1964,7 @@ final class AppModel {
             _ = try await DMPushRegistrationClient.register(
                 deviceToken: deviceToken,
                 environment: Self.dmPushAPNsEnvironment,
+                platform: Self.dmPushRegistrationPlatform,
                 installationID: TaskifyDMPushSettings.installationID,
                 baseURL: serverURL,
                 identity: identity
@@ -2051,6 +2052,7 @@ final class AppModel {
             _ = try await DMPushRegistrationClient.register(
                 deviceToken: deviceToken,
                 environment: Self.dmPushAPNsEnvironment,
+                platform: Self.dmPushRegistrationPlatform,
                 installationID: TaskifyDMPushSettings.installationID,
                 baseURL: serverURL,
                 identity: identity
@@ -2102,6 +2104,14 @@ final class AppModel {
         "sandbox"
 #else
         "production"
+#endif
+    }
+
+    private static var dmPushRegistrationPlatform: DMPushRegistrationPlatform {
+#if os(macOS)
+        .macOS
+#else
+        .iOS
 #endif
     }
 
