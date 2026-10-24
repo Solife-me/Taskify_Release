@@ -168,6 +168,20 @@ npm test             # Vitest
 npm run lint         # ESLint
 ```
 
+**Shared Nostr runtime and CLI:**
+```sh
+cd taskify-runtime-nostr
+npm test             # builds, then runs transport/unit tests (including a loopback fake relay)
+
+cd ../taskify-cli
+npm test             # rebuilds the bundled CLI before the Node test suite
+```
+
+The runtime test script currently uses Node's `--test-force-exit`. A clean test summary therefore
+does not prove transport teardown; natural process termination is tracked as C12-3 in the
+improvement review. The NIP-42/NIP-13 integration tests bind a loopback port and may need a local
+test environment that permits listening on `127.0.0.1`.
+
 **Worker (local):**
 ```sh
 # Requires Cloudflare account + wrangler auth

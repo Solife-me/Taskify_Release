@@ -54,7 +54,7 @@ Constraints carried through every chunk:
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
 | 11 | macOS | `taskify-macos` | Approved implementation done (2026-10-23); C11-6A/C11-7A signed proof gates in progress; shared wallet deletion remains due after Dec 1 |
-| 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Pending |
+| 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Reviewed (2026-10-24); awaiting decisions |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
 
@@ -2907,3 +2907,165 @@ delivery proof.
 - This is Apple framework lifecycle and provisioning glue around the shared fixture-backed wire
   contract. Rust/UniFFI or WASM would add a bridge without making signing, AppKit callbacks or APNs
   delivery testable, so no language port is warranted.
+
+---
+
+## Chunk 12 — Nostr runtime and CLI
+
+`taskify-runtime-nostr` is the shared TypeScript relay transport used by the PWA and CLI.
+`taskify-cli` is the agent-facing client: its JSON and exit-code contracts matter as much as its
+human output, and its mutations must keep the same task, calendar and wire semantics as the apps.
+
+What the review found:
+
+- **The transport has substantial behavioral coverage.** Its 17 test files exercise signatures,
+  history recovery, subscription sharing and batching, NIP-42, NIP-13, per-relay pacing and the
+  durable outbox. The normal suite passes 77 tests with `--test-force-exit`.
+- **The forced exit still masks a real lifecycle gap.** Running the same complete suite without
+  `--test-force-exit` passed all eight fake-relay NIP-42/NIP-13 cases, then stayed alive for more
+  than a minute until interrupted. `RuntimeNostrSession.shutdown()` already stops subscriptions,
+  publisher timers and visible relay pools, so the next step is to identify and own the remaining
+  handle rather than preserve the escape hatch. Shutdown also aborts a readonly controller, which
+  makes a later `init()` look supported while proof-of-work remains permanently aborted, and
+  `PublishCoordinator.shutdown()` clears debounced publishes without settling their returned
+  promises.
+- **CLI actions often prevent their own cleanup.** There are 271 `process.exit()` calls in the
+  entry point and command modules. In commands such as event CRUD and board mutations, the exit is
+  inside `try` or `catch`, before `finally { await runtime.disconnect() }`; Node terminates at the
+  exit call, so that cleanup is unreachable. The entry point's comment says actions have already
+  shut transport down, but this is not true for those paths.
+- **Most high-level CLI regression tests still inspect implementation text.** The suite passes 202
+  tests, but 102 explicit test cases live in files that read `src/*.ts` and match regular
+  expressions. These tests can pass when a command is unreachable, an injected value is ignored,
+  cleanup is skipped, or the wrong event is published. The newer subprocess tests prove help,
+  profile selection, local mutations and JSON failures, but they cannot inject a relay/runtime to
+  exercise the network-backed command actions deterministically.
+- **The CLI relay/domain adapter is too large to test at its seams.** `src/nostrRuntime.ts` is 1,720
+  lines. It owns connection timing, task and calendar decoding, latest-event selection, cache
+  merge, task/calendar/board publication and every mutation behind one closure. Much of its
+  behavior is sound and already delegates normalization to `taskify-core`; the problem is the
+  boundary, not a case for a ground-up rewrite.
+- **One-off relay paths have drifted around the shared session.** Profile metadata, bot command
+  lists, inbox-relay discovery and contact sync construct raw NDK instances. They do reuse the
+  shared AUTH and proof-of-work helpers and verify received signatures, but several helpers never
+  destroy their pool, while contact code owns its teardown separately. This duplicates timeout,
+  verification and lifecycle policy and contributes to the CLI's dependence on hard exit.
+- **The durable CLI outbox is already the right foundation.** `createCliNostrSession` supplies an
+  atomic file-backed outbox to `RuntimeNostrSession`; writes are recorded before relay publication
+  and replay on a later connection. The review found no reason to replace it with a new queue.
+  Correct shutdown and behavioral tests should prove the existing design instead.
+- **Startup is not the current problem.** The bundled entry is about 690 KB and `--help` completed
+  in about 0.11 seconds on this Mac. A startup-budget project would displace correctness work
+  without evidence of a user-visible bottleneck.
+- **Language fit:** keep this layer in TypeScript. It directly shares `taskify-core` with the PWA,
+  and NDK is the active transport on both browser and Node. The CLI already injects Node's native
+  SHA-256 implementation for proof-of-work. Rust/UniFFI/WASM would add two runtime bridges without
+  fixing command cleanup, relay ownership or source-text tests.
+
+### C12-1 — One CLI exit boundary that always completes cleanup — recommend **Approve**
+
+- **User:** CLI and agent users, especially after a failed or queued network write.
+- **Problem:** `process.exit()` inside command actions bypasses `finally`, so runtime disconnect,
+  pending output and other cleanup are not reliable. This is a behavior bug, not only style debt.
+- **Proposal:** make actions return normally after setting a typed result/`process.exitCode`; only
+  the outer executable boundary may choose the final process status, after `parseAsync` and all
+  action cleanup finish. Convert network-backed commands first, then local commands. Keep the
+  current exit codes and JSON/human output byte-for-byte unless a failing behavior test proves a
+  bug. Add a lint/test guard that command modules do not call `process.exit`.
+- **Test first:** inject a runtime whose `disconnect` records completion. Prove success, validation
+  failure, relay failure and queued-write paths all disconnect before the command resolves, retain
+  their existing status, and emit exactly one JSON envelope in agent mode.
+- **Effort:** M because the calls are numerous but mechanical. **Risk:** medium; stage it by command
+  group with a green bundled-CLI test after each commit.
+
+### C12-2 — A behavioral command harness, then retire source-regex tests — recommend **Approve**
+
+- **User:** Maintainers and agent users who depend on stable machine-readable behavior.
+- **Proposal:** separate `buildProgram(dependencies)` and `runCli(argv, dependencies)` from the
+  executable side effect. Inject config persistence, `NostrRuntime`, attachment/share transports,
+  clock/UUID and stdout/stderr; use in-memory fakes in tests. Keep a small subprocess layer for the
+  actual bundle, argument parsing and OS exit code. Replace source-text tests in risk order:
+  event/task mutations and recurring completion, boards/lists, contacts/sharing, then registration
+  and presentation. Delete each regex assertion when its real behavior test lands.
+- **Test shape:** call the real Commander action with a recording fake runtime and assert calls,
+  returned status, output and cleanup. The fake is not a second implementation of Nostr; lower
+  runtime tests remain responsible for signed event transport.
+- **Effort:** M–L, naturally incremental. **Risk:** low after C12-1 supplies one lifecycle model.
+
+### C12-3 — An explicit, terminal runtime shutdown contract — recommend **Approve**
+
+- **User:** PWA and CLI users; both consume this package.
+- **Proposal:** find the open handle exposed by removing `--test-force-exit`, then make every owned
+  timer, subscription, relay callback and pool close through one idempotent `shutdown()`. Pending
+  debounced publish promises must either finish or reject with a named shutdown error; they must
+  never be silently abandoned. Make shutdown explicitly terminal (a later operation fails fast),
+  or rebuild all abort-owned components on restart—do not advertise the current half-restart.
+  Add a small owned standalone-session API for profile/contact/bot reads and writes so raw NDK
+  helpers share signature verification, AUTH/PoW, timeouts and close semantics.
+- **Test first:** the complete runtime suite must finish naturally without `--test-force-exit`;
+  focused tests cover double shutdown, operation after shutdown, a debounced publish during
+  shutdown, and each standalone helper closing on success, timeout and error.
+- **Effort:** M. **Risk:** medium because relay teardown races are timing-sensitive; use the local
+  fake relay, not public infrastructure.
+
+### C12-4 — Split the CLI Nostr adapter by domain behind the same interface — recommend **Approve**
+
+- **User:** Indirectly all CLI users; this reduces drift without changing commands.
+- **Proposal:** after the harness exists, extract task codec/repository, calendar codec/repository,
+  board repository and cache merge from `nostrRuntime.ts`. Keep `NostrRuntime` as the facade the
+  commands consume and inject one session/clock/config store. Move deterministic behavior to
+  `taskify-core` when another client also owns it; keep Node persistence and relay orchestration in
+  the CLI/runtime. Port line by line and preserve event tags, timestamps, encryption, errors and
+  cache keys.
+- **Test first:** characterize each current facade method through the fake session before moving
+  it. A refactor commit must not change the signed event templates or public return records.
+- **Effort:** L in small commits. **Risk:** medium if attempted as one rewrite, low when split one
+  domain at a time.
+
+### C12-5 — Make the CLI consume the existing cross-client wire vectors — recommend **Approve**
+
+- **User:** Anyone editing a task or calendar event from more than one client.
+- **Proposal:** run the CLI task/calendar decoders and encoders against the existing
+  `task-event-vectors-*.json`, `calendar-event-vectors-*.json` and event-version vectors. The PWA
+  and Swift remain the vector producers; the CLI becomes a third consumer. Export only the pure
+  codec seams needed by the test. If a vector exposes a difference, first decide the shared
+  behavior in `taskify-core`, then add/fix the vector and its Swift coverage before changing a
+  client.
+- **Test first:** the current fixtures are the tests. Do not replace them with CLI-only snapshots.
+- **Effort:** S–M after C12-4 exposes codecs. **Risk:** low; it may reveal intentional CLI omissions
+  that should be documented rather than copied.
+
+### C12-6 — Port the runtime or CLI to Rust/UniFFI/WASM — recommend **Decline**
+
+The expensive and failure-prone work here is relay lifecycle and command orchestration, not a CPU
+kernel. A Rust port would lose the direct browser/Node NDK sharing, require JavaScript and Swift
+bridges, and still need platform-specific WebSocket, persistence and process-lifecycle code. Keep
+native hashing injected for proof-of-work. Revisit only if measurements later show mining dominates
+real commands and a small isolated WASM hashing worker beats the existing Node/browser workers; do
+not port the session or domain facade for that hypothetical gain.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C12-1 | — | — | Awaiting maintainer decision |
+| C12-2 | — | — | Awaiting maintainer decision |
+| C12-3 | — | — | Awaiting maintainer decision |
+| C12-4 | — | — | Awaiting maintainer decision |
+| C12-5 | — | — | Awaiting maintainer decision |
+| C12-6 | — | — | Awaiting maintainer decision |
+
+### Checkpoint — October 24, 2026 (Chunk 12 review)
+
+The Chunk 12 review is complete; no implementation has started and nothing has been pushed.
+
+- Baselines remain green at the reviewed head: CLI 202/202 and runtime 77/77 with its current
+  forced-exit script. The no-force runtime experiment passed the fake-relay cases but did not
+  terminate and was interrupted after more than a minute; it is evidence for C12-3, not a passing
+  gate.
+- C12-1 through C12-5 are recommended for approval in that order. C12-6 is recommended for
+  decline. C12-4 and C12-5 should wait until the command harness and lifecycle work make behavior
+  observable without source inspection.
+- The next step is the maintainer's decisions. Do not infer approval or begin implementation from
+  this review. If approved, start C12-1 with a failing cleanup test and one command group; preserve
+  the unrelated runtime-security manifest/workflow changes already present in the worktree.
