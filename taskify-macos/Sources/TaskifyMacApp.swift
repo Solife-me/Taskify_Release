@@ -117,6 +117,10 @@ struct TaskifyMacApp: App {
         let configuration = MacRuntimeConfiguration.production
 #endif
         _runtime = StateObject(wrappedValue: MacRuntime(configuration: configuration))
+#if TASKIFY_MAC_SHORTCUTS
+        // Keep the system's parameter and phrase data current after a Mac launch, matching iOS.
+        TaskifyShortcuts.updateAppShortcutParameters()
+#endif
     }
 
     var body: some Scene {

@@ -2470,7 +2470,7 @@ Explore. C11-8 requires no feature work.
 | C11-4 | Approve | 2026-10-21 | Done. The shared Spotlight indexer now builds on macOS, updates after the same task-area saves as iOS, and gives every result the shared `taskify://task` content link. Mac opens that link through its production router, while bundle-scoped Mac domains keep the isolated host out of the production index. A ninth CI smoke covers index, open, complete and removal; `TaskifyCore` remains the single authority for which tasks are searchable. |
 | C11-5 | Approve | 2026-10-21 | Done. `MacAttachmentQueue` now has one import boundary for file URLs and raw transferable image bytes. It detects the actual image type from the bytes, writes a protected temporary file with a safe generated name and real extension, and sends that file through the unchanged task/chat encryption and upload services. Both composers accept the same payload. Package regressions cover file import, invalid bytes, CoreTransferable PNG negotiation and round trips through both encryption inputs; a tenth isolated-host smoke puts PNG data with no file URL on the pasteboard and stages it in each composer. |
 | C11-6 | Explore | 2026-10-21 | Complete. Compile prototypes favor shared App Intents/Shortcuts over a resident menu item. Returned C11-6A (Approve) and C11-6B (Decline) for maintainer decision. |
-| C11-6A | Approve | 2026-10-23 | In progress. Stage 1 moved Add Task's complete mutation into an injected `TaskifyExternalActions.addTask` core operation and kept the iOS intent as a thin production adapter. Stage 2 must share the intent/provider with Mac and prove a signed terminated-app invocation before enabling the surface. |
+| C11-6A | Approve | 2026-10-23 | In progress. Stage 1 moved Add Task's complete mutation into an injected `TaskifyExternalActions.addTask` core operation. Stage 2 shares the intent/provider with the Mac `UITest` configuration and adds an isolated terminated-app `AppIntentsTesting` gate. Production configurations remain disabled until that gate passes with Apple development signing. |
 | C11-6B | Decline | 2026-10-23 | Do not add a resident menu-bar process or Mac share extension without evidence that Shortcuts plus the existing paste/drop capture paths are insufficient. |
 | C11-7 | Explore | 2026-10-21 | Complete as far as an unsigned review can go. Returned C11-7A (Approve a signed provisioning spike) and C11-7B (Decline release before its real-Mac proof) for maintainer decision. |
 | C11-7A | Approve | 2026-10-23 | Not started. Run the limited signed provisioning spike with an explicit `macos` registration, distinct APNs topic and generic privacy-preserving alert. |
@@ -2787,3 +2787,34 @@ implemented locally on `Beta`; nothing has been pushed.
 - Next: commit stage 1; then share the App Shortcut intent/provider with the generated Mac target,
   verify extracted metadata, and attempt the required signed terminated-app invocation in an
   isolated build before enabling C11-6A.
+
+### Checkpoint — October 23, 2026 (C11-6A stage 2 gate)
+
+C11-6A now has the production-enable gate prepared locally on `Beta`; nothing has been pushed.
+
+- The iOS Add Task intents and `TaskifyShortcuts` provider are explicit shared sources in the
+  generated Mac project. iOS keeps them in every app build. Mac compiles and publishes them only
+  for the separately identified `UITest` configuration behind `TASKIFY_MAC_SHORTCUTS`; Local,
+  Debug and Release still expose no Mac shortcut surface.
+- The isolated Mac external-action adapter uses the UI-test store, fixed device settings and a
+  disabled publisher. Its package regression proves that the default test path is deterministic
+  and cannot publish to relays.
+- The existing first UI smoke still proves the injected task deep link, then terminates Taskify,
+  invokes `TaskifyAddTaskIntent` through Apple's `AppIntentsTesting` process boundary, relaunches
+  with the same isolated store and verifies the task. Expanding an existing CI-selected smoke
+  keeps the gate active without changing the concurrently edited workflow.
+- Verification passed: deterministic project generation; all 27 Mac package tests; unsigned Mac
+  Local build with no relevant App Intents metadata; ad-hoc-signed Mac UITest build and UI runner
+  with both Add Task intents extracted; and the iOS simulator build with the same two intents
+  extracted. The targeted UI execution cannot start on this host because XCTest times out while
+  enabling automation before entering the method. The host also has no valid Apple code-signing
+  identity, so its “Sign to Run Locally” build cannot provide the required system registration
+  proof.
+- The next release-authorized step is to run the existing smoke on CI or a developer Mac with UI
+  automation and Apple development signing. Only after that terminated-app invocation passes
+  should `TASKIFY_MAC_SHORTCUTS` be added to Local, Debug and Release, followed by the proposed
+  ten-launch median launch-to-first-board comparison with a regression budget below 5%.
+- No shared JSON vector or Rust/UniFFI boundary is warranted. The durable mutation is already
+  shared in Swift core; this stage is specifically Apple's signed App Intents lifecycle.
+- Next: commit this safely disabled gate, then begin C11-7A with a typed `ios`/`macos` registration
+  contract while keeping Mac push unavailable until a real terminated-app delivery succeeds.

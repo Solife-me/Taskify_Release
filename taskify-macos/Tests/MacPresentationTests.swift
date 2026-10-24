@@ -5,6 +5,22 @@ import TaskifyWallet
 @testable import MacPresentation
 
 final class MacPresentationTests: XCTestCase {
+    func testUITestExternalActionsUseTheDefaultIsolatedStoreAndNeverPublish() {
+        let root = URL(fileURLWithPath: "/tmp/taskify-shortcuts-test", isDirectory: true)
+
+        let configuration = MacUITestExternalActionConfiguration.resolve(temporaryDirectory: root)
+
+        XCTAssertEqual(
+            configuration.storeURL,
+            root
+                .appendingPathComponent("TaskifyMacUITests", isDirectory: true)
+                .appendingPathComponent("default", isDirectory: true)
+                .appendingPathComponent("taskify-ui-test.json", isDirectory: false)
+        )
+        XCTAssertFalse(configuration.publishesToRelays)
+        XCTAssertNotEqual(configuration.storeURL, JSONTaskStore.defaultURL)
+    }
+
     func testPNGItemProviderNegotiatesTheRawImageTransferRepresentation() async throws {
         let provider = NSItemProvider()
         provider.registerDataRepresentation(

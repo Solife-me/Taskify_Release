@@ -84,6 +84,32 @@ struct MacUITestRuntimeConfiguration: Equatable {
     let walletRecoveryPreview: Bool
 }
 
+/// The one-shot App Intent runs in a separate system-launched process. The isolated test target
+/// therefore cannot rely on the UI runner's launch arguments or injected `AppModel`; it needs a
+/// deterministic private store of its own and must never create a relay publisher.
+struct MacUITestExternalActionConfiguration: Equatable {
+    let storeURL: URL
+    let publishesToRelays: Bool
+
+    static func resolve(
+        temporaryDirectory: URL = FileManager.default.temporaryDirectory
+    ) -> MacUITestExternalActionConfiguration {
+        let runtime = MacRuntimeConfiguration.resolve(
+            isUITestHost: true,
+            arguments: [],
+            temporaryDirectory: temporaryDirectory,
+            bundleIdentifier: "solife.me.Taskify.Mac.UITests"
+        )
+        guard let test = runtime.uiTest else {
+            preconditionFailure("The isolated external-action configuration requires the UI-test host.")
+        }
+        return MacUITestExternalActionConfiguration(
+            storeURL: test.storeURL,
+            publishesToRelays: false
+        )
+    }
+}
+
 struct MacRuntimeStartPlan: Equatable {
     let startsDeferredServices: Bool
     let startsWallet: Bool

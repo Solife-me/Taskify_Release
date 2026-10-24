@@ -92,6 +92,7 @@
 		B0000000000000000000S02 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */; };
 		B0000000000000000000S03 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */; };
 		B00000000000000000000124 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */; };
+		C116A0000000000000000F01 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C116A0000000000000000F00 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift */; };
 		C1A700000000000000000F01 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */; };
 		B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */; };
 		B00000000000000000000125 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */; };
@@ -276,6 +277,7 @@
 		B00000000000000000000224 /* Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Boards/BibleTrackerView.swift; sourceTree = SOURCE_ROOT; };
 		B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Shared/TaskifyQuickAddIntent.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift; sourceTree = SOURCE_ROOT; };
+		C116A0000000000000000F00 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyShortcuts.swift; sourceTree = SOURCE_ROOT; };
 		C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift; sourceTree = SOURCE_ROOT; };
@@ -452,6 +454,7 @@
 				B00000000000000000000201 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift */,
 				B00000000000000000000202 /* Sources/TaskifyApp/App/AppModel.swift */,
 				B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */,
+				C116A0000000000000000F00 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift */,
 				C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */,
 				B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */,
 				B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */,
@@ -927,6 +930,7 @@
 				B00000000000000000000101 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift in Sources */,
 				B00000000000000000000102 /* Sources/TaskifyApp/App/AppModel.swift in Sources */,
 				B00000000000000000000124 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift in Sources */,
+				C116A0000000000000000F01 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift in Sources */,
 				C1A700000000000000000F01 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift in Sources */,
 				B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */,
 				B0000000000000000000S02 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */,

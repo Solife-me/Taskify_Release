@@ -2,6 +2,7 @@ import AppIntents
 import Foundation
 import TaskifyCore
 
+#if os(iOS) || TASKIFY_MAC_SHORTCUTS
 /// Must live in the app target, not the TaskifyCore package. App Intents defined outside the app
 /// target extract into `Metadata.appintents` looking completely healthy -- correct parameters,
 /// `isDiscoverable: true`, NLU phrase assets and all -- while the system still fails to load the
@@ -165,6 +166,19 @@ enum TaskifyIntentTaskWriter {
         priority: TaskPriority? = nil,
         interpretNaturalLanguageTitle: Bool = false
     ) async throws -> TaskifyIntentCreatedTask {
+#if os(macOS) && TASKIFY_MAC_UI_TEST
+        let test = MacUITestExternalActionConfiguration.resolve()
+        return try await TaskifyExternalActions.addTask(
+            title: title,
+            requestedBoardName: requestedBoardName,
+            note: note,
+            dueDate: dueDate,
+            priority: priority,
+            interpretNaturalLanguageTitle: interpretNaturalLanguageTitle,
+            store: JSONTaskStore(fileURL: test.storeURL),
+            publisher: .disabled
+        )
+#else
         try await TaskifyExternalActions.addTask(
             title: title,
             requestedBoardName: requestedBoardName,
@@ -173,7 +187,9 @@ enum TaskifyIntentTaskWriter {
             priority: priority,
             interpretNaturalLanguageTitle: interpretNaturalLanguageTitle
         )
+#endif
     }
 }
 
 typealias TaskifyAddTaskIntentError = TaskifyExternalAddTaskError
+#endif

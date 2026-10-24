@@ -28,6 +28,8 @@ SHARED_SOURCES = (
     "App/ScriptureMemorySettings.swift",
     "App/TaskStreakSettings.swift",
     "App/TaskOrderingSettings.swift",
+    "App/TaskifyAddTaskIntent.swift",
+    "App/TaskifyShortcuts.swift",
     "App/TaskifySpotlightIndexer.swift",
     "App/StartupViewSettings.swift",
     "App/OnboardingSettings.swift",
@@ -230,7 +232,7 @@ def render_project() -> str:
                 {
                     "SWIFT_OPTIMIZATION_LEVEL": "-Onone" if name != "Release" else "-O",
                     "SWIFT_ACTIVE_COMPILATION_CONDITIONS": (
-                        "DEBUG TASKIFY_MAC_UI_TEST" if name == "UITest"
+                        "DEBUG TASKIFY_MAC_UI_TEST TASKIFY_MAC_SHORTCUTS" if name == "UITest"
                         else "DEBUG" if name != "Release"
                         else ""
                     ),

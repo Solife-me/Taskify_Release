@@ -1,4 +1,5 @@
 import AppKit
+import AppIntentsTesting
 import CoreSpotlight
 import XCTest
 
@@ -11,10 +12,12 @@ final class TaskifyMacUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testIsolatedHostOpensFixtureTaskFromInjectedDeepLink() {
+    @available(macOS 27.0, *)
+    func testIsolatedHostOpensFixtureTaskFromInjectedDeepLink() async throws {
+        let taskTitle = "Shortcut task \(UUID().uuidString.prefix(6))"
         let app = XCUIApplication()
         app.launchArguments = [
-            "--taskify-ui-test-session", UUID().uuidString,
+            "--taskify-ui-test-session", "default",
             "--taskify-ui-test-open-url",
             "taskify://task?id=ui-test-deep-link-task&board=ui-test-board",
         ]
@@ -25,6 +28,23 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["TASK DETAILS"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Edit Task…"].exists)
         XCTAssertFalse(app.staticTexts["Welcome to Taskify"].exists)
+
+        app.terminate()
+        XCTAssertEqual(app.state, .notRunning)
+        let definitions = IntentDefinitions(bundleIdentifier: "solife.me.Taskify.Mac.UITests")
+        try await definitions.intents["TaskifyAddTaskIntent"]
+            .makeIntent(taskTitle: taskTitle)
+            .run()
+
+        let relaunched = XCUIApplication()
+        relaunched.launchArguments = [
+            "--taskify-ui-test-session", "default",
+            "--taskify-ui-test-preserve-store",
+        ]
+        relaunched.launch()
+        XCTAssertTrue(relaunched.staticTexts["UI Test Board"].waitForExistence(timeout: 10))
+        relaunched.staticTexts["UI Test Board"].click()
+        XCTAssertTrue(relaunched.staticTexts[taskTitle].waitForExistence(timeout: 10))
     }
 
     @MainActor

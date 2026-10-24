@@ -34,11 +34,14 @@ Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 26 presentation/runtime tests, the unsigned app build and the ten isolated app-host smoke tests on
+the 27 presentation/runtime tests, the unsigned app build and the ten isolated app-host smoke tests on
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
 a session-scoped temporary store/outbox and Keychain service, and no relay or wallet startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing
-process-global environment. The attachment smoke puts raw PNG data without a file URL on the real
+process-global environment. The first smoke also terminates Taskify, invokes Add Task out of process
+through `AppIntentsTesting`, relaunches, and verifies the task in the same isolated store. App Intent
+metadata is deliberately limited to this configuration until that test passes with Apple development
+signing; Local, Debug, and Release publish no Mac shortcuts yet. The attachment smoke puts raw PNG data without a file URL on the real
 pasteboard and stages it in both task and chat composers. A developer Mac must allow Xcode UI automation before the test runner
 can execute. `Local` retains
 app debugging while Swift package dependencies use their release configuration;
