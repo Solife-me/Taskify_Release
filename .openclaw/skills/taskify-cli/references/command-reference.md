@@ -26,7 +26,7 @@ taskify inbox triage <taskId> --board "Work" --column "Backlog" --priority 2 --y
 taskify boards --json
 taskify board list
 taskify board columns "Work"
-taskify board create "Sprint 12" --kind lists
+taskify board create "Sprint 12" --kind lists --columns "To do, Doing, Done"
 taskify board sync
 ```
 

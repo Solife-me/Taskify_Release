@@ -45,6 +45,8 @@ export type CliDependencies = {
   writeAgentJson?: typeof writeAgentJson;
   /** The command clock, for date-relative views such as `upcoming`. */
   now?: () => Date;
+  /** Asks the user a question; null when stdin isn't a terminal. */
+  prompt?: (question: string) => Promise<string | null>;
   version?: string;
 };
 
@@ -67,6 +69,7 @@ function composeProgram(dependencies: CliDependencies = {}) {
     createIdempotencyStore: dependencies.createIdempotencyStore,
     writeAgentJson: dependencies.writeAgentJson,
     now: dependencies.now,
+    prompt: dependencies.prompt,
   });
   const initRuntime = context.initRuntime;
   const relayCheck = dependencies.checkRelay ?? checkRelay;

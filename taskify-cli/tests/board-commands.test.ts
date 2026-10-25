@@ -234,3 +234,45 @@ test("task add --human confirms the column the task landed in", async () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout.join("\n"), /Created: Pack\s+\[col: later \(Later\)\]/);
 });
+
+test("board create in a script makes a list board without waiting for input", { timeout: 5000 }, async () => {
+  const asked: string[] = [];
+  const { runtime, calls } = recordingRuntime({ createBoard: async () => ({ boardId: "new-board" }) });
+  const { dependencies } = harnessDependencies(runtime, {
+    randomUUID: () => "uuid-new",
+    prompt: async (question: string) => { asked.push(question); return null; },
+  }, config);
+
+  const result = await captureConsole(() => runCli(["node", "taskify", "board", "create", "Groceries"], dependencies));
+
+  assert.equal(result.status, 0);
+  assert.deepEqual(calls, [
+    ["createBoard", { name: "Groceries", kind: "lists", columns: [], children: [] }],
+    ["disconnect"],
+  ]);
+});
+
+test("board create takes list names from --columns, or asks when run interactively", { timeout: 5000 }, async () => {
+  let n = 0;
+  const ids = () => `col-${++n}`;
+  const named = recordingRuntime({ createBoard: async () => ({ boardId: "b" }) });
+  const flagged = await captureConsole(() => runCli([
+    "node", "taskify", "board", "create", "Trip", "--columns", "Pack, Book,, Go",
+  ], harnessDependencies(named.runtime, { randomUUID: ids, prompt: async () => { throw new Error("asked"); } }, config).dependencies));
+  assert.equal(flagged.status, 0);
+  assert.deepEqual(named.calls[0], ["createBoard", {
+    name: "Trip", kind: "lists", children: [],
+    columns: [{ id: "col-1", name: "Pack" }, { id: "col-2", name: "Book" }, { id: "col-3", name: "Go" }],
+  }]);
+
+  const asked: string[] = [];
+  const interactive = recordingRuntime({ createBoard: async () => ({ boardId: "b" }) });
+  const prompted = await captureConsole(() => runCli([
+    "node", "taskify", "board", "create", "Home",
+  ], harnessDependencies(interactive.runtime, {
+    randomUUID: ids, prompt: async (question: string) => { asked.push(question); return "Chores, Repairs"; },
+  }, config).dependencies));
+  assert.equal(prompted.status, 0);
+  assert.equal(asked.length, 1);
+  assert.deepEqual((interactive.calls[0][1] as { columns: Array<{ name: string }> }).columns.map((c) => c.name), ["Chores", "Repairs"]);
+});

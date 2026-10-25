@@ -3362,3 +3362,18 @@ Board and list commands now run through the behavioral harness; nothing has been
   - the `boards` alias duplicates `board list` but without its 24-hour refresh or relay display.
 - The build, `npx tsc --noEmit` and the CLI suite pass at 219/219.
 - Next: those two fixes, then contact/sharing and registration/presentation checks.
+
+### Checkpoint — October 25, 2026 (CLI `board create` in scripts)
+
+- Failing tests came first. In a script, `board create <name>` (a lists board by default) waited
+  on stdin for column names. The test run hung past its own time limit, because the open readline
+  kept the process alive. `--columns` did not exist.
+- The command context has a `prompt` seam (`src/shared/prompt.ts`). It asks only when stdin is a
+  terminal and returns null when nobody can answer, including when input ends.
+- `board create` takes list names from `--columns`, asks in a terminal, and otherwise creates the
+  board without lists.
+- The confirmation prompts in `agent` and `transfer`, and inbox triage, still open their own
+  readline. They have `--yes` for scripts, and move to the seam when their commands are
+  characterized.
+- Also found, for the `boards` step: the command reference shows `taskify boards --json`, but
+  neither `boards` nor `board list` has a `--json` option.
