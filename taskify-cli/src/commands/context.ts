@@ -39,7 +39,12 @@ export function rethrowReportedError(error: unknown): void {
   if (error instanceof CliReportedError) throw error;
 }
 
-export function createCommandContext(program: Command) {
+export type CommandContextDependencies = {
+  createRuntime?: typeof createNostrRuntime;
+  loadConfig?: typeof loadConfig;
+};
+
+export function createCommandContext(program: Command, dependencies: CommandContextDependencies = {}) {
   // ---- Validation helpers ----
 
   function validateDue(due: string | undefined): void {
@@ -142,7 +147,7 @@ export function createCommandContext(program: Command) {
 
   function initRuntime(config: Parameters<typeof createNostrRuntime>[0]): NostrRuntime {
     try {
-      return createNostrRuntime(config);
+      return (dependencies.createRuntime ?? createNostrRuntime)(config);
     } catch (err) {
       console.error(chalk.red(String(err)));
       throw new CliReportedError();
@@ -401,6 +406,6 @@ export function createCommandContext(program: Command) {
   }
 
 
-  return { validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
+  return { loadConfig: dependencies.loadConfig ?? loadConfig, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
 }
 export type CommandContext = ReturnType<typeof createCommandContext>;

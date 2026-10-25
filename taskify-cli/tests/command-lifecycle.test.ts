@@ -105,3 +105,10 @@ test("reported helper failures unwind without a duplicate error envelope", () =>
   assert.equal(result.stdout, "");
   assert.deepEqual(exits, ["process.exit:1"]);
 });
+
+test("Commander help returns through the executable exit boundary", () => {
+  const { result, exits } = runWithExitTrace(["--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Usage: taskify/);
+  assert.deepEqual(exits, ["process.exit:0"]);
+});

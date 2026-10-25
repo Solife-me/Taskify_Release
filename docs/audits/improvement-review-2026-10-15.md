@@ -3049,7 +3049,7 @@ not port the session or domain facade for that hypothetical gain.
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
-| C12-2 | Approve | 2026-10-25 | Not started |
+| C12-2 | Approve | 2026-10-25 | In progress; importable program/run seam and first event behavior tests are stage 1 |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
 | C12-5 | Approve | 2026-10-25 | Not started |
@@ -3195,3 +3195,25 @@ C12-1 is complete locally on `Beta`; nothing has been pushed.
 - Next: C12-2, beginning with a `buildProgram(dependencies)`/`runCli(argv, dependencies)` seam and
   a recording fake runtime, then replacing the highest-risk source-regex assertions with behavior
   tests one command family at a time.
+
+### Checkpoint — October 25, 2026 (C12-2 stage 1)
+
+The first behavioral command-harness stage is complete locally on `Beta`; nothing has been pushed.
+
+- `src/cli.ts` now owns importable `buildProgram(dependencies)` and
+  `runCli(argv, dependencies)`. The executable composes relay settings, awaits `runCli`, and owns
+  the only hard exit. The build emits a separate non-executing `dist/cli.js` bundle for tests as
+  well as the normal shebang-bearing `dist/index.js`.
+- Commander runs with `exitOverride()`. A failing bundled regression first showed that intercepted
+  `--help` attempted four exits (help, then three error exits as execution continued); it now
+  prints the same help and returns status zero to the executable boundary exactly once. Commander
+  parse failures likewise return their own status without a duplicate Taskify error envelope.
+- Dependencies can now supply runtime construction, config reads, relay checks, onboarding and a
+  version. Event commands consume the injected config seam. The first in-process behavior tests
+  drive the real `event list --json` action with a recording fake runtime and prove arguments,
+  output, success/failure status and awaited disconnect without relay traffic or a child process.
+- `AGENT.md` lists the new harness test. The bundle builds, `npx tsc --noEmit` passes and the full
+  CLI suite passes 214/214.
+- Next: characterize event/task mutations and recurring completion through injected runtime,
+  clock/UUID/output seams, then delete the matching source-regex assertions as each behavioral
+  replacement lands.

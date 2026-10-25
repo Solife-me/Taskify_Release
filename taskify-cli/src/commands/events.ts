@@ -8,14 +8,13 @@ buildEventRsvpResponseEnvelope,
 normalizeTaskRecurrence,
 normalizeTaskReminders
 } from "taskify-core";
-import { loadConfig } from "../config.js";
 import { renderJson } from "../render.js";
 import { buildCalendarEventDraft } from "../shared/eventDraft.js";
 import { sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerEventsCommands(program: Command, context: Pick<CommandContext, "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
-  const { parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow } = context;
+export function registerEventsCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
+  const { loadConfig, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow } = context;
   // ---- event command group ----
   const eventCmd = program
     .command("event")

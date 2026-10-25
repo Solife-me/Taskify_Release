@@ -1,9 +1,12 @@
 import esbuild from "esbuild";
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from "fs";
 
-const OUT = "dist/index.js";
+const INDEX_OUT = "dist/index.js";
+const CLI_OUT = "dist/cli.js";
 
-if (existsSync(OUT)) unlinkSync(OUT);
+for (const output of [INDEX_OUT, CLI_OUT]) {
+  if (existsSync(output)) unlinkSync(output);
+}
 
 const NODE_BUILTINS = [
   "crypto", "fs", "path", "os", "url", "util", "stream", "events",
@@ -14,11 +17,14 @@ const NODE_BUILTINS = [
 ];
 
 await esbuild.build({
-  entryPoints: ["src/index.ts"],
+  entryPoints: {
+    index: "src/index.ts",
+    cli: "src/cli.ts",
+  },
   bundle: true,
   platform: "node",
   target: "node22",
-  outfile: OUT,
+  outdir: "dist",
   format: "esm",
   external: [
     ...NODE_BUILTINS,
@@ -38,10 +44,10 @@ await esbuild.build({
 });
 
 // Strip any shebang lines, prepend exactly one
-let content = readFileSync(OUT, "utf8");
+let content = readFileSync(INDEX_OUT, "utf8");
 while (content.startsWith("#!")) {
   content = content.slice(content.indexOf("\n") + 1);
 }
-writeFileSync(OUT, "#!/usr/bin/env node\n" + content);
+writeFileSync(INDEX_OUT, "#!/usr/bin/env node\n" + content);
 
-console.log("✓ dist/index.js bundled");
+console.log("✓ dist/index.js and dist/cli.js bundled");
