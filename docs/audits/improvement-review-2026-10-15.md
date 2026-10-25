@@ -54,7 +54,7 @@ Constraints carried through every chunk:
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
 | 11 | macOS | `taskify-macos` | Approved implementation done (2026-10-23); C11-6A/C11-7A signed proof gates in progress; shared wallet deletion remains due after Dec 1 |
-| 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Reviewed (2026-10-24); awaiting decisions |
+| 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Implementing (approved 2026-10-25) |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
 
@@ -3048,12 +3048,12 @@ not port the session or domain facade for that hypothetical gain.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C12-1 | — | — | Awaiting maintainer decision |
-| C12-2 | — | — | Awaiting maintainer decision |
-| C12-3 | — | — | Awaiting maintainer decision |
-| C12-4 | — | — | Awaiting maintainer decision |
-| C12-5 | — | — | Awaiting maintainer decision |
-| C12-6 | — | — | Awaiting maintainer decision |
+| C12-1 | Approve | 2026-10-25 | In progress; event commands are stage 1 |
+| C12-2 | Approve | 2026-10-25 | Not started |
+| C12-3 | Approve | 2026-10-25 | Not started |
+| C12-4 | Approve | 2026-10-25 | Not started |
+| C12-5 | Approve | 2026-10-25 | Not started |
+| C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
 
 ### Checkpoint — October 24, 2026 (Chunk 12 review)
 
@@ -3069,3 +3069,22 @@ The Chunk 12 review is complete; no implementation has started and nothing has b
 - The next step is the maintainer's decisions. Do not infer approval or begin implementation from
   this review. If approved, start C12-1 with a failing cleanup test and one command group; preserve
   the unrelated runtime-security manifest/workflow changes already present in the worktree.
+
+### Checkpoint — October 25, 2026 (C12-1 stage 1)
+
+The maintainer approved C12-1 through C12-5 and declined C12-6. The first C12-1 command group is
+implemented locally on `Beta`; nothing has been pushed.
+
+- A bundled-process regression was written first. It intercepts the executable's hard-exit call
+  in an isolated home and proved that `event list` called `process.exit` once inside the action and
+  once at the executable boundary. That action-level exit prevented its `finally` cleanup in a
+  real process.
+- All event commands now return normally. Early validation/not-found paths set the intended exit
+  code and return; caught failures set it; success leaves zero unchanged. Their existing
+  `finally { await runtime.disconnect() }` blocks therefore finish before the sole hard exit in
+  `index.ts`. JSON and human output are unchanged.
+- The full CLI suite passes 203/203 after rebuilding the bundle. This stage changes process
+  lifecycle only; it does not change a cross-client behavior or wire contract, so no shared JSON
+  vector or Swift run is appropriate.
+- Next: continue C12-1 through the remaining network-backed command groups, with a lifecycle
+  regression/guard for each stage, then remove action-level exits from the local-only groups.

@@ -46,10 +46,9 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
             console.log(`${chalk.cyan(e.id.slice(0, 8))}  ${e.title}${boardLabel}  ${chalk.dim(when)}`);
           }
         }
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -76,7 +75,8 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
     .action(async (title: string, opts) => {
       if (!opts.date) {
         console.error(chalk.red("--date is required (YYYY-MM-DD)"));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       const config = await loadConfig(program.opts().profile as string | undefined);
       const boardId = await resolveBoardId(opts.board, config);
@@ -111,10 +111,9 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         });
         if (opts.json) renderJson(created);
         else console.log(chalk.green(`✓ Created event: ${created.title} (${created.id.slice(0, 8)})`));
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -133,7 +132,8 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         const event = await runtime.getEvent(eventId, boardId);
         if (!event) {
           console.error(chalk.red(`Event not found: ${eventId}`));
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         if (opts.json) renderJson(event);
         else {
@@ -162,10 +162,9 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
           if (event.columnId) console.log(`column: ${event.columnId}`);
           if (event.rsvpStatus) console.log(`rsvp status: ${event.rsvpStatus}`);
         }
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -206,7 +205,8 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
           const existingEvent = await runtime.getEvent(eventId, boardId);
           if (!existingEvent) {
             console.error(chalk.red(`Event not found: ${eventId}`));
-            process.exit(1);
+            process.exitCode = 1;
+            return;
           }
           documents = await mergeAttachmentDocuments({
             existing: existingEvent.documents as Record<string, unknown>[] | undefined,
@@ -239,14 +239,14 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         });
         if (!updated) {
           console.error(chalk.red(`Event not found: ${eventId}`));
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         if (opts.json) renderJson(updated);
         else console.log(chalk.green(`✓ Updated event: ${updated.title}`));
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -265,14 +265,14 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         const deleted = await runtime.deleteEvent(eventId, boardId);
         if (!deleted) {
           console.error(chalk.red(`Event not found: ${eventId}`));
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         if (opts.json) renderJson(deleted);
         else console.log(chalk.green(`✓ Deleted event: ${deleted.title}`));
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -313,7 +313,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -343,7 +343,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
