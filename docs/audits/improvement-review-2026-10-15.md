@@ -3048,7 +3048,7 @@ not port the session or domain facade for that hypothetical gain.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C12-1 | Approve | 2026-10-25 | In progress; event and task commands are stages 1–2 |
+| C12-1 | Approve | 2026-10-25 | In progress; event, task and board commands are stages 1–3 |
 | C12-2 | Approve | 2026-10-25 | Not started |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
@@ -3104,3 +3104,18 @@ Task query and mutation actions now follow the event-command lifecycle; nothing 
   CLI suite passes 204/204 after rebuilding.
 - Next: board and board/list mutation actions, which contain the largest remaining cluster of hard
   exits, then the sharing/attachment/transfer groups.
+
+### Checkpoint — October 25, 2026 (C12-1 stage 3)
+
+Board actions now follow the same single-exit lifecycle; nothing has been pushed.
+
+- Board/default/list/admin and compound-board actions no longer hard-exit. Validation failures set
+  the existing status and return, while success returns normally to the executable boundary.
+- Every runtime created by the board commands now disconnects through `finally`, including the
+  best-effort display-name refresh after `board list`, join metadata refresh, `columns` and
+  `overview`. The optional single-board sync lookup is action-scoped rather than hidden inside an
+  IIFE, so a missing board returns from the command instead of only from a nested function.
+- The bundled lifecycle regression now covers `board list`. The production bundle builds and the
+  full CLI suite passes 205/205.
+- Next: remove action-level exits from sharing, attachment, assignment, inbox and transfer
+  commands, preserving their output and exit statuses while making their cleanup reachable.

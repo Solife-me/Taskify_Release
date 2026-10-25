@@ -62,3 +62,9 @@ test("task commands return control on failure before the executable performs the
   assert.equal(result.status, 1, result.stderr);
   assert.deepEqual(exits, ["process.exit:1"]);
 });
+
+test("board commands return control before the executable performs the only hard exit", () => {
+  const { result, exits } = runWithExitTrace(["board", "list"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(exits, ["process.exit:0"]);
+});
