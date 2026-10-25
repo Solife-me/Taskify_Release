@@ -3049,7 +3049,7 @@ not port the session or domain facade for that hypothetical gain.
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
-| C12-2 | Approve | 2026-10-25 | In progress; importable program/run seam and first event behavior tests are stage 1 |
+| C12-2 | Approve | 2026-10-25 | In progress; harness plus event command behavior are stages 1–2 |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
 | C12-5 | Approve | 2026-10-25 | Not started |
@@ -3217,3 +3217,21 @@ The first behavioral command-harness stage is complete locally on `Beta`; nothin
 - Next: characterize event/task mutations and recurring completion through injected runtime,
   clock/UUID/output seams, then delete the matching source-regex assertions as each behavioral
   replacement lands.
+
+### Checkpoint — October 25, 2026 (C12-2 stage 2)
+
+The event-command source-surface tests have been replaced with behavior tests; nothing has been
+pushed.
+
+- The deleted `event-cli-surface.test.ts` contained six regex assertions over command source. The
+  harness now asks the real Commander tree for CRUD/JSON registration and executes list, show,
+  update and delete against a recording runtime.
+- The behavior tests prove optional board resolution, the exact update patch passed to the runtime,
+  JSON mutation output, cross-board list labels, show-board metadata, status and disconnect order.
+  They therefore fail when the command is unreachable, ignores an option or calls the wrong
+  runtime method—cases the source assertions could not distinguish.
+- The bundle builds, `npx tsc --noEmit` passes and the full suite passes 211/211 after removing the
+  six regex cases and adding three broader behavioral cases.
+- Next: inject task-command config plus clock/UUID/idempotency dependencies and characterize task
+  creation, status mutations and recurring completion before retiring their corresponding source
+  assertions.

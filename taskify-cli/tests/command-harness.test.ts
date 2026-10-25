@@ -102,3 +102,107 @@ test("runCli preserves event failure status and disconnects the injected runtime
   assert.deepEqual(calls, ["createRuntime", "listEvents", "disconnect"]);
   assert.match(result.stderr.join("\n"), /relay unavailable/);
 });
+
+test("event command registration exposes CRUD and JSON deletion without source inspection", () => {
+  const program = buildProgram({ version: "test" });
+  const event = program.commands.find((command) => command.name() === "event");
+  assert.ok(event);
+  assert.deepEqual(
+    event.commands.map((command) => command.name()).filter((name) => ["list", "add", "show", "update", "delete"].includes(name)),
+    ["list", "add", "show", "update", "delete"],
+  );
+  const deleteCommand = event.commands.find((command) => command.name() === "delete");
+  assert.ok(deleteCommand?.options.some((option) => option.long === "--json"));
+});
+
+test("event update and delete pass optional board scope and render returned records", async () => {
+  const calls: unknown[][] = [];
+  const runtime = {
+    async updateEvent(...args: unknown[]) {
+      calls.push(["updateEvent", ...args]);
+      return {
+        id: "event-1", boardId: "board-1", boardName: "Harness Board 7f06",
+        title: "Renamed", kind: "date" as const, startDate: "2026-10-25",
+      };
+    },
+    async deleteEvent(...args: unknown[]) {
+      calls.push(["deleteEvent", ...args]);
+      return {
+        id: "event-1", boardId: "board-1", boardName: "Harness Board 7f06",
+        title: "Renamed", kind: "date" as const, startDate: "2026-10-25",
+      };
+    },
+    async disconnect() {
+      calls.push(["disconnect"]);
+    },
+  };
+  const dependencies: CliDependencies = {
+    version: "test",
+    loadConfig: async () => config,
+    createRuntime: (() => runtime) as NonNullable<CliDependencies["createRuntime"]>,
+  };
+
+  const updated = await captureConsole(() => runCli([
+    "node", "taskify", "event", "update", "event-1", "--title", "Renamed", "--json",
+  ], dependencies));
+  assert.equal(updated.status, 0);
+  assert.equal(JSON.parse(updated.stdout.join("\n")).title, "Renamed");
+  assert.deepEqual(calls[0], ["updateEvent", "event-1", undefined, {
+    title: "Renamed",
+    description: undefined,
+    startDate: undefined,
+    endDate: undefined,
+    startISO: undefined,
+    endISO: undefined,
+    startTzid: undefined,
+    endTzid: undefined,
+    columnId: undefined,
+    recurrence: undefined,
+    reminders: undefined,
+    participants: undefined,
+    documents: undefined,
+  }]);
+  assert.deepEqual(calls[1], ["disconnect"]);
+
+  calls.length = 0;
+  const deleted = await captureConsole(() => runCli([
+    "node", "taskify", "event", "delete", "event-1", "--board", "Harness Board 7f06", "--json",
+  ], dependencies));
+  assert.equal(deleted.status, 0);
+  assert.equal(JSON.parse(deleted.stdout.join("\n")).id, "event-1");
+  assert.deepEqual(calls, [
+    ["deleteEvent", "event-1", "board-1"],
+    ["disconnect"],
+  ]);
+});
+
+test("event list and show human output include board context from runtime records", async () => {
+  const runtime = {
+    async listEvents() {
+      return [{
+        id: "event-1", boardId: "board-1", boardName: "Harness Board 7f06",
+        title: "Planning", kind: "date" as const, startDate: "2026-10-25",
+      }];
+    },
+    async getEvent() {
+      return {
+        id: "event-1", boardId: "board-1", boardName: "Harness Board 7f06",
+        title: "Planning", kind: "date" as const, startDate: "2026-10-25",
+      };
+    },
+    async disconnect() {},
+  };
+  const dependencies: CliDependencies = {
+    version: "test",
+    loadConfig: async () => config,
+    createRuntime: (() => runtime) as NonNullable<CliDependencies["createRuntime"]>,
+  };
+
+  const listed = await captureConsole(() => runCli(["node", "taskify", "event", "list"], dependencies));
+  assert.equal(listed.status, 0);
+  assert.match(listed.stdout.join("\n"), /Planning \[Harness Board 7f06\]/);
+
+  const shown = await captureConsole(() => runCli(["node", "taskify", "event", "show", "event-1"], dependencies));
+  assert.equal(shown.status, 0);
+  assert.match(shown.stdout.join("\n"), /board: Harness Board 7f06/);
+});
