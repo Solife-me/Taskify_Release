@@ -276,3 +276,40 @@ test("board create takes list names from --columns, or asks when run interactive
   assert.equal(asked.length, 1);
   assert.deepEqual((interactive.calls[0][1] as { columns: Array<{ name: string }> }).columns.map((c) => c.name), ["Chores", "Repairs"]);
 });
+
+test("boards and board list are one command: same refresh, same output", async () => {
+  const day = 24 * 60 * 60 * 1000;
+  const boards = configWithBoards([
+    { id: "fresh-1", name: "Fresh", kind: "lists", syncedAt: now().getTime() - 60_000, relays: ["wss://relay.example"] },
+    { id: "old-1", name: "Old", kind: "lists", syncedAt: now().getTime() - 2 * day },
+    { id: "abcdef12", name: "abcdef12", syncedAt: now().getTime() },
+  ]);
+  const outputs: string[][] = [];
+  for (const argv of [["board", "list"], ["boards"]]) {
+    const { runtime, calls } = recordingRuntime({
+      syncBoard: async (id) => ({ name: id === "abcdef12" ? "Named" : undefined, kind: "lists", columns: [] }),
+    });
+    const harness = harnessDependencies(runtime, { now }, boards);
+    const result = await captureConsole(() => runCli(["node", "taskify", ...argv], harness.dependencies));
+    assert.equal(result.status, 0, argv.join(" "));
+    assert.deepEqual(calls, [["syncBoard", "old-1"], ["syncBoard", "abcdef12"], ["disconnect"]], argv.join(" "));
+    assert.equal(harness.saved[0].boards.find((b) => b.id === "old-1")?.syncedAt, now().getTime(), argv.join(" "));
+    outputs.push(result.stdout);
+  }
+  assert.deepEqual(outputs[0], outputs[1]);
+  assert.match(outputs[0].join("\n"), /wss:\/\/relay\.example/);
+  assert.match(outputs[0].join("\n"), /Named/);
+});
+
+test("boards --json lists each board's id, name, kind, relays and lists", async () => {
+  const { runtime } = recordingRuntime({});
+  const result = await captureConsole(() => runCli(["node", "taskify", "boards", "--json"],
+    harnessDependencies(runtime, { now }, config).dependencies));
+  assert.equal(result.status, 0);
+  const listed = JSON.parse(result.stdout.join("\n")) as Array<Record<string, unknown>>;
+  assert.deepEqual(listed[0], {
+    id: "board-1", name: "Harness Board 7f06", kind: "lists", relays: [],
+    columns: [{ id: "todo", name: "Todo" }, { id: "later", name: "Later" }, { id: "done", name: "Done" }],
+  });
+  assert.deepEqual(listed.map((b) => b.id), ["board-1", "week-1", "combo-1", "empty-1", "dupes-1"]);
+});

@@ -15,61 +15,76 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
     .command("board")
     .description("Manage boards");
 
+  /**
+   * `board list` and `boards`: refreshes names and lists for boards that still show an id, or
+   * were last synced over a day ago, then lists every board.
+   */
+  async function listBoards(opts: { json?: boolean }) {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (config.boards.length === 0) {
+      if (opts.json) renderJson([]);
+      else console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
+      return;
+    }
+
+    const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
+    const STALE_SYNC_MS = 24 * 60 * 60 * 1000;
+    const stale = config.boards.filter((b) => {
+      if (UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8)) return true;
+      if (!b.syncedAt) return true;
+      return now().getTime() - b.syncedAt > STALE_SYNC_MS;
+    });
+
+    if (stale.length > 0) {
+      process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
+      let runtime: ReturnType<typeof initRuntime> | undefined;
+      try {
+        runtime = initRuntime(config);
+        for (const b of stale) {
+          try {
+            const meta = await runtime.syncBoard(b.id);
+            if (meta.name) b.name = meta.name;
+            if (meta.kind) b.kind = meta.kind as BoardEntry["kind"];
+            if (meta.columns) b.columns = meta.columns;
+            b.syncedAt = now().getTime();
+          } catch { /* non-fatal — show whatever name we have */ }
+        }
+        await saveConfig(config);
+      } catch (error) {
+        rethrowReportedError(error);
+        // Metadata refresh is non-fatal.
+      } finally {
+        try { await runtime?.disconnect(); } catch { /* non-fatal display-name refresh */ }
+      }
+    }
+
+    if (opts.json) {
+      renderJson(config.boards.map((b) => ({
+        id: b.id,
+        name: b.name,
+        kind: b.kind ?? null,
+        relays: b.relays ?? [],
+        columns: b.columns ?? [],
+      })));
+      return;
+    }
+    for (const b of config.boards) {
+      const relays = b.relays?.length ? `  [${b.relays.join(", ")}]` : "";
+      console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}${relays}`);
+    }
+  }
+
   boardCmd
     .command("list")
     .description("List all configured boards")
-    .action(async () => {
-      const config = await loadConfig(program.opts().profile as string | undefined);
-      if (config.boards.length === 0) {
-        console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
-        return;
-      }
+    .option("--json", "Output as JSON")
+    .action(listBoards);
 
-      // Auto-sync any board whose stored name looks like a raw UUID prefix
-      // (happens when a board was joined without a --name or metadata wasn't fetched).
-      // This ensures agents always see human-readable names without a manual board sync step.
-      const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
-      const STALE_SYNC_MS = 24 * 60 * 60 * 1000; // 24h TTL for non-stale boards
-      const stale = config.boards.filter(
-        (b) => {
-          // UUID-named boards are always stale
-          if (UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8)) return true;
-          // Non-UUID boards: re-sync if last sync was >24h ago (or never synced)
-          if (!b.syncedAt) return true;
-          return now().getTime() - b.syncedAt > STALE_SYNC_MS;
-        },
-      );
-
-      if (stale.length > 0) {
-        process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
-        let runtime: ReturnType<typeof initRuntime> | undefined;
-        try {
-          runtime = initRuntime(config);
-          for (const b of stale) {
-            try {
-              const meta = await runtime.syncBoard(b.id);
-              if (meta.name) b.name = meta.name;
-              if (meta.kind) b.kind = meta.kind as BoardEntry["kind"];
-              if (meta.columns) b.columns = meta.columns;
-              b.syncedAt = now().getTime();
-            } catch { /* non-fatal — show whatever name we have */ }
-          }
-          await saveConfig(config);
-        } catch (error) {
-          rethrowReportedError(error);
-          // Metadata refresh is non-fatal.
-        }
-        finally {
-          try { await runtime?.disconnect(); } catch { /* non-fatal display-name refresh */ }
-        }
-      }
-
-      for (const b of config.boards) {
-        const relays = b.relays?.length ? `  [${b.relays.join(", ")}]` : "";
-        console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}${relays}`);
-      }
-      return;
-    });
+  program
+    .command("boards")
+    .description("List configured boards (alias for: board list)")
+    .option("--json", "Output as JSON")
+    .action(listBoards);
 
   boardCmd
     .command("join <boardId>")

@@ -3377,3 +3377,15 @@ Board and list commands now run through the behavioral harness; nothing has been
   characterized.
 - Also found, for the `boards` step: the command reference shows `taskify boards --json`, but
   neither `boards` nor `board list` has a `--json` option.
+
+### Checkpoint — October 25, 2026 (CLI `boards` is `board list`)
+
+- Failing tests came first:
+  - `boards` refreshed only boards still named by id, while `board list` also refreshes boards
+    last synced over a day ago;
+  - `boards` left out the board's relays;
+  - `--json` was missing from both commands, though the command reference shows it.
+- `board list` and `boards` are now one action in `boards.ts`, and `boardListAlias.ts` is gone.
+  `--json` lists each board's id, name, kind, relays and lists.
+- The CLI suite passes at 223/223 and `npx tsc --noEmit` is clean.
+- Next: contact/sharing behavior (C12-2 stage 6), then registration/presentation (stage 7).

@@ -5,7 +5,6 @@ import { registerAssignmentsCommands } from "./commands/assignments.js";
 import { registerAttachmentsCommands } from "./commands/attachments.js";
 import { registerBackupCommands } from "./commands/backup.js";
 import { registerBoardCreationCommands } from "./commands/boardCreation.js";
-import { registerBoardListAliasCommands } from "./commands/boardListAlias.js";
 import { registerBoardsCommands } from "./commands/boards.js";
 import { registerBotCommands } from "./commands/bot.js";
 import { registerCacheCommands } from "./commands/cache.js";
@@ -76,7 +75,6 @@ function composeProgram(dependencies: CliDependencies = {}) {
 
   registerDiscoveryCommands(program, context);
   const boardCmd = registerBoardsCommands(program, context);
-  registerBoardListAliasCommands(program, context);
   registerEventsCommands(program, context);
   registerSharingCommands(program, context);
   registerTaskQueriesCommands(program, context);
