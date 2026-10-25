@@ -1,10 +1,11 @@
 import chalk from "chalk";
 import type { Command } from "commander";
 import { readFile } from "fs/promises";
-import { loadConfig,saveConfig } from "../config.js";
 import { mergeBoardsFromBackup,mergeRelaysFromBackup,parseBackupSnapshot } from "../shared/backupSync.js";
+import type { CommandContext } from "./context.js";
 
-export function registerBackupCommands(program: Command) {
+export function registerBackupCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "saveConfig">) {
+  const { loadConfig, saveConfig } = context;
   // ---- backup snapshot ----
   const backupCmd = program
     .command("backup")

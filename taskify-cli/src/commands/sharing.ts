@@ -8,13 +8,11 @@ buildTaskAssignmentResponseEnvelope,
 buildTaskShareEnvelope,
 resolveBoardReference
 } from "taskify-core";
-import { loadConfig,saveConfig } from "../config.js";
 import { renderJson } from "../render.js";
-import { fetchShareInboxNip17,sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerSharingCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
-  const { initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow } = context;
+export function registerSharingCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow" | "loadConfig" | "saveConfig" | "now" | "shareTransport">) {
+  const { initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow, loadConfig, saveConfig, now, shareTransport } = context;
   const shareCmd = program
     .command("share")
     .description("Share board/task/event envelopes over NIP-17 and process inbox messages");
@@ -34,7 +32,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
         const senderHex = nsecToHexOrThrow(config.nsec);
         const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
         const envelope = buildBoardShareEnvelope(entry.id, entry.name, config.relays, { npub: senderNpub });
-        await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+        await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Board share sent."));
       } catch (err) {
         console.error(chalk.red(String(err)));
@@ -72,7 +70,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
           assignees: task.assignees?.map((a) => ({ pubkey: a.pubkey })),
           relays: config.relays,
         }, { npub: senderNpub });
-        await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+        await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Task share sent."));
       } catch (err) {
         rethrowReportedError(err);
@@ -99,8 +97,8 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
       const config = await loadConfig(program.opts().profile as string | undefined);
       try {
         const senderHex = nsecToHexOrThrow(config.nsec);
-        const envelope = buildTaskAssignmentResponseEnvelope({ taskId, status, respondedAt: new Date().toISOString() });
-        await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+        const envelope = buildTaskAssignmentResponseEnvelope({ taskId, status, respondedAt: now().toISOString() });
+        await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Assignment response sent."));
       } catch (err) {
         console.error(chalk.red(String(err)));
@@ -119,7 +117,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
       let exitCode = 0;
       try {
         const senderHex = nsecToHexOrThrow(config.nsec);
-        const inbox = await fetchShareInboxNip17({ recipientSecretHex: senderHex, relays: config.relays, limit: 100 });
+        const inbox = await shareTransport.fetchInbox({ recipientSecretHex: senderHex, relays: config.relays, limit: 100 });
         if (opts.apply) {
           const processed = new Set(config.processedInboxRumorIds ?? []);
           for (const item of inbox) {

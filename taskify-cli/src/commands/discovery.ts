@@ -12,11 +12,10 @@ createCliNostrSession,
 FileNostrOutboxStore
 } from "../shared/nodeRuntimeSession.js";
 import { cliProofOfWorkSettings, cliRelayInfoCache } from "../shared/relaySettings.js";
-import { fetchShareInboxNip17 } from "../shared/shareTransport.js";
 import type { CommandContext,CoreErrorDetails } from "./context.js";
 
-export function registerDiscoveryCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "useHumanOutput" | "CliCommandError" | "commandErrorDetails" | "writeCoreFailure" | "profilePubkey">) {
-  const { initRuntime, useHumanOutput, CliCommandError, commandErrorDetails, writeCoreFailure, profilePubkey } = context;
+export function registerDiscoveryCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "useHumanOutput" | "CliCommandError" | "commandErrorDetails" | "writeCoreFailure" | "profilePubkey" | "shareTransport">) {
+  const { initRuntime, useHumanOutput, CliCommandError, commandErrorDetails, writeCoreFailure, profilePubkey, shareTransport } = context;
   // ---- agent-first discovery and diagnostics ----
   program
     .command("context")
@@ -139,7 +138,7 @@ export function registerDiscoveryCommands(program: Command, context: Pick<Comman
             };
         let boardShares = { sharesScanned: 0, boardSharesFound: 0, boardsAdded: 0 };
         if (!backup) {
-          const inbox = await fetchShareInboxNip17({
+          const inbox = await shareTransport.fetchInbox({
             recipientSecretHex: transport.secretKeyHex,
             relays: transport.relays,
             limit: 100,

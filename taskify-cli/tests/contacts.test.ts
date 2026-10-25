@@ -5,73 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const CONTACTS = readFileSync(path.resolve(import.meta.dirname, "../src/commands/contact.ts"), "utf8");
-const CONFIG = readFileSync(path.resolve(import.meta.dirname, "../src/config.ts"), "utf8");
 const NIP51 = readFileSync(path.resolve(import.meta.dirname, "../src/shared/nip51Contacts.ts"), "utf8");
-
-test("Contact type is exported from config.ts", () => {
-  assert.match(CONFIG, /export type Contact = \{/);
-  assert.match(CONFIG, /pubkey: string/);
-  assert.match(CONFIG, /npub\?: string/);
-  assert.match(CONFIG, /name\?: string/);
-  assert.match(CONFIG, /nip05\?: string/);
-});
-
-test("ProfileConfig has contacts array", () => {
-  assert.match(CONFIG, /contacts\?: Contact\[\]/);
-});
-
-test("profileDefaults initializes contacts to empty array", () => {
-  assert.match(CONFIG, /contacts: partial\.contacts \?\? \[\]/);
-});
-
-test("saveConfig persists contacts field", () => {
-  assert.match(CONFIG, /contacts: cfg\.contacts/);
-});
-
-test("saveConfig writes flat mutations back to selected profile", () => {
-  assert.match(CONFIG, /selectedProfile: string/);
-  assert.match(CONFIG, /selectedProfile: resolvedProfileName/);
-  assert.match(CONFIG, /const targetProfile = cfg\.selectedProfile \?\? cfg\.activeProfile/);
-  assert.match(CONFIG, /\[targetProfile\]: profileData/);
-});
-
-test("contact command group is registered", () => {
-  assert.match(CONTACTS, /contactCmd = program\s*\n?\s*\.command\("contact"\)/);
-});
-
-test("contact list subcommand exists", () => {
-  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("list"\)/);
-});
-
-test("contact show subcommand exists", () => {
-  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("show <npubOrId>"\)/);
-});
-
-test("contact add subcommand exists with --name and --nip05 flags", () => {
-  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("add <npub>"\)/);
-  assert.match(CONTACTS, /--name <name>/);
-  assert.match(CONTACTS, /--nip05 <nip05>/);
-});
-
-test("contact remove subcommand exists", () => {
-  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("remove <npubOrId>"\)/);
-});
-
-test("contact fetch subcommand exists", () => {
-  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("fetch <npub>"\)/);
-});
-
-test("contact sync subcommand exists", () => {
-  assert.match(CONTACTS, /contactCmd[\s\S]*?\.command\("sync"\)/);
-});
-
-test("resolveContact helper function is defined", () => {
-  assert.match(CONTACTS, /function resolveContact\(/);
-});
-
-test("contact add decodes npub via nip19", () => {
-  assert.match(CONTACTS, /nip19\.decode\(npubArg\)/);
-});
 
 test("contact fetch fetches kind 0 profile from relays", () => {
   assert.match(CONTACTS, /kinds: \[0\].*authors: \[pubkeyHex\]|kinds.*0.*authors.*pubkeyHex/);

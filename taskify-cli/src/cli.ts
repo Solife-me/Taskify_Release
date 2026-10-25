@@ -29,6 +29,7 @@ import { runOnboarding } from "./onboarding.js";
 import { checkRelay } from "./relayDiagnostics.js";
 import type { AgentIdempotencyStore } from "./shared/agentIdempotency.js";
 import type { writeAgentJson } from "./shared/agentOutput.js";
+import type { ShareTransport } from "./commands/context.js";
 
 const require = createRequire(import.meta.url);
 const packageVersion = (require("../package.json") as { version: string }).version;
@@ -46,6 +47,8 @@ export type CliDependencies = {
   now?: () => Date;
   /** Asks the user a question; null when stdin isn't a terminal. */
   prompt?: (question: string) => Promise<string | null>;
+  /** NIP-17 share delivery and inbox reads. */
+  shareTransport?: ShareTransport;
   version?: string;
 };
 
@@ -69,6 +72,7 @@ function composeProgram(dependencies: CliDependencies = {}) {
     writeAgentJson: dependencies.writeAgentJson,
     now: dependencies.now,
     prompt: dependencies.prompt,
+    shareTransport: dependencies.shareTransport,
   });
   const initRuntime = context.initRuntime;
   const relayCheck = dependencies.checkRelay ?? checkRelay;
@@ -87,7 +91,7 @@ function composeProgram(dependencies: CliDependencies = {}) {
   registerCompletionCommands(program);
   registerAgentCommands(program, context);
   registerTransferCommands(program, context);
-  registerBackupCommands(program);
+  registerBackupCommands(program, context);
   registerInboxCommands(program, context);
   registerBoardCreationCommands(program, context, boardCmd);
   registerAssignmentsCommands(program, context);

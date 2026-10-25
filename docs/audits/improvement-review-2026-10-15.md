@@ -3389,3 +3389,43 @@ Board and list commands now run through the behavioral harness; nothing has been
   `--json` lists each board's id, name, kind, relays and lists.
 - The CLI suite passes at 223/223 and `npx tsc --noEmit` is clean.
 - Next: contact/sharing behavior (C12-2 stage 6), then registration/presentation (stage 7).
+
+### Checkpoint — October 25, 2026 (C12-2 stage 6)
+
+Sharing, assignment and backup relay merges now run through the behavioral harness; nothing has
+been pushed.
+
+- The command context has a share-transport seam (`CliDependencies.shareTransport`: NIP-17 send
+  and inbox read). Sharing, assignments, event invite/RSVP and discovery use it. Backup commands
+  now receive the context, and response timestamps use the command clock.
+- `share-commands.test.ts` (7 cases) covers:
+  - board and task shares, with the exact envelope, sender key, recipient and relays;
+  - assignment and RSVP responses, carrying the command's time;
+  - delivery failure, which returns status 1 and still disconnects;
+  - share inbox listing;
+  - `--apply`: a new board is joined and an existing one isn't duplicated, a task is created on
+    the default board, assignment and RSVP responses are applied, and processed message ids are
+    saved;
+  - assign (no duplicate assignee, `--notify` sends an assignment request) and unassign;
+  - `backup merge-relays`, including `--dry-run`, a backup with no relays, and an unreadable file.
+- Retired 20 regex cases:
+  - 14 in `contacts.test.ts`. The subprocess contact test in `command-registration.test.ts`
+    already proves registration, profile-scoped persistence, lookup by name or pubkey prefix, and
+    npub validation. The `contact fetch` and `contact sync` cases stay until C12-3 gives the raw
+    NDK reads a seam.
+  - Two each in `share-phase2-cli-surface.test.ts` and `share-phase3-cli-surface.test.ts`.
+  - `backup-cli-surface.test.ts`.
+- **Found: `event invite` and `share event` never succeed.**
+  - The CLI builds calendar addresses with NIP-52 kinds 31923/31924. Taskify uses 30310/30311,
+    so `buildCalendarEventInviteEnvelope` rejects every invite ("Invalid calendar event
+    address").
+  - It also invents the event key and a per-recipient token. The PWA uses the event's real
+    `eventKey`, and saves per-recipient invite tokens into the event, republishing it, under
+    board-key addresses.
+  - Token merging exists only in the PWA. The fix moves it to `taskify-core` with shared vectors
+    and adds a runtime invite operation, with a failing test first. The two regex cases about
+    `share event` and `event invite` registration stay until then.
+- **Found: `share inbox --apply` saves processed ids only after the whole batch.** If the runtime
+  fails partway, tasks already created are not recorded, and the next apply creates them again.
+  The fix comes next, with a failing test first.
+- The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

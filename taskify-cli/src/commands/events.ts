@@ -10,11 +10,10 @@ normalizeTaskReminders
 } from "taskify-core";
 import { renderJson } from "../render.js";
 import { buildCalendarEventDraft } from "../shared/eventDraft.js";
-import { sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerEventsCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
-  const { loadConfig, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow } = context;
+export function registerEventsCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow" | "now" | "shareTransport">) {
+  const { loadConfig, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow, now, shareTransport } = context;
   // ---- event command group ----
   const eventCmd = program
     .command("event")
@@ -310,7 +309,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
           end: event.endISO ?? event.endDate,
           relays: config.relays,
         }, { npub: senderNpub });
-        await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: recipient, relays: config.relays });
+        await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: recipient, relays: config.relays });
         console.log(chalk.green("✓ Event invite shared."));
       } catch (err) {
         rethrowReportedError(err);
@@ -335,9 +334,9 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         const envelope = buildEventRsvpResponseEnvelope({
           eventId,
           status,
-          respondedAt: new Date().toISOString(),
+          respondedAt: now().toISOString(),
         });
-        await sendShareEnvelopeNip17({
+        await shareTransport.send({
           envelope,
           senderSecretHex: senderHex,
           recipientPubkeyHex: npubOrHexToHex(opts.to),
