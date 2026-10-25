@@ -3049,7 +3049,7 @@ not port the session or domain facade for that hypothetical gain.
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
-| C12-2 | Approve | 2026-10-25 | In progress; harness, event behavior and task-mutation behavior are stages 1–3 |
+| C12-2 | Approve | 2026-10-25 | Done in seven stages. Every CLI command group runs through `buildProgram`/`runCli` with injected config (load and save), runtime, clock, UUIDs, prompt, share transport and output; every source-regex test of command code is replaced by behavior, and the remaining source assertions target the runtime for C12-4 (and raw NDK contact reads for C12-3). Found and fixed on the way: `upcoming` dates, `board create` in scripts, `boards`/`board list` drift, `share inbox --apply` progress, and `event invite`/`share event` (shared invitation rule in core) |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
 | C12-5 | Approve | 2026-10-25 | Not started |
@@ -3491,4 +3491,29 @@ invite envelope.
 - The runtime wiring is checked by the compiler, not by a test: the runtime has no test seam
   until C12-4. Not tried against a real relay or a second client yet.
 - The CLI suite passes at 216/216 and `npx tsc --noEmit` is clean.
+
+### Checkpoint — October 25, 2026 (C12-2 stage 7 — complete)
+
+C12-2 is complete. Nothing has been pushed.
+
+- `presentation-commands.test.ts` (4 cases) covers:
+  - the rich task flags (`--recurrence-json`, `--documents-json`, `--assignee`) and event flags
+    (`--column`, `--recurrence-json`, `--reminders`, `--invitee`) reaching the runtime parsed;
+  - malformed JSON stopping before any write;
+  - `show --human` listing documents and each assignee's state;
+  - `event show` listing invitees with roles and the RSVP state.
+- Retired:
+  - three cases in `parity-phase3b-cli-surface.test.ts`;
+  - `share-phase3-cli-surface.test.ts`;
+  - the `commandSource` helper, which no test reads any more.
+- **What source assertions remain, and why:**
+  - Runtime regexes in `board-core-integration`, `board-phase1-cli-surface`, `board-sort` (with
+    its `BoardEntry` field checks), `calendar-interop`, `events-runtime-surface`,
+    `list-targeting-cli`, `parity-phase3b-cli-surface`, `recurring-completion`,
+    `runtime-core-normalization`, `runtime-pwa-interop` and `sync-regressions`. They are for C12-4
+    to replace with fake-session repository tests as it splits `nostrRuntime.ts` by domain.
+  - `contacts.test.ts`: two raw-NDK `contact fetch`/`sync` assertions, until C12-3's
+    standalone-session API gives them a seam.
+- The CLI suite passes at 214/214 and `npx tsc --noEmit` is clean.
+- Next: C12-3 (terminal runtime shutdown and a standalone-session API), then C12-4.
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.
