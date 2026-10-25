@@ -3326,3 +3326,39 @@ Task queries now run through the behavioral harness; nothing has been pushed.
 - The OpenClaw command reference said the default window was 7 days; it is 14, and now says so.
 - The CLI suite passes at 218/218 and `npx tsc --noEmit` is clean.
 - Next: board/list behavior, then contact/sharing and registration/presentation checks.
+
+### Checkpoint — October 25, 2026 (C12-2 stage 5)
+
+Board and list commands now run through the behavioral harness; nothing has been pushed.
+
+- `boards.ts`, `boardCreation.ts` and `boardListAlias.ts` take config loading and saving, the clock
+  and UUIDs from the command context. `CliDependencies.saveConfig` is new; the harness records
+  saves. Each harness load now returns a fresh copy of the config, since commands mutate it.
+- `board-commands.test.ts` (13 cases) covers:
+  - every board settings command (`rename`, `archive`/`unarchive`, `hide`/`unhide`, `index-card`,
+    `share-settings`, `sort`), with the exact `updateBoard` patch, boards named by id or by
+    case-insensitive name, and bad input rejected before any update;
+  - `clear-completed`;
+  - list column add, rename, delete and reorder;
+  - compound child add, remove and reorder;
+  - `board columns`, with an offline fallback to the saved columns;
+  - `default`, `column-default` and `--clear`, through the saved config;
+  - `join` (with the command clock) and `leave`;
+  - compound `create`;
+  - the column guards for list-less boards and ambiguous names;
+  - the `[col: …]` confirmation from `add --human`.
+- Mutation check: flipping archive's flag and dropping child-add's duplicate guard each failed a
+  case. Removing the column-reorder clamp changed nothing, because `splice` already clamps.
+- Retired (12 regex cases):
+  - three command-registration cases in `board-phase1-cli-surface.test.ts`;
+  - five CLI sort cases in `board-sort.test.ts`;
+  - three CLI cases in `list-targeting-cli.test.ts`;
+  - the CLI board-resolution case in `board-core-integration.test.ts`.
+
+  Their runtime and config-type regexes remain for C12-4.
+- Found, to fix next, each with a failing test first:
+  - `board create --kind lists` always prompts on stdin for column names, so a script or agent
+    never gets the board created;
+  - the `boards` alias duplicates `board list` but without its 24-hour refresh or relay display.
+- The build, `npx tsc --noEmit` and the CLI suite pass at 219/219.
+- Next: those two fixes, then contact/sharing and registration/presentation checks.

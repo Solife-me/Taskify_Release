@@ -68,15 +68,29 @@ export function recordingRuntime(handlers: Record<string, (...args: unknown[]) =
   return { runtime, calls };
 }
 
-/** Dependencies that run commands against `runtime`, with agent JSON recorded in `output`. */
-export function harnessDependencies(runtime: object, overrides: CliDependencies = {}) {
+/** A copy of the harness config with `boards` on the selected profile. */
+export function configWithBoards(boards: TaskifyConfig["boards"]): TaskifyConfig {
+  const config = structuredClone(harnessConfig);
+  config.boards = boards;
+  config.profiles.test.boards = boards;
+  return config;
+}
+
+/**
+ * Dependencies that run commands against `runtime`. Each load returns a fresh copy of `config`,
+ * since commands mutate what they load; agent JSON is recorded in `output` and saved configs in
+ * `saved`.
+ */
+export function harnessDependencies(runtime: object, overrides: CliDependencies = {}, config: TaskifyConfig = harnessConfig) {
   const output: unknown[] = [];
+  const saved: TaskifyConfig[] = [];
   const dependencies: CliDependencies = {
     version: "test",
-    loadConfig: async () => harnessConfig,
+    loadConfig: async () => structuredClone(config),
+    saveConfig: async (value) => { saved.push(structuredClone(value)); },
     writeAgentJson: (value) => output.push(value),
     createRuntime: (() => runtime) as NonNullable<CliDependencies["createRuntime"]>,
     ...overrides,
   };
-  return { dependencies, output };
+  return { dependencies, output, saved };
 }

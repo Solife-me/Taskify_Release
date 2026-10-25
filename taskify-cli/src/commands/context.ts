@@ -9,7 +9,7 @@ normalizeTaskAssignees,
 normalizeTaskDocuments
 } from "taskify-core";
 import { buildAttachmentDocuments } from "../attachmentCrypto.js";
-import { CONFIG_DIR,loadConfig } from "../config.js";
+import { CONFIG_DIR,loadConfig,saveConfig } from "../config.js";
 import { createNostrRuntime,type NostrRuntime } from "../nostrRuntime.js";
 import { createFileAgentIdempotencyStore,type AgentIdempotencyStore } from "../shared/agentIdempotency.js";
 import { agentFailure,writeAgentJson } from "../shared/agentOutput.js";
@@ -45,6 +45,7 @@ export function rethrowReportedError(error: unknown): void {
 export type CommandContextDependencies = {
   createRuntime?: typeof createNostrRuntime;
   loadConfig?: typeof loadConfig;
+  saveConfig?: typeof saveConfig;
   randomUUID?: () => string;
   createIdempotencyStore?: () => AgentIdempotencyStore;
   writeAgentJson?: typeof writeAgentJson;
@@ -413,6 +414,6 @@ export function createCommandContext(program: Command, dependencies: CommandCont
   }
 
 
-  return { loadConfig: dependencies.loadConfig ?? loadConfig, now: dependencies.now ?? (() => new Date()), randomUUID: dependencies.randomUUID ?? nodeRandomUUID, createIdempotencyStore: dependencies.createIdempotencyStore ?? (() => createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"))), writeAgentJson: dependencies.writeAgentJson ?? writeAgentJson, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
+  return { loadConfig: dependencies.loadConfig ?? loadConfig, saveConfig: dependencies.saveConfig ?? saveConfig, now: dependencies.now ?? (() => new Date()), randomUUID: dependencies.randomUUID ?? nodeRandomUUID, createIdempotencyStore: dependencies.createIdempotencyStore ?? (() => createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"))), writeAgentJson: dependencies.writeAgentJson ?? writeAgentJson, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
 }
 export type CommandContext = ReturnType<typeof createCommandContext>;

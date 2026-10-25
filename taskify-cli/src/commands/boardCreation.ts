@@ -3,11 +3,10 @@ import type { Command } from "commander";
 import {
 resolveBoardReference
 } from "taskify-core";
-import { loadConfig } from "../config.js";
 import type { CommandContext } from "./context.js";
 
-export function registerBoardCreationCommands(program: Command, context: Pick<CommandContext, "initRuntime">, boardCmd: Command) {
-  const { initRuntime } = context;
+export function registerBoardCreationCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "loadConfig" | "randomUUID">, boardCmd: Command) {
+  const { initRuntime, loadConfig, randomUUID } = context;
   // ---- board create ----
   boardCmd
     .command("create <name>")
@@ -38,7 +37,7 @@ export function registerBoardCreationCommands(program: Command, context: Pick<Co
           });
           if (answer) {
             columns = answer.split(",").map((n) => n.trim()).filter(Boolean).map((n) => ({
-              id: crypto.randomUUID(),
+              id: randomUUID(),
               name: n,
             }));
           }

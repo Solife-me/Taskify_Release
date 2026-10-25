@@ -3,13 +3,13 @@ import type { Command } from "commander";
 import {
 resolveBoardReference
 } from "taskify-core";
-import { loadConfig,saveConfig,type BoardEntry } from "../config.js";
+import type { BoardEntry } from "../config.js";
 import { renderJson } from "../render.js";
 import { parseOnOffState } from "../shared/boardState.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerBoardsCommands(program: Command, context: Pick<CommandContext, "initRuntime">) {
-  const { initRuntime } = context;
+export function registerBoardsCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "loadConfig" | "saveConfig" | "now" | "randomUUID">) {
+  const { initRuntime, loadConfig, saveConfig, now, randomUUID } = context;
   // ---- board command group ----
   const boardCmd = program
     .command("board")
@@ -36,7 +36,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
           if (UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8)) return true;
           // Non-UUID boards: re-sync if last sync was >24h ago (or never synced)
           if (!b.syncedAt) return true;
-          return Date.now() - b.syncedAt > STALE_SYNC_MS;
+          return now().getTime() - b.syncedAt > STALE_SYNC_MS;
         },
       );
 
@@ -51,7 +51,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
               if (meta.name) b.name = meta.name;
               if (meta.kind) b.kind = meta.kind as BoardEntry["kind"];
               if (meta.columns) b.columns = meta.columns;
-              b.syncedAt = Date.now();
+              b.syncedAt = now().getTime();
             } catch { /* non-fatal — show whatever name we have */ }
           }
           await saveConfig(config);
@@ -88,7 +88,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         return;
       }
       const name = opts.name ?? boardId.slice(0, 8);
-      const entry: { id: string; name: string; relays?: string[]; syncedAt?: number } = { id: boardId, name, syncedAt: Date.now() };
+      const entry: { id: string; name: string; relays?: string[]; syncedAt?: number } = { id: boardId, name, syncedAt: now().getTime() };
       if (opts.relay) {
         entry.relays = [opts.relay];
       }
@@ -384,7 +384,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       try {
         const syncedAt = entry.syncedAt ?? 0;
         const THIRTY_MIN_MS = 30 * 60 * 1000;
-        if (!entry.columns || Date.now() - syncedAt > THIRTY_MIN_MS) {
+        if (!entry.columns || now().getTime() - syncedAt > THIRTY_MIN_MS) {
           try {
             await runtime.syncBoard(entry.id);
           } catch { /* non-fatal */ }
@@ -472,7 +472,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         const entry = resolveBoardReference(config.boards, boardArg);
         if (!entry) throw new Error(`Board not found: "${boardArg}"`);
         if (entry.kind !== "lists") throw new Error("Column operations are only supported for list boards");
-        const next = [...(entry.columns ?? []), { id: crypto.randomUUID(), name }];
+        const next = [...(entry.columns ?? []), { id: randomUUID(), name }];
         const updated = await runtime.updateBoard(entry.id, { columns: next });
         if (!updated) throw new Error("Failed to update board");
         console.log(chalk.green(`✓ Added column \"${name}\"`));

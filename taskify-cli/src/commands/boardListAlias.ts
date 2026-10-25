@@ -1,10 +1,10 @@
 import chalk from "chalk";
 import type { Command } from "commander";
-import { loadConfig,saveConfig,type BoardEntry } from "../config.js";
+import type { BoardEntry } from "../config.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerBoardListAliasCommands(program: Command, context: Pick<CommandContext, "initRuntime">) {
-  const { initRuntime } = context;
+export function registerBoardListAliasCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "loadConfig" | "saveConfig">) {
+  const { initRuntime, loadConfig, saveConfig } = context;
   // ---- boards (alias for board list) ----
   program
     .command("boards")

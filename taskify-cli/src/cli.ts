@@ -24,7 +24,7 @@ import { registerTaskMutationsCommands } from "./commands/taskMutations.js";
 import { registerTaskQueriesCommands } from "./commands/taskQueries.js";
 import { registerTransferCommands } from "./commands/transfer.js";
 import { registerTrustCommands } from "./commands/trust.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, saveConfig } from "./config.js";
 import { createNostrRuntime } from "./nostrRuntime.js";
 import { runOnboarding } from "./onboarding.js";
 import { checkRelay } from "./relayDiagnostics.js";
@@ -38,6 +38,7 @@ export type CliDependencies = {
   createRuntime?: typeof createNostrRuntime;
   checkRelay?: typeof checkRelay;
   loadConfig?: typeof loadConfig;
+  saveConfig?: typeof saveConfig;
   runOnboarding?: typeof runOnboarding;
   randomUUID?: () => string;
   createIdempotencyStore?: () => AgentIdempotencyStore;
@@ -61,6 +62,7 @@ function composeProgram(dependencies: CliDependencies = {}) {
   const context = createCommandContext(program, {
     createRuntime: dependencies.createRuntime,
     loadConfig: dependencies.loadConfig,
+    saveConfig: dependencies.saveConfig,
     randomUUID: dependencies.randomUUID,
     createIdempotencyStore: dependencies.createIdempotencyStore,
     writeAgentJson: dependencies.writeAgentJson,

@@ -1,10 +1,8 @@
-import { commandSource } from "./helpers/commandSource.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-const CLI = commandSource();
 const RUNTIME = readFileSync(path.resolve(import.meta.dirname, "../src/nostrRuntime.ts"), "utf8");
 const CONFIG = readFileSync(path.resolve(import.meta.dirname, "../src/config.ts"), "utf8");
 
@@ -18,26 +16,6 @@ test("BoardEntry has sortDirection field", () => {
 
 test("BoardEntry has eventKeys field", () => {
   assert.match(CONFIG, /eventKeys\?: Record<string, string>/);
-});
-
-test("board sort subcommand is registered on boardCmd", () => {
-  assert.match(CLI, /boardCmd[\s\S]*?\.command\("sort <board>/);
-});
-
-test("board sort validates mode against VALID_MODES list", () => {
-  assert.match(CLI, /VALID_MODES.*=.*\[.*"manual".*"due".*"priority".*"created".*"alpha".*\]/);
-});
-
-test("board sort validates direction against VALID_DIRS list", () => {
-  assert.match(CLI, /VALID_DIRS.*=.*\[.*"asc".*"desc".*\]/);
-});
-
-test("board sort without mode prints current settings", () => {
-  assert.match(CLI, /sortMode.*manual.*default|Sort mode.*sortMode/);
-});
-
-test("board sort calls runtime.updateBoard with sortMode and sortDirection", () => {
-  assert.match(CLI, /updateBoard[\s\S]*?sortMode.*mode|sortMode.*updateBoard/);
 });
 
 test("publishBoardDefinition emits sort tag in event tags", () => {
