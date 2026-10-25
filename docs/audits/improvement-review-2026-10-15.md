@@ -3454,4 +3454,14 @@ The first half of the `event invite` fix: one rule for invitation secrets, in `t
   - PWA `tsc` clean;
   - the PWA calendar publisher tests pass. The one remaining PWA failure, in
     `taskCommands.test.ts`, was already failing; the next fix covers it.
+
+### Checkpoint — October 25, 2026 (PWA board visibility used the real clock)
+
+- `taskCommands.test.ts` ("moves the due date a week later and hides the task until then") began
+  failing once the real date passed October 22. The postpone planner is given a clock, but
+  `hiddenUntilForBoard` read `new Date()`, so whether a postponed task was hidden depended on when
+  the plan ran, not on the plan's own time.
+- `hiddenUntilForBoard` and `applyHiddenForFuture` now take `now`. The postpone and
+  generated-task planners pass theirs; UI callers keep the current time.
+- The PWA suite passes (746, 14 skipped) and `tsc` is clean.
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

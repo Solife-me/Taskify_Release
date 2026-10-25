@@ -317,7 +317,7 @@ export function planFastingReminders(
       ...(targetBoard.kind === "week" ? { column: "day" as const } : {}),
       ...(firstColumn ? { columnId: firstColumn.id } : {}),
     };
-    applyHiddenForFuture(reminder, settings.weekStart, targetBoard.kind);
+    applyHiddenForFuture(reminder, settings.weekStart, targetBoard.kind, now);
     next.push(reminder);
     publish.push(reminder);
   }

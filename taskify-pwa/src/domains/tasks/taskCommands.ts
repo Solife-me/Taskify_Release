@@ -536,7 +536,7 @@ export function planPostponeTask(
     dueISO: nextDue.toISOString(),
     dueDateEnabled: true,
     lastEditedBy: normalizeAgentPubkey(ctx.actorPubkey) ?? t.lastEditedBy ?? t.createdBy,
-    hiddenUntilISO: hiddenUntilForBoard(nextDue.toISOString(), boardKind, ctx.settings.weekStart),
+    hiddenUntilISO: hiddenUntilForBoard(nextDue.toISOString(), boardKind, ctx.settings.weekStart, ctx.now),
   };
   const next = tasks.slice();
   next[index] = updated;

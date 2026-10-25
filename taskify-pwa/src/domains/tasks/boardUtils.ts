@@ -185,24 +185,31 @@ export function isVisibleNow(t: Task, now = new Date()): boolean {
   return today >= reveal;
 }
 
-export function hiddenUntilForBoard(dueISO: string, boardKind: Board["kind"], weekStart: Weekday): string | undefined {
+/** When a task due `dueISO` appears on a board of `boardKind`, relative to `now`; undefined when it
+ * already shows. Planners pass their own clock, so a plan doesn't depend on when it runs. */
+export function hiddenUntilForBoard(
+  dueISO: string,
+  boardKind: Board["kind"],
+  weekStart: Weekday,
+  now: Date = new Date(),
+): string | undefined {
   const dueDate = startOfDay(new Date(dueISO));
   if (Number.isNaN(dueDate.getTime())) return undefined;
-  const today = startOfDay(new Date());
+  const today = startOfDay(now);
   if (boardKind === "lists" || boardKind === "compound") {
     return dueDate.getTime() > today.getTime() ? dueDate.toISOString() : undefined;
   }
-  const nowSow = startOfWeek(new Date(), weekStart);
+  const nowSow = startOfWeek(now, weekStart);
   const dueSow = startOfWeek(dueDate, weekStart);
   return dueSow.getTime() > nowSow.getTime() ? dueSow.toISOString() : undefined;
 }
 
-export function applyHiddenForFuture(task: Task, weekStart: Weekday, boardKind: Board["kind"]): void {
+export function applyHiddenForFuture(task: Task, weekStart: Weekday, boardKind: Board["kind"], now: Date = new Date()): void {
   if (task.dueDateEnabled === false) {
     task.hiddenUntilISO = undefined;
     return;
   }
-  task.hiddenUntilISO = hiddenUntilForBoard(task.dueISO, boardKind, weekStart);
+  task.hiddenUntilISO = hiddenUntilForBoard(task.dueISO, boardKind, weekStart, now);
 }
 
 // ---- Calendar event visibility helpers ----
