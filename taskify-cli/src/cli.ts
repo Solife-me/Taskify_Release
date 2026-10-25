@@ -28,6 +28,8 @@ import { loadConfig } from "./config.js";
 import { createNostrRuntime } from "./nostrRuntime.js";
 import { runOnboarding } from "./onboarding.js";
 import { checkRelay } from "./relayDiagnostics.js";
+import type { AgentIdempotencyStore } from "./shared/agentIdempotency.js";
+import type { writeAgentJson } from "./shared/agentOutput.js";
 
 const require = createRequire(import.meta.url);
 const packageVersion = (require("../package.json") as { version: string }).version;
@@ -37,6 +39,9 @@ export type CliDependencies = {
   checkRelay?: typeof checkRelay;
   loadConfig?: typeof loadConfig;
   runOnboarding?: typeof runOnboarding;
+  randomUUID?: () => string;
+  createIdempotencyStore?: () => AgentIdempotencyStore;
+  writeAgentJson?: typeof writeAgentJson;
   version?: string;
 };
 
@@ -54,6 +59,9 @@ function composeProgram(dependencies: CliDependencies = {}) {
   const context = createCommandContext(program, {
     createRuntime: dependencies.createRuntime,
     loadConfig: dependencies.loadConfig,
+    randomUUID: dependencies.randomUUID,
+    createIdempotencyStore: dependencies.createIdempotencyStore,
+    writeAgentJson: dependencies.writeAgentJson,
   });
   const initRuntime = context.initRuntime;
   const relayCheck = dependencies.checkRelay ?? checkRelay;

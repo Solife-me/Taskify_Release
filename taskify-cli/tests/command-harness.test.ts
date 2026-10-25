@@ -1,15 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { nip19 } from "nostr-tools";
 import { buildProgram, runCli, type CliDependencies } from "../dist/cli.js";
 import type { TaskifyConfig } from "../src/config.ts";
 
 const profile = {
+  nsec: nip19.nsecEncode(new Uint8Array(32).fill(1)),
   relays: [],
   defaultBoard: "board-1",
+  defaultLocation: { boardId: "board-1", listId: "todo" },
   trustedNpubs: [],
   securityMode: "moderate" as const,
   securityEnabled: true,
-  boards: [{ id: "board-1", name: "Harness Board 7f06" }],
+  boards: [{
+    id: "board-1",
+    name: "Harness Board 7f06",
+    kind: "lists" as const,
+    columns: [{ id: "todo", name: "Todo" }],
+  }],
   taskReminders: {},
 };
 
@@ -205,4 +213,115 @@ test("event list and show human output include board context from runtime record
   const shown = await captureConsole(() => runCli(["node", "taskify", "event", "show", "event-1"], dependencies));
   assert.equal(shown.status, 0);
   assert.match(shown.stdout.join("\n"), /board: Harness Board 7f06/);
+});
+
+test("task create injects config, UUID, idempotency and JSON output dependencies", async () => {
+  const calls: unknown[][] = [];
+  const output: unknown[] = [];
+  const runtime = {
+    async createTaskFull(input: Record<string, unknown>) {
+      calls.push(["createTaskFull", input]);
+      return {
+        id: input.taskId,
+        boardId: input.boardId,
+        boardName: "Harness Board 7f06",
+        title: input.title,
+        note: input.note,
+        priority: input.priority,
+        dueISO: input.dueISO,
+        column: input.columnId,
+        completed: false,
+      };
+    },
+    async disconnect() {
+      calls.push(["disconnect"]);
+    },
+  };
+  const idempotency = {
+    async get() { return null; },
+    async set() {},
+    async reserve(key: string, proposedTaskId: string) {
+      calls.push(["reserve", key, proposedTaskId]);
+      return { taskId: proposedTaskId, created: true };
+    },
+  };
+  const dependencies: CliDependencies = {
+    version: "test",
+    loadConfig: async () => config,
+    randomUUID: () => "uuid-fixed",
+    createIdempotencyStore: () => idempotency,
+    writeAgentJson: (value) => output.push(value),
+    createRuntime: (() => runtime) as NonNullable<CliDependencies["createRuntime"]>,
+  };
+
+  const result = await captureConsole(() => runCli([
+    "node", "taskify", "add", "Write report",
+    "--in", "Harness Board 7f06/Todo",
+    "--priority", "3",
+    "--due", "2026-10-30",
+    "--idempotency-key", "request-1",
+  ], dependencies));
+  assert.equal(result.status, 0);
+  assert.deepEqual(calls[0], ["reserve", "test:board-1:request-1", "uuid-fixed"]);
+  assert.deepEqual(calls[1], ["createTaskFull", {
+    taskId: "uuid-fixed",
+    title: "Write report",
+    note: "",
+    boardId: "board-1",
+    dueISO: "2026-10-30",
+    priority: 3,
+    subtasks: undefined,
+    columnId: "todo",
+    recurrence: undefined,
+    reminders: undefined,
+    documents: undefined,
+    assignees: undefined,
+    dueTimeEnabled: undefined,
+    dueTimeZone: undefined,
+    hiddenUntilISO: undefined,
+  }]);
+  assert.deepEqual(calls[2], ["disconnect"]);
+  assert.equal((output[0] as { command: string }).command, "task.create");
+  assert.equal((output[0] as { data: { task: { id: string } } }).data.task.id, "uuid-fixed");
+});
+
+test("task completion forwards recurring next-occurrence data and awaits cleanup", async () => {
+  const calls: unknown[][] = [];
+  const output: unknown[] = [];
+  const runtime = {
+    async setTaskStatus(...args: unknown[]) {
+      calls.push(["setTaskStatus", ...args]);
+      return {
+        id: "task-1",
+        boardId: "board-1",
+        title: "Daily review",
+        completed: true,
+        nextOccurrence: {
+          id: "recurrence:task-1:2026-10-26",
+          dueISO: "2026-10-26T14:00:00.000Z",
+        },
+      };
+    },
+    async disconnect() {
+      calls.push(["disconnect"]);
+    },
+  };
+  const dependencies: CliDependencies = {
+    version: "test",
+    loadConfig: async () => config,
+    writeAgentJson: (value) => output.push(value),
+    createRuntime: (() => runtime) as NonNullable<CliDependencies["createRuntime"]>,
+  };
+
+  const result = await captureConsole(() => runCli([
+    "node", "taskify", "done", "task-1", "--in", "Harness Board 7f06/Todo",
+  ], dependencies));
+  assert.equal(result.status, 0);
+  assert.deepEqual(calls, [
+    ["setTaskStatus", "task-1", "done", "board-1"],
+    ["disconnect"],
+  ]);
+  const response = output[0] as { command: string; data: { task: { nextOccurrence: { id: string } } } };
+  assert.equal(response.command, "task.done");
+  assert.equal(response.data.task.nextOccurrence.id, "recurrence:task-1:2026-10-26");
 });

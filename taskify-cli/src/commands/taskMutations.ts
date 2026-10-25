@@ -1,20 +1,17 @@
 import chalk from "chalk";
 import { planTaskReorder, parseTaskOrder } from "../shared/taskOrdering.js";
 import type { Command } from "commander";
-import { join } from "node:path";
 import {
 normalizeTaskRecurrence,
 normalizeTaskReminders
 } from "taskify-core";
-import { CONFIG_DIR,loadConfig } from "../config.js";
 import { renderJson } from "../render.js";
-import { createFileAgentIdempotencyStore } from "../shared/agentIdempotency.js";
-import { agentSuccess,writeAgentJson } from "../shared/agentOutput.js";
+import { agentSuccess } from "../shared/agentOutput.js";
 import { resolveCliLocation } from "../shared/cliLocation.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerTaskMutationsCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "resolveTaskIdByTitle" | "VALID_REMINDER_PRESETS" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "useHumanOutput" | "CliCommandError" | "requireWriteIdentity" | "validateCoreDue" | "validateCorePriority" | "writeCoreFailure" | "profilePubkey">) {
-  const { warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, writeCoreFailure, profilePubkey } = context;
+export function registerTaskMutationsCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "randomUUID" | "createIdempotencyStore" | "writeAgentJson" | "warnShortTaskId" | "resolveTaskIdByTitle" | "VALID_REMINDER_PRESETS" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "useHumanOutput" | "CliCommandError" | "requireWriteIdentity" | "validateCoreDue" | "validateCorePriority" | "writeCoreFailure" | "profilePubkey">) {
+  const { loadConfig, randomUUID, createIdempotencyStore, writeAgentJson, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, writeCoreFailure, profilePubkey } = context;
   program
     .command("reorder <taskId> <position>")
     .description("Move a task to a 1-based position within its board or selected list")
@@ -173,13 +170,13 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
       const runtime = initRuntime(config);
       let exitCode = 0;
       try {
-        const idempotencyStore = createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"));
+        const idempotencyStore = createIdempotencyStore();
         const idempotencyKey = opts.idempotencyKey
           ? `${config.selectedProfile}:${boardId}:${String(opts.idempotencyKey).trim()}`
           : undefined;
         let reservedTaskId: string | undefined;
         if (idempotencyKey) {
-          const reservation = await idempotencyStore.reserve(idempotencyKey, crypto.randomUUID());
+          const reservation = await idempotencyStore.reserve(idempotencyKey, randomUUID());
           reservedTaskId = reservation.taskId;
           if (!reservation.created) {
             const existing = await runtime.getTask(reservation.taskId, boardId);
@@ -198,7 +195,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
           }
         }
         const subtasks = (opts.subtask as string[]).map((text) => ({
-          id: crypto.randomUUID(),
+          id: randomUUID(),
           title: text,
           completed: false,
         }));

@@ -3049,7 +3049,7 @@ not port the session or domain facade for that hypothetical gain.
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
-| C12-2 | Approve | 2026-10-25 | In progress; harness plus event command behavior are stages 1–2 |
+| C12-2 | Approve | 2026-10-25 | In progress; harness, event behavior and task-mutation behavior are stages 1–3 |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
 | C12-5 | Approve | 2026-10-25 | Not started |
@@ -3235,3 +3235,55 @@ pushed.
 - Next: inject task-command config plus clock/UUID/idempotency dependencies and characterize task
   creation, status mutations and recurring completion before retiring their corresponding source
   assertions.
+
+### Checkpoint — October 25, 2026 (C12-2 stage 3)
+
+Task mutation commands now run through the behavioral harness; nothing has been pushed.
+
+- The command dependency seam now supplies UUID generation, the idempotency store and agent JSON
+  writer as well as config/runtime. `taskMutations.ts` no longer reaches the filesystem-backed
+  idempotency store, global UUID source or stdout writer directly; production defaults are the same.
+- A real `add` action proves location resolution, stable idempotency-key namespacing, reserved task
+  ID, exact `createTaskFull` input, agent response and disconnect order. A real `done` action proves
+  status arguments and that the runtime's recurring `nextOccurrence` reaches the agent response
+  before cleanup.
+- The runtime-level regex in `recurring-completion.test.ts` remains intentionally: the command fake
+  cannot prove that the current monolithic runtime actually publishes the next occurrence. C12-4
+  must replace that assertion with a repository/session behavior test before deleting it.
+- The build, `npx tsc --noEmit` and the full CLI suite pass at 213/213.
+- Next: inject task-query config/output, replace list/upcoming command source assertions with
+  runtime-call/output behavior, then continue through board and sharing command groups.
+
+### Checkpoint — October 25, 2026 (handoff after C12-2 stage 3)
+
+Work is stopped at a clean implementation boundary. All Taskify improvement-review work described
+below is committed locally on `Beta`; nothing has been pushed.
+
+- **Completed:** C12-1 in seven staged commits. All CLI command code returns through cleanup;
+  `src/index.ts` owns the only hard exit, reported helper errors unwind without duplicate output,
+  and the architecture guard enforces that boundary.
+- **C12-2 completed so far:** stage 1 added importable `buildProgram`/`runCli` plus injected config,
+  runtime, relay-check and output dependencies; stage 2 replaced the event command source-surface
+  regex tests with behavior; stage 3 added deterministic UUID/idempotency/output seams and real
+  task-create/task-done behavior tests. C12-2 is not complete.
+- **Current verification:** `npm run build`, `npx tsc --noEmit` and all CLI tests pass, 213/213.
+  No shared core or Swift source changed in these stages, so no core/Swift run was required.
+- **Next, in order:** (1) inject `loadConfig` and agent output into `taskQueries.ts`; add recording-
+  runtime behavior for `list`, `upcoming`, `show` and `search`, preserving agent envelopes and
+  cleanup; retire only the matching source-regex assertions whose behavior is now proved;
+  (2) migrate board/list command behavior and remove its replaced source tests; (3) migrate
+  contact/sharing behavior and registration/presentation checks; (4) finish C12-2 only when each
+  remaining source assertion is either replaced by behavior or explicitly retained for C12-4's
+  runtime-repository characterization.
+- **Do not delete yet:** the runtime assertion in `recurring-completion.test.ts` that checks
+  `setTaskStatus` calls the recurrence builder and duplicate lookup. The current command fake proves
+  forwarding/output, not the monolithic runtime's publication; replace that assertion during C12-4
+  with a fake-session repository behavior test.
+- **Preserve unrelated worktree changes:** `.github/workflows/ci.yml`; package manifests/locks in
+  CLI, core, PWA, runtime, worker and push relay; `taskify-push-relay/Dockerfile`;
+  `taskify-push-relay/startos/actions/configureWebPush.ts`;
+  `taskify-push-relay/startos/versions/current.ts`; and untracked
+  `docs/audits/runtime-security-2026-10-22.md`. They belong to a separate runtime-security pass and
+  must not be staged with improvement-review commits.
+- Continue the one-step/one-commit rule with the required Claude co-author trailer. Never push;
+  the maintainer owns pushing.

@@ -1,14 +1,17 @@
 import { bytesToHex,hexToBytes } from "@noble/hashes/utils.js";
 import chalk from "chalk";
 import type { Command } from "commander";
+import { randomUUID as nodeRandomUUID } from "node:crypto";
+import { join } from "node:path";
 import { getPublicKey,nip19 } from "nostr-tools";
 import {
 normalizeTaskAssignees,
 normalizeTaskDocuments
 } from "taskify-core";
 import { buildAttachmentDocuments } from "../attachmentCrypto.js";
-import { loadConfig } from "../config.js";
+import { CONFIG_DIR,loadConfig } from "../config.js";
 import { createNostrRuntime,type NostrRuntime } from "../nostrRuntime.js";
+import { createFileAgentIdempotencyStore,type AgentIdempotencyStore } from "../shared/agentIdempotency.js";
 import { agentFailure,writeAgentJson } from "../shared/agentOutput.js";
 import { CliLocationError } from "../shared/cliLocation.js";
 import { formatAvailableColumns,resolveBoardColumn } from "../shared/columnResolution.js";
@@ -42,6 +45,9 @@ export function rethrowReportedError(error: unknown): void {
 export type CommandContextDependencies = {
   createRuntime?: typeof createNostrRuntime;
   loadConfig?: typeof loadConfig;
+  randomUUID?: () => string;
+  createIdempotencyStore?: () => AgentIdempotencyStore;
+  writeAgentJson?: typeof writeAgentJson;
 };
 
 export function createCommandContext(program: Command, dependencies: CommandContextDependencies = {}) {
@@ -344,7 +350,7 @@ export function createCommandContext(program: Command, dependencies: CommandCont
         }
       }
     } else {
-      writeAgentJson(agentFailure(command, failure.code, failure.message, {
+      (dependencies.writeAgentJson ?? writeAgentJson)(agentFailure(command, failure.code, failure.message, {
         details: failure.details,
         retryable: failure.retryable,
       }));
@@ -406,6 +412,6 @@ export function createCommandContext(program: Command, dependencies: CommandCont
   }
 
 
-  return { loadConfig: dependencies.loadConfig ?? loadConfig, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
+  return { loadConfig: dependencies.loadConfig ?? loadConfig, randomUUID: dependencies.randomUUID ?? nodeRandomUUID, createIdempotencyStore: dependencies.createIdempotencyStore ?? (() => createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"))), writeAgentJson: dependencies.writeAgentJson ?? writeAgentJson, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
 }
 export type CommandContext = ReturnType<typeof createCommandContext>;
