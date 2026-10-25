@@ -4,6 +4,7 @@ import { RelayAuthManager, createRelayAuthPolicy } from "./RelayAuth.js";
 import { applyProofOfWork, countLeadingZeroBits, parseProofOfWorkRejection } from "./ProofOfWork.js";
 import type { RuntimeProofOfWorkSettings } from "./RuntimeNostrSession.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
+import { installNdkRelayTimerFix } from "./ndkLifecycle.js";
 
 let relayInfoCache = new RelayInfoCache();
 let proofOfWork: RuntimeProofOfWorkSettings = {};
@@ -45,6 +46,8 @@ export function recordRelayProofOfWorkRejection(relayUrl: string, message: strin
 
 /** Standalone clients share the same auth policy; anonymous reads use an ephemeral key. */
 export function configureRelayAccess(ndk: NDK, secretKeyHex?: string): void {
+  // NDK's relays already exist by now; this covers relays it adds later, and any pool made after.
+  installNdkRelayTimerFix();
   const signer = secretKeyHex ? new NDKPrivateKeySigner(secretKeyHex) : NDKPrivateKeySigner.generate();
   const manager = new RelayAuthManager(ndk, { loadSecretKeyHex: () => signer.privateKey ?? null });
   ndk.relayAuthDefaultPolicy = createRelayAuthPolicy(manager, { timeoutMs: authTimeoutMs });

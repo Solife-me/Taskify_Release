@@ -33,3 +33,34 @@ export function stopNdkRelayTimers(relay) {
         clearTimeout(patched[TIMER]);
     patched[TIMER] = undefined;
 }
+/**
+ * Closes every relay of an NDK instance for good. Each relay is taken out of its pool, not just
+ * disconnected: when more than half of a pool's relays drop within a few seconds, NDK 3.0.3 takes
+ * it for a system sleep and reconnects them. NDK has no pool teardown of its own, so the pool's
+ * temporary-relay and system-event timers are cleared here too.
+ */
+export function closeNdkPools(ndk) {
+    for (const pool of [ndk.pool, ndk.outboxPool]) {
+        if (!pool)
+            continue;
+        for (const [url, relay] of Array.from(pool.relays.entries())) {
+            stopNdkRelayTimers(relay);
+            try {
+                pool.removeRelay(url);
+            }
+            catch {
+                // ignore individual relay teardown errors
+            }
+        }
+        const internals = pool;
+        if (internals.temporaryRelayTimers instanceof Map) {
+            for (const timer of internals.temporaryRelayTimers.values())
+                clearTimeout(timer);
+            internals.temporaryRelayTimers.clear();
+        }
+        if (internals.systemEventDetector) {
+            clearTimeout(internals.systemEventDetector);
+            internals.systemEventDetector = undefined;
+        }
+    }
+}

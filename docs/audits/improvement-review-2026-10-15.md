@@ -3551,4 +3551,36 @@ The runtime suite finishes by itself, without `--test-force-exit`. Nothing has b
   - PWA nostr and wallet tests 250 (12 skipped), and `tsc` is clean.
 - Next: the standalone-session API for profile, contact, bot and inbox-relay reads and writes
   (stage 2).
+
+### Checkpoint — October 25, 2026 (C12-3 stage 2: standalone sessions, multi-relay teardown)
+
+- **Found while testing the standalone session: shutdown with several relays reconnected them.**
+  - When more than half of a pool's relays drop within 5 seconds, NDK 3.0.3 takes it for a
+    system sleep and reconnects them. That reopens sockets and keepalive timers after shutdown.
+  - NDK also has no pool teardown: the `pool.destroy?.()` call did nothing.
+  - Stage 1's exit test used one relay, so it missed this. Its three-relay variant failed first
+    (the process was still running).
+- **Shared teardown.** `closeNdkPools` (in `ndkLifecycle.ts`, renamed from `ndkRelayTimers.ts`)
+  takes each relay out of its pool before its asynchronous disconnect arrives, so the pool never
+  sees a mass drop. It also clears NDK's temporary-relay and system-event timers. Both kinds of
+  session use it.
+- **`StandaloneNostrSession`** (with `withStandaloneSession`, which always closes) is the owned
+  path for one-off reads and writes outside a runtime session:
+  - same AUTH and proof-of-work handling as the main session;
+  - every returned event's signature checked;
+  - bounded connect and read waits, with their timers cleared;
+  - writes through `publishStandaloneEvent`, so proof-of-work refusals are re-mined;
+  - a terminal, idempotent close;
+  - NDK's outbox model off, since these sessions always name their relays.
+- **Tests.** `standalone-session.test.ts` (6 cases) covers:
+  - a forged event dropped from a read;
+  - a signed write accepted, and a write without a key refused;
+  - close twice, and nothing working after it;
+  - a child process exiting by itself after success, an error, or a timeout.
+- **Verification.**
+  - Runtime 87/87, finishing naturally in about 18 s;
+  - CLI 214/214;
+  - PWA nostr and wallet tests 250 (12 skipped), and `tsc` is clean.
+- Next: move the CLI's profile, contact, bot and inbox-relay helpers onto `withStandaloneSession`
+  (stage 3).
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

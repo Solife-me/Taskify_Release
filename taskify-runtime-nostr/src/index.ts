@@ -18,4 +18,5 @@ export * from "./RelayAccess.js";
 export * from "./RelayPublishBudget.js";
 export * from "./nip17Keys.js";
 export * from "./sessionErrors.js";
-export * from "./ndkRelayTimers.js";
+export * from "./ndkLifecycle.js";
+export * from "./StandaloneSession.js";

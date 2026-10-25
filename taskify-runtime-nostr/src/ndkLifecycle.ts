@@ -1,4 +1,4 @@
-import { NDKRelay } from "@nostr-dev-kit/ndk";
+import NDK, { NDKRelay } from "@nostr-dev-kit/ndk";
 
 /**
  * NDK 3.0.3 re-arms a referenced 30-second timer in every relay's `updateValidationRatio` and keeps
@@ -42,4 +42,36 @@ export function stopNdkRelayTimers(relay: unknown): void {
   patched[STOPPED] = true;
   if (patched[TIMER]) clearTimeout(patched[TIMER]);
   patched[TIMER] = undefined;
+}
+
+/**
+ * Closes every relay of an NDK instance for good. Each relay is taken out of its pool, not just
+ * disconnected: when more than half of a pool's relays drop within a few seconds, NDK 3.0.3 takes
+ * it for a system sleep and reconnects them. NDK has no pool teardown of its own, so the pool's
+ * temporary-relay and system-event timers are cleared here too.
+ */
+export function closeNdkPools(ndk: NDK): void {
+  for (const pool of [ndk.pool, ndk.outboxPool]) {
+    if (!pool) continue;
+    for (const [url, relay] of Array.from(pool.relays.entries())) {
+      stopNdkRelayTimers(relay);
+      try {
+        pool.removeRelay(url);
+      } catch {
+        // ignore individual relay teardown errors
+      }
+    }
+    const internals = pool as unknown as {
+      temporaryRelayTimers?: Map<string, ReturnType<typeof setTimeout>>;
+      systemEventDetector?: ReturnType<typeof setTimeout>;
+    };
+    if (internals.temporaryRelayTimers instanceof Map) {
+      for (const timer of internals.temporaryRelayTimers.values()) clearTimeout(timer);
+      internals.temporaryRelayTimers.clear();
+    }
+    if (internals.systemEventDetector) {
+      clearTimeout(internals.systemEventDetector);
+      internals.systemEventDetector = undefined;
+    }
+  }
 }

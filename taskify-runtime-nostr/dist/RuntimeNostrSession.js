@@ -8,7 +8,7 @@ import { PublishCoordinator } from "./PublishCoordinator.js";
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
-import { installNdkRelayTimerFix, stopNdkRelayTimers } from "./ndkRelayTimers.js";
+import { closeNdkPools, installNdkRelayTimerFix } from "./ndkLifecycle.js";
 import { RuntimeSessionClosedError } from "./sessionErrors.js";
 export class RuntimeNostrSession {
     ndk;
@@ -34,7 +34,7 @@ export class RuntimeNostrSession {
     constructor(relays, deps) {
         const normalized = normalizeRelayUrls(relays);
         this.knownRelays = new Set(normalized);
-        // Before NDK makes its first relay: see ndkRelayTimers.ts.
+        // Before NDK makes its first relay: see ndkLifecycle.ts.
         installNdkRelayTimerFix();
         this.ndk = new NDK({ explicitRelayUrls: normalized, enableOutboxModel: deps.enableOutboxModel ?? true, autoConnectUserRelays: false });
         this.relayInfoCache = deps.relayInfoCache;
@@ -113,25 +113,7 @@ export class RuntimeNostrSession {
                 clearTimeout(timer);
             }
             this.relayRetryTimers.clear();
-            for (const pool of [this.ndk.pool, this.ndk.outboxPool]) {
-                if (!pool)
-                    continue;
-                for (const relay of pool.relays.values()) {
-                    stopNdkRelayTimers(relay);
-                    try {
-                        relay.disconnect();
-                    }
-                    catch {
-                        // ignore individual relay teardown errors
-                    }
-                }
-                try {
-                    pool.destroy?.();
-                }
-                catch {
-                    // ignore pool teardown errors
-                }
-            }
+            closeNdkPools(this.ndk);
             // Some NDK relay implementations emit disconnect asynchronously. Clear a
             // second time after initiating teardown; the hook also checks shuttingDown.
             for (const timer of this.relayRetryTimers.values()) {

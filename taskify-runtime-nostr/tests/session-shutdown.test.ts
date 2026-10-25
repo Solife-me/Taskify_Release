@@ -24,26 +24,30 @@ function session(url: string) {
   });
 }
 
-test("a process exits by itself once its session has shut down", async () => {
-  const relay = await startMockRelay();
-  try {
-    const child = spawn(process.execPath, [path.join(import.meta.dirname, "helpers/sessionLifecycleChild.mjs"), relay.url], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    const exited = await new Promise<number | null | "still running">((resolve) => {
-      const timer = setTimeout(() => resolve("still running"), 8_000);
-      child.on("exit", (code) => { clearTimeout(timer); resolve(code); });
-    });
-    if (exited === "still running") child.kill();
-    assert.equal(stdout.trim(), "shut down");
-    assert.equal(exited, 0, "the process kept running after shutdown");
-    assert.equal(relay.events.length, 1);
-  } finally {
-    await relay.close();
-  }
-});
+for (const relayCount of [1, 3]) {
+  test(`a process exits by itself once its session with ${relayCount} relay(s) has shut down`, async () => {
+    // With several relays, NDK takes most of them dropping at once for a system sleep and
+    // reconnects them, so shutdown must take relays out of the pool rather than just disconnect.
+    const relays = await Promise.all(Array.from({ length: relayCount }, () => startMockRelay()));
+    try {
+      const child = spawn(process.execPath, [
+        path.join(import.meta.dirname, "helpers/sessionLifecycleChild.mjs"), ...relays.map((relay) => relay.url),
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      const exited = await new Promise<number | null | "still running">((resolve) => {
+        const timer = setTimeout(() => resolve("still running"), 8_000);
+        child.on("exit", (code) => { clearTimeout(timer); resolve(code); });
+      });
+      if (exited === "still running") child.kill();
+      assert.equal(stdout.trim(), "shut down");
+      assert.equal(exited, 0, "the process kept running after shutdown");
+      for (const relay of relays) assert.equal(relay.events.length, 1);
+    } finally {
+      await Promise.all(relays.map((relay) => relay.close()));
+    }
+  });
+}
 
 test("shutdown can be called twice, and nothing works after it", async () => {
   const relay = await startMockRelay();
