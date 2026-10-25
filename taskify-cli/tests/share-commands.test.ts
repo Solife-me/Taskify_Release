@@ -214,3 +214,23 @@ test("backup merge-relays saves the backup's relays, previews with --dry-run, an
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("share inbox --apply keeps the messages it applied when a later one fails", async () => {
+  const sender = "cd".repeat(32);
+  const inbox = [
+    { rumorId: "r1", senderPubkey: sender, envelope: { item: { type: "task", title: "First" } } },
+    { rumorId: "r2", senderPubkey: sender, envelope: { item: { type: "task", title: "Second" } } },
+  ];
+  const result = await run(["share", "inbox", "--apply"], {
+    getDefaultBoardId: () => "board-1",
+    createTaskFull: async (input) => {
+      if ((input as { title: string }).title === "Second") throw new Error("relay unavailable");
+      return { id: "t1", boardId: "board-1", title: "First", completed: false };
+    },
+  }, { inbox });
+
+  assert.equal(result.status, 1);
+  // Applying again must not create "First" a second time.
+  assert.deepEqual(result.saved.at(-1)?.processedInboxRumorIds, ["r1"]);
+  assert.deepEqual(result.calls.at(-1), ["disconnect"]);
+});

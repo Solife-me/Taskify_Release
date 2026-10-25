@@ -3425,7 +3425,8 @@ been pushed.
   - Token merging exists only in the PWA. The fix moves it to `taskify-core` with shared vectors
     and adds a runtime invite operation, with a failing test first. The two regex cases about
     `share event` and `event invite` registration stay until then.
-- **Found: `share inbox --apply` saves processed ids only after the whole batch.** If the runtime
-  fails partway, tasks already created are not recorded, and the next apply creates them again.
-  The fix comes next, with a failing test first.
+- **Found: `share inbox --apply` saved processed ids only after the whole batch.** If the runtime
+  failed partway, tasks already created were not recorded, and the next apply created them again.
+  Fixed: a failing test first, then the config is saved after each applied message (CLI suite
+  211/211).
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

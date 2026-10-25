@@ -145,10 +145,12 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
             if (item.envelope.item.type === "event-rsvp-response") {
               await runtime.applyEventRsvpResponse(item.envelope.item.eventId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
             }
+            // Saved after each message, so a failure later in the batch can't make the next
+            // apply repeat what this one already did.
             processed.add(item.rumorId);
+            config.processedInboxRumorIds = Array.from(processed).slice(-2000);
+            await saveConfig(config);
           }
-          config.processedInboxRumorIds = Array.from(processed).slice(-2000);
-          await saveConfig(config);
         }
         if (opts.json) renderJson(inbox);
         else inbox.forEach((m) => console.log(`${chalk.cyan(m.envelope.item.type)} ${chalk.dim(m.senderPubkey.slice(0, 12))}`));
