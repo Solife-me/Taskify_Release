@@ -11,7 +11,7 @@ import { renderJson } from "../render.js";
 import { createFileAgentIdempotencyStore } from "../shared/agentIdempotency.js";
 import { agentSuccess,writeAgentJson } from "../shared/agentOutput.js";
 import { resolveCliLocation } from "../shared/cliLocation.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerTaskMutationsCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "resolveTaskIdByTitle" | "VALID_REMINDER_PRESETS" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "useHumanOutput" | "CliCommandError" | "requireWriteIdentity" | "validateCoreDue" | "validateCorePriority" | "writeCoreFailure" | "profilePubkey">) {
   const { warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, writeCoreFailure, profilePubkey } = context;
@@ -83,12 +83,16 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
             const task = await runtime.getTask(taskId, boardId);
             if (task?.title) title = task.title;
           }
-        } catch { /* title lookup is best-effort */ }
+        } catch (error) {
+          rethrowReportedError(error);
+          // Title lookup is best-effort once board resolution succeeds.
+        }
         await runtime.remindTask(taskId, presets as Parameters<typeof runtime.remindTask>[1]);
         console.log(
           chalk.green(`✓ Reminders set for ${title}: ${presets.join(", ")} (device-local only, will not sync)`),
         );
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {

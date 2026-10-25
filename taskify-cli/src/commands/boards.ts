@@ -6,7 +6,7 @@ resolveBoardReference
 import { loadConfig,saveConfig,type BoardEntry } from "../config.js";
 import { renderJson } from "../render.js";
 import { parseOnOffState } from "../shared/boardState.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerBoardsCommands(program: Command, context: Pick<CommandContext, "initRuntime">) {
   const { initRuntime } = context;
@@ -55,7 +55,10 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
             } catch { /* non-fatal — show whatever name we have */ }
           }
           await saveConfig(config);
-        } catch { /* non-fatal */ }
+        } catch (error) {
+          rethrowReportedError(error);
+          // Metadata refresh is non-fatal.
+        }
         finally {
           try { await runtime?.disconnect(); } catch { /* non-fatal display-name refresh */ }
         }
@@ -101,7 +104,10 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
           const colCount = meta.columns?.length ?? 0;
           console.log(chalk.dim(`  Synced: kind=${meta.kind ?? "?"}, columns=${colCount}`));
         }
-      } catch { /* non-fatal if sync fails on join */ }
+      } catch (error) {
+        rethrowReportedError(error);
+        // Metadata refresh is non-fatal if sync fails after the runtime starts.
+      }
       finally {
         try { await runtime?.disconnect(); } catch { /* non-fatal metadata refresh */ }
       }

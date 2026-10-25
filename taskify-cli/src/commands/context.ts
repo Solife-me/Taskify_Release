@@ -23,6 +23,22 @@ export type CoreErrorDetails = {
   details?: Record<string, unknown>;
   retryable: boolean;
 };
+
+/** A command helper already rendered this failure and only needs to unwind to the executable. */
+export class CliReportedError extends Error {
+  readonly exitCode: number;
+
+  constructor(exitCode = 1) {
+    super("Command failure already reported.");
+    this.name = "CliReportedError";
+    this.exitCode = exitCode;
+  }
+}
+
+export function rethrowReportedError(error: unknown): void {
+  if (error instanceof CliReportedError) throw error;
+}
+
 export function createCommandContext(program: Command) {
   // ---- Validation helpers ----
 
@@ -30,7 +46,7 @@ export function createCommandContext(program: Command) {
     if (!due) return;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) {
       console.error(chalk.red(`Invalid --due format: "${due}". Expected YYYY-MM-DD.`));
-      process.exit(1);
+      throw new CliReportedError();
     }
   }
 
@@ -38,7 +54,7 @@ export function createCommandContext(program: Command) {
     if (!pri) return;
     if (!["1", "2", "3"].includes(pri)) {
       console.error(chalk.red(`Invalid --priority: "${pri}". Must be 1, 2, or 3.`));
-      process.exit(1);
+      throw new CliReportedError();
     }
   }
 
@@ -129,7 +145,7 @@ export function createCommandContext(program: Command) {
       return createNostrRuntime(config);
     } catch (err) {
       console.error(chalk.red(String(err)));
-      process.exit(1);
+      throw new CliReportedError();
     }
   }
 
@@ -157,7 +173,7 @@ export function createCommandContext(program: Command) {
         console.error(`  ${b.name} (${b.id})`);
       }
     }
-    process.exit(resolved.exitCode);
+    throw new CliReportedError(resolved.exitCode);
   }
 
 
@@ -313,6 +329,7 @@ export function createCommandContext(program: Command) {
   }
 
   function writeCoreFailure(command: string, error: unknown, human: boolean): number {
+    if (error instanceof CliReportedError) return error.exitCode;
     const failure = commandErrorDetails(error);
     if (human) {
       console.error(chalk.red(failure.message));
@@ -352,17 +369,17 @@ export function createCommandContext(program: Command) {
     if (resolved.reason === "no-columns") {
       console.error(chalk.red(`Board "${entry.name}" has no columns/lists yet.`));
       console.error(chalk.dim("Add a list first (PWA or `taskify board column-add`) then retry."));
-      process.exit(1);
+      throw new CliReportedError();
     }
     if (resolved.reason === "ambiguous") {
       console.error(chalk.red(`Ambiguous column "${columnArg}" on board "${entry.name}".`));
       console.error(chalk.dim("Use --column <id> to target deterministically."));
       console.error(chalk.dim(`Available columns:\n${available}`));
-      process.exit(1);
+      throw new CliReportedError();
     }
     console.error(chalk.red(`Column not found: "${columnArg}" on board "${entry.name}".`));
     console.error(chalk.dim(`Available columns:\n${available}`));
-    process.exit(1);
+    throw new CliReportedError();
   }
 
 

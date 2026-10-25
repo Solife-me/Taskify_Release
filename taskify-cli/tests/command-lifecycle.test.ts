@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -85,4 +85,23 @@ test("local commands return control before the executable performs the only hard
   const { result, exits } = runWithExitTrace(["cache", "status"]);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(exits, ["process.exit:0"]);
+});
+
+test("only the executable boundary may hard-exit", () => {
+  const sourceRoot = resolve("src");
+  const visit = (directory: string): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return visit(path);
+    return entry.isFile() && path.endsWith(".ts") && path !== join(sourceRoot, "index.ts") ? [path] : [];
+  });
+  const offenders = visit(sourceRoot).filter((path) => readFileSync(path, "utf8").includes("process.exit("));
+  assert.deepEqual(offenders, []);
+});
+
+test("reported helper failures unwind without a duplicate error envelope", () => {
+  const { result, exits } = runWithExitTrace(["inbox", "triage", "12345678", "--due", "not-a-date", "--yes"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Invalid --due format/);
+  assert.equal(result.stdout, "");
+  assert.deepEqual(exits, ["process.exit:1"]);
 });

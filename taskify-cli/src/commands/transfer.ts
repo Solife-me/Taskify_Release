@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import { readFile,writeFile } from "fs/promises";
 import { loadConfig } from "../config.js";
 import { csvEscape,parseCSV } from "../csv.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerTransferCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "resolveColumnOrExit">) {
   const { initRuntime, resolveBoardId, resolveColumnOrExit } = context;
@@ -99,6 +99,7 @@ export function registerTransferCommands(program: Command, context: Pick<Command
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
@@ -261,6 +262,7 @@ export function registerTransferCommands(program: Command, context: Pick<Command
         }
         console.log(chalk.green(`✓ Imported ${created}/${rows.length} tasks`));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {

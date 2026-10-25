@@ -3048,7 +3048,7 @@ not port the session or domain facade for that hypothetical gain.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C12-1 | Approve | 2026-10-25 | In progress; command actions are stages 1–6 |
+| C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
 | C12-2 | Approve | 2026-10-25 | Not started |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
@@ -3175,3 +3175,23 @@ pushed.
   This is process lifecycle only; shared behavior and wire formats are unchanged.
 - Next: replace hard exits in command-context and onboarding helpers with typed returns/errors,
   then enforce the outer-boundary rule with a source architecture guard and finish C12-1.
+
+### Checkpoint — October 25, 2026 (C12-1 stage 7 — complete)
+
+C12-1 is complete locally on `Beta`; nothing has been pushed.
+
+- Command-context validation, board/column resolution and runtime construction now throw a typed
+  `CliReportedError` after rendering their existing human error. That error unwinds through any
+  action cleanup and tells the executable only the final status; it cannot produce a duplicate
+  human message or agent JSON failure envelope. Onboarding cancellation returns normally.
+- Best-effort metadata/title catches rethrow this typed failure rather than accidentally treating
+  failure to construct a runtime or resolve an explicitly requested board as optional. Runtime
+  `finally` blocks still run while the reported failure reaches the executable boundary.
+- A source architecture guard now scans all CLI TypeScript below `src/` and fails if any file
+  except `src/index.ts` calls `process.exit`. A bundled regression also proves a reported helper
+  failure emits its original error once and reaches exactly one executable hard exit.
+- The production bundle builds, `npx tsc --noEmit` passes and the complete CLI suite passes
+  210/210. C12-1 changes process lifecycle only; no cross-client vector or Swift run is needed.
+- Next: C12-2, beginning with a `buildProgram(dependencies)`/`runCli(argv, dependencies)` seam and
+  a recording fake runtime, then replacing the highest-risk source-regex assertions with behavior
+  tests one command family at a time.

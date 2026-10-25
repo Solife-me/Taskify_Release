@@ -12,7 +12,7 @@ import { loadConfig } from "../config.js";
 import { renderJson } from "../render.js";
 import { buildCalendarEventDraft } from "../shared/eventDraft.js";
 import { sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerEventsCommands(program: Command, context: Pick<CommandContext, "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
   const { parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow } = context;
@@ -47,6 +47,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         process.exitCode = 1;
       } finally {
@@ -112,6 +113,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         if (opts.json) renderJson(created);
         else console.log(chalk.green(`✓ Created event: ${created.title} (${created.id.slice(0, 8)})`));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         process.exitCode = 1;
       } finally {
@@ -163,6 +165,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
           if (event.rsvpStatus) console.log(`rsvp status: ${event.rsvpStatus}`);
         }
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         process.exitCode = 1;
       } finally {
@@ -245,6 +248,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         if (opts.json) renderJson(updated);
         else console.log(chalk.green(`✓ Updated event: ${updated.title}`));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         process.exitCode = 1;
       } finally {
@@ -271,6 +275,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         if (opts.json) renderJson(deleted);
         else console.log(chalk.green(`✓ Deleted event: ${deleted.title}`));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         process.exitCode = 1;
       } finally {
@@ -309,6 +314,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: recipient, relays: config.relays });
         console.log(chalk.green("✓ Event invite shared."));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {

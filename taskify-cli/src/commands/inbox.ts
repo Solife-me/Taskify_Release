@@ -2,7 +2,7 @@ import chalk from "chalk";
 import type { Command } from "commander";
 import { loadConfig } from "../config.js";
 import { renderTable } from "../render.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerInboxCommands(program: Command, context: Pick<CommandContext, "validateDue" | "validatePriority" | "warnShortTaskId" | "initRuntime" | "resolveBoardId" | "resolveColumnOrExit">) {
   const { validateDue, validatePriority, warnShortTaskId, initRuntime, resolveBoardId, resolveColumnOrExit } = context;
@@ -29,6 +29,7 @@ export function registerInboxCommands(program: Command, context: Pick<CommandCon
           renderTable(inboxTasks, config.trustedNpubs);
         }
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
@@ -61,6 +62,7 @@ export function registerInboxCommands(program: Command, context: Pick<CommandCon
         });
         console.log(chalk.green(`✓ Inbox: ${title}`));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
@@ -162,6 +164,7 @@ export function registerInboxCommands(program: Command, context: Pick<CommandCon
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {

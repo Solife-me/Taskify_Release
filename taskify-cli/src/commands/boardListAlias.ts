@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { Command } from "commander";
 import { loadConfig,saveConfig,type BoardEntry } from "../config.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerBoardListAliasCommands(program: Command, context: Pick<CommandContext, "initRuntime">) {
   const { initRuntime } = context;
@@ -35,7 +35,10 @@ export function registerBoardListAliasCommands(program: Command, context: Pick<C
             } catch { /* non-fatal */ }
           }
           await saveConfig(config);
-        } catch { /* non-fatal */ }
+        } catch (error) {
+          rethrowReportedError(error);
+          // Metadata refresh is non-fatal.
+        }
         finally {
           try { await runtime?.disconnect(); } catch { /* non-fatal display-name refresh */ }
         }

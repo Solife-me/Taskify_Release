@@ -9,7 +9,7 @@ import { renderJson,renderTable,renderTaskCard } from "../render.js";
 import { agentSuccess,writeAgentJson } from "../shared/agentOutput.js";
 import { resolveCliLocation } from "../shared/cliLocation.js";
 import { formatAvailableColumns,resolveBoardColumn } from "../shared/columnResolution.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerTaskQueriesCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "initRuntime" | "resolveBoardId" | "useHumanOutput" | "CliCommandError" | "writeCoreFailure" | "profilePubkey" | "resolveColumnOrExit">) {
   const { warnShortTaskId, initRuntime, resolveBoardId, useHumanOutput, CliCommandError, writeCoreFailure, profilePubkey, resolveColumnOrExit } = context;
@@ -250,6 +250,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         exitCode = coreMode ? writeCoreFailure("task.list", err, human) : 1;
         if (!coreMode) console.error(chalk.red(String(err)));
       } finally {
@@ -308,6 +309,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
@@ -354,6 +356,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           renderTaskCard(task, config.trustedNpubs, localReminders);
         }
       } catch (err) {
+        rethrowReportedError(err);
         exitCode = writeCoreFailure("task.get", err, human);
       } finally {
         await runtime.disconnect();
@@ -411,6 +414,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         exitCode = writeCoreFailure("task.search", err, human);
       } finally {
         await runtime.disconnect();

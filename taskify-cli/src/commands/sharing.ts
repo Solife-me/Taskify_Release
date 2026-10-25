@@ -11,7 +11,7 @@ resolveBoardReference
 import { loadConfig,saveConfig } from "../config.js";
 import { renderJson } from "../render.js";
 import { fetchShareInboxNip17,sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerSharingCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
   const { initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow } = context;
@@ -75,6 +75,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
         await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Task share sent."));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
