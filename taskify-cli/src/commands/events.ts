@@ -285,41 +285,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
     .command("invite <eventId> <npubOrHex>")
     .description("Share an event invite over NIP-17 DM")
     .option("--board <id|name>", "Board the event belongs to (optional; scans all if omitted)")
-    .action(async (eventId: string, npubOrHex: string, opts) => {
-      const config = await loadConfig(program.opts().profile as string | undefined);
-      const runtime = initRuntime(config);
-      let exitCode = 0;
-      try {
-        const recipient = npubOrHexToHex(npubOrHex);
-        const event = await runtime.getEvent(eventId, opts.board ? await resolveBoardId(opts.board, config) : undefined);
-        if (!event) throw new Error(`Event not found: ${eventId}`);
-        const senderHex = nsecToHexOrThrow(config.nsec);
-        const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
-        const eventKey = `taskify:event:${event.id}`;
-        const canonical = `31923:${getPublicKey(hexToBytes(senderHex))}:${event.id}`;
-        const view = `31924:${getPublicKey(hexToBytes(senderHex))}:${event.id}`;
-        const envelope = buildCalendarEventInviteEnvelope({
-          eventId: event.id,
-          canonical,
-          view,
-          eventKey,
-          inviteToken: `${event.id}:${recipient.slice(0, 16)}`,
-          title: event.title,
-          start: event.startISO ?? event.startDate,
-          end: event.endISO ?? event.endDate,
-          relays: config.relays,
-        }, { npub: senderNpub });
-        await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: recipient, relays: config.relays });
-        console.log(chalk.green("✓ Event invite shared."));
-      } catch (err) {
-        rethrowReportedError(err);
-        console.error(chalk.red(String(err)));
-        exitCode = 1;
-      } finally {
-        await runtime.disconnect();
-        process.exitCode = exitCode;
-      }
-    });
+    .action(eventInviteAction(program, context));
 
   eventCmd
     .command("rsvp <eventId> <accepted|declined|tentative>")
@@ -351,4 +317,49 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
       }
     });
 
+}
+
+/** `event invite` and `share event`: invite someone to a calendar event over NIP-17. */
+export function eventInviteAction(
+  program: Command,
+  context: Pick<CommandContext, "loadConfig" | "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow" | "shareTransport">,
+) {
+  const { loadConfig, initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow, shareTransport } = context;
+  return async (eventId: string, npubOrHex: string, opts: { board?: string }) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const recipient = npubOrHexToHex(npubOrHex);
+      // The runtime adds the invitee, gives them their own token and republishes the event, so
+      // the invitee can open its view copy.
+      const invitation = await runtime.inviteToEvent(eventId, opts.board ? await resolveBoardId(opts.board, config) : undefined, recipient);
+      if (!invitation) throw new Error(`Event not found: ${eventId}`);
+      const { event } = invitation;
+      const senderHex = nsecToHexOrThrow(config.nsec);
+      const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
+      const envelope = buildCalendarEventInviteEnvelope({
+        eventId: event.id,
+        canonical: invitation.canonical,
+        view: invitation.view,
+        eventKey: event.eventKey,
+        inviteToken: invitation.inviteToken,
+        title: event.title,
+        start: event.kind === "date" ? event.startDate : event.startISO,
+        end: event.kind === "date" ? event.endDate : event.endISO,
+        relays: invitation.relays,
+      }, { npub: senderNpub });
+      // Sent over the board's relays and this profile's, as the PWA sends invites.
+      const sendRelays = Array.from(new Set([...invitation.relays, ...config.relays]));
+      await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: recipient, relays: sendRelays });
+      console.log(chalk.green("✓ Event invite shared."));
+    } catch (err) {
+      rethrowReportedError(err);
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exitCode = exitCode;
+    }
+  };
 }

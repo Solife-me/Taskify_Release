@@ -234,3 +234,41 @@ test("share inbox --apply keeps the messages it applied when a later one fails",
   assert.deepEqual(result.saved.at(-1)?.processedInboxRumorIds, ["r1"]);
   assert.deepEqual(result.calls.at(-1), ["disconnect"]);
 });
+
+test("event invite sends the event's key, the recipient's token and Taskify's calendar addresses", async () => {
+  const key = btoa("k".repeat(32));
+  const boardPubkey = "e".repeat(64);
+  const invitation = {
+    event: {
+      id: "event-1", boardId: "board-1", title: "Launch", kind: "date", startDate: "2026-11-01", endDate: "2026-11-01",
+      eventKey: key, participants: [{ pubkey: recipientHex }], inviteTokens: { [recipientHex]: "token-r" },
+    },
+    canonical: `30310:${boardPubkey}:event-1`,
+    view: `30311:${boardPubkey}:event-1`,
+    inviteToken: "token-r",
+    relays: ["wss://board.example"],
+  };
+  for (const argv of [
+    ["event", "invite", "event-1", recipientNpub, "--board", "Harness Board 7f06"],
+    ["share", "event", "event-1", recipientNpub, "--board", "Harness Board 7f06"],
+  ]) {
+    const result = await run(argv, { inviteToEvent: async () => invitation });
+    assert.equal(result.status, 0, `${argv.join(" ")}: ${result.stderr.join("\n")}`);
+    assert.deepEqual(result.calls, [["inviteToEvent", "event-1", "board-1", recipientHex], ["disconnect"]], argv.join(" "));
+    assert.equal(result.sent.length, 1, argv.join(" "));
+    assert.equal(result.sent[0].recipientPubkeyHex, recipientHex);
+    assert.deepEqual(result.sent[0].relays, ["wss://board.example", ...relays]);
+    assert.deepEqual(result.sent[0].envelope.item, {
+      type: "event", eventId: "event-1",
+      canonical: invitation.canonical, view: invitation.view,
+      eventKey: key, inviteToken: "token-r",
+      title: "Launch", start: "2026-11-01", end: "2026-11-01",
+      relays: ["wss://board.example"],
+    }, argv.join(" "));
+  }
+
+  const missing = await run(["event", "invite", "nope", recipientNpub], { inviteToEvent: async () => null });
+  assert.equal(missing.status, 1);
+  assert.deepEqual(missing.sent, []);
+  assert.match(missing.stderr.join("\n"), /Event not found: nope/);
+});

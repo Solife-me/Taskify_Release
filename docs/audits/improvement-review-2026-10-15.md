@@ -3464,4 +3464,31 @@ The first half of the `event invite` fix: one rule for invitation secrets, in `t
 - `hiddenUntilForBoard` and `applyHiddenForFuture` now take `now`. The postpone and
   generated-task planners pass theirs; UI callers keep the current time.
 - The PWA suite passes (746, 14 skipped) and `tsc` is clean.
+
+### Checkpoint — October 25, 2026 (CLI event invitations work)
+
+The second half of the `event invite` fix. Failing test first: the command test expected a valid
+invite envelope.
+
+- **Runtime.** It applies the shared rule (`src/shared/eventInvite.ts`, which calls
+  `planEventInvitations` with an npub-aware key normalizer):
+  - `createEvent` gives each invitee a token;
+  - `updateEvent` keeps tokens in step with participants: new invitees get one, removed ones lose
+    theirs. Before, events made or edited in the CLI had invitees with no token, so they couldn't
+    open the event even if invited elsewhere.
+  - New `inviteToEvent` adds the recipient, republishes, and returns Taskify's calendar addresses
+    (30310/30311 under the board's key), the recipient's token and the board's relays.
+- **Command.**
+  - `event invite` sends that result. The envelope carries the board's relays; it is sent over
+    the board's relays plus the profile's, as the PWA sends.
+  - `share event` re-parsed the whole command line with a malformed argv, so it never reached the
+    invite; it now uses the same action.
+- **Tests.**
+  - `event-invite.test.ts` covers the helper.
+  - `share-commands.test.ts` covers both commands and the not-found case.
+  - The last two regex cases in `share-phase2-cli-surface.test.ts` are replaced and the file is
+    removed.
+- The runtime wiring is checked by the compiler, not by a test: the runtime has no test seam
+  until C12-4. Not tried against a real relay or a second client yet.
+- The CLI suite passes at 216/216 and `npx tsc --noEmit` is clean.
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

@@ -10,6 +10,7 @@ resolveBoardReference
 } from "taskify-core";
 import { renderJson } from "../render.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
+import { eventInviteAction } from "./events.js";
 
 export function registerSharingCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow" | "loadConfig" | "saveConfig" | "now" | "shareTransport">) {
   const { initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow, loadConfig, saveConfig, now, shareTransport } = context;
@@ -86,9 +87,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
     .command("event <eventId> <npubOrHex>")
     .description("Share an event invite envelope over NIP-17 DM")
     .option("--board <id|name>", "Board the event belongs to (optional)")
-    .action(async (eventId: string, npubOrHex: string, opts) => {
-      await program.parseAsync(["node", "taskify", "event", "invite", eventId, npubOrHex, ...(opts.board ? ["--board", opts.board] : [])], { from: "user" });
-    });
+    .action(eventInviteAction(program, context));
 
   shareCmd
     .command("respond-assignment <taskId> <accepted|declined|tentative> <npubOrHex>")

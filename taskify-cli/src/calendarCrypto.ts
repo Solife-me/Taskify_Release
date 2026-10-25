@@ -49,6 +49,12 @@ export function generateEventKey(): string {
   return bytesToBase64(bytes);
 }
 
+/** One invitee's token for a calendar event: 16 random bytes, base64, as the PWA and iOS make. */
+export function generateInviteToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return bytesToBase64(bytes);
+}
+
 export async function encryptCalendarPayloadForBoard(
   payload: unknown,
   boardSkHex: string,

@@ -2,6 +2,7 @@ import { type NDKEvent } from "@nostr-dev-kit/ndk";
 import { sanitizeRemote } from "./shared/displaySafe.js";
 import { getPublicKey, nip19 } from "nostr-tools";
 import { boardTagHash, collectRuntimeRelayUrls, deriveBoardKeyPair, type RelayRuntimeStatus } from "taskify-runtime-nostr";
+import { eventInvitationSecrets, withInvitee } from "./shared/eventInvite.js";
 import type { ReminderPreset, Recurrence, Subtask, TaskAssignee } from "./shared/taskTypes.js";
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "./shared/agentRuntime.js";
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
@@ -33,6 +34,7 @@ import {
   decryptCalendarPayloadForBoard,
   encryptCalendarPayloadWithEventKey,
   generateEventKey,
+  generateInviteToken,
 } from "./calendarCrypto.js";
 import {
   buildCalendarCanonicalEnvelope,
@@ -225,6 +227,17 @@ export type ExtendedCreateInput = AgentTaskCreateInput & {
   hiddenUntilISO?: string;
 };
 
+/** What an invitation to a calendar event carries (`buildCalendarEventInviteEnvelope`). */
+export type EventInvitation = {
+  event: FullEventRecord;
+  /** The board copy's and the invitees' copy's addresses, under the board's key. */
+  canonical: string;
+  view: string;
+  inviteToken: string;
+  /** The board's relays, where the event is published. */
+  relays: string[];
+};
+
 export type FullEventRecord = {
   id: string;
   boardId: string;
@@ -291,6 +304,9 @@ export type NostrRuntime = {
   }): Promise<FullEventRecord>;
   updateEvent(eventId: string, boardId: string | undefined, patch: Partial<Pick<FullEventRecord, "title" | "startDate" | "endDate" | "startISO" | "endISO" | "startTzid" | "endTzid" | "description" | "recurrence" | "reminders" | "participants" | "columnId">> & { documents?: Record<string, unknown>[] | null }): Promise<FullEventRecord | null>;
   deleteEvent(eventId: string, boardId: string | undefined): Promise<FullEventRecord | null>;
+  /** Adds `recipientPubkeyHex` to the event's participants with their own invite token, publishes
+   * the event, and returns what the invitation carries. Null when the event isn't found. */
+  inviteToEvent(eventId: string, boardId: string | undefined, recipientPubkeyHex: string): Promise<EventInvitation | null>;
   syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }>;
   createTask(input: AgentTaskCreateInput): Promise<FullTaskRecord>;
   createTaskFull(input: ExtendedCreateInput): Promise<FullTaskRecord>;
@@ -511,6 +527,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     await session.init(runtimeRelays);
     connected = true;
   }
+
+  const invitationGenerators = { eventKey: generateEventKey, inviteToken: generateInviteToken };
 
   function boardRelays(boardId: string): string[] {
     const configured = config.boards.find((board) => board.id === boardId)?.relays;
@@ -936,12 +954,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (!normalized) {
         throw new Error("Invalid event payload");
       }
-      const eventKey = generateEventKey();
       const userPubkey = getUserPubkeyHex(config);
+      // A key, and a token per invitee, by the rule the PWA and iOS share.
+      const { eventKey, inviteTokens } = eventInvitationSecrets({}, input.participants, userPubkey, invitationGenerators);
       // Merge extra fields not handled by normalizeCalendarMutationPayload
       const payload: Record<string, unknown> = {
         ...normalized,
         ...(userPubkey ? { createdBy: userPubkey, lastEditedBy: userPubkey } : {}),
+        ...(inviteTokens ? { inviteTokens } : {}),
         recurrence: input.recurrence ?? null,
         reminders: input.reminders ?? null,
         participants: input.participants ?? null,
@@ -955,6 +975,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         id,
         boardId: input.boardId,
         eventKey,
+        inviteTokens,
         createdBy: userPubkey,
         lastEditedBy: userPubkey,
         title: normalized.title ?? "",
@@ -1005,6 +1026,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const mergedRecurrence = patch.recurrence ?? existing.recurrence;
       const mergedReminders = patch.reminders ?? existing.reminders;
       const mergedParticipants = patch.participants ?? existing.participants;
+      // Tokens follow the participants: new invitees get one, removed ones lose theirs.
+      const { eventKey, inviteTokens } = eventInvitationSecrets(existing, mergedParticipants, getUserPubkeyHex(config), invitationGenerators);
       const mergedDocuments = patch.documents === undefined ? existing.documents : patch.documents ?? undefined;
       const normalized = normalizeCalendarMutationPayload(
         {
@@ -1027,7 +1050,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         ...(getUserPubkeyHex(config) || existing.lastEditedBy
           ? { lastEditedBy: getUserPubkeyHex(config) || existing.lastEditedBy }
           : {}),
-        ...(existing.inviteTokens ? { inviteTokens: existing.inviteTokens } : {}),
+        ...(inviteTokens ? { inviteTokens } : {}),
         ...(existing.summary ? { summary: existing.summary } : {}),
         ...(existing.image ? { image: existing.image } : {}),
         ...(existing.locations?.length ? { locations: existing.locations } : {}),
@@ -1043,7 +1066,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const published = await publishCalendarEvent(
         entry.id,
         resolvedId,
-        existing.eventKey,
+        eventKey,
         mergedPayload,
         "open",
         colId,
@@ -1053,10 +1076,10 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         id: resolvedId,
         boardId: entry.id,
         boardName: entry.name,
-        eventKey: existing.eventKey,
+        eventKey,
         createdBy: existing.createdBy,
         lastEditedBy: getUserPubkeyHex(config) || existing.lastEditedBy,
-        inviteTokens: existing.inviteTokens,
+        inviteTokens,
         title: normalized.title ?? "",
         summary: existing.summary,
         image: existing.image,
@@ -1079,6 +1102,26 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         columnId: colId || undefined,
         createdAt: published.created_at ?? existing.createdAt,
         updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : nowISO(),
+      };
+    },
+
+    async inviteToEvent(this: NostrRuntime, eventId: string, boardId: string | undefined, recipientPubkeyHex: string): Promise<EventInvitation | null> {
+      const sender = getUserPubkeyHex(config);
+      if (sender && sender === recipientPubkeyHex) throw new Error("You can't invite yourself.");
+      const existing = await this.getEvent(eventId, boardId);
+      if (!existing) return null;
+      const event = await this.updateEvent(existing.id, existing.boardId, {
+        participants: withInvitee(existing.participants, recipientPubkeyHex),
+      });
+      const inviteToken = event?.inviteTokens?.[recipientPubkeyHex];
+      if (!event || !inviteToken) return null;
+      const { pk } = deriveBoardKeyPair(event.boardId);
+      return {
+        event,
+        canonical: calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, pk, event.id),
+        view: calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, pk, event.id),
+        inviteToken,
+        relays: boardRelays(event.boardId),
       };
     },
 
