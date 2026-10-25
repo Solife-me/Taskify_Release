@@ -177,10 +177,11 @@ cd ../taskify-cli
 npm test             # rebuilds the bundled CLI before the Node test suite
 ```
 
-The runtime test script currently uses Node's `--test-force-exit`. A clean test summary therefore
-does not prove transport teardown; natural process termination is tracked as C12-3 in the
-improvement review. The NIP-42/NIP-13 integration tests bind a loopback port and may need a local
-test environment that permits listening on `127.0.0.1`.
+The runtime suite runs without `--test-force-exit`: it must finish by itself, which proves
+transport teardown (`session-shutdown.test.ts` also checks that a process exits once its session
+shuts down). If it ever hangs, something a shut-down session owns is still running. The
+NIP-42/NIP-13 integration tests bind a loopback port and may need a local test environment that
+permits listening on `127.0.0.1`.
 
 **Worker (local):**
 ```sh
@@ -261,6 +262,7 @@ npx wrangler dev
 | `taskify-cli/tests/share-commands.test.ts` | CLI sharing and assignment | Board, task and event-invite shares, assignment and RSVP responses (with the command clock), delivery failures, share inbox listing and `--apply` (board join, task create, responses, processed ids), assign/unassign with `--notify`, and backup relay merges, through an injected share transport |
 | `taskify-cli/tests/event-invite.test.ts` | CLI calendar invitation secrets | npub/hex participant keys, adding an invitee once, and tokens kept in step with participants by the shared core rule (the runtime applies it on event create, update and invite) |
 | `taskify-cli/tests/presentation-commands.test.ts` | CLI rich flags and `show` output | Task and event recurrence, document, assignee, reminder, invitee and list flags reach the runtime parsed (bad JSON stops before any write); `show --human` lists documents and assignment states, and `event show` lists invitees and RSVP state |
+| `taskify-runtime-nostr/tests/session-shutdown.test.ts` | Runtime session lifecycle | A process exits by itself once its session shuts down (child process against the loopback relay); shutdown is idempotent and terminal (later calls fail with `RuntimeSessionClosedError`); a debounced publish waiting at shutdown is sent |
 | `src/agent/agentDispatcher.test.ts` | Agent mode | Command dispatch, op routing, security modes |
 | `src/domains/upcoming/upcomingPreferences.test.ts` | Upcoming preferences and calendar filter | Board toggles take their lists and a list its board; stored filters follow board changes; labels; presets saved newest first and applied to boards that still exist; preferences saved under the existing storage keys and read back defensively; choosing a sort again flips its direction |
 | `src/domains/upcoming/upcomingModel.test.ts` | Upcoming and board sort | Which tasks/events are upcoming (holidays, external calendars, messages board excluded); board/list filter and search; ordering by time, board, manual order and title, grouped or mixed; multi-day events on each day; a board's upcoming section only after today; board sort keeps open tasks first |

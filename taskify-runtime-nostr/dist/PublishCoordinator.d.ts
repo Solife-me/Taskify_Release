@@ -44,6 +44,8 @@ export type PublishCoordinatorOptions = {
 export declare class PublishCoordinator {
     private replaceableCache;
     private pending;
+    private closed;
+    private shutdownPromise;
     private readonly debounceDefault;
     private eventCache?;
     private resolveRelaySet;
@@ -65,6 +67,8 @@ export declare class PublishCoordinator {
     private publishNow;
     private resolveRelaySetWithEnsure;
     private scheduleDebouncedPublish;
+    /** Publishes a debounced event now and settles every caller waiting on it. */
+    private firePending;
     private shouldSkipReplaceable;
     private outboxMutationId;
     private relayUrlsForPublish;
@@ -93,7 +97,12 @@ export declare class PublishCoordinator {
      * (Taskify's own relays by default). Returns how many queued rows changed.
      */
     limitQueuedRepublish(boardTag: string, keptRelayUrls?: readonly string[]): Promise<number>;
-    shutdown(): void;
+    /**
+     * Terminal. Debounced publishes still waiting are sent now, so their callers get the real
+     * result rather than a promise that never settles; retries stop; later publishes fail with
+     * `RuntimeSessionClosedError`. Idempotent: later calls wait for the first.
+     */
+    shutdown(): Promise<void>;
     publish(templateOrEvent: EventTemplate | NDKEvent, options?: PublishOptions): Promise<PublishResult>;
     publishRaw(event: NostrEvent, options?: PublishOptions): Promise<PublishResult>;
 }

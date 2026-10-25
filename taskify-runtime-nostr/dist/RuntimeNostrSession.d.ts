@@ -93,6 +93,7 @@ export declare class RuntimeNostrSession<TWalletClient = unknown> {
     private relayRetryTimers;
     private loggedDebugSummary;
     private shuttingDown;
+    private shutdownPromise;
     private readonly workAbort;
     private readonly relayInfoCache;
     private readonly relayHealth;
@@ -109,7 +110,15 @@ export declare class RuntimeNostrSession<TWalletClient = unknown> {
     constructor(relays: string[], deps: RuntimeNostrSessionDeps<TWalletClient>);
     init(relays: string[]): Promise<this>;
     private connect;
+    /** Throws if the session has shut down: shutdown is terminal (make a new session instead). */
+    private assertOpen;
+    /**
+     * Terminal and idempotent. New operations fail with `RuntimeSessionClosedError` at once;
+     * debounced publishes already asked for are sent first; then subscriptions, timers, proof-of-work
+     * and every relay pool close, so nothing the session owns keeps the process alive.
+     */
     shutdown(): Promise<void>;
+    private closeEverything;
     private buildRelaySet;
     private ensureRelays;
     private fetchRelayInfo;

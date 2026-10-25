@@ -3050,7 +3050,7 @@ not port the session or domain facade for that hypothetical gain.
 | --- | --- | --- | --- |
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
 | C12-2 | Approve | 2026-10-25 | Done in seven stages. Every CLI command group runs through `buildProgram`/`runCli` with injected config (load and save), runtime, clock, UUIDs, prompt, share transport and output; every source-regex test of command code is replaced by behavior, and the remaining source assertions target the runtime for C12-4 (and raw NDK contact reads for C12-3). Found and fixed on the way: `upcoming` dates, `board create` in scripts, `boards`/`board list` drift, `share inbox --apply` progress, and `event invite`/`share event` (shared invitation rule in core) |
-| C12-3 | Approve | 2026-10-25 | Not started |
+| C12-3 | Approve | 2026-10-25 | In progress: stage 1 (terminal shutdown; the runtime suite exits by itself) is done |
 | C12-4 | Approve | 2026-10-25 | Not started |
 | C12-5 | Approve | 2026-10-25 | Not started |
 | C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
@@ -3516,4 +3516,39 @@ C12-2 is complete. Nothing has been pushed.
     standalone-session API gives them a seam.
 - The CLI suite passes at 214/214 and `npx tsc --noEmit` is clean.
 - Next: C12-3 (terminal runtime shutdown and a standalone-session API), then C12-4.
+
+### Checkpoint — October 25, 2026 (C12-3 stage 1: terminal shutdown)
+
+The runtime suite finishes by itself, without `--test-force-exit`. Nothing has been pushed.
+
+- **The open handle was in NDK.** NDK 3.0.3 (the latest release) re-arms a referenced 30-second
+  timer in every relay's `updateValidationRatio` and keeps no handle to it. Any process that ever
+  made an NDK relay could never exit by itself, which is also why the CLI depended on a hard exit.
+  - `ndkRelayTimers.ts` replaces that method once, keeping the same calculation. The timer is now
+    stored on the relay, unreferenced, and stopped at shutdown.
+  - It is installed before a session's first relay. Remove it when NDK fixes this; an upstream
+    issue is worth filing (not done: it's an outward action for the maintainer).
+- **Our own leak.** The session's 3-second connect race left its timer running; it is cleared now.
+- **Terminal, idempotent shutdown.**
+  - `RuntimeNostrSession.shutdown()` returns the same promise on every call.
+  - Once it starts, `init`, `subscribe`, `publish`, `publishRaw`, `publishSigned` and
+    `fetchEvents` fail with the named `RuntimeSessionClosedError`. Before, `init` after shutdown
+    looked like a restart, while proof-of-work stayed aborted and the pools were destroyed. Every
+    consumer already discards a session after shutting it down (PWA singleton, NWC sessions, the
+    CLI's `disconnect`).
+- **Debounced publishes finish.** `PublishCoordinator.shutdown()` sends any debounced publish
+  still waiting and settles its callers' promises with the real result. It used to drop them,
+  leaving the promises unsettled. Retries and outbox drains stop once closed; the outbox keeps
+  anything unsent for the next session.
+- **Tests.** `session-shutdown.test.ts` (3 cases) covers:
+  - a child process that connects, publishes and shuts down exits by itself (with the shim
+    switched off, it was still running at 8 s);
+  - double shutdown, and every operation after it;
+  - a debounced publish waiting at shutdown is sent.
+- **Verification.**
+  - Runtime 80/80, finishing naturally in about 18 s;
+  - CLI 214/214;
+  - PWA nostr and wallet tests 250 (12 skipped), and `tsc` is clean.
+- Next: the standalone-session API for profile, contact, bot and inbox-relay reads and writes
+  (stage 2).
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

@@ -9,6 +9,8 @@ import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
 import type { NostrOutboxStore } from "./NostrOutbox.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
+import { installNdkRelayTimerFix, stopNdkRelayTimers } from "./ndkRelayTimers.js";
+import { RuntimeSessionClosedError } from "./sessionErrors.js";
 import type { RelayInfo } from "./RelayInfoCache.js";
 
 export type RelayInfoCacheLike = {
@@ -90,6 +92,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   private relayRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private loggedDebugSummary = false;
   private shuttingDown = false;
+  private shutdownPromise: Promise<void> | null = null;
   private readonly workAbort = new AbortController();
 
   private readonly relayInfoCache: RelayInfoCacheLike;
@@ -109,6 +112,8 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   constructor(relays: string[], deps: RuntimeNostrSessionDeps<TWalletClient>) {
     const normalized = normalizeRelayUrls(relays);
     this.knownRelays = new Set(normalized);
+    // Before NDK makes its first relay: see ndkRelayTimers.ts.
+    installNdkRelayTimerFix();
     this.ndk = new NDK({ explicitRelayUrls: normalized, enableOutboxModel: deps.enableOutboxModel ?? true, autoConnectUserRelays: false });
     this.relayInfoCache = deps.relayInfoCache;
     this.relayHealth = deps.relayHealth;
@@ -137,7 +142,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async init(relays: string[]): Promise<this> {
-    this.shuttingDown = false;
+    this.assertOpen("init");
     const normalized = normalizeRelayUrls(relays);
     await this.ensureRelays(normalized);
     await this.connect();
@@ -149,42 +154,67 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     // 3s: if a relay hasn't connected by then it's unreachable.
     // Subscriptions start against connected relays immediately; dead relays
     // are skipped and retried in the background via scheduleRelayConnect.
-    await Promise.race([this.ndk.connect(), new Promise<void>((resolve) => setTimeout(resolve, 3_000))]);
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([this.ndk.connect(), new Promise<void>((resolve) => { connectTimer = setTimeout(resolve, 3_000); })]);
+    } finally {
+      clearTimeout(connectTimer);
+    }
     this.logDebugSummary();
     this.initialized = true;
   }
 
-  async shutdown(): Promise<void> {
+  /** Throws if the session has shut down: shutdown is terminal (make a new session instead). */
+  private assertOpen(operation: string): void {
+    if (this.shuttingDown) throw new RuntimeSessionClosedError(operation);
+  }
+
+  /**
+   * Terminal and idempotent. New operations fail with `RuntimeSessionClosedError` at once;
+   * debounced publishes already asked for are sent first; then subscriptions, timers, proof-of-work
+   * and every relay pool close, so nothing the session owns keeps the process alive.
+   */
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
     this.shuttingDown = true;
-    this.workAbort.abort();
-    this.publisher.shutdown();
-    this.subscriptions.shutdown();
-    for (const timer of this.relayRetryTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.relayRetryTimers.clear();
-    for (const pool of [this.ndk.pool, this.ndk.outboxPool]) {
-      if (!pool) continue;
-      for (const relay of pool.relays.values()) {
+    this.shutdownPromise = this.closeEverything();
+    return this.shutdownPromise;
+  }
+
+  private async closeEverything(): Promise<void> {
+    try {
+      await this.publisher.shutdown();
+    } finally {
+      this.workAbort.abort();
+      this.subscriptions.shutdown();
+      for (const timer of this.relayRetryTimers.values()) {
+        clearTimeout(timer);
+      }
+      this.relayRetryTimers.clear();
+      for (const pool of [this.ndk.pool, this.ndk.outboxPool]) {
+        if (!pool) continue;
+        for (const relay of pool.relays.values()) {
+          stopNdkRelayTimers(relay);
+          try {
+            relay.disconnect();
+          } catch {
+            // ignore individual relay teardown errors
+          }
+        }
         try {
-          relay.disconnect();
+          (pool as unknown as { destroy?: () => void }).destroy?.();
         } catch {
-          // ignore individual relay teardown errors
+          // ignore pool teardown errors
         }
       }
-      try {
-        (pool as unknown as { destroy?: () => void }).destroy?.();
-      } catch {
-        // ignore pool teardown errors
+      // Some NDK relay implementations emit disconnect asynchronously. Clear a
+      // second time after initiating teardown; the hook also checks shuttingDown.
+      for (const timer of this.relayRetryTimers.values()) {
+        clearTimeout(timer);
       }
+      this.relayRetryTimers.clear();
+      this.initialized = false;
     }
-    // Some NDK relay implementations emit disconnect asynchronously. Clear a
-    // second time after initiating teardown; the hook also checks shuttingDown.
-    for (const timer of this.relayRetryTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.relayRetryTimers.clear();
-    this.initialized = false;
   }
 
   private async buildRelaySet(relayUrls?: string[]): Promise<NDKRelaySet | undefined> {
@@ -258,14 +288,17 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async subscribe(filters: NDKFilter | NDKFilter[], options?: SubscribeOptions): Promise<ManagedSubscription> {
+    this.assertOpen("subscribe");
     return this.subscriptions.subscribe(filters, options);
   }
 
   async publish(event: EventTemplate, options?: Parameters<PublishCoordinator["publish"]>[1]): Promise<PublishResult> {
+    this.assertOpen("publish");
     return this.publisher.publish(event, options);
   }
 
   async publishRaw(event: NostrEvent, options?: Parameters<PublishCoordinator["publish"]>[1]): Promise<PublishResult> {
+    this.assertOpen("publishRaw");
     return this.publisher.publishRaw(event, options);
   }
 
@@ -322,6 +355,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     relayUrls: string[],
     options?: Omit<PublishOptions, "relayUrls" | "signer">,
   ): Promise<PublishResult> {
+    this.assertOpen("publishSigned");
     const relays = normalizeRelayUrls(relayUrls);
     await this.prepareNDKEvent(event, signer, relays);
     let result: PublishResult | undefined;
@@ -353,6 +387,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async fetchEvents(filters: NDKFilter[], relayUrls?: string[], timeoutMs = 8_000, eoseGraceMs = 200, inactivityMs = 1_500): Promise<NostrEvent[]> {
+    this.assertOpen("fetchEvents");
     const relaySet = await this.buildRelaySet(relayUrls);
     return new Promise<NostrEvent[]>((resolve) => {
       const collected: NostrEvent[] = [];

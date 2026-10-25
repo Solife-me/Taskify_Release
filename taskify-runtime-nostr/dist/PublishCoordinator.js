@@ -3,6 +3,7 @@ import { createNostrOutboxMutation, cloneNostrEvent, earliestRejectionRelease, r
 import { applyProofOfWork, countLeadingZeroBits, parseProofOfWorkRejection } from "./ProofOfWork.js";
 import { FIRST_PARTY_RELAYS, RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
+import { RuntimeSessionClosedError } from "./sessionErrors.js";
 export class NostrWriteQueuedError extends Error {
     code = "WRITE_QUEUED";
     retryable = true;
@@ -34,6 +35,8 @@ function hashEventShape(event) {
 export class PublishCoordinator {
     replaceableCache = new Map();
     pending = new Map();
+    closed = false;
+    shutdownPromise = null;
     debounceDefault = 350;
     eventCache;
     resolveRelaySet;
@@ -190,18 +193,24 @@ export class PublishCoordinator {
     scheduleDebouncedPublish(key, pending, delayMs) {
         if (pending.timer)
             clearTimeout(pending.timer);
-        pending.timer = setTimeout(async () => {
-            try {
-                const result = await this.publishNowWithOutbox(pending.event, pending.relaySet, pending.outboxId);
-                pending.resolvers.forEach(({ resolve, returnEvent }) => resolve(returnEvent ? toPublicEventResult(result) : result.createdAt));
-            }
-            catch (error) {
-                pending.rejecters.forEach((reject) => reject(error));
-            }
-            finally {
+        pending.timer = setTimeout(() => void this.firePending(key, pending), delayMs);
+    }
+    /** Publishes a debounced event now and settles every caller waiting on it. */
+    async firePending(key, pending) {
+        if (pending.timer)
+            clearTimeout(pending.timer);
+        pending.timer = null;
+        try {
+            const result = await this.publishNowWithOutbox(pending.event, pending.relaySet, pending.outboxId);
+            pending.resolvers.forEach(({ resolve, returnEvent }) => resolve(returnEvent ? toPublicEventResult(result) : result.createdAt));
+        }
+        catch (error) {
+            pending.rejecters.forEach((reject) => reject(error));
+        }
+        finally {
+            if (this.pending.get(key) === pending)
                 this.pending.delete(key);
-            }
-        }, delayMs);
+        }
     }
     shouldSkipReplaceable(key, event, skipIfIdentical) {
         if (!skipIfIdentical)
@@ -363,7 +372,7 @@ export class PublishCoordinator {
         this.retryTimers.delete(id);
     }
     scheduleOutboxRetry(id, delayMs) {
-        if (!this.outboxStore)
+        if (!this.outboxStore || this.closed)
             return;
         this.clearOutboxRetry(id);
         const timer = setTimeout(() => {
@@ -380,6 +389,9 @@ export class PublishCoordinator {
         return false;
     }
     async drainOutbox(options) {
+        // A closed publisher leaves the outbox for the next session.
+        if (this.closed)
+            return;
         if (!this.outboxStore)
             return;
         if (this.drainPromise)
@@ -459,18 +471,28 @@ export class PublishCoordinator {
         }
         return changed;
     }
+    /**
+     * Terminal. Debounced publishes still waiting are sent now, so their callers get the real
+     * result rather than a promise that never settles; retries stop; later publishes fail with
+     * `RuntimeSessionClosedError`. Idempotent: later calls wait for the first.
+     */
     shutdown() {
+        if (this.shutdownPromise)
+            return this.shutdownPromise;
+        this.closed = true;
         for (const timer of this.retryTimers.values()) {
             clearTimeout(timer);
         }
         this.retryTimers.clear();
-        for (const pending of this.pending.values()) {
-            if (pending.timer)
-                clearTimeout(pending.timer);
-        }
-        this.pending.clear();
+        const waiting = Array.from(this.pending.entries());
+        this.shutdownPromise = Promise.all(waiting.map(([key, pending]) => this.firePending(key, pending))).then(() => {
+            this.pending.clear();
+        });
+        return this.shutdownPromise;
     }
     async publish(templateOrEvent, options) {
+        if (this.closed)
+            throw new RuntimeSessionClosedError("publish");
         const relaySet = await this.resolveRelaySetWithEnsure(options?.relayUrls);
         const signer = signerFromInput(options?.signer);
         const relayUrls = this.relayUrlsForPublish(relaySet, options?.relayUrls);
