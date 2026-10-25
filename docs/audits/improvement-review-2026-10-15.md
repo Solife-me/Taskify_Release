@@ -3429,4 +3429,29 @@ been pushed.
   failed partway, tasks already created were not recorded, and the next apply created them again.
   Fixed: a failing test first, then the config is saved after each applied message (CLI suite
   211/211).
+
+### Checkpoint — October 25, 2026 (shared calendar invitation rule)
+
+The first half of the `event invite` fix: one rule for invitation secrets, in `taskify-core`.
+
+- `planEventInvitations` gives each invitee their own token, keeping existing ones and dropping
+  removed invitees. The sender never gets a token. The event key is kept unless it is missing or
+  isn't 32 bytes of base64.
+- Between two spellings of one key, the token under the lowercase-hex spelling wins, then the
+  smallest token. The old "first wins" depended on object order, which isn't portable; Swift's
+  dictionary order made it random.
+- `fixtures/event-invitation-vectors.json` (8 cases) is written from the TS planner and checked by
+  `event-invitation-vectors.test.ts` and Swift `EventInvitationVectorTests`.
+- iOS's `TaskifyEventInvitationPlanner` already followed this rule, except for duplicate
+  spellings, which now use the portable tie rule.
+- The PWA's `mergeInviteTokens` now calls the core planner and passes the sender. Previously it
+  wrote a token for the sender, and kept a malformed event key that its own encryption then
+  refused. All three clients generate 32-byte base64 keys, so real events keep theirs. The
+  publisher test's placeholder key `"k1"` became a real-format key.
+- Verification:
+  - core 170/170;
+  - Swift 876 (14 skipped);
+  - PWA `tsc` clean;
+  - the PWA calendar publisher tests pass. The one remaining PWA failure, in
+    `taskCommands.test.ts`, was already failing; the next fix covers it.
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

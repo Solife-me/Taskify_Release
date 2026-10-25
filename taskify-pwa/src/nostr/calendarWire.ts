@@ -6,6 +6,7 @@
  */
 import {
   calendarRecurrenceSyncFields,
+  planEventInvitations,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   type TaskDocument,
@@ -17,37 +18,22 @@ import { generateEventKey, generateInviteToken } from "../lib/privateCalendar";
 
 export type PreparedEventAttachments = { image: string | null; documents: unknown[] | null };
 
-/** Participants plus extra recipients, as unique hex keys in order. */
-function invitePubkeys(event: CalendarEvent, extraPubkeys?: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const candidate of [...(event.participants ?? []).map((p) => p.pubkey), ...(extraPubkeys ?? [])]) {
-    const pubkey = normalizeNostrPubkeyHex(candidate);
-    if (!pubkey || seen.has(pubkey)) continue;
-    seen.add(pubkey);
-    out.push(pubkey);
-  }
-  return out;
-}
-
 /**
- * The event key and one invite token per invitee, keeping existing ones. `changed` says whether
- * the event must be updated locally before publishing.
+ * The event key and one invite token per invitee, keeping existing ones (`planEventInvitations`,
+ * the rule iOS and the CLI share). The sender gets no token. `changed` says whether the event must
+ * be updated locally before publishing.
  */
-export function mergeInviteTokens(event: CalendarEvent, extraPubkeys?: string[]) {
-  const eventKey = event.eventKey || generateEventKey();
-  const existing = event.inviteTokens ?? {};
-  const inviteTokens: Record<string, string> = {};
-  for (const pubkey of invitePubkeys(event, extraPubkeys)) {
-    inviteTokens[pubkey] = existing[pubkey] || generateInviteToken();
-  }
-  const existingKeys = Object.keys(existing);
-  const nextKeys = Object.keys(inviteTokens);
-  const changed =
-    eventKey !== event.eventKey ||
-    existingKeys.length !== nextKeys.length ||
-    nextKeys.some((key) => existing[key] !== inviteTokens[key]);
-  return { eventKey, inviteTokens: nextKeys.length ? inviteTokens : undefined, changed };
+export function mergeInviteTokens(event: CalendarEvent, extraPubkeys?: string[], senderPubkey?: string | null) {
+  const plan = planEventInvitations(
+    {
+      eventKey: event.eventKey,
+      inviteTokens: event.inviteTokens,
+      participantPubkeys: [...(event.participants ?? []).map((p) => p.pubkey), ...(extraPubkeys ?? [])],
+      senderPubkey,
+    },
+    { eventKey: generateEventKey, inviteToken: generateInviteToken, normalizePubkey: normalizeNostrPubkeyHex },
+  );
+  return { eventKey: plan.eventKey, inviteTokens: plan.inviteTokens, changed: plan.changed };
 }
 
 /**

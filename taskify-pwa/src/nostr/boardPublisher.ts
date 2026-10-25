@@ -265,7 +265,7 @@ export class BoardPublisher {
 
   /** The event key and invite tokens it is published with, stored locally first when new. */
   private withInviteSecrets(event: CalendarEvent): { event: CalendarEvent; eventKey: string } {
-    const merged = mergeInviteTokens(event);
+    const merged = mergeInviteTokens(event, undefined, this.deps.actorPubkey());
     if (!merged.changed) return { event, eventKey: merged.eventKey };
     const updated = { ...event, eventKey: merged.eventKey, inviteTokens: merged.inviteTokens };
     this.deps.onEventSecretsMerged(updated);

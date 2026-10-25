@@ -4873,7 +4873,7 @@ export default function App() {
     const boardKeys = await deriveBoardNostrKeys(board.nostr.boardId);
     const canonicalAddr = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, event.id);
     const viewAddr = calendarAddress(TASKIFY_CALENDAR_VIEW_KIND, boardKeys.pk, event.id);
-    const merged = mergeInviteTokens(event, recipients);
+    const merged = mergeInviteTokens(event, recipients, nostrPK);
     const updatedEvent = merged.changed ? { ...event, eventKey: merged.eventKey, inviteTokens: merged.inviteTokens } : event;
     if (merged.changed) {
       setCalendarEvents((prev) => prev.map((ev) => (ev.id === event.id ? updatedEvent : ev)));

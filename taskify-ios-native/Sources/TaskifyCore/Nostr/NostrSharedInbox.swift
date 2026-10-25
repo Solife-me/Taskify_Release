@@ -577,20 +577,26 @@ public enum TaskifyEventInvitationPlanner {
             normalizedPublicKey($0.publicKey)
         })
         // Two spellings of one key (npub and hex, or mixed case) normalize to the same key.
-        let existingTokens = [String: String](
-            (event.inviteTokens ?? [:]).compactMap { key, token in
-                guard let publicKey = normalizedPublicKey(key),
-                      let token = token.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
-                    return nil
-                }
-                return (publicKey, token)
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
+        // Dictionary order isn't stable, so the token under the canonical spelling wins, then the
+        // smallest token: the rule in taskify-core's `planEventInvitations` (shared vectors).
+        var existingTokens: [String: (token: String, canonical: Bool)] = [:]
+        for (key, rawToken) in event.inviteTokens ?? [:] {
+            guard let publicKey = normalizedPublicKey(key),
+                  let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
+                continue
+            }
+            let candidate = (token: token, canonical: key == publicKey)
+            if let current = existingTokens[publicKey],
+               current.canonical && !candidate.canonical
+                || (current.canonical == candidate.canonical && current.token <= candidate.token) {
+                continue
+            }
+            existingTokens[publicKey] = candidate
+        }
 
         var invitationTokens: [String: String] = [:]
         for participant in normalizedParticipants {
-            invitationTokens[participant.publicKey] = existingTokens[participant.publicKey]
+            invitationTokens[participant.publicKey] = existingTokens[participant.publicKey]?.token
                 ?? generateInviteToken()
         }
 

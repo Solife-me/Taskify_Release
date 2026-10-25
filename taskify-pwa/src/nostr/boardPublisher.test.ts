@@ -142,6 +142,8 @@ describe("BoardPublisher", () => {
 
 describe("calendar publishing", () => {
   const invitee = "c".repeat(64);
+  // A real event key: 32 bytes of base64 (any other key is replaced before publishing).
+  const KEY = btoa("k".repeat(32));
   const event = (overrides: Partial<CalendarEvent> = {}): CalendarEvent =>
     ({
       id: "e1",
@@ -149,7 +151,7 @@ describe("calendar publishing", () => {
       title: "Review",
       kind: "date",
       startDate: "2026-10-20",
-      eventKey: "k1",
+      eventKey: KEY,
       participants: [{ pubkey: invitee }],
       inviteTokens: { [invitee]: "tok" },
       ...overrides,
@@ -158,7 +160,7 @@ describe("calendar publishing", () => {
   it("keeps the event key, participants and invite tokens out of the invitees' copy", () => {
     const board = calendarEventPayload(event(), { audience: "board", actorPubkey: ACTOR });
     const invitees = calendarEventPayload(event(), { audience: "invitees", actorPubkey: ACTOR });
-    expect(board).toMatchObject({ v: 1, eventId: "e1", eventKey: "k1", participants: [{ pubkey: invitee }], inviteTokens: { [invitee]: "tok" } });
+    expect(board).toMatchObject({ v: 1, eventId: "e1", eventKey: KEY, participants: [{ pubkey: invitee }], inviteTokens: { [invitee]: "tok" } });
     expect(invitees).toMatchObject({ v: 1, eventId: "e1", title: "Review", startDate: "2026-10-20" });
     for (const secret of ["eventKey", "participants", "inviteTokens"]) expect(invitees).not.toHaveProperty(secret);
     expect(calendarEventPayload(event(), { audience: "board", deleted: true })).not.toHaveProperty("title");
@@ -169,7 +171,7 @@ describe("calendar publishing", () => {
     await publisher.publishCalendarEvent(event(), undefined, { skipBoardMetadata: true });
     expect(sent.map((entry) => entry.template.kind)).toEqual([30310, 30311]);
     expect(sent[0].template.tags).toEqual([["d", "e1"], ["b", "tag:nb1"]]);
-    expect(sent[1].template.content.startsWith("view:k1(")).toBe(true);
+    expect(sent[1].template.content.startsWith(`view:${KEY}(`)).toBe(true);
     expect(ledger.eventAt("tag:nb1", "e1")).toBe(sent[0].template.created_at);
     expect(deps.onEventSecretsMerged).not.toHaveBeenCalled();
     expect(deps.onEventSettled).toHaveBeenCalledWith("e1");
