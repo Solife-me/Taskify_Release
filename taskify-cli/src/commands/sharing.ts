@@ -27,7 +27,8 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
       const entry = resolveBoardReference(config.boards, boardRef);
       if (!entry) {
         console.error(chalk.red(`Board not found: ${boardRef}`));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       try {
         const senderHex = nsecToHexOrThrow(config.nsec);
@@ -35,10 +36,9 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
         const envelope = buildBoardShareEnvelope(entry.id, entry.name, config.relays, { npub: senderNpub });
         await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Board share sent."));
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       }
     });
 
@@ -79,7 +79,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -101,10 +101,9 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
         const envelope = buildTaskAssignmentResponseEnvelope({ taskId, status, respondedAt: new Date().toISOString() });
         await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Assignment response sent."));
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       }
     });
 
@@ -159,7 +158,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

@@ -69,7 +69,7 @@ export function registerAssignmentsCommands(program: Command, context: Pick<Comm
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -107,7 +107,7 @@ export function registerAssignmentsCommands(program: Command, context: Pick<Comm
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

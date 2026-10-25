@@ -33,7 +33,7 @@ export function registerInboxCommands(program: Command, context: Pick<CommandCon
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -47,7 +47,8 @@ export function registerInboxCommands(program: Command, context: Pick<CommandCon
       const boardEntry = config.boards.find((b) => b.id === boardId)!;
       if (boardEntry.kind === "compound") {
         console.error(chalk.red("Cannot add tasks to a compound board."));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       const runtime = initRuntime(config);
       let exitCode = 0;
@@ -64,7 +65,7 @@ export function registerInboxCommands(program: Command, context: Pick<CommandCon
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -165,7 +166,7 @@ export function registerInboxCommands(program: Command, context: Pick<CommandCon
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

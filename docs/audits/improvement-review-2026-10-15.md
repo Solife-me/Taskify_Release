@@ -3048,7 +3048,7 @@ not port the session or domain facade for that hypothetical gain.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C12-1 | Approve | 2026-10-25 | In progress; event, task and board commands are stages 1–3 |
+| C12-1 | Approve | 2026-10-25 | In progress; network-backed commands are stages 1–4 |
 | C12-2 | Approve | 2026-10-25 | Not started |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
@@ -3119,3 +3119,21 @@ Board actions now follow the same single-exit lifecycle; nothing has been pushed
   full CLI suite passes 205/205.
 - Next: remove action-level exits from sharing, attachment, assignment, inbox and transfer
   commands, preserving their output and exit statuses while making their cleanup reachable.
+
+### Checkpoint — October 25, 2026 (C12-1 stage 4)
+
+The sharing, attachment, assignment, inbox and transfer command groups now return to the
+executable boundary; nothing has been pushed.
+
+- A failing bundled-process regression first showed that a missing-board `share board` validation
+  path could invoke `process.exit(1)` three times: the action continued after its first intercepted
+  exit, then the executable handled both the resulting exception and its final status. The command
+  now sets the status and returns immediately, producing one hard exit.
+- All runtime-backed actions in these groups preserve their existing result code through
+  `process.exitCode` only after `await runtime.disconnect()` completes. Attachment success and
+  failure paths now reach their existing `finally`; import validation, empty input, dry-run and
+  interactive abort return before a runtime is created.
+- The production bundle builds and the full CLI suite passes 206/206. No cross-client behavior or
+  wire format changed, so no shared fixture or Swift run is appropriate.
+- Next: convert profile, contact, bot and relay commands, including their standalone NDK helpers;
+  C12-3 will subsequently consolidate those helpers behind the shared terminal session contract.

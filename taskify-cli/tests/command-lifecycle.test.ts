@@ -68,3 +68,9 @@ test("board commands return control before the executable performs the only hard
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(exits, ["process.exit:0"]);
 });
+
+test("collaboration commands return control on validation failure before the executable exits", () => {
+  const { result, exits } = runWithExitTrace(["share", "board", "missing-board", "0".repeat(64)]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.deepEqual(exits, ["process.exit:1"]);
+});
