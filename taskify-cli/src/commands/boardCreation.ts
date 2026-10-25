@@ -18,7 +18,7 @@ export function registerBoardCreationCommands(program: Command, context: Pick<Co
     .action(async (name: string, opts) => {
       if (!["lists", "week", "compound"].includes(opts.kind)) {
         console.error(chalk.red(`Invalid --kind: "${opts.kind}". Use: lists, week, or compound`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const kind = opts.kind as "lists" | "week" | "compound";
       const config = await loadConfig(program.opts().profile as string | undefined);
@@ -54,7 +54,7 @@ export function registerBoardCreationCommands(program: Command, context: Pick<Co
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

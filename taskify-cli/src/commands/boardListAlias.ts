@@ -13,7 +13,7 @@ export function registerBoardListAliasCommands(program: Command, context: Pick<C
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (config.boards.length === 0) {
         console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
-        process.exit(0);
+        return;
       }
 
       const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
@@ -23,8 +23,9 @@ export function registerBoardListAliasCommands(program: Command, context: Pick<C
 
       if (stale.length > 0) {
         process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
+        let runtime: ReturnType<typeof initRuntime> | undefined;
         try {
-          const runtime = initRuntime(config);
+          runtime = initRuntime(config);
           for (const b of stale) {
             try {
               const meta = await runtime.syncBoard(b.id);
@@ -33,15 +34,17 @@ export function registerBoardListAliasCommands(program: Command, context: Pick<C
               if (meta.columns) b.columns = meta.columns;
             } catch { /* non-fatal */ }
           }
-          await runtime.disconnect();
           await saveConfig(config);
         } catch { /* non-fatal */ }
+        finally {
+          try { await runtime?.disconnect(); } catch { /* non-fatal display-name refresh */ }
+        }
       }
 
       for (const b of config.boards) {
         console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}`);
       }
-      process.exit(0);
+      return;
     });
 
 }

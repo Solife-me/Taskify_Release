@@ -80,3 +80,9 @@ test("identity commands return control before the executable performs the only h
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(exits, ["process.exit:0"]);
 });
+
+test("local commands return control before the executable performs the only hard exit", () => {
+  const { result, exits } = runWithExitTrace(["cache", "status"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(exits, ["process.exit:0"]);
+});

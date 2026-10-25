@@ -13,7 +13,7 @@ export function registerCacheCommands(program: Command) {
     .action(() => {
       clearCache();
       console.log(chalk.green("✓ Cache cleared"));
-      process.exit(0);
+      return;
     });
 
   cacheCmd
@@ -25,7 +25,7 @@ export function registerCacheCommands(program: Command) {
       const now = Date.now();
       if (Object.keys(cache.boards).length === 0) {
         console.log(chalk.dim("No cache."));
-        process.exit(0);
+        return;
       }
       for (const board of config.boards) {
         const bc = cache.boards[board.id];
@@ -53,7 +53,7 @@ export function registerCacheCommands(program: Command) {
           console.log(chalk.dim(`  [orphan ${boardId.slice(0, 8)}]: ${bc.tasks.length} tasks`));
         }
       }
-      process.exit(0);
+      return;
     });
 
 }

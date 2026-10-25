@@ -3048,7 +3048,7 @@ not port the session or domain facade for that hypothetical gain.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C12-1 | Approve | 2026-10-25 | In progress; network and identity commands are stages 1–5 |
+| C12-1 | Approve | 2026-10-25 | In progress; command actions are stages 1–6 |
 | C12-2 | Approve | 2026-10-25 | Not started |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
@@ -3157,3 +3157,21 @@ pushed.
   client behavior or wire contract changed.
 - Next: convert the remaining local/admin command groups and command-context/onboarding helpers,
   then add the architectural guard that only `src/index.ts` may call `process.exit`.
+
+### Checkpoint — October 25, 2026 (C12-1 stage 6)
+
+The remaining local and administrative command actions now return normally; nothing has been
+pushed.
+
+- A failing bundled-process regression showed that an empty `cache status` continued through two
+  action-level exits before reaching the executable, producing three hard-exit calls in total when
+  exits were intercepted. Cache, backup, config, completion, setup, trust, agent and board-creation
+  paths now preserve their output/status and return.
+- `config set default-list` owns its runtime in one `finally`, including missing-list and missing-
+  profile failures. The legacy `boards` alias also disconnects its best-effort display-name refresh
+  runtime on failure as well as success. Nested AI-triage failure records its local result before
+  the outer cleanup publishes that status.
+- The production bundle builds, `npx tsc --noEmit` passes and the full CLI suite passes 208/208.
+  This is process lifecycle only; shared behavior and wire formats are unchanged.
+- Next: replace hard exits in command-context and onboarding helpers with typed returns/errors,
+  then enforce the outer-boundary rule with a source architecture guard and finish C12-1.

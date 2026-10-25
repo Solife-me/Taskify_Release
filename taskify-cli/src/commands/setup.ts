@@ -23,7 +23,7 @@ export function registerSetupCommands(program: Command) {
         });
         rl.close();
         if (ans.trim().toLowerCase() === "n") {
-          process.exit(0);
+          return;
         }
       }
       await runOnboarding(targetProfile ?? existing.selectedProfile);
