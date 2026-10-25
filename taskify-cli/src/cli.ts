@@ -29,7 +29,7 @@ import { runOnboarding } from "./onboarding.js";
 import { checkRelay } from "./relayDiagnostics.js";
 import type { AgentIdempotencyStore } from "./shared/agentIdempotency.js";
 import type { writeAgentJson } from "./shared/agentOutput.js";
-import type { ShareTransport } from "./commands/context.js";
+import type { CommandContextDependencies, ShareTransport } from "./commands/context.js";
 
 const require = createRequire(import.meta.url);
 const packageVersion = (require("../package.json") as { version: string }).version;
@@ -49,6 +49,8 @@ export type CliDependencies = {
   prompt?: (question: string) => Promise<string | null>;
   /** NIP-17 share delivery and inbox reads. */
   shareTransport?: ShareTransport;
+  /** One-off relay sessions (profiles, contacts, bot command lists). */
+  withStandaloneSession?: CommandContextDependencies["withStandaloneSession"];
   version?: string;
 };
 
@@ -73,6 +75,7 @@ function composeProgram(dependencies: CliDependencies = {}) {
     now: dependencies.now,
     prompt: dependencies.prompt,
     shareTransport: dependencies.shareTransport,
+    withStandaloneSession: dependencies.withStandaloneSession,
   });
   const initRuntime = context.initRuntime;
   const relayCheck = dependencies.checkRelay ?? checkRelay;
@@ -95,9 +98,9 @@ function composeProgram(dependencies: CliDependencies = {}) {
   registerInboxCommands(program, context);
   registerBoardCreationCommands(program, context, boardCmd);
   registerAssignmentsCommands(program, context);
-  registerProfileCommands(program);
-  registerBotCommands(program);
-  registerContactCommands(program, initRuntime);
+  registerProfileCommands(program, context);
+  registerBotCommands(program, context);
+  registerContactCommands(program, context);
   registerSetupCommands(program);
 
   return { program, context };

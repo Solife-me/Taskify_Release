@@ -3,7 +3,6 @@ import { sanitizeRemote } from "../shared/displaySafe.js";
 import chalk from "chalk";
 import { readFile } from "fs/promises";
 import { nip19, getPublicKey } from "nostr-tools";
-import { loadConfig } from "../config.js";
 import {
   fetchBotCommands,
   fetchInboxRelays,
@@ -11,8 +10,10 @@ import {
   publishBotCommands,
   validateBotCommandsDraft,
 } from "../shared/botCommands.js";
+import type { CommandContext } from "./context.js";
 
-export function registerBotCommands(program: Command) {
+export function registerBotCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "withStandaloneSession">) {
+  const { loadConfig, withStandaloneSession } = context;
   // ---- bot command group (NIP-51 bot commands list — docs/reference/bot-command-lists.md) ----
   const botCmd = program
     .command("bot")
@@ -62,12 +63,12 @@ export function registerBotCommands(program: Command) {
       if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exitCode = 1; return; }
       const pubkeyHex = getPublicKey(decoded.data as Uint8Array);
 
-      const inboxRelays = await fetchInboxRelays(pubkeyHex, config.relays);
+      const inboxRelays = await fetchInboxRelays(pubkeyHex, config.relays, { withSession: withStandaloneSession });
       const publishRelays = Array.from(new Set([...config.relays, ...inboxRelays]));
       console.error(chalk.dim(`  Publishing ${commands.length} command${commands.length === 1 ? "" : "s"} to ${publishRelays.length} relay${publishRelays.length === 1 ? "" : "s"}...`));
 
       try {
-        const { event } = await publishBotCommands(config.nsec, commands, publishRelays);
+        const { event } = await publishBotCommands(config.nsec, commands, publishRelays, { withSession: withStandaloneSession });
         if (opts.json) {
           console.log(JSON.stringify(event, null, 2));
         } else {
@@ -105,10 +106,10 @@ export function registerBotCommands(program: Command) {
         peerHex = getPublicKey(decoded.data as Uint8Array);
       }
 
-      const inboxRelays = await fetchInboxRelays(peerHex, config.relays);
+      const inboxRelays = await fetchInboxRelays(peerHex, config.relays, { withSession: withStandaloneSession });
       const relays = Array.from(new Set([...config.relays, ...inboxRelays]));
       console.error(chalk.dim("  Fetching bot commands from relays..."));
-      const fetched = await fetchBotCommands(peerHex, relays);
+      const fetched = await fetchBotCommands(peerHex, relays, { withSession: withStandaloneSession });
       const event = fetched.event;
       // The bot writes these names and descriptions; they are shown in the terminal.
       const commands = sanitizeRemote(fetched.commands);

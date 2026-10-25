@@ -3050,7 +3050,7 @@ not port the session or domain facade for that hypothetical gain.
 | --- | --- | --- | --- |
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
 | C12-2 | Approve | 2026-10-25 | Done in seven stages. Every CLI command group runs through `buildProgram`/`runCli` with injected config (load and save), runtime, clock, UUIDs, prompt, share transport and output; every source-regex test of command code is replaced by behavior, and the remaining source assertions target the runtime for C12-4 (and raw NDK contact reads for C12-3). Found and fixed on the way: `upcoming` dates, `board create` in scripts, `boards`/`board list` drift, `share inbox --apply` progress, and `event invite`/`share event` (shared invitation rule in core) |
-| C12-3 | Approve | 2026-10-25 | In progress: stage 1 (terminal shutdown; the runtime suite exits by itself) is done |
+| C12-3 | Approve | 2026-10-25 | Done in three stages. Shutdown is terminal and idempotent and finishes debounced publishes; NDK's unstoppable relay timer is shimmed and its multi-relay reconnect avoided, so processes exit by themselves and the runtime suite runs without `--test-force-exit`; `StandaloneNostrSession` is the owned path for one-off reads and writes, and the CLI uses it for profiles, contacts and bot lists |
 | C12-4 | Approve | 2026-10-25 | Not started |
 | C12-5 | Approve | 2026-10-25 | Not started |
 | C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
@@ -3583,4 +3583,34 @@ The runtime suite finishes by itself, without `--test-force-exit`. Nothing has b
   - PWA nostr and wallet tests 250 (12 skipped), and `tsc` is clean.
 - Next: move the CLI's profile, contact, bot and inbox-relay helpers onto `withStandaloneSession`
   (stage 3).
+
+### Checkpoint — October 25, 2026 (C12-3 stage 3 — complete)
+
+C12-3 is complete. Nothing has been pushed.
+
+- **CLI on the standalone session.** Profile read and publish, contact fetch and sync, bot command
+  list publish and show, and inbox-relay lookup all run through `withStandaloneSession`. It is
+  injectable as `CliDependencies.withStandaloneSession`. No CLI code builds a raw NDK instance any
+  more.
+  - Before, these helpers never closed their relays.
+  - `publishProfile` opened a second connection to read the current profile; it now reads and
+    writes in one session.
+  - `contact fetch` started a whole runtime just to disconnect it; that is gone.
+  - The CLI's own `verifiedRawEvents` is removed; the runtime's does the same check.
+- **Tests.** `standalone-commands.test.ts` (5 cases) covers:
+  - `contact fetch`: an anonymous read and the saved contact, and a failure that saves nothing
+    but still closes the session;
+  - `contact sync`: the encrypted and legacy lists merged, and one encrypted list published with
+    nobody's key in the clear; `--pull` doesn't publish;
+  - bot command lists published to the profile's relays plus the inbox relays, then read back.
+  - Every session that opens is closed.
+- The last two source regexes in `contacts.test.ts` are retired. Its kind/d-tag interop value
+  check remains.
+- **Verification:**
+  - CLI 218/218, `npx tsc --noEmit` clean;
+  - runtime 87/87, finishing naturally.
+- **Not done:** the CLI executable still ends with its one hard exit (C12-1). Now that sessions
+  close completely, a later step could make it optional, but nothing here depends on that.
+- Next: C12-4 (split the CLI Nostr adapter by domain, replacing the remaining runtime source
+  regexes with fake-session repository tests).
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

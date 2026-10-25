@@ -3,11 +3,13 @@ import { readSecret } from "../shared/readSecret.js";
 import type { Command } from "commander";
 import { generateSecretKey,getPublicKey,nip19 } from "nostr-tools";
 import { createInterface } from "readline";
-import { DEFAULT_RELAYS,loadConfig,saveProfiles,type ProfileConfig } from "../config.js";
+import { DEFAULT_RELAYS,saveProfiles,type ProfileConfig } from "../config.js";
 import { uploadImageToNip96 } from "../nip96Upload.js";
 import { fetchLatestProfileEvent,publishProfile } from "../profileMeta.js";
+import type { CommandContext } from "./context.js";
 
-export function registerProfileCommands(program: Command): void {
+export function registerProfileCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "withStandaloneSession">): void {
+  const { loadConfig, withStandaloneSession } = context;
   // ---- Helper: readline queue (handles piped stdin correctly) ----
   function makeLineQueue(rl: ReturnType<typeof createInterface>): (prompt: string) => Promise<string> {
     const lineQueue: string[] = [];
@@ -383,7 +385,7 @@ export function registerProfileCommands(program: Command): void {
       console.log(chalk.dim("  Publishing profile metadata..."));
 
       try {
-        const result = await publishProfile(config.nsec, cleanDraft, config.relays);
+        const result = await publishProfile(config.nsec, cleanDraft, config.relays, { withSession: withStandaloneSession });
         if (opts.json) {
           console.log(JSON.stringify(result.event, null, 2));
         } else {
@@ -427,7 +429,7 @@ export function registerProfileCommands(program: Command): void {
       const pubkeyHex = getPublicKey(decoded.data as Uint8Array);
 
       console.log(chalk.dim("  Fetching profile metadata from relays..."));
-      const { event, metadata } = await fetchLatestProfileEvent(pubkeyHex, profile.relays ?? []);
+      const { event, metadata } = await fetchLatestProfileEvent(pubkeyHex, profile.relays ?? [], { withSession: withStandaloneSession });
 
       if (!event) {
         console.log(chalk.yellow("No kind:0 profile event found on relays."));
