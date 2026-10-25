@@ -3048,7 +3048,7 @@ not port the session or domain facade for that hypothetical gain.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C12-1 | Approve | 2026-10-25 | In progress; network-backed commands are stages 1–4 |
+| C12-1 | Approve | 2026-10-25 | In progress; network and identity commands are stages 1–5 |
 | C12-2 | Approve | 2026-10-25 | Not started |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
@@ -3137,3 +3137,23 @@ executable boundary; nothing has been pushed.
   wire format changed, so no shared fixture or Swift run is appropriate.
 - Next: convert profile, contact, bot and relay commands, including their standalone NDK helpers;
   C12-3 will subsequently consolidate those helpers behind the shared terminal session contract.
+
+### Checkpoint — October 25, 2026 (C12-1 stage 5)
+
+Profile, contact, bot and relay actions now return to the executable boundary; nothing has been
+pushed.
+
+- A failing bundled-process regression first proved that even local `profile list` performed an
+  action-level hard exit before the executable issued its final exit. Identity success,
+  validation, not-found, interactive-abort and relay-status paths now return with the same output
+  and status.
+- Runtime-backed relay status and contact fetch still complete their existing disconnect blocks.
+  Raw NDK profile/contact/bot helpers retain their current transport behavior in this lifecycle-only
+  step; C12-3 owns putting them behind one teardown-capable standalone-session API.
+- Profile-media upload failure now records its status and stops the action before trying another
+  upload or publishing partial metadata, matching the immediate-stop behavior previously supplied
+  by `process.exit` without terminating inside the helper.
+- The bundle builds, `npx tsc --noEmit` passes and the full CLI suite passes 207/207. No shared
+  client behavior or wire contract changed.
+- Next: convert the remaining local/admin command groups and command-context/onboarding helpers,
+  then add the architectural guard that only `src/index.ts` may call `process.exit`.

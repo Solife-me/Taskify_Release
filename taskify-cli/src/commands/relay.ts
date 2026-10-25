@@ -66,7 +66,7 @@ export function registerRelayCommands(program: Command, initRuntime: typeof crea
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -79,7 +79,7 @@ export function registerRelayCommands(program: Command, initRuntime: typeof crea
       if (config.relays.length === 0) {
         if (opts.json) renderJson([]);
         else console.log(chalk.dim("No relays configured."));
-        process.exit(0);
+        return;
       }
       if (!opts.json) console.log(chalk.dim(`Checking ${config.relays.length} relay(s)...`));
       const rows = await Promise.all(config.relays.map(async (relay) => {
@@ -95,14 +95,14 @@ export function registerRelayCommands(program: Command, initRuntime: typeof crea
           paymentRequired: info.paymentRequired,
           restrictedWrites: info.restrictedWrites,
         })));
-        process.exit(0);
+        return;
       }
       for (const { relay, connected, info } of rows) {
         const summary = accessSummary(info);
         const head = connected ? chalk.green(`✓ ${relay}`) + chalk.dim("  connected") : chalk.red(`✗ ${relay}`) + chalk.dim("  disconnected");
         console.log(summary ? `${head}${chalk.dim(`  ·  ${summary}`)}` : head);
       }
-      process.exit(0);
+      return;
     });
 
   relayCmd
@@ -113,12 +113,12 @@ export function registerRelayCommands(program: Command, initRuntime: typeof crea
       const normalized = normalizeRelayInput(url);
       if (!normalized) {
         console.error(chalk.red(`Not a relay URL: ${url} (expected wss://… or ws://…)`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const [connected, info] = await Promise.all([checkRelay(normalized), fetchRelayInformation(normalized)]);
       if (opts.json) {
         renderJson({ ...info, connected });
-        process.exit(0);
+        return;
       }
       const yesNo = (value: boolean) => (value ? chalk.yellow("yes") : "no");
       console.log(chalk.bold(info.name ?? normalized));
@@ -137,7 +137,7 @@ export function registerRelayCommands(program: Command, initRuntime: typeof crea
       if (info.learnedPowDifficulty > info.minPowDifficulty) {
         console.log(`  Learned PoW:       ${chalk.yellow(`difficulty ${info.learnedPowDifficulty}`)} ${chalk.dim("(from the relay's own rejections)")}`);
       }
-      process.exit(0);
+      return;
     });
 
   relayCmd
@@ -147,7 +147,7 @@ export function registerRelayCommands(program: Command, initRuntime: typeof crea
       const normalized = normalizeRelayInput(url);
       if (!normalized) {
         console.error(chalk.red(`Not a relay URL: ${url} (expected wss://… or ws://…)`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.relays.some((relay) => sameRelay(relay, normalized))) {
@@ -157,7 +157,7 @@ export function registerRelayCommands(program: Command, initRuntime: typeof crea
       } else {
         console.log(chalk.dim(`Relay already configured: ${normalized}`));
       }
-      process.exit(0);
+      return;
     });
 
   relayCmd
@@ -169,11 +169,11 @@ export function registerRelayCommands(program: Command, initRuntime: typeof crea
       config.relays = config.relays.filter((r) => r !== url && !sameRelay(r, url));
       if (config.relays.length === before) {
         console.error(chalk.red(`Relay not found in config: ${url}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       await saveConfig(config);
       console.log(chalk.green(`✓ Relay removed: ${url}`));
-      process.exit(0);
+      return;
     });
 
 }

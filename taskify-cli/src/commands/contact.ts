@@ -44,14 +44,14 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
     .action(async (opts) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
       const contacts = config.contacts ?? [];
-      if (opts.json) { renderJson(contacts); process.exit(0); }
-      if (contacts.length === 0) { console.log(chalk.dim("No contacts.")); process.exit(0); }
+      if (opts.json) { renderJson(contacts); return; }
+      if (contacts.length === 0) { console.log(chalk.dim("No contacts.")); return; }
       for (const c of contacts) {
         const key = c.npub ?? c.pubkey.slice(0, 12) + "...";
         const label = [c.name, c.nip05].filter(Boolean).join(" / ");
         console.log(`  ${chalk.bold(key)}  ${chalk.dim(label)}`);
       }
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -61,13 +61,13 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
     .action(async (ref: string, opts) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
       const contact = resolveContact(config.contacts ?? [], ref);
-      if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exit(1); }
-      if (opts.json) { renderJson(contact); process.exit(0); }
+      if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exitCode = 1; return; }
+      if (opts.json) { renderJson(contact); return; }
       console.log(chalk.bold("Contact"));
       for (const [k, v] of Object.entries(contact)) {
         if (v !== undefined && v !== null) console.log(`  ${chalk.dim(k + ":")} ${v}`);
       }
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -86,12 +86,12 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
         npub = npubArg;
       } catch {
         console.error(chalk.red("Invalid npub: " + npubArg));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const contacts = config.contacts ?? [];
       if (contacts.find((c) => c.pubkey === pubkeyHex)) {
         console.log(chalk.yellow("Contact already exists."));
-        process.exit(0);
+        return;
       }
       const contact: Contact = {
         pubkey: pubkeyHex,
@@ -103,7 +103,7 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
       config.contacts = [...contacts, contact];
       await saveConfig(config);
       console.log(chalk.green(`✓ Added contact: ${opts.name ?? npub}`));
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -113,11 +113,11 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
       const config = await loadConfig(program.opts().profile as string | undefined);
       const contacts = config.contacts ?? [];
       const contact = resolveContact(contacts, ref);
-      if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exit(1); }
+      if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exitCode = 1; return; }
       config.contacts = contacts.filter((c) => c.pubkey !== contact.pubkey);
       await saveConfig(config);
       console.log(chalk.green(`✓ Removed contact: ${contact.name ?? contact.npub ?? contact.pubkey}`));
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -134,7 +134,7 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
         npub = npubArg;
       } catch {
         console.error(chalk.red("Invalid npub: " + npubArg));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const runtime = initRuntime(config);
       try {
@@ -174,11 +174,11 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
         try { (ndk.pool as unknown as { destroy?(): void })?.destroy?.(); } catch { /* ignore */ }
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       } finally {
         await runtime.disconnect();
       }
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -190,10 +190,10 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.nsec) {
         console.error(chalk.red("No nsec configured — cannot sync contacts"));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const decoded = nip19.decode(config.nsec);
-      if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exit(1); }
+      if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exitCode = 1; return; }
       const userSk = decoded.data as Uint8Array;
       const userPk = getPublicKey(userSk);
       const NDKMod = await import("@nostr-dev-kit/ndk");
@@ -265,11 +265,11 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
         else console.log(chalk.green(`✓ Synced ${contacts.length} contacts`));
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       } finally {
         try { (ndk.pool as unknown as { destroy?(): void })?.destroy?.(); } catch { /* ignore */ }
       }
-      process.exit(0);
+      return;
     });
 
 }

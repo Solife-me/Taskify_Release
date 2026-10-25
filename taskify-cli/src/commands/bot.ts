@@ -26,7 +26,7 @@ export function registerBotCommands(program: Command) {
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.nsec) {
         console.error(chalk.red("No nsec configured. Run `taskify setup` or set TASKIFY_NSEC."));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       let raw: string;
@@ -47,7 +47,7 @@ export function registerBotCommands(program: Command) {
         parsed = JSON.parse(raw);
       } catch (err) {
         console.error(chalk.red(`Invalid JSON: ${String(err)}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       let commands: { name: string; description: string }[];
@@ -55,11 +55,11 @@ export function registerBotCommands(program: Command) {
         commands = validateBotCommandsDraft(parsed);
       } catch (err) {
         console.error(chalk.red(String(err instanceof Error ? err.message : err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       const decoded = nip19.decode(config.nsec);
-      if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exit(1); }
+      if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exitCode = 1; return; }
       const pubkeyHex = getPublicKey(decoded.data as Uint8Array);
 
       const inboxRelays = await fetchInboxRelays(pubkeyHex, config.relays);
@@ -77,9 +77,9 @@ export function registerBotCommands(program: Command) {
         }
       } catch (err) {
         console.error(chalk.red(`Failed to publish bot commands: ${String(err)}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
-      process.exit(0);
+      return;
     });
 
   botCmd
@@ -93,15 +93,15 @@ export function registerBotCommands(program: Command) {
         peerHex = parsePubkey(npub);
         if (!peerHex) {
           console.error(chalk.red("Invalid npub or hex pubkey."));
-          process.exit(1);
+          process.exitCode = 1; return;
         }
       } else {
         if (!config.nsec) {
           console.error(chalk.red("No nsec configured and no npub given."));
-          process.exit(1);
+          process.exitCode = 1; return;
         }
         const decoded = nip19.decode(config.nsec);
-        if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exit(1); }
+        if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exitCode = 1; return; }
         peerHex = getPublicKey(decoded.data as Uint8Array);
       }
 
@@ -119,7 +119,7 @@ export function registerBotCommands(program: Command) {
         } else {
           console.log(chalk.yellow("No bot commands list found for this npub."));
         }
-        process.exit(0);
+        return;
       }
 
       if (opts.json) {
@@ -134,7 +134,7 @@ export function registerBotCommands(program: Command) {
         for (const command of commands) console.log(`  /${command.name}  ${command.description}`);
         console.log(chalk.dim(`  (event id: ${event.id?.slice(0, 8)}..., created_at: ${new Date((event.created_at ?? 0) * 1000).toISOString()})`));
       }
-      process.exit(0);
+      return;
     });
 
 }
