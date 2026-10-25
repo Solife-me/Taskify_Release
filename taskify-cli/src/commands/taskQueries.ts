@@ -103,7 +103,8 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
             ?? (config.boards.length === 1 ? config.boards[0].id : undefined);
           if (!singleBoardId) {
             console.error(chalk.red("--column requires --board when multiple boards are configured"));
-            process.exit(1);
+            process.exitCode = 1;
+            return;
           }
           const be = config.boards.find((b) => b.id === singleBoardId)!;
           const resolved = resolveColumnOrExit(be, opts.column);
@@ -128,11 +129,13 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
             }
             if (!boardEntry) {
               console.error(chalk.red(`Could not resolve board "${listBoardName}" from defaultList.`));
-              process.exit(1);
+              process.exitCode = 1;
+              return;
             }
             if (!config.boards.some(b => b.id === boardEntry!.id)) {
               console.error(chalk.red(`Board "${boardEntry!.name}" not found in local config.`));
-              process.exit(1);
+              process.exitCode = 1;
+              return;
             }
             // Sync columns if needed
             const syncedAt = boardEntry.syncedAt ?? 0;
@@ -150,7 +153,8 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
             } else {
               console.error(chalk.red(`Column "${listName}" not found on "${boardEntry.name}".`));
               console.error(chalk.dim(`Available columns: ${formatAvailableColumns(boardEntry.columns || [])}`));
-              process.exit(1);
+              process.exitCode = 1;
+              return;
             }
           }
         } else if (boardEntry && process.stdin.isTTY) {
@@ -212,7 +216,8 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
                     columnName = match.name;
                   } else {
                     console.error(chalk.red(`Could not resolve column "${answer}".`));
-                    process.exit(1);
+                    process.exitCode = 1;
+                    return;
                   }
                 }
               }
@@ -249,7 +254,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
         if (!coreMode) console.error(chalk.red(String(err)));
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -307,7 +312,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -352,7 +357,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
         exitCode = writeCoreFailure("task.get", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -409,7 +414,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
         exitCode = writeCoreFailure("task.search", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

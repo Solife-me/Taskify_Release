@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 
 const cli = resolve("dist/index.js");
 
-test("event commands return control before the executable performs the only hard exit", () => {
+function runWithExitTrace(args: string[]) {
   const home = mkdtempSync(join(tmpdir(), "taskify-command-lifecycle-"));
   const configDir = join(home, ".taskify-cli");
   const trace = join(home, "lifecycle.log");
@@ -40,14 +40,25 @@ test("event commands return control before the executable performs the only hard
   `);
 
   try {
-    const result = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, cli, "event", "list", "--json"], {
+    const result = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, cli, ...args], {
       env: { ...process.env, HOME: home, TASKIFY_NSEC: "" },
       encoding: "utf8",
       timeout: 10_000,
     });
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(readFileSync(trace, "utf8").trim().split("\n"), ["process.exit:0"]);
+    return { result, exits: readFileSync(trace, "utf8").trim().split("\n") };
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+}
+
+test("event commands return control before the executable performs the only hard exit", () => {
+  const { result, exits } = runWithExitTrace(["event", "list", "--json"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(exits, ["process.exit:0"]);
+});
+
+test("task commands return control on failure before the executable performs the only hard exit", () => {
+  const { result, exits } = runWithExitTrace(["list"]);
+  assert.equal(result.status, 1, result.stderr);
+  assert.deepEqual(exits, ["process.exit:1"]);
 });

@@ -3048,7 +3048,7 @@ not port the session or domain facade for that hypothetical gain.
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C12-1 | Approve | 2026-10-25 | In progress; event commands are stage 1 |
+| C12-1 | Approve | 2026-10-25 | In progress; event and task commands are stages 1–2 |
 | C12-2 | Approve | 2026-10-25 | Not started |
 | C12-3 | Approve | 2026-10-25 | Not started |
 | C12-4 | Approve | 2026-10-25 | Not started |
@@ -3088,3 +3088,19 @@ implemented locally on `Beta`; nothing has been pushed.
   vector or Swift run is appropriate.
 - Next: continue C12-1 through the remaining network-backed command groups, with a lifecycle
   regression/guard for each stage, then remove action-level exits from the local-only groups.
+
+### Checkpoint — October 25, 2026 (C12-1 stage 2)
+
+Task query and mutation actions now follow the event-command lifecycle; nothing has been pushed.
+
+- `list`, `upcoming`, `show`, `search`, `reorder`, `remind`, `add`, `done`, `reopen`, `delete`,
+  `subtask` and `update` no longer hard-exit. Their `finally` blocks own the one runtime disconnect,
+  including the interactive delete-abort path, which previously disconnected and exited inside the
+  `try` before reaching the same cleanup again.
+- Early validation and interactive-selection failures now set status and return from the action;
+  success/failure status computed in each command is handed back through `process.exitCode` after
+  disconnect. Agent JSON and human rendering are unchanged.
+- The bundled lifecycle regression covers the task failure path as well as event success. The full
+  CLI suite passes 204/204 after rebuilding.
+- Next: board and board/list mutation actions, which contain the largest remaining cluster of hard
+  exits, then the sharing/attachment/transfer groups.

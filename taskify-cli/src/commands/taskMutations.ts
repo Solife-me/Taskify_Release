@@ -67,7 +67,8 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
             `Invalid reminder preset(s): ${invalid.join(", ")}. Valid: ${[...VALID_REMINDER_PRESETS].join(", ")}`,
           ),
         );
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       const config = await loadConfig(program.opts().profile as string | undefined);
       const runtime = initRuntime(config);
@@ -92,7 +93,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -253,7 +254,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.create", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -312,7 +313,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.done", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -368,7 +369,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.reopen", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -427,8 +428,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
             });
             if (!confirmed) {
               console.log("Aborted.");
-              await runtime.disconnect();
-              process.exit(0);
+              return;
             }
           }
           const deleted = await runtime.deleteTask(taskId, boardId);
@@ -444,7 +444,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.delete", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -461,11 +461,13 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
     .action(async (taskId: string, subtaskRef: string, opts) => {
       if (!opts.done && !opts.reopen) {
         console.error(chalk.red("Specify --done or --reopen."));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       if (opts.done && opts.reopen) {
         console.error(chalk.red("Specify only one of --done or --reopen."));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       warnShortTaskId(taskId);
       const config = await loadConfig(program.opts().profile as string | undefined);
@@ -500,7 +502,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -602,7 +604,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.update", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
