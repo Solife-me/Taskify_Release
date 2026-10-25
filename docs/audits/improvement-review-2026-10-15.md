@@ -3306,11 +3306,23 @@ Task queries now run through the behavioral harness; nothing has been pushed.
 - Retired: `upcoming-filter.test.ts` (11 regex cases) and the "list semantics" regex case in
   `parity-phase3b-cli-surface.test.ts`. Its `resolveColumnOrExit` pattern for task add/update is
   still asserted in `list-targeting-cli.test.ts` and moves with the board/list stage.
-- **Found, not yet fixed:** `upcoming` takes "today" and its cutoff from the UTC date
+- **Found:** `upcoming` takes "today" and its cutoff from the UTC date
   (`toISOString().slice(0, 10)`), so west of UTC in the evening a task due today drops out, and a
   timed task due on the cutoff day is excluded because a full ISO string sorts after the bare
-  date. The stage 4 tests use a time when UTC and local dates agree. The fix (a local date key from
-  `taskify-core`) is the next commit, with a failing test first.
+  date. The stage 4 tests use a time when UTC and local dates agree; the fix follows below.
 - The build, `npx tsc --noEmit` and the full CLI suite pass at 216/216.
-- Next: the `upcoming` date fix, then board/list behavior, then contact/sharing and
-  registration/presentation checks.
+
+### Checkpoint — October 25, 2026 (CLI `upcoming` dates)
+
+- Two failing tests came first, in `task-query-commands.test.ts`:
+  - At 9 pm in Chicago (already the next day in UTC), today's tasks were missing from `upcoming`.
+  - A timed task on the last day of the window was excluded.
+- `upcoming` now uses `taskify-core`'s date keys, as the apps do:
+  - "today" is `todayDateKey(now)`;
+  - the window ends at `addDaysToDateKey(today, days)`;
+  - a task's day is `isoDatePart(dueISO, dueTimeZone)`, so a date-only task saved as local
+    midnight keeps its day.
+  - Order is day, then priority, then time.
+- The OpenClaw command reference said the default window was 7 days; it is 14, and now says so.
+- The CLI suite passes at 218/218 and `npx tsc --noEmit` is clean.
+- Next: board/list behavior, then contact/sharing and registration/presentation checks.

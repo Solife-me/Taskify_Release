@@ -2,7 +2,10 @@ import chalk from "chalk";
 import type { Command } from "commander";
 import { createInterface } from "readline";
 import {
-resolveBoardReference
+addDaysToDateKey,
+isoDatePart,
+resolveBoardReference,
+todayDateKey
 } from "taskify-core";
 import type { BoardEntry } from "../config.js";
 import { renderJson,renderTable,renderTaskCard } from "../render.js";
@@ -275,33 +278,37 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
         const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
         const allTasks = await runtime.listTasks({ boardId: resolvedBoardId, status: "open" });
 
-        const now = currentTime();
-        const todayStr = now.toISOString().slice(0, 10);
-        const cutoff = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-        const cutoffStr = cutoff.toISOString().slice(0, 10);
+        // Days on this device's calendar, as in the apps: a task's day is its due date in its
+        // own time zone (date-only tasks are saved as local midnight), not its UTC timestamp.
+        const today = todayDateKey(currentTime());
+        const cutoff = addDaysToDateKey(today, days) ?? today;
+        const dueDay = (task: (typeof allTasks)[number]) =>
+          Number.isNaN(Date.parse(task.dueISO)) ? null : isoDatePart(task.dueISO, task.dueTimeZone);
 
-        const upcoming = allTasks.filter(
-          (t) => t.dueDateEnabled === true && t.dueISO && t.dueISO >= todayStr && t.dueISO <= cutoffStr,
-        );
-
-        // Sort: primary = dueISO asc, secondary = priority desc (3=high)
-        upcoming.sort((a, b) => {
-          if (a.dueISO < b.dueISO) return -1;
-          if (a.dueISO > b.dueISO) return 1;
-          return (a.priority ?? 0) === (b.priority ?? 0) ? 0 : (b.priority ?? 0) - (a.priority ?? 0);
+        const dated = allTasks.flatMap((task) => {
+          if (task.dueDateEnabled !== true || !task.dueISO) return [];
+          const day = dueDay(task);
+          return day && day >= today && day <= cutoff ? [{ task, day }] : [];
         });
+
+        // Sort: day, then priority (3 = high) first, then time within the day.
+        dated.sort((a, b) => {
+          if (a.day !== b.day) return a.day < b.day ? -1 : 1;
+          const byPriority = (b.task.priority ?? 0) - (a.task.priority ?? 0);
+          if (byPriority !== 0) return byPriority;
+          return Date.parse(a.task.dueISO) - Date.parse(b.task.dueISO);
+        });
+        const upcoming = dated.map(({ task }) => task);
 
         if (opts.json) {
           renderJson(upcoming);
         } else if (upcoming.length === 0) {
           console.log(chalk.dim(`No tasks due in the next ${days} days.`));
         } else {
-          // Group by dueISO date prefix
           const groups = new Map<string, typeof upcoming>();
-          for (const t of upcoming) {
-            const day = t.dueISO.slice(0, 10);
+          for (const { task, day } of dated) {
             if (!groups.has(day)) groups.set(day, []);
-            groups.get(day)!.push(t);
+            groups.get(day)!.push(task);
           }
           for (const [day, tasks] of groups) {
             console.log(chalk.bold(`\n${day}`));

@@ -270,3 +270,50 @@ test("search --in scopes the read and --human says when nothing matches", async 
   assert.deepEqual(calls[0], ["listTasks", { boardId: "board-1", status: "any", columnId: "todo" }]);
   assert.match(result.stdout.join("\n"), /No tasks matching "dentist"\./);
 });
+
+/** Runs `run` with the process in `timeZone`, restoring the previous zone after. */
+async function inTimeZone<T>(timeZone: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.env.TZ;
+  process.env.TZ = timeZone;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
+test("upcoming counts days on the device's calendar, not UTC's", async () => {
+  // 9 pm on October 25 in Chicago is already October 26 in UTC.
+  const now = () => new Date("2026-10-26T02:00:00Z");
+  const { runtime } = recordingRuntime({
+    listTasks: async () => [
+      // A date-only task for October 25, saved as local midnight (as the PWA does).
+      task("today", { dueDateEnabled: true, dueISO: "2026-10-25T05:00:00.000Z" }),
+      // A task the CLI saved as a bare date.
+      task("today-bare", { dueDateEnabled: true, dueISO: "2026-10-25" }),
+      task("yesterday", { dueDateEnabled: true, dueISO: "2026-10-24T05:00:00.000Z" }),
+    ],
+  });
+  const result = await inTimeZone("America/Chicago", () =>
+    captureConsole(() => runCli(["node", "taskify", "upcoming", "--json"], harnessDependencies(runtime, { now }).dependencies)));
+
+  assert.equal(result.status, 0);
+  const ids = (JSON.parse(result.stdout.join("\n")) as Array<{ id: string }>).map((t) => t.id);
+  assert.deepEqual(ids.sort(), ["today", "today-bare"]);
+});
+
+test("upcoming includes a timed task on the last day of the window", async () => {
+  const now = () => new Date("2026-10-25T12:00:00Z");
+  const { runtime } = recordingRuntime({
+    listTasks: async () => [
+      task("cutoff-day", { dueDateEnabled: true, dueTimeEnabled: true, dueTimeZone: "UTC", dueISO: "2026-11-08T15:00:00.000Z" }),
+      task("after", { dueDateEnabled: true, dueTimeEnabled: true, dueTimeZone: "UTC", dueISO: "2026-11-09T09:00:00.000Z" }),
+    ],
+  });
+  const result = await inTimeZone("UTC", () =>
+    captureConsole(() => runCli(["node", "taskify", "upcoming", "--json"], harnessDependencies(runtime, { now }).dependencies)));
+
+  assert.equal(result.status, 0);
+  assert.deepEqual((JSON.parse(result.stdout.join("\n")) as Array<{ id: string }>).map((t) => t.id), ["cutoff-day"]);
+});
