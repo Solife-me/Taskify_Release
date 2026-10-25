@@ -29,12 +29,6 @@ test("event add/update expose recurrence reminders invitees and list-column flag
   assert.match(CLI_SOURCE, /eventCmd[\s\S]*?\.command\("update\s*<eventId>"\)[\s\S]*?--invitee/);
 });
 
-test("list semantics resolve board id and strict column-name match", () => {
-  assert.match(CLI_SOURCE, /const resolvedBoardId = opts\.board \? await resolveBoardId\(opts\.board, config\) : undefined;/);
-  assert.match(CLI_SOURCE, /boardId: resolvedBoardId/);
-  assert.match(CLI_SOURCE, /resolveColumnOrExit\(boardEntry, opts\.column\)/);
-});
-
 test("runtime defaults list-column placement for list boards", () => {
   assert.match(RUNTIME_SOURCE, /entry\.kind === "lists"[\s\S]*entry\.columns\[0\]\.id/);
   assert.match(RUNTIME_SOURCE, /const colId = input\.columnId[\s\S]*entry\.columns\[0\]\.id/);

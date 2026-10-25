@@ -4,15 +4,15 @@ import { createInterface } from "readline";
 import {
 resolveBoardReference
 } from "taskify-core";
-import { loadConfig,type BoardEntry } from "../config.js";
+import type { BoardEntry } from "../config.js";
 import { renderJson,renderTable,renderTaskCard } from "../render.js";
-import { agentSuccess,writeAgentJson } from "../shared/agentOutput.js";
+import { agentSuccess } from "../shared/agentOutput.js";
 import { resolveCliLocation } from "../shared/cliLocation.js";
 import { formatAvailableColumns,resolveBoardColumn } from "../shared/columnResolution.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerTaskQueriesCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "initRuntime" | "resolveBoardId" | "useHumanOutput" | "CliCommandError" | "writeCoreFailure" | "profilePubkey" | "resolveColumnOrExit">) {
-  const { warnShortTaskId, initRuntime, resolveBoardId, useHumanOutput, CliCommandError, writeCoreFailure, profilePubkey, resolveColumnOrExit } = context;
+export function registerTaskQueriesCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "writeAgentJson" | "now" | "warnShortTaskId" | "initRuntime" | "resolveBoardId" | "useHumanOutput" | "CliCommandError" | "writeCoreFailure" | "profilePubkey" | "resolveColumnOrExit">) {
+  const { loadConfig, writeAgentJson, now: currentTime, warnShortTaskId, initRuntime, resolveBoardId, useHumanOutput, CliCommandError, writeCoreFailure, profilePubkey, resolveColumnOrExit } = context;
   // ---- list ----
   program
     .command("list")
@@ -139,7 +139,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
             }
             // Sync columns if needed
             const syncedAt = boardEntry.syncedAt ?? 0;
-            if (!boardEntry.columns || Date.now() - syncedAt > 30 * 60 * 1000) {
+            if (!boardEntry.columns || currentTime().getTime() - syncedAt > 30 * 60 * 1000) {
               try {
                 await runtime.syncBoard(boardEntry.id);
                 // Refresh boardEntry from config after sync
@@ -163,7 +163,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           // Ensure columns are available
           let columns = boardEntry.columns;
           const syncedAt = boardEntry.syncedAt ?? 0;
-          if (!columns || Date.now() - syncedAt > 30 * 60 * 1000) {
+          if (!columns || currentTime().getTime() - syncedAt > 30 * 60 * 1000) {
             try {
               await runtime.syncBoard(boardEntry.id);
               boardEntry = config.boards.find(b => b.id === boardEntry!.id) ?? boardEntry;
@@ -275,7 +275,7 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
         const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
         const allTasks = await runtime.listTasks({ boardId: resolvedBoardId, status: "open" });
 
-        const now = new Date();
+        const now = currentTime();
         const todayStr = now.toISOString().slice(0, 10);
         const cutoff = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
         const cutoffStr = cutoff.toISOString().slice(0, 10);

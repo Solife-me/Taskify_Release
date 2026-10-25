@@ -42,6 +42,8 @@ export type CliDependencies = {
   randomUUID?: () => string;
   createIdempotencyStore?: () => AgentIdempotencyStore;
   writeAgentJson?: typeof writeAgentJson;
+  /** The command clock, for date-relative views such as `upcoming`. */
+  now?: () => Date;
   version?: string;
 };
 
@@ -62,6 +64,7 @@ function composeProgram(dependencies: CliDependencies = {}) {
     randomUUID: dependencies.randomUUID,
     createIdempotencyStore: dependencies.createIdempotencyStore,
     writeAgentJson: dependencies.writeAgentJson,
+    now: dependencies.now,
   });
   const initRuntime = context.initRuntime;
   const relayCheck = dependencies.checkRelay ?? checkRelay;

@@ -1,47 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nip19 } from "nostr-tools";
 import { buildProgram, runCli, type CliDependencies } from "../dist/cli.js";
-import type { TaskifyConfig } from "../src/config.ts";
-
-const profile = {
-  nsec: nip19.nsecEncode(new Uint8Array(32).fill(1)),
-  relays: [],
-  defaultBoard: "board-1",
-  defaultLocation: { boardId: "board-1", listId: "todo" },
-  trustedNpubs: [],
-  securityMode: "moderate" as const,
-  securityEnabled: true,
-  boards: [{
-    id: "board-1",
-    name: "Harness Board 7f06",
-    kind: "lists" as const,
-    columns: [{ id: "todo", name: "Todo" }],
-  }],
-  taskReminders: {},
-};
-
-const config: TaskifyConfig = {
-  ...profile,
-  activeProfile: "test",
-  selectedProfile: "test",
-  profiles: { test: profile },
-};
-
-async function captureConsole(run: () => Promise<number>) {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const originalLog = console.log;
-  const originalError = console.error;
-  console.log = (...args: unknown[]) => stdout.push(args.map(String).join(" "));
-  console.error = (...args: unknown[]) => stderr.push(args.map(String).join(" "));
-  try {
-    return { status: await run(), stdout, stderr };
-  } finally {
-    console.log = originalLog;
-    console.error = originalError;
-  }
-}
+import { captureConsole, harnessConfig as config } from "./helpers/cliHarness.ts";
 
 test("buildProgram exposes the real command tree without parsing or exiting", () => {
   const program = buildProgram({ version: "test" });

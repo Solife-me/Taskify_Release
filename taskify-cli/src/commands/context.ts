@@ -48,6 +48,7 @@ export type CommandContextDependencies = {
   randomUUID?: () => string;
   createIdempotencyStore?: () => AgentIdempotencyStore;
   writeAgentJson?: typeof writeAgentJson;
+  now?: () => Date;
 };
 
 export function createCommandContext(program: Command, dependencies: CommandContextDependencies = {}) {
@@ -412,6 +413,6 @@ export function createCommandContext(program: Command, dependencies: CommandCont
   }
 
 
-  return { loadConfig: dependencies.loadConfig ?? loadConfig, randomUUID: dependencies.randomUUID ?? nodeRandomUUID, createIdempotencyStore: dependencies.createIdempotencyStore ?? (() => createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"))), writeAgentJson: dependencies.writeAgentJson ?? writeAgentJson, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
+  return { loadConfig: dependencies.loadConfig ?? loadConfig, now: dependencies.now ?? (() => new Date()), randomUUID: dependencies.randomUUID ?? nodeRandomUUID, createIdempotencyStore: dependencies.createIdempotencyStore ?? (() => createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"))), writeAgentJson: dependencies.writeAgentJson ?? writeAgentJson, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
 }
 export type CommandContext = ReturnType<typeof createCommandContext>;

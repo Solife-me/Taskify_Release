@@ -3287,3 +3287,30 @@ below is committed locally on `Beta`; nothing has been pushed.
   must not be staged with improvement-review commits.
 - Continue the one-step/one-commit rule with the required Claude co-author trailer. Never push;
   the maintainer owns pushing.
+
+
+### Checkpoint — October 25, 2026 (C12-2 stage 4)
+
+Task queries now run through the behavioral harness; nothing has been pushed.
+
+- `taskQueries.ts` takes config, agent output and a clock from the command context instead of
+  importing `loadConfig`, the stdout writer and `new Date()`/`Date.now()`. `CliDependencies.now`
+  injects the clock; production defaults are unchanged.
+- `task-query-commands.test.ts` (15 cases, fixtures in `tests/helpers/cliHarness.ts`) drives the
+  real `list`, `upcoming`, `show` and `search` actions against a recording runtime. It proves the
+  arguments each passes to the runtime (`--in`, `--board`/`--column`, `--status`, `--all`,
+  `--refresh`, `--no-cache`, `--days`), `--mine` assignee filtering, the `task.list`, `task.get`
+  and `task.search` envelopes, validation and NOT_FOUND failures, human output, and that disconnect
+  is always last. Three deliberate source mutations (upcoming priority sort, `--no-cache`
+  forwarding, note search) each turned exactly one case red.
+- Retired: `upcoming-filter.test.ts` (11 regex cases) and the "list semantics" regex case in
+  `parity-phase3b-cli-surface.test.ts`. Its `resolveColumnOrExit` pattern for task add/update is
+  still asserted in `list-targeting-cli.test.ts` and moves with the board/list stage.
+- **Found, not yet fixed:** `upcoming` takes "today" and its cutoff from the UTC date
+  (`toISOString().slice(0, 10)`), so west of UTC in the evening a task due today drops out, and a
+  timed task due on the cutoff day is excluded because a full ISO string sorts after the bare
+  date. The stage 4 tests use a time when UTC and local dates agree. The fix (a local date key from
+  `taskify-core`) is the next commit, with a failing test first.
+- The build, `npx tsc --noEmit` and the full CLI suite pass at 216/216.
+- Next: the `upcoming` date fix, then board/list behavior, then contact/sharing and
+  registration/presentation checks.
