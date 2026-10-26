@@ -81,7 +81,7 @@ test('Watch HTTPS lookup returns signed public preferences without persisting or
     },
   })
   await store.putPreference(old)
-  const before = JSON.stringify(store.state)
+  const before = store.snapshot()
   const response = await post(address, '/v1/watch/inbox-preference/query', {
     recipientPublicKey: recipient, relays: ['wss://discovery.example', 'wss://push.solife.me'],
   }, generateSecretKey())
@@ -93,7 +93,7 @@ test('Watch HTTPS lookup returns signed public preferences without persisting or
     relay: 'wss://discovery.example', filter: { kinds: [10_050], authors: [recipient], limit: 4 },
     limit: 4, requireEOSE: true,
   }])
-  assert.equal(JSON.stringify(store.state), before, 'Lookup must not create a preference cache or contact history')
+  assert.equal(store.snapshot(), before, 'Lookup must not create a preference cache or contact history')
 })
 
 test('Watch lookup keeps failed and invalid upstream replies distinct from completed empty queries', async (t) => {

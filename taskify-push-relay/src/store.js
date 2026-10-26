@@ -190,6 +190,12 @@ export class RelayStore {
     await this.persist()
   }
 
+  /// Everything the store keeps, as one canonical JSON string: for checks that an operation
+  /// left nothing behind, and for diagnostics. Not a backup format.
+  snapshot() {
+    return JSON.stringify(this.state)
+  }
+
   registrationKey(pubkey, installationID) {
     return `${pubkey.toLowerCase()}:${installationID}`
   }

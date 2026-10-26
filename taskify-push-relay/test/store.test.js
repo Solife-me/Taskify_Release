@@ -17,6 +17,15 @@ async function storeForTest(options = {}) {
   return { directory, store }
 }
 
+/// A second store on the same directory: what survived to disk, read through the public API.
+async function reopen(directory, options = {}) {
+  const store = new RelayStore({ dataDirectory: directory, ...options })
+  await store.load()
+  return store
+}
+
+const sizeOf = (event) => Buffer.byteLength(JSON.stringify(event))
+
 function giftWrap(id, recipient, createdAt = 1_700_000_000) {
   return {
     id,
@@ -91,7 +100,8 @@ test('a gift wrap alerts only the devices of the app that sent it', async () => 
 
   await store.putGiftWrap(giftWrap('1'.repeat(64), alice), { notify: true, application: 'snapstr' })
   assert.deepEqual(notified(), ['snapstr-phone'])
-  assert.equal(store.state.previews.length, 1)
+  const [snapstrJob] = store.duePushJobs(Number.MAX_SAFE_INTEGER)
+  assert.equal(store.previewForToken(snapstrJob.previewToken)?.id, '1'.repeat(64))
 
   await store.completePushJob(store.duePushJobs(Number.MAX_SAFE_INTEGER)[0].id)
   await store.putGiftWrap(giftWrap('2'.repeat(64), alice), { notify: true })
@@ -190,7 +200,9 @@ test('device registration is bounded without preventing token rotation', async (
     deviceToken: '90'.repeat(32),
     environment: 'production',
   })
-  assert.deepEqual(store.state.registrations.map((registration) => registration.pubkey).sort(), [bob, carol])
+  assert.equal(store.hasInbox(alice), false)
+  assert.equal(store.registrationsFor(bob).length, 1)
+  assert.equal(store.registrationsFor(carol).length, 1)
 })
 
 test('registrations nobody refreshes expire, and refreshing keeps them', async () => {
@@ -202,7 +214,8 @@ test('registrations nobody refreshes expire, and refreshing keeps them', async (
   await store.putRegistration(bob, 'phone-2', { deviceToken: '34'.repeat(32), environment: 'production' })
   clock += 200
   store.prune()
-  assert.deepEqual(store.state.registrations.map((registration) => registration.pubkey), [bob])
+  assert.deepEqual(store.registrationsFor(alice), [])
+  assert.equal(store.registrationsFor(bob).length, 1)
   assert.equal(store.hasInbox(alice), false)
 })
 
@@ -230,9 +243,9 @@ test('accepted gift wraps are durable, deduplicated, and enqueue one job per dev
   assert.equal(store.eventsFor(bob).length, 1)
   assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 2)
 
-  const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
-  assert.equal(onDisk.events.length, 1)
-  assert.equal(onDisk.pushJobs.length, 2)
+  const reopened = await reopen(directory)
+  assert.equal(reopened.eventsFor(bob).length, 1)
+  assert.equal(reopened.duePushJobs(Number.MAX_SAFE_INTEGER).length, 2)
 })
 
 test('NIP-09 deletion requests remove only same-author IDs and older addressable events', async () => {
@@ -258,8 +271,9 @@ test('NIP-09 deletion requests remove only same-author IDs and older addressable
   assert.equal(deleted, 2)
   assert.deepEqual(store.eventsFor(bob).map((event) => event.id), [otherAuthorWrap.id])
   assert.equal(store.preferencesFor([author]).length, 0)
+  const [remaining] = store.duePushJobs(Number.MAX_SAFE_INTEGER)
   assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 1)
-  assert.equal(store.state.previews.length, 1)
+  assert.equal(store.previewForToken(remaining.previewToken)?.id, otherAuthorWrap.id)
 })
 
 test('NIP-09 deletion requests require bounded valid e or a targets', async () => {
@@ -306,7 +320,6 @@ test('Watch wake jobs do not allocate unnecessary preview tokens', async () => {
 
   const [job] = store.duePushJobs(Number.MAX_SAFE_INTEGER)
   assert.equal(job.previewToken, undefined)
-  assert.equal(store.state.previews.length, 0)
 })
 
 test('Mac wake jobs do not allocate unnecessary preview tokens', async () => {
@@ -320,7 +333,6 @@ test('Mac wake jobs do not allocate unnecessary preview tokens', async () => {
 
   const [job] = store.duePushJobs(Number.MAX_SAFE_INTEGER)
   assert.equal(job.previewToken, undefined)
-  assert.equal(store.state.previews.length, 0)
   assert.equal(store.registrationsFor(bob)[0].deviceToken, 'ab'.repeat(32))
 })
 
@@ -446,13 +458,17 @@ test('a burst of wraps to one device waits as a single alert for the newest wrap
   const { store } = await storeForTest({ now: () => now })
   await store.putRegistration(bob, 'phone', { deviceToken: '77'.repeat(32), environment: 'production' })
 
+  const superseded = []
   for (const digit of ['1', '2', '3']) {
     await store.putGiftWrap(giftWrap(digit.repeat(64), bob, now), { notify: true })
+    superseded.push(store.duePushJobs(Number.MAX_SAFE_INTEGER)[0].previewToken)
   }
   const jobs = store.duePushJobs(Number.MAX_SAFE_INTEGER)
   assert.equal(jobs.length, 1)
   assert.equal(jobs[0].eventID, '3'.repeat(64))
-  assert.equal(store.state.previews.length, 1, 'superseded previews are dropped')
+  for (const token of superseded.slice(0, -1)) {
+    assert.equal(store.previewForToken(token), null, 'superseded previews are dropped')
+  }
   assert.deepEqual(store.previewForToken(jobs[0].previewToken)?.id, '3'.repeat(64))
 })
 
@@ -495,7 +511,7 @@ test('byte budgets evict the oldest wraps, per recipient and in total', async ()
     await store.putGiftWrap(big(digit.repeat(64), carol), { notify: false })
     now += 1
   }
-  const total = store.state.events.reduce((sum, entry) => sum + entry.bytes, 0)
+  const total = [...store.eventsFor(bob), ...store.eventsFor(carol)].reduce((sum, event) => sum + sizeOf(event), 0)
   assert.ok(total <= 13_000, `total ${total} within budget`)
   assert.equal(store.eventsFor(bob).length, 0, 'oldest wraps anywhere go first')
 })

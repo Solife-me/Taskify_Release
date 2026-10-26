@@ -177,6 +177,8 @@ test('kind 5 requests delete only events signed by the deletion author', async (
   }, authorKey)
   socket.send(JSON.stringify(['EVENT', giftWrap]))
   await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === giftWrap.id)
+  const [alert] = store.duePushJobs(Number.MAX_SAFE_INTEGER)
+  assert.equal(store.previewForToken(alert.previewToken)?.id, giftWrap.id)
 
   const impostorDeletion = finalizeEvent({
     kind: 5, created_at: giftWrap.created_at + 1, tags: [['e', giftWrap.id]], content: '',
@@ -194,7 +196,7 @@ test('kind 5 requests delete only events signed by the deletion author', async (
   assert.deepEqual(removed.slice(2), [true, 'deleted: 1 event'])
   assert.equal(store.eventsFor(recipientPubkey).length, 0)
   assert.equal(store.duePushJobs(Number.MAX_SAFE_INTEGER).length, 0)
-  assert.equal(store.state.previews.length, 0)
+  assert.equal(store.previewForToken(alert.previewToken), null)
 })
 
 test('a Snapstr sender alerts only Snapstr devices and a Taskify sender only Taskify devices', async (t) => {
