@@ -72,7 +72,9 @@ export function createBoardRepository(context: RuntimeContext) {
         boardRelays(boardId),
         10_000,
       );
-      const events = new Set(rawEvents.map((event) => session.createEvent(event)));
+      // Only the board's own key signs its definition, as the PWA and iOS check. NDK drops other
+      // authors for this filter today; the board's name, lists and children must not rest on that.
+      const events = new Set(rawEvents.filter((event) => event.pubkey === boardPubkey).map((event) => session.createEvent(event)));
 
       // Use config from closure (avoids extra file read and ensures correct profile)
       const entry = config.boards.find((b) => b.id === boardId);

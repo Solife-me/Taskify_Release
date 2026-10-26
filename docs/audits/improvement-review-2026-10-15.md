@@ -3949,3 +3949,13 @@ Found while answering what is public about events and RSVPs.
 - **Still possible:** two devices changing one board in the same second, neither having seen the
   other's change. No client can order that without coordination; relays keep one, as with any
   replaceable event.
+
+### Hardening — October 26, 2026: `syncBoard` checks a definition's author itself
+
+While fixing the ties, I noticed that `syncBoard` never compared a definition's author with the
+board key. The PWA (`applyBoardEvent`) and iOS (`decodeBoardEvent`) do, as the CLI's own task and
+calendar parsers do. A test with a relay that ignores the `authors` filter
+(`MockRelayOptions.ignoreAuthors`, new) shows **this was not exploitable**: NDK delivers an event
+only to subscriptions whose filters it matches (`dispatchEvent` → `matchFilters`), so a stranger's
+definition never reached `syncBoard`. The check is now explicit anyway, so a board's name, lists
+and children don't rest on an NDK internal. CLI 224/224; runtime package 87/87.

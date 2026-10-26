@@ -15,6 +15,8 @@ export type MockRelayOptions = {
   powDifficulty?: number;
   /** Advertise `powDifficulty` in NIP-11 (otherwise the relay only says so when it refuses). */
   advertisePow?: boolean;
+  /** Serve events whoever wrote them, ignoring a filter's `authors`, as a hostile relay might. */
+  ignoreAuthors?: boolean;
 };
 
 export type MockRelay = {
@@ -46,9 +48,9 @@ function encodeFrame(text: string, opcode = 0x1): Buffer {
   return Buffer.concat([header, payload]);
 }
 
-function matches(event: NostrEvent, filter: Record<string, unknown>): boolean {
+function matches(event: NostrEvent, filter: Record<string, unknown>, options: MockRelayOptions = {}): boolean {
   if (Array.isArray(filter.kinds) && !filter.kinds.includes(event.kind)) return false;
-  if (Array.isArray(filter.authors) && !filter.authors.includes(event.pubkey)) return false;
+  if (!options.ignoreAuthors && Array.isArray(filter.authors) && !filter.authors.includes(event.pubkey)) return false;
   if (Array.isArray(filter.ids) && !filter.ids.includes(event.id)) return false;
   if (typeof filter.since === "number" && event.created_at < filter.since) return false;
   if (typeof filter.until === "number" && event.created_at > filter.until) return false;
@@ -146,7 +148,7 @@ export async function startMockRelay(options: MockRelayOptions = {}): Promise<Mo
           return send(["CLOSED", subId, "auth-required: authenticate to read"]);
         }
         for (const event of events) {
-          if (filters.some((filter) => matches(event, filter))) send(["EVENT", subId, event]);
+          if (filters.some((filter) => matches(event, filter, options))) send(["EVENT", subId, event]);
         }
         return send(["EOSE", subId]);
       }

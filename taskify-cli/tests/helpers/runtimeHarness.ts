@@ -4,7 +4,7 @@ import { finalizeEvent, type NostrEvent } from "nostr-tools";
 import { createNostrRuntime } from "../../dist/runtime.js";
 import type { TaskifyConfig } from "../../src/config.ts";
 import type { TaskCache } from "../../src/taskCache.ts";
-import { startMockRelay, type MockRelay } from "../../../taskify-runtime-nostr/tests/helpers/mockRelay.ts";
+import { startMockRelay, type MockRelay, type MockRelayOptions } from "../../../taskify-runtime-nostr/tests/helpers/mockRelay.ts";
 import { configWithBoards, harnessPubkey } from "./cliHarness.ts";
 
 /** The runtime's boards for these tests: a list board, a week board and a compound of both. */
@@ -21,8 +21,8 @@ export const START = Date.parse("2026-10-25T12:00:00.000Z");
  * The CLI's Nostr runtime on a loopback relay, with the task cache and config in memory, a clock
  * that the test moves, and sequential UUIDs. Every event the runtime publishes is on `relay`.
  */
-export async function runtimeHarness(options: { boards?: TaskifyConfig["boards"] } = {}) {
-  const relay = await startMockRelay();
+export async function runtimeHarness(options: { boards?: TaskifyConfig["boards"]; relay?: MockRelayOptions } = {}) {
+  const relay = await startMockRelay(options.relay);
   const config = configWithBoards(structuredClone(options.boards ?? runtimeBoards));
   config.relays = [relay.url];
   config.profiles.test.relays = [relay.url];

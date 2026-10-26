@@ -270,3 +270,26 @@ test("each board definition is published after the newest one known, even in the
     await h.close();
   }
 });
+
+test("syncing ignores another author's definition even from a relay that serves it", async () => {
+  const h = await runtimeHarness({ relay: { ignoreAuthors: true } });
+  try {
+    const t = seconds(START);
+    h.relay.events.push(
+      await definitionEvent(BOARD, { tags: [["k", "lists"], ["name", "Groceries"]], payload: { columns: [{ id: "todo", name: "Todo" }] }, createdAt: t - 60 }),
+      // Newer, and naming boards of the stranger's choosing as this board's children.
+      await definitionEvent(BOARD, {
+        tags: [["k", "compound"], ["name", "Hijacked"]], payload: { children: ["attacker-board"] }, createdAt: t, secretKey: generateSecretKey(),
+      }),
+    );
+    const synced = await h.runtime.syncBoard(BOARD);
+    assert.equal(synced.name, "Groceries");
+    const entry = h.config.boards.find((board) => board.id === BOARD);
+    assert.equal(entry?.name, "Groceries");
+    assert.equal(entry?.kind, "lists");
+    assert.equal(entry?.children, undefined);
+    assert.equal(entry?.definitionAt, t - 60, "a stranger's timestamp isn't remembered either");
+  } finally {
+    await h.close();
+  }
+});
