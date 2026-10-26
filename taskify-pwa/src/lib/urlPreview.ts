@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { LS_URL_PREVIEW_CACHE } from "../localStorageKeys";
 import { kvStorage } from "../storage/kvStorage";
+import { previewLookupRequest } from "./workerLookups";
 
 export type UrlPreviewData = {
   url: string;
@@ -418,8 +419,8 @@ async function fetchPreview(url: string, options: FetchPreviewOptions = {}): Pro
       return null;
     }
     try {
-      const endpoint = `${base}/api/preview?url=${encodeURIComponent(url)}`;
-      const res = await fetch(endpoint, { headers: { Accept: "application/json" }, cache: "no-store" });
+      const [endpoint, init] = previewLookupRequest(base, url);
+      const res = await fetch(endpoint, { ...init, cache: "no-store" });
       if (!res.ok) {
         setCacheEntry(url, null, "empty");
         return null;

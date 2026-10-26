@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { nip19 } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { Contact, ContactProfile } from "../../lib/contacts";
+import { nip05LookupRequest } from "../../lib/workerLookups";
 import { makeContactId, normalizeContact } from "../../lib/contacts";
 import type { ContactSharePayload } from "../chatHelpers";
 import { encodeContactPayload, parseProfileContent } from "../chatHelpers";
@@ -158,13 +159,9 @@ export function useContactLookup({
       const fetchViaWorker = async (): Promise<{ pubkey: string; relays?: string[]; nip05: string } | null> => {
         const base = workerBaseUrl?.trim().replace(/\/$/, "");
         if (!base) return null;
-        const workerUrl = `${base}/api/nip05?address=${encodeURIComponent(normalized)}`;
+        const [workerUrl, init] = nip05LookupRequest(base, normalized);
         try {
-          const res = await fetch(workerUrl, {
-            headers: { Accept: "application/json" },
-            redirect: "follow",
-            mode: "cors",
-          });
+          const res = await fetch(workerUrl, { ...init, redirect: "follow", mode: "cors" });
           if (!res.ok) {
             lastError = `NIP-05 lookup failed (${res.status})`;
             return null;

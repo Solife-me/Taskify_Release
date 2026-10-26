@@ -11,7 +11,32 @@ import {
 import { handleNip05Lookup } from "./nip05.ts";
 import { handleWatchNostrPublish, handleWatchNostrQuery } from "./nostr-bridge.ts";
 import type { Env } from "./lib.ts";
-import { enforceRateLimit, jsonResponse, requireDb, withBodyWithin } from "./lib.ts";
+import { enforceRateLimit, jsonResponse, readBodyWithin, requireDb, withBodyWithin } from "./lib.ts";
+
+// A lookup's input sent in the body: a URL or address, never more than this.
+const MAX_LOOKUP_BODY_BYTES = 8 * 1024;
+
+/**
+ * The lookup input as the handlers read it, from a POST body or (for builds before C13-8) the
+ * query string. Taken from the body, the link or name never appears in a logged request URL; the
+ * URL built here is internal only.
+ */
+async function lookupInput(request: Request, url: URL, field: string): Promise<URL | Response> {
+  if (request.method === "GET") return url;
+  const bytes = await readBodyWithin(request, MAX_LOOKUP_BODY_BYTES);
+  if (!bytes) return jsonResponse({ error: "Request body too large" }, 413);
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return jsonResponse({ error: "Bad request" }, 400);
+  }
+  const value = body && typeof body === "object" ? (body as Record<string, unknown>)[field] : undefined;
+  if (typeof value !== "string") return jsonResponse({ error: "Bad request" }, 400);
+  const internal = new URL(url.origin + url.pathname);
+  internal.searchParams.set(field, value);
+  return internal;
+}
 
 // The Watch bridge verifies a signature over the whole body, so the body is bounded first.
 const MAX_WATCH_BRIDGE_BODY_BYTES = 256 * 1024;
@@ -221,15 +246,19 @@ export default {
           vapidPublicKey: env.VAPID_PUBLIC_KEY || "",
         });
       }
-      if (url.pathname === "/api/preview" && request.method === "GET") {
+      if (url.pathname === "/api/preview" && (request.method === "POST" || request.method === "GET")) {
         const limited = await enforceRateLimit(request, env.PREVIEW_RATE_LIMITER, "preview");
         if (limited) return limited;
-        return await handlePreviewProxy(url);
+        const input = await lookupInput(request, url, "url");
+        if (input instanceof Response) return input;
+        return await handlePreviewProxy(input);
       }
-      if (url.pathname === "/api/nip05" && request.method === "GET") {
+      if (url.pathname === "/api/nip05" && (request.method === "POST" || request.method === "GET")) {
         const limited = await enforceRateLimit(request, env.NIP05_RATE_LIMITER, "nip05");
         if (limited) return limited;
-        return await handleNip05Lookup(url, ctx);
+        const input = await lookupInput(request, url, "address");
+        if (input instanceof Response) return input;
+        return await handleNip05Lookup(input, ctx);
       }
       if (url.pathname === "/api/devices" && request.method === "PUT") {
         const limited = await enforceRateLimit(request, env.PUSH_RATE_LIMITER, "push");

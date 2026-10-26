@@ -2295,3 +2295,21 @@ test("the Worker keeps no reminder titles: saves drop them, and polls return non
   assert.equal("title" in items[0], false);
   assert.equal(items[0].taskId, "task-0");
 });
+
+test("preview and NIP-05 lookups accept their input in a POST body, kept out of the URL", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const post = (path: string, body: unknown) => worker.fetch(new Request(`https://taskify.test${path}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }), env);
+
+  // The same checks as the query-string form, which older builds still use.
+  const privateTarget = await post("/api/preview", { url: "http://127.0.0.1/" });
+  assert.equal(privateTarget.status, 400);
+  assert.deepEqual(await privateTarget.json(), { error: "URL target is not allowed" });
+  const badAddress = await post("/api/nip05", { address: "not an address" });
+  assert.equal(badAddress.status, 400);
+  assert.deepEqual(await badAddress.json(), { error: "Invalid NIP-05 address" });
+
+  assert.equal((await post("/api/preview", { url: `https://example.com/${"x".repeat(9_000)}` })).status, 413);
+  assert.equal((await post("/api/nip05", "not an object")).status, 400);
+});
