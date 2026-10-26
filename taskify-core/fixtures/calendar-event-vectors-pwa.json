@@ -1,5 +1,5 @@
 {
-  "description": "Calendar events (canonical copies) made by the PWA, and what every client must decode them to. Checked by PWA vitest and Swift CalendarEventVectorTests.",
+  "description": "Calendar events (canonical copies) made by the PWA, and what every client must decode them to. Checked by PWA vitest, Swift CalendarEventVectorTests and the CLI's wire-vectors test.",
   "boards": {
     "lists": {
       "id": "lists",

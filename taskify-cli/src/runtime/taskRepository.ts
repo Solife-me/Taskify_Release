@@ -381,8 +381,8 @@ export function createTaskRepository(context: RuntimeContext) {
         ...(patch.hiddenUntilISO !== undefined ? { hiddenUntilISO: patch.hiddenUntilISO } : {}),
         lastEditedBy: userPubkey,
       };
-      // reminders are device-local only — strip from published payload
-      delete merged.reminders;
+      // `reminders` stays as received: the PWA and iOS sync them in the payload, so an edit here must
+      // not drop theirs. This device's own reminders are local (`remindTask`) and never published.
       const statusTag = event.tags.find((t) => t[0] === "status");
       const status = (statusTag?.[1] ?? "open") as "open" | "done" | "deleted";
       const colTag = event.tags.find((t) => t[0] === "col");

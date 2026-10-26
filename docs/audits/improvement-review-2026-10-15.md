@@ -3081,7 +3081,7 @@ so a response never crosses between them in either direction.
 | C12-2 | Approve | 2026-10-25 | Done in seven stages. Every CLI command group runs through `buildProgram`/`runCli` with injected config (load and save), runtime, clock, UUIDs, prompt, share transport and output; every source-regex test of command code is replaced by behavior, and the remaining source assertions target the runtime for C12-4 (and raw NDK contact reads for C12-3). Found and fixed on the way: `upcoming` dates, `board create` in scripts, `boards`/`board list` drift, `share inbox --apply` progress, and `event invite`/`share event` (shared invitation rule in core) |
 | C12-3 | Approve | 2026-10-25 | Done in three stages. Shutdown is terminal and idempotent and finishes debounced publishes; NDK's unstoppable relay timer is shimmed and its multi-relay reconnect avoided, so processes exit by themselves and the runtime suite runs without `--test-force-exit`; `StandaloneNostrSession` is the owned path for one-off reads and writes, and the CLI uses it for profiles, contacts and bot lists |
 | C12-4 | Approve | 2026-10-25 | Done in four steps. `nostrRuntime.ts` (about 1,780 lines) is now a 176-line facade over the task, calendar and board repositories in `src/runtime/`. Each domain is pinned by behaviour on a loopback relay (`runtime-tasks`, `runtime-calendar`, `runtime-boards`), and no test reads runtime source any more. Found on the way: `createEvent` board names, RSVPs across clients (C12-7), the board-definition leak, and the two sync fixes below |
-| C12-5 | Approve | 2026-10-25 | Not started |
+| C12-5 | Approve | 2026-10-26 | Done. The CLI reads and edits the PWA's and iOS's task and calendar vectors through its runtime, and orders versions by the shared vectors. Two CLI differences found and fixed: case-sensitive version ids, and CLI edits dropping synced reminders |
 | C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
 | C12-7 | Approve | 2026-10-25 | Done in four commits. The RSVP rule (build, organizer check, board-derived token, newest per attendee) is in `taskify-core` with vectors iOS checks. The PWA calls it. The CLI publishes kind 30312 answers and reads them live; it no longer sends the RSVP DM or rewrites the board's copy |
 
@@ -3894,3 +3894,28 @@ Found while answering what is public about events and RSVPs.
   current second, with no `previous + 1` as tasks have. Two changes to one board in the same
   second can therefore tie, and NIP-01 relays keep the lower event id. Fixing that means a shared
   rule for every client, not a CLI change.
+
+### Checkpoint — October 26, 2026 (C12-5: the CLI consumes the cross-client wire vectors)
+
+- **The test.** `tests/wire-vectors.test.ts` makes the CLI a third consumer of
+  `taskify-core/fixtures/`. Each PWA- and iOS-made task and calendar event is put on the loopback
+  relay under the vector boards' shared ids and read by the CLI's own runtime:
+  - the decoded id, title, note, due time, status, list, priority, recurrence, series and
+    documents must match the vector;
+  - every live task is then edited from the CLI, and the republished payload must keep what other
+    clients wrote: `republishKeeps`, and the Scripture Memory link and stage, which the CLI doesn't
+    model but must carry;
+  - `compareReplaceableEvents` is checked against `event-version-vectors.json`.
+
+  No codec seams needed exporting; the runtime is exercised as the CLI runs it.
+- **Differences found, each with the shared rule already in the vectors, fixed in the CLI:**
+  - *CLI edits deleted other clients' reminders.* `updateTask` stripped `reminders` from the
+    payload it republished, on the grounds that reminders are device-local. They are local in the
+    CLI, but the PWA and iOS sync them in the payload, so a CLI edit wiped a task's reminders on
+    every other device. The payload's reminders are now kept as received, and the CLI still never
+    publishes its own.
+  - *Version ids compared case-sensitively.* The CLI's comparator now delegates to core
+    `compareEventVersions`: ids in any case, and a known id beats an unknown one.
+- The calendar vectors already matched.
+- The vector descriptions (and their PWA/Swift/core generators) now name the CLI as a consumer.
+- CLI 222/222; core 173/173; the PWA and Swift vector suites pass.

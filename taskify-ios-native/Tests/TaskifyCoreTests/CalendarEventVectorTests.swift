@@ -137,7 +137,7 @@ final class CalendarEventVectorTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(VectorFile(
-            description: "Calendar events (canonical copies) made by iOS, and what every client must decode them to. Checked by Swift CalendarEventVectorTests and PWA vitest.",
+            description: "Calendar events (canonical copies) made by iOS, and what every client must decode them to. Checked by Swift CalendarEventVectorTests, PWA vitest and the CLI's wire-vectors test.",
             boards: boards,
             vectors: vectors
         )).write(to: Self.fixtures.appendingPathComponent("calendar-event-vectors-ios.json"))

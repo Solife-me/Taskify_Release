@@ -18,6 +18,6 @@ test.runIf(process.env.WRITE_TASK_VECTORS === "1")("write the PWA's task event v
   const path = fileURLToPath(new URL("../../taskify-core/fixtures/task-event-vectors-pwa.json", import.meta.url));
   writeFileSync(
     path,
-    `${JSON.stringify({ description: "Task events made by the PWA, and what every client must decode them to. Checked by PWA vitest and Swift TaskEventVectorTests.", boards: VECTOR_BOARDS, vectors }, null, 2)}\n`,
+    `${JSON.stringify({ description: "Task events made by the PWA, and what every client must decode them to. Checked by PWA vitest, Swift TaskEventVectorTests and the CLI's wire-vectors test.", boards: VECTOR_BOARDS, vectors }, null, 2)}\n`,
   );
 });

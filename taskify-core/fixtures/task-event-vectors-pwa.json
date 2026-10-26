@@ -1,5 +1,5 @@
 {
-  "description": "Task events made by the PWA, and what every client must decode them to. Checked by PWA vitest and Swift TaskEventVectorTests.",
+  "description": "Task events made by the PWA, and what every client must decode them to. Checked by PWA vitest, Swift TaskEventVectorTests and the CLI's wire-vectors test.",
   "boards": {
     "lists": {
       "id": "lists",

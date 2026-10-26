@@ -262,7 +262,7 @@ final class TaskEventVectorTests: XCTestCase {
             vectors.append(Vector(name: name, board: boardKey, event: event, expected: expected))
         }
         let file = VectorFile(
-            description: "Task events made by iOS, and what every client must decode them to. Checked by Swift TaskEventVectorTests and PWA vitest.",
+            description: "Task events made by iOS, and what every client must decode them to. Checked by Swift TaskEventVectorTests, PWA vitest and the CLI's wire-vectors test.",
             boards: Self.boards,
             vectors: vectors
         )

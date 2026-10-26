@@ -18,6 +18,6 @@ test.runIf(process.env.WRITE_CALENDAR_VECTORS === "1")("write the PWA's calendar
   const path = fileURLToPath(new URL("../../taskify-core/fixtures/calendar-event-vectors-pwa.json", import.meta.url));
   writeFileSync(
     path,
-    `${JSON.stringify({ description: "Calendar events (canonical copies) made by the PWA, and what every client must decode them to. Checked by PWA vitest and Swift CalendarEventVectorTests.", boards: VECTOR_BOARDS, vectors }, null, 2)}\n`,
+    `${JSON.stringify({ description: "Calendar events (canonical copies) made by the PWA, and what every client must decode them to. Checked by PWA vitest, Swift CalendarEventVectorTests and the CLI's wire-vectors test.", boards: VECTOR_BOARDS, vectors }, null, 2)}\n`,
   );
 });

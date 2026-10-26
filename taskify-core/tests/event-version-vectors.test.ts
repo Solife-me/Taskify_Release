@@ -28,7 +28,7 @@ const cases = [
 function buildVectors() {
   return {
     description:
-      "Which version of a replaceable item wins: later created_at, then the lowest id (NIP-01); a known id wins a tie with an unknown one. expected is the sign of compare(a, b). Written by taskify-core tests/event-version-vectors.test.ts (WRITE_EVENT_VERSION_VECTORS=1); checked there and by Swift EventVersionVectorTests.",
+      "Which version of a replaceable item wins: later created_at, then the lowest id (NIP-01); a known id wins a tie with an unknown one. expected is the sign of compare(a, b). Written by taskify-core tests/event-version-vectors.test.ts (WRITE_EVENT_VERSION_VECTORS=1); checked there, by Swift EventVersionVectorTests and by the CLI's wire-vectors test.",
     vectors: cases.map((c) => ({ ...c, expected: Math.sign(compareEventVersions(c.a, c.b)) })),
   };
 }

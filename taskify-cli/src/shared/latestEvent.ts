@@ -1,3 +1,5 @@
+import { compareEventVersions } from "taskify-core";
+
 export type TimestampedRelayEvent = {
   created_at?: number;
   id?: string;
@@ -10,23 +12,18 @@ export function relayEventCreatedAt(event: TimestampedRelayEvent): number {
 }
 
 /**
- * Compare replaceable Nostr events using the deterministic ordering from NIP-01.
- * A positive value means `candidate` replaces `current`: a newer timestamp wins,
- * and for equal timestamps the event with the lexicographically lower id wins.
+ * Compare replaceable Nostr events by the rule every client shares (taskify-core
+ * `compareEventVersions`, fixtures/event-version-vectors.json). A positive value means `candidate`
+ * replaces `current`: a newer timestamp wins, then the lower id (in any case), then a known id.
  */
 export function compareReplaceableEvents(
   candidate: TimestampedRelayEvent,
   current: TimestampedRelayEvent,
 ): number {
-  const timestampDelta = relayEventCreatedAt(candidate) - relayEventCreatedAt(current);
-  if (timestampDelta !== 0) return timestampDelta;
-
-  const candidateId = typeof candidate.id === "string" ? candidate.id : "";
-  const currentId = typeof current.id === "string" ? current.id : "";
-  if (candidateId === currentId) return 0;
-  if (!candidateId) return -1;
-  if (!currentId) return 1;
-  return candidateId < currentId ? 1 : -1;
+  return compareEventVersions(
+    { createdAt: relayEventCreatedAt(candidate), id: candidate.id ?? null },
+    { createdAt: relayEventCreatedAt(current), id: current.id ?? null },
+  );
 }
 
 export function pickLatestEvent<TEvent extends TimestampedRelayEvent>(
