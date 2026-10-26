@@ -55,7 +55,7 @@ Constraints carried through every chunk:
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
 | 11 | macOS | `taskify-macos` | Approved implementation done (2026-10-23); C11-6A/C11-7A signed proof gates in progress; shared wallet deletion remains due after Dec 1 |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Done (2026-10-26): C12-1 to C12-5 and C12-7; C12-6 declined |
-| 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
+| 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Reviewed (2026-10-26); awaiting decisions |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
 
 ---
@@ -3959,3 +3959,197 @@ calendar parsers do. A test with a relay that ignores the `authors` filter
 only to subscriptions whose filters it matches (`dispatchEvent` → `matchFilters`), so a stranger's
 definition never reached `syncBoard`. The check is now explicit anyway, so a board's name, lists
 and children don't rest on an NDK internal. CLI 224/224; runtime package 87/87.
+
+## Chunk 13 — Worker and push relay
+
+The Cloudflare Worker serves the PWA and its `/api/` routes. These are:
+- reminders through Web Push, with a once-a-minute cron;
+- link previews and NIP-05 lookups;
+- voice extraction through Workers AI;
+- a Watch-to-Nostr bridge.
+
+The push relay is a restricted NIP-17 inbox relay and an APNs, FCM and Web Push bridge. It also
+serves as the Watch's HTTPS gateway. It ships as a StartOS package and runs in production behind
+a Cloudflare tunnel. The 2026-09-30 full-stack audit (report of 2026-10-02) already reviewed both
+services in depth. This chunk checks its open items against today's code, and adds what that
+audit did not cover.
+
+What the review found:
+
+- **The relay rewrites its whole state on every change (F5-4, still open).** Each stored gift wrap,
+  registration, push job and preview calls `persist()`. That `JSON.stringify`s all of `state.json`
+  on the event loop and writes the full file again. Measured on this Mac with a synthetic state at
+  the relay's own caps (100,000 wraps plus a 100,000-entry task cache, 231 MiB): 170–250 ms of
+  blocked event loop and about 200 ms of writing per change, with a 1.3 GB resident set. At
+  10,000 items: about 20 ms and 15 ms, 215 MiB. Each queued write also holds its own full snapshot
+  string until its turn. On a slow SD-card StartOS box, a burst of messages can therefore stack
+  several copies in memory. The production state size was not measured.
+- **Code items from the earlier audit, still open:**
+  - The Worker's limiters allow everything when their binding is missing (F1A-11(c)).
+  - The relay container runs as root (F1B-10).
+  - Every APNs alert opens a new HTTP/2 connection and carries no collapse ID or expiry
+    (F1B-3, F1B-11).
+  - Voice has one shared global daily cap that one person can spend (F1A-4).
+  - The schema is still created at request time as well as by migrations (F5-7).
+  - The legacy KV fallback is still in the code (F5-3).
+  - `compatibility_date` is 2024-03-01 (F1A-11(d)).
+  - `wrangler.toml` names the Worker `taskify`, while the deployed one is `taskify-public`
+    (F1A-11(e)).
+  - Reminder titles are sent to and stored by the Worker (F1A-8).
+  - Preview and NIP-05 inputs travel in URLs (F1A-9).
+- **Dependency advisories now surface only when someone runs an audit.** CI runs `npm audit` on
+  each push, but nothing runs it on a schedule. The DOMPurify (critical) and undici (high)
+  advisories published after 2026-10-22 were found by hand on 2026-10-26 (`fe41cd1c`). The
+  earlier report proposed a weekly run; it does not exist yet.
+- **The StartOS SDK fix now ships (F0-5).** The relay's development-only zod advisory is fixed in
+  `@start9labs/start-sdk` 3.1.0; the package pins 3.0.3.
+- **The relay package departs from the StartOS packaging guide in layout:**
+  - its image is built from the relay's own source in the same directory (`dockerBuild`, with
+    `upstreamRepo` = `packageRepo`), where the guide takes the application from a published image
+    or a pinned submodule;
+  - it has no `UPDATING.md`, and no package `AGENTS.md`/`CLAUDE.md`.
+
+  Because no image is published, the relay can be self-hosted only through StartOS or by building
+  it from source.
+- **Self-hosting stops at the relay.** Reminders, link previews, NIP-05 lookups, voice and the
+  Watch bridge exist only in the Cloudflare Worker. A StartOS self-hoster still depends on
+  `taskify.solife.me` for them. The Watch has two bridges to Nostr (the relay's gateway, with the
+  Worker's bridge as a documented failover), implemented twice with different authentication.
+- **Running cost is sound on the free plans.** A quiet cron minute is one indexed D1 query. Busy
+  minutes are bounded (45 devices, 5 reminders each), writes have daily budgets, and previews
+  parse only page heads.
+- **Language fit:** keep both in TypeScript/JavaScript. Both are I/O-bound and share `nostr-tools`
+  with the PWA. A Rust port would fix none of the findings above.
+
+### C13-1 — Per-record SQLite storage for the push relay — recommend **Approve**
+
+- **User:** StartOS self-hosters and the hosted relay. Memory, event-loop stalls and disk wear
+  grow with total state today.
+- **Proposal:**
+  - Replace `state.json` with `node:sqlite` (built into Node 22.23.4, no native module), in WAL
+    mode. One table per collection (wraps, preferences, registrations, push jobs, previews, relay
+    sessions, the task cache), with indexes for the existing caps and eviction orders.
+  - Each change writes only its own rows.
+  - On first start, the relay imports an existing `state.json` in one transaction and keeps the
+    file renamed, so a failed import changes nothing.
+  - Back up with SQLite's online backup, so StartOS backups are consistent.
+- **Test first:** a store-contract suite run against the current store, then the SQLite store;
+  an import test from a real-shaped `state.json`; a StartOS box install, update and backup
+  restore.
+- **Effort:** M–L. **Risk:** data migration. Old releases can't read the new store, so the
+  package version records it as one-way.
+
+### C13-2 — One APNs connection, with collapse IDs and expiry — recommend **Approve**
+
+- **User:** everyone receiving alerts. Apple asks providers to keep connections open; one per
+  push adds a TLS handshake to each alert and risks throttling.
+- **Proposal:**
+  - Keep one HTTP/2 session per APNs authority, reconnecting on `GOAWAY` or error.
+  - Set `apns-collapse-id` per device and app, so repeated "new message" alerts collapse.
+  - Set `apns-expiration`, so a stale alert is dropped rather than delivered late.
+- **Test first:** a local HTTP/2 server asserting reuse, headers and reconnection.
+- **Effort:** S–M. **Risk:** low.
+
+### C13-3 — The relay container runs unprivileged — recommend **Approve**
+
+- **Proposal:** add a non-root `USER` in the Dockerfile. A StartOS oneshot gives `/data` to that
+  user before the daemon starts; it runs on every start and is idempotent.
+- **Test:** install and update on a StartOS box, with existing data.
+- **Effort:** S. **Risk:** low, provided the ownership step precedes the daemon.
+
+### C13-4 — The deployed Worker is the one CI checked — recommend **Approve**
+
+- **Proposal:**
+  - Limiters fail closed when their binding is missing (test-first).
+  - `wrangler.toml` names the deployed Worker (`taskify-public`, to be confirmed).
+  - CI runs `wrangler deploy --dry-run` with that configuration.
+  - `compatibility_date` advances to a current date with the full test pass.
+  - A weekly scheduled CI run of the existing audit steps.
+- **Effort:** S. **Risk:** low. The name must match what is deployed, or the next deploy creates a
+  second Worker.
+
+### C13-5 — Schema from migrations only, and the KV fallback removed — recommend **Approve**, staged
+
+- **Proposal:**
+  - Document `wrangler d1 migrations apply` as part of every deploy, then drop `ensureSchema`
+    (F5-7).
+  - Once the maintainer confirms the three legacy KV namespaces are empty, remove the KV fallback
+    and its bindings (F5-3).
+  - Move the VAPID private key from a KV namespace to a secret (F1A-11(b)); the code already
+    accepts one.
+- **Effort:** S. **Risk:** low once migrations are applied on deploy.
+
+### C13-6 — The relay package follows the packaging guide; SDK 3.1.0 — recommend **Approve**
+
+- **Proposal:**
+  - Bump `@start9labs/start-sdk` to 3.1.0 (F0-5).
+  - Add `UPDATING.md`, saying where the relay image comes from.
+  - Add a short package `AGENTS.md` (the relay's source living beside the package, and the test
+    commands) and the one-line `CLAUDE.md`.
+  - Verify with `s9pk pack` and an install.
+- **Effort:** S. **Risk:** low.
+
+### C13-7 — Publish the relay as a versioned image — recommend **Explore**
+
+- **Proposal:** CI builds a multi-arch relay image on each relay version tag and publishes it to
+  GHCR. The StartOS package then pins `dockerTag` instead of building from source, as the guide
+  prescribes. Anyone can then self-host the relay with plain Docker.
+- **To explore:** whether the relay's source moves to its own directory (or repository) apart from
+  the package, the GHCR and release flow, and the multi-arch build time on free runners.
+
+### C13-8 — The Worker stops holding reminder titles and URL-borne inputs — recommend **Approve**
+
+- **User:** PWA users with reminders. Today the Worker stores each reminder's title in plaintext.
+- **Proposal:**
+  - The PWA sends only `{taskId, reminderKey, sendAt, minutes}`, and resolves the title from its
+    own tasks when the wake arrives. The Worker accepts the old shape until old builds are gone.
+  - Preview and NIP-05 lookups move to request bodies (F1A-8, F1A-9).
+- **Effort:** M. **Risk:** needs a PWA release first, and a compatibility window.
+
+### C13-9 — Self-hostable Worker services — recommend **Explore**
+
+- **Proposal:** decide which Worker routes a StartOS self-hoster needs (reminders, previews,
+  NIP-05, the Watch bridge), and whether they move into the relay package on C13-1's store. The
+  PWA would then find a self-hosted backend through `/api/config`.
+- **To explore:** whether the Watch's two bridges converge on the relay's gateway model.
+- **Not included:** voice stays on Workers AI.
+
+### C13-10 — Voice keeps a share for returning users — recommend **Approve**
+
+- **Proposal:** split the global daily voice cap so part of it is reserved for accounts that used
+  voice before. One person can then no longer switch voice off for everyone (F1A-4).
+- **Effort:** S. **Risk:** low.
+
+### C13-11 — Port the Worker or relay to Rust — recommend **Decline**
+
+Both services are I/O-bound and share `nostr-tools` with the PWA. None of the findings is about
+CPU or memory safety in parsing that a port would fix.
+
+### Maintainer-only items carried from the earlier audit
+
+These need account access, not code. Their state since 2026-10-02 is not visible from the
+repository:
+- a Cloudflare rate rule on `/api/*` (F1A-17);
+- check for the retired calendar tables and, if present, revoke the OAuth client and apply
+  migration 0005 (F1A-16);
+- apply D1 migrations 0006–0007 and deploy;
+- delete the `GEMINI_API_KEY` secret and revoke the key (F1A-10);
+- turn off Worker invocation logs (F1A-9);
+- rebuild and install the relay package (now `0.4.1:18`, Node 22.23.4);
+- once old builds are gone, `TASKIFY_AUTH_V1=off` and `REQUIRE_SIGNED_PREVIEWS=true`.
+
+### Decisions
+
+| ID | Decision | Date | Outcome |
+| --- | --- | --- | --- |
+| C13-1 | Pending | | |
+| C13-2 | Pending | | |
+| C13-3 | Pending | | |
+| C13-4 | Pending | | |
+| C13-5 | Pending | | |
+| C13-6 | Pending | | |
+| C13-7 | Pending | | |
+| C13-8 | Pending | | |
+| C13-9 | Pending | | |
+| C13-10 | Pending | | |
+| C13-11 | Pending | | |
