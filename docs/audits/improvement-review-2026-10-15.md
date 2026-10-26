@@ -4149,9 +4149,9 @@ repository:
 | C13-4 | Approve | 2026-10-26 | Done except the Worker's name, which awaits the maintainer's confirmation. Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
 | C13-5 | Approve | 2026-10-26 | Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes) |
 | C13-6 | Approve | 2026-10-26 | Done. SDK 3.1.0 (the dev-only zod advisory is gone; full audit clean), `UPDATING.md`, package `AGENTS.md` and `CLAUDE.md`. `make arm` packs 0.5.0:0. `start-cli` here is 2.3.0, behind the published 2.5.1 |
-| C13-7 | Explore | 2026-10-26 | Not started |
+| C13-7 | Explore | 2026-10-26 | Explored: proposal C13-7a below, awaiting a decision |
 | C13-8 | Approve | 2026-10-26 | Reminder titles done: the PWA sends none, and the Worker stores none and returns none; migration 0008 clears stored titles. The service worker names a fired reminder from the device's IndexedDB copy (`public/reminder-titles.js`), kept only while push is on. Checked in a production build in the browser. Found on the way and fixed separately: the PWA's service worker never registered after the async bootstrap (`020e78df`). Preview and NIP-05 lookups now send their input in a POST body (`workerLookups.ts`). The Worker answers both forms, and in its local runtime the POST log lines show no link or name. **Remove the GET forms** once builds before this change are gone, about a month after it ships |
-| C13-9 | Explore | 2026-10-26 | Not started |
+| C13-9 | Explore | 2026-10-26 | Explored: proposals C13-9a and C13-9b below, awaiting a decision |
 | C13-10 | Approve | 2026-10-26 | Done. Accounts with no voice use in the previous 7 days share at most 600 of the 1,000 daily sessions, so 400 stay for returning users; the account's own budget is still checked first. Ageing accounts a day ahead would game it, but each aged account costs the new-account share and the per-address limit. Tested on real SQLite |
 | C13-11 | Decline | 2026-10-26 | Keep TypeScript/JavaScript |
 
@@ -4240,3 +4240,106 @@ Not taken from wisp:
 The last could come later through a raw-JSON read path if REQ replay ever shows up in profiles.
 
 Relay suite 111/111.
+
+### Checkpoint — October 26, 2026 (C13-7 and C13-9 explored)
+
+#### C13-7 — the relay as a published image
+
+**What is true now:**
+- The relay's source lives inside its StartOS package (`taskify-push-relay/src`, `test`,
+  `Dockerfile`), and the manifest builds it with `dockerBuild`. `packageRepo` and `upstreamRepo` are
+  the same URL.
+- The packaging guide allows three sources for an application: a published image, a git submodule,
+  or a Start9-built image. Source kept inside the package is the layout it calls a fork
+  (`project-structure.md`, "The Package Repo Is Not a Fork of the Application").
+- The repository is public, so GHCR hosting is free. It has no git tags yet.
+- The image's dependencies (`nostr-tools`, `ws`) are pure JavaScript. On this Apple-silicon Mac, a
+  cold `buildx` build took 5 s for linux/amd64 under emulation and 4 s for linux/arm64 natively,
+  base image cached. One `ubuntu-latest` runner with QEMU is therefore enough; no Arm runner is
+  needed.
+
+**Proposal C13-7a:**
+1. **Split the directories.** The relay moves to `push-relay/` at the repository root: `src/`,
+   `test/`, `Dockerfile`, a `package.json` with only `nostr-tools` and `ws`, and a README for plain
+   Docker use (`docker run -v relay:/data -p 8080:8080 …`). `taskify-push-relay/` keeps only
+   packaging: `startos/`, the docs, the `Makefile`, and the SDK as a development dependency. CI runs
+   the relay's tests from the new path.
+2. **Publish on a tag.** A `push-relay-v<version>` tag runs a workflow that:
+   - runs the relay tests;
+   - checks that the tag matches `push-relay/package.json`;
+   - builds linux/amd64 and linux/arm64 with buildx;
+   - pushes `ghcr.io/solife-me/taskify-push-relay:<version>` using `GITHUB_TOKEN`
+     (`packages: write`).
+3. **Pin the image in the package.** The manifest takes `dockerTag:
+   'ghcr.io/solife-me/taskify-push-relay:<version>'`. `UPDATING.md` says to confirm the tag with
+   `docker manifest inspect` before pinning it. The `chown` oneshot and the `node` user are
+   unchanged.
+4. **Later, a repository of its own for the package** (`taskify-push-relay-startos`), like every
+   StartOS package. The maintainer creates it; until then the split directories already follow the
+   guide's rule.
+
+- **Effort:** M. **Risk:** low.
+- **Release order:** the image must be published before the package that pins it can be built.
+- **Maintainer:** after the first push, check the GHCR package is public; new GHCR packages can
+  start private.
+
+#### C13-9 — Worker services a self-hoster needs
+
+**Who uses each route:**
+- `/api/preview`, `/api/nip05`, `/api/reminders` and `/api/devices` serve **only the PWA**. No
+  Swift or CLI source calls them.
+- The native apps call `/api/voice/*` and `/api/config` (for voice), and the Watch calls the Nostr
+  bridge.
+- The PWA finds its backend from `/api/config` on the origin that served it.
+
+So a self-hosted reminders, preview or NIP-05 service helps only someone who also serves the PWA
+themselves.
+
+**The Watch's two bridges:**
+- Since `b545bb16` (2026-09-04), the Watch reads and publishes tasks through the push relay's
+  gateway (`/v1/watch/tasks/query`, `/v1/watch/task-events/publish`), which has the task cache and
+  NIP-42 relay authentication.
+- The Worker's `/api/watch/nostr/{query,publish}` (since `1044f185`, 2026-08-07) is now used only
+  when the gateway call fails, or when the Watch has no gateway URL.
+- Every iPhone build since `b545bb16` provisions one: the user's push server, else
+  `https://push.solife.me`.
+
+**The privacy gap:** a Watch whose owner runs their own relay falls back to `taskify.solife.me` on
+any gateway error. It then sends an account-signed request and its board authors to Taskify's Worker,
+a service the owner chose not to use.
+
+**Proposal C13-9a — converge the Watch on the gateway:**
+1. **Now:** the Watch falls back to the Worker bridge only when its gateway is Taskify's own
+   (`push.solife.me`), never from a self-hosted one. This is a Swift change, and its test comes
+   first.
+2. **After old builds expire:** remove the Worker bridge, `WATCH_NOSTR_RATE_LIMITER`, and the
+   Watch's failover.
+   - TestFlight builds expire 90 days after upload. Builds from before 2026-09-04 are therefore gone
+     by 2026-12-03, assuming no App Store build predates the gateway.
+   - From then on, the Watch's task sync is as available as the relay, which already serves its
+     chat.
+
+- **Effort:** S, then S. **Risk:** low.
+
+**What moving the PWA services to Node would take:**
+- **Reminders:** port easily. Web Push here carries no payload: a VAPID-signed wake-up, after which
+  the service worker polls. A Node port needs ES256 signing (`node:crypto`), C13-1's SQLite store,
+  and a timer in place of cron.
+- **NIP-05:** a plain fetch; ports as is.
+- **Previews:** the hard one.
+  - They parse with `HTMLRewriter`, which exists only on Workers.
+  - They rely on `global_fetch_strictly_public` to refuse private addresses after DNS. `public-fetch.ts`
+    checks host names and literal addresses only.
+  - On a home server the fetcher sits on the owner's LAN, so a port needs connect-time address
+    checks: a `lookup` that refuses private results, re-checked on every redirect. Without them, a
+    preview link becomes a way into the LAN.
+- **Voice:** stays on Workers AI, as decided.
+
+**Proposal C13-9b — don't move these services into the relay package:**
+- The relay stays a Nostr relay and APNs bridge.
+- If self-hosting the PWA is wanted later, it is a package of its own: the built PWA plus reminders,
+  NIP-05 and previews behind one origin, with connect-time address checks written and tested before
+  previews are enabled.
+- Until then a self-hosted PWA has no previews or reminders, and says so.
+- **Recommend:** Decline for now. Reopen when a self-hosted PWA is wanted.
+
