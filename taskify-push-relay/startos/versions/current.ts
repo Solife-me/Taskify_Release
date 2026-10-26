@@ -1,7 +1,7 @@
 import { IMPOSSIBLE, VersionInfo } from '@start9labs/start-sdk'
 
 export const current = VersionInfo.of({
-  version: '0.5.0:1',
+  version: '0.5.0:2',
   releaseNotes: {
     en_US: `**Storage**
 
@@ -20,7 +20,11 @@ export const current = VersionInfo.of({
 - The relay now runs as an unprivileged user instead of root.
 - Pins the Node.js runtime to 22.23.4 for the October 2026 Node.js and eMudhra certificate fixes, if 0.4.1:18 was not installed.
 - Built with StartOS SDK 3.1.0.
-- The public NIP-11 relay information reports the installed relay version instead of the stale 0.4.1 value.`,
+- The public NIP-11 relay information reports the installed relay version instead of the stale 0.4.1 value.
+
+**Packaging**
+
+- The package now pins Taskify's public, multi-architecture relay image instead of rebuilding an embedded source copy.`,
   },
   migrations: {
     up: async () => {},

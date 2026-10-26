@@ -108,6 +108,25 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        working-directory: push-relay
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+      - run: npm test
+      - name: Build the production relay image
+        run: docker build --tag taskify-push-relay:ci .
+      # The image installs with --omit=dev, so that is what is gated; the weekly dependency-audit
+      # workflow also reports the development tools.
+      - run: npm audit --omit=dev --audit-level=high
+
+  push-relay-startos:
+    name: Push relay StartOS package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
         working-directory: taskify-push-relay
     steps:
       - uses: actions/checkout@v7
@@ -117,11 +136,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
-      - name: Build the production relay image
-        run: docker build --tag taskify-push-relay:ci .
-      # The image installs with --omit=dev, so that is what is gated; the weekly dependency-audit
-      # workflow also reports the development tools.
-      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run build
 
   shared-libraries:
     name: taskify-core and taskify-runtime-nostr

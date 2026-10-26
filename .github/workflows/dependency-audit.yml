@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [taskify-pwa, worker, taskify-push-relay, taskify-cli, taskify-core, taskify-runtime-nostr]
+        package: [taskify-pwa, worker, push-relay, taskify-push-relay, taskify-cli, taskify-core, taskify-runtime-nostr]
     defaults:
       run:
         working-directory: ${{ matrix.package }}

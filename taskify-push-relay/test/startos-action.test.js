@@ -25,3 +25,17 @@ test('StartOS APNs action migrates old config to an independently editable Mac t
   assert.match(source, /current\.macTopic\s*\?\?\s*'solife\.me\.Taskify\.Mac'/)
   assert.match(source, /macTopic,\s*\n\s*snapstrTopic,/)
 })
+
+test('StartOS package pins the published multi-architecture relay image', async () => {
+  const manifest = await readFile(
+    new URL('../startos/manifest/index.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(
+    manifest,
+    /dockerTag:\s*'ghcr\.io\/solife-me\/taskify-push-relay:0\.5\.0'/,
+  )
+  assert.match(manifest, /arch:\s*\['x86_64',\s*'aarch64'\]/)
+  assert.doesNotMatch(manifest, /dockerBuild/)
+})

@@ -58,7 +58,8 @@ Taskify_Release/
 │   └── migrations/            # D1 SQL migrations
 │
 ├── taskify-ios-native/        # Native SwiftUI app and TaskifyCore Swift package
-├── taskify-push-relay/        # NIP-17 inbox relay and APNs bridge
+├── push-relay/                # NIP-17 inbox relay and APNs/FCM/Web Push bridge
+├── taskify-push-relay/        # StartOS package for the published relay image
 │
 ├── docs/                      # Project documentation
 │   ├── README.md             # Documentation index
@@ -131,7 +132,8 @@ Test runners are package-specific:
 | `taskify-runtime-nostr` | `npm test` | Node test runner; builds first |
 | `taskify-cli` | `npm test` | Node test runner; builds first |
 | `worker` | `npm test` | Node test runner |
-| `taskify-push-relay` | `npm test` | Node test runner |
+| `push-relay` | `npm test` | Node test runner |
+| `taskify-push-relay` | `npm test && npm run check && npm run build` | StartOS package checks |
 
 Run commands from the corresponding package directory. Add PWA tests as `*.test.ts` or `*.test.tsx`; Vitest discovers them automatically. See the [native iOS README](taskify-ios-native/README.md) for Swift test instructions.
 

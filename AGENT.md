@@ -51,10 +51,11 @@ Taskify_Release/
 │   ├── Tests/           # Mac presentation and runtime-configuration regression tests
 │   └── UITests/         # Isolated app-host smoke tests; never use a production identity/store
 │
-├── taskify-push-relay/   # Dedicated NIP-17 inbox relay, APNs/FCM/Web Push bridge, StartOS package
+├── push-relay/           # Dedicated NIP-17 inbox relay and APNs/FCM/Web Push bridge
 │   ├── src/              # Relay, NIP-42/NIP-98 auth, store, APNs provider
-│   ├── startos/          # Start SDK 2.x manifest, action, daemon, interface, backup
 │   └── test/             # Protocol, persistence, APNs, and WebSocket integration tests
+├── taskify-push-relay/   # StartOS package pinned to the published multi-architecture relay image
+│   └── startos/          # Start SDK manifest, actions, daemon, interface and backup
 │
 ├── docs/                 # Project documentation
 │   ├── README.md              # Documentation index
@@ -133,14 +134,14 @@ Backups
 | **NIP-01** | Core Nostr event structure | `nostr/`, `domains/nostr/` |
 | **NIP-17** | Private DMs, kind-10050 inbox relay preferences, sender/recipient delivery copies | `taskify-ios-native/Sources/TaskifyCore/Nostr/NostrSharedInbox.swift`, `taskify-ios-native/Sources/TaskifyCore/Nostr/NIP17InboxRelayResolver.swift` |
 | **NIP-59** | Gift-wrapped Nostr events with randomized timestamps and ephemeral outer keys | `taskify-ios-native/Sources/TaskifyCore/Nostr/NostrSharedInbox.swift` |
-| **NIP-42** | Relay authentication | `nostr/RelayAuth.ts`, `taskify-ios-native/Sources/TaskifyCore/Sync/TaskSyncEngine.swift`, `taskify-push-relay/src/server.js` |
-| **NIP-98** | Authenticated chat-push device registration (Apple native apps and PWA) | `taskify-ios-native/Sources/TaskifyCore/Nostr/DMPushRegistrationClient.swift`, `taskify-pwa/src/domains/push/chatPush.ts`, `taskify-push-relay/src/auth.js` |
+| **NIP-42** | Relay authentication | `nostr/RelayAuth.ts`, `taskify-ios-native/Sources/TaskifyCore/Sync/TaskSyncEngine.swift`, `push-relay/src/server.js` |
+| **NIP-98** | Authenticated chat-push device registration (Apple native apps and PWA) | `taskify-ios-native/Sources/TaskifyCore/Nostr/DMPushRegistrationClient.swift`, `taskify-pwa/src/domains/push/chatPush.ts`, `push-relay/src/auth.js` |
 | **NIP-47** | Nostr Wallet Connect (NWC) | `wallet/nwc.ts` |
 | **NIP-61** | Nutzap / P2PK Cashu | `wallet/p2pk.ts` |
 | **NIP-96** | File/backup storage over Nostr | `nostr/Nip96Client.ts` |
 | **Cashu NUT-16** | Offline/deterministic tokens | `wallet/nut16.ts` |
 | **Web Push (RFC 8030)** | Push notifications via VAPID | `worker/src/index.ts` |
-| **Apple Push Notification service** | Generic DM alert delivery with device-side rich preview decryption | `taskify-ios-native/Sources/TaskifyNotificationService/NotificationService.swift`, `taskify-ios-native/Sources/TaskifyApp/Notifications/DMPushNotificationCoordinator.swift`, `taskify-push-relay/src/apns.js` |
+| **Apple Push Notification service** | Generic DM alert delivery with device-side rich preview decryption | `taskify-ios-native/Sources/TaskifyNotificationService/NotificationService.swift`, `taskify-ios-native/Sources/TaskifyApp/Notifications/DMPushNotificationCoordinator.swift`, `push-relay/src/apns.js` |
 | **DLEQ proofs** | Cashu blind signature verification | `wallet/dleq.ts` |
 
 ---
@@ -194,11 +195,12 @@ curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"
 npx wrangler@4.150.0 deploy --dry-run --outdir /tmp/wrangler
 ```
 
-**Push relay image:** CI builds the Dockerfile on every change. A maintainer publishes a release
-only by pushing `push-relay-v<package.json version>`; the tag workflow re-runs the tests, requires
-an exact version match, and publishes amd64 and arm64 to
-`ghcr.io/solife-me/taskify-push-relay:<version>`. Agents never push tags. Confirm the first GHCR
-package is public before the StartOS package is changed to consume it.
+**Push relay image:** `push-relay/` is the application and `taskify-push-relay/` is only its
+StartOS package. CI builds the application Dockerfile on every change. A maintainer publishes a
+release only by pushing `push-relay-v<push-relay/package.json version>`; the tag workflow re-runs
+the tests, requires an exact version match, and publishes amd64 and arm64 to
+`ghcr.io/solife-me/taskify-push-relay:<version>`. Agents never push tags. Confirm the exact GHCR
+tag is public and contains both architectures before changing the StartOS image pin.
 
 ### Important Notes
 
@@ -322,10 +324,10 @@ package is public before the StartOS package is changed to consume it.
 | `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyWatchChatRuntimeTests/TaskifyWatchIndependentClientTests.swift` | Independent Watch task transport privacy | A failed self-hosted gateway never sends signed task reads or writes to Taskify's Worker; Taskify's own gateway retains the temporary compatibility fallback |
-| `taskify-core/fixtures/dm-push-registration-vectors.json`, `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift`, `taskify-push-relay/test/{server,apns,store}.test.js` | Apple push registration across native clients and relay | Shared legacy/iOS/Watch/Mac platform and token-normalization vectors; NIP-98 request binding; distinct metadata-free Mac topic routing with no preview capability |
+| `taskify-core/fixtures/dm-push-registration-vectors.json`, `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift`, `push-relay/test/{server,apns,store}.test.js` | Apple push registration across native clients and relay | Shared legacy/iOS/Watch/Mac platform and token-normalization vectors; NIP-98 request binding; distinct metadata-free Mac topic routing with no preview capability |
 | `taskify-ios-native/Tests/TaskifyCoreTests/ShareTaskDraftTests.swift`, `taskify-ios-native/Tests/TaskifyNativeUITests/ShareToTaskUITests.swift` | Native share sheet to tasks | Draft title/note rules and isolated file persistence; Safari page-title capture; real image upload and attachment when the app imports the draft |
 | `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift`, `taskify-macos/UITests/TaskifyMacUITests.swift` | Mac build, presentation and isolated app host | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 28 package tests cover DST-aware placement, list drafts, pending wallet outcomes, recovery consent, payment-request mint selection, recurrence, deep-link selection, runtime isolation, live withdraw-only routes, recovery-mode wallet startup, production-only APNs lifecycle/entitlements, the explicit signed-push proof gate, file/raw-image import, Transferable type negotiation, both encrypted attachment inputs, and the isolated no-relay external-action store; ten isolated host smokes cover deep-link navigation plus terminated-app App Intent capture, wallet close-out surfaces, task editing and completion, two-window conflicts/account switching, quit/outbox persistence, local Spotlight index/open/remove, and raw PNG paste in both composers without production relays, APNs registration or wallet startup |
-| `taskify-push-relay/test/*.test.js` | Push relay and StartOS runtime | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy and per-platform topic configuration/migration, one kept-open APNs connection (reconnected after a close) with per-app collapse IDs and a day's expiry, retries, authenticated WebSocket delivery, and Web Push (RFC 8291 payload a browser decrypts, VAPID signature, push-service-only endpoints); refusals that need no signature (kind, recipient, author, size) come before the signature check; a reader that falls too far behind is cut off; the SQLite store's durability across reopening, all-or-nothing writes, task-cache columns on disk, and the one-time import of a former `state.json` (sequences kept, run once) |
+| `push-relay/test/*.test.js`, `taskify-push-relay/test/*.test.js` | Push relay and StartOS package | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy and per-platform topic configuration/migration, one kept-open APNs connection (reconnected after a close) with per-app collapse IDs and a day's expiry, retries, authenticated WebSocket delivery, and Web Push (RFC 8291 payload a browser decrypts, VAPID signature, push-service-only endpoints); refusals that need no signature (kind, recipient, author, size) come before the signature check; a reader that falls too far behind is cut off; the SQLite store's durability across reopening, all-or-nothing writes, task-cache columns on disk, and the one-time import of a former `state.json` (sequences kept, run once); package tests cover StartOS configuration actions |
 
 Additional PWA regression tests include `src/nostr/startupStability.test.ts`, which is
 present in this checkout and discovered by Vitest.

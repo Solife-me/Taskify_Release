@@ -4149,7 +4149,7 @@ repository:
 | C13-4 | Approve | 2026-10-26 | Done except the Worker's name, which awaits the maintainer's confirmation. Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
 | C13-5 | Approve | 2026-10-26 | Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes) |
 | C13-6 | Approve | 2026-10-26 | Done. SDK 3.1.0 (the dev-only zod advisory is gone; full audit clean), `UPDATING.md`, package `AGENTS.md` and `CLAUDE.md`. `make arm` packs 0.5.0:0. `start-cli` here is 2.3.0, behind the published 2.5.1 |
-| C13-7a | Approve | 2026-10-26 | Stage 1 done: an exact `push-relay-v<version>` tag tests and publishes amd64/arm64 to GHCR, and ordinary CI builds the production image. To avoid either breaking the StartOS build or duplicating source, the directory split and package pin happen together only after the first image is published and confirmed public |
+| C13-7a | Approve | 2026-10-26 | Done. An exact `push-relay-v<version>` tag tests and publishes amd64/arm64 to GHCR. The relay application now lives in `push-relay/`; `taskify-push-relay/` contains only the StartOS package and pins the public versioned image. The two packages have independent dependencies, tests and CI jobs, with no duplicated application source |
 | C13-8 | Approve | 2026-10-26 | Reminder titles done: the PWA sends none, and the Worker stores none and returns none; migration 0008 clears stored titles. The service worker names a fired reminder from the device's IndexedDB copy (`public/reminder-titles.js`), kept only while push is on. Checked in a production build in the browser. Found on the way and fixed separately: the PWA's service worker never registered after the async bootstrap (`020e78df`). Preview and NIP-05 lookups now send their input in a POST body (`workerLookups.ts`). The Worker answers both forms, and in its local runtime the POST log lines show no link or name. **Remove the GET forms** once builds before this change are gone, about a month after it ships |
 | C13-9a | Approve | 2026-10-26 | Stage 1 done. Failed reads and publishes through a self-hosted Watch gateway now propagate that failure and never send the signed request, board list or event to Taskify's Worker. Taskify's own gateway retains the old fallback until stage 2 after 2026-12-03 |
 | C13-9b | Decline | 2026-10-26 | Keep PWA-only services out of the relay. Reconsider a separate self-hosted PWA package only when that product is wanted and preview fetching has connect-time private-address defenses |
@@ -4393,4 +4393,27 @@ a service the owner chose not to use.
 - The relay semver remains 0.5.0 because that is the installed and not-yet-tagged application
   release. The StartOS revision advances to 0.5.0:1 so a server already running 0.5.0:0 can apply
   the corrected image normally.
+
+### Checkpoint — October 26, 2026 (C13-7a complete: published application, package-only StartOS source)
+
+- The maintainer created `push-relay-v0.5.0` at `1277f371`. GitHub Actions run `40391474514`
+  passed, and the public `ghcr.io/solife-me/taskify-push-relay:0.5.0` manifest contains both
+  linux/amd64 and linux/arm64 images.
+- The application (`src/`, protocol tests, Dockerfile and its two production dependencies) moved
+  without source changes to root package `push-relay/`. Its README now documents development and
+  plain-Docker deployment from the same published image.
+- `taskify-push-relay/` is now packaging only. Its manifest pins the already-published `0.5.0`
+  image, its lock contains only StartOS build tools, and a package test prevents a return to
+  `dockerBuild`. The StartOS package revision is `0.5.0:2`; its runtime is the same relay 0.5.0
+  already installed as `0.5.0:1`, but the package now follows the upstream-image layout.
+- CI tests and audits the relay application and checks the StartOS package independently. Future
+  release tags read the version and Docker build context from `push-relay/`, so the package cannot
+  accidentally publish itself as the application.
+- Verification after the split: 113/113 application tests, 3/3 package tests, clean production
+  dependency audit and TypeScript check, successful standalone Docker build, and successful
+  `0.5.0:2` StartOS packs for both aarch64 (52 MB) and x86_64 (54 MB). The package ingredient list
+  contains only its JavaScript bundle, icon, license, instructions, README and assets—no relay
+  source or Dockerfile.
+- The application remains in this monorepo. Moving the StartOS package to its own repository is a
+  later maintainer choice, not needed for the source/image separation.
 

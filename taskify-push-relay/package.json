@@ -1,9 +1,9 @@
 {
-  "name": "taskify-push-relay",
+  "name": "taskify-push-relay-startos",
   "version": "0.5.0",
   "private": true,
   "type": "module",
-  "description": "Privacy-preserving NIP-17 relay and APNs bridge for Taskify and Snapstr",
+  "description": "StartOS package for the Taskify Push Relay",
   "engines": {
     "node": ">=22.23.4 <23"
   },
@@ -11,12 +11,7 @@
     "build": "rm -rf ./javascript && ncc build startos/index.ts -o ./javascript",
     "check": "tsc --noEmit",
     "prettier": "prettier --write startos",
-    "start": "node src/main.js",
     "test": "node --test test/*.test.js"
-  },
-  "dependencies": {
-    "nostr-tools": "2.25.2",
-    "ws": "8.22.0"
   },
   "devDependencies": {
     "@start9labs/start-sdk": "3.1.0",

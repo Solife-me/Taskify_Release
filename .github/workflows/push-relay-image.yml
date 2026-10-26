@@ -24,11 +24,11 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: taskify-push-relay/package-lock.json
+          cache-dependency-path: push-relay/package-lock.json
 
       - name: Tag matches the relay package version
         id: version
-        working-directory: taskify-push-relay
+        working-directory: push-relay
         run: |
           version="$(node -p "require('./package.json').version")"
           expected="push-relay-v${version}"
@@ -39,7 +39,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install and test the relay
-        working-directory: taskify-push-relay
+        working-directory: push-relay
         run: |
           npm ci
           npm test
@@ -61,7 +61,7 @@ jobs:
       - name: Build and publish the relay
         uses: docker/build-push-action@v7
         with:
-          context: taskify-push-relay
+          context: push-relay
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
