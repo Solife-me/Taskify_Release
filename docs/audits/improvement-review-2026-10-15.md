@@ -3051,7 +3051,7 @@ not port the session or domain facade for that hypothetical gain.
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
 | C12-2 | Approve | 2026-10-25 | Done in seven stages. Every CLI command group runs through `buildProgram`/`runCli` with injected config (load and save), runtime, clock, UUIDs, prompt, share transport and output; every source-regex test of command code is replaced by behavior, and the remaining source assertions target the runtime for C12-4 (and raw NDK contact reads for C12-3). Found and fixed on the way: `upcoming` dates, `board create` in scripts, `boards`/`board list` drift, `share inbox --apply` progress, and `event invite`/`share event` (shared invitation rule in core) |
 | C12-3 | Approve | 2026-10-25 | Done in three stages. Shutdown is terminal and idempotent and finishes debounced publishes; NDK's unstoppable relay timer is shimmed and its multi-relay reconnect avoided, so processes exit by themselves and the runtime suite runs without `--test-force-exit`; `StandaloneNostrSession` is the owned path for one-off reads and writes, and the CLI uses it for profiles, contacts and bot lists |
-| C12-4 | Approve | 2026-10-25 | In progress: the runtime seam (step 1) and the task domain (step 2) are done; calendar and boards are next |
+| C12-4 | Approve | 2026-10-25 | In progress: the runtime seam (step 1), the task domain (step 2) and the calendar domain (step 3) are done; boards are next |
 | C12-5 | Approve | 2026-10-25 | Not started |
 | C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
 
@@ -3688,3 +3688,53 @@ were moved by line range, unedited.
 
   Step 4 does the same for boards (`createBoard`/`updateBoard` tags including sort, and
   `syncBoard` saving config).
+
+### Checkpoint — October 25, 2026 (C12-4 step 3: the calendar domain moves out)
+
+- **`runtime-calendar.test.ts` (11 cases)** pins the calendar behaviour on the loopback relay before
+  anything moved. Payloads are decrypted with `nostr-tools`' NIP-44 directly (board key to itself,
+  and the event key), so the wire format is checked independently of the CLI's crypto helpers.
+  The cases:
+  - the board copy (30310): exact tags, board signer, canonical payload;
+  - the invitees' view (30311): its `a` address, and that it carries no event key, tokens or
+    participants;
+  - a list board's first list, a given list, and no column on a week board;
+  - listing newest first across boards, by board name; getting by id prefix;
+  - an id matching events on two boards needs `--board` for get, update and delete;
+  - updates keep what they don't change, and a same-second edit gets `created_at + 1`;
+  - invite tokens follow the participants under the same event key;
+  - invitations return the token and both addresses, keep the token when sent twice, and refuse
+    the sender;
+  - deletion publishes deleted copies (column cleared) that every read leaves out;
+  - an RSVP response is written onto the board copy;
+  - events signed by another key are ignored;
+  - changes build on the newest version while a relay still serves an older one.
+
+  All 11 pass against the original monolith.
+- **The move.** Method bodies moved by line range, unedited:
+  - `src/runtime/calendarCodec.ts`: the `FullEventRecord`/`EventInvitation` types and the 30310
+    decoding;
+  - `src/runtime/calendarRepository.ts`: `createCalendarRepository(context)` with fetching, id
+    resolution, two-copy publishing and the seven calendar methods, plus the `CreateEventInput`
+    and `EventPatch` types.
+
+  `inviteToEvent` now calls the repository's own `getEvent`/`updateEvent` rather than `this`, so it
+  no longer depends on how the facade is called. `nostrRuntime.ts` is down to about 320 lines:
+  the facade, boards, reminders, security config and relay status.
+- **Regex tests retired:**
+  - all of `calendar-interop` (14), `events-runtime-surface` (2), `runtime-core-normalization`
+    and `sync-regressions`;
+  - `runtime-pwa-interop`'s author check, narrowed to the board-metadata fetch for step 4.
+- CLI 213/213, `npx tsc --noEmit` clean.
+- **Found; needs deciding, not changed.** `applyEventRsvpResponse` (`share inbox --apply`) writes
+  an attendee's RSVP onto the owner's board copy:
+  - a single `rsvpStatus`/`rsvpCreatedAt`, with `lastEditedBy` set to the attendee;
+  - re-signed with the board key.
+
+  The PWA keeps `rsvpStatus` only on events the user was invited to (`external`). It is the
+  attendee's own answer and is never published into the owner's copy. A later `updateEvent` from
+  the CLI also drops the field. The tests pin today's behaviour so the move couldn't change it.
+  Deciding the cross-client model for responses an owner receives belongs in taskify-core.
+- Next: step 4, board characterization (`createBoard`/`updateBoard` 30300 tags including sort,
+  and `syncBoard` saving config), then the board move. That retires `board-phase1-cli-surface`,
+  `board-sort`'s runtime cases and the rest of `runtime-pwa-interop`.

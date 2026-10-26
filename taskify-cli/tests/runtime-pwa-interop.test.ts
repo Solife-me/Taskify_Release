@@ -10,8 +10,6 @@ test("board definition publish uses hashed board id for d/b tags (PWA parity)", 
   assert.match(RUNTIME_SOURCE, /event\.tags = \[\s*\["d", bTag\],\s*\["b", bTag\]/s);
 });
 
-test("calendar and board fetches require the deterministic board author", () => {
-  const authorFilterCount = (RUNTIME_SOURCE.match(/authors: \[boardPubkey\]/g) ?? []).length;
-  assert.ok(authorFilterCount >= 2, `expected board author filters, got ${authorFilterCount}`);
-  assert.match(RUNTIME_SOURCE, /event\.pubkey !== deriveBoardKeyPair\(boardId\)\.pk/);
+test("board metadata fetches require the deterministic board author", () => {
+  assert.match(RUNTIME_SOURCE, /kinds: \[30300\], authors: \[boardPubkey\]/);
 });
