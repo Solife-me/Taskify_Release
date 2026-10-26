@@ -7,7 +7,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools'
 import WebSocket from 'ws'
 
 import { createHash } from 'node:crypto'
-import { clientAddressKey, createTaskifyPushServer } from '../src/server.js'
+import { clientAddressKey, createTaskifyPushServer, sendRelayFrame } from '../src/server.js'
 import { RelayStore } from '../src/store.js'
 
 const registrationVectors = JSON.parse(await readFile(
@@ -594,4 +594,54 @@ test('a socket that never answers the challenge is closed, an authenticated one 
   await new Promise((resolve) => setTimeout(resolve, 400))
   assert.equal(authed.readyState, WebSocket.OPEN)
   authed.close()
+})
+
+test('an event the relay refuses anyway is refused before its signature is checked', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-server-'))
+  const store = new RelayStore({ dataDirectory: directory })
+  await store.load()
+  const server = createTaskifyPushServer({
+    config: { port: 0, publicBaseURL: 'https://push.solife.me', publicRelayURL: 'wss://push.solife.me' },
+    store,
+    apnsClient: { async send() { return { status: 200, reason: null } } },
+    logger: { info() {} },
+  })
+  const address = await server.start(0)
+  t.after(() => server.stop())
+  const publisherKey = generateSecretKey()
+  const socket = await connectAndAuthenticate(address.port, publisherKey)
+  t.after(() => socket.close())
+
+  // Signed, then altered: each would fail its signature check, so a refusal naming anything else
+  // shows the cheaper check ran first.
+  const forged = (template) => ({ ...finalizeEvent(template, publisherKey), sig: '0'.repeat(128) })
+  const refusal = async (event) => {
+    socket.send(JSON.stringify(['EVENT', event]))
+    return (await nextFrame(socket, (frame) => frame[0] === 'OK' && frame[1] === event.id)).slice(2)
+  }
+  const now = Math.floor(Date.now() / 1000)
+  assert.deepEqual(await refusal(forged({ kind: 1, created_at: now, tags: [], content: 'hi' })),
+    [false, 'restricted: only kinds 5, 1059, and 10050 are accepted'])
+  assert.deepEqual(await refusal(forged({ kind: 1059, created_at: now, tags: [['p', 'e'.repeat(64)]], content: 'opaque' })),
+    [false, 'restricted: recipient does not use this relay'])
+  assert.deepEqual(await refusal({ ...forged({ kind: 10_050, created_at: now, tags: [], content: '' }), pubkey: 'f'.repeat(64) }),
+    [false, 'restricted: kind 10050 author must match authenticated pubkey'])
+  assert.deepEqual(await refusal(forged({ kind: 5, created_at: now, tags: [['e', '1'.repeat(64)]], content: 'x'.repeat(17 * 1024) })),
+    [false, 'invalid: deletion request is too large'])
+  // Whatever passes the cheap checks still needs a valid signature.
+  await store.putRegistration('e'.repeat(64), 'phone', { deviceToken: '12'.repeat(32), environment: 'production' })
+  assert.deepEqual(await refusal(forged({ kind: 1059, created_at: now, tags: [['p', 'e'.repeat(64)]], content: 'opaque' })),
+    [false, 'invalid: event signature is invalid'])
+})
+
+test('a socket that cannot keep up with its frames is cut off instead of buffering without bound', () => {
+  const sent = []
+  let terminated = false
+  const socket = { readyState: 1, bufferedAmount: 0, send: (text) => sent.push(text), terminate: () => { terminated = true } }
+  assert.equal(sendRelayFrame(socket, '["EOSE","a"]', 1_000), true)
+  socket.bufferedAmount = 1_001
+  assert.equal(sendRelayFrame(socket, '["EOSE","b"]', 1_000), false)
+  assert.equal(terminated, true)
+  assert.deepEqual(sent, ['["EOSE","a"]'])
+  assert.equal(sendRelayFrame({ ...socket, readyState: 3 }, '["EOSE","c"]', 1_000), false, 'a closed socket is skipped')
 })

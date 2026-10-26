@@ -216,6 +216,19 @@ function taskCacheSources(payload, authenticatedPubkey, expectedURL) {
   return sources
 }
 
+/// Sends one relay frame, unless the socket is closed or its reader has fallen so far behind that
+/// more than `maxBufferedBytes` already wait to be sent; that socket is cut off rather than left to
+/// grow the relay's memory without bound. Returns whether the frame was queued.
+export function sendRelayFrame(socket, text, maxBufferedBytes) {
+  if (socket.readyState !== WebSocket.OPEN) return false
+  if (socket.bufferedAmount > maxBufferedBytes) {
+    socket.terminate()
+    return false
+  }
+  socket.send(text)
+  return true
+}
+
 export function createTaskifyPushServer({
   config,
   store,
@@ -242,6 +255,10 @@ export function createTaskifyPushServer({
   // Every Taskify client answers the AUTH challenge on connect. A socket that has not by now
   // is holding a slot without using the relay.
   unauthenticatedSocketTimeoutMs = 60_000,
+  // Frames waiting on one socket before it is dropped as too slow: more than a full history
+  // replay (500 wraps of at most 128 KiB is about 64 MiB) would be unusual, so this stays well
+  // above a healthy client's worst case while bounding a stalled one.
+  maxSocketBufferedBytes = 96 * 1024 * 1024,
 }) {
   const clientAddressHeader = config.clientAddressHeader?.toLowerCase() || null
   const socketsPerAddress = new Map()
@@ -254,6 +271,9 @@ export function createTaskifyPushServer({
   const privateRequestLimiter = new SlidingWindowRateLimiter({ maximum: 300 })
   const privateIPLimiter = new SlidingWindowRateLimiter({ maximum: 1_200 })
   const sockets = new Set()
+  // Signed-in sockets by account. A gift-wrap subscription can only name the socket's own key
+  // (assertAuthorizedGiftWrapFilters), so a stored wrap can only reach its recipient's sockets.
+  const socketsByPubkey = new Map()
   const watchAuthSessions = new Map()
   const watchForwardingTasks = new Set()
   const watchPreferenceLookups = new Set()
@@ -819,17 +839,44 @@ export function createTaskifyPushServer({
   })
 
   function relaySend(socket, value) {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value))
+    sendRelayFrame(socket, JSON.stringify(value), maxSocketBufferedBytes)
+  }
+
+  /// An EVENT frame from an event serialized once, however many subscriptions it goes to.
+  function eventFrame(subscriptionID, eventJSON) {
+    return `["EVENT",${JSON.stringify(subscriptionID)},${eventJSON}]`
   }
 
   function broadcastEvent(event) {
-    for (const state of sockets) {
+    // A gift wrap can only match its recipient's subscriptions; anything else is checked against
+    // every socket (preference lookups are public, and deletions match no subscription).
+    const candidates = event.kind === 1059
+      ? socketsByPubkey.get(event.tags.find((tag) => tag[0] === 'p')?.[1]?.toLowerCase()) ?? []
+      : sockets
+    let eventJSON = null
+    for (const state of candidates) {
       for (const [subscriptionID, filters] of state.subscriptions) {
         if (filters.some((filter) => matchesFilter(event, filter))) {
-          relaySend(state.socket, ['EVENT', subscriptionID, event])
+          eventJSON ??= JSON.stringify(event)
+          sendRelayFrame(state.socket, eventFrame(subscriptionID, eventJSON), maxSocketBufferedBytes)
         }
       }
     }
+  }
+
+  function indexSocket(state, pubkey) {
+    if (state.authenticatedPubkey) socketsByPubkey.get(state.authenticatedPubkey)?.delete(state)
+    if (!pubkey) return
+    const set = socketsByPubkey.get(pubkey) ?? new Set()
+    set.add(state)
+    socketsByPubkey.set(pubkey, set)
+  }
+
+  function unindexSocket(state) {
+    const set = state.authenticatedPubkey ? socketsByPubkey.get(state.authenticatedPubkey) : null
+    if (!set) return
+    set.delete(state)
+    if (set.size === 0) socketsByPubkey.delete(state.authenticatedPubkey)
   }
 
   function authenticateSocket(state, event) {
@@ -843,37 +890,43 @@ export function createTaskifyPushServer({
     if (singleTag(event, 'relay') !== config.publicRelayURL) {
       throw new Error('auth-required: relay URL does not match')
     }
+    indexSocket(state, event.pubkey.toLowerCase())
     state.authenticatedPubkey = event.pubkey.toLowerCase()
     state.application = socketApplication(event)
   }
 
   async function handleRelayEvent(state, event) {
-    // Cheap checks first: an unauthenticated or over-limit socket must not cost a signature check.
+    // Every refusal that needs no signature comes first: an unauthenticated, over-limit or
+    // unwanted event must not cost a signature check (as wisp orders its checks).
     if (!state.authenticatedPubkey) throw new Error('auth-required: authenticate before publishing')
     if (!publishLimiter.consume(state.authenticatedPubkey)) throw new Error('rate-limited: publish limit exceeded')
-    if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
-    if (event.kind === 5) {
+    if (event?.kind === 5) {
       if (Buffer.byteLength(JSON.stringify(event)) > 16 * 1024) {
         throw new Error('invalid: deletion request is too large')
       }
+      if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
       const deletedCount = await store.applyDeletionRequest(event)
       if (deletedCount > 0) broadcastEvent(event)
       return `deleted: ${deletedCount} event${deletedCount === 1 ? '' : 's'}`
     }
-    if (event.kind === 10_050) {
-      if (event.pubkey.toLowerCase() !== state.authenticatedPubkey) {
+    if (event?.kind === 10_050) {
+      if (event.pubkey?.toLowerCase() !== state.authenticatedPubkey) {
         throw new Error('restricted: kind 10050 author must match authenticated pubkey')
       }
+      if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
       const stored = await store.putPreference(event)
       if (stored) broadcastEvent(event)
       return stored ? 'saved' : 'duplicate: older replaceable event'
     }
-    if (event.kind !== 1059) throw new Error('restricted: only kinds 5, 1059, and 10050 are accepted')
+    if (event?.kind !== 1059) throw new Error('restricted: only kinds 5, 1059, and 10050 are accepted')
     const recipient = giftWrapRecipient(event)
     // Only accounts that registered a device or published their inbox preference here use
     // this relay; storing wraps for any other key would let anyone fill it.
     if (!store.hasInbox(recipient)) throw new Error('restricted: recipient does not use this relay')
-    if (event.content.length > 128 * 1024) throw new Error('invalid: gift wrap is too large')
+    if (typeof event.content !== 'string' || event.content.length > 128 * 1024) {
+      throw new Error('invalid: gift wrap is too large')
+    }
+    if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
     const stored = await store.putGiftWrap(event, {
       notify: shouldNotifyRecipient({
         authenticatedPubkey: state.authenticatedPubkey,
@@ -910,7 +963,7 @@ export function createTaskifyPushServer({
       }
     }
     for (const event of [...matching.values()].sort(newestFirst).slice(0, 500)) {
-      relaySend(state.socket, ['EVENT', subscriptionID, event])
+      sendRelayFrame(state.socket, eventFrame(subscriptionID, JSON.stringify(event)), maxSocketBufferedBytes)
     }
     relaySend(state.socket, ['EOSE', subscriptionID])
   }
@@ -948,6 +1001,7 @@ export function createTaskifyPushServer({
     socket.on('close', () => {
       clearTimeout(authenticationDeadline)
       sockets.delete(state)
+      unindexSocket(state)
       if (!address) return
       const remaining = (socketsPerAddress.get(address) ?? 1) - 1
       if (remaining > 0) socketsPerAddress.set(address, remaining)

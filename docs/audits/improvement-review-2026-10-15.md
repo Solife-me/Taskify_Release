@@ -4143,7 +4143,7 @@ repository:
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C13-1 | Approve | 2026-10-26 | Storage done (relay 0.5.0:0): SQLite store, one-time import of `state.json`; per incoming wrap 669 ms → 0.6 ms at 100,000 items, steady memory 1.16 GB → 52 MiB. The wisp-derived server changes are next |
+| C13-1 | Approve | 2026-10-26 | Done. Relay 0.5.0:0 keeps its state in SQLite, importing `state.json` once: per incoming wrap 669 ms → 0.6 ms at 100,000 items, steady memory 1.16 GB → 52 MiB. From wisp: refusals before signature checks, events serialized once per broadcast, gift wraps routed to their recipient's sockets only, and slow readers cut off at 96 MiB |
 | C13-2 | Approve | 2026-10-26 | Not started |
 | C13-3 | Approve | 2026-10-26 | Not started |
 | C13-4 | Approve | 2026-10-26 | Not started |
@@ -4212,3 +4212,31 @@ Node 22 logs one `ExperimentalWarning` for `node:sqlite` at start.
 
 **Not verified:** an install and update on a real StartOS box with production data, and a backup
 restore. The release notes say the update cannot be reversed by installing an older version.
+
+### Checkpoint — October 26, 2026 (C13-1: wisp's techniques in the relay server)
+
+These follow wisp's handler and broadcaster, with failing tests first where the behaviour is
+observable:
+
+- **Refusals before signature checks.** `handleRelayEvent` verified the signature before
+  checking the kind, the recipient, a preference's author or a deletion's size. Every refusal
+  that needs no signature now comes first, and the order is pinned by a test that sends events
+  with bad signatures and expects the specific refusal.
+- **One serialization per broadcast.** An event is `JSON.stringify`d once and spliced into each
+  subscription's `EVENT` frame, where every send serialized it again.
+- **Gift wraps go only to their recipient's sockets.** A gift-wrap subscription can only name the
+  socket's own key, and a wrap has exactly one `p` tag. Sockets are therefore indexed by signed-in
+  key, and a wrap is matched against its recipient's sockets instead of every socket and
+  subscription. `matchesFilter` still decides, so delivery is unchanged.
+- **Slow readers are cut off.** A socket whose unsent frames pass 96 MiB (above a full 500-wrap
+  replay) is terminated rather than buffering without bound (`sendRelayFrame`, unit-tested).
+
+Not taken from wisp:
+- group commit, as WAL with `synchronous=NORMAL` already avoids a sync per message;
+- a query cache, as relay reads are per-recipient indexed lookups;
+- serving stored bytes without parsing them, as the store API returns events for
+  `matchesFilter`.
+
+The last could come later through a raw-JSON read path if REQ replay ever shows up in profiles.
+
+Relay suite 111/111.

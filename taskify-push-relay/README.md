@@ -77,7 +77,7 @@ asked for a list of everyone who uses it.
   for backward compatibility
 - WebSocket: at most 2,000 connections per process, 64 per client address, and 100 messages per
   connection every 10 seconds; a connection that has not answered the NIP-42 challenge within
-  60 seconds is closed
+  60 seconds is closed, and one whose unsent frames pass 96 MiB is dropped as too slow
 - Client address: behind a proxy every connection comes from the proxy, so per-address limits
   (the WebSocket cap above and the 1,200-a-minute NIP-98 request limit) read the address from the
   header named by `CLIENT_ADDRESS_HEADER`, grouping IPv6 by /64. The StartOS package sets
