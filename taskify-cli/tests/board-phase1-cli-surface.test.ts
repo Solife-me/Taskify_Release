@@ -7,6 +7,5 @@ const RUNTIME_SOURCE = readFileSync(path.resolve(import.meta.dirname, "../src/no
 
 test("runtime provides board mutation helpers used by phase 1 CLI", () => {
   assert.match(RUNTIME_SOURCE, /async updateBoard\(/);
-  assert.match(RUNTIME_SOURCE, /async clearCompleted\(/);
   assert.match(RUNTIME_SOURCE, /async function publishBoardDefinition\(/);
 });

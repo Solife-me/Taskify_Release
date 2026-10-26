@@ -1,6 +1,6 @@
 import { RelayAuthManager, RelayHealthTracker, RelayInfoCache, RuntimeNostrSession, boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
-import { decryptFromBoard } from "taskify-core";
-import type { NostrEvent } from "nostr-tools";
+import { decryptFromBoard, encryptToBoard } from "taskify-core";
+import { finalizeEvent, type NostrEvent } from "nostr-tools";
 import { createNostrRuntime } from "../../dist/runtime.js";
 import type { TaskifyConfig } from "../../src/config.ts";
 import type { TaskCache } from "../../src/taskCache.ts";
@@ -69,6 +69,26 @@ export function boardEvents(relay: MockRelay, boardId: string, kind: number): No
 
 export function tag(event: NostrEvent, name: string): string | undefined {
   return event.tags.find((t) => t[0] === name)?.[1];
+}
+
+/**
+ * A task event as another device (or, with `secretKey`, someone without the board's key) would
+ * sign it. Tests put it straight into `relay.events`, so a relay can hold several versions.
+ */
+export async function taskEvent(boardId: string, task: {
+  id: string;
+  status: "open" | "done" | "deleted";
+  column?: string;
+  payload: Record<string, unknown>;
+  createdAt: number;
+  secretKey?: Uint8Array;
+}): Promise<NostrEvent> {
+  return finalizeEvent({
+    kind: 30301,
+    created_at: task.createdAt,
+    content: await encryptToBoard(boardId, JSON.stringify(task.payload)),
+    tags: [["d", task.id], ["b", boardTagHash(boardId)], ["col", task.column ?? ""], ["status", task.status]],
+  }, task.secretKey ?? Buffer.from(deriveBoardKeyPair(boardId).skHex, "hex"));
 }
 
 /** A task event's decrypted payload. */

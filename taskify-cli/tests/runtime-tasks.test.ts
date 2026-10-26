@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { boardEvents, boardTagHash, deriveBoardKeyPair, runtimeHarness, START, tag, taskPayload, userPubkey } from "./helpers/runtimeHarness.ts";
+import { generateSecretKey } from "nostr-tools";
+import { boardEvents, boardTagHash, deriveBoardKeyPair, runtimeHarness, START, tag, taskEvent, taskPayload, userPubkey } from "./helpers/runtimeHarness.ts";
 
 /**
  * C12-4: the runtime's task behaviour, through a real session on a loopback relay. These pin the
@@ -9,6 +10,7 @@ import { boardEvents, boardTagHash, deriveBoardKeyPair, runtimeHarness, START, t
 
 const BOARD = "board-lists-1";
 const seconds = (ms: number) => Math.floor(ms / 1000);
+const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 
 test("creating a task publishes one board-signed event with its tags and encrypted payload", async () => {
   const h = await runtimeHarness();
@@ -194,6 +196,124 @@ test("clearing completed tasks deletes each of them", async () => {
     assert.equal(await h.runtime.clearCompleted(BOARD), 1);
     const statuses = Object.fromEntries(boardEvents(h.relay, BOARD, 30301).map((e) => [tag(e, "d"), tag(e, "status")]));
     assert.deepEqual(statuses, { [milk.id]: "open", [eggs.id]: "deleted" });
+  } finally {
+    await h.close();
+  }
+});
+
+test("a board is found by name, and a week board's task goes in its day column", async () => {
+  const h = await runtimeHarness();
+  try {
+    const gym = await h.runtime.createTaskFull({ boardId: "Week", title: "Gym" });
+    assert.equal(gym.boardId, "board-week-1");
+    assert.equal(gym.boardName, "Week");
+    assert.equal(gym.column, "day");
+    assert.equal(tag(boardEvents(h.relay, "board-week-1", 30301)[0], "col"), "day");
+    assert.deepEqual((await h.runtime.listTasks({ boardId: "Week", status: "open" })).map((task) => task.id), [gym.id]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("task events not signed with the board's key are ignored", async () => {
+  const h = await runtimeHarness();
+  try {
+    const milk = await h.runtime.createTaskFull({ boardId: BOARD, title: "Milk" });
+    const intruder = generateSecretKey();
+    h.relay.events.push(
+      await taskEvent(BOARD, { id: "forged-1", status: "open", column: "todo", payload: { title: "Pay me" }, createdAt: seconds(START), secretKey: intruder }),
+      await taskEvent(BOARD, { id: milk.id, status: "open", column: "todo", payload: { title: "Hijacked" }, createdAt: seconds(START) + 600, secretKey: intruder }),
+    );
+    const listed = await h.runtime.listTasks({ boardId: BOARD, status: "any", refresh: true });
+    assert.deepEqual(listed.map((task) => task.title), ["Milk"]);
+    assert.equal(await h.runtime.getTask("forged-1", BOARD), null);
+    assert.equal((await h.runtime.getTask(milk.id, BOARD))?.title, "Milk");
+  } finally {
+    await h.close();
+  }
+});
+
+test("the task cache keeps every field and deleted tasks, so a read from it matches the relay's", async () => {
+  const h = await runtimeHarness();
+  try {
+    const assignee = "ab".repeat(32);
+    const payload = {
+      title: "Run", note: "5k", priority: 3, order: 2,
+      dueISO: "2026-10-26T07:00:00.000Z", dueDateEnabled: true, dueTimeEnabled: true, dueTimeZone: "Europe/London",
+      hiddenUntilISO: "2026-10-25T00:00:00.000Z", completedAt: "2026-10-25T11:00:00.000Z", completedBy: assignee,
+      createdBy: userPubkey, lastEditedBy: assignee, createdAt: START - 86_400_000,
+      recurrence: { type: "daily" }, streak: 4, longestStreak: 9, seriesId: "series-1",
+      images: ["https://example.test/a.png"], documents: [{ id: "doc-1", name: "plan.pdf" }], bounty: { amount: 21 },
+      subtasks: [{ id: "s1", title: "Stretch", completed: true }],
+      assignees: [{ pubkey: assignee, status: "accepted", respondedAt: 1_761_390_000 }], inboxItem: true,
+    };
+    h.relay.events.push(
+      await taskEvent(BOARD, { id: "task-run", status: "done", column: "later", payload, createdAt: seconds(START) - 120 }),
+      await taskEvent(BOARD, { id: "task-gone", status: "deleted", column: "todo", payload: { title: "Gone" }, createdAt: seconds(START) - 60 }),
+    );
+
+    const fromRelay = await h.runtime.listTasks({ boardId: BOARD, status: "any" });
+    assert.deepEqual(fromRelay.map((task) => task.id), ["task-run"]);
+    const [run] = fromRelay;
+    assert.equal(run.completed, true);
+    assert.equal(run.column, "later");
+    assert.equal(run.createdAt, seconds(START) - 120, "the relay's time, not the payload's");
+    assert.equal(run.streak, 4);
+    assert.equal(run.seriesId, "series-1");
+    assert.equal(run.dueTimeZone, "Europe/London");
+    assert.deepEqual(run.images, payload.images);
+    assert.equal(h.cache().boards[BOARD].tasks.find((task) => task.id === "task-gone")?.status, "deleted");
+
+    // The relay has lost everything: the next read is the cache's alone.
+    h.relay.events.length = 0;
+    const fromCache = await h.runtime.listTasks({ boardId: BOARD, status: "any" });
+    assert.deepEqual(plain(fromCache), plain(fromRelay));
+  } finally {
+    await h.close();
+  }
+});
+
+test("another device's later version replaces the cached one by relay time, and its deletion hides it", async () => {
+  const h = await runtimeHarness();
+  try {
+    const milk = await h.runtime.createTaskFull({ boardId: BOARD, title: "Milk" });
+    await h.runtime.listTasks({ boardId: BOARD, status: "open" });
+
+    // The edit keeps the task's original creation time in its payload, a day before this one's.
+    h.advance(60_000);
+    h.relay.events.push(await taskEvent(BOARD, {
+      id: milk.id, status: "open", column: "todo",
+      payload: { title: "Oat milk", createdAt: START - 86_400_000 }, createdAt: seconds(START + 60_000),
+    }));
+    assert.deepEqual((await h.runtime.listTasks({ boardId: BOARD, status: "open" })).map((task) => task.title), ["Oat milk"]);
+
+    h.advance(60_000);
+    h.relay.events.push(await taskEvent(BOARD, {
+      id: milk.id, status: "deleted", column: "todo", payload: { title: "Oat milk" }, createdAt: seconds(START + 120_000),
+    }));
+    assert.deepEqual(await h.runtime.listTasks({ boardId: BOARD, status: "any" }), []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("changes build on the newest version when a relay still serves an older one", async () => {
+  const h = await runtimeHarness();
+  try {
+    const milk = await h.runtime.createTaskFull({ boardId: BOARD, title: "Milk", note: "2%" });
+    const [first] = boardEvents(h.relay, BOARD, 30301);
+    h.advance(60_000);
+    await h.runtime.updateTask(milk.id, BOARD, { title: "Oat milk" });
+    h.relay.events.push(first);
+
+    assert.equal((await h.runtime.getTask(milk.id, BOARD))?.title, "Oat milk");
+    h.advance(60_000);
+    const done = await h.runtime.setTaskStatus(milk.id, "done", BOARD);
+    assert.equal(done?.title, "Oat milk");
+    const newest = boardEvents(h.relay, BOARD, 30301)[0];
+    assert.equal(tag(newest, "status"), "done");
+    assert.equal((await taskPayload(newest, BOARD)).title, "Oat milk");
+    assert.equal((await taskPayload(newest, BOARD)).note, "2%");
   } finally {
     await h.close();
   }

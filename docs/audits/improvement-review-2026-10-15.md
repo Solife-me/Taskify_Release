@@ -3051,7 +3051,7 @@ not port the session or domain facade for that hypothetical gain.
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
 | C12-2 | Approve | 2026-10-25 | Done in seven stages. Every CLI command group runs through `buildProgram`/`runCli` with injected config (load and save), runtime, clock, UUIDs, prompt, share transport and output; every source-regex test of command code is replaced by behavior, and the remaining source assertions target the runtime for C12-4 (and raw NDK contact reads for C12-3). Found and fixed on the way: `upcoming` dates, `board create` in scripts, `boards`/`board list` drift, `share inbox --apply` progress, and `event invite`/`share event` (shared invitation rule in core) |
 | C12-3 | Approve | 2026-10-25 | Done in three stages. Shutdown is terminal and idempotent and finishes debounced publishes; NDK's unstoppable relay timer is shimmed and its multi-relay reconnect avoided, so processes exit by themselves and the runtime suite runs without `--test-force-exit`; `StandaloneNostrSession` is the owned path for one-off reads and writes, and the CLI uses it for profiles, contacts and bot lists |
-| C12-4 | Approve | 2026-10-25 | Not started |
+| C12-4 | Approve | 2026-10-25 | In progress: the runtime seam (step 1) and the task domain (step 2) are done; calendar and boards are next |
 | C12-5 | Approve | 2026-10-25 | Not started |
 | C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
 
@@ -3643,4 +3643,48 @@ Nothing moved yet. Behaviour is pinned first, as the proposal requires.
 - It replaces the last runtime regex in `recurring-completion.test.ts`, as the stage-3 handoff
   asked.
 - CLI 226/226, `npx tsc --noEmit` clean; runtime suite still passes.
-- The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.
+
+### Checkpoint — October 25, 2026 (C12-4 step 2: the task domain moves out)
+
+The task code now lives in three modules behind the unchanged `NostrRuntime` facade. Method bodies
+were moved by line range, unedited.
+
+- **`src/runtime/context.ts`** holds what every domain shares:
+  - `RuntimeContext`: config, session, connection, board relays, task cache, config saving, clock
+    and UUIDs;
+  - board content encryption, the user's pubkey and board lookup.
+- **`src/runtime/taskCodec.ts`** has the `FullTaskRecord` types and the conversions: event to
+  record, record to cache, and cache to record.
+- **`src/runtime/taskRepository.ts`** has `createTaskRepository(context)`: task fetches, id
+  resolution, publishing, and the ten task methods.
+- **`nostrRuntime.ts`** goes from about 1,780 lines to about 920. The facade delegates its task
+  methods and still exports the task types, so commands import from the same place.
+- **Five more characterization cases** (14 in `runtime-tasks.test.ts`):
+  - a board found by name, and a week board's `day` column;
+  - task events signed by another key are ignored;
+  - the cache keeps every field and deleted tasks, so a read from the cache alone matches the
+    relay's;
+  - another device's later version wins by relay time, not payload `createdAt`, and its deletion
+    hides the task;
+  - changes build on the newest version while a relay still serves an older one.
+
+  All 14 pass against the original monolith as well. Parsing a task's time from its payload
+  instead of the relay breaks two of them.
+- **Regex tests retired.** These source-regex tests read task code that now lives elsewhere, and
+  the cases above replace them:
+  - all of `board-core-integration`, `list-targeting-cli` and `parity-phase3b-cli-surface`;
+  - five task cases in `sync-regressions`;
+  - the prefix case in `runtime-core-normalization`;
+  - the week-column case in `runtime-pwa-interop`.
+
+  The calendar and board regexes left in those files are narrowed to what still sits in
+  `nostrRuntime.ts`. Steps 3–4 retire them.
+- CLI 221/221, `npx tsc --noEmit` clean.
+- Next: step 3, calendar characterization on the harness, then the calendar domain move. The
+  cases to cover:
+  - `createEvent` publishing the 30310 canonical copy plus the 30311 view;
+  - `getEvent`/`listEvents`, `updateEvent` and `deleteEvent`;
+  - invite tokens and RSVP responses.
+
+  Step 4 does the same for boards (`createBoard`/`updateBoard` tags including sort, and
+  `syncBoard` saving config).
