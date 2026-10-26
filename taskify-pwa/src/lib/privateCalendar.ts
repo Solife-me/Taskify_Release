@@ -1,4 +1,3 @@
-import { sha256 } from "@noble/hashes/sha2.js";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip44 } from "nostr-tools";
 export {
@@ -10,6 +9,10 @@ export {
   parseCalendarCanonicalPayload,
   parseCalendarViewPayload,
   parseCalendarRsvpPayload,
+  acceptCalendarRsvp,
+  deriveBoardRsvpToken,
+  latestCalendarRsvps,
+  planCalendarRsvp,
 } from "taskify-core";
 
 export type {
@@ -19,6 +22,7 @@ export type {
   CalendarCanonicalPayload,
   CalendarViewPayload,
   CalendarRsvpPayload,
+  CalendarRsvpResponse,
 } from "taskify-core";
 
 function ensureNip44V2() {
@@ -36,26 +40,6 @@ function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
   return btoa(binary);
-}
-
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-const BOARD_RSVP_TOKEN_LABEL = new TextEncoder().encode("taskify-board-rsvp-token-v1");
-
-export function deriveBoardRsvpToken(boardId: string, attendeePubkey: string): string {
-  const normalizedBoardId = (boardId || "").trim();
-  const normalizedPubkey = (attendeePubkey || "").trim().toLowerCase();
-  const material = concatBytes(
-    BOARD_RSVP_TOKEN_LABEL,
-    new TextEncoder().encode(`${normalizedBoardId}:${normalizedPubkey}`),
-  );
-  const digest = sha256(material);
-  return bytesToBase64(digest);
 }
 
 function base64ToBytes(base64: string): Uint8Array {

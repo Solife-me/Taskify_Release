@@ -4746,7 +4746,7 @@ export default function App() {
     options?: { fb?: CalendarRsvpFb; note?: string; boardId?: string },
   ): Promise<void> {
     const fallbackInviteToken = options?.boardId && nostrPK
-      ? deriveBoardRsvpToken(options.boardId, nostrPK)
+      ? await deriveBoardRsvpToken(options.boardId, nostrPK)
       : undefined;
     const publication = planCalendarRsvpPublication({
       canonical,

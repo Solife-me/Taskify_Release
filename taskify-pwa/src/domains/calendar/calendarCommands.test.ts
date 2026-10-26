@@ -609,6 +609,10 @@ describe("calendar RSVP commands", () => {
       kind: "invalid",
       error: "Invalid calendar event address.",
     });
+    expect(planCalendarRsvpPublication({ ...base, eventId: "event-2", inviteToken: "token" })).toEqual({
+      kind: "invalid",
+      error: "Calendar event address mismatch.",
+    });
     expect(planCalendarRsvpPublication(base)).toEqual({
       kind: "invalid",
       error: "Missing invite token for RSVP.",

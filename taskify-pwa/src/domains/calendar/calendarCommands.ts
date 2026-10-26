@@ -6,11 +6,9 @@ import {
   addDaysToDateKey,
   ISO_DATE_PATTERN,
   MS_PER_DAY,
-  TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_RSVP_KIND,
-  calendarAddress,
   nextOccurrence,
-  parseCalendarAddress,
+  planCalendarRsvp,
   type CalendarRsvpFb,
   type CalendarRsvpStatus,
   type CalendarViewPayload,
@@ -720,7 +718,10 @@ export function planAddAcceptedInviteToCalendar(
   return { kind: "applied", events: next, event: normalizedEvent };
 }
 
-/** Validates and normalizes everything needed to encrypt and publish an RSVP event. */
+/**
+ * Validates and normalizes everything needed to encrypt and publish an RSVP event. The event
+ * itself follows the rule every client shares (taskify-core `planCalendarRsvp`).
+ */
 export function planCalendarRsvpPublication(
   input: CalendarRsvpPublicationInput,
 ): CalendarRsvpPublicationPlan {
@@ -729,31 +730,24 @@ export function planCalendarRsvpPublication(
   if (!input.hasSigner || !input.attendeePubkey) {
     return { kind: "invalid", error: "Connect a Nostr key to RSVP." };
   }
-  const parsed = parseCalendarAddress(input.canonical);
-  if (!parsed || parsed.kind !== TASKIFY_CALENDAR_EVENT_KIND) {
-    return { kind: "invalid", error: "Invalid calendar event address." };
-  }
-  const canonicalAddress = calendarAddress(parsed.kind, parsed.pubkey, parsed.d);
-  const inviteToken =
-    (typeof input.inviteToken === "string" ? input.inviteToken.trim() : "")
-    || (input.fallbackInviteToken?.trim() ?? "");
-  if (!inviteToken) return { kind: "invalid", error: "Missing invite token for RSVP." };
-  const rsvpId = `${input.eventId}:${input.attendeePubkey}`;
+  const plan = planCalendarRsvp({
+    canonical: input.canonical,
+    eventId: input.eventId,
+    attendeePubkey: input.attendeePubkey,
+    status: input.status,
+    inviteToken: (typeof input.inviteToken === "string" ? input.inviteToken.trim() : "") || input.fallbackInviteToken,
+    fb: input.fb,
+    note: input.note,
+  });
+  if (plan.kind === "invalid") return plan;
   return {
     kind: "ready",
     relayList,
-    recipientPubkey: parsed.pubkey,
-    canonicalAddress,
-    rsvpId,
-    tags: [["d", rsvpId], ["a", canonicalAddress]],
-    payload: {
-      v: 1,
-      eventId: input.eventId,
-      status: input.status,
-      inviteToken,
-      ...(input.fb ? { fb: input.fb } : {}),
-      ...(input.note ? { note: input.note } : {}),
-    },
+    recipientPubkey: plan.boardPubkey,
+    canonicalAddress: plan.canonicalAddress,
+    rsvpId: plan.tags[0][1],
+    tags: plan.tags,
+    payload: plan.payload,
   };
 }
 

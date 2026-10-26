@@ -6,7 +6,9 @@ import {
   calendarAddress,
   decryptCalendarRsvpPayload,
   decryptCalendarRsvpPayloadForAttendee,
+  acceptCalendarRsvp,
   deriveBoardRsvpToken,
+  latestCalendarRsvps,
   parseCalendarRsvpPayload,
   TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_RSVP_KIND,
@@ -76,11 +78,22 @@ export function useCalendarEventManagement({
   const activeEventRsvpMapRef = useRef<Map<string, CalendarRsvpEnvelope>>(new Map());
   const activeEventInviteTokensRef = useRef<Record<string, string> | null>(null);
   const activeEventInviteTokensVersionRef = useRef("");
-  const activeEventRsvpContextRef = useRef<{ eventId: string; boardNostrId: string; boardSkHex: string } | null>(null);
+  const activeEventRsvpContextRef = useRef<{ eventId: string; canonicalAddress: string; boardNostrId: string; boardSkHex: string } | null>(null);
 
   const setActiveRsvp = useCallback((next: CalendarRsvpEnvelope) => {
     const existing = activeEventRsvpMapRef.current.get(next.authorPubkey);
-    if (existing && existing.createdAt > next.createdAt) return;
+    // Each attendee's newest answer, by the rule every client shares.
+    const asResponse = (rsvp: CalendarRsvpEnvelope) => ({
+      eventId: rsvp.eventId,
+      attendeePubkey: rsvp.authorPubkey,
+      createdAt: rsvp.createdAt,
+      status: rsvp.status,
+      inviteToken: rsvp.inviteToken ?? "",
+    });
+    if (existing) {
+      const incoming = asResponse(next);
+      if (latestCalendarRsvps([asResponse(existing), incoming])[0] !== incoming) return;
+    }
     activeEventRsvpMapRef.current.set(next.authorPubkey, next);
     setActiveEventRsvps(
       Array.from(activeEventRsvpMapRef.current.values()).sort((a, b) => b.createdAt - a.createdAt),
@@ -100,29 +113,25 @@ export function useCalendarEventManagement({
       if (!ev?.content || ev.kind !== TASKIFY_CALENDAR_RSVP_KIND) return;
       const ctx = activeEventRsvpContextRef.current;
       if (!ctx) return;
-      const tokenMap = activeEventInviteTokensRef.current ?? {};
       const attendeePubkey = (ev.pubkey || "").toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(attendeePubkey)) return;
       try {
         const raw = await decryptCalendarRsvpPayload(ev.content, ctx.boardSkHex, ev.pubkey);
-        const payload = parseCalendarRsvpPayload(raw);
-        if (!payload || payload.eventId !== ctx.eventId) return;
-        const expectedToken = tokenMap[attendeePubkey];
-        const boardToken = deriveBoardRsvpToken(ctx.boardNostrId, attendeePubkey);
-        const tokenValues = Object.values(tokenMap);
-        const tokenMatches =
-          payload.inviteToken === boardToken ||
-          (!!expectedToken && payload.inviteToken === expectedToken) ||
-          (tokenValues.length > 0 && tokenValues.includes(payload.inviteToken));
-        if (!tokenMatches) return;
-        const createdAt = typeof ev.created_at === "number" ? ev.created_at : 0;
+        const checked = acceptCalendarRsvp({
+          rsvp: { kind: ev.kind, pubkey: ev.pubkey, created_at: typeof ev.created_at === "number" ? ev.created_at : 0, tags: ev.tags },
+          payload: raw,
+          event: { id: ctx.eventId, canonicalAddress: ctx.canonicalAddress, inviteTokens: activeEventInviteTokensRef.current },
+          boardToken: await deriveBoardRsvpToken(ctx.boardNostrId, attendeePubkey),
+        });
+        if (!checked.accepted) return;
+        const { response } = checked;
         setActiveRsvp({
-          eventId: payload.eventId,
-          authorPubkey: attendeePubkey,
-          createdAt,
-          status: payload.status,
-          ...(payload.fb ? { fb: payload.fb } : {}),
-          inviteToken: payload.inviteToken,
+          eventId: response.eventId,
+          authorPubkey: response.attendeePubkey,
+          createdAt: response.createdAt,
+          status: response.status,
+          ...(response.fb ? { fb: response.fb } : {}),
+          inviteToken: response.inviteToken,
         });
       } catch (err) {
         console.warn("Failed to decrypt RSVP", err);
@@ -195,7 +204,7 @@ export function useCalendarEventManagement({
           const boardKeys = await deriveBoardNostrKeys(board.nostr!.boardId);
           const coord = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, event.id);
           if (cancelled) return;
-          activeEventRsvpContextRef.current = { eventId: event.id, boardNostrId, boardSkHex: boardKeys.skHex };
+          activeEventRsvpContextRef.current = { eventId: event.id, canonicalAddress: coord, boardNostrId, boardSkHex: boardKeys.skHex };
           setActiveEventRsvpCoord(coord);
           setActiveEventRsvpRelays(relays);
           activeEventInviteTokensRef.current = event.inviteTokens ?? null;
