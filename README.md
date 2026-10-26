@@ -102,8 +102,8 @@ The PWA keeps its touch-first mobile shell on phones and tablets. On a desktop b
 ### Worker (local)
 
 ```sh
-# Requires wrangler auth and .dev.vars with VAPID_PUBLIC_KEY, VAPID_SUBJECT, VAPID_PRIVATE_KEY
-npx wrangler dev     # Worker at http://localhost:8787
+# .dev.vars with VAPID_PUBLIC_KEY, VAPID_SUBJECT, VAPID_PRIVATE_KEY for the push routes
+npx wrangler@4.150.0 dev --local     # Worker at http://localhost:8787
 ```
 
 ### Common Commands
@@ -114,8 +114,9 @@ npx wrangler dev     # Worker at http://localhost:8787
 | `cd taskify-pwa && npm test` | Run PWA tests (Vitest) |
 | `cd taskify-pwa && npm run lint` | ESLint check |
 | `cd taskify-pwa && npm run build` | Production PWA build |
-| `npx wrangler dev` | Start Worker locally (from repo root) |
-| `npx wrangler deploy` | Deploy Worker + PWA to Cloudflare |
+| `npx wrangler@4.150.0 dev --local` | Start Worker locally (from repo root); no Cloudflare login needed |
+| `npx wrangler@4.150.0 d1 migrations apply taskify-notifications --remote` | Apply pending D1 migrations; run before every deploy |
+| `npx wrangler@4.150.0 deploy` | Deploy Worker + PWA to Cloudflare (after the PWA build and the migrations) |
 
 ---
 
