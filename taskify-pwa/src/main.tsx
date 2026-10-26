@@ -1,5 +1,6 @@
 import { Component, StrictMode, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { whenWindowLoaded } from './lib/whenWindowLoaded'
 import './index.css'
 
 // Windows often doesn't render backdrop-filter blur, so the frosted sheets there get an opaque
@@ -205,7 +206,9 @@ function setupServiceWorkers() {
       }
     });
 
-    window.addEventListener('load', () => {
+    // This runs at the end of an asynchronous bootstrap, normally after `load` has fired, so a
+    // plain `load` listener would never register the worker (no offline cache, no reminders).
+    whenWindowLoaded(() => {
       navigator.serviceWorker
         .register('/sw.js')
         .then((registration) => {
