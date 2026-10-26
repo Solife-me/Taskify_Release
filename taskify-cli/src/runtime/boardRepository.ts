@@ -21,7 +21,7 @@ export type SyncedBoard = { name?: string; kind?: string; columns?: { id: string
  * entries they keep in step with. The `NostrRuntime` facade exposes these methods as they are.
  */
 export function createBoardRepository(context: RuntimeContext) {
-  const { config, session, ensureConnected, boardRelays, persistConfig, randomUUID } = context;
+  const { config, session, ensureConnected, boardRelays, persistConfig, clock, randomUUID } = context;
 
   async function publishBoardDefinition(board: BoardEntry): Promise<void> {
     const { signer } = deriveBoardKeyPair(board.id);
@@ -43,6 +43,7 @@ export function createBoardRepository(context: RuntimeContext) {
     };
     const encrypted = await encryptContent(board.id, JSON.stringify(payload));
     const event = session.createEvent();
+    event.created_at = Math.floor(clock() / 1000);
     event.kind = 30300;
     event.content = encrypted;
     // Tags are public: they carry only what the PWA and iOS put there. Lists and child boards are
@@ -114,13 +115,10 @@ export function createBoardRepository(context: RuntimeContext) {
         if (meta.clearCompletedDisabled !== undefined) entry.clearCompletedDisabled = meta.clearCompletedDisabled;
         if (meta.hideChildBoardNames !== undefined) entry.hideChildBoardNames = meta.hideChildBoardNames;
         if (meta.shareSettings !== undefined) entry.shareSettings = meta.shareSettings;
-        // Parse sort tag from board events
-        for (const event of events) {
-          const sortTag = event.tags.find((t: string[]) => t[0] === "sort");
-          if (sortTag?.[1]) {
-            entry.sortMode = sortTag[1] as BoardEntry["sortMode"];
-            if (sortTag[2]) entry.sortDirection = sortTag[2] as BoardEntry["sortDirection"];
-          }
+        // Sort is the CLI's alone: a definition from the PWA or iOS leaves this device's as it is.
+        if (meta.sortMode) {
+          entry.sortMode = meta.sortMode;
+          if (meta.sortDirection) entry.sortDirection = meta.sortDirection;
         }
         await persistConfig(config);
       }

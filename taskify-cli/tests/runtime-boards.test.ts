@@ -205,3 +205,47 @@ test("syncing ignores definitions not signed with the board's key, and boards it
     await h.close();
   }
 });
+
+test("board definitions are stamped with the runtime's clock, as tasks and events are", async () => {
+  const h = await runtimeHarness();
+  try {
+    const { boardId } = await h.runtime.createBoard({ name: "Week plan", kind: "week" });
+    assert.equal(boardEvents(h.relay, boardId, BOARD_DEFINITION)[0].created_at, seconds(START));
+    h.advance(60_000);
+    await h.runtime.updateBoard(boardId, { name: "Week plan 2" });
+    assert.equal(boardEvents(h.relay, boardId, BOARD_DEFINITION)[0].created_at, seconds(START + 60_000));
+  } finally {
+    await h.close();
+  }
+});
+
+test("syncing takes the sort from the newest definition, whatever order the relays return them in", async () => {
+  const h = await runtimeHarness();
+  try {
+    const t = seconds(START);
+    const newest = await definitionEvent(BOARD, { tags: [["k", "lists"], ["name", "Groceries"], ["sort", "due", "desc"]], payload: {}, createdAt: t - 60 });
+    const older = await definitionEvent(BOARD, { tags: [["k", "lists"], ["name", "Groceries"], ["sort", "priority", "asc"]], payload: {}, createdAt: t - 600 });
+    // A relay that missed the newer copy still serves the older one, and it arrives last.
+    h.relay.events.push(newest, older);
+    await h.runtime.syncBoard(BOARD);
+    let entry = h.config.boards.find((board) => board.id === BOARD);
+    assert.equal(entry?.sortMode, "due");
+    assert.equal(entry?.sortDirection, "desc");
+
+    // The PWA and iOS publish no sort: a newer definition from them leaves this device's sort.
+    h.relay.events.push(await definitionEvent(BOARD, { tags: [["k", "lists"], ["name", "Groceries"]], payload: { columns: [] }, createdAt: t }));
+    await h.runtime.syncBoard(BOARD);
+    entry = h.config.boards.find((board) => board.id === BOARD);
+    assert.equal(entry?.sortMode, "due");
+    assert.equal(entry?.sortDirection, "desc");
+
+    // Values no client writes are ignored rather than saved.
+    h.relay.events.push(await definitionEvent(BOARD, { tags: [["k", "lists"], ["name", "Groceries"], ["sort", "random", "sideways"]], payload: {}, createdAt: t + 60 }));
+    await h.runtime.syncBoard(BOARD);
+    entry = h.config.boards.find((board) => board.id === BOARD);
+    assert.equal(entry?.sortMode, "due");
+    assert.equal(entry?.sortDirection, "desc");
+  } finally {
+    await h.close();
+  }
+});

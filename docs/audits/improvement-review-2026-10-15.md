@@ -3878,3 +3878,19 @@ Found while answering what is public about events and RSVPs.
     regexes over the runtime;
   - `BoardEntry.eventKeys`, which nothing used except `board-sort`'s regex.
 - CLI 215/215, `npx tsc --noEmit` clean.
+- **Two fixes after the move** (own commit, failing tests first):
+  - *Definitions took the wall clock.* Unlike tasks and events, `publishBoardDefinition` never set
+    `created_at`, so NDK stamped it at signing and the runtime's injected clock was ignored. It
+    now uses the clock, as the PWA does (`nowSeconds`).
+  - *A stale sort could win.* `syncBoard` took the board's other fields from the newest
+    definition, but its sort from whichever fetched definition carrying a `sort` tag came last.
+    A relay still serving an older copy could restore an old sort order. The sort now comes from
+    the same newest definition (its tag, else its payload), and only values a client writes are
+    accepted. The PWA and iOS publish no sort, so a definition from them leaves this device's sort
+    as it is.
+
+  CLI 217/217, `npx tsc --noEmit` clean.
+- **Left as found, cross-client:** board definitions from every client are stamped with the
+  current second, with no `previous + 1` as tasks have. Two changes to one board in the same
+  second can therefore tie, and NIP-01 relays keep the lower event id. Fixing that means a shared
+  rule for every client, not a CLI change.
