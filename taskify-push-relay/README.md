@@ -45,7 +45,7 @@ asked for a list of everyone who uses it.
 - One-use preview retrieval: `GET /v1/previews/:opaqueToken` (expires after 15 minutes, works once).
   A NIP-98-signed fetch must be signed by the recipient; unsigned fetches from older iPhone builds
   are accepted until `REQUIRE_SIGNED_PREVIEWS=true`
-- Persistent state: `/data/state.json`
+- Persistent state: `/data/relay.sqlite` (SQLite, WAL journal). A `state.json` left by a release before 0.5.0 is imported on the first start and kept as `state.json.imported`
 - APNs configuration: `/data/apns.json`
 - Separate Taskify iOS, Taskify watchOS, Taskify macOS, and Snapstr iOS APNs topics; the defaults
   are `solife.me.Taskify.Native`, `solife.me.Taskify.Native.watchkitapp`,

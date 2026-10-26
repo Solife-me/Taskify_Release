@@ -55,7 +55,7 @@ Constraints carried through every chunk:
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
 | 11 | macOS | `taskify-macos` | Approved implementation done (2026-10-23); C11-6A/C11-7A signed proof gates in progress; shared wallet deletion remains due after Dec 1 |
 | 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Done (2026-10-26): C12-1 to C12-5 and C12-7; C12-6 declined |
-| 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Reviewed (2026-10-26); awaiting decisions |
+| 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Implementing (approved 2026-10-26) |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
 
 ---
@@ -4032,7 +4032,8 @@ What the review found:
   - Each change writes only its own rows.
   - On first start, the relay imports an existing `state.json` in one transaction and keeps the
     file renamed, so a failed import changes nothing.
-  - Back up with SQLite's online backup, so StartOS backups are consistent.
+  - StartOS backups stay a plain volume snapshot: StartOS always stops a service before backing it
+    up (packaging guide, Backups), so the database and its log are copied at rest.
 - **Test first:** a store-contract suite run against the current store, then the SQLite store;
   an import test from a real-shaped `state.json`; a StartOS box install, update and backup
   restore.
@@ -4142,14 +4143,72 @@ repository:
 
 | ID | Decision | Date | Outcome |
 | --- | --- | --- | --- |
-| C13-1 | Pending | | |
-| C13-2 | Pending | | |
-| C13-3 | Pending | | |
-| C13-4 | Pending | | |
-| C13-5 | Pending | | |
-| C13-6 | Pending | | |
-| C13-7 | Pending | | |
-| C13-8 | Pending | | |
-| C13-9 | Pending | | |
-| C13-10 | Pending | | |
-| C13-11 | Pending | | |
+| C13-1 | Approve | 2026-10-26 | Storage done (relay 0.5.0:0): SQLite store, one-time import of `state.json`; per incoming wrap 669 ms → 0.6 ms at 100,000 items, steady memory 1.16 GB → 52 MiB. The wisp-derived server changes are next |
+| C13-2 | Approve | 2026-10-26 | Not started |
+| C13-3 | Approve | 2026-10-26 | Not started |
+| C13-4 | Approve | 2026-10-26 | Not started |
+| C13-5 | Approve | 2026-10-26 | Not started |
+| C13-6 | Approve | 2026-10-26 | Not started |
+| C13-7 | Explore | 2026-10-26 | Not started |
+| C13-8 | Approve | 2026-10-26 | Not started |
+| C13-9 | Explore | 2026-10-26 | Not started |
+| C13-10 | Approve | 2026-10-26 | Not started |
+| C13-11 | Decline | 2026-10-26 | Keep TypeScript/JavaScript |
+
+### Checkpoint — October 26, 2026 (C13-1: the relay's SQLite store)
+
+**What wisp offers.** The maintainer asked for techniques from [wisp](https://github.com/privkeyio/wisp),
+a Nostr relay in Zig on LMDB (commit `41dacd3`, read but not built or run). Its README claims
+about 9× strfry's throughput and about 11 MB of memory when idle. What applies to this relay:
+
+- **Store the event's JSON once and index beside it.** Keys are composite (a tag, then
+  big-endian `created_at`, then id), so range scans come out newest first, and queries return
+  stored bytes rather than re-serialising.
+- **Decide every rejection before writing,** then commit many events together. Its group-commit
+  writer drains up to 1,000 events into one transaction, and the queue is capped by count and
+  by bytes (256 MiB), so a flood is refused rather than growing into an out-of-memory crash.
+- **Cheapest checks first:** authentication, block rules, rate, size and age come before the
+  signature.
+- **Match new events to subscriptions by index,** not by visiting every connection.
+- **Durability by default is "the last commit may roll back, the store never corrupts".**
+
+**The store (this step).** `relay.sqlite` replaces `state.json`:
+
+- one table per collection, each event's JSON stored once, and an index for every lookup and
+  eviction order;
+- running totals kept by triggers, and jobs and previews cascading with their wrap or
+  registration;
+- every change one transaction;
+- WAL with `synchronous=NORMAL`, which keeps wisp's default guarantee without paying a sync per
+  message. Because of that, group commit buys little here and was not built.
+
+The first start imports `state.json` in one transaction, keeps the wrap sequences that Watch
+paging depends on, and renames the file to `state.json.imported`. Following the packaging guide
+(an application's own schema change runs on its start, not in `migrations.up`), the import is
+the relay's own, so it also covers hosted and test runs.
+
+**Measured** on this Mac, with a generated state of wraps over 1,000 recipients plus a task cache,
+in separate processes:
+
+| Items stored | Per incoming wrap, before → after | Memory, before → steady after | Start, before → after |
+| --- | --- | --- | --- |
+| 10,000 | 64 ms → 0.47 ms | 295 MiB → 52 MiB | 126 ms → 7 ms |
+| 100,000 | 669 ms → 0.60 ms | 1,162 MiB → 52 MiB | 1,282 ms → 45 ms |
+
+The one-time import took 1.1 s at 10,000 items and 13 s at 100,000. Slower boxes take longer,
+and StartOS shows the relay as starting meanwhile. A first version still scanned the task cache
+on every write (15.6 ms per wrap at 100,000 items). Per-author checks on touched authors and a
+trigger-kept total made the cost flat.
+
+**Verified:**
+
+- relay suite 109/109, with the store tests now behavioural (`ee0e188b`);
+- `tsc` clean, and the StartOS bundle builds;
+- the shipped container image (Node 22.23.4, Alpine) imported a sample `state.json`, served
+  `/healthz` and shut down cleanly: one `relay.sqlite` (mode 0600) beside the renamed file, no
+  leftover log, sequences and totals intact.
+
+Node 22 logs one `ExperimentalWarning` for `node:sqlite` at start.
+
+**Not verified:** an install and update on a real StartOS box with production data, and a backup
+restore. The release notes say the update cannot be reversed by installing an older version.

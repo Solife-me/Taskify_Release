@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
+import { DatabaseSync } from 'node:sqlite'
 import { RelayStore } from '../src/store.js'
 
 const alice = 'a'.repeat(64)
@@ -442,12 +443,12 @@ test('task cache keeps only the latest replaceable ciphertext without account me
   assert.deepEqual(store.taskEventsFor([alice]).map((event) => event.id), [newer.id, other.id])
   assert.deepEqual(store.taskEventsFor([bob]), [])
 
-  const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
-  assert.equal(onDisk.version, 3)
-  assert.deepEqual(
-    Object.keys(onDisk.taskEvents[0]).sort(),
-    ['coordinate', 'event', 'lastSeenAt'],
-  )
+  // On disk: the coordinate, the signed ciphertext event and fields read from it, and when it was
+  // last observed. Nothing that names an account, device or relay.
+  const file = new DatabaseSync(path.join(directory, 'relay.sqlite'), { readOnly: true })
+  const columns = file.prepare('PRAGMA table_info(task_events)').all().map((column) => column.name).sort()
+  file.close()
+  assert.deepEqual(columns, ['author', 'board_tag', 'coordinate', 'created_at', 'id', 'json', 'kind', 'last_seen_at'])
 
   now += 101
   assert.deepEqual(store.taskEventsFor([alice]), [])
@@ -487,15 +488,54 @@ test('after a delivered alert the next one waits for the minimum gap', async () 
   assert.equal(store.duePushJobs(now + 8).length, 1, 'due once the gap has passed')
 })
 
-test('one failed write does not stop later writes', async () => {
+test('a write that fails part-way leaves nothing behind, and later writes still land', async () => {
   const { directory, store } = await storeForTest()
-  const { rm, mkdir } = await import('node:fs/promises')
-  await rm(directory, { recursive: true, force: true })
-  await assert.rejects(store.putPreference({ ...giftWrap('6'.repeat(64), bob), kind: 10_050, pubkey: alice, tags: [] }))
-  await mkdir(directory, { recursive: true })
-  await store.putPreference({ ...giftWrap('7'.repeat(64), bob), kind: 10_050, pubkey: carol, tags: [] })
-  const onDisk = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'))
-  assert.deepEqual(onDisk.preferences.map((entry) => entry.pubkey).sort(), [alice, carol])
+  const valid = taskEvent('1'.repeat(64), alice, 'task-1', 1_800_000_000)
+  // The second event cannot be stored (BigInt has no JSON form) after the first already was.
+  const unstorable = { ...taskEvent('2'.repeat(64), alice, 'task-2', 1_800_000_000), content: 10n }
+  await assert.rejects(store.putTaskEvents([valid, unstorable]))
+  assert.deepEqual(store.taskEventsFor([alice]), [], 'the batch is all or nothing')
+
+  assert.equal(await store.putTaskEvents([valid]), true)
+  assert.deepEqual((await reopen(directory)).taskEventsFor([alice]).map((event) => event.id), [valid.id])
+})
+
+test('importing a former state.json keeps wrap sequences, numbers new wraps after them, and runs once', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'taskify-push-store-'))
+  const now = 1_700_000_000
+  await writeFile(path.join(directory, 'state.json'), JSON.stringify({
+    version: 3,
+    nextEventSequence: 42,
+    registrations: [{
+      key: `${bob}:phone-1`, pubkey: bob, installationID: 'phone-1', deviceToken: '12'.repeat(32),
+      environment: 'production', platform: 'ios', application: 'taskify', updatedAt: now, lastPushAt: now - 5,
+    }],
+    events: [
+      { event: giftWrap('1'.repeat(64), bob, now), recipient: bob, storedAt: now, sequence: 40 },
+      { event: giftWrap('2'.repeat(64), bob, now), recipient: bob, storedAt: now + 1, sequence: 41 },
+    ],
+    preferences: [{ pubkey: alice, event: preferenceEvent('3'.repeat(64), alice, now, 'wss://push.solife.me') }],
+    taskEvents: [{ coordinate: `30301:${alice}:task-1`, event: taskEvent('4'.repeat(64), alice, 'task-1', now), lastSeenAt: now }],
+    pushJobs: [],
+    previews: [],
+  }))
+  const store = await reopen(directory, { now: () => now + 2 })
+  assert.deepEqual(store.eventsAfter(bob, 40).events.map((event) => event.id), ['2'.repeat(64)])
+  assert.equal(store.registrationsFor(bob)[0].lastPushAt, now - 5)
+  assert.equal(store.preferencesFor([alice]).length, 1)
+  assert.equal(store.taskEventsFor([alice]).length, 1)
+
+  await store.putGiftWrap(giftWrap('5'.repeat(64), bob, now + 2), { notify: false })
+  const page = store.eventsAfter(bob, 41)
+  assert.deepEqual(page.events.map((event) => event.id), ['5'.repeat(64)])
+  assert.ok(page.nextSequence >= 42, `new wraps follow the imported sequence (got ${page.nextSequence})`)
+
+  const { existsSync } = await import('node:fs')
+  assert.equal(existsSync(path.join(directory, 'state.json')), false)
+  assert.equal(existsSync(path.join(directory, 'state.json.imported')), true)
+  store.close()
+  const again = await reopen(directory, { now: () => now + 3 })
+  assert.equal(again.eventsFor(bob).length, 3, 'imported once, not twice')
 })
 
 test('byte budgets evict the oldest wraps, per recipient and in total', async () => {
