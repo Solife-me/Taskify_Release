@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Privacy-preserving NIP-17 relay and APNs bridge for Taskify and Snapstr",
+  "engines": {
+    "node": ">=22.23.4 <23"
+  },
   "scripts": {
     "build": "rm -rf ./javascript && ncc build startos/index.ts -o ./javascript",
     "check": "tsc --noEmit",

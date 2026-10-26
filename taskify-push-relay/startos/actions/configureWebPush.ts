@@ -75,7 +75,9 @@ export const configureWebPush = sdk.Action.withInput(
       const subject = input.subject?.trim() ?? ''
       const publicBytes = base64url(publicKey)
       if (publicBytes.length !== 65 || publicBytes[0] !== 0x04) {
-        throw new Error('The VAPID public key must be an uncompressed P-256 point.')
+        throw new Error(
+          'The VAPID public key must be an uncompressed P-256 point.',
+        )
       }
       const scalar = privateKey.includes('BEGIN')
         ? Buffer.from(
@@ -89,7 +91,9 @@ export const configureWebPush = sdk.Action.withInput(
         throw new Error('The VAPID private key does not match the public key.')
       }
       if (!/^(mailto:|https:\/\/)/.test(subject)) {
-        throw new Error('The VAPID subject must start with mailto: or https://.')
+        throw new Error(
+          'The VAPID subject must start with mailto: or https://.',
+        )
       }
       await apnsConfigJson.write(effects, {
         ...current,
