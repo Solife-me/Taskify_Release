@@ -4152,7 +4152,7 @@ repository:
 | C13-7 | Explore | 2026-10-26 | Not started |
 | C13-8 | Approve | 2026-10-26 | Not started |
 | C13-9 | Explore | 2026-10-26 | Not started |
-| C13-10 | Approve | 2026-10-26 | Not started |
+| C13-10 | Approve | 2026-10-26 | Done. Accounts with no voice use in the previous 7 days share at most 600 of the 1,000 daily sessions, so 400 stay for returning users; the account's own budget is still checked first. Ageing accounts a day ahead would game it, but each aged account costs the new-account share and the per-address limit. Tested on real SQLite |
 | C13-11 | Decline | 2026-10-26 | Keep TypeScript/JavaScript |
 
 ### Checkpoint — October 26, 2026 (C13-1: the relay's SQLite store)

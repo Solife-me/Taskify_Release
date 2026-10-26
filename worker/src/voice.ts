@@ -415,14 +415,33 @@ export async function reserveVoiceQuota(db: D1Database, key: string, date: strin
   return !!row;
 }
 
-async function reserveVoiceBudget(request: Request, env: Env, npub: string, seconds = 0): Promise<Response | null> {
+// The whole service's daily voice budget, and the part of it accounts new to voice may spend: the
+// rest is kept for people who used voice on an earlier day (within the 7 days counters are kept),
+// so one person making fresh accounts cannot switch voice off for everyone (F1A-4).
+const VOICE_GLOBAL_SESSIONS_PER_DAY = 1000;
+const VOICE_NEW_ACCOUNT_SESSIONS_PER_DAY = 600;
+const VOICE_RETURNING_WINDOW_DAYS = 7;
+
+async function usedVoiceBefore(db: D1Database, npub: string, day: string): Promise<boolean> {
+  const since = new Date(Date.parse(`${day}T00:00:00Z`) - VOICE_RETURNING_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const row = await db.prepare(
+    "SELECT 1 AS used FROM voice_quota WHERE npub = ? AND date < ? AND date >= ? LIMIT 1",
+  ).bind(npub, day, since).first();
+  return !!row;
+}
+
+export async function reserveVoiceBudget(request: Request, env: Env, npub: string, seconds = 0): Promise<Response | null> {
   const db = requireDb(env);
   const day = utcDateString();
   const ip = rateLimitAddress(request.headers.get("CF-Connecting-IP") || "unknown");
   // Hash addresses; never trust caller-supplied X-Forwarded-For / X-Real-IP.
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${day}:${ip}`));
   const ipKey = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
-  for (const [key, limit, cost] of [[npub, VOICE_MAX_SESSIONS_PER_DAY, seconds], [`ip:${ipKey}`, 100, 0], ["global:voice", 1000, 0]] as const) {
+  // The account's own budget first: one over its quota is refused before it costs anyone else.
+  const budgets: Array<readonly [string, number, number]> = [[npub, VOICE_MAX_SESSIONS_PER_DAY, seconds], [`ip:${ipKey}`, 100, 0]];
+  if (!(await usedVoiceBefore(db, npub, day))) budgets.push(["global:voice:new", VOICE_NEW_ACCOUNT_SESSIONS_PER_DAY, 0]);
+  budgets.push(["global:voice", VOICE_GLOBAL_SESSIONS_PER_DAY, 0]);
+  for (const [key, limit, cost] of budgets) {
     if (!await reserveVoiceQuota(db, key, day, limit, cost)) {
       const response = jsonResponse({ error: "quota_exceeded", message: "Voice unavailable right now. Please try again later." }, 429);
       response.headers.set("Retry-After", String(Math.ceil((Date.parse(`${day}T00:00:00Z`) + 86400000 - Date.now()) / 1000)));

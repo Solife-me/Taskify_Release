@@ -935,6 +935,15 @@ class MockD1WithVoice extends MockD1 {
           db.quota.set(key, row);
           return row;
         }
+        // Whether an account used voice on an earlier day: npub = ? AND date < ? AND date >= ?
+        if (/SELECT .* FROM voice_quota .*date < \?/is.test(sql)) {
+          const [npub, before, since] = params as [string, string, string];
+          for (const key of db.quota.keys()) {
+            const date = key.slice(key.lastIndexOf(":") + 1);
+            if (key.slice(0, key.lastIndexOf(":")) === npub && date < before && date >= since) return { used: 1 } as any;
+          }
+          return null;
+        }
         // SELECT * FROM voice_quota WHERE npub=? AND date=?
         if (/SELECT .* FROM voice_quota/i.test(sql)) {
           const [npub, date] = params as [string, string];
@@ -1831,7 +1840,7 @@ test("voice accepts model JSON that is fenced or wrapped in a sentence", async (
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test("provider failures still charge account, IP and global budgets", async () => {
+test("provider failures still charge account, IP, new-account and global budgets", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
   const originalFetch = globalThis.fetch;
@@ -1842,7 +1851,7 @@ test("provider failures still charge account, IP and global budgets", async () =
       body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "Call dentist" }),
     }), env);
     assert.equal(response.status, 503);
-    assert.equal(db.quota.size, 3);
+    assert.equal(db.quota.size, 4, "an account new to voice also spends the new-account share");
     for (const row of db.quota.values()) assert.equal(row.session_count, 1);
   } finally { globalThis.fetch = originalFetch; }
 });
