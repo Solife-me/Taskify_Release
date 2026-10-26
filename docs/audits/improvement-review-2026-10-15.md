@@ -54,7 +54,7 @@ Constraints carried through every chunk:
 | 9 | iOS chat, settings, onboarding, wallet phase-out | `TaskifyApp/Features` (rest) | Done (2026-10-20); the App Store release must be live before Dec 1 |
 | 10 | iOS extensions | Widgets, Watch, share extension, notification service, App Intents | Done (2026-10-20); C10-5 stages 2–3 and C10-2 stage 2 are deferred until after the December 1 wallet deletion and measurements |
 | 11 | macOS | `taskify-macos` | Approved implementation done (2026-10-23); C11-6A/C11-7A signed proof gates in progress; shared wallet deletion remains due after Dec 1 |
-| 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Implementing (approved 2026-10-25) |
+| 12 | Nostr runtime and CLI | `taskify-runtime-nostr`, `taskify-cli` | Done (2026-10-26): C12-1 to C12-5 and C12-7; C12-6 declined |
 | 13 | Worker and push relay | `worker/`, `taskify-push-relay/` — running cost and self-hosting | Pending |
 | 14 | Parity matrix, repo hygiene, roll-up | Feature parity across clients, docs, final summary | Pending |
 
