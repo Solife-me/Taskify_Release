@@ -14,6 +14,10 @@ const registrationVectors = JSON.parse(await readFile(
   new URL('../../taskify-core/fixtures/dm-push-registration-vectors.json', import.meta.url),
   'utf8',
 )).vectors
+const relayPackageVersion = JSON.parse(await readFile(
+  new URL('../package.json', import.meta.url),
+  'utf8',
+)).version
 
 function nextFrame(socket, predicate = () => true) {
   return new Promise((resolve, reject) => {
@@ -90,6 +94,7 @@ test('authenticated NIP-17 delivery stores, wakes APNs, and is readable only by 
   assert.match(relayInfoResponse.headers.get('content-type'), /^application\/nostr\+json/)
   const relayInfo = await relayInfoResponse.json()
   assert.deepEqual(relayInfo.supported_nips, [1, 9, 11, 17, 42, 59, 98])
+  assert.equal(relayInfo.version, relayPackageVersion)
 
   const senderKey = generateSecretKey()
   const recipientKey = generateSecretKey()

@@ -3,6 +3,7 @@ import http from 'node:http'
 import { isIP } from 'node:net'
 import { verifyEvent } from 'nostr-tools'
 import { WebSocket, WebSocketServer } from 'ws'
+import relayPackage from '../package.json' with { type: 'json' }
 
 import { NIP98_MAX_AGE_SECONDS, NIP98ReplayGuard, verifyNip98Request } from './auth.js'
 import {
@@ -817,7 +818,7 @@ export function createTaskifyPushServer({
         contact: 'https://solife.me',
         supported_nips: [1, 9, 11, 17, 42, 59, 98],
         software: 'https://github.com/Solife-me/Taskify_Release',
-        version: '0.4.1',
+        version: relayPackage.version,
         limitation: {
           auth_required: true,
           payment_required: false,

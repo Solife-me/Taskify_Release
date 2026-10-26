@@ -4382,3 +4382,15 @@ a service the owner chose not to use.
   GHCR package public if necessary, and confirm
   `docker manifest inspect ghcr.io/solife-me/taskify-push-relay:0.5.0` lists amd64 and arm64.
 
+### Checkpoint — October 26, 2026 (relay 0.5.0:1: truthful NIP-11 version)
+
+- The maintainer installed 0.5.0:0. The public health endpoint returned 200 and the WebSocket
+  opened, but the NIP-11 document still claimed `0.4.1` because `server.js` hard-coded that old
+  value; it was not evidence that the SQLite update had failed.
+- A failing HTTP-level relay test first reproduced `0.4.1 !== 0.5.0`. NIP-11 now reads the version
+  from the same `package.json` that the image ships, so a future version bump cannot leave the
+  public metadata behind again.
+- The relay semver remains 0.5.0 because that is the installed and not-yet-tagged application
+  release. The StartOS revision advances to 0.5.0:1 so a server already running 0.5.0:0 can apply
+  the corrected image normally.
+
