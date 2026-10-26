@@ -32,6 +32,14 @@ public struct EventVersion: Codable, Hashable, Sendable {
         return idA < idB ? 1 : -1
     }
 
+    /// The `created_at` for a new version: now, but always after the newest version known (taskify-core
+    /// `nextEventCreatedAt`). Otherwise two changes in the same second, or a clock that is behind,
+    /// would publish a version relays may keep the older of.
+    public static func nextCreatedAt(now: Int, previous: Int?) -> Int {
+        guard let previous else { return now }
+        return max(now, previous + 1)
+    }
+
     /// Whether this version wins over `other`.
     public func wins(over other: EventVersion) -> Bool {
         Self.compare(self, other) > 0

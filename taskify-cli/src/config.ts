@@ -26,6 +26,8 @@ export type BoardEntry = {
   sortMode?: "manual" | "due" | "priority" | "created" | "alpha";
   sortDirection?: "asc" | "desc";
   syncedAt?: number;
+  /** `created_at` of the newest definition of the board this device published or read. */
+  definitionAt?: number;
 };
 
 export type Contact = {

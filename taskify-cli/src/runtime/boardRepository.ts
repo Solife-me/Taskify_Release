@@ -1,4 +1,5 @@
 import { boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
+import { nextEventCreatedAt } from "taskify-core";
 import type { BoardEntry } from "../config.js";
 import { pickBestBoardMeta } from "../shared/boardMeta.js";
 import { sanitizeRemote } from "../shared/displaySafe.js";
@@ -43,7 +44,9 @@ export function createBoardRepository(context: RuntimeContext) {
     };
     const encrypted = await encryptContent(board.id, JSON.stringify(payload));
     const event = session.createEvent();
-    event.created_at = Math.floor(clock() / 1000);
+    // After every definition known, so a change in the same second as the last (or after a member
+    // whose clock is ahead) isn't the one relays drop. `definitionAt` is saved with the config.
+    event.created_at = nextEventCreatedAt(clock() / 1000, board.definitionAt);
     event.kind = 30300;
     event.content = encrypted;
     // Tags are public: they carry only what the PWA and iOS put there. Lists and child boards are
@@ -56,6 +59,7 @@ export function createBoardRepository(context: RuntimeContext) {
       ...(board.sortMode ? [["sort", board.sortMode, board.sortDirection ?? "asc"]] : []),
     ];
     await session.publishSigned(event, signer, board.relays?.length ? board.relays : config.relays);
+    board.definitionAt = event.created_at;
   }
 
   const repository = {
@@ -120,6 +124,8 @@ export function createBoardRepository(context: RuntimeContext) {
           entry.sortMode = meta.sortMode;
           if (meta.sortDirection) entry.sortDirection = meta.sortDirection;
         }
+        const newest = Math.max(...eventLikes.map((event) => event.created_at ?? 0));
+        if (newest > (entry.definitionAt ?? 0)) entry.definitionAt = newest;
         await persistConfig(config);
       }
 

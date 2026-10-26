@@ -93,6 +93,19 @@ describe("BoardPublisher", () => {
     expect(deps.onTaskSettled).toHaveBeenCalledWith("t1");
   });
 
+  it("publishes each board definition after the newest one known, even in the same second", async () => {
+    const { publisher, sent, ledger } = setup();
+    await publisher.publishBoardMetadata(shared);
+    await publisher.publishBoardMetadata({ ...shared, name: "Team A" } as Board);
+    expect(sent.map((entry) => entry.template.created_at)).toEqual([1000, 1001]);
+
+    // Another member's definition from a clock ahead of this one.
+    ledger.acceptBoardMeta("tag:nb1", 1500);
+    await publisher.publishBoardMetadata({ ...shared, name: "Team B" } as Board);
+    expect(sent[sent.length - 1].template.created_at).toBe(1501);
+    expect(ledger.boardMetaAt("tag:nb1")).toBe(1501);
+  });
+
   it("drops a publish superseded by a newer edit of the same task", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));

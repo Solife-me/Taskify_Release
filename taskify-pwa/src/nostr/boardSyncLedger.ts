@@ -11,8 +11,7 @@
  *
  * Board ids here are board tags (`boardTag(nostrBoardId)`), as the events carry them.
  */
-import { compareEventVersions, latestEventVersion, type EventVersion } from "taskify-core";
-import { reserveTaskMutationTimestamp } from "../domains/tasks/taskMovePersistence";
+import { compareEventVersions, latestEventVersion, nextEventCreatedAt, type EventVersion } from "taskify-core";
 
 type Clock = Map<string, Map<string, number>>;
 type VersionClock = Map<string, Map<string, EventVersion>>;
@@ -120,7 +119,7 @@ export class BoardSyncLedger {
    */
   reserveTaskPublish(boardTag: string, taskId: string, storedAt: number, nowSeconds: number): number {
     const current = Math.max(this.taskAt(boardTag, taskId), storedAt);
-    const at = reserveTaskMutationTimestamp(nowSeconds, current);
+    const at = nextEventCreatedAt(nowSeconds, current);
     raiseVersion(this.tasks, boardTag, taskId, { createdAt: at });
     this.pendingTasks.add(key(boardTag, taskId));
     return at;
@@ -184,6 +183,21 @@ export class BoardSyncLedger {
   }
 
   // ---- Board metadata ----
+
+  /** The `created_at` of the newest definition of the board seen or published, or 0. */
+  boardMetaAt(boardTag: string): number {
+    return this.boardMeta.get(boardTag) ?? 0;
+  }
+
+  /**
+   * The `created_at` for a new definition of the board: after every one known, so two changes in
+   * the same second, or a member's clock ahead of this one, can't leave relays keeping the older.
+   */
+  reserveBoardMeta(boardTag: string, nowSeconds: number): number {
+    const at = nextEventCreatedAt(nowSeconds, this.boardMeta.get(boardTag));
+    this.boardMeta.set(boardTag, at);
+    return at;
+  }
 
   noteBoardMeta(boardTag: string, at: number): void {
     this.boardMeta.set(boardTag, Math.max(this.boardMeta.get(boardTag) ?? 0, at));

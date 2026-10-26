@@ -34,3 +34,15 @@ export function compareEventVersions(a: EventVersion, b: EventVersion): number {
 export function latestEventVersion(a: EventVersion, b: EventVersion): EventVersion {
   return compareEventVersions(a, b) >= 0 ? a : b;
 }
+
+/**
+ * The `created_at` for a new version of a replaceable item: now, but always after the newest
+ * version this client knows (its own last publish or one it received). Otherwise two changes in
+ * the same second, or a device whose clock is behind, would publish a version relays may keep the
+ * older of (fixtures/event-version-vectors.json, `nextCreatedAt`).
+ */
+export function nextEventCreatedAt(nowSeconds: number, previousCreatedAt?: number | null): number {
+  const now = Number.isFinite(nowSeconds) ? Math.floor(nowSeconds) : 0;
+  if (typeof previousCreatedAt !== "number" || !Number.isFinite(previousCreatedAt)) return now;
+  return Math.max(now, Math.floor(previousCreatedAt) + 1);
+}

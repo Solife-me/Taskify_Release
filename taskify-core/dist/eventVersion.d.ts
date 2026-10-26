@@ -18,3 +18,10 @@ export type EventVersion = {
 export declare function compareEventVersions(a: EventVersion, b: EventVersion): number;
 /** The winning version of the two (`a` when they are the same). */
 export declare function latestEventVersion(a: EventVersion, b: EventVersion): EventVersion;
+/**
+ * The `created_at` for a new version of a replaceable item: now, but always after the newest
+ * version this client knows (its own last publish or one it received). Otherwise two changes in
+ * the same second, or a device whose clock is behind, would publish a version relays may keep the
+ * older of (fixtures/event-version-vectors.json, `nextCreatedAt`).
+ */
+export declare function nextEventCreatedAt(nowSeconds: number, previousCreatedAt?: number | null): number;

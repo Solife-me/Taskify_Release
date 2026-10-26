@@ -1,5 +1,5 @@
 {
-  "description": "Which version of a replaceable item wins: later created_at, then the lowest id (NIP-01); a known id wins a tie with an unknown one. expected is the sign of compare(a, b). Written by taskify-core tests/event-version-vectors.test.ts (WRITE_EVENT_VERSION_VECTORS=1); checked there, by Swift EventVersionVectorTests and by the CLI's wire-vectors test.",
+  "description": "Which version of a replaceable item wins: later created_at, then the lowest id (NIP-01); a known id wins a tie with an unknown one. expected is the sign of compare(a, b). nextCreatedAt: a new version's created_at, now but always after the newest version known. Written by taskify-core tests/event-version-vectors.test.ts (WRITE_EVENT_VERSION_VECTORS=1); checked there, by Swift EventVersionVectorTests and by the CLI's wire-vectors test.",
   "vectors": [
     {
       "name": "a later created_at wins",
@@ -120,6 +120,32 @@
         "id": "0a11111111111111111111111111111111111111111111111111111111111111"
       },
       "expected": 1
+    }
+  ],
+  "nextCreatedAt": [
+    {
+      "name": "nothing known yet: now",
+      "now": 1000,
+      "previous": null,
+      "expected": 1000
+    },
+    {
+      "name": "the last version is older: now",
+      "now": 1000,
+      "previous": 990,
+      "expected": 1000
+    },
+    {
+      "name": "the last version is this second: one later",
+      "now": 1000,
+      "previous": 1000,
+      "expected": 1001
+    },
+    {
+      "name": "the last version is ahead of this clock: one after it",
+      "now": 1000,
+      "previous": 1005,
+      "expected": 1006
     }
   ]
 }

@@ -3890,10 +3890,10 @@ Found while answering what is public about events and RSVPs.
     as it is.
 
   CLI 217/217, `npx tsc --noEmit` clean.
-- **Left as found, cross-client:** board definitions from every client are stamped with the
-  current second, with no `previous + 1` as tasks have. Two changes to one board in the same
-  second can therefore tie, and NIP-01 relays keep the lower event id. Fixing that means a shared
-  rule for every client, not a CLI change.
+- **Left as found, cross-client (since fixed; see "Same-second board definitions" below):** the
+  PWA and CLI stamped board definitions with the current second, with no `previous + 1` as tasks
+  have. Two changes to one board in the same second could therefore tie, and NIP-01 relays keep
+  the lower event id. iOS was already monotonic (`nextNostrTimestamp`).
 
 ### Checkpoint — October 26, 2026 (C12-5: the CLI consumes the cross-client wire vectors)
 
@@ -3919,3 +3919,33 @@ Found while answering what is public about events and RSVPs.
 - The calendar vectors already matched.
 - The vector descriptions (and their PWA/Swift/core generators) now name the CLI as a consumer.
 - CLI 222/222; core 173/173; the PWA and Swift vector suites pass.
+
+### Same-second board definitions — October 26, 2026
+
+- **The defect.** The PWA (`nowSeconds()`) and the CLI stamped a board definition (kind 30300,
+  replaceable) with the current second only. Two changes to one board in the same second, or
+  after another member whose clock is ahead, got a `created_at` no later than the version before.
+  NIP-01 relays then keep one by id, so a real change could be silently dropped. Tasks were already
+  safe on every client (`max(now, previous + 1)`). iOS's `nextNostrTimestamp` was already
+  app-wide monotonic, and is raised by every event it receives.
+- **The shared rule.** One function for a new version's `created_at`, `nextEventCreatedAt(now,
+  previous?)` in `taskify-core/src/eventVersion.ts`. Its vectors are in the new `nextCreatedAt`
+  section of `event-version-vectors.json`, checked by core and by Swift `EventVersionVectorTests`
+  (`EventVersion.nextCreatedAt`). The three copies of this rule now use it:
+  - the PWA's task ledger (`reserveTaskMutationTimestamp` removed);
+  - the CLI's task and calendar publishing;
+  - iOS's `nextNostrTimestamp`.
+- **Board definitions, failing tests first:**
+  - *PWA:* `BoardSyncLedger.reserveBoardMeta` stamps each definition after the newest one the
+    ledger has seen or sent.
+  - *CLI:* a board's config entry keeps `definitionAt`, the newest definition this device
+    published or read in `syncBoard`. It is saved with the config, so the next command, a new
+    process, still knows it.
+- **Verified:**
+  - CLI 223/223; PWA `tsc -b` and lint clean, 747 tests; core 173/173; Swift
+    `EventVersionVectorTests` 2/2;
+  - the iOS app target, which `swift test` doesn't compile, built for the simulator with the
+    `AppModel` change.
+- **Still possible:** two devices changing one board in the same second, neither having seen the
+  other's change. No client can order that without coordination; relays keep one, as with any
+  replaceable event.

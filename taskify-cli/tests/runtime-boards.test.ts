@@ -107,6 +107,7 @@ test("creating a board publishes its definition under the board's key and adds i
     const entry = {
       id: boardId, name: "Week plan", kind: "week", columns: [], children: [],
       archived: false, hidden: false, clearCompletedDisabled: false, indexCardEnabled: false, hideChildBoardNames: false,
+      definitionAt: seconds(START),
     };
     assert.deepEqual(h.config.boards.at(-1), entry);
     assert.equal(h.saved.length, 1);
@@ -245,6 +246,26 @@ test("syncing takes the sort from the newest definition, whatever order the rela
     entry = h.config.boards.find((board) => board.id === BOARD);
     assert.equal(entry?.sortMode, "due");
     assert.equal(entry?.sortDirection, "desc");
+  } finally {
+    await h.close();
+  }
+});
+
+test("each board definition is published after the newest one known, even in the same second", async () => {
+  const h = await runtimeHarness();
+  try {
+    const t = seconds(START);
+    await h.runtime.updateBoard(BOARD, { name: "Groceries A" });
+    await h.runtime.updateBoard(BOARD, { name: "Groceries B" });
+    assert.deepEqual(boardEvents(h.relay, BOARD, BOARD_DEFINITION).map((event) => event.created_at), [t + 1]);
+    assert.equal(h.saved.at(-1)?.boards.find((board) => board.id === BOARD)?.definitionAt, t + 1, "remembered for the next command");
+
+    // Another member's definition, from a clock ahead of this one.
+    h.relay.events.push(await definitionEvent(BOARD, { tags: [["k", "lists"], ["name", "Groceries C"]], payload: {}, createdAt: t + 300 }));
+    await h.runtime.syncBoard(BOARD);
+    assert.equal(h.config.boards.find((board) => board.id === BOARD)?.definitionAt, t + 300);
+    await h.runtime.updateBoard(BOARD, { name: "Groceries D" });
+    assert.equal(boardEvents(h.relay, BOARD, BOARD_DEFINITION)[0].created_at, t + 301);
   } finally {
     await h.close();
   }

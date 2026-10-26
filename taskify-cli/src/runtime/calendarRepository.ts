@@ -6,6 +6,7 @@ import {
   deriveBoardRsvpToken,
   latestCalendarRsvps,
   normalizeCalendarDeleteMutationPayload,
+  nextEventCreatedAt,
   normalizeCalendarMutationPayload,
   readTagValue,
   resolveIdentifierReference,
@@ -110,10 +111,7 @@ export function createCalendarRepository(context: RuntimeContext) {
     const viewPayload = buildCalendarViewEnvelope(canonicalPayload);
     const encrypted = await encryptCalendarPayloadForBoard(canonicalPayload, boardKeys.skHex, boardKeys.pk);
     const event = session.createEvent();
-    event.created_at = Math.max(
-      Math.floor(clock() / 1000),
-      typeof afterCreatedAt === "number" ? afterCreatedAt + 1 : 0,
-    );
+    event.created_at = nextEventCreatedAt(clock() / 1000, afterCreatedAt);
     event.kind = TASKIFY_CALENDAR_EVENT_KIND;
     event.content = encrypted;
     event.tags = [

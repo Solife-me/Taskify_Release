@@ -131,7 +131,7 @@ export class BoardPublisher {
     const content = await this.deps.encrypt(board.nostr.boardId, JSON.stringify(payload));
     const { createdAt } = await this.deps.publish(
       relays,
-      { kind: BOARD_METADATA_KIND, tags, content, created_at: this.nowSeconds() },
+      { kind: BOARD_METADATA_KIND, tags, content, created_at: this.deps.ledger.reserveBoardMeta(tag, this.nowSeconds()) },
       { sk: keys.sk },
     );
     this.deps.ledger.noteBoardMeta(tag, createdAt);
@@ -147,7 +147,7 @@ export class BoardPublisher {
     const content = await this.deps.encrypt(nostrBoardId, JSON.stringify(payload));
     await this.deps.publish(
       relays,
-      { kind: BOARD_METADATA_KIND, tags, content, created_at: this.nowSeconds() },
+      { kind: BOARD_METADATA_KIND, tags, content, created_at: this.deps.ledger.reserveBoardMeta(tag, this.nowSeconds()) },
       { sk: keys.sk },
     );
   }

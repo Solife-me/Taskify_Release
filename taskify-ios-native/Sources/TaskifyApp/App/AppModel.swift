@@ -6310,8 +6310,10 @@ final class AppModel {
     }
 
     func nextNostrTimestamp() -> Int {
-        let now = Int(Date().timeIntervalSince1970)
-        lastNostrCreatedAt = max(now, lastNostrCreatedAt + 1)
+        lastNostrCreatedAt = EventVersion.nextCreatedAt(
+            now: Int(Date().timeIntervalSince1970),
+            previous: lastNostrCreatedAt
+        )
         return lastNostrCreatedAt
     }
 

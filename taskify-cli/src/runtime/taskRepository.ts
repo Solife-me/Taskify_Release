@@ -1,6 +1,6 @@
 import { type NDKEvent } from "@nostr-dev-kit/ndk";
 import { boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
-import { readTagValue, resolveIdentifierReference } from "taskify-core";
+import { nextEventCreatedAt, readTagValue, resolveIdentifierReference } from "taskify-core";
 import type { BoardEntry } from "../config.js";
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "../shared/agentRuntime.js";
 import { MAX_CONCURRENT_BOARD_FETCHES, mapWithConcurrency } from "../shared/concurrency.js";
@@ -91,10 +91,7 @@ export function createTaskRepository(context: RuntimeContext) {
     const bTag = boardTagHash(boardId);
     const encrypted = await encryptContent(boardId, JSON.stringify(payload));
     const event = session.createEvent();
-    event.created_at = Math.max(
-      Math.floor(clock() / 1000),
-      typeof afterCreatedAt === "number" ? afterCreatedAt + 1 : 0,
-    );
+    event.created_at = nextEventCreatedAt(clock() / 1000, afterCreatedAt);
     event.kind = 30301;
     event.content = encrypted;
     event.tags = [
