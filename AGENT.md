@@ -194,6 +194,12 @@ curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"
 npx wrangler@4.150.0 deploy --dry-run --outdir /tmp/wrangler
 ```
 
+**Push relay image:** CI builds the Dockerfile on every change. A maintainer publishes a release
+only by pushing `push-relay-v<package.json version>`; the tag workflow re-runs the tests, requires
+an exact version match, and publishes amd64 and arm64 to
+`ghcr.io/solife-me/taskify-push-relay:<version>`. Agents never push tags. Confirm the first GHCR
+package is public before the StartOS package is changed to consume it.
+
 ### Important Notes
 
 - Test runners are package-specific: `taskify-core` uses Node's built-in `--test`, while

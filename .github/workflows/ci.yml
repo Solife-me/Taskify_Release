@@ -117,6 +117,8 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+      - name: Build the production relay image
+        run: docker build --tag taskify-push-relay:ci .
       # The image installs with --omit=dev, so that is what is gated; the weekly dependency-audit
       # workflow also reports the development tools.
       - run: npm audit --omit=dev --audit-level=high

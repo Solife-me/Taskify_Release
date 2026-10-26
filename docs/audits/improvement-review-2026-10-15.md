@@ -4149,7 +4149,7 @@ repository:
 | C13-4 | Approve | 2026-10-26 | Done except the Worker's name, which awaits the maintainer's confirmation. Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
 | C13-5 | Approve | 2026-10-26 | Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes) |
 | C13-6 | Approve | 2026-10-26 | Done. SDK 3.1.0 (the dev-only zod advisory is gone; full audit clean), `UPDATING.md`, package `AGENTS.md` and `CLAUDE.md`. `make arm` packs 0.5.0:0. `start-cli` here is 2.3.0, behind the published 2.5.1 |
-| C13-7a | Approve | 2026-10-26 | Approved. Split the relay application from its StartOS packaging and add the version-tagged multi-architecture GHCR release. Do not pin the package until that image has actually been published and confirmed public |
+| C13-7a | Approve | 2026-10-26 | Stage 1 done: an exact `push-relay-v<version>` tag tests and publishes amd64/arm64 to GHCR, and ordinary CI builds the production image. To avoid either breaking the StartOS build or duplicating source, the directory split and package pin happen together only after the first image is published and confirmed public |
 | C13-8 | Approve | 2026-10-26 | Reminder titles done: the PWA sends none, and the Worker stores none and returns none; migration 0008 clears stored titles. The service worker names a fired reminder from the device's IndexedDB copy (`public/reminder-titles.js`), kept only while push is on. Checked in a production build in the browser. Found on the way and fixed separately: the PWA's service worker never registered after the async bootstrap (`020e78df`). Preview and NIP-05 lookups now send their input in a POST body (`workerLookups.ts`). The Worker answers both forms, and in its local runtime the POST log lines show no link or name. **Remove the GET forms** once builds before this change are gone, about a month after it ships |
 | C13-9a | Approve | 2026-10-26 | Stage 1 done. Failed reads and publishes through a self-hosted Watch gateway now propagate that failure and never send the signed request, board list or event to Taskify's Worker. Taskify's own gateway retains the old fallback until stage 2 after 2026-12-03 |
 | C13-9b | Decline | 2026-10-26 | Keep PWA-only services out of the relay. Reconsider a separate self-hosted PWA package only when that product is wanted and preview fetching has connect-time private-address defenses |
@@ -4360,4 +4360,25 @@ a service the owner chose not to use.
 - Next: implement C13-7a stages 1–2. The StartOS package must remain on its build-from-source image
   until the maintainer pushes a matching `push-relay-v<version>` tag, confirms the GHCR image is
   public, and then approves the package pin.
+
+### Checkpoint — October 26, 2026 (C13-7a stage 1: publish before the split)
+
+- `.github/workflows/push-relay-image.yml` runs only for `push-relay-v*` tags. It rejects a tag
+  that does not exactly match `taskify-push-relay/package.json`, runs the relay suite and the
+  production dependency audit, then builds linux/amd64 and linux/arm64 with Buildx and publishes
+  the version-only tag to `ghcr.io/solife-me/taskify-push-relay` with provenance and an SBOM.
+- Regular CI now builds the production Dockerfile, so a broken image is found before a release
+  tag rather than only after it.
+- Verified locally: both workflow files parse as YAML; the exact tag passes and a mismatched tag
+  fails; relay type-check and 115/115 tests pass; the production dependency audit is clean; the
+  StartOS JavaScript bundle rebuilds; and Buildx completes both linux/amd64 and linux/arm64 without
+  pushing.
+- The implementation order changed from the proposal for a stronger invariant. Moving the source
+  before an image exists would break `s9pk` packaging or require a temporary second source tree.
+  The first tag therefore publishes from the current combined directory. Once it is public, one
+  later commit moves the relay application to `push-relay/`, changes CI and the release workflow
+  to that directory, and pins the StartOS manifest to the already-existing image.
+- Maintainer next step (agents never push): push `push-relay-v0.5.0`, check the workflow, make the
+  GHCR package public if necessary, and confirm
+  `docker manifest inspect ghcr.io/solife-me/taskify-push-relay:0.5.0` lists amd64 and arm64.
 

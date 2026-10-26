@@ -6,6 +6,9 @@ This is the StartOS package for Taskify's push relay, and also the relay itself:
 
 - Run `npm test`, `npm run check` and `npm run build` (the StartOS bundle). Packing needs
   `make`, with `start-cli` installed.
+- A maintainer publishes a relay image by pushing the exact tag
+  `push-relay-v<package.json version>`. The workflow tests the relay and publishes both amd64 and
+  arm64 to GHCR. Agents never create or push that tag.
 - The relay's state is `relay.sqlite`, through `RelayStore` only. Don't read or write `state.json`:
   `importLegacyState` is its one reader, for upgrades from releases before 0.5.0.
 - Store tests go through the store's public API, and check durability by reopening the store. The
