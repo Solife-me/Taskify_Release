@@ -4149,9 +4149,10 @@ repository:
 | C13-4 | Approve | 2026-10-26 | Done except the Worker's name, which awaits the maintainer's confirmation. Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
 | C13-5 | Approve | 2026-10-26 | Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes) |
 | C13-6 | Approve | 2026-10-26 | Done. SDK 3.1.0 (the dev-only zod advisory is gone; full audit clean), `UPDATING.md`, package `AGENTS.md` and `CLAUDE.md`. `make arm` packs 0.5.0:0. `start-cli` here is 2.3.0, behind the published 2.5.1 |
-| C13-7 | Explore | 2026-10-26 | Explored: proposal C13-7a below, awaiting a decision |
+| C13-7a | Approve | 2026-10-26 | Approved. Split the relay application from its StartOS packaging and add the version-tagged multi-architecture GHCR release. Do not pin the package until that image has actually been published and confirmed public |
 | C13-8 | Approve | 2026-10-26 | Reminder titles done: the PWA sends none, and the Worker stores none and returns none; migration 0008 clears stored titles. The service worker names a fired reminder from the device's IndexedDB copy (`public/reminder-titles.js`), kept only while push is on. Checked in a production build in the browser. Found on the way and fixed separately: the PWA's service worker never registered after the async bootstrap (`020e78df`). Preview and NIP-05 lookups now send their input in a POST body (`workerLookups.ts`). The Worker answers both forms, and in its local runtime the POST log lines show no link or name. **Remove the GET forms** once builds before this change are gone, about a month after it ships |
-| C13-9 | Explore | 2026-10-26 | Explored: proposals C13-9a and C13-9b below, awaiting a decision |
+| C13-9a | Approve | 2026-10-26 | Stage 1 done. Failed reads and publishes through a self-hosted Watch gateway now propagate that failure and never send the signed request, board list or event to Taskify's Worker. Taskify's own gateway retains the old fallback until stage 2 after 2026-12-03 |
+| C13-9b | Decline | 2026-10-26 | Keep PWA-only services out of the relay. Reconsider a separate self-hosted PWA package only when that product is wanted and preview fetching has connect-time private-address defenses |
 | C13-10 | Approve | 2026-10-26 | Done. Accounts with no voice use in the previous 7 days share at most 600 of the 1,000 daily sessions, so 400 stay for returning users; the account's own budget is still checked first. Ageing accounts a day ahead would game it, but each aged account costs the new-account share and the per-address limit. Tested on real SQLite |
 | C13-11 | Decline | 2026-10-26 | Keep TypeScript/JavaScript |
 
@@ -4342,4 +4343,21 @@ a service the owner chose not to use.
   previews are enabled.
 - Until then a self-hosted PWA has no previews or reminders, and says so.
 - **Recommend:** Decline for now. Reopen when a self-hosted PWA is wanted.
+
+### Checkpoint — October 26, 2026 (C13-9a stage 1)
+
+- The maintainer approved C13-7a and C13-9a and declined C13-9b.
+- `TaskifyWatchIndependentClient` permits the legacy Worker fallback only after a failure from
+  `https://push.solife.me` (default HTTPS port). A failed custom gateway now throws its own error;
+  neither its signed read and board list nor its signed event is copied to Taskify's Worker.
+- A new transport-level package test runs the real Watch client against a recording URL protocol.
+  Before the fix, the self-hosted read reached both hosts and returned the Worker's successful
+  response. It now covers read and publish privacy and preserves Taskify's hosted compatibility
+  fallback.
+- C13-9a stage 2 stays dated after 2026-12-03: confirm no App Store build predates the relay
+  gateway, then remove the Watch fallback, the Worker's `/api/watch/nostr/*` routes and
+  `WATCH_NOSTR_RATE_LIMITER` together.
+- Next: implement C13-7a stages 1–2. The StartOS package must remain on its build-from-source image
+  until the maintainer pushes a matching `push-relay-v<version>` tag, confirms the GHCR image is
+  public, and then approves the package pin.
 

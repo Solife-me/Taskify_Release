@@ -274,5 +274,8 @@ reported crash cause; these transport regressions do not replace that verificati
 - Watch gateway reads now use account-bound, expiring, single-use AUTH sessions;
   regression tests cover acknowledgement ordering, account mismatch, and replay.
   Deploy the matching gateway before relying on authenticated upstream reads.
+- A Watch configured with a self-hosted task gateway never falls back to Taskify's
+  Worker when that gateway fails. Taskify's hosted gateway keeps the compatibility
+  fallback only until pre-gateway builds have expired and the Worker bridge is removed.
 - PWA NWC sessions are isolated by client identity and reused across RPCs, with
   idle shutdown and explicit cleanup on disconnect; relay metadata is shared.

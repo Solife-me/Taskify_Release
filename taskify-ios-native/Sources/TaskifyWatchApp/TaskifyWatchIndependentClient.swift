@@ -64,8 +64,11 @@ struct TaskifyWatchIndependentClient: Sendable {
                 return
             } catch {
                 if Task.isCancelled { throw CancellationError() }
-                // Preserve the existing Taskify Watch bridge as a failover. The immutable signed
-                // event is safe to retry because both the bridge and Nostr relays deduplicate IDs.
+                // A self-hoster chose this gateway as the task service. Never copy its signed
+                // event to Taskify's Worker when that private service is unavailable.
+                guard Self.allowsWorkerFallback(after: gatewayBaseURL) else { throw error }
+                // Preserve the old Taskify Watch bridge temporarily for Taskify's own gateway.
+                // The immutable event is safe to retry because both paths deduplicate its ID.
             }
         }
 
@@ -138,8 +141,10 @@ struct TaskifyWatchIndependentClient: Sendable {
                 )
             } catch {
                 if Task.isCancelled { throw CancellationError() }
-                // The existing taskify.solife.me service remains the explicit failover whenever
-                // the self-hosted or hosted push relay cannot refresh its bounded ciphertext cache.
+                // A self-hoster chose this gateway as the task service. Never copy its signed
+                // request and board list to Taskify's Worker when that service is unavailable.
+                guard Self.allowsWorkerFallback(after: gatewayBaseURL) else { throw error }
+                // Keep the old Worker path only as a temporary failover for Taskify's gateway.
             }
         }
         let reply: Reply = try await authenticatedPost(
@@ -514,6 +519,12 @@ struct TaskifyWatchIndependentClient: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(value)
+    }
+
+    private static func allowsWorkerFallback(after gatewayBaseURL: URL) -> Bool {
+        gatewayBaseURL.scheme?.lowercased() == "https"
+            && gatewayBaseURL.host?.lowercased() == "push.solife.me"
+            && (gatewayBaseURL.port == nil || gatewayBaseURL.port == 443)
     }
 
     private func normalizedRelays(_ values: [String]) -> [String] {
