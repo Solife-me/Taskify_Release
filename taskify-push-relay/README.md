@@ -94,6 +94,12 @@ asked for a list of everyone who uses it.
 - APNs jobs survive restarts and retry temporary failures with bounded exponential backoff
 - At most one unsent alert per device: further wraps repoint it at the newest wrap, and a device
   gets its next alert no sooner than 10 seconds after the last one Apple accepted
+- One HTTP/2 connection to APNs per environment, kept open and reconnected when Apple closes it.
+  Alerts that read the same (Watch, Mac, and iPhone alerts without a preview) carry a per-app
+  `apns-collapse-id`, so a newer one replaces an older one on the device. Every alert expires
+  after a day (`apns-expiration`)
+- The container runs as the image's unprivileged `node` user. The StartOS package hands the
+  root-mounted volume to that user before each start
 
 The production public origins are intentionally pinned to `https://push.solife.me` and
 `wss://push.solife.me` so NIP-98 and NIP-42 signatures cannot be replayed to a different origin.

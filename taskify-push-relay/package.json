@@ -19,7 +19,7 @@
     "ws": "8.22.0"
   },
   "devDependencies": {
-    "@start9labs/start-sdk": "3.0.3",
+    "@start9labs/start-sdk": "3.1.0",
     "@types/node": "^26.6.4",
     "@vercel/ncc": "^0.45.0",
     "prettier": "^3.9.9",

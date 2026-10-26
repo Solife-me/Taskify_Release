@@ -9,9 +9,17 @@ export const current = VersionInfo.of({
 - The first start after updating imports the existing data. With a full relay this can take a minute or more on slower hardware, and the relay shows as starting until it is done. The old file is kept beside the database as \`state.json.imported\`.
 - This update cannot be undone by installing an older version.
 
+**Alerts**
+
+- The relay keeps one connection open to Apple's push service instead of opening one per alert.
+- Alerts that all read the same now replace one another on the device instead of piling up. An iPhone alert with a message preview still shows each message.
+- An alert that cannot be delivered within a day is dropped instead of arriving late.
+
 **Security**
 
-- Pins the Node.js runtime to 22.23.4 for the October 2026 Node.js and eMudhra certificate fixes, if 0.4.1:18 was not installed.`,
+- The relay now runs as an unprivileged user instead of root.
+- Pins the Node.js runtime to 22.23.4 for the October 2026 Node.js and eMudhra certificate fixes, if 0.4.1:18 was not installed.
+- Built with StartOS SDK 3.1.0.`,
   },
   migrations: {
     up: async () => {},
