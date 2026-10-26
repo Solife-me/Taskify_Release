@@ -3735,6 +3735,12 @@ were moved by line range, unedited.
   attendee's own answer and is never published into the owner's copy. A later `updateEvent` from
   the CLI also drops the field. The tests pin today's behaviour so the move couldn't change it.
   Deciding the cross-client model for responses an owner receives belongs in taskify-core.
+- **Fixed after the move (own commit, failing test first).** `createEvent` was the only facade
+  method that used its `boardId` without resolving it. Given a board's name, it derived the
+  signing key and relays from the name and returned the name as the board id. Given an unknown
+  board, it published anyway. The one CLI caller resolves the board first, so this was latent.
+  `createEvent` now resolves like `createTaskFull`: it refuses an unknown board and returns
+  `boardName`. CLI 214/214.
 - Next: step 4, board characterization (`createBoard`/`updateBoard` 30300 tags including sort,
   and `syncBoard` saving config), then the board move. That retires `board-phase1-cli-surface`,
   `board-sort`'s runtime cases and the rest of `runtime-pwa-interop`.

@@ -319,3 +319,22 @@ test("calendar changes build on the newest version when a relay still serves an 
     await h.close();
   }
 });
+
+test("an event is created on a board given by name, and an unknown board is refused", async () => {
+  const h = await runtimeHarness();
+  try {
+    const created = await h.runtime.createEvent({ ...dinner, boardId: "Groceries" });
+    assert.equal(created.boardId, BOARD);
+    assert.equal(created.boardName, "Groceries");
+    assert.equal(created.columnId, "todo");
+    const [canonical] = boardEvents(h.relay, BOARD, CANONICAL);
+    assert.equal(canonical?.pubkey, deriveBoardKeyPair(BOARD).pk);
+    assert.equal(canonicalPayload(canonical, BOARD).eventId, created.id);
+
+    const before = h.relay.events.length;
+    await assert.rejects(h.runtime.createEvent({ ...dinner, boardId: "Nowhere" }), /Board not found in config: "Nowhere"/);
+    assert.equal(h.relay.events.length, before, "nothing published");
+  } finally {
+    await h.close();
+  }
+});

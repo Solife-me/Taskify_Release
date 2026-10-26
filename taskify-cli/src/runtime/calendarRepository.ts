@@ -191,6 +191,13 @@ export function createCalendarRepository(context: RuntimeContext) {
 
     async createEvent(input: CreateEventInput): Promise<FullEventRecord> {
       await ensureConnected();
+      const boardEntry = resolveBoardEntry(config, input.boardId);
+      if (!boardEntry) {
+        throw new Error(
+          `Board not found in config: "${input.boardId}". Use: taskify board join <id> --name <name>`,
+        );
+      }
+      const boardId = boardEntry.id;
       const id = randomUUID();
       const now = clock();
       const normalized = normalizeCalendarMutationPayload(
@@ -223,13 +230,13 @@ export function createCalendarRepository(context: RuntimeContext) {
         participants: input.participants ?? null,
         documents: input.documents ?? null,
       };
-      const boardEntry = resolveBoardEntry(config, input.boardId);
       const colId = input.columnId
-        ?? (boardEntry?.kind === "lists" && Array.isArray(boardEntry.columns) && boardEntry.columns.length > 0 ? boardEntry.columns[0].id : "");
-      await publishCalendarEvent(input.boardId, id, eventKey, payload, "open", colId);
+        ?? (boardEntry.kind === "lists" && Array.isArray(boardEntry.columns) && boardEntry.columns.length > 0 ? boardEntry.columns[0].id : "");
+      await publishCalendarEvent(boardId, id, eventKey, payload, "open", colId);
       return {
         id,
-        boardId: input.boardId,
+        boardId,
+        boardName: boardEntry.name,
         eventKey,
         inviteTokens,
         createdBy: userPubkey,
