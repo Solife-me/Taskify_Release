@@ -2,18 +2,26 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import chalk from "chalk";
 import type { Command } from "commander";
 import { getPublicKey,nip19 } from "nostr-tools";
+import { deriveBoardKeyPair } from "taskify-runtime-nostr";
 import {
 buildCalendarEventInviteEnvelope,
-buildEventRsvpResponseEnvelope,
+calendarAddress,
+deriveBoardRsvpToken,
 normalizeTaskRecurrence,
-normalizeTaskReminders
+normalizeTaskReminders,
+planCalendarRsvp,
+resolveIdentifierReference,
+TASKIFY_CALENDAR_EVENT_KIND,
+TASKIFY_CALENDAR_RSVP_KIND,
+type CalendarRsvpStatus
 } from "taskify-core";
+import { encryptCalendarRsvpForBoard } from "../calendarCrypto.js";
 import { renderJson } from "../render.js";
 import { buildCalendarEventDraft } from "../shared/eventDraft.js";
 import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerEventsCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow" | "now" | "shareTransport">) {
-  const { loadConfig, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow, now, shareTransport } = context;
+export function registerEventsCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow" | "now" | "shareTransport" | "withStandaloneSession">) {
+  const { loadConfig, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, nsecToHexOrThrow, now, shareTransport, withStandaloneSession } = context;
   // ---- event command group ----
   const eventCmd = program
     .command("event")
@@ -296,26 +304,43 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
 
   eventCmd
     .command("rsvp <eventId> <accepted|declined|tentative>")
-    .description("Send RSVP response for an event invite")
-    .option("--to <npubOrHex>", "Invite sender public key")
-    .action(async (eventId: string, status: "accepted" | "declined" | "tentative", opts) => {
+    .description("Answer an event invitation: publishes your RSVP (kind 30312) for the event's board to read")
+    .option("--board <id|name>", "Answer an event on one of your boards rather than an invitation in your inbox")
+    .option("--fb <free|busy>", "Whether the time is free or busy for you")
+    .option("--note <text>", "A note for the organizer")
+    .option("--to <npubOrHex>", "No longer needed: the answer goes to the event's board (ignored)")
+    .option("--json", "Output the published RSVP as JSON")
+    .action(async (eventId: string, status: CalendarRsvpStatus, opts) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
       let exitCode = 0;
       try {
-        if (!opts.to) throw new Error("--to <npubOrHex> is required.");
-        const senderHex = nsecToHexOrThrow(config.nsec);
-        const envelope = buildEventRsvpResponseEnvelope({
-          eventId,
+        const secretHex = nsecToHexOrThrow(config.nsec);
+        const attendeePubkey = getPublicKey(hexToBytes(secretHex));
+        const target = opts.board
+          ? await boardEventRsvpTarget(eventId, opts.board, attendeePubkey, config)
+          : await invitationRsvpTarget(eventId, secretHex, config);
+        const plan = planCalendarRsvp({
+          canonical: target.canonical,
+          eventId: target.eventId,
+          attendeePubkey,
           status,
-          respondedAt: now().toISOString(),
+          inviteToken: target.inviteToken,
+          fb: opts.fb,
+          note: opts.note,
         });
-        await shareTransport.send({
-          envelope,
-          senderSecretHex: senderHex,
-          recipientPubkeyHex: npubOrHexToHex(opts.to),
-          relays: config.relays,
-        });
-        console.log(chalk.green("✓ RSVP sent."));
+        if (plan.kind === "invalid") throw new Error(plan.error);
+        const content = await encryptCalendarRsvpForBoard(plan.payload, secretHex, plan.boardPubkey);
+        const { event, relays } = await withStandaloneSession(
+          { relays: target.relays, secretKeyHex: secretHex },
+          (session) => session.publish({
+            kind: TASKIFY_CALENDAR_RSVP_KIND,
+            content,
+            tags: plan.tags,
+            created_at: Math.floor(now().getTime() / 1000),
+          }),
+        );
+        if (opts.json) renderJson({ eventId: target.eventId, status, canonical: plan.canonicalAddress, rsvpEventId: event.id, relays });
+        else console.log(chalk.green(`✓ RSVP sent: ${status}`));
       } catch (err) {
         console.error(chalk.red(String(err)));
         exitCode = 1;
@@ -323,6 +348,43 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         process.exitCode = exitCode;
       }
     });
+
+  type RsvpTarget = { eventId: string; canonical: string; inviteToken: string | undefined; relays: string[] };
+
+  /** The newest invitation to `eventRef` (an id or its prefix) among the shares in the inbox. */
+  async function invitationRsvpTarget(eventRef: string, secretHex: string, config: Awaited<ReturnType<typeof loadConfig>>): Promise<RsvpTarget> {
+    const inbox = await shareTransport.fetchInbox({ recipientSecretHex: secretHex, relays: config.relays, limit: 100 });
+    const invitations = inbox.flatMap((share) => (share.envelope.item.type === "event" ? [{ ...share.envelope.item, id: share.envelope.item.eventId }] : []));
+    const invitation = resolveIdentifierReference(invitations, eventRef);
+    if (!invitation) {
+      throw new Error(`No invitation to event ${eventRef} in your inbox; for an event on one of your boards, pass --board.`);
+    }
+    return {
+      eventId: invitation.eventId,
+      canonical: invitation.canonical,
+      inviteToken: invitation.inviteToken,
+      relays: invitation.relays?.length ? invitation.relays : config.relays,
+    };
+  }
+
+  /** An event on one of the user's boards: their own token if it names one, else the board's. */
+  async function boardEventRsvpTarget(eventRef: string, board: string, attendeePubkey: string, config: Awaited<ReturnType<typeof loadConfig>>): Promise<RsvpTarget> {
+    const boardId = await resolveBoardId(board, config);
+    const runtime = initRuntime(config);
+    try {
+      const event = await runtime.getEvent(eventRef, boardId);
+      if (!event) throw new Error(`Event not found: ${eventRef}`);
+      const entry = config.boards.find((candidate) => candidate.id === event.boardId);
+      return {
+        eventId: event.id,
+        canonical: calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, deriveBoardKeyPair(event.boardId).pk, event.id),
+        inviteToken: event.inviteTokens?.[attendeePubkey] ?? await deriveBoardRsvpToken(event.boardId, attendeePubkey),
+        relays: entry?.relays?.length ? entry.relays : config.relays,
+      };
+    } finally {
+      await runtime.disconnect();
+    }
+  }
 
 }
 

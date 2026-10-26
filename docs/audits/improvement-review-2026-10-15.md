@@ -3083,7 +3083,7 @@ so a response never crosses between them in either direction.
 | C12-4 | Approve | 2026-10-25 | In progress: the runtime seam (step 1), the task domain (step 2) and the calendar domain (step 3) are done; boards are next |
 | C12-5 | Approve | 2026-10-25 | Not started |
 | C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
-| C12-7 | Approve | 2026-10-25 | In progress |
+| C12-7 | Approve | 2026-10-25 | Done in four commits. The RSVP rule (build, organizer check, board-derived token, newest per attendee) is in `taskify-core` with vectors iOS checks. The PWA calls it. The CLI publishes kind 30312 answers and reads them live; it no longer sends the RSVP DM or rewrites the board's copy |
 
 ### Checkpoint — October 24, 2026 (Chunk 12 review)
 
@@ -3774,3 +3774,49 @@ were moved by line range, unedited.
 - Next: step 4, board characterization (`createBoard`/`updateBoard` 30300 tags including sort,
   and `syncBoard` saving config), then the board move. That retires `board-phase1-cli-surface`,
   `board-sort`'s runtime cases and the rest of `runtime-pwa-interop`.
+
+### Checkpoint — October 25, 2026 (C12-7: event RSVPs across clients)
+
+C12-7 is done, before C12-4 step 4 as asked. Four commits, none pushed.
+
+1. **Core rule with shared vectors.** `taskify-core/src/calendarRsvp.ts`:
+   - `planCalendarRsvp`, `acceptCalendarRsvp` (names the reason it rejects),
+     `deriveBoardRsvpToken` and `latestCalendarRsvps`;
+   - `fixtures/calendar-rsvp-vectors.json` is written by the core test and checked by Swift
+     `CalendarRsvpVectorTests`;
+   - iOS's `SharedCalendarRSVPContract` is split into the same pure plan and accept steps, and its
+     builder and decoder use them.
+
+   Two iOS details now follow core: an unknown free/busy value is dropped instead of voiding the
+   payload, and an RSVP whose address names another event is not built. Core 173/173; Swift 880
+   tests, 0 failures.
+2. **The PWA uses it.**
+   - `planCalendarRsvpPublication` keeps its relay and signer checks and delegates the rest;
+   - the organizer view accepts through `acceptCalendarRsvp`, which also checks the `a` address
+     client-side now, and keeps the newest per attendee through `latestCalendarRsvps`;
+   - the board-derived token comes from core.
+
+   `tsc -b` and lint clean; 746 tests pass.
+3. **CLI organizer.**
+   - `listEventRsvps` reads the answers for the event's address and keeps what core accepts;
+   - `event show` lists them in human and JSON output;
+   - `applyEventRsvpResponse` is removed, `share inbox --apply` no longer applies the RSVP DM, and
+     a stray board-copy `rsvpStatus` is not read.
+4. **CLI attendee.** `event rsvp <id> <status>` publishes a kind 30312 answer:
+   - it takes the address, token and relays from the newest invitation in the share inbox (id or
+     prefix), or with `--board` from an event on your own board (your token, else the board's);
+   - `--fb` and `--note` are new;
+   - `--to` is accepted and ignored, so existing scripts keep working.
+
+   An end-to-end case runs the real command through a real standalone session on the loopback
+   relay, and the organizer's runtime reads the answer back. CLI 219/219, `npx tsc --noEmit`
+   clean.
+
+- **Not verified:**
+  - against a real PWA or iOS client on live relays: the shared vectors and NIP-44 decryption
+    stand in for that;
+  - the PWA organizer view in a browser.
+- **Pre-existing:** `npx tsc --noEmit -p tsconfig.app.json` in the PWA reports 22 errors
+  (`erasableSyntaxOnly`, unused locals), the same count with and without this change. CI runs
+  `tsc -b`, which is clean.
+- Next: C12-4 step 4, board characterization, then the board domain move.

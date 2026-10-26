@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { nip19 } from "nostr-tools";
-import { runCli } from "../dist/cli.js";
+import { getPublicKey, nip19, nip44 } from "nostr-tools";
+import { acceptCalendarRsvp, deriveBoardRsvpToken } from "taskify-core";
+import { deriveBoardKeyPair } from "taskify-runtime-nostr";
+import { runCli, type CliDependencies } from "../dist/cli.js";
 import type { TaskifyConfig } from "../src/config.ts";
 import { captureConsole, harnessConfig, harnessDependencies, recordingRuntime } from "./helpers/cliHarness.ts";
 
@@ -25,6 +27,8 @@ function sharingConfig(changes: Partial<TaskifyConfig> = {}): TaskifyConfig {
 
 type Sent = { envelope: { item: Record<string, unknown>; sender?: { npub?: string } }; senderSecretHex: string; recipientPubkeyHex: string; relays: string[] };
 
+type Published = { open: { relays: string[]; signs: boolean }; template: { kind: number; content: string; tags: string[][]; created_at?: number } };
+
 function run(argv: string[], handlers: Record<string, (...args: unknown[]) => unknown> = {}, options: {
   config?: TaskifyConfig;
   inbox?: unknown[];
@@ -32,9 +36,26 @@ function run(argv: string[], handlers: Record<string, (...args: unknown[]) => un
 } = {}) {
   const sent: Sent[] = [];
   const fetched: unknown[] = [];
+  const published: Published[] = [];
+  let openSessions = 0;
   const { runtime, calls } = recordingRuntime(handlers);
+  // A standalone session that records what it is asked to publish.
+  const withStandaloneSession = (async (open: { relays: string[]; secretKeyHex?: string }, work: (session: unknown) => Promise<unknown>) => {
+    openSessions += 1;
+    try {
+      return await work({
+        async publish(template: Published["template"]) {
+          published.push({ open: { relays: open.relays, signs: Boolean(open.secretKeyHex) }, template });
+          return { event: { ...template, id: "e".repeat(64), pubkey: getPublicKey(Buffer.from(senderSecretHex, "hex")), sig: "s" }, relays: open.relays };
+        },
+      });
+    } finally {
+      openSessions -= 1;
+    }
+  }) as NonNullable<CliDependencies["withStandaloneSession"]>;
   const harness = harnessDependencies(runtime, {
     now,
+    withStandaloneSession,
     shareTransport: {
       send: async (input) => {
         if (options.sendError) throw options.sendError;
@@ -48,7 +69,7 @@ function run(argv: string[], handlers: Record<string, (...args: unknown[]) => un
     },
   }, options.config ?? sharingConfig());
   return captureConsole(() => runCli(["node", "taskify", ...argv], harness.dependencies))
-    .then((result) => ({ ...result, calls, sent, fetched, saved: harness.saved }));
+    .then((result) => ({ ...result, calls, sent, fetched, published, openSessions, saved: harness.saved }));
 }
 
 test("share board sends the board's envelope to the recipient over the profile's relays", async () => {
@@ -87,23 +108,95 @@ test("share task sends the task, as an assignment request when asked, and discon
   assert.deepEqual(missing.calls.at(-1), ["disconnect"]);
 });
 
-test("assignment and RSVP responses carry the status and the command's time", async () => {
+test("assignment responses carry the status and the command's time", async () => {
   const assignment = await run(["share", "respond-assignment", "task-1", "accepted", recipientNpub]);
   assert.equal(assignment.status, 0);
   assert.deepEqual(assignment.sent[0].envelope.item, {
     type: "task-assignment-response", taskId: "task-1", status: "accepted", respondedAt: now().toISOString(),
   });
+});
 
-  const rsvp = await run(["event", "rsvp", "event-1", "tentative", "--to", recipientNpub]);
-  assert.equal(rsvp.status, 0);
-  assert.equal(rsvp.sent[0].recipientPubkeyHex, recipientHex);
-  assert.deepEqual(rsvp.sent[0].envelope.item, {
-    type: "event-rsvp-response", eventId: "event-1", status: "tentative", respondedAt: now().toISOString(),
+const attendeeHex = getPublicKey(Buffer.from(senderSecretHex, "hex"));
+const sharedBoard = deriveBoardKeyPair("shared-board");
+const invitedEventId = "11111111-2222-4333-8444-555555555555";
+const invitedCanonical = `30310:${sharedBoard.pk}:${invitedEventId}`;
+const invitation = {
+  rumorId: "invite-1", senderPubkey: recipientHex, createdAt: 100,
+  envelope: { item: {
+    type: "event", eventId: invitedEventId, canonical: invitedCanonical, view: `30311:${sharedBoard.pk}:${invitedEventId}`,
+    eventKey: "k", inviteToken: "invite-token", title: "Dinner", relays: ["wss://board.example"],
+  } },
+};
+
+/** What the board's members read: the answer under the board's key, through the shared rule. */
+async function organizerReads(published: Published, board: { skHex: string }, event: { id: string; canonicalAddress: string; inviteTokens?: Record<string, string> }, boardId: string) {
+  const payload = JSON.parse(nip44.v2.decrypt(published.template.content, nip44.v2.utils.getConversationKey(Buffer.from(board.skHex, "hex"), attendeeHex)));
+  return acceptCalendarRsvp({
+    rsvp: { kind: published.template.kind, pubkey: attendeeHex, created_at: published.template.created_at ?? 0, tags: published.template.tags },
+    payload,
+    event,
+    boardToken: await deriveBoardRsvpToken(boardId, attendeeHex),
   });
+}
 
-  const noRecipient = await run(["event", "rsvp", "event-1", "accepted"]);
-  assert.equal(noRecipient.status, 1);
-  assert.match(noRecipient.stderr.join("\n"), /--to <npubOrHex> is required/);
+test("event rsvp publishes the attendee's own answer from the invitation in their inbox", async () => {
+  const result = await run(
+    ["event", "rsvp", invitedEventId.slice(0, 8), "tentative", "--note", "Bringing dessert", "--fb", "busy", "--to", recipientNpub],
+    {},
+    { inbox: [{ rumorId: "other", senderPubkey: recipientHex, createdAt: 200, envelope: { item: { type: "task", title: "Unrelated" } } }, invitation] },
+  );
+  assert.equal(result.status, 0, result.stderr.join("\n"));
+  assert.deepEqual(result.sent, [], "no message: the answer is its own event");
+  assert.deepEqual(result.fetched, [{ recipientSecretHex: senderSecretHex, relays, limit: 100 }]);
+  assert.equal(result.published.length, 1);
+  const [answer] = result.published;
+  assert.deepEqual(answer.open, { relays: ["wss://board.example"], signs: true });
+  assert.equal(answer.template.kind, 30312);
+  assert.equal(answer.template.created_at, Math.floor(now().getTime() / 1000));
+  assert.deepEqual(answer.template.tags, [["d", `${invitedEventId}:${attendeeHex}`], ["a", invitedCanonical]]);
+
+  const read = await organizerReads(answer, sharedBoard, { id: invitedEventId, canonicalAddress: invitedCanonical, inviteTokens: { [attendeeHex]: "invite-token" } }, "shared-board");
+  assert.ok(read.accepted, JSON.stringify(read));
+  assert.deepEqual(read.accepted && read.response, {
+    eventId: invitedEventId, attendeePubkey: attendeeHex, createdAt: Math.floor(now().getTime() / 1000),
+    status: "tentative", inviteToken: "invite-token", fb: "busy", note: "Bringing dessert",
+  });
+  assert.equal(result.openSessions, 0, "the session is closed");
+  assert.match(result.stdout.join("\n"), /RSVP sent: tentative/);
+});
+
+test("event rsvp --board answers an event on one of your boards with the board's token", async () => {
+  const board = deriveBoardKeyPair("board-1");
+  const canonicalAddress = `30310:${board.pk}:event-1`;
+  const result = await run(["event", "rsvp", "event-1", "accepted", "--board", "Harness Board 7f06"], {
+    getEvent: async () => ({ id: "event-1", boardId: "board-1", title: "Planning", kind: "date", startDate: "2026-10-26", eventKey: "k" }),
+  });
+  assert.equal(result.status, 0, result.stderr.join("\n"));
+  assert.deepEqual(result.calls, [["getEvent", "event-1", "board-1"], ["disconnect"]]);
+  assert.deepEqual(result.fetched, [], "no inbox lookup");
+  const [answer] = result.published;
+  assert.deepEqual(answer.open, { relays, signs: true });
+  assert.deepEqual(answer.template.tags, [["d", `event-1:${attendeeHex}`], ["a", canonicalAddress]]);
+  const read = await organizerReads(answer, board, { id: "event-1", canonicalAddress }, "board-1");
+  assert.ok(read.accepted, JSON.stringify(read));
+  assert.equal(read.accepted && read.response.inviteToken, await deriveBoardRsvpToken("board-1", attendeeHex));
+});
+
+test("event rsvp without an invitation, or with a bad status, publishes nothing", async () => {
+  const missing = await run(["event", "rsvp", invitedEventId, "accepted"], {}, { inbox: [] });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr.join("\n"), /No invitation to event .* in your inbox; for an event on one of your boards, pass --board/);
+  assert.deepEqual(missing.published, []);
+
+  const badStatus = await run(["event", "rsvp", invitedEventId, "maybe"], {}, { inbox: [invitation] });
+  assert.equal(badStatus.status, 1);
+  assert.match(badStatus.stderr.join("\n"), /Invalid RSVP status/);
+  assert.deepEqual(badStatus.published, []);
+
+  const notOnBoard = await run(["event", "rsvp", "event-9", "accepted", "--board", "Harness Board 7f06"], { getEvent: async () => null });
+  assert.equal(notOnBoard.status, 1);
+  assert.match(notOnBoard.stderr.join("\n"), /Event not found: event-9/);
+  assert.deepEqual(notOnBoard.calls.at(-1), ["disconnect"]);
 });
 
 test("a delivery failure is reported with status 1 and still disconnects", async () => {

@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { finalizeEvent, generateSecretKey, getPublicKey, nip44, type NostrEvent } from "nostr-tools";
+import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, type NostrEvent } from "nostr-tools";
 import { calendarAddress, deriveBoardRsvpToken } from "taskify-core";
 import type { MockRelay } from "../../taskify-runtime-nostr/tests/helpers/mockRelay.ts";
 import { boardEvents, boardTagHash, deriveBoardKeyPair, runtimeHarness, START, tag, userPubkey } from "./helpers/runtimeHarness.ts";
+import { runCli } from "../dist/cli.js";
+import { captureConsole, harnessConfig, harnessDependencies } from "./helpers/cliHarness.ts";
 
 /**
  * C12-4 step 3: the runtime's calendar behaviour, through a real session on a loopback relay.
@@ -299,6 +301,45 @@ test("an organizer reads each attendee's newest RSVP from their own events", asy
     assert.equal(h.relay.events.length, before + 6, "reading answers publishes nothing");
     assert.equal(boardEvents(h.relay, BOARD, CANONICAL).length, 1);
     assert.equal(await h.runtime.listEventRsvps("ffffffff", BOARD), null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("an invitee's `event rsvp` reaches the organizer through the relay", async () => {
+  const h = await runtimeHarness();
+  try {
+    const attendee = generateSecretKey();
+    const attendeePubkey = getPublicKey(attendee);
+    const created = await h.runtime.createEvent(dinner);
+    const invitation = await h.runtime.inviteToEvent(created.id, BOARD, attendeePubkey);
+    assert.ok(invitation);
+
+    // The invitee's own CLI: their key, the invitation in their inbox, and a real standalone
+    // session publishing to the loopback relay.
+    const config = structuredClone(harnessConfig);
+    config.nsec = nip19.nsecEncode(attendee);
+    config.relays = [h.relay.url];
+    config.profiles.test = { ...config.profiles.test, nsec: config.nsec, relays: config.relays };
+    const { dependencies } = harnessDependencies({}, {
+      now: () => new Date(START + 120_000),
+      shareTransport: {
+        send: async () => { throw new Error("no message should be sent"); },
+        fetchInbox: async () => [{
+          wrapId: "w", rumorId: "r", senderPubkey: userPubkey, createdAt: seconds(START), raw: "",
+          envelope: { v: 1, kind: "taskify-share", item: {
+            type: "event", eventId: invitation.event.id, canonical: invitation.canonical, view: invitation.view,
+            eventKey: invitation.event.eventKey, inviteToken: invitation.inviteToken, relays: invitation.relays,
+          } },
+        }] as never,
+      },
+    }, config);
+    const answered = await captureConsole(() => runCli(["node", "taskify", "event", "rsvp", created.id, "accepted", "--note", "See you there"], dependencies));
+    assert.equal(answered.status, 0, answered.stderr.join("\n"));
+
+    const rsvps = await h.runtime.listEventRsvps(created.id, BOARD);
+    assert.deepEqual(rsvps?.map((r) => [r.attendeePubkey, r.status, r.note, r.createdAt]), [[attendeePubkey, "accepted", "See you there", seconds(START + 120_000)]]);
+    assert.equal(boardEvents(h.relay, BOARD, CANONICAL).length, 1, "the board's copy is untouched");
   } finally {
     await h.close();
   }
