@@ -183,11 +183,15 @@ shuts down). If it ever hangs, something a shut-down session owns is still runni
 NIP-42/NIP-13 integration tests bind a loopback port and may need a local test environment that
 permits listening on `127.0.0.1`.
 
-**Worker (local):**
+**Worker (local):** runs in Cloudflare's own runtime with local D1, KV and rate limiters; no
+Cloudflare account or login is needed. Build the PWA first (the Worker serves `taskify-pwa/dist`),
+and put secrets the routes need (such as `VAPID_PRIVATE_KEY`) in `.dev.vars`.
 ```sh
-# Requires Cloudflare account + wrangler auth
-# Create .dev.vars with the required local Worker secrets
-npx wrangler dev
+npx wrangler@4.150.0 dev --local --test-scheduled
+# The every-minute cron does not fire locally; --test-scheduled lets you run it:
+curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"
+# What CI checks: the production configuration bundles and binds every rate limiter
+npx wrangler@4.150.0 deploy --dry-run --outdir /tmp/wrangler
 ```
 
 ### Important Notes

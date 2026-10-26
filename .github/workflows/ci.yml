@@ -79,6 +79,30 @@ jobs:
       - run: npm test
       - run: npm audit --omit=dev --audit-level=high
 
+  worker-deploy-check:
+    name: Worker deploy (dry run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the PWA the Worker serves
+        working-directory: taskify-pwa
+        run: |
+          npm ci
+          npm run build
+      # The production configuration, bundled exactly as a deploy would, without uploading.
+      - name: Bundle the Worker with wrangler.toml
+        run: npx --yes wrangler@4.150.0 deploy --dry-run --outdir "$RUNNER_TEMP/wrangler" | tee "$RUNNER_TEMP/wrangler.log"
+      # The Worker refuses (503) on a route whose limiter is not bound, so a missing one must not
+      # reach production.
+      - name: Every rate limiter the routes use is bound
+        run: |
+          for binding in PREVIEW_RATE_LIMITER NIP05_RATE_LIMITER WATCH_NOSTR_RATE_LIMITER PUSH_RATE_LIMITER VOICE_RATE_LIMITER; do
+            grep -q "env.$binding " "$RUNNER_TEMP/wrangler.log" || { echo "::error::$binding is not bound in wrangler.toml"; exit 1; }
+          done
+
   push-relay:
     name: Push relay
     runs-on: ubuntu-latest
@@ -93,8 +117,8 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
-      # Development tooling inside @start9labs/start-sdk carries advisories that only an SDK
-      # release can fix; the image installs with --omit=dev, so that is what is gated.
+      # The image installs with --omit=dev, so that is what is gated; the weekly dependency-audit
+      # workflow also reports the development tools.
       - run: npm audit --omit=dev --audit-level=high
 
   shared-libraries:

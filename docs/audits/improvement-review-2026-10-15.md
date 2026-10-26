@@ -4146,7 +4146,7 @@ repository:
 | C13-1 | Approve | 2026-10-26 | Done. Relay 0.5.0:0 keeps its state in SQLite, importing `state.json` once: per incoming wrap 669 ms → 0.6 ms at 100,000 items, steady memory 1.16 GB → 52 MiB. From wisp: refusals before signature checks, events serialized once per broadcast, gift wraps routed to their recipient's sockets only, and slow readers cut off at 96 MiB |
 | C13-2 | Approve | 2026-10-26 | Done (`7bea41fd`). One HTTP/2 session per APNs host, reconnected after an error, GOAWAY or close. Per-app `apns-collapse-id` on alerts that read the same (not on iPhone preview alerts), and `apns-expiration` a day out. Tested against a local HTTP/2 server |
 | C13-3 | Approve | 2026-10-26 | Done (`27e35505`). The image runs as `node` and gives it /data; a StartOS `chown` oneshot runs before the daemon. Checked with Docker; not yet on a StartOS box |
-| C13-4 | Approve | 2026-10-26 | Not started |
+| C13-4 | Approve | 2026-10-26 | Done except the Worker's name, which awaits the maintainer's confirmation. Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
 | C13-5 | Approve | 2026-10-26 | Not started |
 | C13-6 | Approve | 2026-10-26 | Done. SDK 3.1.0 (the dev-only zod advisory is gone; full audit clean), `UPDATING.md`, package `AGENTS.md` and `CLAUDE.md`. `make arm` packs 0.5.0:0. `start-cli` here is 2.3.0, behind the published 2.5.1 |
 | C13-7 | Explore | 2026-10-26 | Not started |

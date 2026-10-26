@@ -337,6 +337,8 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+const allowAll = () => ({ limit: async () => ({ success: true }) });
+
 async function makeEnv(db: MockD1) {
   const vapid = await createVapidFixture();
   return {
@@ -344,7 +346,12 @@ async function makeEnv(db: MockD1) {
       fetch: async () => new Response("asset", { status: 200 }),
     },
     TASKIFY_DB: db as any,
-    VOICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    // Every limiter production binds (wrangler.toml), each allowing everything.
+    VOICE_RATE_LIMITER: allowAll(),
+    PREVIEW_RATE_LIMITER: allowAll(),
+    NIP05_RATE_LIMITER: allowAll(),
+    PUSH_RATE_LIMITER: allowAll(),
+    WATCH_NOSTR_RATE_LIMITER: allowAll(),
     VAPID_PUBLIC_KEY: vapid.publicKey,
     VAPID_PRIVATE_KEY: vapid.privatePem,
     VAPID_SUBJECT: "mailto:test@example.com",
@@ -2087,6 +2094,19 @@ test("once the day's shared reminder budget is spent, changes are refused but un
   assert.equal((await register("newcomer", "https://fcm.googleapis.com/fcm/send/newcomer")).status, 429);
   const subscriptionId = await sha256Hex("https://fcm.googleapis.com/fcm/send/known");
   assert.equal((await saveReminders(env, "known", subscriptionId, schedule(1), "203.0.113.9")).status, 429);
+});
+
+test("a route whose rate limiter is not bound refuses rather than serving everyone", async () => {
+  for (const [binding, request] of [
+    ["PREVIEW_RATE_LIMITER", new Request("https://taskify.test/api/preview?url=https%3A%2F%2Fexample.com%2F")],
+    ["NIP05_RATE_LIMITER", new Request("https://taskify.test/api/nip05?name=alice%40example.com")],
+    ["PUSH_RATE_LIMITER", new Request("https://taskify.test/api/reminders", { method: "PUT", body: "{}" })],
+  ] as const) {
+    const env = await makeEnv(new SqliteD1());
+    delete env[binding];
+    const response = await worker.fetch(request, env);
+    assert.equal(response.status, 503, `${binding} missing`);
+  }
 });
 
 test("Watch bridge bodies are bounded before the signature is checked", async () => {

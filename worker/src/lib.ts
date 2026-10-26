@@ -164,12 +164,20 @@ export function rateLimitAddress(address: string): string {
   return `${groups.slice(0, 4).map((group) => group.replace(/^0+(?=.)/, "")).join(":")}::/64`;
 }
 
+/// The response for a route whose rate limiter is not bound: logged, and refused.
+export function unboundLimiter(scope: string): Response {
+  console.error("Rate limiter not bound; refusing", { scope });
+  return jsonResponse({ error: "Service unavailable" }, 503);
+}
+
 export async function enforceRateLimit(
   request: Request,
   binding: RateLimitBinding | undefined,
   scope: string,
 ): Promise<Response | null> {
-  if (!binding) return null;
+  // A missing binding is a deployment mistake. Refusing makes it visible at once; allowing would
+  // quietly open the route to anyone.
+  if (!binding) return unboundLimiter(scope);
   const clientAddress = request.headers.get("CF-Connecting-IP")
     || request.headers.get("X-Real-IP")
     || "unknown";

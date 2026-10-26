@@ -1,0 +1,36 @@
+# Advisories are published against lockfiles that have not changed, so a quiet branch never
+# reruns CI's audit steps. This runs them weekly, and on demand, for every package.
+name: Dependency audit
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22.23.4"
+
+jobs:
+  audit:
+    name: npm audit (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [taskify-pwa, worker, taskify-push-relay, taskify-cli, taskify-core, taskify-runtime-nostr]
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # npm audit reads the lockfile; nothing needs installing.
+      - name: Production dependencies (fails on high or critical)
+        run: npm audit --omit=dev --audit-level=high
+      - name: Everything, including development tools (reported, does not fail)
+        run: npm audit || true
