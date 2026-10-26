@@ -1,3 +1,6 @@
+// The Worker sends no reminder titles (C13-8); this device's copy is read from IndexedDB.
+importScripts('/reminder-titles.js');
+
 self.addEventListener('install', (event) => {
   event.waitUntil(clearOldCaches().then(() => self.skipWaiting()));
 });
@@ -372,8 +375,15 @@ async function handlePushEvent() {
     return;
   }
 
+  let storedTitles = new Map();
+  try {
+    storedTitles = await self.taskifyReminderTitles.lookup(reminders.map((item) => item && item.taskId).filter(Boolean));
+  } catch (err) {
+    console.warn('Reminder titles unavailable on this device', err);
+  }
+
   await Promise.all(reminders.map(async (item) => {
-    const title = buildReminderTitle(item);
+    const title = buildReminderTitle(item, storedTitles.get(item.taskId));
     const body = buildReminderBody(item);
     const tag = `taskify_${item.taskId || 'unknown'}_${item.minutes || 0}`;
     const url = item.taskId ? `/?task=${encodeURIComponent(item.taskId)}` : '/';
@@ -549,8 +559,9 @@ function shouldBypassRelayTraffic(request) {
   }
 }
 
-function buildReminderTitle(item) {
-  const raw = typeof item?.title === 'string' ? item.title : '';
+// The device's own title first; then one an older Worker sent with the reminder.
+function buildReminderTitle(item, storedTitle) {
+  const raw = typeof storedTitle === 'string' && storedTitle ? storedTitle : typeof item?.title === 'string' ? item.title : '';
   const cleaned = raw.trim();
   const base = cleaned || 'Task';
   const withoutSuffix = base.replace(/\s+from\s+taskify$/i, '').trim();

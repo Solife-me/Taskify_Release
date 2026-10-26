@@ -29,7 +29,6 @@ const PRIVATE_KEY_KV_KEYS = ["VAPID_PRIVATE_KEY", "private-key", "key"] as const
 const MAX_PUSH_BODY_BYTES = 256 * 1024;
 const MAX_REMINDERS_PER_DEVICE = 500;
 const MAX_OFFSETS_PER_REMINDER = 8;
-const MAX_TITLE_LENGTH = 200;
 const MAX_ID_LENGTH = 128;
 const MAX_ENDPOINT_LENGTH = 2048;
 const MAX_KEY_LENGTH = 256;
@@ -279,12 +278,13 @@ async function handleSaveReminders(request: Request, env: Env): Promise<Response
   const byKey = new Map<string, ReminderEntry>();
   for (const item of reminders as ReminderTaskInput[]) {
     if (!item || typeof item !== "object") continue;
-    if (!isBoundedString(item.taskId, MAX_ID_LENGTH) || typeof item.title !== "string" || !isBoundedString(item.dueISO, 64)) continue;
+    // Titles are not taken: the device shows its own copy when the reminder fires (C13-8).
+    if (!isBoundedString(item.taskId, MAX_ID_LENGTH) || !isBoundedString(item.dueISO, 64)) continue;
     if (!Array.isArray(item.minutesBefore)) continue;
     const dueTime = Date.parse(item.dueISO);
     if (Number.isNaN(dueTime)) continue;
     const boardId = isBoundedString(item.boardId, MAX_ID_LENGTH) ? item.boardId : undefined;
-    const title = item.title.slice(0, MAX_TITLE_LENGTH);
+    const title = "";
     for (const minutes of item.minutesBefore.slice(0, MAX_OFFSETS_PER_REMINDER)) {
       if (!Number.isInteger(minutes) || Math.abs(minutes) > MAX_OFFSET_MINUTES) continue;
       const sendAt = dueTime - minutes * MINUTE_MS;
@@ -498,7 +498,6 @@ async function handlePollReminders(request: Request, env: Env): Promise<Response
       notificationId: row.id,
       taskId: row.task_id,
       boardId: row.board_id ?? undefined,
-      title: row.title,
       dueISO: row.due_iso,
       minutes: row.minutes,
     })),
@@ -788,7 +787,7 @@ async function migrateRemindersFromKv(env: Env, deviceId: string): Promise<void>
   entries.sort((a, b) => (a?.sendAt ?? 0) - (b?.sendAt ?? 0));
   for (const entry of entries) {
     if (!entry || typeof entry.reminderKey !== "string" || typeof entry.taskId !== "string") continue;
-    if (typeof entry.title !== "string" || typeof entry.dueISO !== "string" || typeof entry.minutes !== "number") continue;
+    if (typeof entry.dueISO !== "string" || typeof entry.minutes !== "number") continue;
     if (typeof entry.sendAt !== "number") continue;
     statements.push(
       db
@@ -801,7 +800,7 @@ async function migrateRemindersFromKv(env: Env, deviceId: string): Promise<void>
           entry.reminderKey,
           entry.taskId,
           entry.boardId ?? null,
-          entry.title,
+          "",
           entry.dueISO,
           entry.minutes,
           entry.sendAt,
@@ -840,7 +839,6 @@ async function migratePendingFromKv(env: Env, deviceId: string): Promise<void> {
     (entry) =>
       entry &&
       typeof entry.taskId === "string" &&
-      typeof entry.title === "string" &&
       typeof entry.dueISO === "string" &&
       typeof entry.minutes === "number",
   );

@@ -3,6 +3,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useReminderSync, type ReminderSyncItem } from "./useReminderSync";
+import { clearReminderTitles, saveReminderTitles } from "./reminderTitles";
+
+vi.mock("./reminderTitles", () => ({
+  saveReminderTitles: vi.fn(async () => {}),
+  clearReminderTitles: vi.fn(async () => {}),
+}));
 import type { PushPreferences } from "../tasks/settingsTypes";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -65,7 +71,7 @@ test("a failed save is retried until it succeeds, with one toast and the error c
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   await flush();
   expect(fetchMock).toHaveBeenCalledTimes(3);
-  expect(h.sentPayloadRef.current).toContain("Pay rent");
+  expect(h.sentPayloadRef.current).toContain('"taskId":"t1"');
   expect(h.setPushError).toHaveBeenLastCalledWith(null);
   await h.unmount();
 });
@@ -105,5 +111,23 @@ test("after a failure, an unchanged schedule is sent again when the effect re-ru
   await h.render({ ...pushPrefs });
   await act(async () => { await vi.advanceTimersByTimeAsync(400); });
   expect(fetchMock).toHaveBeenCalledTimes(2);
+  await h.unmount();
+});
+
+test("the Worker gets no titles; the device keeps them while push is on and drops them when it is off", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+  vi.stubGlobal("fetch", fetchMock);
+  const h = harness();
+  await h.render();
+  await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+  await flush();
+
+  const sent = JSON.parse(fetchMock.mock.calls[0][1].body);
+  expect(sent.reminders).toEqual([{ taskId: "t1", dueISO: "2026-10-05T09:00:00Z", minutesBefore: [5] }]);
+  expect(saveReminderTitles).toHaveBeenLastCalledWith([{ taskId: "t1", title: "Pay rent" }]);
+
+  await h.render({ ...pushPrefs, enabled: false });
+  await flush();
+  expect(clearReminderTitles).toHaveBeenCalled();
   await h.unmount();
 });

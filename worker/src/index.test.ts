@@ -1898,7 +1898,7 @@ test("device registration accepts only browser push-service endpoints", async ()
   }
 });
 
-test("reminder saves are capped, de-duplicated, and truncate long titles", async () => {
+test("reminder saves are capped and de-duplicated, and keep no title", async () => {
   const db = new SqliteD1();
   const env = await makeEnv(db);
   const endpoint = "https://fcm.googleapis.com/fcm/send/caps";
@@ -1920,7 +1920,7 @@ test("reminder saves are capped, de-duplicated, and truncate long titles", async
   assert.equal(db.reminders.length, 500);
   assert.equal(db.reminders.filter((row) => row.task_id === "dup").length, 1);
   const long = db.reminders.find((row) => row.task_id === "long");
-  assert.equal(long?.title.length, 200);
+  assert.equal(long?.title, "", "a title, however long, is not stored");
 });
 
 test("oversized push bodies are refused before parsing", async () => {
@@ -2055,14 +2055,21 @@ test("a reminder save writes only what changed, in a fixed number of statements"
   assert.equal((await saveReminders(env, "diff", subscriptionId, schedule(500))).status, 204);
   assert.equal(db.budget("reminders:all"), 500);
 
-  // One title edited and one reminder removed: two changes.
+  // A renamed task costs nothing: the Worker keeps no titles.
+  const renamed = schedule(500);
+  renamed[0].title = "renamed";
+  assert.equal((await saveReminders(env, "diff", subscriptionId, renamed)).status, 204);
+  assert.equal(db.budget("reminders:all"), 500);
+
+  // One due date moved and one reminder removed: two changes.
   const edited = schedule(499);
-  edited[0].title = "renamed";
+  const moved = new Date(Date.parse(SCHEDULE_DUE) + 60 * 60_000).toISOString();
+  edited[0].dueISO = moved;
   assert.equal((await saveReminders(env, "diff", subscriptionId, edited)).status, 204);
   assert.equal(db.budget("reminders:all"), 502);
   const rows = db.reminders;
   assert.equal(rows.length, 499);
-  assert.equal(rows.find((row) => row.task_id === "task-0")?.title, "renamed");
+  assert.equal(rows.find((row) => row.task_id === "task-0")?.due_iso, moved);
   assert.equal(rows.some((row) => row.task_id === "task-499"), false);
 });
 
@@ -2258,4 +2265,33 @@ test("the library parser gets only the document head", () => {
   assert.ok(head.includes("og:image"));
   assert.ok(!head.includes("<p>body</p>"));
   assert.ok(documentHead("<p>" + "x".repeat(200_000)).length <= 64_000);
+});
+
+test("the Worker keeps no reminder titles: saves drop them, and polls return none", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://fcm.googleapis.com/fcm/send/untitled";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("untitled", pushDevice("untitled", endpoint, subscriptionId));
+
+  // An older PWA still sends titles; a current one sends none.
+  assert.equal((await saveReminders(env, "untitled", subscriptionId, schedule(2, "Pick up prescription"))).status, 204);
+  const untitled = schedule(2, "", "plain").map(({ title: _title, ...reminder }) => reminder);
+  assert.equal((await saveReminders(env, "untitled", subscriptionId, [...schedule(2, "Pick up prescription"), ...untitled])).status, 204);
+  const stored = db.sqlite.prepare("SELECT task_id, title FROM reminders ORDER BY task_id").all() as Array<{ task_id: string; title: string }>;
+  assert.deepEqual(stored.map((row) => row.task_id), ["plain-0", "plain-1", "task-0", "task-1"]);
+  assert.deepEqual([...new Set(stored.map((row) => row.title))], [""], "no title is stored");
+
+  // A notification an older version queued with its title is delivered without it.
+  db.pending.push({
+    id: 7, device_id: "untitled", task_id: "task-0", board_id: null, title: "Pick up prescription",
+    due_iso: SCHEDULE_DUE, minutes: 0, created_at: Date.now(),
+  } as any);
+  const polled = await worker.fetch(new Request("https://taskify.test/api/reminders/poll", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint }),
+  }), env);
+  const items = await polled.json() as Array<Record<string, unknown>>;
+  assert.equal(items.length, 1);
+  assert.equal("title" in items[0], false);
+  assert.equal(items[0].taskId, "task-0");
 });

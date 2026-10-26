@@ -3,6 +3,7 @@ import { reminderPresetToMinutes } from "taskify-core";
 import type { PushPreferences } from "../tasks/settingsTypes";
 import type { ReminderPreset } from "../dateTime/reminderUtils";
 import { reminderRetryDelayMs, syncRemindersToWorker } from "./reminderClient";
+import { clearReminderTitles, saveReminderTitles } from "./reminderTitles";
 
 export type ReminderSyncItem = {
   taskId: string;
@@ -37,6 +38,17 @@ export function useReminderSync({
   setPushError: (message: string | null) => void;
   showToast: (message: string, durationMs?: number) => void;
 }): void {
+  // The Worker keeps no titles (C13-8): the service worker names a fired reminder from this
+  // device's copy, kept only while reminders are on.
+  const remindersOn = !!(pushPrefs?.enabled && pushPrefs.deviceId && pushPrefs.subscriptionId);
+  useEffect(() => {
+    const titles = remindersOn
+      ? saveReminderTitles(reminderSyncItems.map((item) => ({ taskId: item.taskId, title: item.title })))
+      : clearReminderTitles();
+    // Without IndexedDB (a private window, say) a reminder still fires, with a generic title.
+    titles.catch((err) => console.warn("Reminder titles not kept on this device", err));
+  }, [reminderSyncItems, remindersOn]);
+
   useEffect(() => {
     if (!pushPrefs?.enabled || !pushPrefs.deviceId || !pushPrefs.subscriptionId) {
       sentPayloadRef.current = null;
@@ -51,7 +63,6 @@ export function useReminderSync({
         taskId: item.taskId,
         boardId: item.boardId,
         dueISO: item.dueISO,
-        title: item.title,
         minutesBefore: (item.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
       }))
       .sort((a, b) => a.taskId.localeCompare(b.taskId));

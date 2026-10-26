@@ -17,8 +17,8 @@ test("sends stable reminder order and minute offsets with cancellation signal", 
   expect(init.method).toBe("PUT");
   expect(init.signal).toBe(controller.signal);
   expect(JSON.parse(init.body)).toEqual({ deviceId: "device", subscriptionId: "subscription", reminders: [
-    { taskId: "a", title: "First", dueISO: "2026-09-15T10:00:00Z", minutesBefore: [0] },
-    { taskId: "z", boardId: "board", title: "Later", dueISO: "2026-09-15T12:00:00Z", minutesBefore: [5, 60] },
+    { taskId: "a", dueISO: "2026-09-15T10:00:00Z", minutesBefore: [0] },
+    { taskId: "z", boardId: "board", dueISO: "2026-09-15T12:00:00Z", minutesBefore: [5, 60] },
   ] });
 });
 test("skips devices without a subscription and rejects missing worker configuration", async () => {
