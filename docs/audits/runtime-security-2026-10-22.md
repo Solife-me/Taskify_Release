@@ -29,3 +29,18 @@ The fixed Node runtime also covers CVE-2026-105482, CVE-2026-106069, CVE-2026-11
 ## Deployment requirement
 
 Rebuild and redeploy the push-relay/StartOS package so the running process actually moves to Node 22.23.4. Existing images built from the former floating tag remain vulnerable until replaced.
+
+## Follow-up — 2026-10-26
+
+Committed on 2026-10-26, when `npm audit` was run again across every package.
+
+- The PWA test failure noted above (`taskCommands.test.ts`) was a clock dependency in the test, fixed in `b73ad92d`.
+- **New since 2026-10-22 and fixed:**
+  - **PWA:** DOMPurify ≤ 3.4.16 (critical: a `SAFE_FOR_TEMPLATES` shadow-root bypass, `IN_PLACE` hook handlers left armed, and an SMIL `href` guard skipped under XHTML). `src/lib/sanitize.ts` uses it on HTML that can come from other people. Now 3.4.17.
+  - **PWA, dev tools only:** undici 7.30.1 (via jsdom) and zod 4.6.7 (via `eslint-plugin-react-hooks`).
+  - **Worker:** undici 8.12.3 (via `link-preview-js`), for an EventSource memory denial of service, a Subresource Integrity bypass and a content-encoding crash.
+- **Verification:**
+  - production and full npm audits are clean for the PWA, Worker, CLI, core and Nostr runtime;
+  - PWA `tsc -b`, lint, 747 tests, production build and startup budget pass;
+  - Worker TypeScript and 86/86 tests pass.
+- **Open:** the push relay's dev dependency `@start9labs/start-sdk` carries a zod memory-exhaustion advisory, fixed in SDK 3.1.0. The relay's production audit is clean. The SDK bump changes the StartOS package and needs a pack-and-install check, so it is left to the Chunk 13 review of the relay.
