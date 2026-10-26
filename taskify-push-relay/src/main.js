@@ -31,6 +31,7 @@ async function shutdown() {
   await server.stop()
   // Folds the write-ahead log into the database, so the volume holds one complete file.
   store.close()
+  apnsClient.close()
   process.exit(0)
 }
 

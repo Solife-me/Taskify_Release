@@ -68,8 +68,15 @@ export function apnsDeliveryProfile(
     topic: isWatch ? watchTopic : isMac ? macTopic : isSnapstr ? snapstrTopic : topic,
     pushType: 'alert',
     priority: '10',
+    // Alerts that all read the same replace one another on the device instead of piling up. One
+    // with a preview link is rewritten into that message's own preview, so it is never collapsed.
+    collapseID: previewURL && !isWatch && !isMac ? null : isSnapstr ? 'snapstr-new-snap' : 'taskify-new-message',
   }
 }
+
+// An alert still undelivered after this long is about a conversation the person has long since
+// opened on another device, so APNs drops it rather than delivering it late.
+const ALERT_LIFETIME_SECONDS = 24 * 60 * 60
 
 export class APNsClient {
   constructor({
@@ -81,6 +88,8 @@ export class APNsClient {
     macTopic = 'solife.me.Taskify.Mac',
     snapstrTopic = 'app.snapstr.ios',
     requestTimeoutMs = 10_000,
+    // Apple's hosts; tests point these at a local HTTP/2 server.
+    authorities = { production: 'https://api.push.apple.com', sandbox: 'https://api.sandbox.push.apple.com' },
     now = () => Date.now(),
   }) {
     this.teamID = teamID
@@ -91,8 +100,35 @@ export class APNsClient {
     this.macTopic = macTopic
     this.snapstrTopic = snapstrTopic
     this.requestTimeoutMs = requestTimeoutMs
+    this.authorities = authorities
     this.now = now
     this.cachedToken = null
+    this.sessions = new Map()
+  }
+
+  /// The open HTTP/2 session to `authority`, connecting when there is none. Apple asks providers
+  /// to keep their connection open rather than connect per alert; a session that errors, is told
+  /// to go away, or closes is forgotten, and the next alert connects again.
+  session(authority) {
+    const existing = this.sessions.get(authority)
+    if (existing && !existing.closed && !existing.destroyed) return existing
+    const session = http2.connect(authority)
+    const forget = () => {
+      if (this.sessions.get(authority) === session) this.sessions.delete(authority)
+    }
+    session.on('error', forget)
+    session.on('goaway', forget)
+    session.on('close', forget)
+    // An idle connection must not keep the process alive at shutdown.
+    session.unref()
+    this.sessions.set(authority, session)
+    return session
+  }
+
+  /// Closes every connection; a later alert connects again.
+  close() {
+    for (const session of this.sessions.values()) session.close()
+    this.sessions.clear()
   }
 
   providerToken() {
@@ -117,9 +153,7 @@ export class APNsClient {
   }
 
   async send(registration, previewURL = null) {
-    const authority = registration.environment === 'sandbox'
-      ? 'https://api.sandbox.push.apple.com'
-      : 'https://api.push.apple.com'
+    const authority = registration.environment === 'sandbox' ? this.authorities.sandbox : this.authorities.production
     const delivery = apnsDeliveryProfile(registration, {
       topic: this.topic,
       watchTopic: this.watchTopic,
@@ -128,27 +162,30 @@ export class APNsClient {
       previewURL,
     })
     const body = Buffer.from(JSON.stringify(delivery.payload))
-    const client = http2.connect(authority)
+    const session = this.session(authority)
     return new Promise((resolve, reject) => {
       let settled = false
       let status = 0
       let timeout = null
       const chunks = []
+      const onSessionError = (error) => finish(() => reject(error))
       const finish = (callback) => {
         if (settled) return
         settled = true
         if (timeout) clearTimeout(timeout)
-        client.close()
+        session.off('error', onSessionError)
         callback()
       }
-      client.once('error', (error) => finish(() => reject(error)))
-      const request = client.request({
+      session.once('error', onSessionError)
+      const request = session.request({
         ':method': 'POST',
         ':path': `/3/device/${registration.deviceToken}`,
         authorization: `bearer ${this.providerToken()}`,
         'apns-topic': delivery.topic,
         'apns-push-type': delivery.pushType,
         'apns-priority': delivery.priority,
+        'apns-expiration': String(Math.floor(this.now() / 1000) + ALERT_LIFETIME_SECONDS),
+        ...(delivery.collapseID ? { 'apns-collapse-id': delivery.collapseID } : {}),
         'content-type': 'application/json',
         'content-length': String(body.length),
       })
