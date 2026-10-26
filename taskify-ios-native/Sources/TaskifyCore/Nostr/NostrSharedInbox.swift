@@ -1266,8 +1266,78 @@ public enum TaskifyEventInvitationResolver {
     }
 }
 
+/// Event RSVPs, the rule the PWA, CLI and iOS share (taskify-core `calendarRsvp.ts`,
+/// `fixtures/calendar-rsvp-vectors.json`). An attendee answers with their own kind 30312 event:
+/// `d` is `<eventId>:<attendee>`, `a` the event's canonical address, and the content NIP-44 to the
+/// board's key. The organizer stores nothing; it reads the responses and keeps the ones `accept`
+/// passes, newest per attendee.
 public enum SharedCalendarRSVPContract {
     public static let eventKind = 30_312
+
+    /// An attendee's RSVP before encryption and signing (core `planCalendarRsvp`).
+    public struct Plan: Equatable, Sendable {
+        public let boardPublicKey: String
+        public let canonicalAddress: String
+        public let tags: [[String]]
+        let payload: CalendarRSVPPayload
+    }
+
+    public enum PlanError: Error, Equatable {
+        case invalidAddress
+        case addressMismatch
+        case invalidAttendee
+        case invalidStatus
+        case missingInviteToken
+
+        /// taskify-core's message for the same failure.
+        public var coreMessage: String {
+            switch self {
+            case .invalidAddress: "Invalid calendar event address."
+            case .addressMismatch: "Calendar event address mismatch."
+            case .invalidAttendee: "Invalid attendee public key."
+            case .invalidStatus: "Invalid RSVP status."
+            case .missingInviteToken: "Missing invite token for RSVP."
+            }
+        }
+    }
+
+    /// Why an organizer leaves a response out (core `CalendarRsvpRejection`).
+    public enum Rejection: String, Error, Equatable {
+        case kind, author, address, payload, event, token
+    }
+
+    public static func plan(
+        canonical: String,
+        eventID: String,
+        attendeePublicKey: String,
+        status: String,
+        inviteToken: String?,
+        freeBusy: String? = nil,
+        note: String? = nil
+    ) throws -> Plan {
+        guard let address = canonicalEventAddress(canonical) else { throw PlanError.invalidAddress }
+        let eventID = eventID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard eventID == address.identifier else { throw PlanError.addressMismatch }
+        let attendee = attendeePublicKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard isPublicKeyHex(attendee) else { throw PlanError.invalidAttendee }
+        guard let status = rsvpStatus(status) else { throw PlanError.invalidStatus }
+        let token = (inviteToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { throw PlanError.missingInviteToken }
+        let canonicalAddress = "\(TaskifyCalendarEventCodec.canonicalEventKind):\(address.publicKey):\(eventID)"
+        return Plan(
+            boardPublicKey: address.publicKey,
+            canonicalAddress: canonicalAddress,
+            tags: [["d", "\(eventID):\(attendee)"], ["a", canonicalAddress]],
+            payload: CalendarRSVPPayload(
+                version: 1,
+                eventID: eventID,
+                status: status,
+                inviteToken: token,
+                freeBusy: freeBusy.flatMap(TaskifyEventFreeBusyStatus.init(rawValue:)),
+                note: note?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            )
+        )
+    }
 
     public static func event(
         invite: SharedCalendarEventDelivery,
@@ -1275,32 +1345,62 @@ public enum SharedCalendarRSVPContract {
         identity: NostrIdentity,
         createdAt: Int
     ) throws -> NostrEvent {
-        guard status == .accepted || status == .declined || status == .tentative,
-              let author = invite.eventAuthorPublicKey,
-              let authorKey = try? Data(hex: author) else {
+        guard let plan = try? plan(
+            canonical: invite.canonical,
+            eventID: invite.eventID,
+            attendeePublicKey: identity.publicKeyHex,
+            status: status.rawValue,
+            inviteToken: invite.inviteToken
+        ), let boardKey = try? Data(hex: plan.boardPublicKey) else {
             throw NostrEventError.invalidEvent
         }
-        let payload = CalendarRSVPPayload(
-            version: 1,
-            eventID: invite.eventID,
-            status: status,
-            inviteToken: invite.inviteToken
-        )
-        let plaintext = try JSONEncoder().encode(payload)
+        let plaintext = try JSONEncoder().encode(plan.payload)
         let encrypted = try NIP44V2.encrypt(
             plaintext,
             privateKey: identity.privateKey,
-            publicKey: authorKey
+            publicKey: boardKey
         )
         return try NostrEvent.signed(
             privateKey: identity.privateKey,
             createdAt: createdAt,
             kind: eventKind,
-            tags: [
-                ["d", "\(invite.eventID):\(identity.publicKeyHex)"],
-                ["a", invite.canonical],
-            ],
+            tags: plan.tags,
             content: encrypted
+        )
+    }
+
+    /// Whether an organizer counts a response (core `acceptCalendarRsvp`). `payload` is the
+    /// decrypted content; the event's signature is the caller's to check.
+    public static func accept(
+        kind: Int,
+        authorPublicKey: String,
+        createdAt: Int,
+        tags: [[String]],
+        payload: Data,
+        eventID: String,
+        canonicalAddress: String,
+        inviteTokens: [String: String]?,
+        boardToken: String
+    ) throws -> TaskifyEventRSVPResponse {
+        guard kind == eventKind else { throw Rejection.kind }
+        let author = authorPublicKey.lowercased()
+        guard isPublicKeyHex(author) else { throw Rejection.author }
+        guard let address = tags.first(where: { $0.first == "a" }).flatMap({ $0.count > 1 ? $0[1] : nil }),
+              address == canonicalAddress else { throw Rejection.address }
+        guard let parsed = parsePayload(payload) else { throw Rejection.payload }
+        guard parsed.eventID == eventID else { throw Rejection.event }
+        let tokens = Array((inviteTokens ?? [:]).values)
+        guard parsed.inviteToken == boardToken || tokens.contains(parsed.inviteToken) else {
+            throw Rejection.token
+        }
+        return TaskifyEventRSVPResponse(
+            eventID: parsed.eventID,
+            authorPublicKey: author,
+            createdAt: createdAt,
+            status: parsed.status,
+            freeBusy: parsed.freeBusy,
+            note: parsed.note,
+            inviteToken: parsed.inviteToken
         )
     }
 
@@ -1316,48 +1416,40 @@ public enum SharedCalendarRSVPContract {
               !responseEvent.content.isEmpty else {
             throw TaskifyEventRSVPError.invalidResponse
         }
-        let normalizedAuthor = authorPublicKey.hexString
         let boardPublicKey = try BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID)
         let canonicalAddress = "\(TaskifyCalendarEventCodec.canonicalEventKind):\(boardPublicKey.hexString):\(event.id)"
-        guard event.canonicalAddress == canonicalAddress,
-              responseEvent.firstTagValue(named: "a") == canonicalAddress else {
-            throw TaskifyEventRSVPError.wrongEvent
-        }
+        guard event.canonicalAddress == canonicalAddress else { throw TaskifyEventRSVPError.wrongEvent }
 
         let plaintext = try NIP44V2.decrypt(
             responseEvent.content,
             privateKey: BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID),
             publicKey: authorPublicKey
         )
-        let payload = try JSONDecoder().decode(CalendarRSVPPayload.self, from: plaintext)
-        guard payload.version == 1,
-              payload.eventID.trimmingCharacters(in: .whitespacesAndNewlines) == event.id,
-              payload.status == .accepted || payload.status == .declined || payload.status == .tentative else {
-            throw TaskifyEventRSVPError.invalidResponse
+        do {
+            return try accept(
+                kind: responseEvent.kind,
+                authorPublicKey: authorPublicKey.hexString,
+                createdAt: responseEvent.createdAt,
+                tags: responseEvent.tags,
+                payload: plaintext,
+                eventID: event.id,
+                canonicalAddress: canonicalAddress,
+                inviteTokens: event.inviteTokens,
+                boardToken: boardRSVPToken(
+                    boardID: board.effectiveNostrBoardID,
+                    attendeePublicKey: authorPublicKey.hexString
+                )
+            )
+        } catch let rejection as Rejection {
+            switch rejection {
+            case .address: throw TaskifyEventRSVPError.wrongEvent
+            case .token: throw TaskifyEventRSVPError.invalidToken
+            case .kind, .author, .payload, .event: throw TaskifyEventRSVPError.invalidResponse
+            }
         }
-        let token = payload.inviteToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else { throw TaskifyEventRSVPError.invalidToken }
-        let tokens = event.inviteTokens ?? [:]
-        let expectedToken = tokens[normalizedAuthor]
-        let derivedToken = boardInviteToken(
-            boardID: board.effectiveNostrBoardID,
-            attendeePublicKey: normalizedAuthor
-        )
-        guard token == expectedToken || tokens.values.contains(token) || token == derivedToken else {
-            throw TaskifyEventRSVPError.invalidToken
-        }
-
-        return TaskifyEventRSVPResponse(
-            eventID: event.id,
-            authorPublicKey: normalizedAuthor,
-            createdAt: responseEvent.createdAt,
-            status: payload.status,
-            freeBusy: payload.freeBusy,
-            note: payload.note?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-            inviteToken: token
-        )
     }
 
+    /// Each attendee's newest response (on a tie, the larger token), ordered by attendee key.
     public static func latestResponses(
         _ responses: [TaskifyEventRSVPResponse]
     ) -> [TaskifyEventRSVPResponse] {
@@ -1375,13 +1467,64 @@ public enum SharedCalendarRSVPContract {
         return latestByAuthor.values.sorted { $0.authorPublicKey < $1.authorPublicKey }
     }
 
-    private static func boardInviteToken(
+    /// The token a board member answers with when the event names none for them:
+    /// base64(sha256(label ‖ "<boardId>:<attendee>")), with the board's shared id.
+    public static func boardRSVPToken(
         boardID: String,
         attendeePublicKey: String
     ) -> String {
         let label = Data("taskify-board-rsvp-token-v1".utf8)
-        let input = Data("\(boardID):\(attendeePublicKey)".utf8)
+        let boardID = boardID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let attendee = attendeePublicKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let input = Data("\(boardID):\(attendee)".utf8)
         return Data(SHA256.hash(data: label + input)).base64EncodedString()
+    }
+
+    private static func canonicalEventAddress(_ value: String) -> (publicKey: String, identifier: String)? {
+        let parts = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count >= 3, Int(parts[0]) == TaskifyCalendarEventCodec.canonicalEventKind else { return nil }
+        let publicKey = String(parts[1]).lowercased()
+        guard isPublicKeyHex(publicKey) else { return nil }
+        let identifier = parts.dropFirst(2).joined(separator: ":")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !identifier.isEmpty else { return nil }
+        return (publicKey, identifier)
+    }
+
+    private static func isPublicKeyHex(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    private static func rsvpStatus(_ value: String) -> SharedInboxItemStatus? {
+        switch value {
+        case "accepted": .accepted
+        case "declined": .declined
+        case "tentative": .tentative
+        default: nil
+        }
+    }
+
+    /// Core `parseCalendarRsvpPayload`: version 1, an event id, an RSVP status and a token; an
+    /// unknown free/busy value or a blank note is left out rather than refused.
+    private static func parsePayload(_ data: Data) -> CalendarRSVPPayload? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["v"] as? NSNumber,
+              CFGetTypeID(version) != CFBooleanGetTypeID(),
+              version.doubleValue == 1,
+              let eventID = (object["eventId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+              let token = (object["inviteToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+              let status = (object["status"] as? String).flatMap(rsvpStatus) else {
+            return nil
+        }
+        return CalendarRSVPPayload(
+            version: 1,
+            eventID: eventID,
+            status: status,
+            inviteToken: token,
+            freeBusy: (object["fb"] as? String).flatMap(TaskifyEventFreeBusyStatus.init(rawValue:)),
+            note: (object["note"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        )
     }
 }
 
@@ -1433,7 +1576,7 @@ public enum TaskifyEventRSVPError: LocalizedError, Equatable {
     }
 }
 
-private struct CalendarRSVPPayload: Codable {
+struct CalendarRSVPPayload: Codable, Equatable, Sendable {
     var version: Int
     var eventID: String
     var status: SharedInboxItemStatus

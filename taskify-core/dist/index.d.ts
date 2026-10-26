@@ -30,3 +30,4 @@ export * from "./taskifyLinks.js";
 export * from "./fileServers.js";
 export * from "./nip17.js";
 export * from "./eventInvitations.js";
+export * from "./calendarRsvp.js";

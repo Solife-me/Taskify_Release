@@ -3044,6 +3044,35 @@ native hashing injected for proof-of-work. Revisit only if measurements later sh
 real commands and a small isolated WASM hashing worker beats the existing Node/browser workers; do
 not port the session or domain facade for that hypothetical gain.
 
+### C12-7 — Event RSVPs in the CLI the way the PWA and iOS do them — **Approved**
+
+Found during C12-4 step 3 (October 25). The CLI and the other clients use different RSVP channels,
+so a response never crosses between them in either direction.
+
+- **PWA and iOS (they match).** An attendee publishes their own kind 30312 event:
+  - signed with their own key;
+  - `d` = `<eventId>:<attendeePubkey>` and `a` = the event's canonical 30310 address;
+  - NIP-44 between the attendee and the board's key: `{v: 1, eventId, status, inviteToken, fb?,
+    note?}`.
+
+  The organizer stores nothing. It reads the responses on the board's relays and keeps one only
+  if it names this event and carries one of the event's invite tokens (or the token derived for
+  that attendee from the board). It shows the newest per attendee.
+- **The CLI.**
+  - As attendee, `event rsvp --to <npub>` sends an `event-rsvp-response` DM that neither the PWA
+    nor iOS sends or reads.
+  - As organizer, `share inbox --apply` writes one `rsvpStatus` onto the board's copy, re-signed
+    with the board key, with `lastEditedBy` set to the attendee.
+  - It never reads kind 30312.
+- **Decision.**
+  - The rule goes into `taskify-core`, with shared vectors for Node and Swift: building an RSVP,
+    the organizer's acceptance check, the board-derived token, and the newest per attendee. The
+    PWA uses it.
+  - The CLI publishes kind 30312 from the invite in its share inbox.
+  - As organizer, the CLI reads responses live and stops rewriting the board's copy.
+  - The DM envelope is no longer sent. One from an older CLI is still listed, but not applied.
+  - No migration: other clients ignore a stray `rsvpStatus`, and the CLI stops reading it.
+
 ### Decisions
 
 | ID | Decision | Date | Outcome |
@@ -3054,6 +3083,7 @@ not port the session or domain facade for that hypothetical gain.
 | C12-4 | Approve | 2026-10-25 | In progress: the runtime seam (step 1), the task domain (step 2) and the calendar domain (step 3) are done; boards are next |
 | C12-5 | Approve | 2026-10-25 | Not started |
 | C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
+| C12-7 | Approve | 2026-10-25 | In progress |
 
 ### Checkpoint — October 24, 2026 (Chunk 12 review)
 

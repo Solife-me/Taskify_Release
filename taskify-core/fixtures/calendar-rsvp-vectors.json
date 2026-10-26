@@ -1,0 +1,933 @@
+{
+  "description": "Event RSVPs: an attendee's kind 30312 event (`d` <eventId>:<attendee>, `a` the event's canonical address, payload {v, eventId, status, inviteToken, fb?, note?}, NIP-44 to the board's key); the organizer's acceptance check (kind, author, address, payload, event id, then a token of the event's or the attendee's board-derived token, in that order); the board-derived token, base64(sha256(\"taskify-board-rsvp-token-v1\" ‖ \"<boardId>:<attendee>\")); and the newest response per attendee (on a tie the larger token), ordered by attendee. Written by taskify-core tests/calendar-rsvp-vectors.test.ts (WRITE_CALENDAR_RSVP_VECTORS=1); checked there and by Swift CalendarRsvpVectorTests.",
+  "boardTokens": [
+    {
+      "name": "a board member's token",
+      "input": {
+        "boardId": "board-1",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expected": "qsWB3ZW3/AUqwwDLQNgykjjPUWHOSBol95XwU28bItM="
+    },
+    {
+      "name": "the board id is trimmed and the key lowercased",
+      "input": {
+        "boardId": " board-1 ",
+        "attendeePubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "expected": "qsWB3ZW3/AUqwwDLQNgykjjPUWHOSBol95XwU28bItM="
+    },
+    {
+      "name": "another board and member",
+      "input": {
+        "boardId": "calendar-board-secret",
+        "attendeePubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expected": "7NUuyhwd3KjY4vXxTHqkcQmqVXgdx1UHf8pvu7WgnN0="
+    }
+  ],
+  "plans": [
+    {
+      "name": "an acceptance",
+      "input": {
+        "canonical": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "eventId": "event-1",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "accepted",
+        "inviteToken": "token-a"
+      },
+      "expected": {
+        "kind": "ready",
+        "boardPubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "tags": [
+          [
+            "d",
+            "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "a",
+            "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+          ]
+        ],
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        }
+      }
+    },
+    {
+      "name": "a tentative answer with free/busy and a note, normalized",
+      "input": {
+        "canonical": "30310:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC:event:part",
+        "eventId": "event:part",
+        "attendeePubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "status": "tentative",
+        "inviteToken": "  token  ",
+        "fb": "busy",
+        "note": "  Running late  "
+      },
+      "expected": {
+        "kind": "ready",
+        "boardPubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event:part",
+        "tags": [
+          [
+            "d",
+            "event:part:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "a",
+            "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event:part"
+          ]
+        ],
+        "payload": {
+          "v": 1,
+          "eventId": "event:part",
+          "status": "tentative",
+          "inviteToken": "token",
+          "fb": "busy",
+          "note": "Running late"
+        }
+      }
+    },
+    {
+      "name": "an unknown free/busy value and a blank note are left out",
+      "input": {
+        "canonical": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "eventId": "event-1",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "declined",
+        "inviteToken": "token-a",
+        "fb": "maybe",
+        "note": "   "
+      },
+      "expected": {
+        "kind": "ready",
+        "boardPubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "tags": [
+          [
+            "d",
+            "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "a",
+            "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+          ]
+        ],
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "declined",
+          "inviteToken": "token-a"
+        }
+      }
+    },
+    {
+      "name": "not a calendar address",
+      "input": {
+        "canonical": "bad",
+        "eventId": "event-1",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "accepted",
+        "inviteToken": "token-a"
+      },
+      "expected": {
+        "kind": "invalid",
+        "error": "Invalid calendar event address."
+      }
+    },
+    {
+      "name": "the invitees' view address is not the event's",
+      "input": {
+        "canonical": "30311:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "eventId": "event-1",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "accepted",
+        "inviteToken": "token-a"
+      },
+      "expected": {
+        "kind": "invalid",
+        "error": "Invalid calendar event address."
+      }
+    },
+    {
+      "name": "the address names another event",
+      "input": {
+        "canonical": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "eventId": "event-2",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "accepted",
+        "inviteToken": "token-a"
+      },
+      "expected": {
+        "kind": "invalid",
+        "error": "Calendar event address mismatch."
+      }
+    },
+    {
+      "name": "no attendee key",
+      "input": {
+        "canonical": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "eventId": "event-1",
+        "attendeePubkey": "not-a-key",
+        "status": "accepted",
+        "inviteToken": "token-a"
+      },
+      "expected": {
+        "kind": "invalid",
+        "error": "Invalid attendee public key."
+      }
+    },
+    {
+      "name": "not an RSVP status",
+      "input": {
+        "canonical": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "eventId": "event-1",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "maybe",
+        "inviteToken": "token-a"
+      },
+      "expected": {
+        "kind": "invalid",
+        "error": "Invalid RSVP status."
+      }
+    },
+    {
+      "name": "no invite token",
+      "input": {
+        "canonical": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "eventId": "event-1",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "accepted",
+        "inviteToken": "  "
+      },
+      "expected": {
+        "kind": "invalid",
+        "error": "Missing invite token for RSVP."
+      }
+    },
+    {
+      "name": "a missing invite token",
+      "input": {
+        "canonical": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+        "eventId": "event-1",
+        "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "accepted",
+        "inviteToken": null
+      },
+      "expected": {
+        "kind": "invalid",
+        "error": "Missing invite token for RSVP."
+      }
+    }
+  ],
+  "acceptance": [
+    {
+      "name": "the attendee's own token",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": true,
+        "response": {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 1785775200,
+          "status": "accepted",
+          "inviteToken": "token-a"
+        }
+      }
+    },
+    {
+      "name": "free/busy and a note are kept",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "tentative",
+          "inviteToken": "token-a",
+          "fb": "free",
+          "note": "Bringing dessert"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": true,
+        "response": {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 1785775200,
+          "status": "tentative",
+          "inviteToken": "token-a",
+          "fb": "free",
+          "note": "Bringing dessert"
+        }
+      }
+    },
+    {
+      "name": "another invitee's token counts too",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-b"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": true,
+        "response": {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 1785775200,
+          "status": "accepted",
+          "inviteToken": "token-b"
+        }
+      }
+    },
+    {
+      "name": "a board member's derived token",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "board-token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": true,
+        "response": {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 1785775200,
+          "status": "accepted",
+          "inviteToken": "board-token-a"
+        }
+      }
+    },
+    {
+      "name": "the author's key is lowercased",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": true,
+        "response": {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 1785775200,
+          "status": "accepted",
+          "inviteToken": "token-a"
+        }
+      }
+    },
+    {
+      "name": "not an RSVP event",
+      "input": {
+        "rsvp": {
+          "kind": 30311,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "kind"
+      }
+    },
+    {
+      "name": "no author key",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "not-a-key",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "author"
+      }
+    },
+    {
+      "name": "no address",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "address"
+      }
+    },
+    {
+      "name": "another event's address",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-2"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "address"
+      }
+    },
+    {
+      "name": "another payload version",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 2,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "payload"
+      }
+    },
+    {
+      "name": "not an RSVP status",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "maybe",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "payload"
+      }
+    },
+    {
+      "name": "an empty token",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": ""
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "payload"
+      }
+    },
+    {
+      "name": "a payload for another event",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-2",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "event"
+      }
+    },
+    {
+      "name": "a token the event doesn't have",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-z"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "token-a",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "token-b"
+          }
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "token"
+      }
+    },
+    {
+      "name": "an event with no tokens takes only the board-derived one",
+      "input": {
+        "rsvp": {
+          "kind": 30312,
+          "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "created_at": 1785775200,
+          "tags": [
+            [
+              "d",
+              "event-1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "a",
+              "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1"
+            ]
+          ]
+        },
+        "payload": {
+          "v": 1,
+          "eventId": "event-1",
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        "event": {
+          "id": "event-1",
+          "canonicalAddress": "30310:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:event-1",
+          "inviteTokens": null
+        },
+        "boardToken": "board-token-a"
+      },
+      "expected": {
+        "accepted": false,
+        "reason": "token"
+      }
+    }
+  ],
+  "latest": [
+    {
+      "name": "the newest per attendee, ordered by attendee",
+      "input": [
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "createdAt": 100,
+          "status": "declined",
+          "inviteToken": "token-b"
+        },
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 200,
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 100,
+          "status": "tentative",
+          "inviteToken": "token-a"
+        },
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "createdAt": 50,
+          "status": "accepted",
+          "inviteToken": "token-b"
+        }
+      ],
+      "expected": [
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 200,
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "createdAt": 100,
+          "status": "declined",
+          "inviteToken": "token-b"
+        }
+      ]
+    },
+    {
+      "name": "on a tie, the larger token",
+      "input": [
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 100,
+          "status": "accepted",
+          "inviteToken": "token-a"
+        },
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 100,
+          "status": "declined",
+          "inviteToken": "token-c"
+        },
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 100,
+          "status": "tentative",
+          "inviteToken": "token-b"
+        }
+      ],
+      "expected": [
+        {
+          "eventId": "event-1",
+          "attendeePubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": 100,
+          "status": "declined",
+          "inviteToken": "token-c"
+        }
+      ]
+    },
+    {
+      "name": "nothing",
+      "input": [],
+      "expected": []
+    }
+  ]
+}
