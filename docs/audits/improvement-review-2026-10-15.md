@@ -3820,3 +3820,40 @@ C12-7 is done, before C12-4 step 4 as asked. Four commits, none pushed.
   (`erasableSyntaxOnly`, unused locals), the same count with and without this change. CI runs
   `tsc -b`, which is clean.
 - Next: C12-4 step 4, board characterization, then the board domain move.
+
+### Security fix — October 26, 2026: CLI board definitions published child-board ids and list names
+
+Found while answering what is public about events and RSVPs.
+
+- **The leak.** The CLI's board definition (kind 30300) carried two plaintext tags that the PWA
+  and iOS keep only in the encrypted content:
+  - `["ch", <childBoardId>]` for each child of a compound board;
+  - `["col", <listId>, <listName>]` for each list of a list board.
+
+  A board's id is its key: from it anyone derives the board's signer and can decrypt every task,
+  event and definition on it. A tag is readable by anyone who queries the relay.
+- **Fixed** (failing test first, `tests/runtime-boards.test.ts`). The definition's tags are now
+  `d`, `b`, `k`, `name` (and the CLI's `sort`), as on the other clients. Lists and children stay
+  in the encrypted payload, where every client already reads them. Definitions older clients
+  published with these tags are still read.
+- **Which boards to consider exposed:**
+  - *Every child board of a compound board whose definition a CLI published from 2026-03-13
+    (commit `2d7c05ef`) up to this fix.* The definition is republished in full on every board
+    change, not only on `board create --kind compound`. That covers rename, archive and unarchive,
+    hide and show, index card, share settings, sort, and adding, removing or reordering a child.
+    Anyone who read one of those definitions can read everything on those child boards: tasks,
+    events, attachments' metadata and invite tokens.
+  - *The list names of every list board whose definition a CLI published from 2026-03-09 (commit
+    `0971a639`).* That covers `board create` and every list or board change above. Only the
+    names are exposed, not the board's contents; this is privacy, not access.
+  - Not exposed by this: the compound board's own contents (its `b` tag is a hash), boards
+    published only from the PWA or iOS, and task and event content.
+- **On this machine** the CLI's only profile has no boards, so none recorded here need checking. A
+  CLI elsewhere, such as an agent install, may have published boards; check that install's boards
+  with the criteria above.
+- **What the fix can't undo.** Publishing the definition again from a fixed CLI replaces the old
+  copy on relays that keep only the newest addressable event. Relays that archive, and anyone who
+  already read it, still have the old one. An exposed child board stays readable by whoever saw
+  its id. Real remediation is a new board (a new id), with its tasks moved and the board shared
+  again. That is the owner's call, and no client automates it today.
+- CLI 222/222, `npx tsc --noEmit` clean.

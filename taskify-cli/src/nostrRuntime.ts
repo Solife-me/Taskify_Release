@@ -118,13 +118,13 @@ export function createNostrRuntime(config: TaskifyConfig, dependencies: NostrRun
     const event = session.createEvent();
     event.kind = 30300;
     event.content = encrypted;
+    // Tags are public: they carry only what the PWA and iOS put there. Lists and child boards are
+    // in the encrypted payload. A child's id is that board's key, and list names are the user's.
     event.tags = [
       ["d", bTag],
       ["b", bTag],
       ["k", board.kind ?? "lists"],
       ["name", board.name],
-      ...(board.columns ?? []).map((c): string[] => ["col", c.id, c.name]),
-      ...(board.children ?? []).map((child): string[] => ["ch", child]),
       ...(board.sortMode ? [["sort", board.sortMode, board.sortDirection ?? "asc"]] : []),
     ];
     await session.publishSigned(event, signer, board.relays?.length ? board.relays : config.relays);
