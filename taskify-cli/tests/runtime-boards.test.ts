@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { NostrEvent } from "nostr-tools";
-import { decryptFromBoard } from "taskify-core";
-import { boardEvents, boardTagHash, deriveBoardKeyPair, runtimeHarness } from "./helpers/runtimeHarness.ts";
+import { finalizeEvent, generateSecretKey, type NostrEvent } from "nostr-tools";
+import { decryptFromBoard, encryptToBoard } from "taskify-core";
+import { boardEvents, boardTagHash, deriveBoardKeyPair, runtimeHarness, START } from "./helpers/runtimeHarness.ts";
 
 /**
  * The runtime's board definitions (kind 30300), through a real session on a loopback relay.
@@ -13,6 +13,24 @@ import { boardEvents, boardTagHash, deriveBoardKeyPair, runtimeHarness } from ".
  */
 
 const BOARD_DEFINITION = 30300;
+const BOARD = "board-lists-1";
+const seconds = (ms: number) => Math.floor(ms / 1000);
+
+/** A definition as another member's client publishes it (or, with `secretKey`, a stranger). */
+async function definitionEvent(boardId: string, definition: {
+  tags?: string[][];
+  payload: Record<string, unknown>;
+  createdAt: number;
+  secretKey?: Uint8Array;
+}): Promise<NostrEvent> {
+  const tag = boardTagHash(boardId);
+  return finalizeEvent({
+    kind: BOARD_DEFINITION,
+    created_at: definition.createdAt,
+    content: await encryptToBoard(boardId, JSON.stringify(definition.payload)),
+    tags: [["d", tag], ["b", tag], ...(definition.tags ?? [])],
+  }, definition.secretKey ?? Buffer.from(deriveBoardKeyPair(boardId).skHex, "hex"));
+}
 
 async function definitionPayload(event: NostrEvent, boardId: string): Promise<Record<string, any>> {
   return JSON.parse((await decryptFromBoard(boardId, event.content)).plaintext);
@@ -76,6 +94,113 @@ test("syncing a board reads its lists and children back from the encrypted defin
     assert.deepEqual((await h.runtime.syncBoard(lists.boardId)).columns, [{ id: "col-a", name: "Groceries" }]);
     assert.deepEqual(h.config.boards.find((entry) => entry.id === boardId)?.children, ["board-lists-1", "board-week-1"]);
     assert.deepEqual(h.config.boards.find((entry) => entry.id === lists.boardId)?.columns, [{ id: "col-a", name: "Groceries" }]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("creating a board publishes its definition under the board's key and adds it to the config", async () => {
+  const h = await runtimeHarness();
+  try {
+    const { boardId } = await h.runtime.createBoard({ name: "Week plan", kind: "week" });
+    assert.equal(boardId, "00000000-0000-4000-8000-000000000001");
+    const entry = {
+      id: boardId, name: "Week plan", kind: "week", columns: [], children: [],
+      archived: false, hidden: false, clearCompletedDisabled: false, indexCardEnabled: false, hideChildBoardNames: false,
+    };
+    assert.deepEqual(h.config.boards.at(-1), entry);
+    assert.equal(h.saved.length, 1);
+    assert.deepEqual(h.saved[0].boards.at(-1), entry);
+
+    const [definition, ...others] = boardEvents(h.relay, boardId, BOARD_DEFINITION);
+    assert.equal(others.length, 0);
+    assert.equal(definition.pubkey, deriveBoardKeyPair(boardId).pk);
+    assert.deepEqual(await definitionPayload(definition, boardId), {
+      name: "Week plan", kind: "week", columns: [], children: [],
+      archived: false, hidden: false, clearCompletedDisabled: false, listIndex: false, hideBoardNames: false,
+      shareSettings: {}, sortMode: null, sortDirection: null, version: 1,
+    });
+  } finally {
+    await h.close();
+  }
+});
+
+test("updating a board found by name changes the config and republishes the whole definition", async () => {
+  const h = await runtimeHarness();
+  try {
+    const columns = [{ id: "todo", name: "Todo" }, { id: "later", name: "Later" }, { id: "soon", name: "Soon" }];
+    const updated = await h.runtime.updateBoard("Groceries", {
+      name: "Shopping", archived: true, indexCardEnabled: true, clearCompletedDisabled: true,
+      shareSettings: { members: 2 }, sortMode: "due", sortDirection: "desc", columns,
+    });
+    assert.equal(updated?.id, BOARD);
+    assert.equal(updated?.name, "Shopping");
+    const entry = h.config.boards.find((board) => board.id === BOARD);
+    assert.deepEqual(entry, updated);
+    assert.equal(h.saved.length, 1);
+    assert.equal(h.saved[0].boards.find((board) => board.id === BOARD)?.name, "Shopping");
+
+    const [definition] = boardEvents(h.relay, BOARD, BOARD_DEFINITION);
+    assert.deepEqual(definition.tags, [["d", boardTagHash(BOARD)], ["b", boardTagHash(BOARD)], ["k", "lists"], ["name", "Shopping"], ["sort", "due", "desc"]]);
+    assert.deepEqual(await definitionPayload(definition, BOARD), {
+      name: "Shopping", kind: "lists", columns, children: [],
+      archived: true, hidden: false, clearCompletedDisabled: true, listIndex: true, hideBoardNames: false,
+      shareSettings: { members: 2 }, sortMode: "due", sortDirection: "desc", version: 1,
+    });
+
+    // Only a sort mode: the published direction defaults to ascending.
+    await h.runtime.updateBoard("board-week-1", { sortMode: "priority" });
+    assert.deepEqual(boardEvents(h.relay, "board-week-1", BOARD_DEFINITION)[0].tags.at(-1), ["sort", "priority", "asc"]);
+
+    const before = h.relay.events.length;
+    assert.equal(await h.runtime.updateBoard("Nowhere", { name: "X" }), null);
+    assert.equal(h.relay.events.length, before, "nothing published");
+  } finally {
+    await h.close();
+  }
+});
+
+test("syncing a board takes the newest definition into the config and saves it once", async () => {
+  const h = await runtimeHarness();
+  try {
+    const t = seconds(START);
+    h.relay.events.push(
+      await definitionEvent(BOARD, { tags: [["k", "lists"], ["name", "Old name"]], payload: { columns: [{ id: "todo", name: "Todo" }] }, createdAt: t - 600 }),
+      await definitionEvent(BOARD, {
+        tags: [["k", "lists"], ["name", "Groceries \u001b[31m(shared)"]],
+        payload: {
+          columns: [{ id: "todo", name: "To buy" }, { id: "got", name: "Got" }], clearCompletedDisabled: true, listIndex: true,
+          archived: true, hidden: true, shareSettings: { mode: "members" },
+        },
+        createdAt: t - 60,
+      }),
+    );
+    const synced = await h.runtime.syncBoard(BOARD);
+    assert.deepEqual(synced, { name: "Groceries [31m(shared)", kind: "lists", columns: [{ id: "todo", name: "To buy" }, { id: "got", name: "Got" }], children: undefined });
+    const entry = h.config.boards.find((board) => board.id === BOARD);
+    assert.equal(entry?.name, "Groceries [31m(shared)", "control characters from another member are removed");
+    assert.deepEqual(entry?.columns, synced.columns);
+    assert.equal(entry?.archived, true);
+    assert.equal(entry?.hidden, true);
+    assert.equal(entry?.indexCardEnabled, true);
+    assert.equal(entry?.clearCompletedDisabled, true);
+    assert.deepEqual(entry?.shareSettings, { mode: "members" });
+    assert.equal(h.saved.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("syncing ignores definitions not signed with the board's key, and boards it doesn't know", async () => {
+  const h = await runtimeHarness();
+  try {
+    h.relay.events.push(await definitionEvent(BOARD, {
+      tags: [["k", "lists"], ["name", "Hijacked"]], payload: { columns: [] }, createdAt: seconds(START), secretKey: generateSecretKey(),
+    }));
+    assert.deepEqual(await h.runtime.syncBoard(BOARD), { name: undefined, kind: undefined, columns: undefined, children: undefined }, "no definition of its own: nothing changes");
+    assert.equal(h.config.boards.find((board) => board.id === BOARD)?.name, "Groceries");
+    assert.deepEqual(await h.runtime.syncBoard("not-in-config"), {});
+    assert.equal(h.saved.length, 0);
   } finally {
     await h.close();
   }

@@ -25,7 +25,6 @@ export type BoardEntry = {
   shareSettings?: Record<string, unknown>;
   sortMode?: "manual" | "due" | "priority" | "created" | "alpha";
   sortDirection?: "asc" | "desc";
-  eventKeys?: Record<string, string>;
   syncedAt?: number;
 };
 

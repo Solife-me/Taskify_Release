@@ -3080,7 +3080,7 @@ so a response never crosses between them in either direction.
 | C12-1 | Approve | 2026-10-25 | Done in seven staged commits; only `src/index.ts` may hard-exit |
 | C12-2 | Approve | 2026-10-25 | Done in seven stages. Every CLI command group runs through `buildProgram`/`runCli` with injected config (load and save), runtime, clock, UUIDs, prompt, share transport and output; every source-regex test of command code is replaced by behavior, and the remaining source assertions target the runtime for C12-4 (and raw NDK contact reads for C12-3). Found and fixed on the way: `upcoming` dates, `board create` in scripts, `boards`/`board list` drift, `share inbox --apply` progress, and `event invite`/`share event` (shared invitation rule in core) |
 | C12-3 | Approve | 2026-10-25 | Done in three stages. Shutdown is terminal and idempotent and finishes debounced publishes; NDK's unstoppable relay timer is shimmed and its multi-relay reconnect avoided, so processes exit by themselves and the runtime suite runs without `--test-force-exit`; `StandaloneNostrSession` is the owned path for one-off reads and writes, and the CLI uses it for profiles, contacts and bot lists |
-| C12-4 | Approve | 2026-10-25 | In progress: the runtime seam (step 1), the task domain (step 2) and the calendar domain (step 3) are done; boards are next |
+| C12-4 | Approve | 2026-10-25 | Done in four steps. `nostrRuntime.ts` (about 1,780 lines) is now a 176-line facade over the task, calendar and board repositories in `src/runtime/`. Each domain is pinned by behaviour on a loopback relay (`runtime-tasks`, `runtime-calendar`, `runtime-boards`), and no test reads runtime source any more. Found on the way: `createEvent` board names, RSVPs across clients (C12-7), the board-definition leak, and the two sync fixes below |
 | C12-5 | Approve | 2026-10-25 | Not started |
 | C12-6 | Decline | 2026-10-25 | Keep TypeScript/NDK; reconsider only from measured hashing cost |
 | C12-7 | Approve | 2026-10-25 | Done in four commits. The RSVP rule (build, organizer check, board-derived token, newest per attendee) is in `taskify-core` with vectors iOS checks. The PWA calls it. The CLI publishes kind 30312 answers and reads them live; it no longer sends the RSVP DM or rewrites the board's copy |
@@ -3857,3 +3857,24 @@ Found while answering what is public about events and RSVPs.
   its id. Real remediation is a new board (a new id), with its tasks moved and the board shared
   again. That is the owner's call, and no client automates it today.
 - CLI 222/222, `npx tsc --noEmit` clean.
+
+### Checkpoint — October 26, 2026 (C12-4 step 4: the board domain moves out; C12-4 done)
+
+- **Characterization first.** Four more cases in `runtime-boards.test.ts` pass against the
+  pre-move code:
+  - creating a board: config entry, one save, the full encrypted payload, the board's signer;
+  - updating one found by name: every field, the `sort` tag with its ascending default, and
+    nothing published for an unknown board;
+  - syncing: the newest definition into the config, one save, other members' control characters
+    removed;
+  - definitions signed by another key are ignored.
+- **The move.** `src/runtime/boardRepository.ts` holds `createBoardRepository(context)`:
+  definition publishing, `syncBoard`, `createBoard` and `updateBoard`, with named
+  `CreateBoardInput`/`BoardPatch`/`SyncedBoard` types. The bodies are unedited.
+  `nostrRuntime.ts` keeps the facade, connection, local reminders, agent security config and
+  relay status (176 lines).
+- **Retired:**
+  - `board-sort` (8), `board-phase1-cli-surface` and `runtime-pwa-interop`, the last source
+    regexes over the runtime;
+  - `BoardEntry.eventKeys`, which nothing used except `board-sort`'s regex.
+- CLI 215/215, `npx tsc --noEmit` clean.
