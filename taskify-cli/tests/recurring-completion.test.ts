@@ -1,10 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { nextRecurringTaskPayload } from "../src/shared/recurringCompletion.ts";
-
-const RUNTIME = readFileSync(path.resolve(import.meta.dirname, "../src/nostrRuntime.ts"), "utf8");
 
 // The wire payload a client publishes for a task (completion state is the status tag).
 const completedDaily = {
@@ -64,10 +60,4 @@ test("non-recurring and ended series produce nothing", () => {
     null,
   );
   assert.equal(nextRecurringTaskPayload("t", { ...completedDaily, dueISO: "" }), null);
-});
-
-test("marking a task done publishes the next occurrence unless one already exists", () => {
-  const setStatus = RUNTIME.slice(RUNTIME.indexOf("async setTaskStatus("), RUNTIME.indexOf("async deleteTask("));
-  assert.match(setStatus, /nextRecurringTaskPayload\(/);
-  assert.match(setStatus, /fetchBoardEvents\(entry\.id, next\.taskId\)/);
 });

@@ -3613,4 +3613,34 @@ C12-3 is complete. Nothing has been pushed.
   close completely, a later step could make it optional, but nothing here depends on that.
 - Next: C12-4 (split the CLI Nostr adapter by domain, replacing the remaining runtime source
   regexes with fake-session repository tests).
+
+### Checkpoint — October 25, 2026 (C12-4 step 1: the runtime seam and task characterization)
+
+Nothing moved yet. Behaviour is pinned first, as the proposal requires.
+
+- **The seam.** `createNostrRuntime(config, dependencies)` takes:
+  - the session factory;
+  - the task cache store and `saveConfig`;
+  - a clock (milliseconds) and a UUID source.
+
+  Production defaults are the existing file-backed session, cache, config and system clock. The
+  recurring-occurrence helper now gets the runtime's clock too.
+- **The harness.** `dist/runtime.js` is a new bundle entry for tests. `tests/helpers/runtimeHarness.ts`
+  runs the real `RuntimeNostrSession` against the runtime package's loopback relay, with in-memory
+  stores, a clock the test moves, and sequential UUIDs. This tests real signing, board encryption
+  and tags rather than a fake's version of them. The loopback relay now honours `since`/`until`,
+  as relays do.
+- **`runtime-tasks.test.ts` (9 cases)** pins the task behaviour before it moves:
+  - board-signed events with their exact tags and decrypted payload;
+  - a list board's default first list;
+  - status and list filters, and the cache cursor;
+  - compound boards aggregating their children;
+  - updates, including a same-second edit getting `created_at + 1`;
+  - recurring completion publishing its next occurrence exactly once;
+  - deletion;
+  - id prefixes, subtasks and assignment responses;
+  - clear-completed.
+- It replaces the last runtime regex in `recurring-completion.test.ts`, as the stage-3 handoff
+  asked.
+- CLI 226/226, `npx tsc --noEmit` clean; runtime suite still passes.
 - The build, `npx tsc --noEmit` and the CLI suite pass at 210/210.

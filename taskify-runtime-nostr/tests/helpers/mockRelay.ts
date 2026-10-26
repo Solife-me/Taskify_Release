@@ -50,6 +50,8 @@ function matches(event: NostrEvent, filter: Record<string, unknown>): boolean {
   if (Array.isArray(filter.kinds) && !filter.kinds.includes(event.kind)) return false;
   if (Array.isArray(filter.authors) && !filter.authors.includes(event.pubkey)) return false;
   if (Array.isArray(filter.ids) && !filter.ids.includes(event.id)) return false;
+  if (typeof filter.since === "number" && event.created_at < filter.since) return false;
+  if (typeof filter.until === "number" && event.created_at > filter.until) return false;
   for (const [key, values] of Object.entries(filter)) {
     if (!key.startsWith("#") || !Array.isArray(values)) continue;
     const name = key.slice(1);

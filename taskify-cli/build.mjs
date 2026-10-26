@@ -3,8 +3,10 @@ import { readFileSync, writeFileSync, unlinkSync, existsSync } from "fs";
 
 const INDEX_OUT = "dist/index.js";
 const CLI_OUT = "dist/cli.js";
+// The runtime facade on its own, for tests that drive it against a loopback relay.
+const RUNTIME_OUT = "dist/runtime.js";
 
-for (const output of [INDEX_OUT, CLI_OUT]) {
+for (const output of [INDEX_OUT, CLI_OUT, RUNTIME_OUT]) {
   if (existsSync(output)) unlinkSync(output);
 }
 
@@ -20,6 +22,7 @@ await esbuild.build({
   entryPoints: {
     index: "src/index.ts",
     cli: "src/cli.ts",
+    runtime: "src/nostrRuntime.ts",
   },
   bundle: true,
   platform: "node",
@@ -50,4 +53,4 @@ while (content.startsWith("#!")) {
 }
 writeFileSync(INDEX_OUT, "#!/usr/bin/env node\n" + content);
 
-console.log("✓ dist/index.js and dist/cli.js bundled");
+console.log("✓ dist/index.js, dist/cli.js and dist/runtime.js bundled");

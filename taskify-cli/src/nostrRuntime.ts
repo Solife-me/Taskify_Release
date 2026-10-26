@@ -8,7 +8,7 @@ import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from 
 import type { AgentSecurityConfig } from "./shared/agentSecurity.js";
 import type { TaskifyConfig, BoardEntry } from "./config.js";
 import { saveConfig } from "./config.js";
-import { incrementalSyncSince, readCache, writeCache, type CachedTask } from "./taskCache.js";
+import { incrementalSyncSince, readCache, writeCache, type CachedTask, type TaskCache } from "./taskCache.js";
 import { pickBestBoardMeta } from "./shared/boardMeta.js";
 import {
   compareReplaceableEvents,
@@ -40,14 +40,11 @@ import {
   buildCalendarCanonicalEnvelope,
   buildCalendarViewEnvelope,
 } from "./shared/calendarEnvelope.js";
-import { createCliNostrSession } from "./shared/nodeRuntimeSession.js";
+import { createCliNostrSession, type CliNostrSession } from "./shared/nodeRuntimeSession.js";
 import { cliProofOfWorkSettings, cliRelayInfoCache } from "./shared/relaySettings.js";
 import { MAX_CONCURRENT_BOARD_FETCHES, mapWithConcurrency } from "./shared/concurrency.js";
 import { nextRecurringTaskPayload } from "./shared/recurringCompletion.js";
 
-function nowISO(): string {
-  return new Date().toISOString();
-}
 
 // ---- Internal helpers (not exported) ----
 
@@ -513,12 +510,32 @@ async function parseDecryptedCalendarEventUnsafe(
 
 // ---- Runtime factory ----
 
-export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
+/**
+ * What the runtime reaches outside itself. Production uses the CLI's file-backed session, task
+ * cache and config; tests pass a session on a loopback relay and in-memory stores.
+ */
+export type NostrRuntimeDependencies = {
+  createSession?: (config: TaskifyConfig) => CliNostrSession;
+  taskCache?: { read(): TaskCache; write(cache: TaskCache): void };
+  saveConfig?: (config: TaskifyConfig) => Promise<void>;
+  /** Milliseconds since the epoch. */
+  now?: () => number;
+  randomUUID?: () => string;
+};
+
+export function createNostrRuntime(config: TaskifyConfig, dependencies: NostrRuntimeDependencies = {}): NostrRuntime {
   const runtimeRelays = collectRuntimeRelayUrls(config.relays, config.boards);
-  const { session } = createCliNostrSession(config, {
-    relayInfoCache: cliRelayInfoCache(),
-    proofOfWork: cliProofOfWorkSettings(),
-  });
+  const session = dependencies.createSession
+    ? dependencies.createSession(config)
+    : createCliNostrSession(config, {
+      relayInfoCache: cliRelayInfoCache(),
+      proofOfWork: cliProofOfWorkSettings(),
+    }).session;
+  const taskCache = dependencies.taskCache ?? { read: readCache, write: writeCache };
+  const persistConfig = dependencies.saveConfig ?? saveConfig;
+  const clock = dependencies.now ?? (() => Date.now());
+  const randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID());
+  const isoNow = () => new Date(clock()).toISOString();
 
   let connected = false;
 
@@ -586,7 +603,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     // Standard UUID (36 chars) — return directly without a relay lookup
     if (exact.length === 36) return exact;
 
-    const cachedTasks = readCache().boards[boardId]?.tasks ?? [];
+    const cachedTasks = taskCache.read().boards[boardId]?.tasks ?? [];
     const cached = resolveIdentifierReference(cachedTasks, exact);
     if (cached) return cached.id;
 
@@ -626,7 +643,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     const encrypted = await encryptContent(boardId, JSON.stringify(payload));
     const event = session.createEvent();
     event.created_at = Math.max(
-      Math.floor(Date.now() / 1000),
+      Math.floor(clock() / 1000),
       typeof afterCreatedAt === "number" ? afterCreatedAt + 1 : 0,
     );
     event.kind = 30301;
@@ -657,7 +674,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
     const encrypted = await encryptCalendarPayloadForBoard(canonicalPayload, boardKeys.skHex, boardKeys.pk);
     const event = session.createEvent();
     event.created_at = Math.max(
-      Math.floor(Date.now() / 1000),
+      Math.floor(clock() / 1000),
       typeof afterCreatedAt === "number" ? afterCreatedAt + 1 : 0,
     );
     event.kind = TASKIFY_CALENDAR_EVENT_KIND;
@@ -745,7 +762,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       }
       if (boards.length === 0) return [];
 
-      const cache = readCache();
+      const cache = taskCache.read();
       const records: FullTaskRecord[] = [];
 
       for (const board of boards) {
@@ -829,7 +846,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
         // A3/A2: guard against caching an empty result when previous data exists
         if (mergedRecords.length === 0 && boardCache && !noCache) {
-          const cacheAgeMs = Date.now() - boardCache.fetchedAt;
+          const cacheAgeMs = clock() - boardCache.fetchedAt;
           const TEN_MIN_MS = 10 * 60 * 1000;
           if (cacheAgeMs <= TEN_MIN_MS) {
             // A3: cache ≤ 10 min old — silently fall back
@@ -860,7 +877,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         // Write merged state to cache, advancing the sync cursor.
         cache.boards[board.id] = {
           tasks: mergedRecords.map(recordToCache),
-          fetchedAt: Date.now(),
+          fetchedAt: clock(),
           ...(maxCreatedAt > 0 ? { lastSyncAt: maxCreatedAt } : {}),
         };
 
@@ -874,7 +891,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         }
       }
 
-      writeCache(cache);
+      taskCache.write(cache);
       records.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
       return records;
     },
@@ -935,8 +952,8 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
 
     async createEvent(input): Promise<FullEventRecord> {
       await ensureConnected();
-      const id = crypto.randomUUID();
-      const now = Date.now();
+      const id = randomUUID();
+      const now = clock();
       const normalized = normalizeCalendarMutationPayload(
         {
           title: input.title,
@@ -1041,7 +1058,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           endTzid: patch.endTzid ?? existing.endTzid,
           description: patch.description ?? existing.description,
         },
-        existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+        existing.createdAt ? existing.createdAt * 1000 : clock(),
       );
       if (!normalized) return null;
       const mergedPayload: Record<string, unknown> = {
@@ -1101,7 +1118,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         documents: mergedDocuments as Record<string, unknown>[] | undefined,
         columnId: colId || undefined,
         createdAt: published.created_at ?? existing.createdAt,
-        updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : nowISO(),
+        updatedAt: published.created_at ? new Date(published.created_at * 1000).toISOString() : isoNow(),
       };
     },
 
@@ -1163,7 +1180,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
           endTzid: existing.endTzid,
           description: existing.description,
         },
-        existing.createdAt ? existing.createdAt * 1000 : Date.now(),
+        existing.createdAt ? existing.createdAt * 1000 : clock(),
       );
       if (!payload) return null;
       await publishCalendarEvent(
@@ -1248,7 +1265,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
             if (sortTag[2]) entry.sortDirection = sortTag[2] as BoardEntry["sortDirection"];
           }
         }
-        await saveConfig(config);
+        await persistConfig(config);
       }
 
       return { name, kind, columns, children };
@@ -1267,14 +1284,14 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         );
       }
       const boardId = entry.id;
-      const taskId = input.taskId?.trim() || crypto.randomUUID();
+      const taskId = input.taskId?.trim() || randomUUID();
       const userPubkey = getUserPubkeyHex(config);
       if (!userPubkey) {
         process.stderr.write(
           "\x1b[33m(warning: no nsec configured — createdBy/lastEditedBy will be empty)\x1b[0m\n",
         );
       }
-      const now = Date.now();
+      const now = clock();
       const payload: Record<string, unknown> = {
         title: input.title,
         priority: input.priority ?? null,
@@ -1336,12 +1353,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         assignees: input.assignees,
       };
       // Update cache with the new task
-      const cache = readCache();
-      const boardCache = cache.boards[boardId] ?? { tasks: [], fetchedAt: Date.now() };
+      const cache = taskCache.read();
+      const boardCache = cache.boards[boardId] ?? { tasks: [], fetchedAt: clock() };
       boardCache.tasks = boardCache.tasks.filter((t) => t.id !== taskId);
       boardCache.tasks.push(recordToCache(result));
       cache.boards[boardId] = boardCache;
-      writeCache(cache);
+      taskCache.write(cache);
       return result;
     },
 
@@ -1411,12 +1428,12 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       };
       if (patch.columnId !== undefined) updated.column = colId || undefined;
       // Invalidate cache entry
-      const cache = readCache();
+      const cache = taskCache.read();
       const bc = cache.boards[entry.id];
       if (bc) {
         bc.tasks = bc.tasks.filter((t) => t.id !== taskId);
         bc.tasks.push(recordToCache(updated));
-        writeCache(cache);
+        taskCache.write(cache);
       }
       return updated;
     },
@@ -1441,7 +1458,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       const completed = status === "done";
       const merged = {
         ...rawPayload,
-        completedAt: completed ? nowISO() : null,
+        completedAt: completed ? isoNow() : null,
         lastEditedBy: userPubkey,
       };
       const nostrStatus: "open" | "done" | "deleted" = completed ? "done" : "open";
@@ -1459,7 +1476,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       // Completing a recurring task opens its next occurrence, as the PWA and iOS do. The id is
       // derived from the series and date, so a copy another device already made is left alone.
       let nextRecord: FullTaskRecord | null = null;
-      const next = completed && !existing.completed ? nextRecurringTaskPayload(taskId, rawPayload) : null;
+      const next = completed && !existing.completed ? nextRecurringTaskPayload(taskId, rawPayload, { now: clock() }) : null;
       if (next) {
         const existingNext = await pickLatestParsedEvent(
           await fetchBoardEvents(entry.id, next.taskId),
@@ -1480,13 +1497,13 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         }
       }
       // Update cache
-      const cache = readCache();
+      const cache = taskCache.read();
       const bc = cache.boards[entry.id];
       if (bc) {
         bc.tasks = bc.tasks.filter((t) => t.id !== taskId && t.id !== nextRecord?.id);
         bc.tasks.push(recordToCache(updated));
         if (nextRecord) bc.tasks.push(recordToCache(nextRecord));
-        writeCache(cache);
+        taskCache.write(cache);
       }
       return nextRecord ? { ...updated, nextOccurrence: { id: nextRecord.id, dueISO: nextRecord.dueISO } } : updated;
     },
@@ -1512,11 +1529,11 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       await publishTaskEvent(entry.id, taskId, rawPayload, "deleted", colId, event.created_at);
 
       // Remove from cache
-      const cache = readCache();
+      const cache = taskCache.read();
       const bc = cache.boards[entry.id];
       if (bc) {
         bc.tasks = bc.tasks.filter((t) => t.id !== taskId);
-        writeCache(cache);
+        taskCache.write(cache);
       }
 
       return existing;
@@ -1600,7 +1617,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         const rawPayload = await decryptTaskEventPayload(event, entry.id);
         const assignees = Array.isArray(rawPayload.assignees) ? rawPayload.assignees : [];
         const idx = assignees.findIndex((a: any) => (typeof a === "string" ? a : a?.pubkey) === senderPubkey);
-        const respondedEpoch = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
+        const respondedEpoch = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(clock() / 1000);
         if (idx >= 0) {
           const prev = assignees[idx];
           assignees[idx] = typeof prev === "string" ? { pubkey: prev, status, respondedAt: respondedEpoch } : { ...prev, status, respondedAt: respondedEpoch };
@@ -1635,7 +1652,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         const rawPayload = await decryptCalendarEventPayload(event, entry.id);
         if (!rawPayload) continue;
         rawPayload.rsvpStatus = status;
-        rawPayload.rsvpCreatedAt = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(Date.now() / 1000);
+        rawPayload.rsvpCreatedAt = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(clock() / 1000);
         rawPayload.lastEditedBy = senderPubkey;
         const colId = readTagValue(event.tags, "col") ?? existing.columnId ?? "";
         await publishCalendarEvent(entry.id, resolvedId, existing.eventKey, rawPayload, "open", colId, event.created_at);
@@ -1648,7 +1665,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       // Device-local only — NEVER publish to Nostr
       if (!config.taskReminders) config.taskReminders = {};
       config.taskReminders[taskId] = presets;
-      await saveConfig(config);
+      await persistConfig(config);
       process.stderr.write(
         "\x1b[2m  Note: Reminders are device-local and will not sync to other devices\x1b[0m\n",
       );
@@ -1663,7 +1680,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
         enabled: config.securityEnabled,
         mode: config.securityMode,
         trustedNpubs: config.trustedNpubs,
-        updatedISO: nowISO(),
+        updatedISO: isoNow(),
       };
     },
 
@@ -1671,7 +1688,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       config.securityEnabled = secCfg.enabled;
       config.securityMode = secCfg.mode;
       config.trustedNpubs = secCfg.trustedNpubs;
-      await saveConfig(config);
+      await persistConfig(config);
       return secCfg;
     },
 
@@ -1689,7 +1706,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       children?: string[];
     }): Promise<{ boardId: string }> {
       await ensureConnected();
-      const boardId = crypto.randomUUID();
+      const boardId = randomUUID();
 
       const newEntry: BoardEntry = {
         id: boardId,
@@ -1710,7 +1727,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       }
 
       config.boards.push(newEntry);
-      await saveConfig(config);
+      await persistConfig(config);
       return { boardId };
     },
 
@@ -1730,7 +1747,7 @@ export function createNostrRuntime(config: TaskifyConfig): NostrRuntime {
       if (patch.sortMode !== undefined) entry.sortMode = patch.sortMode;
       if (patch.sortDirection !== undefined) entry.sortDirection = patch.sortDirection;
       await publishBoardDefinition(entry);
-      await saveConfig(config);
+      await persistConfig(config);
       return entry;
     },
 
