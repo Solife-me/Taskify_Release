@@ -96,3 +96,28 @@ export async function decryptCalendarPayloadWithEventKey(
   const plaintext = nip44v2.decrypt(content, keyBytes);
   return JSON.parse(plaintext);
 }
+
+/**
+ * An attendee's RSVP (kind 30312) is NIP-44 between their key and the board's: they encrypt with
+ * their secret and the board's public key, and the board's members read it with the board's
+ * secret and the attendee's public key.
+ */
+export async function encryptCalendarRsvpForBoard(
+  payload: unknown,
+  attendeeSkHex: string,
+  boardPk: string,
+): Promise<string> {
+  const nip44v2 = ensureNip44V2();
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(attendeeSkHex), boardPk);
+  return nip44v2.encrypt(JSON.stringify(payload), conversationKey);
+}
+
+export async function decryptCalendarRsvpForBoard(
+  content: string,
+  boardSkHex: string,
+  attendeePk: string,
+): Promise<unknown> {
+  const nip44v2 = ensureNip44V2();
+  const conversationKey = nip44v2.utils.getConversationKey(hexToBytes(boardSkHex), attendeePk);
+  return JSON.parse(nip44v2.decrypt(content, conversationKey));
+}

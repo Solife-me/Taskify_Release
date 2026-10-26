@@ -1,27 +1,33 @@
 import { type NDKEvent } from "@nostr-dev-kit/ndk";
 import { boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
 import {
+  acceptCalendarRsvp,
   calendarAddress,
+  deriveBoardRsvpToken,
+  latestCalendarRsvps,
   normalizeCalendarDeleteMutationPayload,
   normalizeCalendarMutationPayload,
   readTagValue,
   resolveIdentifierReference,
   TASKIFY_CALENDAR_EVENT_KIND,
+  TASKIFY_CALENDAR_RSVP_KIND,
   TASKIFY_CALENDAR_VIEW_KIND,
+  type CalendarRsvpResponse,
 } from "taskify-core";
 import {
+  decryptCalendarRsvpForBoard,
   encryptCalendarPayloadForBoard,
   encryptCalendarPayloadWithEventKey,
   generateEventKey,
   generateInviteToken,
 } from "../calendarCrypto.js";
 import { buildCalendarCanonicalEnvelope, buildCalendarViewEnvelope } from "../shared/calendarEnvelope.js";
+import { sanitizeRemote } from "../shared/displaySafe.js";
 import { eventInvitationSecrets, withInvitee } from "../shared/eventInvite.js";
 import { pickLatestParsedEvent, pickLatestParsedEventsByKey } from "../shared/latestEvent.js";
 import type { ReminderPreset, Recurrence } from "../shared/taskTypes.js";
 import { getUserPubkeyHex, resolveBoardEntry, type RuntimeContext } from "./context.js";
 import {
-  decryptCalendarEventPayload,
   parseDecryptedCalendarEvent,
   type EventInvitation,
   type FullEventRecord,
@@ -447,25 +453,41 @@ export function createCalendarRepository(context: RuntimeContext) {
       return { ...existing, deleted: true };
     },
 
-    async applyEventRsvpResponse(eventId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullEventRecord | null> {
-      await ensureConnected();
-      for (const entry of config.boards) {
-        const resolvedId = await resolveCalendarEventId(entry.id, eventId);
-        if (!resolvedId) continue;
-        const events = await fetchBoardCalendarEvents(entry.id, resolvedId);
-        const latest = await pickLatestParsedEvent(events, (event) => parseDecryptedCalendarEvent(event, entry.id, entry.name));
-        if (!latest || latest.parsed.deleted) continue;
-        const { event, parsed: existing } = latest;
-        const rawPayload = await decryptCalendarEventPayload(event, entry.id);
-        if (!rawPayload) continue;
-        rawPayload.rsvpStatus = status;
-        rawPayload.rsvpCreatedAt = respondedAt ? Math.floor(new Date(respondedAt).getTime() / 1000) : Math.floor(clock() / 1000);
-        rawPayload.lastEditedBy = senderPubkey;
-        const colId = readTagValue(event.tags, "col") ?? existing.columnId ?? "";
-        await publishCalendarEvent(entry.id, resolvedId, existing.eventKey, rawPayload, "open", colId, event.created_at);
-        return { ...existing, rsvpStatus: status, rsvpCreatedAt: rawPayload.rsvpCreatedAt };
+    /**
+     * The answers attendees published to the event (kind 30312, `calendarRsvp.ts`), newest per
+     * attendee. Nothing is stored: they are read from the board's relays each time. Null when the
+     * event isn't found.
+     */
+    async listEventRsvps(eventId: string, boardId?: string): Promise<CalendarRsvpResponse[] | null> {
+      const event = await repository.getEvent(eventId, boardId);
+      if (!event) return null;
+      const boardKeys = deriveBoardKeyPair(event.boardId);
+      const canonicalAddress = calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, boardKeys.pk, event.id);
+      const rsvps = await session.fetchEvents(
+        [{ kinds: [TASKIFY_CALENDAR_RSVP_KIND], "#a": [canonicalAddress] } as never],
+        boardRelays(event.boardId),
+        8_000,
+        200,
+        2_000,
+      );
+      const responses: CalendarRsvpResponse[] = [];
+      for (const rsvp of rsvps) {
+        let payload: unknown;
+        try {
+          payload = await decryptCalendarRsvpForBoard(rsvp.content, boardKeys.skHex, rsvp.pubkey);
+        } catch {
+          continue;
+        }
+        const checked = acceptCalendarRsvp({
+          rsvp,
+          payload,
+          event: { id: event.id, canonicalAddress, inviteTokens: event.inviteTokens },
+          boardToken: await deriveBoardRsvpToken(event.boardId, rsvp.pubkey),
+        });
+        if (checked.accepted) responses.push(checked.response);
       }
-      return null;
+      // Attendees write the notes; they are shown in the terminal.
+      return sanitizeRemote(latestCalendarRsvps(responses));
     },
   };
   return repository;

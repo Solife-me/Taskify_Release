@@ -158,6 +158,9 @@ test("event list and show human output include board context from runtime record
         title: "Planning", kind: "date" as const, startDate: "2026-10-25",
       };
     },
+    async listEventRsvps() {
+      return [];
+    },
     async disconnect() {},
   };
   const dependencies: CliDependencies = {

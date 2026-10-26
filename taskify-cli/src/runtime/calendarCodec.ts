@@ -53,8 +53,6 @@ export type FullEventRecord = {
   participants?: Array<{ pubkey: string; relay?: string; role?: string }>;
   documents?: Record<string, unknown>[];
   columnId?: string;
-  rsvpStatus?: "accepted" | "declined" | "tentative";
-  rsvpCreatedAt?: number;
   createdAt?: number;
   updatedAt?: string;
   deleted?: boolean;
@@ -145,8 +143,6 @@ async function parseDecryptedCalendarEventUnsafe(
       participants: Array.isArray(raw.participants) ? raw.participants as Array<{ pubkey: string; relay?: string; role?: string }> : undefined,
       documents: Array.isArray(raw.documents) ? raw.documents as Record<string, unknown>[] : undefined,
       columnId: (readTagValue(event.tags, "col") || undefined),
-      rsvpStatus: raw.rsvpStatus as "accepted" | "declined" | "tentative" | undefined,
-      rsvpCreatedAt: typeof raw.rsvpCreatedAt === "number" ? raw.rsvpCreatedAt : undefined,
       createdAt: event.created_at,
       updatedAt: event.created_at ? new Date(event.created_at * 1000).toISOString() : undefined,
       deleted: statusVal === "deleted" || payload.deleted === true,

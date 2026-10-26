@@ -13,10 +13,12 @@ import { decryptContent, encryptContent, resolveBoardEntry, type RuntimeContext 
 import type { ExtendedCreateInput, FullTaskRecord } from "./runtime/taskCodec.js";
 import { createTaskRepository, type ListTasksOptions } from "./runtime/taskRepository.js";
 import type { EventInvitation, FullEventRecord } from "./runtime/calendarCodec.js";
+import type { CalendarRsvpResponse as EventRsvp } from "taskify-core";
 import { createCalendarRepository, type CreateEventInput, type EventPatch } from "./runtime/calendarRepository.js";
 
 export type { ExtendedCreateInput, FullTaskRecord } from "./runtime/taskCodec.js";
 export type { EventInvitation, FullEventRecord } from "./runtime/calendarCodec.js";
+export type { CalendarRsvpResponse as EventRsvp } from "taskify-core";
 
 // ---- Public types ----
 
@@ -44,7 +46,8 @@ export type NostrRuntime = {
   toggleSubtask(taskId: string, boardId: string, subtaskRef: string, completed: boolean): Promise<FullTaskRecord | null>;
   getTask(taskId: string, boardId?: string): Promise<FullTaskRecord | null>;
   applyTaskAssignmentResponse(taskId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullTaskRecord | null>;
-  applyEventRsvpResponse(eventId: string, senderPubkey: string, status: "accepted" | "declined" | "tentative", respondedAt?: string): Promise<FullEventRecord | null>;
+  /** Each attendee's newest published RSVP to the event; null when the event isn't found. */
+  listEventRsvps(eventId: string, boardId?: string): Promise<EventRsvp[] | null>;
   remindTask(taskId: string, presets: ReminderPreset[]): Promise<void>;
   getLocalReminders(taskId: string): ReminderPreset[];
   getAgentSecurityConfig(): Promise<AgentSecurityConfig>;
@@ -158,7 +161,7 @@ export function createNostrRuntime(config: TaskifyConfig, dependencies: NostrRun
     updateEvent: calendar.updateEvent,
     inviteToEvent: calendar.inviteToEvent,
     deleteEvent: calendar.deleteEvent,
-    applyEventRsvpResponse: calendar.applyEventRsvpResponse,
+    listEventRsvps: calendar.listEventRsvps,
 
     async syncBoard(boardId: string): Promise<{ name?: string; kind?: string; columns?: { id: string; name: string }[]; children?: string[] }> {
       await ensureConnected();

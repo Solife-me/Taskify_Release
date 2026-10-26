@@ -141,9 +141,8 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
             if (item.envelope.item.type === "task-assignment-response") {
               await runtime.applyTaskAssignmentResponse(item.envelope.item.taskId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
             }
-            if (item.envelope.item.type === "event-rsvp-response") {
-              await runtime.applyEventRsvpResponse(item.envelope.item.eventId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
-            }
+            // An `event-rsvp-response` is only ever from an older CLI. Attendees answer with their
+            // own kind 30312 event, which `event show` reads; the board's copy is not rewritten.
             // Saved after each message, so a failure later in the batch can't make the next
             // apply repeat what this one already did.
             processed.add(item.rumorId);

@@ -116,6 +116,8 @@ test("a delivery failure is reported with status 1 and still disconnects", async
 });
 
 test("share inbox lists messages; --apply acts on each new one once and saves progress", async () => {
+  // An `event-rsvp-response` comes only from an older CLI: other clients answer with their own
+  // kind 30312 event, which the organizer reads live. It is listed and marked seen, never applied.
   const sender = "cd".repeat(32);
   const inbox = [
     { rumorId: "seen", senderPubkey: sender, envelope: { item: { type: "task", title: "Already done" } } },
@@ -136,7 +138,6 @@ test("share inbox lists messages; --apply acts on each new one once and saves pr
     getDefaultBoardId: () => "board-1",
     createTaskFull: async () => ({ id: "t", boardId: "board-1", title: "Water plants", completed: false }),
     applyTaskAssignmentResponse: async () => undefined,
-    applyEventRsvpResponse: async () => undefined,
   };
   const applied = await run(["share", "inbox", "--apply"], handlers, {
     inbox,
@@ -148,7 +149,6 @@ test("share inbox lists messages; --apply acts on each new one once and saves pr
       boardId: "board-1", title: "Water plants", note: "Twice", inboxItem: true, assignees: [{ pubkey: recipientHex }],
     }],
     ["applyTaskAssignmentResponse", "task-1", sender, "declined", "2026-10-24T00:00:00.000Z"],
-    ["applyEventRsvpResponse", "event-1", sender, "accepted", "2026-10-24T01:00:00.000Z"],
     ["disconnect"],
   ]);
   const savedConfig = applied.saved.at(-1)!;

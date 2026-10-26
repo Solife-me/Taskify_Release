@@ -97,17 +97,29 @@ test("show --human lists a task's documents and each assignee's state", async ()
   assert.match(text, /: pending/);
 });
 
-test("event show lists invitees with their roles and this account's RSVP", async () => {
-  const result = await run(["event", "show", "event-1"], {
+test("event show lists invitees with their roles and the answers they published", async () => {
+  const other = "cd".repeat(32);
+  const rsvps = [
+    { eventId: "event-1", attendeePubkey: hex, createdAt: 100, status: "accepted", inviteToken: "t1", fb: "busy", note: "Bringing dessert" },
+    { eventId: "event-1", attendeePubkey: other, createdAt: 90, status: "declined", inviteToken: "t2" },
+  ];
+  const handlers = {
     getEvent: async () => ({
       ...event,
-      participants: [{ pubkey: hex, role: "attendee" }, { pubkey: "cd".repeat(32) }],
-      rsvpStatus: "accepted",
+      participants: [{ pubkey: hex, role: "attendee" }, { pubkey: other }],
     }),
-  });
+    listEventRsvps: async () => rsvps,
+  };
+  const result = await run(["event", "show", "event-1"], handlers);
   assert.equal(result.status, 0);
   const text = result.stdout.join("\n");
   assert.match(text, /invitees: 2/);
   assert.match(text, new RegExp(`- ${hex} \\(attendee\\)`));
-  assert.match(text, /rsvp status: accepted/);
+  assert.match(text, /responses: 2/);
+  assert.match(text, new RegExp(`- ${hex}: accepted, busy — Bringing dessert`));
+  assert.match(text, new RegExp(`- ${other}: declined`));
+  assert.ok(result.calls.some((call) => call[0] === "listEventRsvps" && call[1] === "event-1"));
+
+  const json = await run(["event", "show", "event-1", "--json"], handlers);
+  assert.deepEqual(JSON.parse(json.stdout.join("\n")).rsvps, rsvps);
 });

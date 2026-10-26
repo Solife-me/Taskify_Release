@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { finalizeEvent, generateSecretKey, nip44, type NostrEvent } from "nostr-tools";
-import { calendarAddress } from "taskify-core";
+import { finalizeEvent, generateSecretKey, getPublicKey, nip44, type NostrEvent } from "nostr-tools";
+import { calendarAddress, deriveBoardRsvpToken } from "taskify-core";
 import type { MockRelay } from "../../taskify-runtime-nostr/tests/helpers/mockRelay.ts";
 import { boardEvents, boardTagHash, deriveBoardKeyPair, runtimeHarness, START, tag, userPubkey } from "./helpers/runtimeHarness.ts";
 
@@ -251,28 +251,77 @@ test("deleting publishes deleted copies that listing and getting leave out", asy
   }
 });
 
-test("an RSVP response is saved on the board's copy", async () => {
+/** An attendee's kind 30312 answer as the PWA and iOS publish it: NIP-44 to the board's key. */
+function rsvpEvent(attendee: Uint8Array, boardId: string, eventId: string, payload: Record<string, unknown>, createdAt: number, address?: string): NostrEvent {
+  const board = deriveBoardKeyPair(boardId).pk;
+  const canonical = address ?? calendarAddress(CANONICAL, board, eventId);
+  return finalizeEvent({
+    kind: 30312,
+    created_at: createdAt,
+    content: nip44.v2.encrypt(JSON.stringify(payload), nip44.v2.utils.getConversationKey(attendee, board)),
+    tags: [["d", `${eventId}:${getPublicKey(attendee)}`], ["a", canonical]],
+  }, attendee);
+}
+
+test("an organizer reads each attendee's newest RSVP from their own events", async () => {
   const h = await runtimeHarness();
   try {
-    const created = await h.runtime.createEvent({ ...dinner, participants: [{ pubkey: friend }] });
-    h.advance(60_000);
-    const respondedAt = "2026-10-25T12:30:00.000Z";
-    const responded = await h.runtime.applyEventRsvpResponse(created.id, friend, "accepted", respondedAt);
-    assert.equal(responded?.rsvpStatus, "accepted");
-    assert.equal(responded?.rsvpCreatedAt, seconds(Date.parse(respondedAt)));
+    const alice = generateSecretKey();
+    const bob = generateSecretKey();
+    const member = generateSecretKey();
+    const intruder = generateSecretKey();
+    const created = await h.runtime.createEvent({ ...dinner, participants: [{ pubkey: getPublicKey(alice) }, { pubkey: getPublicKey(bob) }] });
+    const tokens = created.inviteTokens ?? {};
+    const answer = (status: string, inviteToken: string, extra: Record<string, unknown> = {}) => ({ v: 1, eventId: created.id, status, inviteToken, ...extra });
+    const t = seconds(START);
+    const before = h.relay.events.length;
+    h.relay.events.push(
+      rsvpEvent(alice, BOARD, created.id, answer("tentative", tokens[getPublicKey(alice)]), t + 10),
+      rsvpEvent(alice, BOARD, created.id, answer("accepted", tokens[getPublicKey(alice)], { fb: "busy", note: "Bringing dessert" }), t + 20),
+      rsvpEvent(bob, BOARD, created.id, answer("declined", tokens[getPublicKey(bob)]), t + 15),
+      // A board member who wasn't invited answers with the token derived for them.
+      rsvpEvent(member, BOARD, created.id, answer("accepted", await deriveBoardRsvpToken(BOARD, getPublicKey(member))), t + 5),
+      // No invitation's token; another event's answer filed under this address.
+      rsvpEvent(intruder, BOARD, created.id, answer("accepted", "guessed"), t + 30),
+      rsvpEvent(bob, BOARD, created.id, { ...answer("accepted", tokens[getPublicKey(bob)]), eventId: "another-event" }, t + 40),
+    );
 
+    const rsvps = await h.runtime.listEventRsvps(created.id.slice(0, 8), BOARD);
+    const byAttendee = Object.fromEntries((rsvps ?? []).map((r) => [r.attendeePubkey, r]));
+    assert.deepEqual(Object.keys(byAttendee).sort(), [getPublicKey(alice), getPublicKey(bob), getPublicKey(member)].sort());
+    assert.equal(byAttendee[getPublicKey(alice)].status, "accepted");
+    assert.equal(byAttendee[getPublicKey(alice)].fb, "busy");
+    assert.equal(byAttendee[getPublicKey(alice)].note, "Bringing dessert");
+    assert.equal(byAttendee[getPublicKey(alice)].createdAt, t + 20);
+    assert.equal(byAttendee[getPublicKey(bob)].status, "declined");
+    assert.equal(byAttendee[getPublicKey(member)].status, "accepted");
+
+    assert.equal(h.relay.events.length, before + 6, "reading answers publishes nothing");
+    assert.equal(boardEvents(h.relay, BOARD, CANONICAL).length, 1);
+    assert.equal(await h.runtime.listEventRsvps("ffffffff", BOARD), null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("an RSVP an older CLI wrote onto the board's copy is no one's answer", async () => {
+  const h = await runtimeHarness();
+  try {
+    const created = await h.runtime.createEvent(dinner);
+    const keys = deriveBoardKeyPair(BOARD);
     const [canonical] = boardEvents(h.relay, BOARD, CANONICAL);
-    assert.equal(canonical.created_at, seconds(START + 60_000));
-    assert.equal(tag(canonical, "col"), "todo");
-    assert.equal(tag(canonical, "status"), "open");
-    const payload = canonicalPayload(canonical, BOARD);
-    assert.equal(payload.rsvpStatus, "accepted");
-    assert.equal(payload.lastEditedBy, friend);
-    assert.equal(payload.title, "Dinner");
-    assert.deepEqual(payload.inviteTokens, created.inviteTokens);
-    assert.equal((await h.runtime.getEvent(created.id, BOARD))?.rsvpStatus, "accepted");
+    const stale = { ...canonicalPayload(canonical, BOARD), rsvpStatus: "accepted", rsvpCreatedAt: seconds(START) };
+    h.relay.events.push(finalizeEvent({
+      kind: CANONICAL,
+      created_at: seconds(START) + 60,
+      content: nip44.v2.encrypt(JSON.stringify(stale), boardConversationKey(BOARD)),
+      tags: canonical.tags,
+    }, Buffer.from(keys.skHex, "hex")));
 
-    assert.equal(await h.runtime.applyEventRsvpResponse("ffffffff", friend, "declined"), null);
+    const event = await h.runtime.getEvent(created.id, BOARD);
+    assert.equal(event?.title, "Dinner");
+    assert.equal("rsvpStatus" in (event ?? {}), false);
+    assert.deepEqual(await h.runtime.listEventRsvps(created.id, BOARD), []);
   } finally {
     await h.close();
   }

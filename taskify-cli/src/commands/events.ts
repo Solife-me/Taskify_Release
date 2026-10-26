@@ -135,7 +135,8 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
           process.exitCode = 1;
           return;
         }
-        if (opts.json) renderJson(event);
+        const rsvps = await runtime.listEventRsvps(event.id, event.boardId) ?? [];
+        if (opts.json) renderJson({ ...event, rsvps });
         else {
           console.log(chalk.bold(event.title));
           console.log(`id: ${event.id}`);
@@ -160,7 +161,13 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
             });
           }
           if (event.columnId) console.log(`column: ${event.columnId}`);
-          if (event.rsvpStatus) console.log(`rsvp status: ${event.rsvpStatus}`);
+          if (rsvps.length > 0) {
+            console.log(`responses: ${rsvps.length}`);
+            rsvps.forEach((rsvp) => {
+              const details = [rsvp.status, rsvp.fb].filter(Boolean).join(", ");
+              console.log(`  - ${rsvp.attendeePubkey}: ${details}${rsvp.note ? ` — ${rsvp.note}` : ""}`);
+            });
+          }
         }
       } catch (err) {
         rethrowReportedError(err);
