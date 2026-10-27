@@ -4528,8 +4528,15 @@ registration with the push server failed.
    this relay", which the PWA can now read.
 3. **Reminders never reached the Worker.** A live tail of both Workers during the test showed no
    `PUT /api/devices` and no `PUT /api/reminders`, and D1 gained no reminder. The registration
-   failed before the Worker was called. The exact error the app showed is needed to tell which
-   step failed.
+   failed before the Worker was called. The app showed its wording for a `pushManager.subscribe()`
+   rejection ("The browser's push service rejected the registration…"), so the browser's own push
+   service refused, and none of our servers was asked.
+   - **Ruled out:** the key pair. The public key is a valid 65-byte P-256 point, the private key in
+     the `VAPID_PRIVATE_KEY` KV entry derives exactly that key, and the live service worker is
+     active at `/sw.js` with scope `/`.
+   - **Remaining causes are on the device:** the site's notification permission, or a browser whose
+     push service is off (Brave without "Google services for push messaging", for example). Which
+     browser it was is needed next.
 
 **Also found:** CI's gitleaks job had failed since 2026-10-21 on two false positives, fixed in
 `534e50c3`. The Native macOS job's "Build the unsigned Mac app" step fails in CI but builds locally
