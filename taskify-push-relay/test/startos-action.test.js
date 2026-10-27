@@ -34,7 +34,7 @@ test('StartOS package pins the published multi-architecture relay image', async 
 
   assert.match(
     manifest,
-    /dockerTag:\s*'ghcr\.io\/solife-me\/taskify-push-relay:0\.5\.0'/,
+    /dockerTag:\s*'ghcr\.io\/solife-me\/taskify-push-relay:0\.5\.1'/,
   )
   assert.match(manifest, /arch:\s*\['x86_64',\s*'aarch64'\]/)
   assert.doesNotMatch(manifest, /dockerBuild/)

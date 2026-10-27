@@ -29,6 +29,10 @@ file private; Apple only lets you download it once.
    payments**, or **Messages & payments**.
 7. In Snapstr Profile settings, enable **Rich notifications**. Snapstr adds the same push relay to
    its signed inbox preference and registers the device as a Snapstr installation.
+8. For chat alerts in the Taskify web app, run **Configure Web Push** and enter the Taskify
+   Worker's VAPID public key, private key and subject. Browsers subscribe with the Worker's public
+   key, so this service must use the same pair. Then turn on chat notifications in the web app's
+   settings.
 
 When enabled, Taskify registers the device using a signed NIP-98 request and adds
 `wss://push.solife.me` to the user's signed NIP-17 inbox relay preference. Disabling the last device
@@ -53,8 +57,10 @@ The same HTTPS origin is the Watch's preferred task and board gateway. For every
 on the Watch, Taskify supplies a fresh proof signed by that board's derived key and the exact relay
 targets to query. The service gathers and deduplicates only events matching those explicit board
 authors and tags; it does not subscribe to or cache unrelated traffic from the upstream relays.
-Outgoing encrypted task changes use the same gateway and Watch-supplied relay targets. When the
-push relay is unavailable, the Watch automatically falls back to `https://taskify.solife.me`.
+Outgoing encrypted task changes use the same gateway and Watch-supplied relay targets. Only when
+this service is Taskify's own `push.solife.me` does the Watch fall back to
+`https://taskify.solife.me` while it is unavailable; a Watch using any other address for this
+service reports the failure instead, so its requests never reach Taskify's servers.
 
 ## Privacy and delivery behavior
 

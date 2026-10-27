@@ -4590,3 +4590,22 @@ registration still failed. The maintainer shared the page's console. Probed from
 - **Chat alerts on the web** still need relay 0.5.1 (CORS) published and the relay's VAPID pair
   configured.
 
+### Checkpoint — October 27, 2026 (relay 0.5.1 published by merge, package 0.5.1:0)
+
+- **The release flow is now hands-off.** The maintainer can only make tags through GitHub's
+  website, so `push-relay-image.yml` now publishes on a push to `main` when GHCR lacks the version
+  in `push-relay/package.json`, and records the tag itself.
+- **The first run worked.** On the merge `14d4effc` it tested, published amd64 and arm64, and
+  tagged `push-relay-v0.5.1` in 100 seconds.
+- **The image checks out:** it pulls anonymously, reports version 0.5.1, contains the CORS
+  handling, and runs as `node`.
+- **The package now pins** `ghcr.io/solife-me/taskify-push-relay:0.5.1` at version `0.5.1:0`, with
+  release notes for 0.5.1 alone.
+- **`instructions.md`:**
+  - adds the Configure Web Push step for the web app's chat alerts;
+  - corrects the Watch fallback after C13-9a: only Taskify's own `push.solife.me` falls back to
+    `taskify.solife.me`.
+- **Packed** with `make`: aarch64 52 MB, x86_64 54 MB.
+- **Not yet done:** installing on the StartOS box, and a browser registering for chat alerts.
+  `start-cli` here is 2.3.0, behind 2.5.1.
+
