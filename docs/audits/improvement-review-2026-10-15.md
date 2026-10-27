@@ -4476,7 +4476,7 @@ Cloudflare API, and nothing in the account was changed.
 - The zone's rate-limit rules (F1A-17) could not be read: the token lacks that permission.
 
 **Maintainer steps, in order:**
-1. Deploy `taskify-public` from this commit. Push from the live site then works without v1.
+1. ~~Deploy `taskify-public` from this commit.~~ Done 2026-10-27 (see the next checkpoint).
 2. Retire v1: remove `taskify-v1.solife.me` and the `taskify` Worker, which stops its competing
    cron. Its R2 binding `TASKIFY_BACKUPS` was not inspected.
 3. Revoke the Google OAuth client, then apply the migrations (0005 drops the `gcal_*` tables and
@@ -4484,4 +4484,92 @@ Cloudflare API, and nothing in the account was changed.
 4. Turn off invocation logs.
 
 C13-5's code steps still wait: legacy KV has keys, and the private key is not yet a secret.
+
+### Checkpoint — October 27, 2026 (`taskify-public` deployed with its push settings)
+
+**How deploys happen:** Cloudflare's Git integration deploys `taskify-public` on a merge to `main`.
+Each push to `Beta` uploads a preview version at the `beta` alias
+(`beta-taskify-public.<account>.workers.dev`), and the cron does not run there. Every production
+deployment since 2026-10-12 followed a merge to `main` within a minute.
+
+**What was checked:**
+- **The preview** (`a5afe45c`, from `ddd3b590`) served the VAPID key at `/api/config`, with the
+  subject and all five limiters bound.
+- **The merge** of PR #218 (`92024519`) was deployed at 02:04 UTC as `a1f7fe3e`.
+- **The live site:**
+  - `taskify.solife.me/api/config` serves the key.
+  - `/`, `/sw.js` and `/reminder-titles.js` answer 200.
+  - A POST preview of example.com answers.
+- **The cron:** four production runs tailed, all `ok`, with no exceptions and no "Push ping error".
+
+**Not yet verified:** a real reminder ping signed by `taskify-public`. No reminder was due during
+the tail; the next stored one is due 2026-11-05. v1's cron still runs alongside.
+
+### Checkpoint — October 27, 2026 (web push from the live site: three faults)
+
+The maintainer set a reminder on `taskify.solife.me` with push on, and the app reported that
+registration with the push server failed.
+
+1. **The relay refused every browser** (fixed in relay 0.5.1, test-first).
+   - The PWA registers chat alerts at `push.solife.me` from `taskify.solife.me`, with a NIP-98
+     `Authorization` header, so the browser sends a CORS preflight first. The relay had no CORS
+     handling and answered the preflight with 404.
+   - Checked in the built-in browser: from `taskify.solife.me`, the call fails as
+     `TypeError: Failed to fetch` before it is sent.
+   - 0.5.1 answers preflights on `/v1/registrations/*` and sends `Access-Control-Allow-Origin: *`
+     on those responses, without credentials. Every request is signed, so the origin grants
+     nothing. A local relay, called cross-origin from the built-in browser, now returns its real
+     JSON error.
+   - The maintainer tags `push-relay-v0.5.1`, then the package pins that image.
+2. **The relay has no VAPID key pair.** The StartOS **Configure Web Push** action needs the
+   Worker's pair: the public key and subject from `wrangler.toml`, and the private key from the
+   `VAPID_PRIVATE_KEY` KV entry. A browser holds one subscription, tied to one key, so the pair must
+   be the same. Until then the relay answers web registrations with "Web push is not configured on
+   this relay", which the PWA can now read.
+3. **Reminders never reached the Worker.** A live tail of both Workers during the test showed no
+   `PUT /api/devices` and no `PUT /api/reminders`, and D1 gained no reminder. The registration
+   failed before the Worker was called. The app showed its wording for a `pushManager.subscribe()`
+   rejection ("The browser's push service rejected the registration…"), so the browser's own push
+   service refused, and none of our servers was asked.
+   - **Ruled out:** the key pair. The public key is a valid 65-byte P-256 point, the private key in
+     the `VAPID_PRIVATE_KEY` KV entry derives exactly that key, and the live service worker is
+     active at `/sw.js` with scope `/`.
+   - **Remaining causes are on the device:** the site's notification permission, or a browser whose
+     push service is off (Brave without "Google services for push messaging", for example).
+   - **The browser was Chromium-based** (Chrome, Brave or Arc), yet the app's message sent every
+     browser to Safari's settings. `pushErrors.ts` (test-first) now gives Brave its setting
+     (`brave://settings/privacy`), other Chromium browsers a push-service hint, Safari its own
+     path, and others advice that names no browser. Not yet seen in a browser: the built-in one has
+     notifications denied.
+
+**Also found:** CI's gitleaks job had failed since 2026-10-21 on two false positives, fixed in
+`534e50c3`. The Native macOS job's "Build the unsigned Mac app" step fails in CI but builds locally
+with the same command. Its CI log is needed.
+
+### Checkpoint — October 27, 2026 (Brave's console on taskify.solife.me)
+
+With Brave's "Use Google services for push messaging" turned on and Brave relaunched,
+registration still failed. The maintainer shared the page's console. Probed from the same Mac:
+
+- **Google's push hosts are reachable:** `mtalk.google.com` on 5228 and 443, and
+  `fcm.googleapis.com` on 443. So the network does not block Brave's push service at the TCP
+  level. The next facts needed are `brave://gcm-internals` (Connection State) and the raw
+  `subscribe()` error.
+- **Ours, fixed test-first:**
+  - The service worker re-fetched relay and `/api/` requests, adding a second uncaught
+    "Failed to fetch" to every failure. It now leaves them to the browser (`3242212b`).
+  - `push.solife.me`'s NIP-11 document had no CORS headers, which NIP-11 requires. It now has
+    them, in relay 0.5.1 (`4207f10b`).
+- **The account's own relay list, not the code:**
+  - `wss://wisp.solife.me` has no DNS record.
+  - `wss://solife.me/nostrrelay/1` answers HTTP 200 instead of upgrading to a WebSocket.
+  - `wss://purplepag.es` returned 502.
+  - None of them is in the repository; remove them from the account's relays.
+- **Seen only in Brave:**
+  - `wss://relay.solife.me` failed with "Invalid frame header" and "Could not decode a text frame
+    as UTF-8", yet it accepts a WebSocket and answers from Node on the same Mac. An extension or a
+    shield in Brave is the likely cause.
+  - Cloudflare's injected Web Analytics beacon and its inline script are blocked by the site's
+    `script-src 'self'`. That is harmless; turn off the zone's automatic Web Analytics injection
+    to silence it.
 

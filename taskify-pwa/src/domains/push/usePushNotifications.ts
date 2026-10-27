@@ -26,6 +26,7 @@ import {
 import type { PushPlatform } from "./pushUtils";
 import { PUSH_OPERATION_TIMEOUT_MS } from "./reminderClient";
 import { urlBase64ToUint8Array } from "./vapidKey";
+import { describePushError, detectPushBrowser } from "./pushErrors";
 
 export function usePushNotifications({
   settings,
@@ -146,22 +147,7 @@ export function usePushNotifications({
   }, [setSettings, settings.pushNotifications]);
 
   function normalizePushError(err: unknown): string {
-    if (!(err instanceof Error)) return 'Failed to enable push notifications.';
-    const message = err.message || 'Failed to enable push notifications.';
-    const lower = message.toLowerCase();
-    if (lower.includes('push service error')) {
-      return 'The browser\'s push service rejected the registration. Check that notifications are allowed for this site (Safari → Settings → Websites → Notifications on macOS) and try again.';
-    }
-    if (lower.includes('not allowed')) {
-      return 'The browser blocked the subscription request. Grant notification permission and try again.';
-    }
-    if (lower.includes('secure context')) {
-      return 'Push notifications require HTTPS (or localhost during development). Reload the app over a secure origin and try again.';
-    }
-    if (lower.includes('invalid vapid public key')) {
-      return 'The configured VAPID public key appears to be invalid. Update both the Worker and the app with matching VAPID keys.';
-    }
-    return message;
+    return describePushError(err, detectPushBrowser(typeof navigator === 'undefined' ? undefined : navigator as Navigator & { brave?: unknown }));
   }
 
   function isRecoverablePushError(err: unknown): boolean {
