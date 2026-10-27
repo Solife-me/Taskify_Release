@@ -1,5 +1,7 @@
 # wrangler.toml (wrangler v3.88.0^)
-name = "taskify"
+# The Worker that serves taskify.solife.me. `taskify` is the retired v1 Worker
+# (taskify-v1.solife.me); deploying under that name would replace it, not the live site.
+name = "taskify-public"
 main = "worker/src/index.ts"
 compatibility_date = "2026-10-12"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
@@ -23,10 +25,15 @@ crons = ["*/1 * * * *"]
 [observability.logs]
 enabled = true
 
-# Configure these in Cloudflare Worker variables/secrets (or `.dev.vars` for local dev):
-# - VAPID_PUBLIC_KEY
-# - VAPID_SUBJECT
-# - CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN (secrets; Workers AI for the voice routes)
+# A deploy replaces every variable with this section, so the push settings live here, not in the
+# dashboard. Both are public: the key is also built into the PWA (VITE_VAPID_PUBLIC_KEY) and served
+# at /api/config. Its private half is the VAPID_PRIVATE_KEY binding below.
+[vars]
+VAPID_PUBLIC_KEY = "BA5BrwPUO-j5WzaaPe28CApexdCiLMHgHrh40LoXyz_OmA21gId1yw5IxWqpIOVEnKGiXfI0FEiFDr1Kl8rj6Dw"
+VAPID_SUBJECT = "mailto:dev@solife.me"
+
+# Secrets, set with `wrangler secret put` (or `.dev.vars` for local dev):
+# - CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN (Workers AI for the voice routes)
 
 [[kv_namespaces]]
 binding = "TASKIFY_DEVICES"

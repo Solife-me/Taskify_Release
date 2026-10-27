@@ -4146,8 +4146,8 @@ repository:
 | C13-1 | Approve | 2026-10-26 | Done. Relay 0.5.0:0 keeps its state in SQLite, importing `state.json` once: per incoming wrap 669 ms → 0.6 ms at 100,000 items, steady memory 1.16 GB → 52 MiB. From wisp: refusals before signature checks, events serialized once per broadcast, gift wraps routed to their recipient's sockets only, and slow readers cut off at 96 MiB |
 | C13-2 | Approve | 2026-10-26 | Done (`7bea41fd`). One HTTP/2 session per APNs host, reconnected after an error, GOAWAY or close. Per-app `apns-collapse-id` on alerts that read the same (not on iPhone preview alerts), and `apns-expiration` a day out. Tested against a local HTTP/2 server |
 | C13-3 | Approve | 2026-10-26 | Done (`27e35505`). The image runs as `node` and gives it /data; a StartOS `chown` oneshot runs before the daemon. Checked with Docker; not yet on a StartOS box |
-| C13-4 | Approve | 2026-10-26 | Done except the Worker's name, which awaits the maintainer's confirmation. Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
-| C13-5 | Approve | 2026-10-26 | Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes) |
+| C13-4 | Approve | 2026-10-26 | Done. The account shows taskify.solife.me is served by `taskify-public`; `wrangler.toml` now deploys that name, with the VAPID settings in `[vars]` (test-first, see the account checkpoint). Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
+| C13-5 | Approve | 2026-10-26 | Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes). Checked on 2026-10-26: none of the three holds yet (see the account checkpoint) |
 | C13-6 | Approve | 2026-10-26 | Done. SDK 3.1.0 (the dev-only zod advisory is gone; full audit clean), `UPDATING.md`, package `AGENTS.md` and `CLAUDE.md`. `make arm` packs 0.5.0:0. `start-cli` here is 2.3.0, behind the published 2.5.1 |
 | C13-7a | Approve | 2026-10-26 | Done. An exact `push-relay-v<version>` tag tests and publishes amd64/arm64 to GHCR. The relay application now lives in `push-relay/`; `taskify-push-relay/` contains only the StartOS package and pins the public versioned image. The two packages have independent dependencies, tests and CI jobs, with no duplicated application source |
 | C13-8 | Approve | 2026-10-26 | Reminder titles done: the PWA sends none, and the Worker stores none and returns none; migration 0008 clears stored titles. The service worker names a fired reminder from the device's IndexedDB copy (`public/reminder-titles.js`), kept only while push is on. Checked in a production build in the browser. Found on the way and fixed separately: the PWA's service worker never registered after the async bootstrap (`020e78df`). Preview and NIP-05 lookups now send their input in a POST body (`workerLookups.ts`). The Worker answers both forms, and in its local runtime the POST log lines show no link or name. **Remove the GET forms** once builds before this change are gone, about a month after it ships |
@@ -4416,4 +4416,72 @@ a service the owner chose not to use.
   source or Dockerfile.
 - The application remains in this monorepo. Moving the StartOS package to its own repository is a
   later maintainer choice, not needed for the source/image separation.
+
+### Checkpoint — October 26, 2026 (the Cloudflare account, read-only)
+
+The maintainer signed wrangler in. These were checked read-only, through wrangler and the
+Cloudflare API, and nothing in the account was changed.
+
+**Which Worker serves what:**
+- `taskify.solife.me` (custom domain and route) and `taskify-v2.solife.me` → **`taskify-public`**.
+  Its active version is `2b0321dd`, deployed 2026-10-15. Two versions were uploaded today
+  (`310c108d`, `eb433d56`) but not deployed.
+- `taskify-v1.solife.me` → **`taskify`**, last deployed 2026-02-20 with compatibility date
+  2024-03-01 and only `nodejs_compat`. It shares `taskify-public`'s D1 database and all four KV
+  namespaces, and runs its own cron every minute. It has no rate limiters and none of the changes
+  since February.
+- **The repository deployed to the wrong Worker.** `wrangler.toml` said `name = "taskify"`, so a
+  deploy from the repository would have replaced v1, not the live site.
+
+**Push from the live site is broken:**
+- None of the 100 `taskify-public` versions the API returns (back to 2026-05-22) has
+  `VAPID_PUBLIC_KEY` or `VAPID_SUBJECT`. `https://taskify.solife.me/api/config` answers
+  `"vapidPublicKey":""`.
+- The PWA still subscribes, because its build has the key compiled in (`VITE_VAPID_PUBLIC_KEY`,
+  the same key v1 serves).
+- `taskify-public`'s cron moves due reminders to pending and then fails to sign the ping:
+  `createVapidJWT` throws, and `sendPushPing` logs "Push ping error". A ping is sent only when v1's
+  cron, which has both variables, reaches the row first.
+- The two `pending_notifications` rows have waited since 2026-10-23 21:00 UTC, which fits.
+- 38 devices are registered; the newest was updated 2026-06-16.
+
+**Fix in the repository, test-first** (`worker/src/deploy-config.test.ts`, failing before):
+- `name = "taskify-public"`.
+- `VAPID_PUBLIC_KEY` and `VAPID_SUBJECT` (`mailto:dev@solife.me`, as v1 has it) are now in
+  `[vars]`. Both are public values, and a deploy can no longer drop them.
+- The dry run shows both variables and all five limiters.
+- **Not deployed:** the maintainer deploys.
+
+**D1 (`taskify-notifications`):**
+- `d1_migrations` records only `0001_init.sql`, so wrangler lists 0002–0008 as pending.
+- `ensureSchema` or hand edits created the tables of 0002, 0003, 0004, 0006 and 0007. All eight
+  migrations are idempotent (`IF NOT EXISTS`, `IF EXISTS`, `UPDATE`), so applying them succeeds.
+- **The retired calendar features still hold user data:**
+  - `gcal_connections`: 2 rows (encrypted Google tokens), last updated 2026-08-24;
+  - `gcal_calendars`: 5 rows;
+  - `gcal_events`: 359 rows (titles, descriptions, locations);
+  - `caldav_accounts`: 1 row (a password hash);
+  - `google_calendar_state`: 1 row.
+- Migration 0005 drops the four `gcal_*` tables. No migration covers `caldav_*` or
+  `google_calendar_*`, which predate the migrations directory.
+- `request_signatures` and `write_budget` are empty.
+
+**KV, secrets and logs:**
+- Legacy KV is not empty: `TASKIFY_DEVICES` holds 9 keys and `TASKIFY_PENDING` 2. `TASKIFY_REMINDERS`
+  is empty.
+- `VAPID_PRIVATE_KEY` is still a KV entry, not a secret.
+- `taskify-public` still has the secrets `GEMINI_API_KEY` (F1A-10) and `GCAL_CLIENT_ID`,
+  `GCAL_CLIENT_SECRET`, `GCAL_TOKEN_ENC_KEY` and `GCAL_WEBHOOK_SECRET` (F1A-16).
+- Invocation logs are on and persisted on both Workers (F1A-9).
+- The zone's rate-limit rules (F1A-17) could not be read: the token lacks that permission.
+
+**Maintainer steps, in order:**
+1. Deploy `taskify-public` from this commit. Push from the live site then works without v1.
+2. Retire v1: remove `taskify-v1.solife.me` and the `taskify` Worker, which stops its competing
+   cron. Its R2 binding `TASKIFY_BACKUPS` was not inspected.
+3. Revoke the Google OAuth client, then apply the migrations (0005 drops the `gcal_*` tables and
+   0008 clears titles). Delete the `GCAL_*` and `GEMINI_API_KEY` secrets.
+4. Turn off invocation logs.
+
+C13-5's code steps still wait: legacy KV has keys, and the private key is not yet a secret.
 
