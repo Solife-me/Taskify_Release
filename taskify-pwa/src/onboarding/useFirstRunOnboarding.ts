@@ -2,13 +2,12 @@ import {
   startTransition,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
+import { currentIdentity } from "../identity/identity";
 import { kvStorage } from "../storage/kvStorage";
 import {
   applyBackupDataToStorage,
@@ -20,50 +19,31 @@ import {
   externalCalendarEventEntityStore,
   taskEntityStore,
 } from "../storage/entityStore";
-import { getWalletSeedMnemonic } from "../wallet/seed";
-import { detectPushPlatformFromNavigator, type PushPlatform } from "../domains/push/pushUtils";
+import { LS_FIRST_RUN_ONBOARDING_DONE, shouldShowFirstRun } from "./firstRunRules";
 
-const LS_FIRST_RUN_ONBOARDING_DONE = "taskify_onboarding_done_v1";
-
-type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-address" | "chat" | "settings";
+type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet-move-out" | "chat" | "settings";
 
 type UseFirstRunOnboardingParams = {
   activePage: ActivePage;
   applyCustomNostrKey: (value: string, options?: { silent?: boolean }) => boolean;
-  enablePushNotifications: (platform: PushPlatform) => Promise<void>;
-  pushPlatform?: PushPlatform | null;
   rotateNostrKey: () => string;
   setActivePage: Dispatch<SetStateAction<ActivePage>>;
-  vapidPublicKey: string;
-  workerBaseUrl: string;
 };
 
 export function useFirstRunOnboarding({
   activePage,
   applyCustomNostrKey,
-  enablePushNotifications,
-  pushPlatform,
   rotateNostrKey,
   setActivePage,
-  vapidPublicKey,
-  workerBaseUrl,
 }: UseFirstRunOnboardingParams) {
   const isOnboardingActiveRef = useRef(false);
-  const onboardingNeedsKeySelection = useMemo(() => {
-    try {
-      const raw = nostrSkSync().trim();
-      return !/^[0-9a-fA-F]{64}$/.test(raw);
-    } catch {
-      return true;
-    }
-  }, []);
+  // Asked once at startup: a device without an identity starts here.
   const [showFirstRunOnboarding, setShowFirstRunOnboarding] = useState(() => {
-    if (!onboardingNeedsKeySelection) return false;
+    let onboardingDone = false;
     try {
-      return kvStorage.getItem(LS_FIRST_RUN_ONBOARDING_DONE) !== "done";
-    } catch {
-      return true;
-    }
+      onboardingDone = kvStorage.getItem(LS_FIRST_RUN_ONBOARDING_DONE) === "done";
+    } catch {}
+    return shouldShowFirstRun({ hasIdentity: !!currentIdentity(), onboardingDone });
   });
   const completeFirstRunOnboarding = useCallback(() => {
     try {
@@ -71,18 +51,25 @@ export function useFirstRunOnboarding({
     } catch {}
     setShowFirstRunOnboarding(false);
   }, []);
+  /** Signs in with a key the user already has, then lands on their tasks. */
   const handleOnboardingUseExistingKey = useCallback((value: string) => {
-    return applyCustomNostrKey(value, { silent: true });
-  }, [applyCustomNostrKey]);
-  const handleOnboardingGenerateNewKey = useCallback(() => {
+    const ok = applyCustomNostrKey(value, { silent: true });
+    if (ok) completeFirstRunOnboarding();
+    return ok;
+  }, [applyCustomNostrKey, completeFirstRunOnboarding]);
+  /**
+   * "Start using Taskify": makes the account key quietly and lands on the board. The key-backup
+   * reminder asks the user to save it once they have tasks worth keeping.
+   */
+  const handleOnboardingStart = useCallback(() => {
     try {
-      const nsec = rotateNostrKey();
-      getWalletSeedMnemonic();
-      return { nsec };
+      rotateNostrKey();
     } catch {
-      return null;
+      return false;
     }
-  }, [rotateNostrKey]);
+    completeFirstRunOnboarding();
+    return true;
+  }, [completeFirstRunOnboarding, rotateNostrKey]);
   const completeOnboardingWithReload = useCallback(() => {
     completeFirstRunOnboarding();
     if (typeof window !== "undefined") {
@@ -91,7 +78,7 @@ export function useFirstRunOnboarding({
   }, [completeFirstRunOnboarding]);
   const handleOnboardingRestoreFromBackupFile = useCallback(async (file: File) => {
     const parsed = parseBackupJsonPayload(await file.text());
-    applyBackupDataToStorage(parsed);
+    await applyBackupDataToStorage(parsed);
     await Promise.all([
       taskEntityStore.flush(),
       boardEntityStore.flush(),
@@ -100,15 +87,6 @@ export function useFirstRunOnboarding({
     ]);
     completeOnboardingWithReload();
   }, [completeOnboardingWithReload]);
-  const handleOnboardingEnableNotifications = useCallback(async () => {
-    const platform = pushPlatform === "android" ? "android" : detectPushPlatformFromNavigator();
-    await enablePushNotifications(platform);
-  }, [enablePushNotifications, pushPlatform]);
-  const onboardingPushSupported = typeof window !== "undefined"
-    && "serviceWorker" in navigator
-    && "PushManager" in window
-    && window.isSecureContext;
-  const onboardingPushConfigured = !!workerBaseUrl && !!vapidPublicKey;
   const isOnboardingActive = showFirstRunOnboarding;
 
   isOnboardingActiveRef.current = isOnboardingActive;
@@ -120,15 +98,11 @@ export function useFirstRunOnboarding({
   }, [isOnboardingActive, activePage, setActivePage]);
 
   return {
-    completeFirstRunOnboarding,
-    handleOnboardingEnableNotifications,
-    handleOnboardingGenerateNewKey,
     handleOnboardingRestoreFromBackupFile,
+    handleOnboardingStart,
     handleOnboardingUseExistingKey,
     isOnboardingActive,
     isOnboardingActiveRef,
-    onboardingPushConfigured,
-    onboardingPushSupported,
     showFirstRunOnboarding,
   };
 }

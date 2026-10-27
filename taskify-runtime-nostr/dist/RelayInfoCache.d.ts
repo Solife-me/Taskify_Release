@@ -41,6 +41,7 @@ type RelayInfoCacheOptions = {
     storage?: RelayInfoStorage;
     storageKey?: string;
     maxEntries?: number;
+    learnedPowTtlMs?: number;
 };
 export declare function normalizeRelayCacheKey(relayUrl: string): string | null;
 export declare function buildNip11Url(relayUrl: string): string | null;
@@ -53,6 +54,8 @@ export declare class RelayInfoCache {
     private readonly storage?;
     private readonly storageKey;
     private readonly maxEntries;
+    private readonly learnedPow;
+    private readonly learnedPowTtlMs;
     constructor(options?: RelayInfoCacheOptions);
     private isExpired;
     private hasRecentFailure;
@@ -60,9 +63,15 @@ export declare class RelayInfoCache {
     getAgeMs(relayUrl: string): number | null;
     getLimits(relayUrls: string[]): RelayLimits;
     prime(relayUrl: string, fetcher: (nip11Url: string) => Promise<RelayInfo | null>): Promise<CachedRelayInfo | null>;
+    /** Records the difficulty a relay demanded in a `pow:` rejection; it never lowers a known requirement. */
+    recordProofOfWorkRequirement(relayUrl: string, difficulty: number): void;
+    /** The difficulty learned from this relay's rejections, or 0. */
+    learnedProofOfWork(relayUrl: string): number;
     needsRefresh(relayUrl: string): boolean;
     private normalizeEntry;
     private restore;
+    private restoreRelayInfo;
+    private restoreLearnedProofOfWork;
     private persist;
 }
 export {};

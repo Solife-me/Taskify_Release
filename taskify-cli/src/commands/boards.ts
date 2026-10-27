@@ -3,67 +3,88 @@ import type { Command } from "commander";
 import {
 resolveBoardReference
 } from "taskify-core";
-import { loadConfig,saveConfig,type BoardEntry } from "../config.js";
+import type { BoardEntry } from "../config.js";
 import { renderJson } from "../render.js";
 import { parseOnOffState } from "../shared/boardState.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerBoardsCommands(program: Command, context: Pick<CommandContext, "initRuntime">) {
-  const { initRuntime } = context;
+export function registerBoardsCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "loadConfig" | "saveConfig" | "now" | "randomUUID">) {
+  const { initRuntime, loadConfig, saveConfig, now, randomUUID } = context;
   // ---- board command group ----
   const boardCmd = program
     .command("board")
     .description("Manage boards");
 
+  /**
+   * `board list` and `boards`: refreshes names and lists for boards that still show an id, or
+   * were last synced over a day ago, then lists every board.
+   */
+  async function listBoards(opts: { json?: boolean }) {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    if (config.boards.length === 0) {
+      if (opts.json) renderJson([]);
+      else console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
+      return;
+    }
+
+    const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
+    const STALE_SYNC_MS = 24 * 60 * 60 * 1000;
+    const stale = config.boards.filter((b) => {
+      if (UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8)) return true;
+      if (!b.syncedAt) return true;
+      return now().getTime() - b.syncedAt > STALE_SYNC_MS;
+    });
+
+    if (stale.length > 0) {
+      process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
+      let runtime: ReturnType<typeof initRuntime> | undefined;
+      try {
+        runtime = initRuntime(config);
+        for (const b of stale) {
+          try {
+            const meta = await runtime.syncBoard(b.id);
+            if (meta.name) b.name = meta.name;
+            if (meta.kind) b.kind = meta.kind as BoardEntry["kind"];
+            if (meta.columns) b.columns = meta.columns;
+            b.syncedAt = now().getTime();
+          } catch { /* non-fatal — show whatever name we have */ }
+        }
+        await saveConfig(config);
+      } catch (error) {
+        rethrowReportedError(error);
+        // Metadata refresh is non-fatal.
+      } finally {
+        try { await runtime?.disconnect(); } catch { /* non-fatal display-name refresh */ }
+      }
+    }
+
+    if (opts.json) {
+      renderJson(config.boards.map((b) => ({
+        id: b.id,
+        name: b.name,
+        kind: b.kind ?? null,
+        relays: b.relays ?? [],
+        columns: b.columns ?? [],
+      })));
+      return;
+    }
+    for (const b of config.boards) {
+      const relays = b.relays?.length ? `  [${b.relays.join(", ")}]` : "";
+      console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}${relays}`);
+    }
+  }
+
   boardCmd
     .command("list")
     .description("List all configured boards")
-    .action(async () => {
-      const config = await loadConfig(program.opts().profile as string | undefined);
-      if (config.boards.length === 0) {
-        console.log(chalk.dim("No boards configured. Use: taskify board join <id> --name <name>"));
-        process.exit(0);
-      }
+    .option("--json", "Output as JSON")
+    .action(listBoards);
 
-      // Auto-sync any board whose stored name looks like a raw UUID prefix
-      // (happens when a board was joined without a --name or metadata wasn't fetched).
-      // This ensures agents always see human-readable names without a manual board sync step.
-      const UUID_PREFIX_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/i;
-      const STALE_SYNC_MS = 24 * 60 * 60 * 1000; // 24h TTL for non-stale boards
-      const stale = config.boards.filter(
-        (b) => {
-          // UUID-named boards are always stale
-          if (UUID_PREFIX_RE.test(b.name) || b.name === b.id || b.name === b.id.slice(0, 8)) return true;
-          // Non-UUID boards: re-sync if last sync was >24h ago (or never synced)
-          if (!b.syncedAt) return true;
-          return Date.now() - b.syncedAt > STALE_SYNC_MS;
-        },
-      );
-
-      if (stale.length > 0) {
-        process.stderr.write(chalk.dim(`Fetching display names for ${stale.length} board(s)…\n`));
-        try {
-          const runtime = initRuntime(config);
-          for (const b of stale) {
-            try {
-              const meta = await runtime.syncBoard(b.id);
-              if (meta.name) b.name = meta.name;
-              if (meta.kind) b.kind = meta.kind as BoardEntry["kind"];
-              if (meta.columns) b.columns = meta.columns;
-              b.syncedAt = Date.now();
-            } catch { /* non-fatal — show whatever name we have */ }
-          }
-          await runtime.disconnect();
-          await saveConfig(config);
-        } catch { /* non-fatal */ }
-      }
-
-      for (const b of config.boards) {
-        const relays = b.relays?.length ? `  [${b.relays.join(", ")}]` : "";
-        console.log(`  ${chalk.bold(b.name.padEnd(16))} ${chalk.dim(b.id)}${relays}`);
-      }
-      process.exit(0);
-    });
+  program
+    .command("boards")
+    .description("List configured boards (alias for: board list)")
+    .option("--json", "Output as JSON")
+    .action(listBoards);
 
   boardCmd
     .command("join <boardId>")
@@ -79,10 +100,10 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const existing = config.boards.find((b) => b.id === boardId);
       if (existing) {
         console.log(chalk.dim(`Already on board ${existing.name} (${boardId})`));
-        process.exit(0);
+        return;
       }
       const name = opts.name ?? boardId.slice(0, 8);
-      const entry: { id: string; name: string; relays?: string[]; syncedAt?: number } = { id: boardId, name, syncedAt: Date.now() };
+      const entry: { id: string; name: string; relays?: string[]; syncedAt?: number } = { id: boardId, name, syncedAt: now().getTime() };
       if (opts.relay) {
         entry.relays = [opts.relay];
       }
@@ -90,16 +111,22 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       await saveConfig(config);
       console.log(chalk.green(`✓ Joined board ${name} (${boardId})`));
       // Auto-sync board metadata immediately after joining
+      let runtime: ReturnType<typeof initRuntime> | undefined;
       try {
-        const runtime = initRuntime(config);
+        runtime = initRuntime(config);
         const meta = await runtime.syncBoard(boardId);
         if (meta.kind || (meta.columns && meta.columns.length > 0)) {
           const colCount = meta.columns?.length ?? 0;
           console.log(chalk.dim(`  Synced: kind=${meta.kind ?? "?"}, columns=${colCount}`));
         }
-        await runtime.disconnect();
-      } catch { /* non-fatal if sync fails on join */ }
-      process.exit(0);
+      } catch (error) {
+        rethrowReportedError(error);
+        // Metadata refresh is non-fatal if sync fails after the runtime starts.
+      }
+      finally {
+        try { await runtime?.disconnect(); } catch { /* non-fatal metadata refresh */ }
+      }
+      return;
     });
 
   boardCmd
@@ -109,18 +136,18 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (config.boards.length === 0) {
         console.error(chalk.red("No boards configured."));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
-      const toSync = boardId
-        ? (() => {
-            const entry = resolveBoardReference(config.boards, boardId);
-            if (!entry) {
-              console.error(chalk.red(`Board not found: "${boardId}"`));
-              process.exit(1);
-            }
-            return [entry];
-          })()
-        : config.boards;
+      let toSync = config.boards;
+      if (boardId) {
+        const entry = resolveBoardReference(config.boards, boardId);
+        if (!entry) {
+          console.error(chalk.red(`Board not found: "${boardId}"`));
+          process.exitCode = 1;
+          return;
+        }
+        toSync = [entry];
+      }
       const runtime = initRuntime(config);
       let exitCode = 0;
       try {
@@ -140,7 +167,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         }
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -153,11 +180,11 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       config.boards = config.boards.filter((b) => b.id !== boardId);
       if (config.boards.length === before) {
         console.error(chalk.red(`Board not found: ${boardId}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       await saveConfig(config);
       console.log(chalk.green(`✓ Left board ${boardId}`));
-      process.exit(0);
+      return;
     });
 
   boardCmd
@@ -168,7 +195,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const entry = resolveBoardReference(config.boards, boardArg);
       if (!entry) {
         console.error(chalk.red(`Board not found: "${boardArg}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       // Resolve column name to ID if needed
       let colId = colArg;
@@ -177,7 +204,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         if (matched) colId = matched.id;
         else {
           console.error(chalk.red(`Column "${colArg}" not found in board "${entry.name}"`));
-          process.exit(1);
+          process.exitCode = 1; return;
         }
       }
       // Store on the selected profile (local only)
@@ -192,7 +219,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       config.defaultLocation = { boardId: entry.id, listId: colId };
       await saveConfig(config);
       console.log(chalk.green(`✓ Default column for profile "${config.selectedProfile}" → "${entry.name}": ${colId}`));
-      process.exit(0);
+      return;
     });
 
   boardCmd
@@ -212,16 +239,16 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         delete config.defaultLocation;
         await saveConfig(config);
         console.log(chalk.green("✓ Default board cleared — you'll be prompted to select one when needed"));
-        process.exit(0);
+        return;
       }
       if (!boardArg) {
         console.error(chalk.red("Provide a board id/name, or use --clear to remove the default board."));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const entry = resolveBoardReference(config.boards, boardArg);
       if (!entry) {
         console.error(chalk.red(`Board not found: "${boardArg}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       // Store as profile-level defaultBoard so add/list commands auto-resolve to this board
       const profileCfg = config.profiles?.[config.selectedProfile];
@@ -233,7 +260,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       config.defaultLocation = { boardId: entry.id };
       await saveConfig(config);
       console.log(chalk.green(`✓ Default board set to "${entry.name}" (${entry.id})`));
-      process.exit(0);
+      return;
     });
 
   boardCmd
@@ -245,7 +272,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const profileCfg = config.profiles?.[config.selectedProfile];
       if (!profileCfg) {
         console.error(chalk.red("No selected profile found."));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       // Resolve default board name
@@ -279,7 +306,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
             name: defaultColumnName,
           } : null,
         });
-        process.exit(0);
+        return;
       }
 
       console.log(chalk.bold(`Selected profile: ${config.selectedProfile}${config.selectedProfile === config.activeProfile ? " (active)" : ""}`));
@@ -302,7 +329,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         console.log(chalk.yellow("Default column: (none set — you'll be prompted to select one when needed)"));
         console.log(chalk.dim("  Use: taskify board column-default <board> <column>"));
       }
-      process.exit(0);
+      return;
     });
 
   boardCmd
@@ -321,34 +348,35 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
           ? `Known boards: ${config.boards.map(b => b.name).join(', ')}`
           : 'No boards configured. Use: taskify board join <id> --name <name>';
         console.error(chalk.red(`Board not found: "${boardArg ?? config.defaultBoard}". ${hint}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       const runtime = initRuntime(config);
-      let columns = entry.columns ?? [];
       try {
-        const meta = await runtime.syncBoard(entry.id);
-        columns = meta.columns ?? columns;
-      } catch {
-        // Use cached columns when relay metadata is unavailable.
-      }
-
-      if (opts.json) {
-        renderJson({
-          board: { id: entry.id, name: entry.name, kind: entry.kind ?? "lists" },
-          columns,
-        });
-      } else if (columns.length === 0) {
-        console.log(chalk.dim(`No columns found for ${entry.name}.`));
-      } else {
-        console.log(chalk.bold(`Columns for ${entry.name}`));
-        for (const col of columns) {
-          console.log(`  ${chalk.bold(col.name.padEnd(18))} ${chalk.dim(col.id)}`);
+        let columns = entry.columns ?? [];
+        try {
+          const meta = await runtime.syncBoard(entry.id);
+          columns = meta.columns ?? columns;
+        } catch {
+          // Use cached columns when relay metadata is unavailable.
         }
-      }
 
-      await runtime.disconnect();
-      process.exit(0);
+        if (opts.json) {
+          renderJson({
+            board: { id: entry.id, name: entry.name, kind: entry.kind ?? "lists" },
+            columns,
+          });
+        } else if (columns.length === 0) {
+          console.log(chalk.dim(`No columns found for ${entry.name}.`));
+        } else {
+          console.log(chalk.bold(`Columns for ${entry.name}`));
+          for (const col of columns) {
+            console.log(`  ${chalk.bold(col.name.padEnd(18))} ${chalk.dim(col.id)}`);
+          }
+        }
+      } finally {
+        await runtime.disconnect();
+      }
     });
 
   boardCmd
@@ -363,59 +391,60 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
           ? `Known boards: ${config.boards.map(b => b.name).join(', ')}`
           : 'No boards configured. Use: taskify board join <id> --name <name>';
         console.error(chalk.red(`Board not found: "${boardArg ?? config.defaultBoard}". ${hint}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       // Sync columns from Nostr if needed
       const runtime = initRuntime(config);
-      const syncedAt = entry.syncedAt ?? 0;
-      const THIRTY_MIN_MS = 30 * 60 * 1000;
-      if (!entry.columns || Date.now() - syncedAt > THIRTY_MIN_MS) {
-        try {
-          await runtime.syncBoard(entry.id);
-        } catch { /* non-fatal */ }
-      }
-
-      // Get fresh board data from runtime
-      let boardColumns = entry.columns || [];
       try {
-        const fresh = await runtime.syncBoard(entry.id);
-        if (fresh.columns && fresh.columns.length > 0) {
-          boardColumns = fresh.columns;
+        const syncedAt = entry.syncedAt ?? 0;
+        const THIRTY_MIN_MS = 30 * 60 * 1000;
+        if (!entry.columns || now().getTime() - syncedAt > THIRTY_MIN_MS) {
+          try {
+            await runtime.syncBoard(entry.id);
+          } catch { /* non-fatal */ }
         }
-      } catch { /* use cached */ }
 
-      // Fetch all tasks to count per column (batch to avoid many relay calls)
-      const allTasks = await runtime.listTasks({ boardId: entry.id, status: "any" });
+        // Get fresh board data from runtime
+        let boardColumns = entry.columns || [];
+        try {
+          const fresh = await runtime.syncBoard(entry.id);
+          if (fresh.columns && fresh.columns.length > 0) {
+            boardColumns = fresh.columns;
+          }
+        } catch { /* use cached */ }
 
-      if (opts.json) {
-        const overview: Record<string, { open: number; total: number }> = {};
+        // Fetch all tasks to count per column (batch to avoid many relay calls)
+        const allTasks = await runtime.listTasks({ boardId: entry.id, status: "any" });
+
+        if (opts.json) {
+          const overview: Record<string, { open: number; total: number }> = {};
+          for (const col of boardColumns) {
+            const colTasks = allTasks.filter((t) => t.column === col.id);
+            overview[col.name] = {
+              open: colTasks.filter((t) => !t.completed).length,
+              total: colTasks.length,
+            };
+          }
+          renderJson({ boardName: entry.name, overview });
+          return;
+        }
+
+        console.log(chalk.bold(`Board: ${entry.name}`));
+        console.log(chalk.dim(`  ID: ${entry.id}`));
+        const nameLen = Math.max(20, ...boardColumns.map(c => c.name.length));
+
         for (const col of boardColumns) {
           const colTasks = allTasks.filter((t) => t.column === col.id);
-          overview[col.name] = {
-            open: colTasks.filter((t) => !t.completed).length,
-            total: colTasks.length,
-          };
+          const open = colTasks.filter((t) => !t.completed).length;
+          const total = colTasks.length;
+          const openDim = chalk.dim(`${String(open).padStart(5)} open`);
+          const totalDim = chalk.dim(`${String(total).padStart(5)} total`);
+          console.log(`  ${chalk.bold(col.name.padEnd(nameLen))}  ${openDim}  ${totalDim}`);
         }
-        renderJson({ boardName: entry.name, overview });
+      } finally {
         await runtime.disconnect();
-        process.exit(0);
       }
-
-      console.log(chalk.bold(`Board: ${entry.name}`));
-      console.log(chalk.dim(`  ID: ${entry.id}`));
-      const nameLen = Math.max(20, ...boardColumns.map(c => c.name.length));
-
-      for (const col of boardColumns) {
-        const colTasks = allTasks.filter((t) => t.column === col.id);
-        const open = colTasks.filter((t) => !t.completed).length;
-        const total = colTasks.length;
-        const openDim = chalk.dim(`${String(open).padStart(5)} open`);
-        const totalDim = chalk.dim(`${String(total).padStart(5)} total`);
-        console.log(`  ${chalk.bold(col.name.padEnd(nameLen))}  ${openDim}  ${totalDim}`);
-      }
-      await runtime.disconnect();
-      process.exit(0);
     });
 
   boardCmd
@@ -426,15 +455,15 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const entry = resolveBoardReference(config.boards, boardArg);
       if (!entry) {
         console.error(chalk.red(`Board not found: "${boardArg}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       if (entry.kind !== "compound") {
         console.log(chalk.dim(`Board is not a compound board (kind: ${entry.kind ?? "unknown"})`));
-        process.exit(0);
+        return;
       }
       if (!entry.children || entry.children.length === 0) {
         console.log(chalk.dim("No children cached — run: taskify board sync"));
-        process.exit(0);
+        return;
       }
       console.log(chalk.bold(`Children of ${entry.name}:`));
       for (const childId of entry.children) {
@@ -445,7 +474,7 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
           console.log(`  ${chalk.dim(childId)} ${chalk.yellow("(not in local config)")}`);
         }
       }
-      process.exit(0);
+      return;
     });
 
   boardCmd
@@ -458,14 +487,14 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         const entry = resolveBoardReference(config.boards, boardArg);
         if (!entry) throw new Error(`Board not found: "${boardArg}"`);
         if (entry.kind !== "lists") throw new Error("Column operations are only supported for list boards");
-        const next = [...(entry.columns ?? []), { id: crypto.randomUUID(), name }];
+        const next = [...(entry.columns ?? []), { id: randomUUID(), name }];
         const updated = await runtime.updateBoard(entry.id, { columns: next });
         if (!updated) throw new Error("Failed to update board");
         console.log(chalk.green(`✓ Added column \"${name}\"`));
-        process.exit(0);
+        return;
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       } finally { await runtime.disconnect(); }
     });
 
@@ -484,10 +513,10 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         columns[idx] = { ...columns[idx], name };
         await runtime.updateBoard(entry.id, { columns });
         console.log(chalk.green(`✓ Renamed column to \"${name}\"`));
-        process.exit(0);
+        return;
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       } finally { await runtime.disconnect(); }
     });
 
@@ -505,10 +534,10 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         if (after.length === before.length) throw new Error(`Column not found: ${columnRef}`);
         await runtime.updateBoard(entry.id, { columns: after });
         console.log(chalk.green(`✓ Deleted column: ${columnRef}`));
-        process.exit(0);
+        return;
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       } finally { await runtime.disconnect(); }
     });
 
@@ -531,10 +560,10 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         columns.splice(target, 0, moved);
         await runtime.updateBoard(entry.id, { columns });
         console.log(chalk.green(`✓ Reordered column: ${moved.name} -> ${target + 1}`));
-        process.exit(0);
+        return;
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       } finally { await runtime.disconnect(); }
     });
 
@@ -549,49 +578,49 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
         if (!entry) throw new Error(`Board not found: ${boardArg}`);
         await runtime.updateBoard(entry.id, { name });
         console.log(chalk.green(`✓ Renamed board to ${name}`));
-        process.exit(0);
-      } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+        return;
+      } catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
     });
 
   boardCmd.command("archive <board>").description("Archive board").action(async (boardArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
-    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { archived: true }); console.log(chalk.green("✓ Board archived")); process.exit(0); }
-    catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { archived: true }); console.log(chalk.green("✓ Board archived")); return; }
+    catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd.command("unarchive <board>").description("Unarchive board").action(async (boardArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
-    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { archived: false }); console.log(chalk.green("✓ Board unarchived")); process.exit(0); }
-    catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { archived: false }); console.log(chalk.green("✓ Board unarchived")); return; }
+    catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd.command("hide <board>").description("Hide board").action(async (boardArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
-    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { hidden: true }); console.log(chalk.green("✓ Board hidden")); process.exit(0); }
-    catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { hidden: true }); console.log(chalk.green("✓ Board hidden")); return; }
+    catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd.command("unhide <board>").description("Unhide board").action(async (boardArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
-    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { hidden: false }); console.log(chalk.green("✓ Board visible")); process.exit(0); }
-    catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { hidden: false }); console.log(chalk.green("✓ Board visible")); return; }
+    catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd.command("index-card <board> <state>").description("Set index-card mode on/off").action(async (boardArg: string, state: string) => {
     const enabled = parseOnOffState(state);
     if (enabled === null) {
       console.error(chalk.red(`Invalid state: "${state}". Use on/off, true/false, yes/no, or 1/0.`));
-      process.exit(1);
+      process.exitCode = 1; return;
     }
     const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
-    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { indexCardEnabled: enabled }); console.log(chalk.green(`✓ Index-card ${enabled ? "enabled" : "disabled"}`)); process.exit(0); }
-    catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); await runtime.updateBoard(entry.id, { indexCardEnabled: enabled }); console.log(chalk.green(`✓ Index-card ${enabled ? "enabled" : "disabled"}`)); return; }
+    catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd.command("clear-completed <board>").description("Delete completed tasks in board").action(async (boardArg: string) => {
     const config = await loadConfig(program.opts().profile as string | undefined); const runtime = initRuntime(config);
-    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); const count = await runtime.clearCompleted(entry.id); console.log(chalk.green(`✓ Cleared ${count} completed task(s)`)); process.exit(0); }
-    catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+    try { const entry = resolveBoardReference(config.boards, boardArg); if (!entry) throw new Error(`Board not found: ${boardArg}`); const count = await runtime.clearCompleted(entry.id); console.log(chalk.green(`✓ Cleared ${count} completed task(s)`)); return; }
+    catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd.command("share-settings <board> <json>").description("Update board share settings (JSON object)").action(async (boardArg: string, jsonRaw: string) => {
@@ -601,8 +630,8 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const parsed = JSON.parse(jsonRaw);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("share-settings must be a JSON object");
       await runtime.updateBoard(entry.id, { shareSettings: parsed as Record<string, unknown> });
-      console.log(chalk.green("✓ Updated share settings")); process.exit(0);
-    } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+      console.log(chalk.green("✓ Updated share settings")); return;
+    } catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd
@@ -613,22 +642,22 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const entry = resolveBoardReference(config.boards, boardArg);
       if (!entry) {
         console.error(chalk.red(`Board not found: "${boardArg}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       if (!mode) {
         console.log(`Sort mode:      ${entry.sortMode ?? "manual (default)"}`);
         console.log(`Sort direction: ${entry.sortDirection ?? "asc (default)"}`);
-        process.exit(0);
+        return;
       }
       const VALID_MODES = ["manual", "due", "priority", "created", "alpha"];
       const VALID_DIRS = ["asc", "desc"];
       if (!VALID_MODES.includes(mode)) {
         console.error(chalk.red(`Invalid sort mode. Use: ${VALID_MODES.join(", ")}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       if (direction && !VALID_DIRS.includes(direction)) {
         console.error(chalk.red(`Invalid direction. Use: asc, desc`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const runtime = initRuntime(config);
       try {
@@ -637,10 +666,10 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
           sortDirection: ((direction ?? "asc") as BoardEntry["sortDirection"]),
         });
         console.log(chalk.green(`✓ Sort set: ${mode} ${direction ?? "asc"}`));
-        process.exit(0);
+        return;
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       } finally {
         await runtime.disconnect();
       }
@@ -652,8 +681,8 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const entry = resolveBoardReference(config.boards, boardArg); if (!entry || entry.kind !== "compound") throw new Error("Compound board not found");
       const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
       const children = [...(entry.children ?? [])]; if (!children.includes(childId)) children.push(childId);
-      await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Added child: ${childId}`)); process.exit(0);
-    } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+      await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Added child: ${childId}`)); return;
+    } catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd.command("child-remove <board> <child>").description("Remove child board from a compound board").action(async (boardArg: string, childArg: string) => {
@@ -662,8 +691,8 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const entry = resolveBoardReference(config.boards, boardArg); if (!entry || entry.kind !== "compound") throw new Error("Compound board not found");
       const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
       const children = (entry.children ?? []).filter((id) => id !== childId);
-      await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Removed child: ${childId}`)); process.exit(0);
-    } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+      await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Removed child: ${childId}`)); return;
+    } catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   boardCmd.command("child-reorder <board> <child> <position>").description("Reorder child board in a compound board").action(async (boardArg: string, childArg: string, positionRaw: string) => {
@@ -674,8 +703,8 @@ export function registerBoardsCommands(program: Command, context: Pick<CommandCo
       const child = resolveBoardReference(config.boards, childArg); const childId = child?.id ?? childArg;
       const children = [...(entry.children ?? [])]; const idx = children.indexOf(childId); if (idx === -1) throw new Error(`Child not found: ${childId}`);
       const [moved] = children.splice(idx, 1); const target = Math.min(children.length, pos - 1); children.splice(target, 0, moved);
-      await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Reordered child: ${childId} -> ${target + 1}`)); process.exit(0);
-    } catch (err) { console.error(chalk.red(String(err))); process.exit(1); } finally { await runtime.disconnect(); }
+      await runtime.updateBoard(entry.id, { children }); console.log(chalk.green(`✓ Reordered child: ${childId} -> ${target + 1}`)); return;
+    } catch (err) { console.error(chalk.red(String(err))); process.exitCode = 1; return; } finally { await runtime.disconnect(); }
   });
 
   return boardCmd;

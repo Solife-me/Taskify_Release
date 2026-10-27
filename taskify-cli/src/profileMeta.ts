@@ -1,16 +1,14 @@
-import { configureRelayAccess, prepareStandaloneEvent } from "taskify-runtime-nostr";
 /**
  * profileMeta.ts — kind:0 profile metadata publish/fetch for Taskify CLI.
  * Ported from taskify-pwa/src/nostr/ProfilePublisher.ts
  */
 
-import NDK, { NDKPrivateKeySigner, NDKEvent } from "@nostr-dev-kit/ndk";
 import { nip19, getPublicKey } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { normalizeRelayUrls } from "taskify-runtime-nostr";
+import { normalizeRelayUrls, withStandaloneSession, type StandaloneNostrSession } from "taskify-runtime-nostr";
 import type { NostrEvent } from "nostr-tools";
+import type { WithStandaloneSession } from "./shared/botCommands.js";
 import { sanitizeRemote } from "./shared/displaySafe.js";
-import { verifiedRawEvents } from "./shared/verifiedEvents.js";
 
 export type ProfileMetadataDraft = {
   name?: string;
@@ -59,33 +57,21 @@ function buildProfileContent(
   return content;
 }
 
-/** Fetch the latest kind:0 event for a pubkey from relays. */
-export async function fetchLatestProfileEvent(
+/** The latest signed kind:0 event for a pubkey, read through an open session. */
+async function latestProfile(
+  session: StandaloneNostrSession,
   pubkeyHex: string,
-  relays: string[],
-  timeoutMs = 8_000,
+  timeoutMs: number,
 ): Promise<{ event: NostrEvent | null; metadata: ProfileMetadata }> {
-  const relayList = normalizeRelayUrls(relays);
-  const ndk = new NDK({ explicitRelayUrls: relayList });
-  configureRelayAccess(ndk);
-  await Promise.race([ndk.connect(), new Promise<void>((r) => setTimeout(r, 3_000))]);
-
-  const events = await Promise.race<Set<NDKEvent>>([
-    ndk.fetchEvents({ kinds: [0], authors: [pubkeyHex], limit: 1 } as any),
-    new Promise<Set<NDKEvent>>((r) => setTimeout(() => r(new Set()), timeoutMs)),
-  ]).catch(() => new Set<NDKEvent>());
-
-  // Only signed copies count: `profile` merges this into what it republishes under the user's key.
-  const verified = verifiedRawEvents(events).filter((ev) => ev.kind === 0 && ev.pubkey === pubkeyHex);
-  if (!verified.length) return { event: null, metadata: {} };
-
-  // Pick highest created_at
+  // Only signed copies count (`fetchVerified`): `profile` merges this into what it republishes
+  // under the user's key.
+  const events = (await session.fetchVerified({ kinds: [0], authors: [pubkeyHex], limit: 1 }, { timeoutMs }))
+    .filter((event) => event.kind === 0 && event.pubkey === pubkeyHex);
   let raw: NostrEvent | null = null;
-  for (const ev of verified) {
-    if (!raw || (ev.created_at ?? 0) > (raw.created_at ?? 0)) raw = ev;
+  for (const event of events) {
+    if (!raw || (event.created_at ?? 0) > (raw.created_at ?? 0)) raw = event;
   }
   if (!raw) return { event: null, metadata: {} };
-
   let metadata: ProfileMetadata = {};
   try {
     metadata = sanitizeRemote(JSON.parse(raw.content ?? "{}"));
@@ -93,6 +79,18 @@ export async function fetchLatestProfileEvent(
     // ignore
   }
   return { event: raw, metadata };
+}
+
+/** Fetch the latest kind:0 event for a pubkey from relays. */
+export async function fetchLatestProfileEvent(
+  pubkeyHex: string,
+  relays: string[],
+  options: { timeoutMs?: number; withSession?: WithStandaloneSession } = {},
+): Promise<{ event: NostrEvent | null; metadata: ProfileMetadata }> {
+  const relayList = normalizeRelayUrls(relays);
+  if (!relayList.length) return { event: null, metadata: {} };
+  return (options.withSession ?? withStandaloneSession)({ relays: relayList }, (session) =>
+    latestProfile(session, pubkeyHex, options.timeoutMs ?? 8_000));
 }
 
 export type PublishProfileResult = {
@@ -106,7 +104,7 @@ export async function publishProfile(
   nsec: string,
   draft: ProfileMetadataDraft,
   relays: string[],
-  opts?: { timeoutMs?: number; reason?: string },
+  opts?: { timeoutMs?: number; reason?: string; withSession?: WithStandaloneSession },
 ): Promise<PublishProfileResult> {
   const relayList = normalizeRelayUrls(relays);
   if (!relayList.length) throw new Error("No relays configured.");
@@ -115,51 +113,28 @@ export async function publishProfile(
   if (decoded.type !== "nsec") throw new Error("Invalid nsec.");
   const sk = decoded.data as Uint8Array;
   const pubkeyHex = getPublicKey(sk);
-  const skHex = bytesToHex(sk);
 
-  const ndk = new NDK({
-    explicitRelayUrls: relayList,
-    signer: new NDKPrivateKeySigner(skHex),
-  });
-  configureRelayAccess(ndk, skHex);
-  await Promise.race([ndk.connect(), new Promise<void>((r) => setTimeout(r, 3_000))]);
+  return (opts?.withSession ?? withStandaloneSession)({ relays: relayList, secretKeyHex: bytesToHex(sk) }, async (session) => {
+    // Merge with the current kind:0, so fields this draft leaves out are kept.
+    const { event: previous, metadata: existingMeta } = await latestProfile(session, pubkeyHex, opts?.timeoutMs ?? 8_000);
+    const content = buildProfileContent(existingMeta as Record<string, unknown>, draft);
+    const { event: raw } = await session.publish({ kind: 0, content: JSON.stringify(content), tags: [] });
+    if (!raw?.id) throw new Error("Failed to publish profile — no event id returned.");
 
-  // Fetch current kind:0 to merge with
-  const { event: previous, metadata: existingMeta } = await fetchLatestProfileEvent(
-    pubkeyHex,
-    relayList,
-    opts?.timeoutMs ?? 8_000,
-  );
-
-  const content = buildProfileContent(existingMeta as Record<string, unknown>, draft);
-
-  const profileEvent = new NDKEvent(ndk);
-  profileEvent.kind = 0;
-  profileEvent.content = JSON.stringify(content);
-  profileEvent.tags = [];
-  profileEvent.created_at = Math.floor(Date.now() / 1000);
-  await prepareStandaloneEvent(profileEvent, relayList);
-  await profileEvent.publish();
-
-  const raw = profileEvent.rawEvent?.() as NostrEvent ?? (profileEvent as unknown as NostrEvent);
-  if (!raw?.id) throw new Error("Failed to publish profile — no event id returned.");
-
-  // Delete the previous event (NIP-09 kind:5)
-  const deletedIds: string[] = [];
-  if (previous?.id && previous.id !== raw.id) {
-    try {
-      const deleteEvent = new NDKEvent(ndk);
-      deleteEvent.kind = 5;
-      deleteEvent.content = opts?.reason ?? "superseded profile metadata";
-      deleteEvent.tags = [["e", previous.id], ["k", "0"]];
-      deleteEvent.created_at = Math.floor(Date.now() / 1000);
-      await prepareStandaloneEvent(deleteEvent, relayList);
-      await deleteEvent.publish();
-      deletedIds.push(previous.id);
-    } catch {
-      // Non-fatal — deletion is best-effort
+    // Delete the previous event (NIP-09 kind:5); best-effort.
+    const deletedIds: string[] = [];
+    if (previous?.id && previous.id !== raw.id) {
+      try {
+        await session.publish({
+          kind: 5,
+          content: opts?.reason ?? "superseded profile metadata",
+          tags: [["e", previous.id], ["k", "0"]],
+        });
+        deletedIds.push(previous.id);
+      } catch {
+        // Non-fatal — deletion is best-effort
+      }
     }
-  }
-
-  return { event: raw, previous: previous ?? null, deletedIds };
+    return { event: raw, previous: previous ?? null, deletedIds };
+  });
 }

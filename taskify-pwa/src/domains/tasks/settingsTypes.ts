@@ -14,6 +14,8 @@ export type PushPreferences = {
   deviceId?: string;
   subscriptionId?: string;
   permission?: NotificationPermission;
+  /** Chat alerts through Taskify's push relay, on this device's push subscription. */
+  chatEnabled?: boolean;
 };
 
 // ---- Fasting reminders ----
@@ -25,6 +27,12 @@ export type FastingRemindersMode = "weekday" | "random";
 export type StartupView = "main" | "wallet" | "upcoming" | "chat";
 export type LightningAddressProvider = "solife.me" | "npub.cash" | "none";
 export type WalletDenominationDisplay = "bitcoin-symbol" | "sat";
+export const DEFAULT_WALLET_DENOMINATION_DISPLAY: WalletDenominationDisplay = "bitcoin-symbol";
+
+/** A stored wallet setting, read without loading wallet code (settings outlive the wallet). */
+export function normalizeWalletDenominationDisplay(value: unknown): WalletDenominationDisplay {
+  return value === "sat" ? "sat" : DEFAULT_WALLET_DENOMINATION_DISPLAY;
+}
 
 export type Settings = {
   weekStart: Weekday; // 0=Sun, 1=Mon, 6=Sat

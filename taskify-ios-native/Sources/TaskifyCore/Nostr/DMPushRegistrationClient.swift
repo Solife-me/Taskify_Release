@@ -20,10 +20,16 @@ public struct DMPushRegistrationResponse: Decodable, Equatable, Sendable {
     public let remainingRegistrations: Int?
 }
 
+public enum DMPushRegistrationPlatform: String, Codable, Sendable {
+    case iOS = "ios"
+    case macOS = "macos"
+}
+
 public enum DMPushRegistrationClient {
     private struct RegistrationPayload: Encodable {
         let deviceToken: String
         let environment: String
+        let platform: DMPushRegistrationPlatform
     }
 
     public static func registrationURL(baseURL: URL, installationID: String) -> URL {
@@ -61,13 +67,17 @@ public enum DMPushRegistrationClient {
     public static func register(
         deviceToken: String,
         environment: String,
+        platform: DMPushRegistrationPlatform = .iOS,
         installationID: String,
         baseURL: URL,
         identity: NostrIdentity,
         session: URLSession = .shared
     ) async throws -> DMPushRegistrationResponse {
-        let payload = RegistrationPayload(deviceToken: deviceToken, environment: environment)
-        let body = try JSONEncoder().encode(payload)
+        let body = try registrationBody(
+            deviceToken: deviceToken,
+            environment: environment,
+            platform: platform
+        )
         return try await request(
             method: "PUT",
             body: body,
@@ -75,6 +85,20 @@ public enum DMPushRegistrationClient {
             baseURL: baseURL,
             identity: identity,
             session: session
+        )
+    }
+
+    static func registrationBody(
+        deviceToken: String,
+        environment: String,
+        platform: DMPushRegistrationPlatform = .iOS
+    ) throws -> Data {
+        try JSONEncoder().encode(
+            RegistrationPayload(
+                deviceToken: deviceToken,
+                environment: environment,
+                platform: platform
+            )
         )
     }
 

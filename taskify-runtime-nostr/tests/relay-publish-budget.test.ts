@@ -50,7 +50,7 @@ test("rejections are classified by their NIP-01 prefix", () => {
   assert.equal(classifyRelayRejection("replaced: have newer event"), "superseded");
   // Only a true acceptance confirms delivery; a false OK with duplicate text is retried.
   assert.equal(classifyRelayRejection("duplicate: already have this event"), "retry");
-  assert.equal(classifyRelayRejection("pow: difficulty 28 required"), "retry");
+  assert.equal(classifyRelayRejection("pow: difficulty 28 required"), "pow");
   assert.equal(classifyRelayRejection("error: database busy"), "retry");
   assert.equal(classifyRelayRejection("Publish timeout after 2500ms"), "retry");
 });

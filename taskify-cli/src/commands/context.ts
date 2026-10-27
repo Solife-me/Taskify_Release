@@ -1,15 +1,21 @@
 import { bytesToHex,hexToBytes } from "@noble/hashes/utils.js";
 import chalk from "chalk";
 import type { Command } from "commander";
+import { randomUUID as nodeRandomUUID } from "node:crypto";
+import { join } from "node:path";
 import { getPublicKey,nip19 } from "nostr-tools";
 import {
 normalizeTaskAssignees,
 normalizeTaskDocuments
 } from "taskify-core";
 import { buildAttachmentDocuments } from "../attachmentCrypto.js";
-import { loadConfig } from "../config.js";
+import { CONFIG_DIR,loadConfig,saveConfig } from "../config.js";
 import { createNostrRuntime,type NostrRuntime } from "../nostrRuntime.js";
+import { createFileAgentIdempotencyStore,type AgentIdempotencyStore } from "../shared/agentIdempotency.js";
 import { agentFailure,writeAgentJson } from "../shared/agentOutput.js";
+import { promptTerminal } from "../shared/prompt.js";
+import { fetchShareInboxNip17,sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
+import { withStandaloneSession } from "taskify-runtime-nostr";
 import { CliLocationError } from "../shared/cliLocation.js";
 import { formatAvailableColumns,resolveBoardColumn } from "../shared/columnResolution.js";
 import { resolveBoardForCommand } from "../shared/commandResolution.js";
@@ -23,14 +29,51 @@ export type CoreErrorDetails = {
   details?: Record<string, unknown>;
   retryable: boolean;
 };
-export function createCommandContext(program: Command) {
+
+/** A command helper already rendered this failure and only needs to unwind to the executable. */
+export class CliReportedError extends Error {
+  readonly exitCode: number;
+
+  constructor(exitCode = 1) {
+    super("Command failure already reported.");
+    this.name = "CliReportedError";
+    this.exitCode = exitCode;
+  }
+}
+
+export function rethrowReportedError(error: unknown): void {
+  if (error instanceof CliReportedError) throw error;
+}
+
+export type CommandContextDependencies = {
+  createRuntime?: typeof createNostrRuntime;
+  loadConfig?: typeof loadConfig;
+  saveConfig?: typeof saveConfig;
+  randomUUID?: () => string;
+  createIdempotencyStore?: () => AgentIdempotencyStore;
+  writeAgentJson?: typeof writeAgentJson;
+  now?: () => Date;
+  /** Asks the user a question; null when nobody can answer (see `promptTerminal`). */
+  prompt?: (question: string) => Promise<string | null>;
+  shareTransport?: ShareTransport;
+  /** Opens a one-off relay session for a piece of work and always closes it. */
+  withStandaloneSession?: typeof withStandaloneSession;
+};
+
+/** NIP-17 delivery of share envelopes, and reading the share inbox. */
+export type ShareTransport = {
+  send: typeof sendShareEnvelopeNip17;
+  fetchInbox: typeof fetchShareInboxNip17;
+};
+
+export function createCommandContext(program: Command, dependencies: CommandContextDependencies = {}) {
   // ---- Validation helpers ----
 
   function validateDue(due: string | undefined): void {
     if (!due) return;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) {
       console.error(chalk.red(`Invalid --due format: "${due}". Expected YYYY-MM-DD.`));
-      process.exit(1);
+      throw new CliReportedError();
     }
   }
 
@@ -38,7 +81,7 @@ export function createCommandContext(program: Command) {
     if (!pri) return;
     if (!["1", "2", "3"].includes(pri)) {
       console.error(chalk.red(`Invalid --priority: "${pri}". Must be 1, 2, or 3.`));
-      process.exit(1);
+      throw new CliReportedError();
     }
   }
 
@@ -126,10 +169,10 @@ export function createCommandContext(program: Command) {
 
   function initRuntime(config: Parameters<typeof createNostrRuntime>[0]): NostrRuntime {
     try {
-      return createNostrRuntime(config);
+      return (dependencies.createRuntime ?? createNostrRuntime)(config);
     } catch (err) {
       console.error(chalk.red(String(err)));
-      process.exit(1);
+      throw new CliReportedError();
     }
   }
 
@@ -157,7 +200,7 @@ export function createCommandContext(program: Command) {
         console.error(`  ${b.name} (${b.id})`);
       }
     }
-    process.exit(resolved.exitCode);
+    throw new CliReportedError(resolved.exitCode);
   }
 
 
@@ -313,6 +356,7 @@ export function createCommandContext(program: Command) {
   }
 
   function writeCoreFailure(command: string, error: unknown, human: boolean): number {
+    if (error instanceof CliReportedError) return error.exitCode;
     const failure = commandErrorDetails(error);
     if (human) {
       console.error(chalk.red(failure.message));
@@ -322,7 +366,7 @@ export function createCommandContext(program: Command) {
         }
       }
     } else {
-      writeAgentJson(agentFailure(command, failure.code, failure.message, {
+      (dependencies.writeAgentJson ?? writeAgentJson)(agentFailure(command, failure.code, failure.message, {
         details: failure.details,
         retryable: failure.retryable,
       }));
@@ -352,17 +396,17 @@ export function createCommandContext(program: Command) {
     if (resolved.reason === "no-columns") {
       console.error(chalk.red(`Board "${entry.name}" has no columns/lists yet.`));
       console.error(chalk.dim("Add a list first (PWA or `taskify board column-add`) then retry."));
-      process.exit(1);
+      throw new CliReportedError();
     }
     if (resolved.reason === "ambiguous") {
       console.error(chalk.red(`Ambiguous column "${columnArg}" on board "${entry.name}".`));
       console.error(chalk.dim("Use --column <id> to target deterministically."));
       console.error(chalk.dim(`Available columns:\n${available}`));
-      process.exit(1);
+      throw new CliReportedError();
     }
     console.error(chalk.red(`Column not found: "${columnArg}" on board "${entry.name}".`));
     console.error(chalk.dim(`Available columns:\n${available}`));
-    process.exit(1);
+    throw new CliReportedError();
   }
 
 
@@ -384,6 +428,6 @@ export function createCommandContext(program: Command) {
   }
 
 
-  return { validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
+  return { loadConfig: dependencies.loadConfig ?? loadConfig, saveConfig: dependencies.saveConfig ?? saveConfig, now: dependencies.now ?? (() => new Date()), prompt: dependencies.prompt ?? promptTerminal, shareTransport: dependencies.shareTransport ?? { send: sendShareEnvelopeNip17, fetchInbox: fetchShareInboxNip17 }, withStandaloneSession: dependencies.withStandaloneSession ?? withStandaloneSession, randomUUID: dependencies.randomUUID ?? nodeRandomUUID, createIdempotencyStore: dependencies.createIdempotencyStore ?? (() => createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"))), writeAgentJson: dependencies.writeAgentJson ?? writeAgentJson, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
 }
 export type CommandContext = ReturnType<typeof createCommandContext>;

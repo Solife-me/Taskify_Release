@@ -11,7 +11,8 @@ import {
   LS_BACKGROUND_IMAGE,
 } from "../storageKeys";
 import { LS_NOSTR_RELAYS, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../../nostrKeys";
-import { setSk as nostrSkSet } from "../../lib/nostrSkStore";
+import { adoptLocalSecretKey } from "../../identity/identity";
+import { markKeyBroughtByUser } from "../../onboarding/keyBackup";
 import {
   taskEntityStore,
   boardEntityStore,
@@ -19,16 +20,10 @@ import {
   externalCalendarEventEntityStore,
 } from "../../storage/entityStore";
 import { LS_LIGHTNING_CONTACTS, LS_BTC_USD_PRICE_CACHE, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
-import {
-  saveStore as saveProofStore,
-  setActiveMint,
-  replaceMintList,
-  replacePendingTokens,
-  normalizeMintUrl,
-  type PendingTokenEntry,
-  type ProofStore,
-} from "../../wallet/storage";
-import { type WalletSeedBackupPayload, restoreWalletSeedBackup } from "../../wallet/seed";
+// Wallet storage loads only when a backup carries wallet data (the wallet is phasing out).
+import type { PendingTokenEntry, ProofStore } from "../../wallet/storage";
+import type { WalletSeedBackupPayload } from "../../wallet/seed";
+import { restoreWalletSeedFromBackup } from "../../wallet/walletSeedBackup";
 import type { Proof } from "@cashu/cashu-ts";
 
 // ---- Constants ----
@@ -59,7 +54,7 @@ export function parseBackupJsonPayload(raw: string): Partial<TaskifyBackupPayloa
   return parsed as Partial<TaskifyBackupPayload>;
 }
 
-function normalizeCashuProofStore(raw: unknown): ProofStore | null {
+function normalizeCashuProofStore(raw: unknown, normalizeMintUrl: (url: string) => string): ProofStore | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const store: ProofStore = {};
   for (const [mintUrl, value] of Object.entries(raw as Record<string, unknown>)) {
@@ -92,7 +87,8 @@ function normalizeCashuProofStore(raw: unknown): ProofStore | null {
   return store;
 }
 
-export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): void {
+/** Writes a backup into storage. Resolves once a wallet seed it carries is restored too. */
+export async function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): Promise<void> {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
   }
@@ -139,13 +135,22 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
     idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
   }
   if (typeof data.nostrSk === "string" && data.nostrSk) {
-    void nostrSkSet(data.nostrSk);
+    adoptLocalSecretKey(data.nostrSk).catch((err) => console.warn("Backup has an unreadable Nostr key", err));
+    // The backup file holds the key, so the user has a copy.
+    markKeyBroughtByUser();
     notifyNostrKeyUpdated();
   }
   const cashuData = data.cashu as Partial<TaskifyBackupPayload["cashu"]> | undefined;
   if (cashuData && typeof cashuData === "object") {
+    const {
+      saveStore: saveProofStore,
+      setActiveMint,
+      replaceMintList,
+      replacePendingTokens,
+      normalizeMintUrl,
+    } = await import("../../wallet/storage");
     if ("proofs" in cashuData && cashuData.proofs !== undefined) {
-      const proofStore = normalizeCashuProofStore(cashuData.proofs);
+      const proofStore = normalizeCashuProofStore(cashuData.proofs, normalizeMintUrl);
       if (proofStore) {
         saveProofStore(proofStore);
       }
@@ -171,7 +176,7 @@ export function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): v
       replacePendingTokens(entries);
     }
     if ("walletSeed" in cashuData && cashuData.walletSeed) {
-      restoreWalletSeedBackup(cashuData.walletSeed as WalletSeedBackupPayload);
+      await restoreWalletSeedFromBackup(cashuData.walletSeed as WalletSeedBackupPayload);
     }
   }
 }

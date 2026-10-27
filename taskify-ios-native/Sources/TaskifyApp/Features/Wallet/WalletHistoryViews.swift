@@ -1,6 +1,7 @@
 import LocalAuthentication
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -19,7 +20,6 @@ struct WalletHistorySheet: View {
     @ObservedObject var wallet: WalletViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var selectedOutgoing: CashuOutgoingToken?
-    @State private var selectedLightningQuote: CashuLightningReceiveQuote?
     @State private var selectedTransaction: CashuTransactionSummary?
     @State private var filter: Filter = .all
 
@@ -77,12 +77,14 @@ struct WalletHistorySheet: View {
                                     }
                                     .buttonStyle(.plain)
                                 case .lightningInvoice(let quote):
-                                    Button { selectedLightningQuote = quote } label: {
-                                        WalletLightningInvoiceRow(quote: quote)
-                                    }
-                                    .buttonStyle(.plain)
+                                    // Status only: invoices are no longer shown for paying (C9-1).
+                                    WalletLightningInvoiceRow(quote: quote)
                                 }
                             }
+                        }
+
+                        if filter != .pending, !wallet.removedSavedTokens.isEmpty {
+                            WalletRemovedTokensSection(entries: wallet.removedSavedTokens, wallet: wallet)
                         }
                     }
                     .padding(18)
@@ -98,9 +100,6 @@ struct WalletHistorySheet: View {
             }
             .sheet(item: $selectedOutgoing) { outgoing in
                 OutgoingTokenSheet(wallet: wallet, outgoing: outgoing)
-            }
-            .sheet(item: $selectedLightningQuote) { quote in
-                ReceiveLightningSheet(wallet: wallet, initialQuote: quote)
             }
             .sheet(item: $selectedTransaction) { transaction in
                 WalletTransactionDetailSheet(wallet: wallet, transaction: transaction)
@@ -149,6 +148,44 @@ struct WalletHistorySheet: View {
         .taskifyGlass(cornerRadius: 18)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Filter wallet history")
+    }
+}
+
+/// Saved tokens removed at close-out (C9-3), kept so one removed by mistake can still be copied
+/// and redeemed in another wallet.
+struct WalletRemovedTokensSection: View {
+    let entries: [CashuRemovedTokenLog.Entry]
+    @ObservedObject var wallet: WalletViewModel
+    @State private var copiedID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Removed saved tokens")
+                .font(.headline)
+                .foregroundStyle(TaskifyTheme.primaryText)
+            ForEach(entries) { entry in
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.amount.map { wallet.formattedSats($0) } ?? "Cashu token")
+                            .font(.subheadline.weight(.semibold))
+                        Text(entry.reason == .spentElsewhere
+                            ? "Already redeemed elsewhere · \(entry.removedAt.formatted(date: .abbreviated, time: .omitted))"
+                            : "Removed by you · \(entry.removedAt.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
+                    Spacer()
+                    Button(copiedID == entry.id ? "Copied" : "Copy") {
+                        UIPasteboard.general.string = entry.token
+                        copiedID = entry.id
+                    }
+                    .font(.caption)
+                }
+                .padding(12)
+                .taskifyGlass(cornerRadius: 16)
+            }
+        }
+        .padding(.top, 8)
     }
 }
 

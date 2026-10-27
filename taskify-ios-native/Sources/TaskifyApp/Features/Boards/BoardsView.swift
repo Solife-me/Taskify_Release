@@ -64,6 +64,9 @@ struct BoardsView: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 6)
 
+            KeyBackupBanner()
+                .padding(.horizontal, 18)
+
             boardContent
                 .environment(selection)
                 .environment(completionAnimations)
@@ -186,6 +189,10 @@ struct BoardsView: View {
         }
         .onAppear(perform: resetFocusedPage)
         .onAppear(perform: TaskCompletionHaptics.warmUp)
+        .onNewDay { previousToday, today in
+            guard model.selectedBoard?.kind == .week else { return }
+            focusedPageID = DayRollover.weekColumn(focusedPageID, previousToday: previousToday, today: today)
+        }
         .onChange(of: focusQuickAdd, initial: true) { _, requested in
             guard requested else { return }
             // A beat after the tab switch: focusing while the view is still appearing gets
@@ -213,7 +220,7 @@ struct BoardsView: View {
         // meant building a set of every event id and hashing all ~500 task ids on *every* body
         // evaluation, including the ones a horizontal page change triggers, when the ids can only
         // have moved if the snapshot was written.
-        .onChange(of: model.snapshotRevision) { _, _ in
+        .onChange(of: model.tasksAreaRevision) { _, _ in
             guard selection.isActive, !selection.isEmpty else { return }
             selection.retainOnlyTasks(model.activeTaskIDs)
             selection.retainOnlyEvents(model.taskifyEventIDs)
@@ -443,10 +450,10 @@ struct BoardsView: View {
                     } label: {
                         HStack(spacing: 8) {
                             Text(model.selectedBoard?.name ?? "Boards")
-                                .font(.system(size: 17, weight: .semibold))
+                                .scaledFont(size: 17, weight: .semibold)
                                 .lineLimit(1)
                             Image(systemName: "chevron.down")
-                                .font(.system(size: 11, weight: .bold))
+                                .scaledFont(size: 11, weight: .bold)
                         }
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .padding(.leading, 16)
@@ -463,7 +470,7 @@ struct BoardsView: View {
                             showingBoardShare = true
                         } label: {
                             Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 15, weight: .semibold))
+                                .scaledFont(size: 15, weight: .semibold)
                                 .frame(width: 42, height: 42)
                                 .contentShape(Rectangle())
                         }

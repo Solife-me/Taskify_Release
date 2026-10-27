@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MeltProofsResponse, Proof, ProofState } from "@cashu/cashu-ts";
 import { getDecodedToken, getEncodedToken } from "@cashu/cashu-ts";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -16,8 +16,8 @@ import {
   setActiveMint as persistActiveMint,
   type PendingTokenEntry,
 } from "../wallet/storage";
-import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
-import { useP2PK } from "./P2PKContext";
+import { revealLocalSecretKey } from "../identity/identity";
+import { CashuContext, useP2PK } from "./walletContexts";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
 import { decodeBolt11Amount } from "../wallet/lightning";
 import { getCashuTokenMetadata } from "../wallet/cashuTokenMetadata";
@@ -56,7 +56,7 @@ type BalanceSnapshot = {
   pending: number;
 };
 
-type CashuContextType = {
+export type CashuContextType = {
   ready: boolean;
   mintUrl: string;
   setMintUrl: (url: string) => Promise<void>;
@@ -118,10 +118,7 @@ type CashuContextType = {
   refreshTotalBalance: () => void;
 };
 
-const globalCtxKey = "__TASKIFY_CASHU_CONTEXT__";
-const globalObj: any = typeof globalThis !== "undefined" ? (globalThis as any) : {};
-const CashuContext: React.Context<CashuContextType | null> =
-  globalObj[globalCtxKey] ?? (globalObj[globalCtxKey] = createContext<CashuContextType | null>(null));
+
 
 function isLikelyOfflineError(error: unknown): boolean {
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -235,6 +232,15 @@ function isTokenAlreadySpentError(err: unknown): boolean {
 
 function normalizeMintUrl(url: string): string {
   return url.trim().replace(/\/+$/, "");
+}
+
+/** A token's notes read without the mint's keyset list (enough to ask the mint their state). */
+function notesWithoutKeysets(token: string): Proof[] {
+  try {
+    return getCashuTokenMetadata(token).incompleteProofs;
+  } catch {
+    return [];
+  }
 }
 
 function extractProofsForMint(token: string, mintUrl: string, decodedToken?: any): Proof[] {
@@ -382,7 +388,7 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
         }
       }
       try {
-        const raw = nostrSkSync();
+        const raw = (revealLocalSecretKey() ?? "");
         const trimmed = raw.trim();
         if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
           const derived = deriveCompressedPubkeyFromSecret(trimmed);
@@ -453,7 +459,9 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
           throw error;
         }
 
-        const proofsToCheck = freshProofs.length ? freshProofs : tokenProofs;
+        // A token the full decoder could not read (short keyset ids it cannot resolve) is still
+        // checked from its notes; otherwise a token spent elsewhere stays saved forever.
+        const proofsToCheck = freshProofs.length ? freshProofs : tokenProofs.length ? tokenProofs : notesWithoutKeysets(entry.token);
         if (!proofsToCheck.length) {
           throw error;
         }
@@ -1336,10 +1344,4 @@ export function CashuProvider({ children }: { children: React.ReactNode }) {
   ]);
 
   return <CashuContext.Provider value={value}>{children}</CashuContext.Provider>;
-}
-
-export function useCashu() {
-  const ctx = useContext(CashuContext);
-  if (!ctx) throw new Error("useCashu must be used within CashuProvider");
-  return ctx;
 }

@@ -63,7 +63,9 @@ Full-text search across title and note fields.
 taskify upcoming [--days <n>] [--board <id|name>] [--json]
 ```
 
-Default: 7 days.
+Open tasks with a due date from today through today + `--days` (default 14), counted on this
+device's calendar. A task's day is its due date in its own time zone. Sorted by day, then
+priority (high first), then time.
 
 ## taskify subtask
 

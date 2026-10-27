@@ -4,6 +4,7 @@ import PhotosUI
 import QuickLook
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 import TaskifyWatchShared
 import UIKit
 import UniformTypeIdentifiers

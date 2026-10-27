@@ -11,6 +11,7 @@ import {
   RelayHealthTracker,
   RelayInfoCache,
   RuntimeNostrSession,
+  type RuntimeProofOfWorkSettings,
   type NostrOutboxMutation,
   type NostrOutboxStore,
 } from "taskify-runtime-nostr";
@@ -135,25 +136,35 @@ export function collectCliRelayUrls(config: Pick<TaskifyConfig, "relays" | "boar
 
 export function createCliNostrSession(
   config: TaskifyConfig,
-  options: { outboxPath?: string; verbose?: boolean } = {},
+  options: {
+    outboxPath?: string;
+    verbose?: boolean;
+    /** Persistent NIP-11 / learned-PoW cache (see `cliRelayInfoCache`). */
+    relayInfoCache?: RelayInfoCache;
+    proofOfWork?: RuntimeProofOfWorkSettings;
+  } = {},
 ): { session: CliNostrSession; relays: string[]; secretKeyHex: string | null } {
   let secretKeyHex: string | null = null;
   try {
     secretKeyHex = secretKeyHexFromNsec(config.nsec);
   } catch {
-    // Read-only board traffic can still work without an account identity. NIP-42
-    // auth and account-backup discovery remain unavailable until one is set.
+    // Read-only board traffic can still work without an account identity. Relays that
+    // demand NIP-42 auth are answered with a throwaway key until one is set.
   }
   const relays = collectCliRelayUrls(config);
   const session = new RuntimeNostrSession<undefined>(relays, {
-    relayInfoCache: new RelayInfoCache(),
+    relayInfoCache: options.relayInfoCache ?? new RelayInfoCache(),
     relayHealth: new RelayHealthTracker(),
     createAuthManager: (ndk) => new RelayAuthManager(ndk, {
       loadSecretKeyHex: () => secretKeyHex,
+      allowEphemeralKey: true,
     }),
     createWalletClient: () => undefined,
     outboxStore: new FileNostrOutboxStore(options.outboxPath),
     isDev: options.verbose,
+    proofOfWork: options.proofOfWork,
+    // The CLI always names its relays; don't also dial NDK's discovery relays.
+    enableOutboxModel: false,
   });
   return { session, relays, secretKeyHex };
 }

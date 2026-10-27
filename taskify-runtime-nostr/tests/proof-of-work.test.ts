@@ -23,3 +23,42 @@ test('mining can be cancelled before starting', async () => {
   controller.abort();
   await assert.rejects(async () => mineEventTemplate(template, generateSecretKey(), 20, { signal: controller.signal }), /abort/i);
 });
+test('pow: rejections yield the target difficulty they name', async () => {
+  const { parseProofOfWorkRejection } = await import('../dist/ProofOfWork.js');
+  assert.equal(parseProofOfWorkRejection('pow: difficulty 8 is less than 20'), 20);
+  assert.equal(parseProofOfWorkRejection('POW: required difficulty 24'), 24);
+  assert.equal(parseProofOfWorkRejection('pow: insufficient proof of work'), null);
+  assert.equal(parseProofOfWorkRejection('blocked: difficulty 30'), null);
+  assert.equal(parseProofOfWorkRejection(undefined), null);
+});
+test('mining verifies against the NIP-01 hash for non-ASCII content and a custom hasher', async () => {
+  const { createHash } = await import('node:crypto');
+  const key = generateSecretKey();
+  let calls = 0;
+  const hashFactory = (prefix: string, suffix: string) => {
+    const head = createHash('sha256').update(prefix, 'utf8');
+    const tail = Buffer.from(suffix, 'utf8');
+    return (nonce: string) => { calls += 1; return head.copy().update(nonce).update(tail).digest(); };
+  };
+  const unicode = { ...template, content: 'Grüße 👋 "quoted" \\ back\nslash', tags: [['p', 'ünïcode']] };
+  const mined = await mineEventTemplate(unicode, key, 10, { hashFactory });
+  assert.ok(calls > 0);
+  assert.ok(countLeadingZeroBits(getEventHash({ ...mined, pubkey: getPublicKey(key) })) >= 10);
+  assert.equal(mined.content, unicode.content);
+});
+test('mining replaces an existing nonce tag rather than adding a second', async () => {
+  const key = generateSecretKey();
+  const mined = await mineEventTemplate({ ...template, tags: [['nonce', '5', '4'], ['p', 'x']] }, key, 6);
+  assert.equal(mined.tags.filter(t => t[0] === 'nonce').length, 1);
+  assert.equal(mined.tags.find(t => t[0] === 'nonce')?.[2], '6');
+});
+
+test('mining for a public key alone meets the target for the key that later signs', async () => {
+  const { mineEventTemplateFor, countLeadingZeroBits } = await import('../dist/ProofOfWork.js');
+  const { finalizeEvent, getPublicKey } = await import('nostr-tools');
+  const secret = new Uint8Array(32).fill(5);
+  const mined = await mineEventTemplateFor({ kind: 1, tags: [], content: 'x', created_at: 1 }, getPublicKey(secret), 8);
+  const event = finalizeEvent(mined, secret);
+  assert.ok(countLeadingZeroBits(event.id) >= 8);
+  assert.deepEqual(mined.tags.find((tag: string[]) => tag[0] === 'nonce')?.[2], '8');
+});

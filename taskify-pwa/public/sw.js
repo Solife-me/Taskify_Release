@@ -1,3 +1,6 @@
+// The Worker sends no reminder titles (C13-8); this device's copy is read from IndexedDB.
+importScripts('/reminder-titles.js');
+
 self.addEventListener('install', (event) => {
   event.waitUntil(clearOldCaches().then(() => self.skipWaiting()));
 });
@@ -12,7 +15,7 @@ self.addEventListener('activate', (event) => {
 });
 
 const CACHE_PREFIX = 'taskify-cache-';
-const CACHE = `${CACHE_PREFIX}v8`;
+const CACHE = `${CACHE_PREFIX}v9`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
 const CACHE_TIMESTAMP_HEADER = 'x-taskify-sw-cached-at';
 const MAX_CACHE_ENTRIES = 160;
@@ -47,10 +50,14 @@ self.addEventListener('fetch', (event) => {
   // resources that need offline behavior.
   if (!shouldHandleCachedRequest(event.request)) return;
 
+  // Every page URL (/boards/<id>, /upcoming, /task/<id>…) serves the same app shell, so
+  // navigations share one cache entry: any route opens offline, and the shell is stored once.
+  const cacheKey = isAppShellNavigation(event.request) ? appShellRequest() : event.request;
+
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
-      const cached = await matchFreshCachedResponse(cache, event.request);
+      const cached = await matchFreshCachedResponse(cache, cacheKey);
       const cachedForCompare = cached ? cached.clone() : null;
 
       // Vite content-hashed assets are immutable: a new deployment produces a
@@ -64,7 +71,7 @@ self.addEventListener('fetch', (event) => {
       // This keeps startup snappy while still refreshing cached HTML when network is available.
       if (isDocumentRequest(event.request)) {
         if (cached) {
-          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForCompare)
+          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForCompare, cacheKey)
             .then((response) => response || cached)
             .catch(() => cached);
           const timeoutFallback = wait(700).then(() => cached);
@@ -73,7 +80,7 @@ self.addEventListener('fetch', (event) => {
           return winner;
         }
         try {
-          const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForCompare);
+          const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForCompare, cacheKey);
           if (networkResponse) return networkResponse;
         } catch {}
         return new Response(null, { status: 504, statusText: 'Gateway Timeout' });
@@ -110,7 +117,7 @@ function isCacheableResponse(request, response) {
   return shouldHandleCachedRequest(request);
 }
 
-async function fetchAndUpdateCache(cache, request, cachedResponse) {
+async function fetchAndUpdateCache(cache, request, cachedResponse, cacheKey = request) {
   try {
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok) {
@@ -118,7 +125,7 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
       if (isCacheableResponse(request, networkResponse)) {
         let cacheError = null;
         try {
-          await putStampedResponse(cache, request, networkResponse);
+          await putStampedResponse(cache, cacheKey, networkResponse);
           cacheUpdated = true;
         } catch (err) {
           cacheError = err;
@@ -126,7 +133,7 @@ async function fetchAndUpdateCache(cache, request, cachedResponse) {
           if (message && message.toLowerCase().includes('quotaexceeded')) {
             try {
               await evictOldestCacheEntries(cache, Math.max(1, Math.ceil((await cache.keys()).length / 4)));
-              await putStampedResponse(cache, request, networkResponse);
+              await putStampedResponse(cache, cacheKey, networkResponse);
               cacheUpdated = true;
               cacheError = null;
             } catch (retryErr) {
@@ -246,6 +253,19 @@ async function evictOldestCacheEntries(cache, count, knownKeys) {
   }));
 }
 
+function appShellRequest() {
+  return new Request(new URL('/', self.location.origin).href);
+}
+
+/** A same-origin page navigation, which the server answers with the app shell. */
+function isAppShellNavigation(request) {
+  try {
+    return request.mode === 'navigate' && new URL(request.url).origin === self.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 function isDocumentRequest(request) {
   const destination = request.destination;
   const acceptHeader = request.headers.get('accept') || '';
@@ -320,8 +340,29 @@ async function clearOldCaches() {
 }
 
 self.addEventListener('push', (event) => {
-  event.waitUntil(handlePushEvent());
+  event.waitUntil(isChatPush(event) ? showChatNotification() : handlePushEvent());
 });
+
+// Taskify's push relay sends an encrypted {"type":"message"} when a direct message arrives; it
+// names no sender or conversation. The Worker's reminder pings carry no payload.
+function isChatPush(event) {
+  if (!event.data) return false;
+  try {
+    return event.data.json()?.type === 'message';
+  } catch {
+    return false;
+  }
+}
+
+async function showChatNotification() {
+  await self.registration.showNotification('New message', {
+    body: 'Open Taskify to read it.',
+    // One alert stands for any number of unread messages.
+    tag: 'taskify_chat',
+    renotify: true,
+    data: { kind: 'chat' },
+  });
+}
 
 async function handlePushEvent() {
   const reminders = await fetchPendingRemindersWithRetry();
@@ -334,8 +375,15 @@ async function handlePushEvent() {
     return;
   }
 
+  let storedTitles = new Map();
+  try {
+    storedTitles = await self.taskifyReminderTitles.lookup(reminders.map((item) => item && item.taskId).filter(Boolean));
+  } catch (err) {
+    console.warn('Reminder titles unavailable on this device', err);
+  }
+
   await Promise.all(reminders.map(async (item) => {
-    const title = buildReminderTitle(item);
+    const title = buildReminderTitle(item, storedTitles.get(item.taskId));
     const body = buildReminderBody(item);
     const tag = `taskify_${item.taskId || 'unknown'}_${item.minutes || 0}`;
     const url = item.taskId ? `/?task=${encodeURIComponent(item.taskId)}` : '/';
@@ -511,8 +559,9 @@ function shouldBypassRelayTraffic(request) {
   }
 }
 
-function buildReminderTitle(item) {
-  const raw = typeof item?.title === 'string' ? item.title : '';
+// The device's own title first; then one an older Worker sent with the reminder.
+function buildReminderTitle(item, storedTitle) {
+  const raw = typeof storedTitle === 'string' && storedTitle ? storedTitle : typeof item?.title === 'string' ? item.title : '';
   const cleaned = raw.trim();
   const base = cleaned || 'Task';
   const withoutSuffix = base.replace(/\s+from\s+taskify$/i, '').trim();
@@ -563,8 +612,10 @@ function formatOffset(minutes) {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  const taskId = typeof data.taskId === 'string' && data.taskId ? data.taskId : null;
-  const targetUrl = new URL(taskId ? `/?task=${encodeURIComponent(taskId)}` : '/', self.location.origin).href;
+  const isChat = data.kind === 'chat';
+  const taskId = !isChat && typeof data.taskId === 'string' && data.taskId ? data.taskId : null;
+  const targetPath = isChat ? '/chat' : taskId ? `/?task=${encodeURIComponent(taskId)}` : '/';
+  const targetUrl = new URL(targetPath, self.location.origin).href;
   event.waitUntil(
     (async () => {
       const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -572,7 +623,8 @@ self.addEventListener('notificationclick', (event) => {
         (candidate) => new URL(candidate.url).origin === self.location.origin && 'focus' in candidate,
       );
       if (client) {
-        if (taskId) client.postMessage({ type: 'TASKIFY_OPEN_REMINDER', taskId });
+        if (isChat) client.postMessage({ type: 'TASKIFY_OPEN_CHAT' });
+        else if (taskId) client.postMessage({ type: 'TASKIFY_OPEN_REMINDER', taskId });
         return client.focus();
       }
       if (clients.openWindow) return clients.openWindow(targetUrl);

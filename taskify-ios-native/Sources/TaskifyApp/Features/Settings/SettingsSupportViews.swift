@@ -1087,25 +1087,6 @@ struct RelayStatusRow: View {
     }
 }
 
-struct StatusRow: View {
-    let title: String
-    let status: String
-    let complete: Bool
-
-    var body: some View {
-        HStack {
-            Image(systemName: complete ? "checkmark.circle.fill" : "circle.dotted")
-                .foregroundStyle(complete ? Color.green : TaskifyTheme.secondaryText)
-            Text(title)
-            Spacer()
-            Text(status)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(complete ? Color.green : TaskifyTheme.secondaryText)
-        }
-    }
-}
-
-
 /// Loads a snapshot on demand so thousands of queued events do not add work to Settings rendering.
 struct SyncQueueInspector: View {
     @Environment(AppModel.self) private var model

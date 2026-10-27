@@ -21,7 +21,7 @@ export function registerCompletionCommands(program: Command): void {
           process.stdout.write(bashCompletion());
           process.stdout.write("\n");
           process.stdout.write(fishCompletion());
-          process.exit(0);
+          return;
         }
       }
       switch (shell) {
@@ -36,9 +36,9 @@ export function registerCompletionCommands(program: Command): void {
           break;
         default:
           console.error(chalk.red(`Unknown shell: "${shell}". Use: zsh, bash, or fish`));
-          process.exit(1);
+          process.exitCode = 1; return;
       }
-      process.exit(0);
+      return;
     });
 
 }

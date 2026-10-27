@@ -28,19 +28,27 @@ final class MacAttachmentQueue: ObservableObject {
     }
 
     func stage(_ urls: [URL]) {
+        stage(urls.map(MacAttachmentImportSource.file))
+    }
+
+    func stage(_ sources: [MacAttachmentImportSource]) {
         guard !importing else { return }
-        guard files.count + urls.count <= NostrDirectMessageAttachment.maximumBatchCount else {
+        guard files.count + sources.count <= NostrDirectMessageAttachment.maximumBatchCount else {
             error = "Choose up to ten attachments at a time."; return
         }
         importing = true; error = nil
         Task {
             defer { importing = false }
             do {
-                for url in urls {
-                    let name = url.lastPathComponent
-                    let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-                    let local = try await AttachmentFiles.work { try AttachmentFiles.importFile(url) }
-                    files.append(MacStagedFile(url: local, name: name, mimeType: type))
+                for source in sources {
+                    let imported = try await AttachmentFiles.work {
+                        try MacAttachmentImporter.materialize(source)
+                    }
+                    files.append(MacStagedFile(
+                        url: imported.url,
+                        name: imported.name,
+                        mimeType: imported.mimeType
+                    ))
                 }
             } catch { self.error = error.localizedDescription }
         }
@@ -91,7 +99,8 @@ struct MacAttachmentQueueView: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(queue.files) { file in
                 HStack {
-                    Label(file.name, systemImage: "doc").lineLimit(1)
+                    Label(file.name, systemImage: file.mimeType.hasPrefix("image/") ? "photo" : "doc")
+                        .lineLimit(1)
                     Spacer()
                     Button { queue.remove(file.id) } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).disabled(busy)
                 }.font(.caption)

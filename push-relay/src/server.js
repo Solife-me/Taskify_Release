@@ -1,0 +1,1164 @@
+import { randomBytes } from 'node:crypto'
+import http from 'node:http'
+import { isIP } from 'node:net'
+import { verifyEvent } from 'nostr-tools'
+import { WebSocket, WebSocketServer } from 'ws'
+import relayPackage from '../package.json' with { type: 'json' }
+
+import { NIP98_MAX_AGE_SECONDS, NIP98ReplayGuard, verifyNip98Request } from './auth.js'
+import {
+  assertAuthorizedGiftWrapFilters,
+  giftWrapRecipient,
+  matchesFilter,
+  shouldNotifyRecipient,
+  socketApplication,
+} from './relay-policy.js'
+import { NostrRelayForwarder, RemoteRelayError, normalizeRelayTargets } from './relay-forwarder.js'
+import { parseWebPushSubscription } from './webpush.js'
+
+const MAX_HTTP_BODY_BYTES = 256 * 1024
+const INSTALLATION_ID = /^[A-Za-z0-9._:-]{1,128}$/
+const DEVICE_TOKEN = /^[0-9a-fA-F]{32,200}$/
+// FCM registration tokens are case-sensitive and use the base64url alphabet plus ':'.
+const FCM_TOKEN = /^[A-Za-z0-9_:-]{32,4096}$/
+const PUBLIC_KEY = /^[0-9a-f]{64}$/
+const WATCH_PAGE_LIMIT = 200
+const WATCH_FORWARD_CONCURRENCY = 4
+const WATCH_PREFERENCE_RELAY_LIMIT = 8
+const WATCH_PREFERENCE_EVENT_LIMIT = 4
+/// The Watch answers each auth-required relay with a sequential series of signed authorize
+/// POSTs; with several restricted relays in one submit the later sessions are only reached
+/// after the earlier ones complete. The TTL must cover that whole loop, not one hop.
+const WATCH_SESSION_TTL_MS = 120_000
+// Each pending session holds an open socket to a remote relay until it is used or expires.
+const WATCH_SESSION_LIMIT = 256
+const WATCH_SESSION_LIMIT_PER_ACCOUNT = 32
+const WATCH_TASK_ACCESS_KIND = 27_236
+const WATCH_TASK_EVENT_KINDS = new Set([30_300, 30_301])
+const WATCH_TASK_AUTHOR_LIMIT = 64
+const WATCH_TASK_EVENT_LIMIT = 1_000
+
+/// The address a request came from, for limits. Behind the Cloudflare tunnel every socket's peer
+/// is the connector, so the client's address comes from the configured header when present. An
+/// IPv6 client is grouped by its /64, which one subscriber controls in full.
+export function clientAddressKey(request, header) {
+  const supplied = header ? request.headers[header] : undefined
+  const candidate = typeof supplied === 'string' ? supplied.split(',')[0].trim() : ''
+  const address = isIP(candidate) ? candidate : (request.socket?.remoteAddress ?? 'unknown')
+  if (isIP(address) !== 6 || address.startsWith('::ffff:')) return address
+  const [head, tail = ''] = address.split('::')
+  const headGroups = head ? head.split(':') : []
+  const tailGroups = tail ? tail.split(':') : []
+  const groups = address.includes('::')
+    ? [...headGroups, ...Array(8 - headGroups.length - tailGroups.length).fill('0'), ...tailGroups]
+    : headGroups
+  return `${groups.slice(0, 4).map((group) => group.toLowerCase().replace(/^0+(?=.)/, '')).join(':')}::/64`
+}
+
+function sendJSON(response, status, value, contentType = 'application/json') {
+  const data = Buffer.from(JSON.stringify(value))
+  response.writeHead(status, {
+    'content-type': contentType,
+    'content-length': data.length,
+    'cache-control': 'no-store',
+  })
+  response.end(data)
+}
+
+async function requestBody(request) {
+  const chunks = []
+  let length = 0
+  for await (const chunk of request) {
+    length += chunk.length
+    if (length > MAX_HTTP_BODY_BYTES) throw new Error('Request body is too large')
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks)
+}
+
+function singleTag(event, name) {
+  const matches = event.tags.filter((tag) => tag[0] === name && tag.length >= 2)
+  return matches.length === 1 ? matches[0][1] : null
+}
+
+function encodeCursor(sequence) {
+  return Buffer.from(`v1:${sequence}`).toString('base64url')
+}
+
+function decodeCursor(value) {
+  if (value == null || value === '') return 0
+  if (typeof value !== 'string' || value.length > 64) throw new Error('Invalid inbox cursor')
+  const decoded = Buffer.from(value, 'base64url').toString('utf8')
+  const match = /^v1:(\d+)$/.exec(decoded)
+  const sequence = match ? Number(match[1]) : Number.NaN
+  if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error('Invalid inbox cursor')
+  return sequence
+}
+
+async function mapWithConcurrency(values, maximum, operation, onResult = () => {}) {
+  const results = new Array(values.length)
+  let nextIndex = 0
+  const workers = Array.from({ length: Math.min(maximum, values.length) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await operation(values[index], index)
+      onResult(results[index], index)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+class SlidingWindowRateLimiter {
+  constructor({ maximum = 120, windowSeconds = 60, now = () => Math.floor(Date.now() / 1000) } = {}) {
+    this.maximum = maximum
+    this.windowSeconds = windowSeconds
+    this.now = now
+    this.entries = new Map()
+    this.sweepAt = 1_024
+  }
+
+  consume(key) {
+    const now = this.now()
+    const cutoff = now - this.windowSeconds
+    // Every new key or address adds an entry; drop the idle ones before the map grows large.
+    if (this.entries.size >= this.sweepAt) {
+      for (const [entryKey, timestamps] of this.entries) {
+        if (timestamps.at(-1) <= cutoff) this.entries.delete(entryKey)
+      }
+      this.sweepAt = Math.max(1_024, this.entries.size * 2)
+    }
+    const recent = (this.entries.get(key) ?? []).filter((timestamp) => timestamp > cutoff)
+    if (recent.length >= this.maximum) return false
+    recent.push(now)
+    this.entries.set(key, recent)
+    return true
+  }
+}
+
+function isPublicPreferenceQuery(filters) {
+  return Array.isArray(filters)
+    && filters.length > 0
+    && filters.length <= 5
+    && filters.every((filter) =>
+      Array.isArray(filter?.kinds)
+      && filter.kinds.length === 1
+      && filter.kinds[0] === 10_050
+      // Naming the accounts keeps this a lookup; without it the relay would list every
+      // account that uses it as an inbox.
+      && Array.isArray(filter.authors) && filter.authors.length > 0 && filter.authors.length <= 100,
+    )
+}
+
+function boundedLimit(filters, maximum = 500) {
+  return Math.min(
+    maximum,
+    Math.max(1, ...filters.map((filter) => Number.isInteger(filter.limit) ? filter.limit : maximum)),
+  )
+}
+
+function assertCacheableTaskEvent(event, allowedSources = null) {
+  if (!WATCH_TASK_EVENT_KINDS.has(event?.kind) || !verifyEvent(event)) {
+    throw new Error('Invalid signed Taskify board event')
+  }
+  const author = event.pubkey?.toLowerCase()
+  if (!PUBLIC_KEY.test(author ?? '') || (allowedSources && !allowedSources.has(author))) {
+    throw new Error('Taskify board event author is not authorized')
+  }
+  const identifier = singleTag(event, 'd')
+  const boardTag = singleTag(event, 'b')?.toLowerCase()
+  if (typeof identifier !== 'string' || identifier.length === 0 || identifier.length > 256) {
+    throw new Error('Taskify board event identifier is invalid')
+  }
+  if (!PUBLIC_KEY.test(boardTag ?? '')) throw new Error('Taskify board tag is invalid')
+  if (allowedSources && allowedSources.get(author) !== boardTag) {
+    throw new Error('Taskify board event is outside the requested subscription')
+  }
+  if (typeof event.content !== 'string' || Buffer.byteLength(event.content) > 128 * 1024) {
+    throw new Error('Taskify board ciphertext is too large')
+  }
+  if (event.created_at > Math.floor(Date.now() / 1_000) + 10 * 60) {
+    throw new Error('Taskify board event timestamp is too far in the future')
+  }
+  return event
+}
+
+function taskCacheSources(payload, authenticatedPubkey, expectedURL) {
+  if (!Array.isArray(payload.sources)
+      || payload.sources.length === 0
+      || payload.sources.length > WATCH_TASK_AUTHOR_LIMIT) {
+    throw new Error('Task cache source limit exceeded')
+  }
+  const sources = new Map()
+  const now = Math.floor(Date.now() / 1_000)
+  for (const source of payload.sources) {
+    const author = source?.author?.toLowerCase()
+    const boardTag = source?.boardTag?.toLowerCase()
+    const proof = source?.proof
+    if (!PUBLIC_KEY.test(author ?? '')
+        || !PUBLIC_KEY.test(boardTag ?? '')
+        || sources.has(author)) {
+      throw new Error('Task cache source is invalid or duplicated')
+    }
+    if (proof?.kind !== WATCH_TASK_ACCESS_KIND
+        || !verifyEvent(proof)
+        || proof.pubkey?.toLowerCase() !== author
+        || Math.abs(now - proof.created_at) > 2 * 60
+        || singleTag(proof, 'u') !== expectedURL
+        || singleTag(proof, 'method')?.toUpperCase() !== 'POST'
+        || singleTag(proof, 'account')?.toLowerCase() !== authenticatedPubkey
+        || singleTag(proof, 'b')?.toLowerCase() !== boardTag
+        || singleTag(proof, 'purpose') !== 'taskify-watch-cache') {
+      throw new Error('Task cache access proof is invalid')
+    }
+    sources.set(author, boardTag)
+  }
+  return sources
+}
+
+/// Sends one relay frame, unless the socket is closed or its reader has fallen so far behind that
+/// more than `maxBufferedBytes` already wait to be sent; that socket is cut off rather than left to
+/// grow the relay's memory without bound. Returns whether the frame was queued.
+export function sendRelayFrame(socket, text, maxBufferedBytes) {
+  if (socket.readyState !== WebSocket.OPEN) return false
+  if (socket.bufferedAmount > maxBufferedBytes) {
+    socket.terminate()
+    return false
+  }
+  socket.send(text)
+  return true
+}
+
+export function createTaskifyPushServer({
+  config,
+  store,
+  apnsClient,
+  // Routes each registration to APNs or FCM; APNs alone when Android push is not configured.
+  pushClient = apnsClient,
+  androidPushEnabled = false,
+  webPushEnabled = false,
+  relayForwarder = new NostrRelayForwarder(),
+  logger = console,
+  watchPreferenceTimeoutMs = 5_000,
+  // Watch events forwarded to other relays leave from this server's shared IP, where public
+  // relays apply per-IP limits (noteguard's documented example is 8/min). Bound each account's
+  // share; the Watch keeps a limited change queued and retries.
+  watchForwardsPerMinute = 30,
+  watchForwardsPerDestinationPerMinute = 240,
+  // The relay sits behind a proxy, so every socket shares one peer address; the caps are
+  // per process and per socket instead.
+  maxSockets = 2_000,
+  maxSocketMessagesPerTenSeconds = 100,
+  // One address must not be able to take every socket. Applies per client address, which
+  // needs `clientAddressHeader` behind a proxy; without it every socket shares the proxy's.
+  maxSocketsPerAddress = 64,
+  // Every Taskify client answers the AUTH challenge on connect. A socket that has not by now
+  // is holding a slot without using the relay.
+  unauthenticatedSocketTimeoutMs = 60_000,
+  // Frames waiting on one socket before it is dropped as too slow: more than a full history
+  // replay (500 wraps of at most 128 KiB is about 64 MiB) would be unusual, so this stays well
+  // above a healthy client's worst case while bounding a stalled one.
+  maxSocketBufferedBytes = 96 * 1024 * 1024,
+}) {
+  const clientAddressHeader = config.clientAddressHeader?.toLowerCase() || null
+  const socketsPerAddress = new Map()
+  const replayGuard = new NIP98ReplayGuard()
+  const publishLimiter = new SlidingWindowRateLimiter()
+  const watchForwardLimiter = new SlidingWindowRateLimiter({ maximum: watchForwardsPerMinute })
+  // Every forward leaves from this server's one address, so a relay that rate-limits by address
+  // sees all accounts together. Bound what any one destination receives from all of them.
+  const watchDestinationLimiter = new SlidingWindowRateLimiter({ maximum: watchForwardsPerDestinationPerMinute })
+  const privateRequestLimiter = new SlidingWindowRateLimiter({ maximum: 300 })
+  const privateIPLimiter = new SlidingWindowRateLimiter({ maximum: 1_200 })
+  const sockets = new Set()
+  // Signed-in sockets by account. A gift-wrap subscription can only name the socket's own key
+  // (assertAuthorizedGiftWrapFilters), so a stored wrap can only reach its recipient's sockets.
+  const socketsByPubkey = new Map()
+  const watchAuthSessions = new Map()
+  const watchForwardingTasks = new Set()
+  const watchPreferenceLookups = new Set()
+  let pushTimer = null
+  let pushWorkerPromise = null
+
+  function enforcePrivateRequestLimit(request, pubkey) {
+    const address = clientAddressKey(request, clientAddressHeader)
+    if (!privateRequestLimiter.consume(pubkey) || !privateIPLimiter.consume(address)) {
+      throw new Error('Private request limit exceeded')
+    }
+  }
+
+  /// Signature, then rate limit, then replay record: a request refused by the limit does not
+  /// take a slot in the replay guard, so a flood of signed requests cannot crowd it out.
+  function authenticatePrivateRequest(request, url, body) {
+    const expectedURL = new URL(`${url.pathname}${url.search}`, config.publicBaseURL).toString()
+    const auth = verifyNip98Request({
+      authorization: request.headers.authorization,
+      method: request.method,
+      expectedURL,
+      body,
+    })
+    enforcePrivateRequestLimit(request, auth.pubkey)
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    replayGuard.consume(auth.event.id, auth.event.created_at + NIP98_MAX_AGE_SECONDS, nowSeconds)
+    return auth
+  }
+
+  /// Our own validation errors map to a status by their wording. A remote relay's refusal can
+  /// carry any text, so it is always reported as an upstream failure.
+  function sendRequestError(response, error) {
+    if (error instanceof RemoteRelayError) {
+      sendJSON(response, 502, { error: 'Relay request failed', relayMessage: error.message })
+      return
+    }
+    const message = error instanceof Error ? error.message : 'Bad request'
+    const status = /limit exceeded/i.test(message)
+      ? 429
+      : /authorization|NIP-98|replay|account mismatch/i.test(message) ? 401 : 400
+    sendJSON(response, status, { error: message })
+  }
+
+  function hasWatchSessionCapacity(accountPubkey) {
+    if (watchAuthSessions.size >= WATCH_SESSION_LIMIT) return false
+    let held = 0
+    for (const session of watchAuthSessions.values()) {
+      if (session.accountPubkey === accountPubkey) held += 1
+    }
+    return held < WATCH_SESSION_LIMIT_PER_ACCOUNT
+  }
+
+  function discardExpiredWatchSessions() {
+    const now = Date.now()
+    for (const [token, session] of watchAuthSessions) {
+      if (session.expiresAt > now) continue
+      session.close?.()
+      watchAuthSessions.delete(token)
+    }
+  }
+
+  async function handleRegistrationRequest(request, response, url) {
+    const match = /^\/v1\/registrations\/([^/]+)$/.exec(url.pathname)
+    if (!match || !['PUT', 'DELETE'].includes(request.method)) return false
+    let installationID
+    try {
+      installationID = decodeURIComponent(match[1])
+    } catch {
+      sendJSON(response, 400, { error: 'Invalid installation ID' })
+      return true
+    }
+    if (!INSTALLATION_ID.test(installationID)) {
+      sendJSON(response, 400, { error: 'Invalid installation ID' })
+      return true
+    }
+    try {
+      const body = await requestBody(request)
+      const auth = authenticatePrivateRequest(request, url, body)
+      if (request.method === 'DELETE') {
+        await store.removeRegistration(auth.pubkey, installationID)
+        sendJSON(response, 200, {
+          enabled: false,
+          remainingRegistrations: store.registrationsFor(auth.pubkey).length,
+        })
+        return true
+      }
+      const payload = JSON.parse(body.toString('utf8'))
+      if (payload.platform === 'web') {
+        if (!webPushEnabled) throw new Error('Web push is not configured on this relay')
+        if (payload.application != null && payload.application !== 'taskify') {
+          throw new Error('Only Taskify supports web registrations')
+        }
+        payload.webPush = parseWebPushSubscription(payload.subscription)
+        payload.deviceToken = payload.webPush.endpoint
+        payload.environment = 'production'
+      } else if (payload.platform === 'android') {
+        if (!androidPushEnabled) throw new Error('Android push is not configured on this relay')
+        if (payload.application !== 'snapstr') throw new Error('Only Snapstr supports Android registrations')
+        if (!FCM_TOKEN.test(payload.deviceToken ?? '')) throw new Error('Invalid FCM registration token')
+        payload.environment = 'production'
+      } else {
+        if (!DEVICE_TOKEN.test(payload.deviceToken ?? '')) throw new Error('Invalid APNs device token')
+        if (!['production', 'sandbox'].includes(payload.environment)) throw new Error('Invalid APNs environment')
+        if (payload.platform != null && !['ios', 'watchos', 'macos'].includes(payload.platform)) {
+          throw new Error('Invalid APNs platform')
+        }
+      }
+      if (payload.application != null && !['taskify', 'snapstr'].includes(payload.application)) {
+        throw new Error('Invalid application')
+      }
+      if (payload.application === 'snapstr' && ['watchos', 'macos'].includes(payload.platform)) {
+        throw new Error('Snapstr supports only iOS APNs registrations')
+      }
+      await store.putRegistration(auth.pubkey, installationID, payload)
+      sendJSON(response, 200, {
+        enabled: true,
+        remainingRegistrations: store.registrationsFor(auth.pubkey).length,
+      })
+    } catch (error) {
+      sendRequestError(response, error)
+    }
+    return true
+  }
+
+  async function ingestLocalWatchEvent(event, authenticatedPubkey) {
+    if (event.kind === 1059) {
+      const recipient = giftWrapRecipient(event)
+      if (!store.hasInbox(recipient)) throw new Error('restricted: recipient does not use this relay')
+      const stored = await store.putGiftWrap(event, {
+        notify: shouldNotifyRecipient({
+          authenticatedPubkey,
+          recipientPubkey: recipient,
+        }),
+        // Only the Taskify Watch uses this gateway.
+        application: 'taskify',
+      })
+      if (stored) broadcastEvent(event)
+      return { accepted: true, message: stored ? 'saved' : 'duplicate: event already stored' }
+    }
+    if (event.kind === 10_050) {
+      if (event.pubkey.toLowerCase() !== authenticatedPubkey) {
+        throw new Error('Kind 10050 author must match the authenticated account')
+      }
+      const stored = await store.putPreference(event)
+      if (stored) broadcastEvent(event)
+      return { accepted: true, message: stored ? 'saved' : 'duplicate: older replaceable event' }
+    }
+    if (WATCH_TASK_EVENT_KINDS.has(event.kind)) {
+      assertCacheableTaskEvent(event)
+      const stored = await store.putTaskEvents([event])
+      return { accepted: true, message: stored ? 'cached' : 'duplicate: latest event already cached' }
+    }
+    throw new Error('Unsupported Watch event kind')
+  }
+
+  function registerReadAuthorization(result, relayURL, accountPubkey, maximumEvents, accept, onEvents) {
+    if (!hasWatchSessionCapacity(accountPubkey)) {
+      result.close?.()
+      throw new Error('Relay authorization capacity exceeded')
+    }
+    const token = randomBytes(32).toString('base64url')
+    const expiry = setTimeout(() => {
+      const session = watchAuthSessions.get(token)
+      session?.close?.()
+      watchAuthSessions.delete(token)
+    }, WATCH_SESSION_TTL_MS)
+    expiry.unref?.()
+    watchAuthSessions.set(token, {
+      accountPubkey, authorizationPubkey: accountPubkey, relayURL,
+      eventID: `query:${token}`, challenge: result.challenge,
+      expiresAt: Date.now() + WATCH_SESSION_TTL_MS,
+      authorize: async event => {
+        const authorized = await result.authorize(event)
+        if (!authorized.accepted || !Array.isArray(authorized.events) || authorized.events.length > maximumEvents) {
+          throw new Error('Invalid authorized query response')
+        }
+        const events = authorized.events.filter(accept)
+        if (events.length !== authorized.events.length) throw new Error("Invalid authorized query events")
+        await onEvents?.(events)
+        return { accepted: true, events }
+      },
+      close: () => { clearTimeout(expiry); result.close?.() },
+    })
+    return { relay: relayURL, status: 'auth-required', session: token, challenge: result.challenge }
+  }
+
+  async function forwardWatchEvent(event, relayURLs, authenticatedPubkey, returnAfterFirstAccepted = false) {
+    const localRelayURL = normalizeRelayTargets([config.publicRelayURL])[0]
+    const completed = new Map()
+    const snapshot = () => relayURLs.map((relay) => completed.get(relay) ?? { relay, status: 'pending' })
+    let acknowledgeFirst
+    const firstAccepted = new Promise((resolve) => { acknowledgeFirst = resolve })
+    // Local ingestion must not sit behind a queue of slow remote handshakes. This changes
+    // scheduling only; results retain the supplied order and no targets are added.
+    const targets = returnAfterFirstAccepted
+      ? [...relayURLs.filter((relay) => relay === localRelayURL), ...relayURLs.filter((relay) => relay !== localRelayURL)]
+      : relayURLs
+    const forwarding = mapWithConcurrency(
+      targets,
+      WATCH_FORWARD_CONCURRENCY,
+      async (relayURL) => {
+        try {
+          if (relayURL === localRelayURL) {
+            const local = await ingestLocalWatchEvent(event, authenticatedPubkey)
+            return { relay: relayURL, status: 'accepted', message: local.message }
+          }
+          if (!watchDestinationLimiter.consume(new URL(relayURL).host)) {
+            return { relay: relayURL, status: 'failed', message: 'Relay destination limit exceeded' }
+          }
+          const result = await relayForwarder.publish(relayURL, event)
+          if (result.outcome === 'auth-required') {
+            if (!hasWatchSessionCapacity(authenticatedPubkey)) {
+              result.close?.()
+              return { relay: relayURL, status: 'failed', message: 'Relay authorization capacity exceeded' }
+            }
+            const token = randomBytes(32).toString('base64url')
+            watchAuthSessions.set(token, {
+              accountPubkey: authenticatedPubkey,
+              authorizationPubkey: WATCH_TASK_EVENT_KINDS.has(event.kind)
+                ? event.pubkey.toLowerCase()
+                : authenticatedPubkey,
+              relayURL,
+              eventID: event.id,
+              challenge: result.challenge,
+              authorize: result.authorize,
+              close: result.close,
+              expiresAt: Date.now() + WATCH_SESSION_TTL_MS,
+            })
+            return {
+              relay: relayURL,
+              status: 'auth-required',
+              session: token,
+              challenge: result.challenge,
+            }
+          }
+          return {
+            relay: relayURL,
+            status: result.outcome === 'accepted' ? 'accepted' : 'rejected',
+            message: result.message ?? null,
+          }
+        } catch (error) {
+          return { relay: relayURL, status: 'failed', message: error.message }
+        }
+      },
+      (result) => {
+        completed.set(result.relay, result)
+        if (result.status === 'accepted') acknowledgeFirst(snapshot())
+      },
+    ).then(snapshot)
+    // Work continues after the early HTTP response. The Watch retains every pending target
+    // in its durable outbox, so a service restart cannot silently lose those replicas.
+    watchForwardingTasks.add(forwarding)
+    forwarding.then(
+      () => watchForwardingTasks.delete(forwarding),
+      () => watchForwardingTasks.delete(forwarding),
+    )
+    return returnAfterFirstAccepted ? Promise.race([firstAccepted, forwarding]) : forwarding
+  }
+
+  async function handleWatchRequest(request, response, url) {
+    if (request.method !== 'POST' || !url.pathname.startsWith('/v1/watch/')) return false
+    discardExpiredWatchSessions()
+    try {
+      const body = await requestBody(request)
+      const auth = authenticatePrivateRequest(request, url, body)
+      const payload = JSON.parse(body.toString('utf8'))
+
+      if (url.pathname === '/v1/watch/inbox-preference/query') {
+        if (!payload || Object.keys(payload).some((key) => !['recipientPublicKey', 'relays'].includes(key))
+            || typeof payload.recipientPublicKey !== 'string'
+            || !PUBLIC_KEY.test(payload.recipientPublicKey)) {
+          throw new Error('A single recipient public key is required')
+        }
+        const recipient = payload.recipientPublicKey
+        const relayURLs = normalizeRelayTargets(payload.relays, WATCH_PREFERENCE_RELAY_LIMIT)
+        const localRelayURL = normalizeRelayTargets([config.publicRelayURL])[0]
+        const controller = new AbortController()
+        const cancel = () => controller.abort()
+        const timer = setTimeout(cancel, watchPreferenceTimeoutMs)
+        response.once('close', cancel)
+        watchPreferenceLookups.add(controller)
+        try {
+          // Lookups are request-scoped. Never persist results, recipient associations, or
+          // upstream errors, and never pass the Watch's authentication to a discovery relay.
+          const gathered = await mapWithConcurrency(relayURLs, WATCH_FORWARD_CONCURRENCY, async (relay) => {
+            try {
+              controller.signal.throwIfAborted()
+              const events = relay === localRelayURL
+                ? store.preferencesFor([recipient])
+                : await relayForwarder.query(relay, {
+                  kinds: [10_050], authors: [recipient], limit: WATCH_PREFERENCE_EVENT_LIMIT,
+                }, WATCH_PREFERENCE_EVENT_LIMIT, {
+                  signal: controller.signal, timeoutMs: 2_000, requireEOSE: true, allowAuth: true,
+                })
+              if (events?.outcome === 'auth-required') {
+                const authorization = registerReadAuthorization(events, relay, auth.pubkey,
+                  WATCH_PREFERENCE_EVENT_LIMIT, event => {
+                    try { return event?.kind === 10_050 && event.pubkey === recipient
+                      && Buffer.byteLength(JSON.stringify(event)) <= 8 * 1024 && verifyEvent(event) }
+                    catch { return false }
+                  })
+                return { relay, events: [], completed: false, authorization }
+              }
+              if (!Array.isArray(events) || events.length > WATCH_PREFERENCE_EVENT_LIMIT) {
+                throw new Error('Invalid preference response')
+              }
+              const valid = events.filter((event) => {
+                try {
+                  return event?.kind === 10_050 && event.pubkey === recipient
+                    && Buffer.byteLength(JSON.stringify(event)) <= 8 * 1024 && verifyEvent(event)
+                } catch { return false }
+              })
+              return { relay, events: valid, completed: valid.length === events.length }
+            } catch {
+              return { relay, events: [], completed: false }
+            }
+          })
+          const events = new Map()
+          for (const result of gathered) {
+            for (const event of result.events) events.set(event.id, event)
+          }
+          sendJSON(response, 200, {
+            events: Array.from(events.values()),
+            ...(gathered.some(result => result.authorization)
+              ? { authorizations: gathered.flatMap(result => result.authorization ? [result.authorization] : []) } : {}),
+            completedRelays: gathered.filter((result) => result.completed).map((result) => result.relay),
+          })
+        } finally {
+          clearTimeout(timer)
+          response.off('close', cancel)
+          watchPreferenceLookups.delete(controller)
+          controller.abort()
+        }
+        return true
+      }
+
+      if (url.pathname === '/v1/watch/inbox/query') {
+        const sequence = decodeCursor(payload.cursor)
+        const limit = Math.max(1, Math.min(WATCH_PAGE_LIMIT, Number(payload.limit) || 100))
+        const page = store.eventsAfter(auth.pubkey, sequence, limit)
+        sendJSON(response, 200, {
+          events: page.events,
+          cursor: encodeCursor(page.nextSequence),
+          hasMore: page.hasMore,
+        })
+        return true
+      }
+
+      if (url.pathname === '/v1/watch/tasks/query') {
+        const expectedURL = new URL(`${url.pathname}${url.search}`, config.publicBaseURL).toString()
+        const sources = taskCacheSources(payload, auth.pubkey, expectedURL)
+        const authors = Array.from(sources.keys())
+        const boardTags = Array.from(sources.values())
+        const relayURLs = normalizeRelayTargets(payload.relays)
+        const limit = Math.max(
+          1,
+          Math.min(WATCH_TASK_EVENT_LIMIT, Number(payload.limit) || WATCH_TASK_EVENT_LIMIT),
+        )
+        const gathered = typeof relayForwarder.query === 'function'
+          ? await mapWithConcurrency(
+            relayURLs,
+            WATCH_FORWARD_CONCURRENCY,
+            async (relayURL) => {
+              try {
+                const events = await relayForwarder.query(relayURL, {
+                  kinds: Array.from(WATCH_TASK_EVENT_KINDS),
+                  authors,
+                  '#b': boardTags,
+                  limit,
+                }, limit, { allowAuth: true })
+                if (events?.outcome === 'auth-required') {
+                  const authorization = registerReadAuthorization(events, relayURL, auth.pubkey, limit,
+                    event => { try { assertCacheableTaskEvent(event, sources); return true } catch { return false } },
+                    events => store.putTaskEvents(events))
+                  return { completed: false, events: [], authorization }
+                }
+                return {
+                  completed: true,
+                  events: events.filter((event) => {
+                    try {
+                      assertCacheableTaskEvent(event, sources)
+                      return true
+                    } catch {
+                      return false
+                    }
+                  }),
+                }
+              } catch {
+                return { completed: false, events: [] }
+              }
+            },
+          )
+          : []
+        const uniqueEvents = new Map()
+        for (const result of gathered) {
+          for (const event of result.events) uniqueEvents.set(event.id, event)
+        }
+        if (uniqueEvents.size > 0) await store.putTaskEvents(Array.from(uniqueEvents.values()))
+        const events = store.taskEventsFor(authors, limit, sources)
+        sendJSON(response, 200, {
+          events,
+          ...(gathered.some(result => result.authorization)
+              ? { authorizations: gathered.flatMap(result => result.authorization ? [result.authorization] : []) } : {}),
+          refreshed: gathered.some((result) => result.completed),
+          cacheHit: events.length > 0,
+        })
+        return true
+      }
+
+      const authorizationMatch = /^\/v1\/watch\/outbox\/([A-Za-z0-9_-]{43})\/authorize$/.exec(url.pathname)
+      if (authorizationMatch) {
+        const token = authorizationMatch[1]
+        const session = watchAuthSessions.get(token)
+        if (!session || session.expiresAt <= Date.now()) throw new Error('Relay authorization session expired')
+        if (session.accountPubkey !== auth.pubkey) throw new Error('Relay authorization account mismatch')
+        const event = payload.event
+        if (event?.kind !== 22_242
+            || !verifyEvent(event)
+            || event.pubkey.toLowerCase() !== session.authorizationPubkey) {
+          throw new Error('Invalid NIP-42 authorization event')
+        }
+        if (singleTag(event, 'relay') !== session.relayURL
+            || singleTag(event, 'challenge') !== session.challenge) {
+          throw new Error('NIP-42 authorization does not match the relay session')
+        }
+        if (Math.abs(Math.floor(Date.now() / 1000) - event.created_at) > 10 * 60) {
+          throw new Error('NIP-42 authorization is stale')
+        }
+        watchAuthSessions.delete(token)
+        try {
+          const result = await session.authorize(event)
+          sendJSON(response, result.accepted ? 200 : 422, {
+            eventID: session.eventID,
+            ...(result.events ? { events: result.events } : {}),
+            result: {
+              relay: session.relayURL,
+              status: result.accepted ? 'accepted' : 'rejected',
+              message: result.message ?? null,
+            },
+          })
+        } finally {
+          session.close?.()
+        }
+        return true
+      }
+
+      const isOutbox = url.pathname === '/v1/watch/outbox/submit'
+      const isPreference = url.pathname === '/v1/watch/inbox-preference/publish'
+      const isTaskPublish = url.pathname === '/v1/watch/task-events/publish'
+      if (!isOutbox && !isPreference && !isTaskPublish) return false
+      const event = payload.event
+      if (isTaskPublish) {
+        assertCacheableTaskEvent(event)
+      } else {
+        const expectedKind = isOutbox ? 1059 : 10_050
+        if (event?.kind !== expectedKind || !verifyEvent(event)) throw new Error('Invalid signed Watch event')
+      }
+      if (isOutbox) {
+        giftWrapRecipient(event)
+        if (event.content.length > 128 * 1024) throw new Error('Gift wrap is too large')
+      } else if (event.pubkey.toLowerCase() !== auth.pubkey) {
+        if (!isTaskPublish) throw new Error('Kind 10050 author must match the authenticated account')
+      }
+      if (!watchForwardLimiter.consume(auth.pubkey)) throw new Error('Watch publish limit exceeded')
+      const relayURLs = normalizeRelayTargets(payload.relays)
+      if (isTaskPublish) await store.putTaskEvents([event])
+      const results = await forwardWatchEvent(
+        event, relayURLs, auth.pubkey, isOutbox && payload.returnAfterFirstAccepted === true,
+      )
+      const accepted = results.filter((result) => result.status === 'accepted').length
+      const pendingAuthorization = results.some((result) => ['auth-required', 'pending'].includes(result.status))
+      sendJSON(response, pendingAuthorization ? 202 : 200, {
+        eventID: event.id,
+        accepted,
+        results,
+      })
+    } catch (error) {
+      sendRequestError(response, error)
+    }
+    return true
+  }
+
+  const httpServer = http.createServer(async (request, response) => {
+    // An async request handler that throws becomes an unhandled rejection, which stops Node.
+    // Request targets such as `//` make URL parsing throw, so every request is contained here.
+    try {
+      await handleHTTPRequest(request, response)
+    } catch (error) {
+      logger.warn?.('HTTP request failed', { error: error?.name ?? 'Error' })
+      if (!response.headersSent) sendJSON(response, 400, { error: 'Bad request' })
+      else response.destroy()
+    }
+  })
+
+  async function handleHTTPRequest(request, response) {
+    const url = new URL(request.url ?? '/', config.publicBaseURL)
+    if (request.method === 'GET' && url.pathname === '/healthz') {
+      sendJSON(response, 200, { status: 'ok' })
+      return
+    }
+    const previewMatch = /^\/v1\/previews\/([A-Za-z0-9_-]{43})$/.exec(url.pathname)
+    if (request.method === 'GET' && previewMatch) {
+      response.setHeader('Cache-Control', 'no-store')
+      response.setHeader('Pragma', 'no-cache')
+      const token = previewMatch[1]
+      const entry = store.previewEntryForToken(token)
+      if (!entry) {
+        sendJSON(response, 404, { error: 'Preview not found' })
+        return
+      }
+      if (request.headers.authorization) {
+        // A signed fetch must come from the recipient. Anything else looks like a missing preview.
+        let signer = null
+        try {
+          signer = authenticatePrivateRequest(request, url, Buffer.alloc(0)).pubkey
+        } catch (error) {
+          if (/limit exceeded/i.test(error.message)) {
+            sendJSON(response, 429, { error: error.message })
+            return
+          }
+        }
+        if (!signer || signer !== entry.recipient) {
+          sendJSON(response, 404, { error: 'Preview not found' })
+          return
+        }
+      } else if (config.requireSignedPreviews) {
+        sendJSON(response, 401, { error: 'NIP-98 authorization is required' })
+        return
+      }
+      await store.consumePreview(token)
+      sendJSON(response, 200, { event: entry.event })
+      return
+    }
+    if (await handleRegistrationRequest(request, response, url)) return
+    if (await handleWatchRequest(request, response, url)) return
+    if (request.method === 'GET' && url.pathname === '/') {
+      sendJSON(response, 200, {
+        name: 'Taskify Push Relay',
+        description: 'NIP-17 inbox relay with privacy-preserving APNs wake delivery',
+        pubkey: '',
+        contact: 'https://solife.me',
+        supported_nips: [1, 9, 11, 17, 42, 59, 98],
+        software: 'https://github.com/Solife-me/Taskify_Release',
+        version: relayPackage.version,
+        limitation: {
+          auth_required: true,
+          payment_required: false,
+          restricted_writes: true,
+          max_message_length: 131072,
+          max_subscriptions: 20,
+        },
+      }, 'application/nostr+json')
+      return
+    }
+    sendJSON(response, 404, { error: 'Not found' })
+  }
+
+  const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 })
+  httpServer.on('upgrade', (request, socket, head) => {
+    webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+      webSocketServer.emit('connection', webSocket, request)
+    })
+  })
+
+  function relaySend(socket, value) {
+    sendRelayFrame(socket, JSON.stringify(value), maxSocketBufferedBytes)
+  }
+
+  /// An EVENT frame from an event serialized once, however many subscriptions it goes to.
+  function eventFrame(subscriptionID, eventJSON) {
+    return `["EVENT",${JSON.stringify(subscriptionID)},${eventJSON}]`
+  }
+
+  function broadcastEvent(event) {
+    // A gift wrap can only match its recipient's subscriptions; anything else is checked against
+    // every socket (preference lookups are public, and deletions match no subscription).
+    const candidates = event.kind === 1059
+      ? socketsByPubkey.get(event.tags.find((tag) => tag[0] === 'p')?.[1]?.toLowerCase()) ?? []
+      : sockets
+    let eventJSON = null
+    for (const state of candidates) {
+      for (const [subscriptionID, filters] of state.subscriptions) {
+        if (filters.some((filter) => matchesFilter(event, filter))) {
+          eventJSON ??= JSON.stringify(event)
+          sendRelayFrame(state.socket, eventFrame(subscriptionID, eventJSON), maxSocketBufferedBytes)
+        }
+      }
+    }
+  }
+
+  function indexSocket(state, pubkey) {
+    if (state.authenticatedPubkey) socketsByPubkey.get(state.authenticatedPubkey)?.delete(state)
+    if (!pubkey) return
+    const set = socketsByPubkey.get(pubkey) ?? new Set()
+    set.add(state)
+    socketsByPubkey.set(pubkey, set)
+  }
+
+  function unindexSocket(state) {
+    const set = state.authenticatedPubkey ? socketsByPubkey.get(state.authenticatedPubkey) : null
+    if (!set) return
+    set.delete(state)
+    if (set.size === 0) socketsByPubkey.delete(state.authenticatedPubkey)
+  }
+
+  function authenticateSocket(state, event) {
+    if (event?.kind !== 22_242 || !verifyEvent(event)) throw new Error('auth-required: invalid NIP-42 event')
+    if (Math.abs(Math.floor(Date.now() / 1000) - event.created_at) > 10 * 60) {
+      throw new Error('auth-required: stale NIP-42 event')
+    }
+    if (singleTag(event, 'challenge') !== state.challenge) {
+      throw new Error('auth-required: challenge does not match')
+    }
+    if (singleTag(event, 'relay') !== config.publicRelayURL) {
+      throw new Error('auth-required: relay URL does not match')
+    }
+    indexSocket(state, event.pubkey.toLowerCase())
+    state.authenticatedPubkey = event.pubkey.toLowerCase()
+    state.application = socketApplication(event)
+  }
+
+  async function handleRelayEvent(state, event) {
+    // Every refusal that needs no signature comes first: an unauthenticated, over-limit or
+    // unwanted event must not cost a signature check (as wisp orders its checks).
+    if (!state.authenticatedPubkey) throw new Error('auth-required: authenticate before publishing')
+    if (!publishLimiter.consume(state.authenticatedPubkey)) throw new Error('rate-limited: publish limit exceeded')
+    if (event?.kind === 5) {
+      if (Buffer.byteLength(JSON.stringify(event)) > 16 * 1024) {
+        throw new Error('invalid: deletion request is too large')
+      }
+      if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
+      const deletedCount = await store.applyDeletionRequest(event)
+      if (deletedCount > 0) broadcastEvent(event)
+      return `deleted: ${deletedCount} event${deletedCount === 1 ? '' : 's'}`
+    }
+    if (event?.kind === 10_050) {
+      if (event.pubkey?.toLowerCase() !== state.authenticatedPubkey) {
+        throw new Error('restricted: kind 10050 author must match authenticated pubkey')
+      }
+      if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
+      const stored = await store.putPreference(event)
+      if (stored) broadcastEvent(event)
+      return stored ? 'saved' : 'duplicate: older replaceable event'
+    }
+    if (event?.kind !== 1059) throw new Error('restricted: only kinds 5, 1059, and 10050 are accepted')
+    const recipient = giftWrapRecipient(event)
+    // Only accounts that registered a device or published their inbox preference here use
+    // this relay; storing wraps for any other key would let anyone fill it.
+    if (!store.hasInbox(recipient)) throw new Error('restricted: recipient does not use this relay')
+    if (typeof event.content !== 'string' || event.content.length > 128 * 1024) {
+      throw new Error('invalid: gift wrap is too large')
+    }
+    if (!verifyEvent(event)) throw new Error('invalid: event signature is invalid')
+    const stored = await store.putGiftWrap(event, {
+      notify: shouldNotifyRecipient({
+        authenticatedPubkey: state.authenticatedPubkey,
+        recipientPubkey: recipient,
+      }),
+      application: state.application,
+    })
+    if (stored) broadcastEvent(event)
+    return stored ? 'saved' : 'duplicate: event already stored'
+  }
+
+  async function handleSubscription(state, subscriptionID, filters) {
+    if (typeof subscriptionID !== 'string' || subscriptionID.length === 0 || subscriptionID.length > 64) {
+      throw new Error('restricted: invalid subscription ID')
+    }
+    if (state.subscriptions.size >= 20 && !state.subscriptions.has(subscriptionID)) {
+      throw new Error('restricted: subscription limit exceeded')
+    }
+    let events
+    if (isPublicPreferenceQuery(filters)) {
+      const authors = filters.flatMap((filter) => filter.authors ?? []).filter((author) => PUBLIC_KEY.test(author))
+      events = store.preferencesFor(authors)
+    } else {
+      assertAuthorizedGiftWrapFilters(filters, state.authenticatedPubkey)
+      events = store.eventsFor(state.authenticatedPubkey)
+    }
+    state.subscriptions.set(subscriptionID, filters)
+    const newestFirst = (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id)
+    const matching = new Map()
+    for (const filter of filters) {
+      for (const event of events.filter((event) => matchesFilter(event, filter))
+        .sort(newestFirst).slice(0, boundedLimit([filter]))) {
+        matching.set(event.id, event)
+      }
+    }
+    for (const event of [...matching.values()].sort(newestFirst).slice(0, 500)) {
+      sendRelayFrame(state.socket, eventFrame(subscriptionID, JSON.stringify(event)), maxSocketBufferedBytes)
+    }
+    relaySend(state.socket, ['EOSE', subscriptionID])
+  }
+
+  webSocketServer.on('connection', (socket, request) => {
+    if (sockets.size >= maxSockets) {
+      socket.close(1013, 'relay is at capacity')
+      return
+    }
+    // Without a trusted client-address header every socket arrives from the proxy, so a
+    // per-address cap would be one cap for everyone; only the total applies then.
+    const address = clientAddressHeader && request ? clientAddressKey(request, clientAddressHeader) : null
+    if (address) {
+      const count = socketsPerAddress.get(address) ?? 0
+      if (count >= maxSocketsPerAddress) {
+        socket.close(1013, 'too many connections from this address')
+        return
+      }
+      socketsPerAddress.set(address, count + 1)
+    }
+    const state = {
+      socket,
+      challenge: randomBytes(32).toString('base64url'),
+      authenticatedPubkey: null,
+      subscriptions: new Map(),
+      messageWindowStartedAt: Date.now(),
+      messagesInWindow: 0,
+    }
+    sockets.add(state)
+    relaySend(socket, ['AUTH', state.challenge])
+    const authenticationDeadline = setTimeout(() => {
+      if (!state.authenticatedPubkey) socket.close(1008, 'auth-required: authenticate sooner')
+    }, unauthenticatedSocketTimeoutMs)
+    authenticationDeadline.unref?.()
+    socket.on('close', () => {
+      clearTimeout(authenticationDeadline)
+      sockets.delete(state)
+      unindexSocket(state)
+      if (!address) return
+      const remaining = (socketsPerAddress.get(address) ?? 1) - 1
+      if (remaining > 0) socketsPerAddress.set(address, remaining)
+      else socketsPerAddress.delete(address)
+    })
+    socket.on('error', () => {})
+    socket.on('message', async (data) => {
+      const now = Date.now()
+      if (now - state.messageWindowStartedAt >= 10_000) {
+        state.messageWindowStartedAt = now
+        state.messagesInWindow = 0
+      }
+      state.messagesInWindow += 1
+      if (state.messagesInWindow > maxSocketMessagesPerTenSeconds) {
+        relaySend(socket, ['NOTICE', 'rate-limited: too many messages'])
+        socket.close(1008, 'too many messages')
+        return
+      }
+      let message
+      try {
+        message = JSON.parse(data.toString())
+        if (!Array.isArray(message) || typeof message[0] !== 'string') throw new Error('invalid: malformed relay message')
+        switch (message[0]) {
+        case 'AUTH':
+          authenticateSocket(state, message[1])
+          relaySend(socket, ['OK', message[1]?.id ?? '', true, 'authenticated'])
+          break
+        case 'EVENT': {
+          const event = message[1]
+          const result = await handleRelayEvent(state, event)
+          relaySend(socket, ['OK', event?.id ?? '', true, result])
+          break
+        }
+        case 'REQ':
+          await handleSubscription(state, message[1], message.slice(2))
+          break
+        case 'CLOSE':
+          state.subscriptions.delete(message[1])
+          break
+        default:
+          relaySend(socket, ['NOTICE', 'unsupported: relay message type'])
+        }
+      } catch (error) {
+        const type = message?.[0]
+        if (type === 'REQ') relaySend(socket, ['CLOSED', message?.[1] ?? '', error.message])
+        else if (type === 'EVENT' || type === 'AUTH') {
+          relaySend(socket, ['OK', message?.[1]?.id ?? '', false, error.message])
+        } else relaySend(socket, ['NOTICE', error.message])
+      }
+    })
+  })
+
+  function processPushJobs() {
+    if (pushWorkerPromise) return pushWorkerPromise
+    pushWorkerPromise = (async () => {
+      for (const job of store.duePushJobs()) {
+        const registration = store.registrationByKey(job.registrationKey)
+        if (!registration) {
+          await store.completePushJob(job.id)
+          continue
+        }
+        try {
+          const previewURL = job.previewToken
+            ? new URL(`/v1/previews/${job.previewToken}`, config.publicBaseURL).toString()
+            : null
+          const result = await pushClient.send(registration, previewURL)
+          if (result.status === 200) {
+            await store.completePushJob(job.id, { retainPreview: true, delivered: true })
+            continue
+          }
+          if (result.status === 410 || ['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered'].includes(result.reason)) {
+            logger.warn?.('The push service rejected a device registration; removing it', {
+              status: result.status,
+              reason: result.reason,
+              platform: registration.platform ?? 'ios',
+              environment: registration.environment,
+            })
+            await store.removeRegistrationByKey(registration.key)
+            continue
+          }
+          if (result.status === 403
+              && ['ExpiredProviderToken', 'InvalidProviderToken'].includes(result.reason)
+              && job.attempts < 8) {
+            pushClient.invalidateProviderToken?.(registration)
+            logger.warn?.('Push service authentication failed; refreshing and retrying', {
+              status: result.status,
+              reason: result.reason,
+              platform: registration.platform ?? 'ios',
+              environment: registration.environment,
+            })
+            await store.retryPushJob(job.id, { delaySeconds: 5 })
+            continue
+          }
+          if ([429, 500, 503].includes(result.status) && job.attempts < 8) {
+            logger.warn?.('The push service temporarily rejected a notification; retrying', {
+              status: result.status,
+              reason: result.reason,
+              platform: registration.platform ?? 'ios',
+              environment: registration.environment,
+            })
+            await store.retryPushJob(job.id, { delaySeconds: Math.min(2 ** job.attempts * 5, 15 * 60) })
+            continue
+          }
+          logger.warn?.('The push service permanently rejected a notification', {
+            status: result.status,
+            reason: result.reason,
+            platform: registration.platform ?? 'ios',
+            environment: registration.environment,
+          })
+          await store.completePushJob(job.id)
+        } catch (error) {
+          logger.warn?.('Push request failed', {
+            error: error?.name ?? 'Error',
+            retrying: job.attempts < 8,
+            platform: registration.platform ?? 'ios',
+            environment: registration.environment,
+          })
+          if (job.attempts < 8) {
+            await store.retryPushJob(job.id, { delaySeconds: Math.min(2 ** job.attempts * 5, 15 * 60) })
+          } else {
+            await store.completePushJob(job.id)
+          }
+        }
+      }
+    })().catch((error) => {
+      logger.error?.('Push worker failed', { error: error?.name ?? 'Error' })
+    }).finally(() => {
+      pushWorkerPromise = null
+    })
+    return pushWorkerPromise
+  }
+
+  return {
+    httpServer,
+    async start(port = config.port) {
+      await new Promise((resolve, reject) => {
+        httpServer.once('error', reject)
+        httpServer.listen(port, '0.0.0.0', resolve)
+      })
+      pushTimer = setInterval(() => void processPushJobs(), 5_000)
+      pushTimer.unref()
+      void processPushJobs()
+      logger.info('Taskify Push Relay is listening')
+      return httpServer.address()
+    },
+    async stop() {
+      for (const controller of watchPreferenceLookups) controller.abort()
+      if (pushTimer) clearInterval(pushTimer)
+      if (pushWorkerPromise) await pushWorkerPromise
+      await Promise.allSettled([...watchForwardingTasks])
+      for (const session of watchAuthSessions.values()) session.close?.()
+      watchAuthSessions.clear()
+      for (const state of sockets) state.socket.close()
+      await new Promise((resolve) => httpServer.close(resolve))
+      await store.flush?.()
+    },
+    processPushJobs,
+  }
+}

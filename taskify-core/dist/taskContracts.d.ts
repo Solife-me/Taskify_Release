@@ -120,7 +120,9 @@ export type Task = {
     lastEditedBy?: string;
     createdAt?: number;
     updatedAt?: string;
+    /** Local only: the version (event `created_at` and, once known, id) last published or received. */
     _nostrAt?: number;
+    _nostrId?: string;
     priority?: TaskPriority;
     note?: string;
     images?: string[];
@@ -150,6 +152,12 @@ export type Task = {
     bountyLists?: string[];
     bountyDeletedAt?: string;
     inboxItem?: InboxItem;
+    /**
+     * Task event payload fields other clients write that this client does not use (iOS publishes
+     * reminders, for example). Kept as received and written back on every publish, so editing a
+     * task here never erases them. Local reminders stay per device and are not among them.
+     */
+    syncExtras?: Record<string, unknown>;
     bounty?: {
         id: string;
         token: string;
@@ -287,3 +295,7 @@ export type ListLikeBoard = Extract<Board, {
     kind: "lists" | "compound";
 }>;
 export declare function isListLikeBoard(board: Board | null | undefined): board is ListLikeBoard;
+/** Ids every client gives the built-in Bible features (native `TaskifySnapshot`, `ScriptureMemory`). */
+export declare const BIBLE_BOARD_ID = "bible-reading";
+export declare const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
+export declare const FASTING_REMINDER_SERIES_ID = "fasting-reminder";

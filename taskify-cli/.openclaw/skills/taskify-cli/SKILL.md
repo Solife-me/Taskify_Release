@@ -85,7 +85,7 @@ taskify list [--a|--all] [--board <name|id>] [--status open|done|any] [--column 
 taskify add <title> [--board <name>] [--due YYYY-MM-DD] [--priority 1|2|3] [--note <text>] [--column <name>]
 taskify show <taskId> [--board <name>] [--json]
 taskify update <taskId> --board <name> [--title <t>] [--due <d>] [--priority <p>] [--note <n>] [--column <name>]
-taskify done <taskId> [--board <name>]
+taskify done <taskId> [--board <name>]   # recurring tasks open their next occurrence (`nextOccurrence` in JSON)
 taskify reopen <taskId> [--board <name>]
 taskify delete <taskId> --board <name>
 taskify search <query> [--board <name>]
@@ -226,7 +226,8 @@ taskify board overview --json | jq '.overview'
 
 ```bash
 taskify board list         # boards with IDs
-taskify relay status       # check relay connectivity
+taskify relay status       # check relay connectivity, NIP-42 auth and NIP-13 PoW
+taskify relay info <url>   # a relay's auth / proof-of-work requirements
 taskify cache clear        # wipe local cache (forces cold re-fetch on next list)
 taskify board defaults --json  # verify your profile's default board+list
 ```

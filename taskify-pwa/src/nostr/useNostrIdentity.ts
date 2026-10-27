@@ -1,14 +1,10 @@
-import { prepareRelayEvent } from "./prepareRelayEvent";
+import { prepareRelayEvent, prepareSignedRelayEvent } from "./prepareRelayEvent";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { generateSecretKey, getPublicKey, nip19, type EventTemplate } from "nostr-tools";
+import { generateSecretKey, nip19, type EventTemplate } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
-import {
-  acknowledgeBackupNotice as nostrSkAcknowledgeBackupNotice,
-  getSkSync as nostrSkSync,
-  isBackupNoticePending as nostrSkBackupNoticePending,
-  setSk as nostrSkSet,
-} from "../lib/nostrSkStore";
+import { adoptLocalSecretKey, revealLocalSecretKey, useIdentity } from "../identity/identity";
+import { markKeyBroughtByUser, markKeyCreatedHere } from "../onboarding/keyBackup";
 import {
   createNostrPool,
   NOSTR_MIN_EVENT_INTERVAL_MS,
@@ -68,33 +64,16 @@ function toNsec(secret: string): string {
 
 export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
   const pool = useMemo(() => createNostrPool(), []);
-  const initialStoredNostrSecretHex = useMemo(() => {
-    try {
-      const existing = nostrSkSync();
-      if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) {
-        return existing.toLowerCase();
-      }
-    } catch {}
-    return null;
-  }, []);
-
-  const [nostrSK, setNostrSK] = useState<Uint8Array>(() => {
-    if (initialStoredNostrSecretHex) {
-      return hexToBytes(initialStoredNostrSecretHex);
-    }
-    return generateSecretKey();
-  });
-  const [nostrPK, setNostrPK] = useState<string>(() => {
-    if (!initialStoredNostrSecretHex) return "";
-    try {
-      return getPublicKey(hexToBytes(initialStoredNostrSecretHex));
-    } catch {
-      return "";
-    }
-  });
+  const identity = useIdentity();
+  const nostrPK = identity?.pubkey ?? "";
+  // Before sign-in, events this device signs (none are user-facing) use a throwaway key.
+  const [throwawayKey] = useState(() => generateSecretKey());
+  const nostrSK = useMemo<Uint8Array>(() => {
+    const local = identity ? revealLocalSecretKey() : null;
+    return local ? hexToBytes(local) : throwawayKey;
+  }, [identity, throwawayKey]);
   const nostrSkHex = useMemo(() => bytesToHex(nostrSK), [nostrSK]);
 
-  useEffect(() => { (window as any).nostrPK = nostrPK; }, [nostrPK]);
   useEffect(() => {
     const relays = defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS);
     NostrSession.init(relays).catch((err) => {
@@ -102,45 +81,22 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
     });
   }, [defaultRelays]);
 
-  const [showSkBackupNotice, setShowSkBackupNotice] = useState(() => nostrSkBackupNoticePending());
-  const dismissSkBackupNotice = useCallback(() => {
-    nostrSkAcknowledgeBackupNotice();
-    setShowSkBackupNotice(false);
-  }, []);
-  const copyNsecAndDismiss = useCallback(async () => {
-    try {
-      const sk = nostrSkSync();
-      if (sk) await navigator.clipboard?.writeText(toNsec(sk));
-    } catch {}
-    dismissSkBackupNotice();
-  }, [dismissSkBackupNotice]);
-
   const rotateNostrKey = useCallback(() => {
-    const sk = generateSecretKey();
-    const skHex = bytesToHex(sk);
-    setNostrSK(sk);
-    const pk = getPublicKey(sk);
-    setNostrPK(pk);
-    void nostrSkSet(skHex);
+    const skHex = bytesToHex(generateSecretKey());
+    void adoptLocalSecretKey(skHex);
+    markKeyCreatedHere();
     return toNsec(skHex);
   }, []);
 
   const applyCustomNostrKey = useCallback((key: string, options?: { silent?: boolean }): boolean => {
-    try {
-      const normalized = normalizeSecretKeyInput(key);
-      if (!normalized) throw new Error("invalid");
-      const sk = hexToBytes(normalized);
-      setNostrSK(sk);
-      const pk = getPublicKey(sk);
-      setNostrPK(pk);
-      void nostrSkSet(normalized);
-      return true;
-    } catch {
-      if (!options?.silent) {
-        alert("Invalid private key");
-      }
+    const normalized = normalizeSecretKeyInput(key);
+    if (!normalized) {
+      if (!options?.silent) alert("Invalid private key");
       return false;
     }
+    void adoptLocalSecretKey(normalized);
+    markKeyBroughtByUser();
+    return true;
   }, []);
 
   const setCustomNostrKey = useCallback((key: string) => {
@@ -163,27 +119,35 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
       }
       const now = Math.floor(Date.now() / 1000);
       let createdAt = typeof template.created_at === "number" ? template.created_at : now;
-      const signer = options?.sk || nostrSK;
-      const signerBytes =
-        typeof signer === "string"
-          ? (() => {
-              const trimmed = signer.trim();
-              if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-                return hexToBytes(trimmed.toLowerCase());
-              }
-              if (trimmed.startsWith("nsec")) {
-                const decoded = nip19.decode(trimmed);
-                if (decoded.type === "nsec" && decoded.data) {
-                  const decodedHex = bytesLikeToHex(decoded.data);
-                  if (decodedHex) return hexToBytes(decodedHex);
+      // Board and other derived keys are passed in; the user's own events are signed by their
+      // signer, wherever the key is held. Before sign-in a throwaway key stands in.
+      const accountSigner = options?.sk ? null : identity?.signer ?? null;
+      let ev: unknown;
+      if (accountSigner) {
+        createdAt = eventTimestampClock.current.next(accountSigner.pubkey, template as { kind: number; tags: string[][] }, createdAt, now);
+        ev = await prepareSignedRelayEvent({ ...template, created_at: createdAt }, accountSigner, relays);
+      } else {
+        const keySource = options?.sk || nostrSK;
+        const signerBytes =
+          typeof keySource === "string"
+            ? (() => {
+                const trimmed = keySource.trim();
+                if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+                  return hexToBytes(trimmed.toLowerCase());
                 }
-              }
-              throw new Error("Invalid Nostr signer key");
-            })()
-          : signer;
-      const signerKey = bytesToHex(signerBytes);
-      createdAt = eventTimestampClock.current.next(signerKey, template as { kind: number; tags: string[][] }, createdAt, now);
-      const ev = await prepareRelayEvent({ ...template, created_at: createdAt }, signerBytes, relays);
+                if (trimmed.startsWith("nsec")) {
+                  const decoded = nip19.decode(trimmed);
+                  if (decoded.type === "nsec" && decoded.data) {
+                    const decodedHex = bytesLikeToHex(decoded.data);
+                    if (decodedHex) return hexToBytes(decodedHex);
+                  }
+                }
+                throw new Error("Invalid Nostr signer key");
+              })()
+            : keySource;
+        createdAt = eventTimestampClock.current.next(bytesToHex(signerBytes), template as { kind: number; tags: string[][] }, createdAt, now);
+        ev = await prepareRelayEvent({ ...template, created_at: createdAt }, signerBytes, relays);
+      }
       await pool.publishEvent(relays, ev as unknown as NostrEvent, { republish: options?.republish });
       lastNostrSentMs.current = Date.now();
       return options?.returnEvent ? { createdAt, event: ev as unknown as NostrEvent } : createdAt;
@@ -191,14 +155,12 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
     const next = nostrPublishQueue.current.catch(() => {}).then(run);
     nostrPublishQueue.current = next.then(() => {}, () => {});
     return next;
-  }, [nostrSK, pool]) as NostrPublishFn;
+  }, [identity, nostrSK, pool]) as NostrPublishFn;
   const nostrPublishRef = useRef<NostrPublishFn>(nostrPublish);
   nostrPublishRef.current = nostrPublish;
 
   return {
     applyCustomNostrKey,
-    copyNsecAndDismiss,
-    dismissSkBackupNotice,
     nostrPK,
     nostrPublish,
     nostrPublishRef,
@@ -207,6 +169,5 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
     pool,
     rotateNostrKey,
     setCustomNostrKey,
-    showSkBackupNotice,
   };
 }

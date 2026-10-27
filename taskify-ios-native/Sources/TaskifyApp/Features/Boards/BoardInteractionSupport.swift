@@ -86,7 +86,7 @@ struct TaskDragSourceModifier: ViewModifier {
             content
                 .draggable(payload) {
                     Label(title, systemImage: "rectangle.stack.fill")
-                        .font(.system(size: 15, weight: .semibold))
+                        .scaledFont(size: 15, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .lineLimit(1)
                         .padding(.horizontal, 16)
@@ -298,6 +298,14 @@ final class TaskSelectionController {
 
     func retainOnlyEvents(_ availableEventIDs: Set<String>) {
         selectedEventIDs.formIntersection(availableEventIDs)
+    }
+
+    /// A selection of one task, for acting on a single card with the selection sheets.
+    static func single(_ taskID: String) -> TaskSelectionController {
+        let selection = TaskSelectionController()
+        selection.enter()
+        selection.toggle(taskID)
+        return selection
     }
 }
 

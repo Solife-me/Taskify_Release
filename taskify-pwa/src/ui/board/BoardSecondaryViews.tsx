@@ -10,6 +10,8 @@ import {
 import type { TaskDocument } from "../../lib/documents";
 import { TaskMedia } from "../task/TaskMedia";
 import { TaskTitle } from "../task/TaskTitle";
+import { UpcomingEventCard, UpcomingTaskCard } from "../task/taskActions";
+import { currentPubkey } from "../../identity/identity";
 
 type BoardUpcomingGroup = {
   dateKey: string;
@@ -27,8 +29,6 @@ type CompletedBibleBook = {
 type BoardUpcomingViewProps = {
   boardUpcomingCount: number;
   boardUpcomingGroups: BoardUpcomingGroup[];
-  renderUpcomingEventCard: (event: CalendarEvent) => ReactNode;
-  renderUpcomingTaskCard: (task: Task) => ReactNode;
 };
 
 type CompletedBoardViewProps = {
@@ -71,8 +71,6 @@ function CompletedIconButton({
 export function BoardUpcomingView({
   boardUpcomingCount,
   boardUpcomingGroups,
-  renderUpcomingEventCard,
-  renderUpcomingTaskCard,
 }: BoardUpcomingViewProps) {
   return (
     <div className="surface-panel board-column p-4">
@@ -87,8 +85,8 @@ export function BoardUpcomingView({
             <div key={group.dateKey} className="upcoming-day" data-upcoming-date={group.dateKey}>
               <div className="upcoming-day__label">{group.label}</div>
               <div className="space-y-2">
-                {group.events.map((event) => renderUpcomingEventCard(event))}
-                {group.tasks.map((task) => renderUpcomingTaskCard(task))}
+                {group.events.map((event) => <UpcomingEventCard key={event.id} event={event} />)}
+                {group.tasks.map((task) => <UpcomingTaskCard key={task.id} task={task} />)}
               </div>
             </div>
           ))}
@@ -170,7 +168,7 @@ export function CompletedBoardView({
             const scheduledTimeLabel = task.dueTimeEnabled
               ? ` at ${formatTimeLabel(task.dueISO, task.dueTimeZone)}`
               : "";
-            const bountyLabel = task.bounty ? bountyStateLabel(task.bounty) : "";
+            const bountyLabel = task.bounty ? bountyStateLabel(task.bounty, currentPubkey()) : "";
             return (
               <li
                 key={task.id}

@@ -1,0 +1,425 @@
+{
+  "description": "Task note Markdown: how notes parse and edit. Generated from the PWA (taskify-pwa/src/domains/tasks/noteMarkdown.ts) and read by its Vitest and by TaskifyCoreTests (Swift TaskNoteMarkdown). Offsets are UTF-16 code units. Block shapes use the PWA's names.",
+  "blocks": [
+    {
+      "name": "plain paragraph",
+      "note": "Buy milk",
+      "expected": [
+        {
+          "type": "paragraph",
+          "content": "Buy milk"
+        }
+      ]
+    },
+    {
+      "name": "single newline is a line break",
+      "note": "Line one\nLine two",
+      "expected": [
+        {
+          "type": "paragraph",
+          "content": "Line one\nLine two"
+        }
+      ]
+    },
+    {
+      "name": "blank rows between blocks become spacers",
+      "note": "First\n\n\nSecond",
+      "expected": [
+        {
+          "type": "paragraph",
+          "content": "First"
+        },
+        {
+          "type": "spacer",
+          "lines": 2
+        },
+        {
+          "type": "paragraph",
+          "content": "Second"
+        }
+      ]
+    },
+    {
+      "name": "headings",
+      "note": "# Title\n### Smaller",
+      "expected": [
+        {
+          "type": "heading",
+          "level": 1,
+          "content": "Title"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "content": "Smaller"
+        }
+      ]
+    },
+    {
+      "name": "bullets and nesting",
+      "note": "- one\n  - nested\n* star",
+      "expected": [
+        {
+          "type": "bullet",
+          "depth": 0,
+          "content": "one"
+        },
+        {
+          "type": "bullet",
+          "depth": 1,
+          "content": "nested"
+        },
+        {
+          "type": "bullet",
+          "depth": 0,
+          "content": "star"
+        }
+      ]
+    },
+    {
+      "name": "numbered list keeps its numbers",
+      "note": "3. three\n4. four",
+      "expected": [
+        {
+          "type": "numbered",
+          "depth": 0,
+          "number": 3,
+          "content": "three"
+        },
+        {
+          "type": "numbered",
+          "depth": 0,
+          "number": 4,
+          "content": "four"
+        }
+      ]
+    },
+    {
+      "name": "checklist with lines",
+      "note": "Groceries\n- [ ] eggs\n- [x] bread\n  - [ ] butter",
+      "expected": [
+        {
+          "type": "paragraph",
+          "content": "Groceries"
+        },
+        {
+          "type": "checklist",
+          "depth": 0,
+          "checked": false,
+          "content": "eggs",
+          "line": 1
+        },
+        {
+          "type": "checklist",
+          "depth": 0,
+          "checked": true,
+          "content": "bread",
+          "line": 2
+        },
+        {
+          "type": "checklist",
+          "depth": 1,
+          "checked": false,
+          "content": "butter",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "name": "quote",
+      "note": "> wise words",
+      "expected": [
+        {
+          "type": "quote",
+          "content": "wise words"
+        }
+      ]
+    },
+    {
+      "name": "fenced code keeps its content",
+      "note": "```\nlet x = 1\n```",
+      "expected": [
+        {
+          "type": "code",
+          "content": "let x = 1"
+        }
+      ]
+    },
+    {
+      "name": "thematic break",
+      "note": "Above\n\n---\n\nBelow",
+      "expected": [
+        {
+          "type": "paragraph",
+          "content": "Above"
+        },
+        {
+          "type": "spacer",
+          "lines": 1
+        },
+        {
+          "type": "rule"
+        },
+        {
+          "type": "spacer",
+          "lines": 1
+        },
+        {
+          "type": "paragraph",
+          "content": "Below"
+        }
+      ]
+    },
+    {
+      "name": "emoji and non-Latin text",
+      "note": "- 🎉 party\n- 日本語",
+      "expected": [
+        {
+          "type": "bullet",
+          "depth": 0,
+          "content": "🎉 party"
+        },
+        {
+          "type": "bullet",
+          "depth": 0,
+          "content": "日本語"
+        }
+      ]
+    }
+  ],
+  "toggles": [
+    {
+      "name": "checks an open item",
+      "note": "- [ ] eggs\n- [x] bread",
+      "line": 0,
+      "expected": "- [x] eggs\n- [x] bread"
+    },
+    {
+      "name": "unchecks a done item",
+      "note": "- [ ] eggs\n- [x] bread",
+      "line": 1,
+      "expected": "- [ ] eggs\n- [ ] bread"
+    },
+    {
+      "name": "nested item by its line",
+      "note": "Groceries\n- [ ] eggs\n  - [ ] butter",
+      "line": 2,
+      "expected": "Groceries\n- [ ] eggs\n  - [x] butter"
+    },
+    {
+      "name": "a line that is not an item",
+      "note": "Groceries\n- [ ] eggs",
+      "line": 0,
+      "expected": null
+    }
+  ],
+  "continueList": [
+    {
+      "name": "next bullet",
+      "text": "- one",
+      "selectionStart": 5,
+      "selectionEnd": 5,
+      "expected": {
+        "text": "- one\n- ",
+        "selectionStart": 8,
+        "selectionEnd": 8
+      }
+    },
+    {
+      "name": "next number",
+      "text": "1. one",
+      "selectionStart": 6,
+      "selectionEnd": 6,
+      "expected": {
+        "text": "1. one\n2. ",
+        "selectionStart": 10,
+        "selectionEnd": 10
+      }
+    },
+    {
+      "name": "next checklist item starts unchecked",
+      "text": "- [x] done",
+      "selectionStart": 10,
+      "selectionEnd": 10,
+      "expected": {
+        "text": "- [x] done\n- [ ] ",
+        "selectionStart": 17,
+        "selectionEnd": 17
+      }
+    },
+    {
+      "name": "empty item ends the list",
+      "text": "- one\n- ",
+      "selectionStart": 8,
+      "selectionEnd": 8,
+      "expected": {
+        "text": "- one\n",
+        "selectionStart": 6,
+        "selectionEnd": 6
+      }
+    },
+    {
+      "name": "quote continues",
+      "text": "> line",
+      "selectionStart": 6,
+      "selectionEnd": 6,
+      "expected": {
+        "text": "> line\n> ",
+        "selectionStart": 9,
+        "selectionEnd": 9
+      }
+    },
+    {
+      "name": "plain line does not continue",
+      "text": "hello",
+      "selectionStart": 5,
+      "selectionEnd": 5,
+      "expected": null
+    },
+    {
+      "name": "offsets are UTF-16: after an emoji",
+      "text": "- 🎉",
+      "selectionStart": 4,
+      "selectionEnd": 4,
+      "expected": {
+        "text": "- 🎉\n- ",
+        "selectionStart": 7,
+        "selectionEnd": 7
+      }
+    }
+  ],
+  "formats": [
+    {
+      "name": "bold wraps the selection",
+      "format": "bold",
+      "text": "make this bold",
+      "selectionStart": 10,
+      "selectionEnd": 14,
+      "expected": {
+        "text": "make this **bold**",
+        "selectionStart": 12,
+        "selectionEnd": 16
+      }
+    },
+    {
+      "name": "italic with no selection inserts markers",
+      "format": "italic",
+      "text": "word",
+      "selectionStart": 4,
+      "selectionEnd": 4,
+      "expected": {
+        "text": "word**",
+        "selectionStart": 5,
+        "selectionEnd": 5
+      }
+    },
+    {
+      "name": "strikethrough",
+      "format": "strikethrough",
+      "text": "old",
+      "selectionStart": 0,
+      "selectionEnd": 3,
+      "expected": {
+        "text": "~~old~~",
+        "selectionStart": 2,
+        "selectionEnd": 5
+      }
+    },
+    {
+      "name": "inline code",
+      "format": "code",
+      "text": "npm test",
+      "selectionStart": 0,
+      "selectionEnd": 8,
+      "expected": {
+        "text": "`npm test`",
+        "selectionStart": 1,
+        "selectionEnd": 9
+      }
+    },
+    {
+      "name": "link",
+      "format": "link",
+      "text": "Taskify",
+      "selectionStart": 0,
+      "selectionEnd": 7,
+      "expected": {
+        "text": "[Taskify](https://)",
+        "selectionStart": 10,
+        "selectionEnd": 18
+      }
+    },
+    {
+      "name": "heading prefixes the line",
+      "format": "heading",
+      "text": "Title",
+      "selectionStart": 0,
+      "selectionEnd": 0,
+      "expected": {
+        "text": "# Title",
+        "selectionStart": 2,
+        "selectionEnd": 2
+      }
+    },
+    {
+      "name": "bullet list over two lines",
+      "format": "bulletList",
+      "text": "a\nb",
+      "selectionStart": 0,
+      "selectionEnd": 3,
+      "expected": {
+        "text": "- a\n- b",
+        "selectionStart": 0,
+        "selectionEnd": 7
+      }
+    },
+    {
+      "name": "numbered list over two lines",
+      "format": "numberedList",
+      "text": "a\nb",
+      "selectionStart": 0,
+      "selectionEnd": 3,
+      "expected": {
+        "text": "1. a\n2. b",
+        "selectionStart": 0,
+        "selectionEnd": 9
+      }
+    },
+    {
+      "name": "checklist",
+      "format": "checklist",
+      "text": "task",
+      "selectionStart": 0,
+      "selectionEnd": 4,
+      "expected": {
+        "text": "- [ ] task",
+        "selectionStart": 0,
+        "selectionEnd": 10
+      }
+    },
+    {
+      "name": "quote",
+      "format": "quote",
+      "text": "said",
+      "selectionStart": 0,
+      "selectionEnd": 4,
+      "expected": {
+        "text": "> said",
+        "selectionStart": 0,
+        "selectionEnd": 6
+      }
+    }
+  ],
+  "previews": [
+    {
+      "name": "markdown removed, items marked",
+      "note": "# Plan\n- [ ] call **Sam**\n- [x] email\n1. first\n> note",
+      "expected": "Plan\n☐ call Sam\n☑ email\n1. first\nnote"
+    },
+    {
+      "name": "blank lines collapse",
+      "note": "a\n\n\n\nb",
+      "expected": "a\nb"
+    }
+  ]
+}

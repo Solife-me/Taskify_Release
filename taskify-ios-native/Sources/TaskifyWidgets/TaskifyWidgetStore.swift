@@ -8,9 +8,11 @@ import WidgetKit
 /// `CompleteTaskIntent`, which goes through the same `JSONTaskStore` the app uses so the two can't
 /// disagree about the file's shape.
 enum TaskifyWidgetStore {
+    /// Read for display: attachments stay on disk, since no widget shows one and a widget's
+    /// memory is limited (C10-3).
     static func loadSnapshot() async -> TaskifySnapshot? {
         guard TaskifySharedContainer.isAvailable() else { return nil }
-        return try? await JSONTaskStore().load()
+        return try? await JSONTaskStore().read(areas: [.tasks])
     }
 
     /// Returns empty data rather than failing when the App Group isn't reachable or the store

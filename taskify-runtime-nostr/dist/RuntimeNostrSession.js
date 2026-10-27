@@ -1,12 +1,15 @@
 import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus } from "@nostr-dev-kit/ndk";
 import { finalizeEvent, verifyEvent } from "nostr-tools";
-import { applyProofOfWork, mineEventTemplate } from "./ProofOfWork.js";
+import { applyProofOfWork, countLeadingZeroBits, mineEventTemplate, mineEventTemplateFor } from "./ProofOfWork.js";
+import { createRelayAuthPolicy } from "./RelayAuth.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager } from "./SubscriptionManager.js";
 import { PublishCoordinator } from "./PublishCoordinator.js";
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
+import { closeNdkPools, installNdkRelayTimerFix } from "./ndkLifecycle.js";
+import { RuntimeSessionClosedError } from "./sessionErrors.js";
 export class RuntimeNostrSession {
     ndk;
     initialized = false;
@@ -14,11 +17,14 @@ export class RuntimeNostrSession {
     relayRetryTimers = new Map();
     loggedDebugSummary = false;
     shuttingDown = false;
+    shutdownPromise = null;
     workAbort = new AbortController();
     relayInfoCache;
     relayHealth;
     authManager;
     isDev;
+    proofOfWork;
+    authTimeoutMs;
     cache;
     cursors;
     subscriptions;
@@ -28,17 +34,27 @@ export class RuntimeNostrSession {
     constructor(relays, deps) {
         const normalized = normalizeRelayUrls(relays);
         this.knownRelays = new Set(normalized);
-        this.ndk = new NDK({ explicitRelayUrls: normalized, enableOutboxModel: true, autoConnectUserRelays: false });
+        // Before NDK makes its first relay: see ndkLifecycle.ts.
+        installNdkRelayTimerFix();
+        this.ndk = new NDK({ explicitRelayUrls: normalized, enableOutboxModel: deps.enableOutboxModel ?? true, autoConnectUserRelays: false });
         this.relayInfoCache = deps.relayInfoCache;
         this.relayHealth = deps.relayHealth;
         this.authManager = deps.createAuthManager(this.ndk);
         this.isDev = Boolean(deps.isDev);
+        this.proofOfWork = deps.proofOfWork ?? {};
+        this.authTimeoutMs = deps.authTimeoutMs;
         this.cache = new EventCache();
         this.cursors = new CursorStore();
         const relayResolver = this.buildRelaySet.bind(this);
         this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, {
             outboxStore: deps.outboxStore,
             resolveProofOfWorkDifficulty: this.resolveProofOfWorkDifficulty.bind(this),
+            proofOfWork: this.miningOptions(),
+            onProofOfWorkRequired: (relayUrl, difficulty) => {
+                this.relayInfoCache.recordProofOfWorkRequirement?.(relayUrl, difficulty);
+                if (this.isDev)
+                    console.error("[nostr] relay requires proof of work", relayUrl, difficulty);
+            },
             signal: this.workAbort.signal,
         });
         this.subscriptions = new SubscriptionManager(this.ndk, this.cursors, relayResolver, this.cache, this.resolveRelayLimit.bind(this));
@@ -47,7 +63,7 @@ export class RuntimeNostrSession {
         this.setupRelayHooks();
     }
     async init(relays) {
-        this.shuttingDown = false;
+        this.assertOpen("init");
         const normalized = normalizeRelayUrls(relays);
         await this.ensureRelays(normalized);
         await this.connect();
@@ -59,40 +75,53 @@ export class RuntimeNostrSession {
         // 3s: if a relay hasn't connected by then it's unreachable.
         // Subscriptions start against connected relays immediately; dead relays
         // are skipped and retried in the background via scheduleRelayConnect.
-        await Promise.race([this.ndk.connect(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
+        let connectTimer;
+        try {
+            await Promise.race([this.ndk.connect(), new Promise((resolve) => { connectTimer = setTimeout(resolve, 3_000); })]);
+        }
+        finally {
+            clearTimeout(connectTimer);
+        }
         this.logDebugSummary();
         this.initialized = true;
     }
-    async shutdown() {
+    /** Throws if the session has shut down: shutdown is terminal (make a new session instead). */
+    assertOpen(operation) {
+        if (this.shuttingDown)
+            throw new RuntimeSessionClosedError(operation);
+    }
+    /**
+     * Terminal and idempotent. New operations fail with `RuntimeSessionClosedError` at once;
+     * debounced publishes already asked for are sent first; then subscriptions, timers, proof-of-work
+     * and every relay pool close, so nothing the session owns keeps the process alive.
+     */
+    shutdown() {
+        if (this.shutdownPromise)
+            return this.shutdownPromise;
         this.shuttingDown = true;
-        this.workAbort.abort();
-        this.publisher.shutdown();
-        this.subscriptions.shutdown();
-        for (const timer of this.relayRetryTimers.values()) {
-            clearTimeout(timer);
-        }
-        this.relayRetryTimers.clear();
-        for (const relay of this.ndk.pool.relays.values()) {
-            try {
-                relay.disconnect();
-            }
-            catch {
-                // ignore individual relay teardown errors
-            }
-        }
+        this.shutdownPromise = this.closeEverything();
+        return this.shutdownPromise;
+    }
+    async closeEverything() {
         try {
-            this.ndk.pool.destroy?.();
+            await this.publisher.shutdown();
         }
-        catch {
-            // ignore pool teardown errors
+        finally {
+            this.workAbort.abort();
+            this.subscriptions.shutdown();
+            for (const timer of this.relayRetryTimers.values()) {
+                clearTimeout(timer);
+            }
+            this.relayRetryTimers.clear();
+            closeNdkPools(this.ndk);
+            // Some NDK relay implementations emit disconnect asynchronously. Clear a
+            // second time after initiating teardown; the hook also checks shuttingDown.
+            for (const timer of this.relayRetryTimers.values()) {
+                clearTimeout(timer);
+            }
+            this.relayRetryTimers.clear();
+            this.initialized = false;
         }
-        // Some NDK relay implementations emit disconnect asynchronously. Clear a
-        // second time after initiating teardown; the hook also checks shuttingDown.
-        for (const timer of this.relayRetryTimers.values()) {
-            clearTimeout(timer);
-        }
-        this.relayRetryTimers.clear();
-        this.initialized = false;
     }
     async buildRelaySet(relayUrls) {
         const relays = normalizeRelayUrls(relayUrls || Array.from(this.knownRelays));
@@ -154,7 +183,12 @@ export class RuntimeNostrSession {
     async resolveProofOfWorkDifficulty(relayUrls) {
         const relays = normalizeRelayUrls(relayUrls);
         await Promise.all(relays.map((relay) => this.fetchRelayInfo(relay)));
-        return this.relayInfoCache.getLimits(relays).minPowDifficulty ?? 0;
+        const required = this.relayInfoCache.getLimits(relays).minPowDifficulty ?? 0;
+        const floor = Number.isInteger(this.proofOfWork.minDifficulty) ? Math.max(0, this.proofOfWork.minDifficulty) : 0;
+        return Math.max(required, floor);
+    }
+    miningOptions() {
+        return { hashFactory: this.proofOfWork.hashFactory, timeoutMs: this.proofOfWork.timeoutMs };
     }
     resolveRelayLimit(relayUrls) {
         const relays = normalizeRelayUrls(relayUrls);
@@ -162,29 +196,94 @@ export class RuntimeNostrSession {
         return Promise.resolve(this.relayInfoCache.getLimits(relays).maxLimit);
     }
     async subscribe(filters, options) {
+        this.assertOpen("subscribe");
         return this.subscriptions.subscribe(filters, options);
     }
     async publish(event, options) {
+        this.assertOpen("publish");
         return this.publisher.publish(event, options);
     }
     async publishRaw(event, options) {
+        this.assertOpen("publishRaw");
         return this.publisher.publishRaw(event, options);
     }
     async prepareNDKEvent(event, signer, relayUrls) {
         const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
-        if (difficulty > 0)
-            await applyProofOfWork(event, signer, difficulty, { signal: this.workAbort.signal });
+        if (difficulty > 0) {
+            this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
+            await applyProofOfWork(event, signer, difficulty, { ...this.miningOptions(), signal: this.workAbort.signal });
+        }
         else if (!event.sig)
             await event.sign(signer);
     }
     async prepareEvent(template, secretKey, relayUrls, options) {
         const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
-        return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, { ...options, signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal }), secretKey);
+        if (difficulty > 0)
+            this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
+        return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, this.preparedMiningOptions(options)), secretKey);
+    }
+    /**
+     * `prepareEvent` for a key held elsewhere: mines proof of work for `signer.pubkey` where the
+     * relays ask for it, then has the signer sign the finished template.
+     */
+    async prepareEventWith(template, signer, relayUrls, options) {
+        const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
+        if (difficulty > 0)
+            this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
+        const mined = await mineEventTemplateFor(template, signer.pubkey, difficulty, this.preparedMiningOptions(options));
+        const signed = await signer.sign(mined);
+        if (signed.pubkey !== signer.pubkey || !verifyEvent(signed))
+            throw new Error("The signer returned an invalid event.");
+        return signed;
+    }
+    preparedMiningOptions(options) {
+        return {
+            ...this.miningOptions(),
+            ...options,
+            signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal,
+        };
+    }
+    /**
+     * Signs (mining NIP-13 proof of work where relays ask for it) and publishes an event. When a
+     * relay refuses it for too little work and names its target, the event is mined again to that
+     * target and resent once: replaceable events go to every relay with a newer timestamp so the
+     * stronger copy wins everywhere; other events go only to the relays that refused them.
+     * `event` is updated in place to the copy that was last published.
+     */
+    async publishSigned(event, signer, relayUrls, options) {
+        this.assertOpen("publishSigned");
+        const relays = normalizeRelayUrls(relayUrls);
+        await this.prepareNDKEvent(event, signer, relays);
+        let result;
+        let failure = null;
+        try {
+            result = await this.publishRaw(event.rawEvent(), { ...options, relayUrls: relays });
+        }
+        catch (error) {
+            failure = error;
+        }
+        const achieved = /^[0-9a-f]{64}$/i.test(event.id || "") ? countLeadingZeroBits(event.id) : 0;
+        const shortfall = relays.filter((relay) => (this.relayInfoCache.getLimits([relay]).minPowDifficulty ?? 0) > achieved);
+        if (!shortfall.length) {
+            if (failure)
+                throw failure;
+            return result;
+        }
+        const replaceable = event.isReplaceable();
+        const targets = replaceable ? relays : shortfall;
+        event.tags = event.tags.filter((tag) => tag[0] !== "nonce");
+        event.sig = undefined;
+        event.id = "";
+        if (replaceable)
+            event.created_at = Math.max(Math.floor(Date.now() / 1000), (event.created_at ?? 0) + 1);
+        await this.prepareNDKEvent(event, signer, targets);
+        return this.publishRaw(event.rawEvent(), { ...options, relayUrls: targets, skipIfIdentical: false });
     }
     createEvent(event) {
         return new NDKEvent(this.ndk, event);
     }
     async fetchEvents(filters, relayUrls, timeoutMs = 8_000, eoseGraceMs = 200, inactivityMs = 1_500) {
+        this.assertOpen("fetchEvents");
         const relaySet = await this.buildRelaySet(relayUrls);
         return new Promise((resolve) => {
             const collected = [];
@@ -258,23 +357,20 @@ export class RuntimeNostrSession {
         return Array.from(this.knownRelays).map((url) => {
             const relay = Array.from(this.ndk.pool.relays.values()).find((candidate) => normalizeRelayUrls([candidate.url])[0] === url);
             const status = relay?.status;
+            const limits = this.relayInfoCache.getLimits([url]);
             return {
                 url,
-                connected: status === NDKRelayStatus.CONNECTED,
+                // An authenticated relay is connected too.
+                connected: status !== undefined && status >= NDKRelayStatus.CONNECTED,
                 status: status === undefined ? "unknown" : NDKRelayStatus[status] ?? String(status),
+                authRequired: Boolean(limits.authRequired),
+                auth: this.authManager.outcome?.(url) ?? null,
+                minPowDifficulty: limits.minPowDifficulty ?? 0,
             };
         });
     }
     setupRelayHooks() {
-        this.ndk.relayAuthDefaultPolicy = async (relay, challenge) => {
-            try {
-                const event = await this.authManager.respond(relay, challenge);
-                return event ?? false;
-            }
-            catch {
-                return false;
-            }
-        };
+        this.ndk.relayAuthDefaultPolicy = createRelayAuthPolicy(this.authManager, { timeoutMs: this.authTimeoutMs });
         this.ndk.pool.on("relay:connect", (relay) => {
             if (this.shuttingDown)
                 return;

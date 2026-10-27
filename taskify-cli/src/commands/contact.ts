@@ -1,14 +1,12 @@
-import { configureRelayAccess, prepareStandaloneEvent } from "taskify-runtime-nostr";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { nip19, getPublicKey } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { loadConfig, saveConfig, type Contact } from "../config.js";
-import type { createNostrRuntime } from "../nostrRuntime.js";
+import type { Contact } from "../config.js";
+import type { CommandContext } from "./context.js";
 import { renderJson } from "../render.js";
 import { pickLatestEvent } from "../shared/latestEvent.js";
 import { sanitizeRemote } from "../shared/displaySafe.js";
-import { verifiedRawEvents } from "../shared/verifiedEvents.js";
 import {
   buildNip51PrivateItems,
   decryptNip51PrivateItems,
@@ -20,7 +18,8 @@ import {
   NIP51_PRIVATE_CONTACTS_D_TAG,
 } from "../shared/nip51Contacts.js";
 
-export function registerContactCommands(program: Command, initRuntime: typeof createNostrRuntime) {
+export function registerContactCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "saveConfig" | "now" | "withStandaloneSession">) {
+  const { loadConfig, saveConfig, now, withStandaloneSession } = context;
   // ---- contact command group ----
   const contactCmd = program
     .command("contact")
@@ -44,14 +43,14 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
     .action(async (opts) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
       const contacts = config.contacts ?? [];
-      if (opts.json) { renderJson(contacts); process.exit(0); }
-      if (contacts.length === 0) { console.log(chalk.dim("No contacts.")); process.exit(0); }
+      if (opts.json) { renderJson(contacts); return; }
+      if (contacts.length === 0) { console.log(chalk.dim("No contacts.")); return; }
       for (const c of contacts) {
         const key = c.npub ?? c.pubkey.slice(0, 12) + "...";
         const label = [c.name, c.nip05].filter(Boolean).join(" / ");
         console.log(`  ${chalk.bold(key)}  ${chalk.dim(label)}`);
       }
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -61,13 +60,13 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
     .action(async (ref: string, opts) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
       const contact = resolveContact(config.contacts ?? [], ref);
-      if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exit(1); }
-      if (opts.json) { renderJson(contact); process.exit(0); }
+      if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exitCode = 1; return; }
+      if (opts.json) { renderJson(contact); return; }
       console.log(chalk.bold("Contact"));
       for (const [k, v] of Object.entries(contact)) {
         if (v !== undefined && v !== null) console.log(`  ${chalk.dim(k + ":")} ${v}`);
       }
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -86,24 +85,24 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
         npub = npubArg;
       } catch {
         console.error(chalk.red("Invalid npub: " + npubArg));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const contacts = config.contacts ?? [];
       if (contacts.find((c) => c.pubkey === pubkeyHex)) {
         console.log(chalk.yellow("Contact already exists."));
-        process.exit(0);
+        return;
       }
       const contact: Contact = {
         pubkey: pubkeyHex,
         npub,
         name: opts.name,
         nip05: opts.nip05,
-        addedAt: Math.floor(Date.now() / 1000),
+        addedAt: Math.floor(now().getTime() / 1000),
       };
       config.contacts = [...contacts, contact];
       await saveConfig(config);
       console.log(chalk.green(`✓ Added contact: ${opts.name ?? npub}`));
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -113,11 +112,11 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
       const config = await loadConfig(program.opts().profile as string | undefined);
       const contacts = config.contacts ?? [];
       const contact = resolveContact(contacts, ref);
-      if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exit(1); }
+      if (!contact) { console.error(chalk.red(`Contact not found: ${ref}`)); process.exitCode = 1; return; }
       config.contacts = contacts.filter((c) => c.pubkey !== contact.pubkey);
       await saveConfig(config);
       console.log(chalk.green(`✓ Removed contact: ${contact.name ?? contact.npub ?? contact.pubkey}`));
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -134,29 +133,21 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
         npub = npubArg;
       } catch {
         console.error(chalk.red("Invalid npub: " + npubArg));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
-      const runtime = initRuntime(config);
       try {
         process.stderr.write("Fetching kind 0 profile from relays...\n");
-        const NDKMod = await import("@nostr-dev-kit/ndk");
-        const ndk = new NDKMod.default({ explicitRelayUrls: config.relays });
-        configureRelayAccess(ndk);
-        await ndk.connect();
-        const events = await ndk.fetchEvents(
-          { kinds: [0], authors: [pubkeyHex], limit: 1 } as Parameters<typeof ndk.fetchEvents>[0],
-          { closeOnEose: true },
-        );
+        const events = await withStandaloneSession({ relays: config.relays }, (session) =>
+          session.fetchVerified({ kinds: [0], authors: [pubkeyHex], limit: 1 }, { timeoutMs: 8_000 }));
         let profileData: Record<string, unknown> = {};
-        const signed = pickLatestEvent(
-          verifiedRawEvents(events).filter((evt) => evt.kind === 0 && evt.pubkey === pubkeyHex),
-        );
+        const signed = pickLatestEvent(events.filter((evt) => evt.kind === 0 && evt.pubkey === pubkeyHex));
         if (signed) {
           try { profileData = sanitizeRemote(JSON.parse(signed.content)); } catch { /* ignore */ }
         }
+        const nowSeconds = Math.floor(now().getTime() / 1000);
         const contacts = config.contacts ?? [];
         const idx = contacts.findIndex((c) => c.pubkey === pubkeyHex);
-        const existing: Contact = idx >= 0 ? contacts[idx] : { pubkey: pubkeyHex, npub, addedAt: Math.floor(Date.now() / 1000) };
+        const existing: Contact = idx >= 0 ? contacts[idx] : { pubkey: pubkeyHex, npub, addedAt: nowSeconds };
         const updated: Contact = {
           ...existing,
           name: (profileData.name as string | undefined) ?? existing.name,
@@ -164,21 +155,18 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
           nip05: (profileData.nip05 as string | undefined) ?? existing.nip05,
           about: (profileData.about as string | undefined) ?? existing.about,
           picture: (profileData.picture as string | undefined) ?? existing.picture,
-          updatedAt: Math.floor(Date.now() / 1000),
+          updatedAt: nowSeconds,
         };
         if (idx >= 0) contacts[idx] = updated;
         else contacts.push(updated);
         config.contacts = contacts;
         await saveConfig(config);
         console.log(chalk.green(`✓ Fetched profile for ${updated.name ?? npub}`));
-        try { (ndk.pool as unknown as { destroy?(): void })?.destroy?.(); } catch { /* ignore */ }
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
-      } finally {
-        await runtime.disconnect();
+        process.exitCode = 1; return;
       }
-      process.exit(0);
+      return;
     });
 
   contactCmd
@@ -190,87 +178,71 @@ export function registerContactCommands(program: Command, initRuntime: typeof cr
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.nsec) {
         console.error(chalk.red("No nsec configured — cannot sync contacts"));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const decoded = nip19.decode(config.nsec);
-      if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exit(1); }
+      if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exitCode = 1; return; }
       const userSk = decoded.data as Uint8Array;
       const userPk = getPublicKey(userSk);
-      const NDKMod = await import("@nostr-dev-kit/ndk");
-      const NDKPrivateKeySigner = (await import("@nostr-dev-kit/ndk")).NDKPrivateKeySigner;
-      const ndk = new NDKMod.default({ explicitRelayUrls: config.relays, signer: new NDKPrivateKeySigner(bytesToHex(userSk)) });
-      configureRelayAccess(ndk, bytesToHex(userSk));
-      await ndk.connect();
       const keys = { privateKeyHex: bytesToHex(userSk), publicKeyHex: userPk };
       let contacts = [...(config.contacts ?? [])];
       try {
-        // Fetch latest encrypted PWA-compatible list, plus legacy public CLI list for migration.
-        const existing = await ndk.fetchEvents(
-          {
+        await withStandaloneSession({ relays: config.relays, secretKeyHex: keys.privateKeyHex }, async (session) => {
+          // The latest encrypted PWA-compatible list, plus the legacy public CLI list for migration.
+          const signedLists = (await session.fetchVerified({
             kinds: [NIP51_CONTACTS_KIND],
             authors: [userPk],
             "#d": [NIP51_PRIVATE_CONTACTS_D_TAG, NIP51_LEGACY_CONTACTS_D_TAG],
             limit: 5,
-          } as Parameters<typeof ndk.fetchEvents>[0],
-          { closeOnEose: true },
-        );
+          }, { timeoutMs: 8_000 })).filter((evt) => evt.pubkey === userPk);
+          const hasDTag = (evt: { tags?: string[][] }, dTag: string) =>
+            Array.isArray(evt.tags) && evt.tags.some((tag) => tag[0] === "d" && tag[1] === dTag);
+          const nowSeconds = Math.floor(now().getTime() / 1000);
 
-        const hasDTag = (evt: { tags?: string[][] }, dTag: string) =>
-          Array.isArray(evt.tags) && evt.tags.some((tag) => tag[0] === "d" && tag[1] === dTag);
-
-        const signedLists = verifiedRawEvents(existing).filter((evt) => evt.pubkey === userPk);
-        const latestPrivate = pickLatestEvent(signedLists.filter((evt) => hasDTag(evt, NIP51_PRIVATE_CONTACTS_D_TAG)));
-        if (latestPrivate) {
-          try {
-            const privateItems = await decryptNip51PrivateItems(latestPrivate.content, keys);
-            const privateContacts = extractNip51PrivateContacts(privateItems);
-            contacts = mergeNip51PrivateContacts(
-              contacts,
-              privateContacts,
-              latestPrivate.created_at ?? Math.floor(Date.now() / 1000),
-            );
-          } catch (err) {
-            process.stderr.write(chalk.yellow(`Warning: could not decrypt private contacts list: ${String(err)}\n`));
-          }
-        }
-
-        const latestLegacy = pickLatestEvent(signedLists.filter((evt) => hasDTag(evt, NIP51_LEGACY_CONTACTS_D_TAG)));
-        if (latestLegacy) {
-          const pTags = latestLegacy.tags.filter((t: string[]) => t[0] === "p");
-          for (const pTag of pTags) {
-            const pk = pTag[1];
-            if (pk && !contacts.find((c) => c.pubkey === pk)) {
-              contacts.push({
-                pubkey: pk,
-                npub: nip19.npubEncode(pk),
-                relays: pTag[2] ? [pTag[2]] : undefined,
-                name: pTag[3] || undefined,
-                addedAt: latestLegacy.created_at ?? Math.floor(Date.now() / 1000),
-              });
+          const latestPrivate = pickLatestEvent(signedLists.filter((evt) => hasDTag(evt, NIP51_PRIVATE_CONTACTS_D_TAG)));
+          if (latestPrivate) {
+            try {
+              const privateItems = await decryptNip51PrivateItems(latestPrivate.content, keys);
+              const privateContacts = extractNip51PrivateContacts(privateItems);
+              contacts = mergeNip51PrivateContacts(contacts, privateContacts, latestPrivate.created_at ?? nowSeconds);
+            } catch (err) {
+              process.stderr.write(chalk.yellow(`Warning: could not decrypt private contacts list: ${String(err)}\n`));
             }
           }
-        }
-        if (!opts.pull && contacts.length > 0) {
-          const NDKEventMod = await import("@nostr-dev-kit/ndk");
-          const syncEvent = new NDKEventMod.NDKEvent(ndk);
-          syncEvent.kind = NIP51_CONTACTS_KIND;
-          syncEvent.content = await encryptNip51PrivateItems(buildNip51PrivateItems(contacts), keys);
-          syncEvent.tags = [["d", NIP51_PRIVATE_CONTACTS_D_TAG]];
-          await prepareStandaloneEvent(syncEvent, config.relays);
-          await syncEvent.publish();
-          console.log(chalk.green(`✓ Published ${contacts.length} encrypted private contacts to relay`));
-        }
+
+          const latestLegacy = pickLatestEvent(signedLists.filter((evt) => hasDTag(evt, NIP51_LEGACY_CONTACTS_D_TAG)));
+          if (latestLegacy) {
+            for (const pTag of latestLegacy.tags.filter((t: string[]) => t[0] === "p")) {
+              const pk = pTag[1];
+              if (pk && !contacts.find((c) => c.pubkey === pk)) {
+                contacts.push({
+                  pubkey: pk,
+                  npub: nip19.npubEncode(pk),
+                  relays: pTag[2] ? [pTag[2]] : undefined,
+                  name: pTag[3] || undefined,
+                  addedAt: latestLegacy.created_at ?? nowSeconds,
+                });
+              }
+            }
+          }
+          if (!opts.pull && contacts.length > 0) {
+            await session.publish({
+              kind: NIP51_CONTACTS_KIND,
+              content: await encryptNip51PrivateItems(buildNip51PrivateItems(contacts), keys),
+              tags: [["d", NIP51_PRIVATE_CONTACTS_D_TAG]],
+            });
+            console.log(chalk.green(`✓ Published ${contacts.length} encrypted private contacts to relay`));
+          }
+        });
         config.contacts = contacts;
         await saveConfig(config);
         if (opts.json) renderJson(contacts);
         else console.log(chalk.green(`✓ Synced ${contacts.length} contacts`));
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
-      } finally {
-        try { (ndk.pool as unknown as { destroy?(): void })?.destroy?.(); } catch { /* ignore */ }
+        process.exitCode = 1; return;
       }
-      process.exit(0);
+      return;
     });
 
 }

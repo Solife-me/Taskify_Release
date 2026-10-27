@@ -1,9 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import type { TaskDocument, TaskDocumentPreview } from "../../lib/documents";
-import { createDocumentFromDataUrl, documentAssetCacheKey, loadDocumentPreview } from "../../lib/documents";
-import { decryptAttachment } from "../../lib/attachmentCrypto";
-import { sanitizeHtml } from "../../lib/sanitize";
+import type { TaskDocument } from "../../lib/documents";
+import { resolveDocumentAsset } from "./documentAsset";
 import { PdfViewer } from "./viewers/PdfViewer";
 import { ImageViewer } from "./viewers/ImageViewer";
 import { VideoViewer } from "./viewers/VideoViewer";
@@ -12,8 +10,6 @@ import { SpreadsheetViewer } from "./viewers/SpreadsheetViewer";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const resolvedDocumentCache = new Map<string, Promise<TaskDocument>>();
-
 function formatBytes(value?: number): string | null {
   if (!value || !Number.isFinite(value)) return null;
   const units = ["B", "KB", "MB", "GB"];
@@ -21,80 +17,6 @@ function formatBytes(value?: number): string | null {
   let unit = 0;
   while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
   return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
-}
-
-async function resolveDocumentAsset(doc: TaskDocument, boardId?: string): Promise<TaskDocument> {
-  if (!doc.remoteUrl) return doc;
-  const decryptBoardId = doc.encryptionBoardId || boardId;
-  const cacheKey = documentAssetCacheKey(doc, boardId);
-  const cached = resolvedDocumentCache.get(cacheKey);
-  if (cached) return cached;
-  const promise = (async () => {
-    const dataUrl = doc.encrypted && decryptBoardId
-      ? await decryptAttachment({ boardId: decryptBoardId, url: doc.remoteUrl!, mimeType: doc.mimeType })
-      : doc.remoteUrl!;
-    const resolved = await createDocumentFromDataUrl({
-      id: doc.id, name: doc.name, mimeType: doc.mimeType, dataUrl,
-      createdAt: doc.createdAt, size: doc.size, remoteUrl: doc.remoteUrl,
-      encrypted: doc.encrypted, encryptionBoardId: doc.encryptionBoardId || decryptBoardId,
-    });
-    return {
-      ...resolved,
-      remoteUrl: doc.remoteUrl,
-      encrypted: doc.encrypted,
-      encryptionBoardId: doc.encryptionBoardId || decryptBoardId,
-    };
-  })().catch((err) => { resolvedDocumentCache.delete(cacheKey); throw err; });
-  resolvedDocumentCache.set(cacheKey, promise);
-  return promise;
-}
-
-// ── Thumbnail ─────────────────────────────────────────────────────────────────
-
-export function DocumentThumbnail({
-  document: doc,
-  boardId,
-  onClick,
-}: {
-  document: TaskDocument;
-  boardId?: string;
-  onClick: () => void;
-}) {
-  const [derivedPreview, setDerivedPreview] = useState<TaskDocumentPreview | null>(doc.preview ?? null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setDerivedPreview(doc.preview ?? null);
-    resolveDocumentAsset(doc, boardId)
-      .then((resolved) => loadDocumentPreview(resolved))
-      .then((next) => { if (!cancelled) setDerivedPreview(next); })
-      .catch(() => { if (!cancelled) setDerivedPreview(doc.preview ?? null); });
-    return () => { cancelled = true; };
-  }, [doc, boardId]);
-
-  const preview = derivedPreview ?? doc.preview ?? null;
-  const label = doc.name || "Document";
-
-  let previewNode: React.ReactNode;
-  if (preview?.type === "image") {
-    previewNode = <img src={preview.data} alt="" className="doc-thumb__image" />;
-  } else if (preview?.type === "html") {
-    previewNode = <div className="doc-thumb__html" dangerouslySetInnerHTML={{ __html: sanitizeHtml(preview.data) }} />;
-  } else if (preview?.type === "text") {
-    previewNode = <pre className="doc-thumb__text">{preview.data.split(/\n+/).slice(0, 6).join("\n")}</pre>;
-  } else {
-    previewNode = <div className="doc-thumb__placeholder">{doc.kind.toUpperCase()}</div>;
-  }
-
-  return (
-    <button type="button" className="doc-thumb" onClick={onClick}>
-      <div className="doc-thumb__preview">{previewNode}</div>
-      <div className="doc-thumb__footer" style={{ display: 'none' }}>
-        <span className="doc-thumb__name" title={label}>{label}</span>
-        <span className="doc-thumb__kind">{doc.kind.toUpperCase()}</span>
-      </div>
-    </button>
-  );
 }
 
 // ── Shell ─────────────────────────────────────────────────────────────────────

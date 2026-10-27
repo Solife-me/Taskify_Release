@@ -25,6 +25,10 @@ struct TaskNoteMarkdownView: View {
     @State private var copiedCode: String?
     @State private var dataAction: TaskNoteDataAction?
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// `fontSize` at the current text size (C8-3).
+    private var size: CGFloat { ScaledSize.scaled(fontSize, for: dynamicTypeSize) }
 
     var body: some View {
         let allBlocks = TaskNoteMarkdown.blocks(note)
@@ -37,7 +41,7 @@ struct TaskNoteMarkdownView: View {
             }
             if blocks.count < allBlocks.count {
                 Text("…")
-                    .font(.system(size: fontSize, weight: .semibold))
+                    .font(.system(size: size, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
             }
@@ -114,26 +118,26 @@ struct TaskNoteMarkdownView: View {
     private func blockView(_ block: TaskNoteBlock) -> some View {
         switch block {
         case .paragraph(let content):
-            inlineText(content, font: .system(size: fontSize))
+            inlineText(content, font: .system(size: size))
         case let .heading(level, content):
             inlineText(content, font: headingFont(level))
         case let .bulletItem(depth, content):
             listRow(depth: depth) {
-                Text("•").font(.system(size: fontSize, weight: .bold))
+                Text("•").font(.system(size: size, weight: .bold))
             } content: {
-                inlineText(content, font: .system(size: fontSize))
+                inlineText(content, font: .system(size: size))
             }
         case let .numberedItem(depth, number, content):
             listRow(depth: depth) {
-                Text("\(number).").font(.system(size: fontSize - 1, weight: .semibold)).monospacedDigit()
+                Text("\(number).").font(.system(size: size - 1, weight: .semibold)).monospacedDigit()
             } content: {
-                inlineText(content, font: .system(size: fontSize))
+                inlineText(content, font: .system(size: size))
             }
         case let .checklistItem(depth, checked, content, line):
             listRow(depth: depth) {
                 checkbox(checked: checked, line: line, content: content)
             } content: {
-                inlineText(content, font: .system(size: fontSize))
+                inlineText(content, font: .system(size: size))
                     .strikethrough(checked)
                     .foregroundStyle(checked ? .secondary : .primary)
             }
@@ -142,14 +146,14 @@ struct TaskNoteMarkdownView: View {
                 RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                     .fill(.tint.opacity(0.7))
                     .frame(width: 3)
-                inlineText(content, font: .system(size: fontSize).italic())
+                inlineText(content, font: .system(size: size).italic())
                     .foregroundStyle(.secondary)
             }
             .fixedSize(horizontal: false, vertical: true)
         case .code(let content):
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(content)
-                    .font(.system(size: fontSize - 2, design: .monospaced))
+                    .font(.system(size: size - 2, design: .monospaced))
                     .fixedSize(horizontal: true, vertical: false)
             }
             .padding(10)
@@ -169,7 +173,7 @@ struct TaskNoteMarkdownView: View {
         case .spacer(let lines):
             // One empty row per skipped line, at the body text's line height.
             Color.clear
-                .frame(height: CGFloat(lines) * fontSize * 1.3)
+                .frame(height: CGFloat(lines) * size * 1.3)
                 .accessibilityHidden(true)
         }
     }
@@ -177,7 +181,7 @@ struct TaskNoteMarkdownView: View {
     @ViewBuilder
     private func checkbox(checked: Bool, line: Int, content: String) -> some View {
         let image = Image(systemName: checked ? "checkmark.square.fill" : "square")
-            .font(.system(size: fontSize, weight: .semibold))
+            .font(.system(size: size, weight: .semibold))
             .foregroundStyle(checked ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
         if let onToggleChecklistItem {
             Button {
@@ -198,14 +202,14 @@ struct TaskNoteMarkdownView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            marker().frame(minWidth: fontSize, alignment: .trailing)
+            marker().frame(minWidth: size, alignment: .trailing)
             content()
         }
-        .padding(.leading, CGFloat(depth) * fontSize * 1.2)
+        .padding(.leading, CGFloat(depth) * size * 1.2)
     }
 
     private func inlineText(_ markdown: String, font: Font) -> some View {
-        Text(TaskNoteInline.attributed(markdown, codeSize: fontSize - 1.5, interactive: selectable))
+        Text(TaskNoteInline.attributed(markdown, codeSize: size - 1.5, interactive: selectable))
             .font(font)
             .fixedSize(horizontal: false, vertical: true)
             .taskNoteTextSelection(selectable)
@@ -213,10 +217,10 @@ struct TaskNoteMarkdownView: View {
 
     private func headingFont(_ level: Int) -> Font {
         switch level {
-        case 1: .system(size: fontSize + 8, weight: .bold)
-        case 2: .system(size: fontSize + 5, weight: .bold)
-        case 3: .system(size: fontSize + 2, weight: .bold)
-        default: .system(size: fontSize, weight: .semibold)
+        case 1: .system(size: size + 8, weight: .bold)
+        case 2: .system(size: size + 5, weight: .bold)
+        case 3: .system(size: size + 2, weight: .bold)
+        default: .system(size: size, weight: .semibold)
         }
     }
 
@@ -567,7 +571,7 @@ struct TaskNoteEditorView: View {
                         }
                     } label: {
                         Image(systemName: format.symbolName)
-                            .font(.system(size: 16, weight: .medium))
+                            .scaledFont(size: 16, weight: .medium)
                             .frame(width: 38, height: 34)
                             .contentShape(Rectangle())
                     }

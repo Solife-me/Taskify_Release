@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import { readFile,writeFile } from "fs/promises";
 import { loadConfig } from "../config.js";
 import { csvEscape,parseCSV } from "../csv.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerTransferCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "resolveColumnOrExit">) {
   const { initRuntime, resolveBoardId, resolveColumnOrExit } = context;
@@ -99,11 +99,12 @@ export function registerTransferCommands(program: Command, context: Pick<Command
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -123,7 +124,8 @@ export function registerTransferCommands(program: Command, context: Pick<Command
         raw = await readFile(file, "utf-8");
       } catch {
         console.error(chalk.red(`Cannot read file: ${file}`));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
 
       type ImportRow = {
@@ -141,10 +143,14 @@ export function registerTransferCommands(program: Command, context: Pick<Command
       if (ext === "json") {
         let parsed: unknown;
         try { parsed = JSON.parse(raw); } catch {
-          console.error(chalk.red("Invalid JSON file")); process.exit(1);
+          console.error(chalk.red("Invalid JSON file"));
+          process.exitCode = 1;
+          return;
         }
         if (!Array.isArray(parsed)) {
-          console.error(chalk.red("JSON file must be an array of objects")); process.exit(1);
+          console.error(chalk.red("JSON file must be an array of objects"));
+          process.exitCode = 1;
+          return;
         }
         rows = (parsed as Record<string, unknown>[]).map((obj) => ({
           title: String(obj.title ?? ""),
@@ -168,19 +174,21 @@ export function registerTransferCommands(program: Command, context: Pick<Command
         }));
       } else {
         console.error(chalk.red(`Unsupported file extension: .${ext}. Use .json or .csv`));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
 
       // Validate: check for missing titles
       const invalid = rows.map((r, i) => ({ i, r })).filter(({ r }) => !r.title.trim());
       if (invalid.length > 0) {
         console.error(chalk.red(`Invalid rows (missing title): ${invalid.map(({ i }) => i + 1).join(", ")}`));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
 
       if (rows.length === 0) {
         console.log(chalk.dim("No rows to import."));
-        process.exit(0);
+        return;
       }
 
       // Print preview table
@@ -196,7 +204,7 @@ export function registerTransferCommands(program: Command, context: Pick<Command
 
       if (opts.dryRun) {
         console.log(chalk.dim("\n[dry-run] No tasks created."));
-        process.exit(0);
+        return;
       }
 
       if (!opts.yes) {
@@ -210,7 +218,7 @@ export function registerTransferCommands(program: Command, context: Pick<Command
         });
         if (!confirmed) {
           console.log("Aborted.");
-          process.exit(0);
+          return;
         }
       }
 
@@ -254,11 +262,12 @@ export function registerTransferCommands(program: Command, context: Pick<Command
         }
         console.log(chalk.green(`✓ Imported ${created}/${rows.length} tasks`));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

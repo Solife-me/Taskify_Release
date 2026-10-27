@@ -1,28 +1,54 @@
 /*
- * Desktop enhancement layer.
+ * Desktop layout.
  *
- * The mobile shell in app-shell.css and boards-and-tasks.css remains the
- * default. These styles only activate for a desktop interaction profile:
- * hover, a fine pointer, and a viewport wide enough for a persistent rail.
+ * The mobile shell in app-shell.css and boards-and-tasks.css stays the default; this layer
+ * only rearranges it for a desktop: hover, a fine pointer, and a viewport wide enough for a
+ * rail. Same components, colors and glass; only the arrangement changes.
+ *
+ *   rail | header
+ *   rail | banner
+ *   rail | content
+ *   rail | page controls
+ *
+ * The rail holds the pages and the user's boards, so it is useful space rather than a strip of
+ * four links. The shell is not capped at the phone-first 80rem: boards use the width.
  */
 @media (min-width: 1024px) and (hover: hover) and (pointer: fine) {
+  :root {
+    --desktop-shell-max: 110rem;
+    --desktop-shell-pad-left: 0.9rem;
+    --desktop-shell-pad-right: 1.25rem;
+    --desktop-rail-width: 13.5rem;
+    --desktop-rail-gap: 1.25rem;
+    /* Space beside a centered shell on very wide screens. */
+    --desktop-shell-margin: max(0px, calc((100vw - var(--desktop-shell-max)) / 2));
+    /* Where the content column starts, for overlays that must leave the rail visible. */
+    --desktop-content-left: calc(
+      var(--desktop-shell-margin) + var(--desktop-shell-pad-left) + var(--desktop-rail-width) + var(--desktop-rail-gap)
+    );
+  }
+
   .app-shell {
     display: grid;
-    grid-template-columns: 15rem minmax(0, 1fr);
+    grid-template-columns: var(--desktop-rail-width) minmax(0, 1fr);
     grid-template-rows: auto auto minmax(0, 1fr) auto;
     grid-template-areas:
-      "header header"
-      "banner banner"
+      "nav header"
+      "nav banner"
       "nav content"
       "nav controls";
-    padding-bottom: 0;
+    column-gap: var(--desktop-rail-gap);
+    max-width: var(--desktop-shell-max);
+    padding: 0.9rem var(--desktop-shell-pad-right) 0 var(--desktop-shell-pad-left);
   }
+
+  /* ---- Header ---- */
 
   .app-header {
     grid-area: header;
     position: relative;
-    min-height: 3.5rem;
-    padding: 0.25rem 0 0.75rem;
+    min-height: 3.25rem;
+    padding: 0 0 0.75rem;
     z-index: 30;
   }
 
@@ -33,6 +59,32 @@
 
   .app-header__right {
     flex: 0 0 auto;
+  }
+
+  .app-header__title,
+  .app-header__board-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+  }
+
+  .app-header__board-title {
+    display: block;
+    margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-header__board-share {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+
+  /* The rail switches boards, so the header picker (and its drop menu) is not needed. */
+  .app-header__left > .board-select {
+    display: none;
   }
 
   .app-header__icon-btn {
@@ -73,39 +125,39 @@
     scrollbar-gutter: stable;
   }
 
+  /* ---- Rail: pages, then boards ---- */
+
   .app-tab-switcher {
     grid-area: nav;
     position: relative;
     inset: auto;
     display: flex;
     flex-direction: column;
-    align-items: stretch;
-    justify-content: flex-start;
-    padding: 1rem;
+    gap: 0.75rem;
+    min-height: 0;
+    margin-bottom: 1rem;
+    padding: 0.6rem;
     pointer-events: auto;
     z-index: 30;
-    border-right: 1px solid var(--surface-border);
-    background: linear-gradient(90deg, rgba(22, 23, 30, 0.9), rgba(22, 23, 30, 0.5));
+    border-radius: var(--radius-card);
+    border: 1px solid var(--surface-border-strong);
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.28), rgba(255, 255, 255, 0.04));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
     backdrop-filter: var(--blur-backdrop);
     -webkit-backdrop-filter: var(--blur-backdrop);
-  }
-
-  html.light .app-tab-switcher {
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.72));
   }
 
   .app-tab-switcher__pill {
     display: flex;
     flex-direction: column;
-    justify-content: flex-start;
-    gap: 0.45rem;
+    gap: 0.15rem;
     width: 100%;
     min-height: 0;
-    padding: 0.5rem;
-    border-radius: var(--radius-card);
-    border: 1px solid var(--surface-border);
-    background: var(--surface-muted);
-    box-shadow: var(--shadow-inner);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
   }
 
   .app-tab-switcher__pill > .relative {
@@ -113,17 +165,22 @@
     width: 100%;
   }
 
+  /* The bottom bar's hidden board picker sits over the Boards button on phones. */
+  .app-tab-switcher__pill > .relative > select {
+    display: none;
+  }
+
   .app-tab-switcher__btn {
     flex: 0 0 auto;
     width: 100%;
-    min-height: 3rem;
+    min-height: 2.5rem;
     flex-direction: row;
     align-items: center;
     justify-content: flex-start;
-    gap: 0.75rem;
-    padding: 0.55rem 0.8rem;
-    border-radius: 0.85rem;
-    font-size: 0.82rem;
+    gap: 0.65rem;
+    padding: 0.3rem 0.6rem 0.3rem 0.35rem;
+    border: 1px solid transparent;
+    border-radius: 0.9rem;
     color: var(--text-secondary);
     transition:
       background-color 140ms ease,
@@ -134,7 +191,6 @@
 
   .app-tab-switcher__btn:hover,
   .app-tab-switcher__btn[data-hovered="true"] {
-    border-color: var(--surface-border-strong);
     background: var(--surface-highlight);
     color: var(--text-primary);
   }
@@ -143,13 +199,7 @@
     box-shadow: 0 0 0 2px var(--accent-soft);
   }
 
-  .app-tab-switcher__btn--active {
-    border-color: var(--accent-border);
-    background: var(--accent-soft);
-    color: var(--accent);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  }
-
+  .app-tab-switcher__btn--active,
   .app-tab-switcher__btn--active:hover {
     border-color: var(--accent-border);
     background: var(--accent-soft);
@@ -162,25 +212,198 @@
   }
 
   .app-tab-switcher__icon {
-    width: 2.1rem;
-    height: 2.1rem;
+    width: 1.9rem;
+    height: 1.9rem;
     flex: 0 0 auto;
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.07);
   }
 
   html.light .app-tab-switcher__icon {
-    background: rgba(12, 24, 63, 0.08);
+    background: rgba(12, 24, 63, 0.07);
   }
 
   .app-tab-switcher__icon-svg {
-    width: 1.15rem;
-    height: 1.15rem;
+    width: 1.05rem;
+    height: 1.05rem;
   }
 
   .app-tab-switcher__label {
-    font-size: 0.82rem;
+    font-size: 0.85rem;
+    font-weight: 600;
     letter-spacing: 0;
   }
+
+  .rail-boards {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--surface-border-strong);
+  }
+
+  .rail-boards__heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 0.35rem 0.4rem 0.6rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  .rail-boards__add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 999px;
+    color: var(--text-secondary);
+  }
+
+  .rail-boards__add:hover {
+    background: var(--surface-highlight);
+    color: var(--text-primary);
+  }
+
+  .rail-boards__list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .rail-boards__item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    min-height: 2.25rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid transparent;
+    border-radius: 0.8rem;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    text-align: left;
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease;
+  }
+
+  .rail-boards__item:hover {
+    background: var(--surface-highlight);
+    color: var(--text-primary);
+  }
+
+  .rail-boards__item.is-current {
+    background: var(--surface-highlight);
+    border-color: var(--surface-border-strong);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .rail-boards__item.is-current .rail-boards__glyph {
+    color: var(--accent);
+  }
+
+  .rail-boards__item.is-drop-target {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .rail-boards__item:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .rail-boards__glyph {
+    width: 1.05rem;
+    height: 1.05rem;
+    flex: 0 0 auto;
+  }
+
+  .rail-boards__name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rail-boards__shared {
+    width: 0.4rem;
+    height: 0.4rem;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: var(--accent);
+    opacity: 0.7;
+  }
+
+  .rail-boards__empty {
+    padding: 0.5rem 0.6rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+  }
+
+  /* ---- Boards ---- */
+
+  .app-content > .board-layout > .overflow-x-auto {
+    padding-bottom: 1rem;
+    scrollbar-gutter: stable both-edges;
+    overscroll-behavior-x: contain;
+  }
+
+  .board-layout [data-column-scroll] {
+    scrollbar-width: thin;
+  }
+
+  .board-scroller[data-panning] {
+    cursor: grabbing;
+    user-select: none;
+  }
+
+  .board-scroll-edge {
+    position: absolute;
+    top: 50%;
+    z-index: 20;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--surface-border-strong);
+    background: linear-gradient(180deg, rgba(30, 32, 42, 0.92), rgba(30, 32, 42, 0.78));
+    color: var(--text-primary);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+    backdrop-filter: var(--blur-backdrop);
+    -webkit-backdrop-filter: var(--blur-backdrop);
+    transform: translateY(-50%);
+    opacity: 0.85;
+    transition: opacity 140ms ease, transform 140ms ease;
+  }
+
+  .board-scroll-edge:hover {
+    opacity: 1;
+    transform: translateY(-50%) scale(1.05);
+  }
+
+  .board-scroll-edge--left {
+    left: 0.25rem;
+  }
+
+  .board-scroll-edge--right {
+    right: 0.25rem;
+  }
+
+  /* ---- Upcoming ---- */
 
   .upcoming-controls {
     grid-area: controls;
@@ -194,16 +417,6 @@
   .upcoming-controls__today {
     min-height: 2.5rem;
     font-size: 0.85rem;
-  }
-
-  .app-content > .board-layout > .overflow-x-auto {
-    padding-bottom: 1rem;
-    scrollbar-gutter: stable both-edges;
-    overscroll-behavior-x: contain;
-  }
-
-  .board-layout [data-column-scroll] {
-    scrollbar-width: thin;
   }
 
   .upcoming-list-view {
@@ -229,9 +442,170 @@
     scrollbar-width: thin;
   }
 
-  .app-content > .upcoming-list {
-    max-width: 56rem;
-    margin: 0 auto;
+  /* Day-by-day view: the month calendar stays beside the list to jump between days. */
+  .upcoming-details {
+    display: grid;
+    grid-template-columns: minmax(17rem, 20rem) minmax(0, 52rem);
+    justify-content: center;
+    align-items: start;
+    gap: 1.5rem;
     padding-bottom: 1.25rem;
+  }
+
+  .upcoming-details__calendar {
+    display: block;
+    position: sticky;
+    top: 0;
+    padding: 1rem;
+  }
+
+  /* ---- Settings: a readable column, not the full width ---- */
+
+  .modal-panel--embedded {
+    width: 100%;
+    max-width: 52rem;
+    margin: 0 auto;
+  }
+
+  /* ---- Dialogs, panes and sheets ---- */
+
+  /* Editors dock on the right, so the board stays in view beside the task being edited. */
+  .modal-backdrop--pane {
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 0.75rem;
+    background: rgba(7, 10, 20, 0.34);
+  }
+
+  .modal-panel--pane {
+    width: clamp(26rem, 38vw, 36rem);
+    height: auto;
+    border-radius: var(--radius-card);
+    animation: taskify-pane-in 180ms ease-out;
+  }
+
+  .modal-panel--pane .modal-panel__header--spaced {
+    padding-top: 0.75rem;
+  }
+
+  /* Short forms are centered and only as tall as they need to be. */
+  .modal-backdrop--dialog {
+    align-items: center;
+  }
+
+  .modal-panel--dialog {
+    width: min(46rem, 92vw);
+    height: auto;
+    max-height: min(85dvh, 50rem);
+    border-radius: var(--radius-card);
+  }
+
+  /* Action sheets float in the middle instead of rising from the bottom edge. */
+  .sheet-backdrop {
+    justify-content: center;
+    align-items: center;
+  }
+
+  .sheet-panel:not(.sheet-panel--inline) {
+    width: min(32rem, 92vw);
+    max-height: min(80dvh, 46rem);
+    border-radius: var(--radius-card);
+    animation: taskify-dialog-in 160ms ease-out;
+  }
+
+  @keyframes taskify-pane-in {
+    from {
+      opacity: 0;
+      transform: translateX(1.5rem);
+    }
+  }
+
+  @keyframes taskify-dialog-in {
+    from {
+      opacity: 0;
+      transform: translateY(0.5rem) scale(0.98);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .modal-panel--pane,
+    .sheet-panel:not(.sheet-panel--inline) {
+      animation: none;
+    }
+  }
+
+  /* ---- Cards: same size as on phones (lists keep one width everywhere), plus a hover state ---- */
+
+  .board-layout .task-card {
+    transition: border-color 140ms ease;
+  }
+
+  .board-layout .task-card:hover {
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+
+  /* ---- Chat (and the wallet) ----
+     Chat still lives in the wallet's full-window overlay (moving it out is planned in chunk 5).
+     On desktop the overlay covers only the content column, so the rail stays usable. */
+  .wallet-modal {
+    left: var(--desktop-content-left);
+    right: calc(var(--desktop-shell-margin) + var(--desktop-shell-pad-right));
+  }
+
+  /* `hidden` still lets scrollIntoView scroll the overlay itself, which shifted the two panes;
+     `clip` does not. */
+  .wallet-modal--chat {
+    overflow: clip;
+  }
+
+  /* Phones hide the bottom tab bar inside a conversation (chat.css); the desktop rail stays. */
+  body:has(.wallet-modal--chat-convo) .app-tab-switcher,
+  body:has(.wallet-modal--app-nav-hidden) .app-tab-switcher {
+    display: flex;
+  }
+
+  /* Conversations on the left, the open conversation (or a new message) on the right. */
+  .chat-page--two-pane {
+    display: grid;
+    grid-template-columns: minmax(18rem, 22rem) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 1rem;
+    padding-bottom: 1rem;
+  }
+
+  .chat-page--two-pane > .chat-page__threads {
+    grid-column: 1;
+    grid-row: 1;
+    border-right: 1px solid var(--surface-border-strong);
+    padding-right: 0.75rem;
+  }
+
+  .chat-page--two-pane > :not(.chat-page__threads) {
+    grid-column: 2;
+    grid-row: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  .chat-page--two-pane .wallet-messages__thread.is-active {
+    background: var(--surface-highlight);
+    border-color: var(--surface-border-strong);
+  }
+
+  .chat-page__empty-pane {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    text-align: center;
+  }
+
+  .chat-page__empty-pane-title {
+    color: var(--text-primary);
+    font-size: 1rem;
+    font-weight: 600;
   }
 }

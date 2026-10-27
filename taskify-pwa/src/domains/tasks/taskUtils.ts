@@ -1,25 +1,10 @@
-import type { Task, Recurrence } from "./taskTypes";
-import type { TaskPriority } from "./taskTypes";
-import { isoDatePart, isoTimePartUtc, startOfDay } from "../dateTime/dateUtils";
+import type { Task } from "./taskTypes";
+import { isoDatePart, startOfDay } from "../dateTime/dateUtils";
 import { revealsOnDueDate, isFrequentRecurrence } from "./boardUtils";
 
 // ---- Priority normalization ----
 
-export function normalizeTaskPriority(value: unknown): TaskPriority | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const rounded = Math.round(value);
-    if (rounded === 1 || rounded === 2 || rounded === 3) return rounded as TaskPriority;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!") {
-      return trimmed.length as TaskPriority;
-    }
-    const parsed = Number.parseInt(trimmed, 10);
-    if (parsed === 1 || parsed === 2 || parsed === 3) return parsed as TaskPriority;
-  }
-  return undefined;
-}
+export { normalizeTaskPriority } from "taskify-core";
 
 // ---- Board sort state ----
 
@@ -159,14 +144,14 @@ export function normalizeTaskBounty(task: Task): Task {
 
 // ---- Bounty state label ----
 
-export function bountyStateLabel(bounty: Task["bounty"]): string {
+/** How a bounty reads to `selfPubkey`: a bounty locked to them is ready to redeem. */
+export function bountyStateLabel(bounty: Task["bounty"], selfPubkey?: string | null): string {
   if (!bounty) return "";
   if (
     bounty.state === "locked" &&
     bounty.lock === "p2pk" &&
     bounty.receiver &&
-    typeof window !== "undefined" &&
-    pubkeysEqual(bounty.receiver, (window as any).nostrPK)
+    pubkeysEqual(bounty.receiver, selfPubkey)
   ) {
     return "ready to redeem";
   }
@@ -213,15 +198,7 @@ export function recurrenceSeriesKey(task: Task): string | null {
   return `sig:${task.boardId}::${task.title}::${task.note || ""}::${recurrence}`;
 }
 
-export function recurringInstanceId(seriesId: string, dueISO: string, rule?: Recurrence, timeZone?: string): string {
-  const datePart = isoDatePart(dueISO, timeZone);
-  const timePart =
-    rule && rule.type === "every" && rule.unit === "hour"
-      ? isoTimePartUtc(dueISO)
-      : "";
-  const suffix = timePart ? `${datePart}T${timePart}` : datePart;
-  return `recurrence:${seriesId}:${suffix}`;
-}
+export { recurringInstanceId } from "taskify-core";
 
 export function recurringOccurrenceKey(task: Task): string | null {
   if (!task.recurrence || !isFrequentRecurrence(task.recurrence)) return null;

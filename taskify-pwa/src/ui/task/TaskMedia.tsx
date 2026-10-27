@@ -6,7 +6,7 @@ import { useUrlPreview } from "../../lib/urlPreview";
 import type { UrlPreviewData } from "../../lib/urlPreview";
 import { extractFirstUrl, isUrlLike } from "../../lib/urlPreview";
 import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } from "./TaskTitle";
-import { DocumentThumbnail } from "./DocumentPreviewModal";
+import { DocumentThumbnail } from "./DocumentThumbnail";
 import { notePreviewText } from "../../domains/tasks/noteMarkdown";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
 import { ImagePreviewModal } from "./ImagePreviewModal";

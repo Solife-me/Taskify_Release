@@ -1,0 +1,114 @@
+{
+  "description": "Calendar events (canonical copies) made by the PWA, and what every client must decode them to. Checked by PWA vitest, Swift CalendarEventVectorTests and the CLI's wire-vectors test.",
+  "boards": {
+    "lists": {
+      "id": "lists",
+      "name": "Lists",
+      "kind": "lists",
+      "columns": [
+        {
+          "id": "c1",
+          "name": "Todo"
+        }
+      ],
+      "nostr": {
+        "boardId": "taskify-vector-lists-board",
+        "relays": []
+      }
+    },
+    "week": {
+      "id": "week",
+      "name": "Week",
+      "kind": "week",
+      "nostr": {
+        "boardId": "taskify-vector-week-board",
+        "relays": []
+      }
+    }
+  },
+  "vectors": [
+    {
+      "name": "timed event with an image and documents",
+      "board": "lists",
+      "event": {
+        "kind": 30310,
+        "created_at": 1792450000,
+        "tags": [
+          [
+            "d",
+            "cal-docs"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ]
+        ],
+        "content": "AtNomWwYM6GPuYYeO4Wmg7TPCyA/n3adMbmkTyut72b6I2TGzo/LDvPGFNJDRHzmczT5fA5DhB0T70OskBxkkNdkE9d9ALZUELX4a0mRbmnemF6QPmZaNU7UrohQEidWGWLiZfvgctmw/O4CMveMBz4UWyaVIN/abFJw0sTpCdUwDvy4HY95C9DyDykTYLuSy22aBAD20VXOeQYtdFYPByQxStccze71zEJBJwLWr5V/+2YJlOuAZGFUlgZLv0jarKOMJilH4TBG67+P3F2BL3CgQBFYm6upP+TK81aEkwGHh9y5uyIA91x841h/BcwqOUau1Xg7431bPgWOeYqYKLP8QAg6oP3dk8QjXK9cu642KyHIsRW51px1ZGV7tkm/z7IYCcevOUUlhdgi63fJk5UpciYBIMg5Nm0gDZeO1aTMzE5x4JRQAffxfU/hNoUy7A8UWSgfp/7v/S4ND7Zli1bxOfJVAHSK1XWeIcM1gQt3Nh8V1jKLIe5yPODSiVouoY9j4/qoS74T2R+U4hdDVc72tPkg1w7aqeBch8uBv0zpBJRbrT+Od/ObhZ/eZ+b36fuBwNs4llwv9SRbBwlUnbyZMM9xgxavn72uqK6abz2uJILnaFYkMFAbiVnSV9PPyXk+gieOF1zbtxMoe5axmskAa6uz2DEpJcvP97Zc8jiJxtO/ZmMCmhxUgLzTV3uacSlBd3p6yuz0fHdjaUxWn/7w7rgmwfRR3TtlhuORnq3hgGhW7ZdKroHL1S7j23mSczlIhydCMuR9PEV7hgXlrYyLBssOXQmTP04fNIK6EqS27cKkoYBV911Jlz+J7C4PH4VIU4GLPmBKSaKwsMYOgpmVGwV0la2CtHa1ZkIUJW1HFyPhFisdLG+OAXSgUpzt1l3zLDXz+TFNEh2ijDlz58TznCksjhS6YxCBE0Ay3WK6kdCi8j7/HVFe7lYRCNLHVfXbbAyg4sN7C1u39FNQNm4LauCQqfaDiaJOCRSMfkV0XrZyLG1gRSm31YBUdiFRqJ9iwpibFhFyLpN6Ht1u9PaeF3x2rCK15gDctPSWP8juZSWSxE8nun0ei16ofRHfYJ9fk4oqZgrD7kCE0LdNaBQ/u6zm6/V/ToFp0x7istzkGtj9eHjsGenzryAVAKCsb5nHOjHxQvttsHzbbwbnyyfZycYhtWVoAYOjtCNssVnJX5q23haPs8MTP6u1ftfR+ZYJhjXHPUvZ70u+a6IVZrDp8FM0BF+27OcxPVuiuIzY525wCekmZ/wCnCzJ+f+7pgrZ",
+        "pubkey": "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "id": "6e8fb7d6e32daf8a5842895068346986e2b4ac5e936c666d640022e923add13a",
+        "sig": "27b849a506a423f3027e426ad74119cbd0e098a8ebd7b7129293096c16a93b7a680b2923e8bbd32d58cda79ce613b2adb31d0b742def46613060a54641145272"
+      },
+      "expected": {
+        "id": "cal-docs",
+        "title": "Closing meeting",
+        "start": "1793113200",
+        "image": "https://files.example/cal-image.bin",
+        "documents": [
+          {
+            "id": "cal-doc-1",
+            "name": "Agenda.pdf",
+            "mimeType": "application/pdf",
+            "kind": "pdf",
+            "remoteUrl": "https://files.example/cal-doc-1.bin",
+            "encrypted": true
+          },
+          {
+            "id": "cal-doc-2",
+            "name": "Venue.png",
+            "mimeType": "image/png",
+            "kind": "png",
+            "remoteUrl": "https://files.example/cal-doc-2.bin",
+            "encrypted": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "all-day event without attachments",
+      "board": "week",
+      "event": {
+        "kind": 30310,
+        "created_at": 1792450001,
+        "tags": [
+          [
+            "d",
+            "cal-plain"
+          ],
+          [
+            "b",
+            "2e29380396d4e5d265384977361f730d9c6fd31b01cf9ef932938e5411ba9588"
+          ],
+          [
+            "col",
+            "day"
+          ]
+        ],
+        "content": "AlsClzqIUdNBrnbSTIoEwzUcPZdCD0dZvIli1bcGNeBWec05RbWwLmEONbB9vD8xHKhnszPZpkf8uMBrBGXuH4DEPoImNEzg1v5/OW2kHBoV+lm/TU26fcruNj8Kfn+Qbl75QyJtYkX6USi6wOA7bVGTEEj1XDyPqxJAst7UkFTkjqYXnI7MF/3UBTyS6kaTajtp+vNjcZaDEhxSw7pvoz4ghBhZgftS8SZpOxS1T6QNd3bYTz+sboDu6QRHr7Kh1U1oHUfq6lgrwJb7Pjvy6I7QLVb0zwCOAFUGKt3wYbcrbAE=",
+        "pubkey": "a0013ac2fec9c934686bea339d6acf90ed6027397f7023b13fab969265fabe4d",
+        "id": "14c508579f352879a208ea1b69c59e463bdf1237ce2431471ddaa330cd9f2576",
+        "sig": "11c4a8f8f8275eaafa001473ee3af90e8b455dc42570271295053f4614f69d47bc9925753018aa0f90da2477e0a72982c0689e99b41ee48b84a0cc85c0f46a96"
+      },
+      "expected": {
+        "id": "cal-plain",
+        "title": "Holiday",
+        "start": "2026-11-11",
+        "image": null,
+        "documents": null
+      }
+    }
+  ]
+}

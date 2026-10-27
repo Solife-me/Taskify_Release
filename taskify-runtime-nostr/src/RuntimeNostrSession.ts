@@ -1,13 +1,16 @@
 import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus, type NDKFilter, type NDKRelay, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { finalizeEvent, verifyEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
-import { applyProofOfWork, mineEventTemplate, type ProofOfWorkOptions } from "./ProofOfWork.js";
+import { applyProofOfWork, countLeadingZeroBits, mineEventTemplate, mineEventTemplateFor, type ProofOfWorkHashFactory, type ProofOfWorkOptions } from "./ProofOfWork.js";
+import { createRelayAuthPolicy, type RelayAuthOutcome } from "./RelayAuth.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
-import { PublishCoordinator, type PublishResult } from "./PublishCoordinator.js";
+import { PublishCoordinator, type PublishOptions, type PublishResult } from "./PublishCoordinator.js";
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
 import type { NostrOutboxStore } from "./NostrOutbox.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
+import { closeNdkPools, installNdkRelayTimerFix } from "./ndkLifecycle.js";
+import { RuntimeSessionClosedError } from "./sessionErrors.js";
 import type { RelayInfo } from "./RelayInfoCache.js";
 
 export type RelayInfoCacheLike = {
@@ -16,6 +19,7 @@ export type RelayInfoCacheLike = {
   get: (relayUrl: string) => unknown;
   getAgeMs: (relayUrl: string) => number | null;
   getLimits: (relayUrls: string[]) => { maxLimit: number; authRequired?: boolean; minPowDifficulty?: number };
+  recordProofOfWorkRequirement?: (relayUrl: string, difficulty: number) => void;
 };
 
 export type RelayHealthLike = {
@@ -30,7 +34,33 @@ export type RelayHealthLike = {
 export type RelayAuthManagerLike = {
   respond: (relay: NDKRelay, challenge: string) => Promise<unknown>;
   reset: (relayUrl: string) => void;
-  markAuthed: (relay: NDKRelay) => void;
+  markAuthed: (relay: NDKRelay, authEventId?: string) => void;
+  markFailed?: (relay: NDKRelay, reason: string, authEventId?: string) => void;
+  isAuthed?: (relay: NDKRelay) => boolean;
+  outcome?: (relayUrl: string) => RelayAuthOutcome | null;
+};
+
+export type RuntimeProofOfWorkSettings = {
+  /** Native SHA-256 for mining (e.g. Node's `crypto`); defaults to a portable implementation. */
+  hashFactory?: ProofOfWorkHashFactory;
+  /** How long one event may be mined before the write fails (default 30 s). */
+  timeoutMs?: number;
+  /** A floor applied to every write, on top of what relays require (NIP-13 spam signalling). */
+  minDifficulty?: number;
+  /** Called before mining starts, e.g. to tell a user a slow write is in progress. */
+  onMine?: (difficulty: number, relayUrls: string[]) => void;
+};
+
+export type RelayRuntimeStatus = {
+  url: string;
+  connected: boolean;
+  status: string;
+  /** NIP-11 says the relay requires NIP-42 authentication. */
+  authRequired: boolean;
+  /** The latest NIP-42 outcome, or null if the relay never challenged this session. */
+  auth: RelayAuthOutcome | null;
+  /** The NIP-13 difficulty writes to this relay are mined to (advertised or learned). */
+  minPowDifficulty: number;
 };
 
 export type RuntimeNostrSessionDeps<TWalletClient> = {
@@ -45,6 +75,14 @@ export type RuntimeNostrSessionDeps<TWalletClient> = {
   }) => TWalletClient;
   outboxStore?: NostrOutboxStore;
   isDev?: boolean;
+  proofOfWork?: RuntimeProofOfWorkSettings;
+  /** How long to wait for a relay to accept an AUTH event (default 10 s). */
+  authTimeoutMs?: number;
+  /**
+   * NDK's outbox model (default on) also connects to NDK's own discovery relays. Clients that
+   * always name their relays can turn it off so they talk only to relays the user chose.
+   */
+  enableOutboxModel?: boolean;
 };
 
 export class RuntimeNostrSession<TWalletClient = unknown> {
@@ -54,12 +92,15 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   private relayRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private loggedDebugSummary = false;
   private shuttingDown = false;
+  private shutdownPromise: Promise<void> | null = null;
   private readonly workAbort = new AbortController();
 
   private readonly relayInfoCache: RelayInfoCacheLike;
   private readonly relayHealth: RelayHealthLike;
   private readonly authManager: RelayAuthManagerLike;
   private readonly isDev: boolean;
+  private readonly proofOfWork: RuntimeProofOfWorkSettings;
+  private readonly authTimeoutMs?: number;
 
   readonly cache: EventCache;
   readonly cursors: CursorStore;
@@ -71,11 +112,15 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   constructor(relays: string[], deps: RuntimeNostrSessionDeps<TWalletClient>) {
     const normalized = normalizeRelayUrls(relays);
     this.knownRelays = new Set(normalized);
-    this.ndk = new NDK({ explicitRelayUrls: normalized, enableOutboxModel: true, autoConnectUserRelays: false });
+    // Before NDK makes its first relay: see ndkLifecycle.ts.
+    installNdkRelayTimerFix();
+    this.ndk = new NDK({ explicitRelayUrls: normalized, enableOutboxModel: deps.enableOutboxModel ?? true, autoConnectUserRelays: false });
     this.relayInfoCache = deps.relayInfoCache;
     this.relayHealth = deps.relayHealth;
     this.authManager = deps.createAuthManager(this.ndk);
     this.isDev = Boolean(deps.isDev);
+    this.proofOfWork = deps.proofOfWork ?? {};
+    this.authTimeoutMs = deps.authTimeoutMs;
 
     this.cache = new EventCache();
     this.cursors = new CursorStore();
@@ -83,6 +128,11 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, {
       outboxStore: deps.outboxStore,
       resolveProofOfWorkDifficulty: this.resolveProofOfWorkDifficulty.bind(this),
+      proofOfWork: this.miningOptions(),
+      onProofOfWorkRequired: (relayUrl, difficulty) => {
+        this.relayInfoCache.recordProofOfWorkRequirement?.(relayUrl, difficulty);
+        if (this.isDev) console.error("[nostr] relay requires proof of work", relayUrl, difficulty);
+      },
       signal: this.workAbort.signal,
     });
     this.subscriptions = new SubscriptionManager(this.ndk, this.cursors, relayResolver, this.cache, this.resolveRelayLimit.bind(this));
@@ -92,7 +142,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async init(relays: string[]): Promise<this> {
-    this.shuttingDown = false;
+    this.assertOpen("init");
     const normalized = normalizeRelayUrls(relays);
     await this.ensureRelays(normalized);
     await this.connect();
@@ -104,39 +154,52 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     // 3s: if a relay hasn't connected by then it's unreachable.
     // Subscriptions start against connected relays immediately; dead relays
     // are skipped and retried in the background via scheduleRelayConnect.
-    await Promise.race([this.ndk.connect(), new Promise<void>((resolve) => setTimeout(resolve, 3_000))]);
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([this.ndk.connect(), new Promise<void>((resolve) => { connectTimer = setTimeout(resolve, 3_000); })]);
+    } finally {
+      clearTimeout(connectTimer);
+    }
     this.logDebugSummary();
     this.initialized = true;
   }
 
-  async shutdown(): Promise<void> {
+  /** Throws if the session has shut down: shutdown is terminal (make a new session instead). */
+  private assertOpen(operation: string): void {
+    if (this.shuttingDown) throw new RuntimeSessionClosedError(operation);
+  }
+
+  /**
+   * Terminal and idempotent. New operations fail with `RuntimeSessionClosedError` at once;
+   * debounced publishes already asked for are sent first; then subscriptions, timers, proof-of-work
+   * and every relay pool close, so nothing the session owns keeps the process alive.
+   */
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
     this.shuttingDown = true;
-    this.workAbort.abort();
-    this.publisher.shutdown();
-    this.subscriptions.shutdown();
-    for (const timer of this.relayRetryTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.relayRetryTimers.clear();
-    for (const relay of this.ndk.pool.relays.values()) {
-      try {
-        relay.disconnect();
-      } catch {
-        // ignore individual relay teardown errors
-      }
-    }
+    this.shutdownPromise = this.closeEverything();
+    return this.shutdownPromise;
+  }
+
+  private async closeEverything(): Promise<void> {
     try {
-      (this.ndk.pool as unknown as { destroy?: () => void }).destroy?.();
-    } catch {
-      // ignore pool teardown errors
+      await this.publisher.shutdown();
+    } finally {
+      this.workAbort.abort();
+      this.subscriptions.shutdown();
+      for (const timer of this.relayRetryTimers.values()) {
+        clearTimeout(timer);
+      }
+      this.relayRetryTimers.clear();
+      closeNdkPools(this.ndk);
+      // Some NDK relay implementations emit disconnect asynchronously. Clear a
+      // second time after initiating teardown; the hook also checks shuttingDown.
+      for (const timer of this.relayRetryTimers.values()) {
+        clearTimeout(timer);
+      }
+      this.relayRetryTimers.clear();
+      this.initialized = false;
     }
-    // Some NDK relay implementations emit disconnect asynchronously. Clear a
-    // second time after initiating teardown; the hook also checks shuttingDown.
-    for (const timer of this.relayRetryTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.relayRetryTimers.clear();
-    this.initialized = false;
   }
 
   private async buildRelaySet(relayUrls?: string[]): Promise<NDKRelaySet | undefined> {
@@ -194,7 +257,13 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   private async resolveProofOfWorkDifficulty(relayUrls: string[]): Promise<number> {
     const relays = normalizeRelayUrls(relayUrls);
     await Promise.all(relays.map((relay) => this.fetchRelayInfo(relay)));
-    return this.relayInfoCache.getLimits(relays).minPowDifficulty ?? 0;
+    const required = this.relayInfoCache.getLimits(relays).minPowDifficulty ?? 0;
+    const floor = Number.isInteger(this.proofOfWork.minDifficulty) ? Math.max(0, this.proofOfWork.minDifficulty!) : 0;
+    return Math.max(required, floor);
+  }
+
+  private miningOptions(): Omit<ProofOfWorkOptions, "signal"> {
+    return { hashFactory: this.proofOfWork.hashFactory, timeoutMs: this.proofOfWork.timeoutMs };
   }
 
   private resolveRelayLimit(relayUrls: string[]): Promise<number> {
@@ -204,26 +273,98 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async subscribe(filters: NDKFilter | NDKFilter[], options?: SubscribeOptions): Promise<ManagedSubscription> {
+    this.assertOpen("subscribe");
     return this.subscriptions.subscribe(filters, options);
   }
 
   async publish(event: EventTemplate, options?: Parameters<PublishCoordinator["publish"]>[1]): Promise<PublishResult> {
+    this.assertOpen("publish");
     return this.publisher.publish(event, options);
   }
 
   async publishRaw(event: NostrEvent, options?: Parameters<PublishCoordinator["publish"]>[1]): Promise<PublishResult> {
+    this.assertOpen("publishRaw");
     return this.publisher.publishRaw(event, options);
   }
 
   async prepareNDKEvent(event: NDKEvent, signer: NDKSigner, relayUrls: string[]): Promise<void> {
     const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
-    if (difficulty > 0) await applyProofOfWork(event, signer, difficulty, { signal: this.workAbort.signal });
-    else if (!event.sig) await event.sign(signer);
+    if (difficulty > 0) {
+      this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
+      await applyProofOfWork(event, signer, difficulty, { ...this.miningOptions(), signal: this.workAbort.signal });
+    } else if (!event.sig) await event.sign(signer);
   }
 
   async prepareEvent(template: EventTemplate, secretKey: Uint8Array, relayUrls: string[], options?: ProofOfWorkOptions): Promise<NostrEvent> {
     const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
-    return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, { ...options, signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal }), secretKey);
+    if (difficulty > 0) this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
+    return finalizeEvent(await mineEventTemplate(template, secretKey, difficulty, this.preparedMiningOptions(options)), secretKey);
+  }
+
+  /**
+   * `prepareEvent` for a key held elsewhere: mines proof of work for `signer.pubkey` where the
+   * relays ask for it, then has the signer sign the finished template.
+   */
+  async prepareEventWith(
+    template: EventTemplate,
+    signer: { pubkey: string; sign: (template: EventTemplate) => Promise<NostrEvent> },
+    relayUrls: string[],
+    options?: ProofOfWorkOptions,
+  ): Promise<NostrEvent> {
+    const difficulty = await this.resolveProofOfWorkDifficulty(relayUrls);
+    if (difficulty > 0) this.proofOfWork.onMine?.(difficulty, normalizeRelayUrls(relayUrls));
+    const mined = await mineEventTemplateFor(template, signer.pubkey, difficulty, this.preparedMiningOptions(options));
+    const signed = await signer.sign(mined);
+    if (signed.pubkey !== signer.pubkey || !verifyEvent(signed)) throw new Error("The signer returned an invalid event.");
+    return signed;
+  }
+
+  private preparedMiningOptions(options?: ProofOfWorkOptions): ProofOfWorkOptions {
+    return {
+      ...this.miningOptions(),
+      ...options,
+      signal: options?.signal ? AbortSignal.any([options.signal, this.workAbort.signal]) : this.workAbort.signal,
+    };
+  }
+
+  /**
+   * Signs (mining NIP-13 proof of work where relays ask for it) and publishes an event. When a
+   * relay refuses it for too little work and names its target, the event is mined again to that
+   * target and resent once: replaceable events go to every relay with a newer timestamp so the
+   * stronger copy wins everywhere; other events go only to the relays that refused them.
+   * `event` is updated in place to the copy that was last published.
+   */
+  async publishSigned(
+    event: NDKEvent,
+    signer: NDKSigner,
+    relayUrls: string[],
+    options?: Omit<PublishOptions, "relayUrls" | "signer">,
+  ): Promise<PublishResult> {
+    this.assertOpen("publishSigned");
+    const relays = normalizeRelayUrls(relayUrls);
+    await this.prepareNDKEvent(event, signer, relays);
+    let result: PublishResult | undefined;
+    let failure: unknown = null;
+    try {
+      result = await this.publishRaw(event.rawEvent() as NostrEvent, { ...options, relayUrls: relays });
+    } catch (error) {
+      failure = error;
+    }
+    const achieved = /^[0-9a-f]{64}$/i.test(event.id || "") ? countLeadingZeroBits(event.id) : 0;
+    const shortfall = relays.filter((relay) => (this.relayInfoCache.getLimits([relay]).minPowDifficulty ?? 0) > achieved);
+    if (!shortfall.length) {
+      if (failure) throw failure;
+      return result!;
+    }
+
+    const replaceable = event.isReplaceable();
+    const targets = replaceable ? relays : shortfall;
+    event.tags = event.tags.filter((tag) => tag[0] !== "nonce");
+    event.sig = undefined;
+    event.id = "";
+    if (replaceable) event.created_at = Math.max(Math.floor(Date.now() / 1000), (event.created_at ?? 0) + 1);
+    await this.prepareNDKEvent(event, signer, targets);
+    return this.publishRaw(event.rawEvent() as NostrEvent, { ...options, relayUrls: targets, skipIfIdentical: false });
   }
 
   createEvent(event?: NostrEvent): NDKEvent {
@@ -231,6 +372,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   }
 
   async fetchEvents(filters: NDKFilter[], relayUrls?: string[], timeoutMs = 8_000, eoseGraceMs = 200, inactivityMs = 1_500): Promise<NostrEvent[]> {
+    this.assertOpen("fetchEvents");
     const relaySet = await this.buildRelaySet(relayUrls);
     return new Promise<NostrEvent[]>((resolve) => {
       const collected: NostrEvent[] = [];
@@ -290,28 +432,26 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     });
   }
 
-  relayStatuses(): Array<{ url: string; connected: boolean; status: string }> {
+  relayStatuses(): RelayRuntimeStatus[] {
     return Array.from(this.knownRelays).map((url) => {
       const relay = Array.from(this.ndk.pool.relays.values()).find((candidate) =>
         normalizeRelayUrls([candidate.url])[0] === url);
       const status = relay?.status;
+      const limits = this.relayInfoCache.getLimits([url]);
       return {
         url,
-        connected: status === NDKRelayStatus.CONNECTED,
+        // An authenticated relay is connected too.
+        connected: status !== undefined && status >= NDKRelayStatus.CONNECTED,
         status: status === undefined ? "unknown" : NDKRelayStatus[status] ?? String(status),
+        authRequired: Boolean(limits.authRequired),
+        auth: this.authManager.outcome?.(url) ?? null,
+        minPowDifficulty: limits.minPowDifficulty ?? 0,
       };
     });
   }
 
   private setupRelayHooks() {
-    this.ndk.relayAuthDefaultPolicy = async (relay, challenge) => {
-      try {
-        const event = await this.authManager.respond(relay, challenge);
-        return (event as any) ?? false;
-      } catch {
-        return false;
-      }
-    };
+    this.ndk.relayAuthDefaultPolicy = createRelayAuthPolicy(this.authManager, { timeoutMs: this.authTimeoutMs });
 
     this.ndk.pool.on("relay:connect", (relay: NDKRelay) => {
       if (this.shuttingDown) return;

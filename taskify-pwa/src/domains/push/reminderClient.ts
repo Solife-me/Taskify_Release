@@ -55,7 +55,7 @@ export async function syncRemindersToWorker(
       taskId: item.taskId,
       boardId: item.boardId,
       dueISO: item.dueISO,
-      title: item.title,
+      // No title: the Worker keeps none, and the device names the reminder (reminderTitles).
       minutesBefore: (item.reminders ?? []).map(reminderPresetToMinutes).sort((a, b) => a - b),
     }))
     .sort((a, b) => a.taskId.localeCompare(b.taskId));

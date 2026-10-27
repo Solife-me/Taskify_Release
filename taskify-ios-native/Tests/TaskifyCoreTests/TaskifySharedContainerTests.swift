@@ -119,6 +119,26 @@ final class TaskifySharedContainerTests: XCTestCase {
 
     // MARK: - Migration
 
+    func testMovesASplitStoreIntoTheGroupContainer() async throws {
+        let (manager, group, support) = try makeManager(withGroup: true)
+        let privateStore = support.appendingPathComponent("TaskifyNative", isDirectory: true)
+        let store = JSONTaskStore(
+            fileURL: privateStore.appendingPathComponent(TaskifySharedContainer.storeFilename),
+            migratesLegacyStore: true
+        )
+        var snapshot = TaskifySnapshot.empty
+        snapshot.tasks = [TaskItem(boardID: snapshot.selectedBoardID, title: "Split before the group existed")]
+        try await store.save(snapshot)
+
+        XCTAssertTrue(TaskifySharedContainer.migrateIfNeeded(fileManager: manager, authorization: { _ in true }))
+        let groupStore = group.appendingPathComponent("TaskifyNative", isDirectory: true)
+        let moved = try await JSONTaskStore(fileURL: groupStore.appendingPathComponent(TaskifySharedContainer.storeFilename)).load()
+        XCTAssertEqual(moved.tasks, snapshot.tasks)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: privateStore.appendingPathComponent(JSONTaskStore.splitDirectoryName).path
+        ))
+    }
+
     func testCopiesAnExistingStoreIntoTheGroupContainer() throws {
         let (manager, group, support) = try makeManager(withGroup: true)
         try writeStore("{\"boards\":[]}", in: support)

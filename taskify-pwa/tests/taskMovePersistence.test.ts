@@ -1,15 +1,15 @@
 import { describe, expect, test } from "vitest";
+import { nextEventCreatedAt } from "taskify-core";
 
 import {
-  reserveTaskMutationTimestamp,
   TaskPublishVersionTracker,
   taskMovePersistencePlan,
 } from "../src/domains/tasks/taskMovePersistence";
 
 describe("task move persistence", () => {
-  test("never moves the optimistic relay clock backward", () => {
-    expect(reserveTaskMutationTimestamp(150, 200)).toBe(201);
-    expect(reserveTaskMutationTimestamp(250, 200)).toBe(250);
+  test("never moves the optimistic relay clock backward (the shared core rule)", () => {
+    expect(nextEventCreatedAt(150, 200)).toBe(201);
+    expect(nextEventCreatedAt(250, 200)).toBe(250);
   });
 
   test("cross-board moves delete the source copy and publish the target copy", () => {

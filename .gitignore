@@ -14,3 +14,4 @@ dist/
 !taskify-runtime-nostr/dist/
 !taskify-runtime-nostr/dist/NostrOutbox.d.ts
 !taskify-runtime-nostr/dist/NostrOutbox.js
+*.tsbuildinfo

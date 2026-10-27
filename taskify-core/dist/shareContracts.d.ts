@@ -1,3 +1,4 @@
+import type { TaskPriority } from "./taskContracts.js";
 export type SharedBoardPayload = {
     type: "board";
     boardId: string;
@@ -84,7 +85,7 @@ export type ShareEnvelope = {
 };
 export declare function normalizeTaskDueISO(value: unknown): string | undefined;
 export declare function normalizeTaskTimeZone(value: unknown): string | undefined;
-export declare function normalizeTaskPriority(value: unknown): number | undefined;
+export declare function normalizeTaskPriority(value: unknown): TaskPriority | undefined;
 export declare function normalizeTaskReminders(value: unknown): Array<string | number> | undefined;
 export declare function normalizeTaskSubtasks(value: unknown): SharedTaskPayload["subtasks"] | undefined;
 export declare function normalizeTaskDocuments(value: unknown): SharedTaskPayload["documents"] | undefined;
@@ -117,3 +118,5 @@ export declare function buildCalendarEventInviteEnvelope(payload: Omit<SharedCal
     name?: string;
 }): ShareEnvelope;
 export declare function parseShareEnvelope(raw: string): ShareEnvelope | null;
+/** A shared task sent as an assignment, which the recipient answers rather than just copies. */
+export declare function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean;

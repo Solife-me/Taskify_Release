@@ -16,6 +16,9 @@ export const LS_DM_BLOCKED_PEERS = "taskify_dm_blocked_peers_v1";
 export const LS_DM_MESSAGE_CACHE = "taskify_dm_message_cache_v1";
 export const LS_DM_THREAD_READ_STATE = "taskify_dm_thread_read_state_v1";
 export const LS_DM_SYNC_META = "taskify_dm_sync_meta_v1";
+/** Message events this device has already opened (chat/seenEvents.ts). */
+export const LS_DM_SEEN_EVENTS = "taskify_dm_seen_events_v1";
+export const LS_DM_REACTIONS = "taskify_dm_reactions_v1";
 export const LS_PROFILE_EVENT_IDS = "taskify_profile_event_ids_v1";
 export const LS_PROFILE_METADATA_CACHE = "taskify_profile_metadata_cache_v1";
 export const LS_CONTACT_PROFILE_CACHE = "taskify_contact_profile_cache_v1";
@@ -32,4 +35,7 @@ export const LS_NWC_WALLET_CATALOG = "taskify_nwc_wallet_catalog_v1";
 export const LS_NWC_TOKEN_SWEEP_JOURNAL = "taskify_nwc_token_sweep_journal_v1";
 export const LS_WALLET_ENABLED = "taskify_wallet_enabled_v1";
 export const LS_WALLET_CLOSED = "taskify_wallet_closed_v1";
-export const LS_WALLET_PHASE_OUT_NOTICE_SEEN = "taskify_wallet_phase_out_notice_v1";
+// v2 announces the removal date, so users who dismissed v1 see it once.
+export const LS_WALLET_PHASE_OUT_NOTICE_SEEN = "taskify_wallet_phase_out_notice_v2";
+/** Changes waiting to be published to relays (see nostr/durablePublisher). */
+export const LS_PUBLISH_INTENTS = "taskify_publish_intents_v1";

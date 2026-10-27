@@ -16,7 +16,7 @@ export function registerTrustCommands(program: Command) {
       }
       await saveConfig(config);
       console.log(chalk.green("✓ Added"));
-      process.exit(0);
+      return;
     });
 
   trust
@@ -27,7 +27,7 @@ export function registerTrustCommands(program: Command) {
       config.trustedNpubs = config.trustedNpubs.filter((n) => n !== npub);
       await saveConfig(config);
       console.log(chalk.green("✓ Removed"));
-      process.exit(0);
+      return;
     });
 
   trust
@@ -42,7 +42,7 @@ export function registerTrustCommands(program: Command) {
           console.log(npub);
         }
       }
-      process.exit(0);
+      return;
     });
 
 }

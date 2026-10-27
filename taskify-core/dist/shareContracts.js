@@ -44,9 +44,10 @@ export function normalizeTaskTimeZone(value) {
     }
 }
 export function normalizeTaskPriority(value) {
+    const inRange = (n) => n === 1 || n === 2 || n === 3;
     if (typeof value === "number" && Number.isFinite(value)) {
         const rounded = Math.round(value);
-        if (rounded >= 1 && rounded <= 3)
+        if (inRange(rounded))
             return rounded;
     }
     if (typeof value === "string") {
@@ -54,7 +55,7 @@ export function normalizeTaskPriority(value) {
         if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!")
             return trimmed.length;
         const parsed = Number.parseInt(trimmed, 10);
-        if (parsed >= 1 && parsed <= 3)
+        if (inRange(parsed))
             return parsed;
     }
     return undefined;
@@ -390,4 +391,8 @@ export function parseShareEnvelope(raw) {
         return { v: 1, kind: "taskify-share", item: { type: "event", eventId, canonical, view, eventKey, inviteToken, ...(typeof item.title === "string" && item.title.trim() ? { title: item.title.trim() } : {}), ...(typeof item.start === "string" && item.start.trim() ? { start: item.start.trim() } : {}), ...(typeof item.end === "string" && item.end.trim() ? { end: item.end.trim() } : {}), relays: normalizeRelayList(item.relays) }, sender: sanitizeSender(parsed.sender) };
     }
     return null;
+}
+/** A shared task sent as an assignment, which the recipient answers rather than just copies. */
+export function isAssignedSharedTask(payload) {
+    return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
 }

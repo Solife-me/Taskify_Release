@@ -1,5 +1,5 @@
 # Runs every package's checks on pushes and pull requests to main and Beta.
-# Swift targets are not covered here; run their tests from Xcode or `swift test`.
+# The macOS job is the first native Swift gate; iOS/Watch device and UI suites remain local.
 name: CI
 
 on:
@@ -16,9 +16,40 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: "22"
+  NODE_VERSION: "22.23.4"
 
 jobs:
+  macos:
+    name: Native macOS
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify the generated Xcode project
+        run: python3 taskify-macos/Scripts/generate-project.py --check
+      - name: Test Mac presentation logic
+        run: swift test --package-path taskify-macos --scratch-path "$RUNNER_TEMP/taskify-macos-tests"
+      - name: Build the unsigned Mac app
+        run: |
+          xcodebuild -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
+            -configuration Local -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/taskify-macos-derived" \
+            CODE_SIGNING_ALLOWED=NO build
+      - name: Test the isolated Mac app host
+        run: |
+          xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/taskify-macos-ui-derived" \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWalletRemovalPreviewShowsRecoveryWithoutReceive \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCreateEditCompleteAndReopenTaskThroughDeepLink \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testStaleEditorCannotOverwriteNewerWindowEdit \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testAccountSwitchClosesEditorsAndResetsEveryWindow \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCommandQPersistsAnImmediateTaskEdit \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testPendingPublicationSurvivesOfflineRelaunch \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testSpotlightTaskOpensAndCompletionRemovesIt \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testRawPNGCanBePastedIntoTaskAndChatComposers
+
   secrets:
     name: Secret scan (full history)
     runs-on: ubuntu-latest
@@ -48,8 +79,51 @@ jobs:
       - run: npm test
       - run: npm audit --omit=dev --audit-level=high
 
+  worker-deploy-check:
+    name: Worker deploy (dry run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the PWA the Worker serves
+        working-directory: taskify-pwa
+        run: |
+          npm ci
+          npm run build
+      # The production configuration, bundled exactly as a deploy would, without uploading.
+      - name: Bundle the Worker with wrangler.toml
+        run: npx --yes wrangler@4.150.0 deploy --dry-run --outdir "$RUNNER_TEMP/wrangler" | tee "$RUNNER_TEMP/wrangler.log"
+      # The Worker refuses (503) on a route whose limiter is not bound, so a missing one must not
+      # reach production.
+      - name: Every rate limiter the routes use is bound
+        run: |
+          for binding in PREVIEW_RATE_LIMITER NIP05_RATE_LIMITER WATCH_NOSTR_RATE_LIMITER PUSH_RATE_LIMITER VOICE_RATE_LIMITER; do
+            grep -q "env.$binding " "$RUNNER_TEMP/wrangler.log" || { echo "::error::$binding is not bound in wrangler.toml"; exit 1; }
+          done
+
   push-relay:
     name: Push relay
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: push-relay
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+      - run: npm test
+      - name: Build the production relay image
+        run: docker build --tag taskify-push-relay:ci .
+      # The image installs with --omit=dev, so that is what is gated; the weekly dependency-audit
+      # workflow also reports the development tools.
+      - run: npm audit --omit=dev --audit-level=high
+
+  push-relay-startos:
+    name: Push relay StartOS package
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -62,9 +136,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
-      # Development tooling inside @start9labs/start-sdk carries advisories that only an SDK
-      # release can fix; the image installs with --omit=dev, so that is what is gated.
-      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run build
 
   shared-libraries:
     name: taskify-core and taskify-runtime-nostr
@@ -129,6 +201,9 @@ jobs:
       - run: npm test
         working-directory: taskify-pwa
       - run: npm run build
+        working-directory: taskify-pwa
+      # Fails when the JavaScript loaded before first render grows past its budget.
+      - run: npm run check:startup
         working-directory: taskify-pwa
       - run: npm audit --omit=dev --audit-level=high
         working-directory: taskify-pwa

@@ -71,7 +71,7 @@ export function NoteViewerModal({
   return (
     <>
       {portal(
-        <Modal onClose={onClose} showClose={false} variant="fullscreen">
+        <Modal onClose={onClose} showClose={false} variant="fullscreen" desktop="pane">
           <div className="edit-modal note-sheet">
             <SheetHeader
               title={task.title || "Notes"}
@@ -242,7 +242,7 @@ export function NoteEditorModal({
   const savedNote = () => (text === markdownFromNoteLines(noteLinesFromMarkdown(initialNote)) ? initialNote : text);
 
   return portal(
-    <Modal onClose={onCancel} showClose={false} variant="fullscreen">
+    <Modal onClose={onCancel} showClose={false} variant="fullscreen" desktop="pane">
       <div className="edit-modal note-sheet note-editor">
         <SheetHeader
           title="Notes"

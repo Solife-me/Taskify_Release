@@ -3,11 +3,13 @@ import { readSecret } from "../shared/readSecret.js";
 import type { Command } from "commander";
 import { generateSecretKey,getPublicKey,nip19 } from "nostr-tools";
 import { createInterface } from "readline";
-import { DEFAULT_RELAYS,loadConfig,saveProfiles,type ProfileConfig } from "../config.js";
+import { DEFAULT_RELAYS,saveProfiles,type ProfileConfig } from "../config.js";
 import { uploadImageToNip96 } from "../nip96Upload.js";
 import { fetchLatestProfileEvent,publishProfile } from "../profileMeta.js";
+import type { CommandContext } from "./context.js";
 
-export function registerProfileCommands(program: Command): void {
+export function registerProfileCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "withStandaloneSession">): void {
+  const { loadConfig, withStandaloneSession } = context;
   // ---- Helper: readline queue (handles piped stdin correctly) ----
   function makeLineQueue(rl: ReturnType<typeof createInterface>): (prompt: string) => Promise<string> {
     const lineQueue: string[] = [];
@@ -66,7 +68,7 @@ export function registerProfileCommands(program: Command): void {
           `  ${marker} ${name.padEnd(14)} ${npubStr.padEnd(22)} ${boardCount} board${boardCount !== 1 ? "s" : ""}`,
         );
       }
-      process.exit(0);
+      return;
     });
 
   profileCmd
@@ -78,7 +80,7 @@ export function registerProfileCommands(program: Command): void {
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (config.profiles[name]) {
         console.error(chalk.red(`Profile already exists: "${name}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       // Non-interactive mode when --nsec is provided
@@ -86,13 +88,13 @@ export function registerProfileCommands(program: Command): void {
         const nsecInput = await readSecret(opts.nsec, "nsec: ");
         if (!nsecInput.startsWith("nsec1")) {
           console.error(chalk.red("Invalid nsec key"));
-          process.exit(1);
+          process.exitCode = 1; return;
         }
         try {
           nip19.decode(nsecInput);
         } catch {
           console.error(chalk.red("Invalid nsec key"));
-          process.exit(1);
+          process.exitCode = 1; return;
         }
         const relays = opts.relay.length > 0 ? opts.relay : [...DEFAULT_RELAYS];
         const newProfile: ProfileConfig = {
@@ -108,7 +110,7 @@ export function registerProfileCommands(program: Command): void {
         const newProfiles = { ...config.profiles, [name]: newProfile };
         await saveProfiles(config.activeProfile, newProfiles);
         console.log(chalk.green(`✓ Profile '${name}' created.`));
-        process.exit(0);
+        return;
       }
 
       // Interactive mode
@@ -149,7 +151,7 @@ export function registerProfileCommands(program: Command): void {
         const cont = await ask("Continue? [Y/n] ");
         if (cont.trim().toLowerCase() === "n") {
           rl.close();
-          process.exit(0);
+          return;
         }
       }
 
@@ -184,7 +186,7 @@ export function registerProfileCommands(program: Command): void {
       await saveProfiles(config.activeProfile, newProfiles);
       console.log();
       console.log(chalk.green(`✓ Profile '${name}' created. Run: taskify profile use ${name}`));
-      process.exit(0);
+      return;
     });
 
   profileCmd
@@ -196,11 +198,11 @@ export function registerProfileCommands(program: Command): void {
         console.error(
           chalk.red(`Profile not found: "${name}". Available: ${Object.keys(config.profiles).join(", ")}`),
         );
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       await saveProfiles(name, config.profiles);
       console.log(chalk.green(`✓ Switched to profile: ${name}`));
-      process.exit(0);
+      return;
     });
 
   profileCmd
@@ -214,7 +216,7 @@ export function registerProfileCommands(program: Command): void {
         console.error(
           chalk.red(`Profile not found: "${profileName}". Available: ${Object.keys(config.profiles).join(", ")}`),
         );
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const isActive = profileName === config.activeProfile;
 
@@ -232,7 +234,7 @@ export function registerProfileCommands(program: Command): void {
       console.log(`  relays:       ${(profile.relays ?? []).join(", ")}`);
       console.log(`  boards:       ${profile.boards?.length ?? 0}`);
       console.log(`  trustedNpubs: ${profile.trustedNpubs?.length ?? 0}`);
-      process.exit(0);
+      return;
     });
 
   profileCmd
@@ -243,17 +245,17 @@ export function registerProfileCommands(program: Command): void {
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.profiles[name]) {
         console.error(chalk.red(`Profile not found: "${name}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       if (name === config.activeProfile) {
         console.error(
           chalk.red(`Cannot remove active profile: "${name}". Switch first with: taskify profile use <other>`),
         );
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       if (Object.keys(config.profiles).length === 1) {
         console.error(chalk.red("Cannot remove the only profile."));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       if (!opts.force) {
@@ -266,14 +268,14 @@ export function registerProfileCommands(program: Command): void {
         });
         if (!confirmed) {
           console.log("Aborted.");
-          process.exit(0);
+          return;
         }
       }
 
       const { [name]: _removed, ...rest } = config.profiles;
       await saveProfiles(config.activeProfile, rest);
       console.log(chalk.green(`✓ Profile '${name}' removed.`));
-      process.exit(0);
+      return;
     });
 
   profileCmd
@@ -283,18 +285,18 @@ export function registerProfileCommands(program: Command): void {
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.profiles[oldName]) {
         console.error(chalk.red(`Profile not found: "${oldName}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       if (config.profiles[newName]) {
         console.error(chalk.red(`Profile already exists: "${newName}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const { [oldName]: profileData, ...rest } = config.profiles;
       const newProfiles = { ...rest, [newName]: profileData };
       const newActive = config.activeProfile === oldName ? newName : config.activeProfile;
       await saveProfiles(newActive, newProfiles);
       console.log(chalk.green(`✓ Renamed profile '${oldName}' → '${newName}'`));
-      process.exit(0);
+      return;
     });
 
   profileCmd
@@ -325,7 +327,7 @@ export function registerProfileCommands(program: Command): void {
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.nsec) {
         console.error(chalk.red("No nsec configured for this profile. Run: taskify setup"));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       // If no fields provided, show current metadata
@@ -333,10 +335,11 @@ export function registerProfileCommands(program: Command): void {
       if (!hasChanges) {
         console.error(chalk.yellow("No fields specified. Use --name, --display-name, --about, --picture, --banner, --nip05, --website, --lud16"));
         console.error(chalk.dim("  Example: taskify profile set-meta --display-name \"Nathan\" --picture ./avatar.png"));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       // Upload local files via NIP-96 if needed
+      let mediaUploadFailed = false;
       const resolveMedia = async (value: string | undefined, label: string): Promise<string | undefined> => {
         if (!value) return undefined;
         if (value.startsWith("http://") || value.startsWith("https://")) return value;
@@ -352,12 +355,16 @@ export function registerProfileCommands(program: Command): void {
           return url;
         } catch (err) {
           console.error(chalk.red(`Failed to upload ${label}: ${String(err)}`));
-          process.exit(1);
+          process.exitCode = 1;
+          mediaUploadFailed = true;
+          return undefined;
         }
       };
 
       const pictureUrl = await resolveMedia(opts.picture, "profile picture");
+      if (mediaUploadFailed) return;
       const bannerUrl = await resolveMedia(opts.banner, "banner");
+      if (mediaUploadFailed) return;
 
       const draft = {
         name: opts.name,
@@ -378,7 +385,7 @@ export function registerProfileCommands(program: Command): void {
       console.log(chalk.dim("  Publishing profile metadata..."));
 
       try {
-        const result = await publishProfile(config.nsec, cleanDraft, config.relays);
+        const result = await publishProfile(config.nsec, cleanDraft, config.relays, { withSession: withStandaloneSession });
         if (opts.json) {
           console.log(JSON.stringify(result.event, null, 2));
         } else {
@@ -396,9 +403,9 @@ export function registerProfileCommands(program: Command): void {
         }
       } catch (err) {
         console.error(chalk.red(`Failed to publish profile: ${String(err)}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
-      process.exit(0);
+      return;
     });
 
   profileCmd
@@ -411,22 +418,22 @@ export function registerProfileCommands(program: Command): void {
       const profile = config.profiles[profileName];
       if (!profile) {
         console.error(chalk.red(`Profile not found: "${profileName}"`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       if (!profile.nsec) {
         console.error(chalk.red("No nsec configured for this profile."));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const decoded = nip19.decode(profile.nsec);
-      if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exit(1); }
+      if (decoded.type !== "nsec") { console.error(chalk.red("Invalid nsec")); process.exitCode = 1; return; }
       const pubkeyHex = getPublicKey(decoded.data as Uint8Array);
 
       console.log(chalk.dim("  Fetching profile metadata from relays..."));
-      const { event, metadata } = await fetchLatestProfileEvent(pubkeyHex, profile.relays ?? []);
+      const { event, metadata } = await fetchLatestProfileEvent(pubkeyHex, profile.relays ?? [], { withSession: withStandaloneSession });
 
       if (!event) {
         console.log(chalk.yellow("No kind:0 profile event found on relays."));
-        process.exit(0);
+        return;
       }
 
       if (opts.json) {
@@ -445,6 +452,6 @@ export function registerProfileCommands(program: Command): void {
         if (metadata.lud16) console.log(`  lud16:        ${metadata.lud16}`);
         console.log(chalk.dim(`  (event id: ${event.id?.slice(0, 8)}..., created_at: ${new Date((event.created_at ?? 0) * 1000).toISOString()})`));
       }
-      process.exit(0);
+      return;
     });
 }

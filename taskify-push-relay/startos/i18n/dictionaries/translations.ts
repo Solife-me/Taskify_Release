@@ -27,6 +27,16 @@ const english = {
   23: 'Store the Firebase service account used to wake Snapstr on Android. Leave blank to turn Android push off.',
   24: 'Firebase Service Account JSON',
   25: 'In the Firebase console, open Project settings, Service accounts, and Generate new private key. Paste the complete downloaded JSON file.',
+  26: 'Configure Web Push',
+  27: 'Store the Taskify Worker VAPID key pair so the Taskify web app gets chat alerts. Leave the private key blank to turn web push off.',
+  28: 'VAPID Public Key',
+  29: 'The Worker VAPID_PUBLIC_KEY (base64url). Browsers subscribe with this key, so it must be the same one.',
+  30: 'VAPID Private Key',
+  31: 'The Worker VAPID_PRIVATE_KEY: base64url or PEM.',
+  32: 'VAPID Subject',
+  33: 'A mailto: or https:// contact for push services, usually the Worker VAPID_SUBJECT.',
+  34: 'Mac App Bundle ID',
+  35: 'The Mac APNs topic. It must match the signed Taskify Mac app bundle identifier.',
 } satisfies LangDict
 
 export default {

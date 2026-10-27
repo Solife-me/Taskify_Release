@@ -20,12 +20,6 @@ export class TaskPublishVersionTracker {
   }
 }
 
-export function reserveTaskMutationTimestamp(now: number, current: number = 0): number {
-  const normalizedNow = Number.isFinite(now) ? Math.floor(now) : 0;
-  const normalizedCurrent = Number.isFinite(current) ? Math.floor(current) : 0;
-  return Math.max(normalizedNow, normalizedCurrent + 1);
-}
-
 export function taskMovePersistencePlan<
   Source extends BoardScopedTask,
   Target extends BoardScopedTask,

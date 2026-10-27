@@ -8,32 +8,53 @@ final class MacRuntime: ObservableObject {
     var bible: BibleTrackerStore { model.bibleTrackerStore }
     let calendar = DeviceCalendarStore()
     let wallet = WalletViewModel()
+    let configuration: MacRuntimeConfiguration
+    let isWalletRecoveryMode: Bool
+    private let requestsDMPushProvisioningSpike: Bool
     private var started = false
     private var dayChangeObservers: [NSObjectProtocol] = []
 
-    init() {
+    init(configuration: MacRuntimeConfiguration = .production) {
+        self.configuration = configuration
 #if DEBUG
-        if Bundle.main.object(forInfoDictionaryKey: "TaskifyMacPreview") as? Bool == true {
-            setenv("TASKIFY_MAC_PREVIEW", "1", 1)
-            setenv("TASKIFY_UI_TEST_CHAT_FIXTURE", "1", 1)
-            setenv("TASKIFY_UI_TEST_CHAT_LOCAL_SENDS", "1", 1)
-            setenv("TASKIFY_UI_TEST_CHAT_COUNT", "40", 1)
-            setenv("TASKIFY_UI_TEST_ONBOARDING", "skip", 1)
-        }
-        if ProcessInfo.processInfo.environment["TASKIFY_MAC_PREVIEW"] == "1" {
-            let path = Bundle.main.object(forInfoDictionaryKey: "TaskifyMacPreviewStore") as? String
-                ?? FileManager.default.temporaryDirectory.appendingPathComponent("taskify-mac-preview.json").path
-            let file = URL(fileURLWithPath: path)
-            model = AppModel(store: JSONTaskStore(fileURL: file),
-                             syncEngine: TaskSyncEngine(outbox: NostrOutboxStore(fileURL: file.appendingPathExtension("outbox"))))
-        } else {
-            model = AppModel()
-        }
+        requestsDMPushProvisioningSpike = MacDMPushProvisioningSpike.isRequested(
+            configuration: configuration
+        )
 #else
-        model = AppModel()
+        requestsDMPushProvisioningSpike = false
 #endif
+        switch configuration {
+        case .production:
+            model = AppModel()
+        case .uiTest(let test):
+#if TASKIFY_MAC_UI_TEST
+            do {
+                try MacUITestFixture.prepare(test)
+            } catch {
+                fatalError("Could not prepare isolated Mac UI-test data: \(error)")
+            }
+            OnboardingSettings.setCompleted(true)
+            model = AppModel(
+                store: JSONTaskStore(fileURL: test.storeURL, migratesLegacyStore: true),
+                identityStore: KeychainIdentityStore(
+                    service: test.identityService,
+                    usesSharedAccessGroup: false
+                ),
+                syncEngine: TaskSyncEngine(
+                    outbox: NostrOutboxStore(fileURL: test.outboxURL),
+                    networkingEnabled: false
+                )
+            )
+#else
+            preconditionFailure("The UI-test runtime is available only in the UI-test build configuration.")
+#endif
+        }
+        self.isWalletRecoveryMode = WalletPhaseOut.isRecoveryMode
         model.registerWalletPaymentReceiver(wallet)
         TaskNotificationActionRouter.shared.register(model: model)
+        if configuration.registersForRemoteNotifications {
+            TaskifyDMPushCoordinator.shared.register(model: model)
+        }
 
         // Unlike a phone, a Mac routinely stays open and active straight through midnight
         // instead of backgrounding and resuming with a fresh Date() of its own accord, so the
@@ -54,20 +75,27 @@ final class MacRuntime: ObservableObject {
     func start() async {
         guard !started, !model.isLoading else { return }
         started = true
-        model.initialContentDidAppear()
 #if DEBUG
-        guard ProcessInfo.processInfo.environment["TASKIFY_MAC_PREVIEW"] != "1" else { return }
+        if requestsDMPushProvisioningSpike {
+            await model.enableDMPushNotifications(
+                selection: TaskifyDMPushSettings.selection,
+                relayURL: TaskifyDMPushSettings.relayURL,
+                serverURL: TaskifyDMPushSettings.serverURL
+            )
+        }
 #endif
-        await wallet.start()
+        await MacRuntimeStartExecutor.run(
+            plan: configuration.startPlan(isWalletRecoveryMode: isWalletRecoveryMode),
+            startDeferredServices: { model.initialContentDidAppear() },
+            startWallet: { await wallet.start() }
+        )
     }
 
     func resume() {
-#if DEBUG
-        guard ProcessInfo.processInfo.environment["TASKIFY_MAC_PREVIEW"] != "1" else { return }
-#endif
         model.reloadIfChangedExternally()
         model.refreshCalendarDayIfNeeded()
         model.refreshNotificationStatus()
+        guard configuration.startsDeferredServices else { return }
         model.refreshSyncIfNeeded()
         model.refreshFullWeekRecurrencesIfNeeded()
         model.refreshContactsIfNeeded()
@@ -81,6 +109,20 @@ final class MacRuntime: ObservableObject {
 final class MacApplicationDelegate: NSObject, NSApplicationDelegate {
     weak var runtime: MacRuntime?
     private var terminating = false
+
+    func application(
+        _ application: NSApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        TaskifyDMPushCoordinator.shared.didRegister(deviceToken: deviceToken)
+    }
+
+    func application(
+        _ application: NSApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        TaskifyDMPushCoordinator.shared.didFailRegistration(error)
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtime, !terminating else { return .terminateNow }
@@ -100,11 +142,27 @@ final class MacApplicationDelegate: NSObject, NSApplicationDelegate {
 struct TaskifyMacApp: App {
     @NSApplicationDelegateAdaptor(MacApplicationDelegate.self) private var delegate
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var runtime = MacRuntime()
+    @StateObject private var runtime: MacRuntime
+
+    init() {
+#if TASKIFY_MAC_UI_TEST
+        let configuration = MacRuntimeConfiguration.resolve(isUITestHost: true)
+#else
+        let configuration = MacRuntimeConfiguration.production
+#endif
+        _runtime = StateObject(wrappedValue: MacRuntime(configuration: configuration))
+#if TASKIFY_MAC_SHORTCUTS
+        // Keep the system's parameter and phrase data current after a Mac launch, matching iOS.
+        TaskifyShortcuts.updateAppShortcutParameters()
+#endif
+    }
 
     var body: some Scene {
         WindowGroup {
-            MacWorkspace()
+            MacWorkspace(
+                initialLink: runtime.configuration.uiTest?.initialLink,
+                isWalletRecoveryMode: runtime.isWalletRecoveryMode
+            )
                 .environment(runtime.model)
                 .environmentObject(runtime.wallet)
                 .environmentObject(runtime.bible)

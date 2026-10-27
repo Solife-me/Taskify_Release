@@ -1,12 +1,14 @@
 import { RelayAuthManager as RuntimeRelayAuthManager } from "taskify-runtime-nostr";
-import { getSkSync as nostrSkSync } from "../lib/nostrSkStore";
+import { currentIdentity } from "../identity/identity";
 
+/** Answers relay AUTH challenges with the user's signer (none while signed out). */
 export class RelayAuthManager extends RuntimeRelayAuthManager {
   constructor(ndk: ConstructorParameters<typeof RuntimeRelayAuthManager>[0]) {
     super(ndk, {
-      loadSecretKeyHex: () => {
-        const raw = nostrSkSync().trim();
-        return raw || null;
+      loadAccountSigner: () => {
+        const identity = currentIdentity();
+        if (!identity) return null;
+        return { pubkey: identity.pubkey, sign: (template) => identity.signer.sign(template) as never };
       },
     });
   }

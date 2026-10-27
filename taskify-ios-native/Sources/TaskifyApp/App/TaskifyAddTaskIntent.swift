@@ -2,6 +2,7 @@ import AppIntents
 import Foundation
 import TaskifyCore
 
+#if os(iOS) || TASKIFY_MAC_SHORTCUTS
 /// Must live in the app target, not the TaskifyCore package. App Intents defined outside the app
 /// target extract into `Metadata.appintents` looking completely healthy -- correct parameters,
 /// `isDiscoverable: true`, NLU phrase assets and all -- while the system still fails to load the
@@ -20,9 +21,9 @@ import TaskifyCore
 /// starts several long-lived background tasks on `init`, all wasted work (and a risk of being
 /// killed mid-flight) for a one-shot "add a task" action that iOS may run and then immediately
 /// suspend. Instead this talks to the same `JSONTaskStore`/`TaskifySnapshot` the app itself
-/// persists through, doing only the minimal load → mutate → save round trip. The new task is
-/// picked up and published to Nostr normally the next time the full app launches and its sync
-/// engine runs.
+/// persists through, doing only the minimal load → mutate → save round trip. The new task is then
+/// sent to its board's relays (`TaskifyExternalActions.commit`); if they can't be reached in a few
+/// seconds, the app publishes it the next time it runs.
 struct TaskifyAddTaskIntent: AppIntent {
     static var title: LocalizedStringResource = "Add Task"
     static var description = IntentDescription(
@@ -140,11 +141,7 @@ struct TaskifyNaturalAddTaskIntent: AppIntent {
 /// The single storage path used by both the backwards-compatible App Shortcut and the newer
 /// reminders-domain App Schema intent. Keeping the mutation here prevents Siri's conversational
 /// route and its exact-phrase route from drifting into subtly different behavior.
-struct TaskifyIntentCreatedTask: Sendable {
-    let task: TaskItem
-    let board: Board
-    let displayBoard: Board
-}
+typealias TaskifyIntentCreatedTask = TaskifyExternalCreatedTask
 
 enum TaskifyIntentBoardPresentation {
     static func board(
@@ -152,51 +149,10 @@ enum TaskifyIntentBoardPresentation {
         requestedBoardName: String?,
         in snapshot: TaskifySnapshot
     ) -> Board {
-        if let requested = requestedBoardName?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !requested.isEmpty,
-           let requestedBoard = matchingNamedBoard(named: requested, in: snapshot),
-           represents(storageBoard: storageBoard, visibleBoard: requestedBoard, in: snapshot) {
-            return requestedBoard
-        }
-
-        if !storageBoard.isVisible,
-           let parent = snapshot.visibleBoards.first(where: {
-               $0.kind == .compound && represents(
-                   storageBoard: storageBoard,
-                   visibleBoard: $0,
-                   in: snapshot
-               )
-           }) {
-            return parent
-        }
-
-        return storageBoard
-    }
-
-    private static func matchingNamedBoard(
-        named name: String,
-        in snapshot: TaskifySnapshot
-    ) -> Board? {
-        let boards = TaskifyAddTaskDestination.namedBoards(in: snapshot)
-        return boards.first {
-            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
-        } ?? boards.first {
-            $0.name.localizedCaseInsensitiveContains(name)
-        } ?? boards.first {
-            name.localizedCaseInsensitiveContains($0.name)
-        }
-    }
-
-    private static func represents(
-        storageBoard: Board,
-        visibleBoard: Board,
-        in snapshot: TaskifySnapshot
-    ) -> Bool {
-        storageBoard.id == visibleBoard.id || (
-            visibleBoard.kind == .compound &&
-                snapshot.compoundChildBoards(for: visibleBoard.id).contains {
-                    $0.id == storageBoard.id
-                }
+        TaskifyAddTaskDestination.displayBoard(
+            for: storageBoard,
+            requestedBoardName: requestedBoardName,
+            in: snapshot
         )
     }
 }
@@ -210,69 +166,30 @@ enum TaskifyIntentTaskWriter {
         priority: TaskPriority? = nil,
         interpretNaturalLanguageTitle: Bool = false
     ) async throws -> TaskifyIntentCreatedTask {
-        let store = JSONTaskStore()
-        var snapshot = try await store.load()
-
-        let spokenRequest = interpretNaturalLanguageTitle
-            ? TaskifySpokenTaskRequestParser.parse(
-                title,
-                explicitlyRequestedBoardName: requestedBoardName,
-                visibleBoardNames: TaskifyAddTaskDestination.namedBoards(in: snapshot).map(\.name)
-            )
-            : TaskifySpokenTaskRequest(
-                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                requestedBoardName: requestedBoardName
-            )
-        let trimmedTitle = spokenRequest.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty else {
-            throw TaskifyAddTaskIntentError.emptyTitle
-        }
-
-        guard let destination = TaskifyAddTaskDestination.resolve(
-            in: snapshot,
-            requestedBoardName: spokenRequest.requestedBoardName
-        ) else {
-            throw TaskifyAddTaskIntentError.noAddableBoard
-        }
-
-        guard let task = snapshot.addTask(
-            title: trimmedTitle,
-            boardID: destination.boardID,
-            columnID: destination.columnID,
-            dueDate: dueDate ?? destination.dueDate,
+#if os(macOS) && TASKIFY_MAC_UI_TEST
+        let test = MacUITestExternalActionConfiguration.resolve()
+        return try await TaskifyExternalActions.addTask(
+            title: title,
+            requestedBoardName: requestedBoardName,
             note: note,
+            dueDate: dueDate,
             priority: priority,
-            newTaskPosition: newTaskPosition
-        ), let board = snapshot.boards.first(where: { $0.id == task.boardID }) else {
-            throw TaskifyAddTaskIntentError.taskNotCreated
-        }
-
-        let displayBoard = TaskifyIntentBoardPresentation.board(
-            for: board,
-            requestedBoardName: spokenRequest.requestedBoardName,
-            in: snapshot
+            interpretNaturalLanguageTitle: interpretNaturalLanguageTitle,
+            store: JSONTaskStore(fileURL: test.storeURL),
+            publisher: .disabled
         )
-        try await store.save(snapshot)
-        return TaskifyIntentCreatedTask(task: task, board: board, displayBoard: displayBoard)
-    }
-
-    /// A local copy of the app's `TaskOrderingSettings.position` read (same UserDefaults key and
-    /// default), kept separate because an intent must not construct the heavyweight `AppModel`.
-    private static var newTaskPosition: NewTaskPosition {
-        UserDefaults.standard.string(forKey: "taskify.newTaskPosition").flatMap(NewTaskPosition.init(rawValue:)) ?? .top
-    }
-}
-
-enum TaskifyAddTaskIntentError: Swift.Error, CustomLocalizedStringResourceConvertible {
-    case emptyTitle
-    case noAddableBoard
-    case taskNotCreated
-
-    var localizedStringResource: LocalizedStringResource {
-        switch self {
-        case .emptyTitle: "Enter a task title."
-        case .noAddableBoard: "Add a board in Taskify first."
-        case .taskNotCreated: "Taskify couldn't add that task."
-        }
+#else
+        try await TaskifyExternalActions.addTask(
+            title: title,
+            requestedBoardName: requestedBoardName,
+            note: note,
+            dueDate: dueDate,
+            priority: priority,
+            interpretNaturalLanguageTitle: interpretNaturalLanguageTitle
+        )
+#endif
     }
 }
+
+typealias TaskifyAddTaskIntentError = TaskifyExternalAddTaskError
+#endif

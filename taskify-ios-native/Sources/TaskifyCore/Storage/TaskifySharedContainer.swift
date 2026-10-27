@@ -85,12 +85,17 @@ public enum TaskifySharedContainer {
         guard let group = groupDirectory(appGroupID: appGroupID, fileManager: fileManager, authorization: authorization) else {
             return false
         }
+        let copiedSplitStore = migrateSplitStore(
+            from: privateDirectory(fileManager: fileManager),
+            to: group.appendingPathComponent("TaskifyNative", isDirectory: true),
+            fileManager: fileManager
+        )
         let source = privateDirectory(fileManager: fileManager)
             .appendingPathComponent(storeFilename, isDirectory: false)
         let destinationDirectory = group.appendingPathComponent("TaskifyNative", isDirectory: true)
         let destination = destinationDirectory.appendingPathComponent(storeFilename, isDirectory: false)
 
-        guard fileManager.fileExists(atPath: source.path) else { return false }
+        guard fileManager.fileExists(atPath: source.path) else { return copiedSplitStore }
         if fileManager.fileExists(atPath: destination.path) {
             let modified: (URL) -> Date? = { url in
                 (try? fileManager.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
@@ -109,6 +114,26 @@ public enum TaskifySharedContainer {
                fileManager.contents(atPath: destination.path) == original {
                 try? fileManager.removeItem(at: source)
             }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// The split store (`JSONTaskStore`, C7-5) moves the same way: copied when the group has none,
+    /// and the private copy removed once the group's is complete.
+    private static func migrateSplitStore(from privateDirectory: URL, to groupStoreDirectory: URL, fileManager: FileManager) -> Bool {
+        let source = privateDirectory.appendingPathComponent(JSONTaskStore.splitDirectoryName, isDirectory: true)
+        let destination = groupStoreDirectory.appendingPathComponent(JSONTaskStore.splitDirectoryName, isDirectory: true)
+        guard fileManager.fileExists(atPath: source.path) else { return false }
+        if fileManager.fileExists(atPath: destination.appendingPathComponent(JSONTaskStore.markerFilename).path) {
+            return false
+        }
+        do {
+            try fileManager.createDirectory(at: groupStoreDirectory, withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: destination.path) { try fileManager.removeItem(at: destination) }
+            try fileManager.copyItem(at: source, to: destination)
+            try? fileManager.removeItem(at: source)
             return true
         } catch {
             return false

@@ -3,17 +3,13 @@ import TaskifyCore
 import UniformTypeIdentifiers
 import UIKit
 
-/// First-run onboarding, ported from the PWA's `FirstRunOnboarding.tsx` / `useFirstRunOnboarding.ts`.
+/// First-run onboarding, matching the PWA's `FirstRunOnboarding.tsx` since C2-5 (iOS: C9-5).
 ///
-/// One behavioral difference from the PWA: native always auto-generates a Nostr identity on
-/// first launch (see `AppModel.load()`), so there's no "no key yet" state to gate on — by the
-/// time this view can appear, a key already exists. "Sign in with an existing key" therefore
-/// *replaces* the auto-generated one (via `importIdentity`, same as Settings' identity import),
-/// and "Create new login" just surfaces/backs up the key that's already there. The PWA's third
-/// option — restoring from a local backup *file* — isn't ported here: native has no local backup
-/// file export/import to restore from yet. Signing in with an existing key already triggers the
-/// existing automatic account-sync search (`AppModel.refreshAccountSync`), which covers the
-/// common "I already used Taskify" case without new plumbing.
+/// It starts with tasks, not keys: "Start using Taskify" keeps the identity the app already made
+/// and opens the boards; the key is offered for saving later, once the user has something to lose
+/// (`KeyBackupState`, shown by `KeyBackupBanner`). "I already use Taskify" replaces that identity
+/// with the user's own key (`importIdentity`), which starts the usual account-sync search.
+/// Notification permission is asked when the first reminder is set, not here.
 struct FirstRunOnboardingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -21,16 +17,11 @@ struct FirstRunOnboardingView: View {
     private enum Page {
         case home
         case signIn
-        case create
-        case notifications
     }
 
     @State private var page: Page = .home
     @State private var existingKeyInput = ""
-    @State private var createdNsec = ""
     @State private var signInError: String?
-    @State private var createMessage: String?
-    @State private var notificationBusy = false
 
     var body: some View {
         NavigationStack {
@@ -56,8 +47,6 @@ struct FirstRunOnboardingView: View {
                         switch page {
                         case .home: homePage
                         case .signIn: signInPage
-                        case .create: createPage
-                        case .notifications: notificationsPage
                         }
                     }
                     .padding(showsPanel ? 32 : 0)
@@ -96,15 +85,15 @@ struct FirstRunOnboardingView: View {
 
     private var homePage: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Choose how you want to get started.")
+            Text("Plan your week, keep lists and share boards. Your tasks stay private and sync across your devices.")
                 .font(.headline)
                 .foregroundStyle(TaskifyTheme.primaryText)
 
             Button {
-                signInError = nil
-                page = .signIn
+                KeyBackupSettings.markCreatedHere()
+                finish()
             } label: {
-                Text("Sign in with nsec")
+                Text("Start using Taskify")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -112,9 +101,10 @@ struct FirstRunOnboardingView: View {
             .controlSize(.large)
 
             Button {
-                openCreatePage()
+                signInError = nil
+                page = .signIn
             } label: {
-                Text("Create new login")
+                Text("I already use Taskify")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -124,11 +114,16 @@ struct FirstRunOnboardingView: View {
 
     private var signInPage: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Sign in with nsec")
+            Text("Sign in with your key")
                 .font(.headline)
                 .foregroundStyle(TaskifyTheme.primaryText)
+            Text("Use the nsec from your other device or password manager. Your boards come back from your account backup.")
+                .font(.subheadline)
+                .foregroundStyle(TaskifyTheme.secondaryText)
 
             SecureField("nsec1... or 64-character key", text: $existingKeyInput)
+                .submitLabel(.go)
+                .onSubmit { handleUseExistingKey() }
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .padding(.horizontal, 16)
@@ -150,121 +145,11 @@ struct FirstRunOnboardingView: View {
                 Button("Back") { page = .home }
                     .buttonStyle(.bordered)
 
-                Button("Continue") { handleUseExistingKey() }
+                Button("Sign in") { handleUseExistingKey() }
                     .buttonStyle(.borderedProminent)
                     .tint(TaskifyTheme.accent)
             }
         }
-    }
-
-    private var createPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Create new login")
-                .font(.headline)
-                .foregroundStyle(TaskifyTheme.primaryText)
-
-            Text("This private key acts as a password to log in to your account. Store it somewhere safe like a password manager.")
-                .font(.subheadline)
-                .foregroundStyle(TaskifyTheme.secondaryText)
-
-            Text(createdNsec.isEmpty ? "Generating key…" : createdNsec)
-                .font(.caption.monospaced())
-                .foregroundStyle(TaskifyTheme.primaryText)
-                .textSelection(.enabled)
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            actionLayout {
-                Button {
-                    UIPasteboard.general.setItems(
-                        [[UTType.plainText.identifier: createdNsec]],
-                        options: [
-                            .localOnly: true,
-                            .expirationDate: Date().addingTimeInterval(120),
-                        ]
-                    )
-                    createMessage = "nsec copied"
-                } label: {
-                    Label("Copy nsec", systemImage: "doc.on.doc")
-                }
-                .buttonStyle(.bordered)
-                .disabled(createdNsec.isEmpty)
-
-                if !createdNsec.isEmpty {
-                    ShareLink(item: createdNsec) {
-                        Label("Save", systemImage: "square.and.arrow.up")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-
-            if let createMessage {
-                Text(createMessage)
-                    .font(.caption)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-            }
-
-            actionLayout {
-                Button("Back") { page = .home }
-                    .buttonStyle(.bordered)
-
-                Button("Continue") { page = .notifications }
-                    .buttonStyle(.borderedProminent)
-                    .tint(TaskifyTheme.accent)
-                    .disabled(createdNsec.isEmpty)
-            }
-        }
-    }
-
-    private var notificationsPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Enable reminder notifications?")
-                .font(.headline)
-                .foregroundStyle(TaskifyTheme.primaryText)
-
-            Text("Taskify only sends notifications for reminders you create on tasks or events. Taskify never sends unsolicited notifications. This also enables push notifications for new chat messages — message contents stay encrypted end to end.")
-                .font(.subheadline)
-                .foregroundStyle(TaskifyTheme.secondaryText)
-
-            actionLayout {
-                Button("Not now") {
-                    finish()
-                }
-                .buttonStyle(.bordered)
-                .disabled(notificationBusy)
-
-                Button {
-                    notificationBusy = true
-                    model.requestNotificationPermission()
-                    // Onboarding also opts the account into DM push with the default
-                    // categories. The registration runs in the background — onboarding
-                    // shouldn't wait on the network — and a failure is surfaced later as
-                    // Settings' push status, where it can be retried.
-                    Task {
-                        await model.enableDMPushNotifications(
-                            selection: .both,
-                            relayURL: TaskifyDMPushSettings.relayURL,
-                            serverURL: TaskifyDMPushSettings.serverURL
-                        )
-                    }
-                    finish()
-                } label: {
-                    Text(notificationBusy ? "Enabling…" : "Enable notifications")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(TaskifyTheme.accent)
-                .disabled(notificationBusy)
-            }
-        }
-    }
-
-    private func openCreatePage() {
-        createMessage = nil
-        if createdNsec.isEmpty {
-            createdNsec = model.currentIdentityNsec() ?? ""
-        }
-        page = .create
     }
 
     private func handleUseExistingKey() {
@@ -285,7 +170,7 @@ struct FirstRunOnboardingView: View {
             signInError = importError ?? "Could not import your identity. Please try again."
             return
         }
-        page = .notifications
+        finish()
     }
 
     private func finish() {

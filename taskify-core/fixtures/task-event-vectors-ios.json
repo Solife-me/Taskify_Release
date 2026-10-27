@@ -1,0 +1,380 @@
+{
+  "boards" : {
+    "lists" : {
+      "columns" : [
+        {
+          "id" : "c1",
+          "name" : "Todo"
+        }
+      ],
+      "id" : "lists",
+      "kind" : "lists",
+      "name" : "Lists",
+      "nostr" : {
+        "boardId" : "taskify-vector-lists-board",
+        "relays" : [
+
+        ]
+      }
+    },
+    "week" : {
+      "id" : "week",
+      "kind" : "week",
+      "name" : "Week",
+      "nostr" : {
+        "boardId" : "taskify-vector-week-board",
+        "relays" : [
+
+        ]
+      }
+    }
+  },
+  "description" : "Task events made by iOS, and what every client must decode them to. Checked by Swift TaskEventVectorTests, PWA vitest and the CLI's wire-vectors test.",
+  "vectors" : [
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "8+BM7jnkoFSvvZL+vtI6Vqo/fvHSteepfALpOgd5gMK7T9WPKQIEreIONRI0wUyMEVd2HA5dKQ6CWp0ZlELmDscWV3DlvIILZNjsCDu3WEzHWg1gEgwHNQowxgsJ8N2k+UDKcLAzHXH+FpM0fzLqpx7coMn9Lt4gWxGvjDI+oHrpN44jQHokaCGMPKFEPsynlWrDNHo+aP5GvdjpyclbOG+hsNS6lYI28aPwM2SOvnT0MBBUWisDMgP/AUpSLVBT",
+        "created_at" : 1792500000,
+        "id" : "e437856664545db0c33ae6f6f0cd55907605a37b2fcff9938822f2d7adb98190",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "350a9a697659fec2699d06c73384b86faac461d73677c15c7ee4d3fc43e0e7ce719de3dc9b1e99aba48730b70fea32cca661ec631a76d075a3b29dbe3676a0b0",
+        "tags" : [
+          [
+            "d",
+            "ios-open"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "documents" : null,
+        "dueAt" : 1792684800,
+        "id" : "ios-open",
+        "note" : "Window seat",
+        "priority" : 3,
+        "recurrence" : null,
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "open",
+        "title" : "Book flights"
+      },
+      "name" : "open task with a note, priority and a timed due date"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "imdvqWam0p76vvJXbCWJZYSib4UzFMSy2E1NnJ0TV7LAxGoi6J4VicEfHOyRWjSZrBoH7aHWCAiN+jTQtsTV76eb4YGOP0d1orPOddnYn/5O2YgxqNCfJ3l6d100uoWj+fPt911Ijp68XkGEJMaRHhPAdYYgO4pASgicmwiSF0Czfpx4+fwIPnirJuwhZP4wqhw60JiXVX6rGb583hjpkvRtcZyAQoZ/Yh5ISdZ7BXBT3D6CuA+D68b7lbGAksTAIJiROAkANARK5GQ=",
+        "created_at" : 1792500001,
+        "id" : "1ae54e59537b8e7e3d555eea56fccd52ab94516e3612e812d2cb0d562fe8fe01",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "8d0317290dcc3092a2dae7843f5d4d321302a51782746b79c7398513174ff3f5746fe23836eda2f770410bb1774680b04a444567071aa2d0fa51b9a4ce8fc757",
+        "tags" : [
+          [
+            "d",
+            "ios-done"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "done"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "documents" : null,
+        "dueAt" : 1792299600,
+        "id" : "ios-done",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : null,
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "done",
+        "title" : "Renew passport"
+      },
+      "name" : "completed task"
+    },
+    {
+      "board" : "week",
+      "event" : {
+        "content" : "9sLuF5hn8DGJFiDwCShEYADkv161gxzYANlofsnBfTMf8ZBENOkIx3D/fLSRN6z9h/mdL1zNoQ2yplUZeGMlT1nKK/nQPEPjZajhKzjtdMt2cv4yE8+hZhIPM92P7MkLqHx8Qm1sp6L1q1cNmQCt4DgwZGUaXTWtQ+NvsHbIgxR27Rho5pPPrLh0FNhQoXEa5467pxR4R+rj4tALE1BSjS1Vnq0VVl151weYIEvzbpwY2tbH5DIckhkjfxMK8Od4FDoz/aI+DJKFKxuh3q4eFgfXFeZgmCq+yA==",
+        "created_at" : 1792500002,
+        "id" : "3209908adb0cf591d7abd45c8a26988dcff1b54b3f073dae85931478df83d817",
+        "kind" : 30301,
+        "pubkey" : "a0013ac2fec9c934686bea339d6acf90ed6027397f7023b13fab969265fabe4d",
+        "sig" : "dc71f36fb391ffff97fa9ca6cf0d7a824a9216e8ef76ac235f9a00e1a26f4658fa900a6b6fef05847f9a38bef042c710d157e9fa114ce70b81199469c89d9c60",
+        "tags" : [
+          [
+            "d",
+            "ios-daily"
+          ],
+          [
+            "b",
+            "2e29380396d4e5d265384977361f730d9c6fd31b01cf9ef932938e5411ba9588"
+          ],
+          [
+            "col",
+            "day"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : null,
+        "documents" : null,
+        "dueAt" : 1792386000,
+        "id" : "ios-daily",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : {
+          "type" : "daily"
+        },
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : "series-plants",
+        "status" : "open",
+        "title" : "Water plants"
+      },
+      "name" : "daily recurring task on a week board"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "Vq7wufgRGFAcf0lhYfAzBBf9bEGXZrSu98RMP9UYwWhxi/Rr22G5gy+c3l1CGkc8KQTeDd+LuPlq6npJHSZOAo96oOgvKooILHL04zRdGhVySbqBx4pJAYKk/d0N/VlvqdFbUB9CQV8GRfOGz7pQxOFjwUxvDgkksiHevkE+jfqd9uUhkQ2PZhNMWRhsUw9LatB9kp+kWeO/HAvP2e9Ewjv5sQzZTddOLY2xMqTYbZgGTR03oQhR/hsqxCLWWrUa5HeQV0WGEw==",
+        "created_at" : 1792500003,
+        "id" : "3c7d2d05d251aa42f2b0f7ed5125f239ff088725547d89e7694ce55e1713ed5e",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "0851b4a4375de3d1cbf0f8f74f22011939a8e58be56cb2eeb22ff905591a4fd2cc1c91bcaf9035adbd7f8d6deee169eda990a58ac86f4541c5f3db49cfd6c01d",
+        "tags" : [
+          [
+            "d",
+            "ios-reminders"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "documents" : null,
+        "dueAt" : 1792767600,
+        "id" : "ios-reminders",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : null,
+        "republishKeeps" : {
+          "reminderTime" : "09:00",
+          "reminders" : [
+            "15m"
+          ]
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "open",
+        "title" : "Team call"
+      },
+      "name" : "reminders survive another client's republish"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "D+iiqGPbD+XrhXZjgS4F3bcI8+zK8vbWMm3kRa3HFf7YKPRKVVi64hUdXwSr8h3rnoiIwSiZIGA6hxCbJwYg9T8WlESYEPKPzqtvUanXrWpdpt6IXI5o/7e0joPXTZbFiZh16r+YiwfWys2bF5zi7GliCHWMaAsWV/nBhdDn9EksAGTw1L/f8J0CYWnPfnOhZ8P2iXK5Z9jT9/N5b6k5O6K67/Ip2KqsPRoO7EGWfNsqHXulYLlof3CEgTOkQ1ZWYVeMMKdWDR5lXqb2WPpKkG3QXYuFNlsW4RjcQOpDQAUnQrQcBN7wG5BU4QVR/wyiNFGhzHKhAVOdoW43klat5ayYkebCK5dv/Jpk19a/2VLsGUZXH29gdw==",
+        "created_at" : 1792500004,
+        "id" : "4af710835f6eebb8929d27bc390b0d0a4ace12084b46909014e15571500dd808",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "52e6593b0d9488846a9a67306a3b8d7d09027ac7a1594e7cda1c175cd419d74b602061e8b54c1bf03430ece71f52cfc6cb50add32bd578606e5be9a0b23fc7cb",
+        "tags" : [
+          [
+            "d",
+            "recurrence:scripture-memory:2026-10-20"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "documents" : null,
+        "dueAt" : 1792472400,
+        "id" : "recurrence:scripture-memory:2026-10-20",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : {
+          "type" : "daily"
+        },
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : "entry-9",
+        "scriptureMemoryStage" : 1,
+        "seriesId" : "scripture-memory",
+        "status" : "open",
+        "title" : "Review Psalm 23:1"
+      },
+      "name" : "Scripture Memory review keeps its passage link"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "J2If2/4NQ8iAFx9WzIwLKF5KP70LDrpvXAeANKlBAQgwerXm1aTF6yU0fjaoubJFFHhjphESvvocgV0fjY4hBKj9h3AEiQ1bVzZNZJgf12mzUf3QiGE5lAhxgNAYjoWKD/DVTP3foPzNAz4cJyBunO3xM5p8mmYSxgEjdCk5a8hXCPAro+YT7fPomBYVaUCtnhVizfRP/unqgS/jlXan8yfU/YaB3Ozv3wsV5DEnPgBD0WTJpKzSubMhs5SOLtru2BNM3lVRtrwxJ86LbSHrxcmnUpiEM21nNF3IdZxibyYAKBfLvBg03WFRZ8HvQPIy983O2tVPyjCeYlntaXxh2XBxYoI0RyzPGEl5wgBNuONzWjOqOlwqsHMPbMLnfmy3u9Zvc8zMgyvLmseFjevKWTcIJaQsfSYeR+7RwR+xn3STnpzccyeA5O8N64FMNFgY8cmcD0U6Qi1VC1X9VmvcEfPvk6x0ul94S3eWl0Q9L6VbsqOGwnb85irLaboxLKwm2MlUfYrJfU0gXinAScNK0vxKCzFrez/8s7yVKFJgBv32B4LI7bdm+rI81Q3vzla0Qw==",
+        "created_at" : 1792500005,
+        "id" : "449d69b66a809706497506b1922633a63660ce7d81d798e458e2b51352c411d1",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "c35d487432df1be3f84c6db9a3a98030006c8136ff618ee9dfe658d91b84307a0713c926bc53021d8a086a08b0763a74c6b99a114786c0b1d1c399f374a5580b",
+        "tags" : [
+          [
+            "d",
+            "ios-docs"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "open"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "documents" : [
+          {
+            "encrypted" : true,
+            "id" : "doc-ios-1",
+            "kind" : "pdf",
+            "mimeType" : "application/pdf",
+            "name" : "Contract.pdf",
+            "remoteUrl" : "https://files.example/c0ffee.bin"
+          }
+        ],
+        "dueAt" : 1792818000,
+        "id" : "ios-docs",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : null,
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "open",
+        "title" : "Review the contract"
+      },
+      "name" : "uploaded document travels by reference"
+    },
+    {
+      "board" : "lists",
+      "event" : {
+        "content" : "SCSROrCqALaR9PB2Ftfv/QWiQQ/fzbyJwSBuRfGTXwBZmSl7fa3eHBHXDAWps+UDID7SkjEHcnHXuQyk1Jjf39ySH90tt1vj1D6+T47QXV/MQPBCNCN+fvX4RW/oUqPOQwmNhNg2dIlche+vV/N4NI++eD0jQaYfP2QmqRVRLkowvEZflais62Q5jLCdWnqPNxunEfk2KtpacP4Z2qKe9yee",
+        "created_at" : 1792500006,
+        "id" : "b1f07cee93b073134cec1c51c5530be4c542f0c9003b500e651d1e751acbbb77",
+        "kind" : 30301,
+        "pubkey" : "15cf3aaa621368e943ae0c9c5784ecd54dd5e99cc79476e7c1d5033e5e30931f",
+        "sig" : "c7019740bc94fe47105ebafc0969ae525addcd802eee4e9b7e353dc3cab21d5825c2f254b226f60c456e36efddd319dc88165f24b8ee437bb5059c7ed98971f9",
+        "tags" : [
+          [
+            "d",
+            "ios-deleted"
+          ],
+          [
+            "b",
+            "459cd02fb0a340c6288bc8592600a32c6f2c793d12237112be6cbe1838f81bfa"
+          ],
+          [
+            "col",
+            "c1"
+          ],
+          [
+            "status",
+            "deleted"
+          ]
+        ]
+      },
+      "expected" : {
+        "columnId" : "c1",
+        "documents" : null,
+        "dueAt" : 1790917200,
+        "id" : "ios-deleted",
+        "note" : "",
+        "priority" : null,
+        "recurrence" : null,
+        "republishKeeps" : {
+
+        },
+        "scriptureMemoryId" : null,
+        "scriptureMemoryStage" : null,
+        "seriesId" : null,
+        "status" : "deleted",
+        "title" : "Cancelled plan"
+      },
+      "name" : "deleted task (tombstone)"
+    }
+  ]
+}

@@ -8,13 +8,12 @@ buildTaskAssignmentResponseEnvelope,
 buildTaskShareEnvelope,
 resolveBoardReference
 } from "taskify-core";
-import { loadConfig,saveConfig } from "../config.js";
 import { renderJson } from "../render.js";
-import { fetchShareInboxNip17,sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
+import { eventInviteAction } from "./events.js";
 
-export function registerSharingCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
-  const { initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow } = context;
+export function registerSharingCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow" | "loadConfig" | "saveConfig" | "now" | "shareTransport">) {
+  const { initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow, loadConfig, saveConfig, now, shareTransport } = context;
   const shareCmd = program
     .command("share")
     .description("Share board/task/event envelopes over NIP-17 and process inbox messages");
@@ -27,18 +26,18 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
       const entry = resolveBoardReference(config.boards, boardRef);
       if (!entry) {
         console.error(chalk.red(`Board not found: ${boardRef}`));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       try {
         const senderHex = nsecToHexOrThrow(config.nsec);
         const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
         const envelope = buildBoardShareEnvelope(entry.id, entry.name, config.relays, { npub: senderNpub });
-        await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+        await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Board share sent."));
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       }
     });
 
@@ -72,14 +71,15 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
           assignees: task.assignees?.map((a) => ({ pubkey: a.pubkey })),
           relays: config.relays,
         }, { npub: senderNpub });
-        await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+        await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Task share sent."));
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -87,9 +87,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
     .command("event <eventId> <npubOrHex>")
     .description("Share an event invite envelope over NIP-17 DM")
     .option("--board <id|name>", "Board the event belongs to (optional)")
-    .action(async (eventId: string, npubOrHex: string, opts) => {
-      await program.parseAsync(["node", "taskify", "event", "invite", eventId, npubOrHex, ...(opts.board ? ["--board", opts.board] : [])], { from: "user" });
-    });
+    .action(eventInviteAction(program, context));
 
   shareCmd
     .command("respond-assignment <taskId> <accepted|declined|tentative> <npubOrHex>")
@@ -98,13 +96,12 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
       const config = await loadConfig(program.opts().profile as string | undefined);
       try {
         const senderHex = nsecToHexOrThrow(config.nsec);
-        const envelope = buildTaskAssignmentResponseEnvelope({ taskId, status, respondedAt: new Date().toISOString() });
-        await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
+        const envelope = buildTaskAssignmentResponseEnvelope({ taskId, status, respondedAt: now().toISOString() });
+        await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: npubOrHexToHex(npubOrHex), relays: config.relays });
         console.log(chalk.green("✓ Assignment response sent."));
-        process.exit(0);
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       }
     });
 
@@ -119,7 +116,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
       let exitCode = 0;
       try {
         const senderHex = nsecToHexOrThrow(config.nsec);
-        const inbox = await fetchShareInboxNip17({ recipientSecretHex: senderHex, relays: config.relays, limit: 100 });
+        const inbox = await shareTransport.fetchInbox({ recipientSecretHex: senderHex, relays: config.relays, limit: 100 });
         if (opts.apply) {
           const processed = new Set(config.processedInboxRumorIds ?? []);
           for (const item of inbox) {
@@ -144,13 +141,14 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
             if (item.envelope.item.type === "task-assignment-response") {
               await runtime.applyTaskAssignmentResponse(item.envelope.item.taskId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
             }
-            if (item.envelope.item.type === "event-rsvp-response") {
-              await runtime.applyEventRsvpResponse(item.envelope.item.eventId, item.senderPubkey, item.envelope.item.status, item.envelope.item.respondedAt);
-            }
+            // An `event-rsvp-response` is only ever from an older CLI. Attendees answer with their
+            // own kind 30312 event, which `event show` reads; the board's copy is not rewritten.
+            // Saved after each message, so a failure later in the batch can't make the next
+            // apply repeat what this one already did.
             processed.add(item.rumorId);
+            config.processedInboxRumorIds = Array.from(processed).slice(-2000);
+            await saveConfig(config);
           }
-          config.processedInboxRumorIds = Array.from(processed).slice(-2000);
-          await saveConfig(config);
         }
         if (opts.json) renderJson(inbox);
         else inbox.forEach((m) => console.log(`${chalk.cyan(m.envelope.item.type)} ${chalk.dim(m.senderPubkey.slice(0, 12))}`));
@@ -159,7 +157,7 @@ export function registerSharingCommands(program: Command, context: Pick<CommandC
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

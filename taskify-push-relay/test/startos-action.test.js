@@ -15,3 +15,27 @@ test('StartOS APNs action accepts PEM text without the broken file-upload value'
   assert.doesNotMatch(source, /privateKeyFile:\s*Value\.file\(/)
   assert.doesNotMatch(source, /input\.privateKeyFile\.path/)
 })
+
+test('StartOS APNs action migrates old config to an independently editable Mac topic', async () => {
+  const source = await readFile(configureActionURL, 'utf8')
+  const model = await readFile(new URL('../startos/fileModels/apns.json.ts', import.meta.url), 'utf8')
+
+  assert.match(model, /macTopic:\s*z\.string\(\)\.optional\(\)/)
+  assert.match(source, /macTopic:\s*Value\.text\(\{/)
+  assert.match(source, /current\.macTopic\s*\?\?\s*'solife\.me\.Taskify\.Mac'/)
+  assert.match(source, /macTopic,\s*\n\s*snapstrTopic,/)
+})
+
+test('StartOS package pins the published multi-architecture relay image', async () => {
+  const manifest = await readFile(
+    new URL('../startos/manifest/index.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(
+    manifest,
+    /dockerTag:\s*'ghcr\.io\/solife-me\/taskify-push-relay:0\.5\.0'/,
+  )
+  assert.match(manifest, /arch:\s*\['x86_64',\s*'aarch64'\]/)
+  assert.doesNotMatch(manifest, /dockerBuild/)
+})

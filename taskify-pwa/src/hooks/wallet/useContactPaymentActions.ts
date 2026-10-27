@@ -9,22 +9,17 @@ import {
   type ProofState,
 } from "@cashu/cashu-ts";
 import { type P2PKKey } from "../../context/P2PKContext";
-import { contactDisplayLabel, contactPrimaryName, type Contact } from "../../lib/contacts";
-import { SATS_PER_BTC } from "../wallet/useWalletPrice";
+import { contactDisplayLabel, type Contact } from "../../lib/contacts";
+import { SATS_PER_BTC } from "./useWalletPrice";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import { normalizeMintUrl } from "../../wallet/cashuProofHelpers";
 import type { CreateSendTokenOptions } from "../../mint/MintSession";
 import type { HistoryTokenState, StoredProofForState } from "../../wallet/walletHistoryTypes";
-import type { GroupChat } from "../../lib/groupChatState";
-import type { WalletDmThread } from "../wallet/useDmState";
 
 export function useContactPaymentActions({
   // Reactive state
   mintUrl,
   info,
-  activeThread,
-  activeGroupChat,
-  renameGroupDraft,
   activeP2pkKey,
   lnInput,
   walletConversionEnabled,
@@ -56,14 +51,6 @@ export function useContactPaymentActions({
   setLnAddrAmt,
   setLnState,
   setLnError,
-  setRenameGroupDraft,
-  setChatView,
-  setRenameGroupBusy,
-  setShareContactStatus,
-  setShareContactBusy,
-  setShareContactPickerOpen,
-  setShareContactPickerMode,
-  setShareContactSource,
   setCreatingSendToken,
   setSendTokenStr,
   setLastSendTokenAmount,
@@ -93,16 +80,10 @@ export function useContactPaymentActions({
   ensureNostrPool,
   safePublish,
   publishNip17Giftwraps,
-  publishGroupSubjectUpdate,
-  upsertGroupChat,
-  sendContactShareToPubkeys,
   defaultNostrRelays,
 }: {
   mintUrl: string;
   info: { unit?: string } | null;
-  activeThread: WalletDmThread | null;
-  activeGroupChat: GroupChat | null;
-  renameGroupDraft: string;
   activeP2pkKey: P2PKKey | null;
   lnInput: string;
   walletConversionEnabled: boolean;
@@ -134,14 +115,6 @@ export function useContactPaymentActions({
   setLnAddrAmt: (amt: string) => void;
   setLnState: (state: string) => void;
   setLnError: (err: string) => void;
-  setRenameGroupDraft: (name: string) => void;
-  setChatView: (view: string) => void;
-  setRenameGroupBusy: (busy: boolean) => void;
-  setShareContactStatus: (status: string | null) => void;
-  setShareContactBusy: (busy: boolean) => void;
-  setShareContactPickerOpen: (open: boolean) => void;
-  setShareContactPickerMode: (mode: string) => void;
-  setShareContactSource: (source: Contact | null) => void;
   setCreatingSendToken: (creating: boolean) => void;
   setSendTokenStr: (token: string) => void;
   setLastSendTokenAmount: (amt: number) => void;
@@ -170,9 +143,6 @@ export function useContactPaymentActions({
   ensureNostrPool: () => any;
   safePublish: (pool: any, relays: string[], event: any) => Promise<void>;
   publishNip17Giftwraps: (opts: any) => Promise<void>;
-  publishGroupSubjectUpdate: (group: GroupChat, name: string) => Promise<boolean>;
-  upsertGroupChat: (group: GroupChat) => void;
-  sendContactShareToPubkeys: (contact: Contact, pubkeys: string[]) => Promise<{ ok: boolean; error?: string }>;
   defaultNostrRelays: string[];
 }) {
   const resetContactForm = useCallback(() => {}, []);
@@ -212,54 +182,6 @@ export function useContactPaymentActions({
       return next;
     },
     [readLightningInput, setLnInput],
-  );
-
-  const handleSendChatContactAttachment = useCallback(
-    async (contact: Contact) => {
-      if (!activeThread) {
-        setShareContactStatus("Open a conversation first.");
-        return;
-      }
-      const ownIdentity = readNostrIdentity().identity;
-      const recipients = activeThread.groupId && activeGroupChat
-        ? activeGroupChat.members
-            .map((member) => member.toLowerCase())
-            .filter((member) => member && member !== ownIdentity?.pubkey.toLowerCase())
-        : [activeThread.peerPubkey.toLowerCase()].filter(Boolean);
-      if (!recipients.length) {
-        setShareContactStatus("No recipients available for this conversation.");
-        return;
-      }
-      setShareContactBusy(true);
-      setShareContactStatus(null);
-      try {
-        const result = await sendContactShareToPubkeys(contact, recipients);
-        if (!result.ok) {
-          setShareContactStatus(result.error || "Unable to send contact.");
-          return;
-        }
-        setShareContactPickerOpen(false);
-        setShareContactPickerMode("recipient");
-        setShareContactSource(null);
-        showToast(
-          activeThread.groupId
-            ? `Shared ${contactPrimaryName(contact)} with ${activeGroupChat?.name || "the group"}`
-            : `Sent ${contactPrimaryName(contact)}`,
-          3000,
-        );
-      } catch (err: any) {
-        setShareContactStatus(err?.message || "Unable to send contact.");
-      } finally {
-        setShareContactBusy(false);
-      }
-    },
-    [
-      activeGroupChat,
-      activeThread,
-      readNostrIdentity,
-      sendContactShareToPubkeys,
-      showToast,
-    ],
   );
 
   const handlePaymentRequestScan = useCallback(async (encodedRequest: string): Promise<boolean> => {
@@ -349,48 +271,6 @@ export function useContactPaymentActions({
       setShowSendOptions,
     ],
   );
-
-  const openGroupNameEditor = useCallback(() => {
-    if (!activeGroupChat) return;
-    setRenameGroupDraft(activeGroupChat.name || "");
-    setChatView("group-name-edit");
-  }, [activeGroupChat]);
-
-  const handleRenameGroupSubmit = useCallback(() => {
-    if (!activeGroupChat) return;
-    const nextName = renameGroupDraft.trim();
-    if (!nextName) {
-      showToast("Enter a group name", 2500);
-      return;
-    }
-    const currentName = (activeGroupChat.name || "").trim();
-    if (nextName === currentName) {
-      setChatView("group-info");
-      return;
-    }
-
-    const renameTimestamp = Math.floor(Date.now() / 1000);
-    const updatedGroup = { ...activeGroupChat, name: nextName, nameUpdatedAt: renameTimestamp };
-    upsertGroupChat(updatedGroup);
-    setRenameGroupBusy(true);
-    setChatView("group-info");
-
-    void (async () => {
-      let synced = false;
-      try {
-        synced = await publishGroupSubjectUpdate(updatedGroup, nextName);
-      } catch (err) {
-        console.warn("[chat] group rename publish failed", err);
-      } finally {
-        setRenameGroupBusy(false);
-      }
-
-      showToast(
-        synced ? "Group name updated" : "Group name updated locally. It will sync on your next message.",
-        synced ? 2200 : 4200,
-      );
-    })();
-  }, [activeGroupChat, publishGroupSubjectUpdate, renameGroupDraft, setChatView, showToast, upsertGroupChat]);
 
   const applyEcashContact = useCallback(
     async (contact: Contact) => {
@@ -695,13 +575,10 @@ export function useContactPaymentActions({
     handleOpenReceiveLock,
     readLightningInput,
     commitLightningInputFromDom,
-    handleSendChatContactAttachment,
     handlePaymentRequestScan,
     openContactsFor,
     closeContactsSheet,
     applyLightningContact,
-    openGroupNameEditor,
-    handleRenameGroupSubmit,
     applyEcashContact,
     handleSelectContact,
     handleProofStateNotification,

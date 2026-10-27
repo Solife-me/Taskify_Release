@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 // MARK: - Fakes
 

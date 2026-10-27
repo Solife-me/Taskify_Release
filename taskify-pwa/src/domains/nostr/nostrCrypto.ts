@@ -1,5 +1,5 @@
 import { nip04 } from "nostr-tools";
-import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
+import { revealLocalSecretKey } from "../../identity/identity";
 import { toBufferSource } from "../../lib/binary";
 import {
   sha256,
@@ -28,7 +28,7 @@ export {
 };
 
 async function deriveAesKeyFromLocalSk(): Promise<CryptoKey> {
-  const skHex = nostrSkSync();
+  const skHex = (revealLocalSecretKey() ?? "");
   if (!skHex || !/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   const label = new TextEncoder().encode("taskify-ecash-v1");
   const raw = concatBytes(hexToBytes(skHex), label);
@@ -57,7 +57,7 @@ export async function decryptEcashTokenForFunder(enc: {alg:"aes-gcm-256";iv:stri
 }
 
 export async function encryptEcashTokenForRecipient(recipientHex: string, plain: string): Promise<{ alg: "nip04"; data: string }> {
-  const skHex = nostrSkSync();
+  const skHex = (revealLocalSecretKey() ?? "");
   if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   if (!/^[0-9a-fA-F]{64}$/.test(recipientHex)) throw new Error("Invalid recipient pubkey");
   const data = await nip04.encrypt(skHex, recipientHex, plain);
@@ -65,7 +65,7 @@ export async function encryptEcashTokenForRecipient(recipientHex: string, plain:
 }
 
 export async function decryptEcashTokenForRecipient(senderHex: string, enc: { alg: "nip04"; data: string }): Promise<string> {
-  const skHex = nostrSkSync();
+  const skHex = (revealLocalSecretKey() ?? "");
   if (!/^[0-9a-fA-F]{64}$/.test(skHex)) throw new Error("No local Nostr secret key");
   if (!/^[0-9a-fA-F]{64}$/.test(senderHex)) throw new Error("Invalid sender pubkey");
   return await nip04.decrypt(skHex, senderHex, enc.data);

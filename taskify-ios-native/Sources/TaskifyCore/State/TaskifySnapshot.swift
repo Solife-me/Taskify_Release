@@ -1475,14 +1475,29 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return (created, updatedIDs)
     }
 
-    private mutating func appendNextRecurrence(
-        afterCompletingAt index: Int,
-        weekStartsOn: WeekdayColumn?,
-        now: Date
-    ) {
-        let completedTask = tasks[index]
+    /// Makes sure a recurring task completed elsewhere has its next occurrence. The Watch, away
+    /// from the iPhone, publishes a completion without one; when its command then reaches the
+    /// iPhone the task is already completed (C10-2). Ids come from the date, so this is
+    /// idempotent and converges with any device that created the occurrence. An occurrence that
+    /// exists, or was deleted, is left alone. Returns the occurrence created, if any.
+    @discardableResult
+    public mutating func ensureNextRecurrence(
+        afterCompleted taskID: String,
+        weekStartsOn: WeekdayColumn? = nil,
+        now: Date = Date()
+    ) -> TaskItem? {
+        guard let index = tasks.firstIndex(where: { $0.id == taskID && !$0.isDeleted }),
+              tasks[index].completed,
+              let next = nextRecurrenceSlot(for: tasks[index], now: now),
+              !tasks.contains(where: { $0.id == next.id }) else { return nil }
+        appendNextRecurrence(afterCompletingAt: index, weekStartsOn: weekStartsOn, now: now)
+        return tasks.first { $0.id == next.id && !$0.isDeleted }
+    }
+
+    /// When and under which id a completed task's series continues.
+    private func nextRecurrenceSlot(for completedTask: TaskItem, now: Date) -> (dueDate: Date, id: String)? {
         guard let recurrence = completedTask.recurrence,
-              let dueDate = completedTask.dueDate else { return }
+              let dueDate = completedTask.dueDate else { return nil }
         // A Scripture Memory review is spaced from when it was done: completing one left overdue
         // since July scheduled the next for the day after it, still in July, so catching up took
         // a completion per missed day.
@@ -1493,16 +1508,27 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                   after: scheduledFrom,
                   dueTimeEnabled: completedTask.dueTimeEnabled,
                   timeZoneIdentifier: completedTask.dueTimeZone
-              ) else { return }
-
-        let seriesID = completedTask.seriesID ?? completedTask.id
-        tasks[index].seriesID = seriesID
+              ) else { return nil }
         let nextID = Self.recurringInstanceID(
-            seriesID: seriesID,
+            seriesID: completedTask.seriesID ?? completedTask.id,
             dueDate: nextDueDate,
             recurrence: recurrence,
             timeZoneIdentifier: completedTask.dueTimeZone
         )
+        return (nextDueDate, nextID)
+    }
+
+    private mutating func appendNextRecurrence(
+        afterCompletingAt index: Int,
+        weekStartsOn: WeekdayColumn?,
+        now: Date
+    ) {
+        let completedTask = tasks[index]
+        guard let recurrence = completedTask.recurrence,
+              let (nextDueDate, nextID) = nextRecurrenceSlot(for: completedTask, now: now) else { return }
+
+        let seriesID = completedTask.seriesID ?? completedTask.id
+        tasks[index].seriesID = seriesID
         guard !tasks.contains(where: { $0.id == nextID && !$0.isDeleted }) else { return }
         // Ids are date-derived, so a deleted record of this occurrence (deleted here, or synced
         // from another device) can already hold the id. The new occurrence replaces it in place:
@@ -1683,7 +1709,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         task.lastEditedBy ?? task.createdBy
     }
 
-    private static func recurringInstanceID(
+    static func recurringInstanceID(
         seriesID: String,
         dueDate: Date,
         recurrence: TaskRecurrence,
@@ -1861,6 +1887,13 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     public mutating func mergeRemoteTasks(
         _ records: [(task: TaskItem, eventCreatedAt: Int)]
     ) -> Bool {
+        mergeRemoteTasks(records.map { TaskRelayRecord(task: $0.task, eventCreatedAt: $0.eventCreatedAt) })
+    }
+
+    /// Applies relay versions that win over what this device holds, in relays' order (NIP-01, C7-3):
+    /// a later `created_at`, or the same one with a lower event id.
+    @discardableResult
+    public mutating func mergeRemoteTasks(_ records: [TaskRelayRecord]) -> Bool {
         guard !records.isEmpty else { return false }
 
         let needsOccurrenceRepair = records.contains {
@@ -1901,15 +1934,29 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             let remoteTask = taskApplyingRecurringSeriesCutoff(record.task)
             if let index = indexByID[remoteTask.id] {
                 let localClock = tasks[index].nostrUpdatedAt ?? 0
+                let local = tasks[index].localEventVersion
                 // Our own version echoed back by a relay: record what the relays hold.
-                if record.eventCreatedAt == localClock, tasks[index].publishedFingerprint == nil {
+                if record.eventCreatedAt == localClock, tasks[index].publishedFingerprint == nil,
+                   local.id == nil || local.id == record.eventID {
                     let relayFingerprint = fingerprint(record.task)
                     if relayFingerprint != nil {
                         tasks[index].publishedFingerprint = relayFingerprint
                         changed = true
                     }
                 }
-                guard record.eventCreatedAt > localClock else { continue }
+                // Stamped here and not yet signed: the id that decides a same-second tie is not
+                // known yet, so the local edit stays until it is queued.
+                if record.eventCreatedAt == localClock, tasks[index].publishPending == true { continue }
+                guard record.version.wins(over: local) else { continue }
+                if record.eventCreatedAt == localClock, local.id == nil,
+                   let relayFingerprint = fingerprint(record.task),
+                   relayFingerprint == fingerprint(tasks[index]) {
+                    // The same content at the same second: most likely the very event this device
+                    // holds, from before ids were kept. Learn its id rather than replace the task.
+                    tasks[index].nostrEventVersion = record.version
+                    changed = true
+                    continue
+                }
                 var merged = remoteTask
                 var preservedFields = tasks[index].preservedSyncFields ?? [:]
                 for (name, value) in remoteTask.preservedSyncFields ?? [:] {
@@ -1917,12 +1964,14 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 }
                 merged.preservedSyncFields = preservedFields.isEmpty ? nil : preservedFields
                 merged.nostrUpdatedAt = record.eventCreatedAt
+                merged.nostrEventVersion = record.eventID == nil ? nil : record.version
                 merged.publishedFingerprint = fingerprint(record.task)
                 tasks[index] = merged
                 changed = true
             } else {
                 var inserted = remoteTask
                 inserted.nostrUpdatedAt = record.eventCreatedAt
+                inserted.nostrEventVersion = record.eventID == nil ? nil : record.version
                 inserted.publishedFingerprint = fingerprint(record.task)
                 indexByID[inserted.id] = tasks.count
                 tasks.append(inserted)
@@ -1935,8 +1984,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func mergeRemoteTask(_ remoteTask: TaskItem, eventCreatedAt: Int) -> Bool {
-        mergeRemoteTasks([(task: remoteTask, eventCreatedAt: eventCreatedAt)])
+    public mutating func mergeRemoteTask(_ remoteTask: TaskItem, eventCreatedAt: Int, eventID: String? = nil) -> Bool {
+        mergeRemoteTasks([TaskRelayRecord(task: remoteTask, eventCreatedAt: eventCreatedAt, eventID: eventID)])
     }
 
     private static func stableRecurringSeriesID(for task: TaskItem) -> String {

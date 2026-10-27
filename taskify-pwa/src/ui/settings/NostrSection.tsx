@@ -1,10 +1,9 @@
 // @ts-nocheck
 import React, { useState, useMemo } from "react";
 import { nip19 } from "nostr-tools";
-import { getSkSync as nostrSkSync } from "../../lib/nostrSkStore";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 import { FileServersSection } from "./FileServersSection";
-import { toNsec } from "../../domains/nostr/nostrKeyUtils";
+import { copyNsecToClipboard, useKeyBackupState } from "../../onboarding/keyBackup";
 import type { Settings } from "../../domains/tasks/settingsTypes";
 import { pillButtonClass } from "./settingsConstants";
 
@@ -34,6 +33,16 @@ export function NostrSection({
   sharedBoardCount?: number;
 }) {
   const [customSk, setCustomSk] = useState("");
+  const keyBackup = useKeyBackupState();
+  const keyUnsaved = !!keyBackup.createdHereAt && !keyBackup.savedAt;
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const copyNsec = async () => {
+    setCopyStatus(
+      (await copyNsecToClipboard())
+        ? "nsec copied. Keep it somewhere safe, like a password manager."
+        : "Couldn't copy here. Download a backup below instead; it includes your key.",
+    );
+  };
   const [newDefaultRelay, setNewDefaultRelay] = useState("");
   const pubkeyNpub = useMemo(() => {
     const trimmed = (pubkeyHex || "").trim();
@@ -56,17 +65,17 @@ export function NostrSection({
           onClick={()=>setShowAdvanced(a=>!a)}
         >{showAdvanced ? "Hide advanced" : "Advanced"}</button>
       </div>
+      {keyUnsaved && (
+        <div className="rounded-xl border border-surface bg-surface-muted p-3 text-xs text-secondary">
+          <div className="text-sm font-medium text-primary">Unsaved key</div>
+          Your account key exists only on this device. Copy your nsec into a password manager so you can sign in elsewhere or recover your tasks if this device is lost.
+        </div>
+      )}
       {/* Quick actions available outside Advanced */}
       <div className="mb-3 flex gap-2">
         <button
           className="ghost-button button-sm pressable"
-          onClick={async ()=>{
-            try {
-              const sk = nostrSkSync();
-              if (!sk) return;
-              await navigator.clipboard?.writeText(toNsec(sk));
-            } catch {}
-          }}
+          onClick={() => { void copyNsec(); }}
         >Copy nsec</button>
         <button
           className="ghost-button button-sm pressable"
@@ -78,6 +87,7 @@ export function NostrSection({
           disabled={sharedBoardCount <= 0}
         >Re-sync board history</button>
       </div>
+      {copyStatus && <div className="text-xs text-secondary">{copyStatus}</div>}
       {showAdvanced && (
         <>
           <div className="mb-3">
@@ -119,13 +129,7 @@ export function NostrSection({
               <button className="ghost-button button-sm pressable" onClick={onGenerateKey}>Generate new key</button>
               <button
                 className="ghost-button button-sm pressable"
-                onClick={async ()=>{
-                  try {
-                    const sk = nostrSkSync();
-                    if (!sk) return;
-                    await navigator.clipboard?.writeText(toNsec(sk));
-                  } catch {}
-                }}
+                onClick={() => { void copyNsec(); }}
               >Copy private key (nsec)</button>
             </div>
           </div>

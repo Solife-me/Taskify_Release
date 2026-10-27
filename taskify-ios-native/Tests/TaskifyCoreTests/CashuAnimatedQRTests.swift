@@ -1,5 +1,6 @@
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 final class CashuAnimatedQRTests: XCTestCase {
     func testAnimatedCashuQRRoundTripsOutOfOrderAndIgnoresDuplicates() throws {

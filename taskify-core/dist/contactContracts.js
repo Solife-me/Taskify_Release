@@ -51,12 +51,23 @@ export function contactVerifiedNip05(contact, cache) {
         return null;
     return nip05 || entry.nip05;
 }
+const GRAPHEME_SEGMENTER = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+const STARTS_WITH_EMOJI = /^[\p{Extended_Pictographic}\p{Regional_Indicator}]/u;
+/** User-perceived characters, so a family emoji or a flag stays one glyph. */
+function graphemes(value) {
+    if (GRAPHEME_SEGMENTER)
+        return Array.from(GRAPHEME_SEGMENTER.segment(value), (part) => part.segment);
+    return [...value];
+}
+/** Avatar initials: a leading emoji on its own, else first and last initials (or two letters of one word). */
 export function contactInitials(value) {
-    const trimmed = (value || "").trim();
-    if (!trimmed)
+    const parts = (value || "").trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0)
         return "?";
-    const parts = trimmed.split(/\s+/).filter(Boolean);
+    const first = graphemes(parts[0]);
+    if (STARTS_WITH_EMOJI.test(parts[0]))
+        return first[0] ?? "?";
     if (parts.length === 1)
-        return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+        return first.slice(0, 2).join("").toUpperCase();
+    return `${first[0] ?? ""}${graphemes(parts[parts.length - 1])[0] ?? ""}`.toUpperCase();
 }

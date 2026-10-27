@@ -5,12 +5,10 @@ import { getPublicKey,nip19 } from "nostr-tools";
 import {
 buildTaskShareEnvelope
 } from "taskify-core";
-import { loadConfig } from "../config.js";
-import { sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
 import type { CommandContext } from "./context.js";
 
-export function registerAssignmentsCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
-  const { warnShortTaskId, initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow } = context;
+export function registerAssignmentsCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow" | "loadConfig" | "shareTransport">) {
+  const { warnShortTaskId, initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow, loadConfig, shareTransport } = context;
   // ---- assign ----
   program
     .command("assign <taskId> <npubOrHex>")
@@ -58,7 +56,7 @@ export function registerAssignmentsCommands(program: Command, context: Pick<Comm
                   assignees: (updated.assignees ?? []).map((a) => ({ pubkey: a.pubkey })),
                   relays: config.relays,
                 }, { npub: senderNpub });
-                await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: hex, relays: config.relays });
+                await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: hex, relays: config.relays });
                 console.log(chalk.dim("  ↳ assignment request DM sent"));
               }
             }
@@ -69,7 +67,7 @@ export function registerAssignmentsCommands(program: Command, context: Pick<Comm
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -107,7 +105,7 @@ export function registerAssignmentsCommands(program: Command, context: Pick<Comm
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

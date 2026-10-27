@@ -25,6 +25,8 @@ final class TaskifyPerfMonitor {
 
     static let isEnabled: Bool = {
         if ProcessInfo.processInfo.environment["TASKIFY_PERF"] == "1" { return true }
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_PERF_PROBE"] == "1" { return true }
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_PERF_PROBE"] == "1" { return true }
         return UserDefaults.standard.bool(forKey: "TaskifyPerf")
     }()
 
@@ -38,6 +40,11 @@ final class TaskifyPerfMonitor {
     private(set) var worstFrameMilliseconds = 0.0
     private(set) var snapshotWritesPerSecond = 0.0
     private(set) var cardBodiesPerSecond = 0.0
+    /// Card body evaluations since launch, for measuring one interaction (the UI-test probe).
+    private(set) var totalCardBodies = 0
+    /// Conversation timeline rebuilds since launch (the UI-test probe).
+    private(set) var totalChatTimelineBuilds = 0
+    private(set) var totalChatTimelineBuildSeconds = 0.0
 
     private var displayLink: CADisplayLink?
     private var lastFrameTimestamp: CFTimeInterval = 0
@@ -67,6 +74,13 @@ final class TaskifyPerfMonitor {
     func recordCardBody() {
         guard Self.isEnabled else { return }
         cardBodiesInWindow += 1
+        totalCardBodies += 1
+    }
+
+    func recordChatTimelineBuild(seconds: Double) {
+        guard Self.isEnabled else { return }
+        totalChatTimelineBuilds += 1
+        totalChatTimelineBuildSeconds += seconds
     }
 
     @objc private func step(_ link: CADisplayLink) {

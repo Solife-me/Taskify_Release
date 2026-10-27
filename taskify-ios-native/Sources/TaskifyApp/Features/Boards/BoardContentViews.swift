@@ -27,7 +27,7 @@ struct IndexCardColumnView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Index")
-                .font(.system(size: 17, weight: .semibold))
+                .scaledFont(size: 17, weight: .semibold)
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
             if flatEntries.isEmpty {
@@ -145,7 +145,7 @@ struct ListBoardView: View {
             }
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
-            .scrollPosition(id: $focusedPageID)
+            .scrollPosition(id: $focusedPageID, anchor: .leading)
             .horizontalTaskDragAutoScroll(
                 pageIDs: columns.map(\.id),
                 focusedPageID: $focusedPageID,
@@ -240,7 +240,7 @@ struct CompoundBoardView: View {
                 }
                 .scrollIndicators(.hidden)
                 .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
-                .scrollPosition(id: $focusedPageID)
+                .scrollPosition(id: $focusedPageID, anchor: .leading)
                 .horizontalTaskDragAutoScroll(
                     pageIDs: columns.map(\.id),
                     focusedPageID: $focusedPageID,
@@ -298,13 +298,13 @@ struct CompoundColumnView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if !hideBoardName {
                         Text(reference.board.name.uppercased())
-                            .font(.system(size: 9, weight: .bold))
+                            .scaledFont(size: 9, weight: .bold)
                             .tracking(1)
                             .foregroundStyle(TaskifyTheme.tertiaryText)
                             .lineLimit(1)
                     }
                     Text(reference.column.name)
-                        .font(.system(size: 17, weight: .semibold))
+                        .scaledFont(size: 17, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .lineLimit(1)
                 }
@@ -335,7 +335,7 @@ struct CompoundColumnView: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 15, weight: .bold))
+                        .scaledFont(size: 15, weight: .bold)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .frame(width: 34, height: 34)
                         .background(TaskifyTheme.raisedFill, in: Circle())
@@ -350,7 +350,7 @@ struct CompoundColumnView: View {
                         TaskifyEventCard(event: event, showDate: true, allowsSelection: true)
                     }
                     ForEach(tasks) { task in
-                        TaskCardView(task: task, allowsDragging: true)
+                        TaskCardView(task: task, context: model.cardContext(for: task), allowsDragging: true).equatable()
                             .taskDropTarget(
                                 boardID: reference.board.id,
                                 columnID: reference.column.id,
@@ -433,7 +433,7 @@ struct ListColumnView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(column.name)
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(size: 17, weight: .semibold)
                     .foregroundStyle(TaskifyTheme.secondaryText)
                 Spacer()
                 Text("\(tasks.count + events.count)")
@@ -502,7 +502,7 @@ struct ListColumnView: View {
                     .disabled(orderedColumns.count <= 1)
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 15, weight: .bold))
+                        .scaledFont(size: 15, weight: .bold)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                         .frame(width: 34, height: 34)
                         .background(TaskifyTheme.raisedFill, in: Circle())
@@ -517,7 +517,7 @@ struct ListColumnView: View {
                         TaskifyEventCard(event: event, showDate: true, allowsSelection: true)
                     }
                     ForEach(tasks) { task in
-                        TaskCardView(task: task, allowsDragging: true)
+                        TaskCardView(task: task, context: model.cardContext(for: task), allowsDragging: true).equatable()
                             .taskDropTarget(
                                 boardID: model.selectedBoardID,
                                 columnID: column.id,
@@ -618,7 +618,7 @@ struct WeekBoardView: View {
             }
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
-            .scrollPosition(id: $focusedPageID)
+            .scrollPosition(id: $focusedPageID, anchor: .leading)
             .horizontalTaskDragAutoScroll(
                 pageIDs: orderedWeekdays.map(\.rawValue),
                 focusedPageID: $focusedPageID,
@@ -655,7 +655,7 @@ struct DayColumnView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(weekday.shortName)
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(size: 17, weight: .semibold)
                     .foregroundStyle(TaskifyTheme.secondaryText)
                 Spacer()
                 Menu {
@@ -686,7 +686,7 @@ struct DayColumnView: View {
                         TaskifyEventCard(event: event, allowsSelection: true)
                     }
                     ForEach(tasks) { task in
-                        TaskCardView(task: task, allowsDragging: true)
+                        TaskCardView(task: task, context: model.cardContext(for: task), allowsDragging: true).equatable()
                             .taskDropTarget(
                                 boardID: model.selectedBoardID,
                                 columnID: weekday.rawValue,
@@ -727,21 +727,34 @@ struct TaskCardView: View {
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
     private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
     let task: TaskItem
+    let context: TaskCardContext
     let allowsDragging: Bool
     @State private var showingEditor = false
     @State private var showingNoteViewer = false
     @State private var showingTaskShare = false
     @State private var taskShareMode: TaskShareMode = .share
     @State private var confirmingRecurringDeletion = false
+    @State private var showingMove = false
+    /// Read when the delete dialog opens, so the card body does not depend on the whole series.
+    @State private var missedForDeletion: Int?
 
-    init(task: TaskItem, allowsDragging: Bool = false) {
+    init(task: TaskItem, context: TaskCardContext, allowsDragging: Bool = false) {
         self.task = task
+        self.context = context
         self.allowsDragging = allowsDragging
     }
 
-    /// Centres the title's first line on the 30pt complete button, which is where a one-line
-    /// card had it when the row was centre-aligned.
-    private static let titleLineInset = (30 - UIFont.systemFont(ofSize: 16, weight: .semibold).lineHeight) / 2
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// The complete button, 30 pt at the default text size, grows with the title (C8-3).
+    private var completeButtonSize: CGFloat { ScaledSize.scaled(30, relativeTo: .callout, for: dynamicTypeSize) }
+
+    /// Centres the title's first line on the complete button, which is where a one-line card had
+    /// it when the row was centre-aligned.
+    private var titleLineInset: CGFloat {
+        let titleSize = ScaledSize.scaled(16, for: dynamicTypeSize)
+        return max(0, (completeButtonSize - UIFont.systemFont(ofSize: titleSize, weight: .semibold).lineHeight) / 2)
+    }
 
     private var subtaskProgress: String? {
         guard let subtasks = task.subtasks, !subtasks.isEmpty else { return nil }
@@ -753,25 +766,9 @@ struct TaskCardView: View {
         return hideCompletedSubtasks ? subtasks.filter { !$0.completed } : subtasks
     }
 
-    /// Streaks are tracked for any "frequent" recurrence (daily/weekly, or every N days/weeks —
-    /// see `TaskifySnapshot.toggleCompletion`), but only *displayed* for the simple daily/weekly
-    /// cases, matching the PWA's narrower badge condition.
-    private var visibleStreak: Int? {
-        guard model.streaksEnabled else { return nil }
-        switch task.recurrence {
-        case .daily, .weekly:
-            break
-        default:
-            return nil
-        }
-        let streak = model.runningStreak(for: task)
-        guard streak > 0 else { return nil }
-        return streak
-    }
+    private var visibleStreak: Int? { context.streak }
 
-    private var mediaBoardID: String {
-        model.board(withID: task.boardID)?.effectiveNostrBoardID ?? task.boardID
-    }
+    private var mediaBoardID: String { context.mediaBoardID }
 
     private var cardText: TaskCardTextCache.Derived {
         TaskCardTextCache.derived(title: task.title, note: task.note)
@@ -824,11 +821,11 @@ struct TaskCardView: View {
                         Image(systemName: isSelectionMode
                             ? (isSelected ? "checkmark.circle.fill" : "circle")
                             : (task.completed ? "checkmark.circle.fill" : "circle"))
-                            .font(.system(size: 22, weight: .medium))
+                            .scaledFont(size: 22, weight: .medium)
                             .foregroundStyle((isSelectionMode ? isSelected : task.completed)
                                 ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
                             .contentTransition(.symbolEffect(.replace))
-                            .frame(width: 30, height: 30)
+                            .frame(width: completeButtonSize, height: completeButtonSize)
                     }
                     .buttonStyle(TaskCompletionToggleButtonStyle {
                         handleCompletionPressDown(origin: proxy.flightOrigin,
@@ -838,13 +835,13 @@ struct TaskCardView: View {
                         ? (isSelected ? "Deselect task" : "Select task")
                         : (task.completed ? "Mark incomplete" : "Complete task"))
                 }
-                .frame(width: 30, height: 30)
+                .frame(width: completeButtonSize, height: completeButtonSize)
 
                 // Title and details open the editor; the note opens the note viewer.
                 VStack(alignment: .leading, spacing: 3) {
                     Button(action: editTapped) {
                         Text(displayTitle)
-                            .font(.system(size: 16, weight: .semibold))
+                            .scaledFont(size: 16, weight: .semibold)
                             .foregroundStyle(task.completed ? TaskifyTheme.tertiaryText : TaskifyTheme.primaryText)
                             .strikethrough(task.completed)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -951,7 +948,7 @@ struct TaskCardView: View {
                 // offscreen pass covers glyphs rather than the whole row.
                 .taskifyLegibilityShadow(overPhoto)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, Self.titleLineInset)
+                .padding(.top, titleLineInset)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -977,7 +974,7 @@ struct TaskCardView: View {
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Image(systemName: subtask.completed ? "checkmark.square.fill" : "square")
-                                    .font(.system(size: 14, weight: .semibold))
+                                    .scaledFont(size: 14, weight: .semibold)
                                     .foregroundStyle(
                                         subtask.completed
                                             ? TaskifyTheme.accent
@@ -1082,12 +1079,23 @@ struct TaskCardView: View {
                 showingEditor = true
             }
         }
+        // Dragging is the visual way to move a card; VoiceOver gets the move sheet (C8-3).
+        .accessibilityAction(named: "Move to…") { showingMove = true }
+        .sheet(isPresented: $showingMove) {
+            SelectionMoveSheet(selection: TaskSelectionController.single(task.id)) {}
+                .environment(model)
+        }
         .contextMenu {
             if !isSelectionMode {
                 Button {
                     showingEditor = true
                 } label: {
                     Label("Edit", systemImage: "pencil")
+                }
+                Button {
+                    showingMove = true
+                } label: {
+                    Label("Move to…", systemImage: "arrow.right.square")
                 }
                 Button {
                     if model.copyTask(task.id) {
@@ -1109,13 +1117,7 @@ struct TaskCardView: View {
                 } label: {
                     Label("Assign Task", systemImage: "person.badge.plus")
                 }
-                if let missed = model.missedOccurrenceCount(for: task.id) {
-                    Button {
-                        model.catchUpRecurringTask(task.id)
-                    } label: {
-                        Label(catchUpLabel(missed: missed), systemImage: "arrow.uturn.forward.circle")
-                    }
-                }
+                TaskCardCatchUpMenuItem(taskID: task.id)
                 if task.dueDateEnabled, task.dueDate != nil {
                     Button {
                         model.postponeTask(task.id, byDays: 1)
@@ -1130,6 +1132,7 @@ struct TaskCardView: View {
                 }
                 Button(role: .destructive) {
                     if task.recurrence?.isActive == true {
+                        missedForDeletion = model.missedOccurrenceCount(for: task.id)
                         confirmingRecurringDeletion = true
                     } else {
                         model.deleteTask(task.id, scope: .single)
@@ -1144,7 +1147,7 @@ struct TaskCardView: View {
             isPresented: $confirmingRecurringDeletion,
             titleVisibility: .visible
         ) {
-            if let missed = model.missedOccurrenceCount(for: task.id) {
+            if let missed = missedForDeletion {
                 Button(catchUpLabel(missed: missed)) {
                     model.catchUpRecurringTask(task.id)
                 }
@@ -1157,7 +1160,7 @@ struct TaskCardView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(model.missedOccurrenceCount(for: task.id) == nil
+            Text(missedForDeletion == nil
                 ? "Choose whether to delete only this occurrence or end the recurring series here."
                 : "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series.")
         }
@@ -1298,9 +1301,66 @@ func catchUpLabel(missed: Int) -> String {
     missed > 1 ? "Catch Up to Today (\(missed) missed)" : "Catch Up to Today"
 }
 
+/// A board column is the phone's width on every screen (C8-6): a wider screen shows more
+/// columns instead of stretching them, as on the PWA desktop. On a narrow phone the column
+/// leaves the next one peeking in.
 func boardColumnWidth(in width: CGFloat) -> CGFloat {
-    guard width >= 700 else { return max(1, min(330, width - 50)) }
-    let available = width - 36
-    let count = max(2, floor((available + 16) / 316))
-    return (available - (count - 1) * 16) / count
+    max(1, min(330, width - 50))
+}
+
+/// What a card shows that comes from outside its task (C8-1). The column looks it up, so the
+/// card depends only on its inputs and, being `Equatable`, skips its body when another task
+/// changes.
+struct TaskCardContext: Equatable {
+    /// The running streak to show; nil when none is shown.
+    var streak: Int?
+    /// The board key attachments are encrypted with.
+    var mediaBoardID: String
+}
+
+extension AppModel {
+    func cardContext(for task: TaskItem) -> TaskCardContext {
+        TaskCardContext(
+            streak: visibleStreak(for: task),
+            mediaBoardID: board(withID: task.boardID)?.effectiveNostrBoardID ?? task.boardID
+        )
+    }
+
+    /// Streaks are tracked for any "frequent" recurrence (daily/weekly, or every N days/weeks —
+    /// see `TaskifySnapshot.toggleCompletion`), but only *displayed* for the simple daily/weekly
+    /// cases, matching the PWA's narrower badge condition.
+    private func visibleStreak(for task: TaskItem) -> Int? {
+        guard streaksEnabled else { return nil }
+        switch task.recurrence {
+        case .daily, .weekly:
+            break
+        default:
+            return nil
+        }
+        let streak = runningStreak(for: task)
+        return streak > 0 ? streak : nil
+    }
+}
+
+extension TaskCardView: Equatable {
+    nonisolated static func == (lhs: TaskCardView, rhs: TaskCardView) -> Bool {
+        lhs.task == rhs.task && lhs.context == rhs.context && lhs.allowsDragging == rhs.allowsDragging
+    }
+}
+
+/// The context menu's "Catch Up" item. Its own view, so the series lookup it needs is a
+/// dependency of the menu rather than of the card.
+private struct TaskCardCatchUpMenuItem: View {
+    @Environment(AppModel.self) private var model
+    let taskID: String
+
+    var body: some View {
+        if let missed = model.missedOccurrenceCount(for: taskID) {
+            Button {
+                model.catchUpRecurringTask(taskID)
+            } label: {
+                Label(catchUpLabel(missed: missed), systemImage: "arrow.uturn.forward.circle")
+            }
+        }
+    }
 }

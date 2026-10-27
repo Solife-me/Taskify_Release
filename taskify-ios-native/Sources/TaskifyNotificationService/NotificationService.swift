@@ -46,7 +46,9 @@ final class NotificationService: UNNotificationServiceExtension {
             let event = try await fetchEvent(from: request.content.userInfo, identity: identity)
             guard !Task.isCancelled else { return }
             let decrypted = try NIP17GiftWrap.unwrapRumor(event, recipient: identity)
-            let snapshot = try await JSONTaskStore().load()
+            // Blocked, muted and left conversations, and contact names: chat and inbox only, with
+            // attachments left on disk, within the extension's memory limit (C10-3).
+            let snapshot = try await JSONTaskStore().read(areas: [.chat, .inbox])
             guard let presentation = DMPushNotificationPreviewPolicy.presentation(
                 for: decrypted,
                 identityPublicKey: identity.publicKeyHex,

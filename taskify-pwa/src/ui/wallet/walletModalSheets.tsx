@@ -1,13 +1,5 @@
 import { lazy } from "react";
 
-export const EcashReceiveSheet = lazy(() =>
-  import("./EcashReceiveSheet").then((module) => ({ default: module.EcashReceiveSheet })),
-);
-
-export const LightningReceiveSheet = lazy(() =>
-  import("./LightningReceiveSheet").then((module) => ({ default: module.LightningReceiveSheet })),
-);
-
 export const EcashSendSheet = lazy(() =>
   import("./EcashSendSheet").then((module) => ({ default: module.EcashSendSheet })),
 );

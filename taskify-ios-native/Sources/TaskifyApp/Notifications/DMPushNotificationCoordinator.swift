@@ -84,7 +84,7 @@ enum TaskifyDMPushCoordinatorError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notificationsDenied:
-            "Notifications are disabled in iOS Settings."
+            "Notifications are disabled in System Settings."
         case .registrationReplaced:
             "A newer push-registration request replaced this one."
         case .apnsRegistrationFailed(let message):
@@ -211,10 +211,61 @@ final class TaskifyApplicationDelegate: NSObject, UIApplicationDelegate {
 @MainActor
 final class TaskifyDMPushCoordinator {
     static let shared = TaskifyDMPushCoordinator()
-    // The relay's existing registration contract has an iOS APNs topic. Do not
-    // register Mac tokens against that topic until the server supports Mac delivery.
+
+    private weak var model: AppModel?
+    private var tokenContinuation: CheckedContinuation<String, Error>?
+
+    private init() {}
+
+    func register(model: AppModel) {
+        self.model = model
+        guard TaskifyDMPushSettings.isEnabled else { return }
+        // Apple may rotate a token. Register on every launch and treat the saved value only as a
+        // status hint, never as the canonical token for this app/device/environment combination.
+        NSApplication.shared.registerForRemoteNotifications()
+    }
+
     func requestDeviceToken() async throws -> String {
-        throw TaskifyDMPushCoordinatorError.apnsRegistrationFailed("Mac push delivery requires a configured macOS APNs topic.")
+        let center = UNUserNotificationCenter.current()
+        var settings = await center.notificationSettings()
+        if settings.authorizationStatus == .notDetermined {
+            _ = try await center.requestAuthorization(options: [.alert, .badge, .sound])
+            settings = await center.notificationSettings()
+        }
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            break
+        case .notDetermined, .denied:
+            throw TaskifyDMPushCoordinatorError.notificationsDenied
+        @unknown default:
+            throw TaskifyDMPushCoordinatorError.notificationsDenied
+        }
+
+        tokenContinuation?.resume(throwing: TaskifyDMPushCoordinatorError.registrationReplaced)
+        return try await withCheckedThrowingContinuation { continuation in
+            tokenContinuation = continuation
+            NSApplication.shared.registerForRemoteNotifications()
+        }
+    }
+
+    func didRegister(deviceToken: Data) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        TaskifyDMPushSettings.saveDeviceToken(token)
+        if let continuation = tokenContinuation {
+            tokenContinuation = nil
+            continuation.resume(returning: token)
+            return
+        }
+        guard TaskifyDMPushSettings.isEnabled else { return }
+        Task { await model?.refreshDMPushRegistration(deviceToken: token) }
+    }
+
+    func didFailRegistration(_ error: Error) {
+        guard let continuation = tokenContinuation else { return }
+        tokenContinuation = nil
+        continuation.resume(
+            throwing: TaskifyDMPushCoordinatorError.apnsRegistrationFailed(error.localizedDescription)
+        )
     }
 }
 #endif

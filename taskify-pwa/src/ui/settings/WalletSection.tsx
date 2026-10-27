@@ -38,8 +38,9 @@ import {
 } from "../../lib/walletHistory";
 import type { Settings } from "../../domains/tasks/settingsTypes";
 import { SessionPool } from "../../nostr/SessionPool";
-import { useCashu } from "../../context/CashuContext";
-import { useP2PK, type P2PKKey } from "../../context/P2PKContext";
+import { useCashu } from "../../context/walletContexts";
+import { useP2PK } from "../../context/walletContexts";
+import type { P2PKKey } from "../../context/P2PKContext";
 import { useToast } from "../../context/ToastContext";
 import {
   pillButtonClass,

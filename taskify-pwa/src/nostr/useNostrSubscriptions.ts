@@ -37,16 +37,6 @@ export type CalendarViewSubscriptionTarget = {
   viewAddress: string;
 };
 
-type SharedInboxSubscriptionConfig = {
-  enabled?: boolean;
-  ensurePool: () => SubscribeManyPool;
-  handleEvent: (event: NostrEvent) => void | Promise<void>;
-  lookbackSeconds: number;
-  nostrPK?: string | null;
-  nostrSkHex?: string | null;
-  relays: string[];
-};
-
 type CalendarViewSubscriptionConfig = {
   enabled?: boolean;
   clockRef: MutableRefObject<Map<string, number>>;
@@ -77,63 +67,11 @@ type UseNostrSubscriptionsParams = {
   chatState?: ReplaceableSubscriptionConfig;
   calendarViews?: CalendarViewSubscriptionConfig;
   scriptureMemory?: ReplaceableSubscriptionConfig;
-  sharedInbox?: SharedInboxSubscriptionConfig;
 };
 
 function eventTagValue(event: NostrEvent, name: string): string | undefined {
   const tag = event.tags.find((entry) => entry[0] === name);
   return tag?.[1];
-}
-
-function useSharedInboxSubscription(config?: SharedInboxSubscriptionConfig) {
-  const enabled = config?.enabled ?? true;
-  const ensurePool = config?.ensurePool;
-  const handleEvent = config?.handleEvent;
-  const lookbackSeconds = config?.lookbackSeconds ?? 0;
-  const nostrPK = config?.nostrPK;
-  const nostrSkHex = config?.nostrSkHex;
-  const relays = config?.relays ?? EMPTY_RELAYS;
-
-  useEffect(() => {
-    if (!enabled || !ensurePool || !handleEvent) return;
-    if (!nostrPK || !nostrSkHex) return;
-    if (!relays.length) return;
-
-    const pool = ensurePool();
-    const since = Math.max(0, Math.floor(Date.now() / 1000) - lookbackSeconds);
-    let cancelled = false;
-    const filter = { kinds: [4, 1059], "#p": [nostrPK], since };
-    const subscription = pool.subscribeMany(relays, filter, {
-      onevent: (event) => {
-        if (cancelled) return;
-        void handleEvent(event);
-      },
-    });
-
-    void (async () => {
-      try {
-        if (typeof pool.list === "function") {
-          const events = await pool.list(relays, [filter]);
-          if (!cancelled && Array.isArray(events)) {
-            events.forEach((event) => {
-              void handleEvent(event);
-            });
-          }
-        }
-      } catch (err) {
-        console.warn("Shared inbox fetch failed", err);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      try {
-        subscription.close("taskify-shares");
-      } catch {
-        // ignore subscription close errors
-      }
-    };
-  }, [enabled, ensurePool, handleEvent, lookbackSeconds, nostrPK, nostrSkHex, relays]);
 }
 
 function useCalendarViewSubscription(config?: CalendarViewSubscriptionConfig) {
@@ -313,9 +251,7 @@ export function useNostrSubscriptions({
   calendarViews,
   chatState,
   scriptureMemory,
-  sharedInbox,
 }: UseNostrSubscriptionsParams) {
-  useSharedInboxSubscription(sharedInbox);
   useCalendarViewSubscription(calendarViews);
   useReplaceableSubscription(appBackup);
   useReplaceableSubscription(bibleTracker);

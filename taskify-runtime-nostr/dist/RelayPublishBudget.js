@@ -14,6 +14,8 @@ export function classifyRelayRejection(message) {
         return "terminal";
     if (text.startsWith("deleted:") || text.startsWith("replaced:"))
         return "superseded";
+    if (text.startsWith("pow:"))
+        return "pow";
     return "retry";
 }
 /**

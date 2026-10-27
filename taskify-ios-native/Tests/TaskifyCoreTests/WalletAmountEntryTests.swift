@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 final class WalletAmountEntryTests: XCTestCase {
     private func type(_ keys: String, allowsDecimal: Bool, into start: String = "", maxDigits: Int = 12) -> String {

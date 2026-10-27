@@ -36,11 +36,13 @@ struct MacTaskEditor: View {
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
                 Button("Save") { saveTask = Task { await save() } }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
                     .disabled(saving || attachments.importing || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("save-task-button")
             }.padding(22)
             Divider()
             Form {
                 Section("Task") {
                     TextField("Title", text: $draft.title, axis: .vertical).lineLimit(1...4)
+                        .accessibilityIdentifier("task-title-field")
                     LabeledContent("Notes") {
                         Button { editingNote = true } label: {
                             Group {
@@ -130,8 +132,11 @@ struct MacTaskEditor: View {
                     MacAttachmentQueueView(queue: attachments, busy: saving, onCancel: { saveTask?.cancel() })
                     HStack {
                         Button("Attach Files…") { attachments.chooseFiles() }.disabled(saving || attachments.importing)
-                        PasteButton(payloadType: URL.self) { urls in attachments.stage(urls) }
+                        PasteButton(payloadType: MacAttachmentTransferPayload.self) { payloads in
+                            attachments.stage(payloads.map(\.source))
+                        }
                             .labelStyle(.iconOnly).disabled(saving || attachments.importing).help("Paste Files")
+                            .accessibilityIdentifier("task-attachment-paste-button")
                     }
                     .padding(6)
                     .background(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
@@ -161,7 +166,14 @@ struct MacTaskEditor: View {
                         }.disabled(subtask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
-                if let error { Section { Text(error).foregroundStyle(.red).textSelection(.enabled) } }
+                if let error {
+                    Section {
+                        Text(error)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("task-editor-error")
+                    }
+                }
                 if original != nil {
                     Section { Button("Delete Task…", role: .destructive) { deleteConfirmation = true } }
                 }

@@ -20,7 +20,12 @@ export type RelayRejectionKind =
    */
   | "superseded"
   /**
-   * Transient (timeouts, `error:`, `pow:`, a false `duplicate:`): retry with the normal backoff.
+   * Not enough NIP-13 proof of work. Resending the same signed event can't succeed, so the
+   * relay is held back for it and the caller re-mines a new event (see `parseProofOfWorkRejection`).
+   */
+  | "pow"
+  /**
+   * Transient (timeouts, `error:`, a false `duplicate:`): retry with the normal backoff.
    * Only a true acceptance confirms delivery (nostr-sync-audit-2026-09-03).
    */
   | "retry";
@@ -33,6 +38,7 @@ export function classifyRelayRejection(message: string | null | undefined): Rela
   if (text.startsWith("banned:")) return "banned";
   if (text.startsWith("blocked:") || text.startsWith("restricted:") || text.startsWith("invalid:")) return "terminal";
   if (text.startsWith("deleted:") || text.startsWith("replaced:")) return "superseded";
+  if (text.startsWith("pow:")) return "pow";
   return "retry";
 }
 

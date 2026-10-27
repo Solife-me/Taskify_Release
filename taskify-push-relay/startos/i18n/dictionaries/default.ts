@@ -27,6 +27,16 @@ const dict = {
   'Store the Firebase service account used to wake Snapstr on Android. Leave blank to turn Android push off.': 23,
   'Firebase Service Account JSON': 24,
   'In the Firebase console, open Project settings, Service accounts, and Generate new private key. Paste the complete downloaded JSON file.': 25,
+  'Configure Web Push': 26,
+  'Store the Taskify Worker VAPID key pair so the Taskify web app gets chat alerts. Leave the private key blank to turn web push off.': 27,
+  'VAPID Public Key': 28,
+  'The Worker VAPID_PUBLIC_KEY (base64url). Browsers subscribe with this key, so it must be the same one.': 29,
+  'VAPID Private Key': 30,
+  'The Worker VAPID_PRIVATE_KEY: base64url or PEM.': 31,
+  'VAPID Subject': 32,
+  'A mailto: or https:// contact for push services, usually the Worker VAPID_SUBJECT.': 33,
+  'Mac App Bundle ID': 34,
+  'The Mac APNs topic. It must match the signed Taskify Mac app bundle identifier.': 35,
 } as const
 
 export type I18nKey = keyof typeof dict

@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { boardTag } from '../boardCrypto';
+import { BoardSyncLedger } from "./boardSyncLedger";
 
 const recoverCalls: Array<{ relay: string; since?: number }> = [];
 vi.mock('taskify-runtime-nostr', async (importOriginal) => ({
@@ -29,9 +30,9 @@ async function renderBoardSync(overrides: Record<string, unknown> = {}) {
     boards: [board], boardsRef: { current: [board] }, tasksRef: { current: [] }, setTasks: () => {},
     pool: { setRelays() {}, subscribe() { return () => {}; } },
     getBoardRelays: () => ['wss://a', 'wss://b'],
-    nostrIdxRef: { current: { taskClock: new Map(), boardMeta: new Map(), calendarClock: new Map() } },
+    ledger: new BoardSyncLedger({ load: () => null, save: () => {} }),
     boardSyncCursorsRef: { current: {} }, relayBatchRef: { current: new Map() }, pendingRelaysByBoardRef: { current: new Map() },
-    seenBoardTasksRef: { current: new Map() }, pendingNostrTasksRef: { current: new Set() },
+    seenBoardTasksRef: { current: new Map() },
     completedNostrInitialSyncRef: { current: new Set() }, setPendingNostrInitialSyncByBoardTag() {},
     markNostrBoardInitialSyncComplete() {}, tagValue: () => 'task',
     applyBoardEvent: async () => {}, applyCalendarEvent: async () => {}, applyTaskEvent: async () => {},

@@ -2,20 +2,26 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import chalk from "chalk";
 import type { Command } from "commander";
 import { getPublicKey,nip19 } from "nostr-tools";
+import { deriveBoardKeyPair } from "taskify-runtime-nostr";
 import {
 buildCalendarEventInviteEnvelope,
-buildEventRsvpResponseEnvelope,
+calendarAddress,
+deriveBoardRsvpToken,
 normalizeTaskRecurrence,
-normalizeTaskReminders
+normalizeTaskReminders,
+planCalendarRsvp,
+resolveIdentifierReference,
+TASKIFY_CALENDAR_EVENT_KIND,
+TASKIFY_CALENDAR_RSVP_KIND,
+type CalendarRsvpStatus
 } from "taskify-core";
-import { loadConfig } from "../config.js";
+import { encryptCalendarRsvpForBoard } from "../calendarCrypto.js";
 import { renderJson } from "../render.js";
 import { buildCalendarEventDraft } from "../shared/eventDraft.js";
-import { sendShareEnvelopeNip17 } from "../shared/shareTransport.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerEventsCommands(program: Command, context: Pick<CommandContext, "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow">) {
-  const { parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow } = context;
+export function registerEventsCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "resolveColumnOrExit" | "npubOrHexToHex" | "nsecToHexOrThrow" | "now" | "shareTransport" | "withStandaloneSession">) {
+  const { loadConfig, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, resolveColumnOrExit, nsecToHexOrThrow, now, shareTransport, withStandaloneSession } = context;
   // ---- event command group ----
   const eventCmd = program
     .command("event")
@@ -46,10 +52,10 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
             console.log(`${chalk.cyan(e.id.slice(0, 8))}  ${e.title}${boardLabel}  ${chalk.dim(when)}`);
           }
         }
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -76,7 +82,8 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
     .action(async (title: string, opts) => {
       if (!opts.date) {
         console.error(chalk.red("--date is required (YYYY-MM-DD)"));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       const config = await loadConfig(program.opts().profile as string | undefined);
       const boardId = await resolveBoardId(opts.board, config);
@@ -111,10 +118,10 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         });
         if (opts.json) renderJson(created);
         else console.log(chalk.green(`✓ Created event: ${created.title} (${created.id.slice(0, 8)})`));
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -133,9 +140,11 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         const event = await runtime.getEvent(eventId, boardId);
         if (!event) {
           console.error(chalk.red(`Event not found: ${eventId}`));
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
-        if (opts.json) renderJson(event);
+        const rsvps = await runtime.listEventRsvps(event.id, event.boardId) ?? [];
+        if (opts.json) renderJson({ ...event, rsvps });
         else {
           console.log(chalk.bold(event.title));
           console.log(`id: ${event.id}`);
@@ -160,12 +169,18 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
             });
           }
           if (event.columnId) console.log(`column: ${event.columnId}`);
-          if (event.rsvpStatus) console.log(`rsvp status: ${event.rsvpStatus}`);
+          if (rsvps.length > 0) {
+            console.log(`responses: ${rsvps.length}`);
+            rsvps.forEach((rsvp) => {
+              const details = [rsvp.status, rsvp.fb].filter(Boolean).join(", ");
+              console.log(`  - ${rsvp.attendeePubkey}: ${details}${rsvp.note ? ` — ${rsvp.note}` : ""}`);
+            });
+          }
         }
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -206,7 +221,8 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
           const existingEvent = await runtime.getEvent(eventId, boardId);
           if (!existingEvent) {
             console.error(chalk.red(`Event not found: ${eventId}`));
-            process.exit(1);
+            process.exitCode = 1;
+            return;
           }
           documents = await mergeAttachmentDocuments({
             existing: existingEvent.documents as Record<string, unknown>[] | undefined,
@@ -239,14 +255,15 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         });
         if (!updated) {
           console.error(chalk.red(`Event not found: ${eventId}`));
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         if (opts.json) renderJson(updated);
         else console.log(chalk.green(`✓ Updated event: ${updated.title}`));
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -265,14 +282,15 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         const deleted = await runtime.deleteEvent(eventId, boardId);
         if (!deleted) {
           console.error(chalk.red(`Event not found: ${eventId}`));
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         if (opts.json) renderJson(deleted);
         else console.log(chalk.green(`✓ Deleted event: ${deleted.title}`));
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -282,69 +300,135 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
     .command("invite <eventId> <npubOrHex>")
     .description("Share an event invite over NIP-17 DM")
     .option("--board <id|name>", "Board the event belongs to (optional; scans all if omitted)")
-    .action(async (eventId: string, npubOrHex: string, opts) => {
-      const config = await loadConfig(program.opts().profile as string | undefined);
-      const runtime = initRuntime(config);
-      let exitCode = 0;
-      try {
-        const recipient = npubOrHexToHex(npubOrHex);
-        const event = await runtime.getEvent(eventId, opts.board ? await resolveBoardId(opts.board, config) : undefined);
-        if (!event) throw new Error(`Event not found: ${eventId}`);
-        const senderHex = nsecToHexOrThrow(config.nsec);
-        const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
-        const eventKey = `taskify:event:${event.id}`;
-        const canonical = `31923:${getPublicKey(hexToBytes(senderHex))}:${event.id}`;
-        const view = `31924:${getPublicKey(hexToBytes(senderHex))}:${event.id}`;
-        const envelope = buildCalendarEventInviteEnvelope({
-          eventId: event.id,
-          canonical,
-          view,
-          eventKey,
-          inviteToken: `${event.id}:${recipient.slice(0, 16)}`,
-          title: event.title,
-          start: event.startISO ?? event.startDate,
-          end: event.endISO ?? event.endDate,
-          relays: config.relays,
-        }, { npub: senderNpub });
-        await sendShareEnvelopeNip17({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: recipient, relays: config.relays });
-        console.log(chalk.green("✓ Event invite shared."));
-      } catch (err) {
-        console.error(chalk.red(String(err)));
-        exitCode = 1;
-      } finally {
-        await runtime.disconnect();
-        process.exit(exitCode);
-      }
-    });
+    .action(eventInviteAction(program, context));
 
   eventCmd
     .command("rsvp <eventId> <accepted|declined|tentative>")
-    .description("Send RSVP response for an event invite")
-    .option("--to <npubOrHex>", "Invite sender public key")
-    .action(async (eventId: string, status: "accepted" | "declined" | "tentative", opts) => {
+    .description("Answer an event invitation: publishes your RSVP (kind 30312) for the event's board to read")
+    .option("--board <id|name>", "Answer an event on one of your boards rather than an invitation in your inbox")
+    .option("--fb <free|busy>", "Whether the time is free or busy for you")
+    .option("--note <text>", "A note for the organizer")
+    .option("--to <npubOrHex>", "No longer needed: the answer goes to the event's board (ignored)")
+    .option("--json", "Output the published RSVP as JSON")
+    .action(async (eventId: string, status: CalendarRsvpStatus, opts) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
       let exitCode = 0;
       try {
-        if (!opts.to) throw new Error("--to <npubOrHex> is required.");
-        const senderHex = nsecToHexOrThrow(config.nsec);
-        const envelope = buildEventRsvpResponseEnvelope({
-          eventId,
+        const secretHex = nsecToHexOrThrow(config.nsec);
+        const attendeePubkey = getPublicKey(hexToBytes(secretHex));
+        const target = opts.board
+          ? await boardEventRsvpTarget(eventId, opts.board, attendeePubkey, config)
+          : await invitationRsvpTarget(eventId, secretHex, config);
+        const plan = planCalendarRsvp({
+          canonical: target.canonical,
+          eventId: target.eventId,
+          attendeePubkey,
           status,
-          respondedAt: new Date().toISOString(),
+          inviteToken: target.inviteToken,
+          fb: opts.fb,
+          note: opts.note,
         });
-        await sendShareEnvelopeNip17({
-          envelope,
-          senderSecretHex: senderHex,
-          recipientPubkeyHex: npubOrHexToHex(opts.to),
-          relays: config.relays,
-        });
-        console.log(chalk.green("✓ RSVP sent."));
+        if (plan.kind === "invalid") throw new Error(plan.error);
+        const content = await encryptCalendarRsvpForBoard(plan.payload, secretHex, plan.boardPubkey);
+        const { event, relays } = await withStandaloneSession(
+          { relays: target.relays, secretKeyHex: secretHex },
+          (session) => session.publish({
+            kind: TASKIFY_CALENDAR_RSVP_KIND,
+            content,
+            tags: plan.tags,
+            created_at: Math.floor(now().getTime() / 1000),
+          }),
+        );
+        if (opts.json) renderJson({ eventId: target.eventId, status, canonical: plan.canonicalAddress, rsvpEventId: event.id, relays });
+        else console.log(chalk.green(`✓ RSVP sent: ${status}`));
       } catch (err) {
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
+  type RsvpTarget = { eventId: string; canonical: string; inviteToken: string | undefined; relays: string[] };
+
+  /** The newest invitation to `eventRef` (an id or its prefix) among the shares in the inbox. */
+  async function invitationRsvpTarget(eventRef: string, secretHex: string, config: Awaited<ReturnType<typeof loadConfig>>): Promise<RsvpTarget> {
+    const inbox = await shareTransport.fetchInbox({ recipientSecretHex: secretHex, relays: config.relays, limit: 100 });
+    const invitations = inbox.flatMap((share) => (share.envelope.item.type === "event" ? [{ ...share.envelope.item, id: share.envelope.item.eventId }] : []));
+    const invitation = resolveIdentifierReference(invitations, eventRef);
+    if (!invitation) {
+      throw new Error(`No invitation to event ${eventRef} in your inbox; for an event on one of your boards, pass --board.`);
+    }
+    return {
+      eventId: invitation.eventId,
+      canonical: invitation.canonical,
+      inviteToken: invitation.inviteToken,
+      relays: invitation.relays?.length ? invitation.relays : config.relays,
+    };
+  }
+
+  /** An event on one of the user's boards: their own token if it names one, else the board's. */
+  async function boardEventRsvpTarget(eventRef: string, board: string, attendeePubkey: string, config: Awaited<ReturnType<typeof loadConfig>>): Promise<RsvpTarget> {
+    const boardId = await resolveBoardId(board, config);
+    const runtime = initRuntime(config);
+    try {
+      const event = await runtime.getEvent(eventRef, boardId);
+      if (!event) throw new Error(`Event not found: ${eventRef}`);
+      const entry = config.boards.find((candidate) => candidate.id === event.boardId);
+      return {
+        eventId: event.id,
+        canonical: calendarAddress(TASKIFY_CALENDAR_EVENT_KIND, deriveBoardKeyPair(event.boardId).pk, event.id),
+        inviteToken: event.inviteTokens?.[attendeePubkey] ?? await deriveBoardRsvpToken(event.boardId, attendeePubkey),
+        relays: entry?.relays?.length ? entry.relays : config.relays,
+      };
+    } finally {
+      await runtime.disconnect();
+    }
+  }
+
+}
+
+/** `event invite` and `share event`: invite someone to a calendar event over NIP-17. */
+export function eventInviteAction(
+  program: Command,
+  context: Pick<CommandContext, "loadConfig" | "initRuntime" | "resolveBoardId" | "npubOrHexToHex" | "nsecToHexOrThrow" | "shareTransport">,
+) {
+  const { loadConfig, initRuntime, resolveBoardId, npubOrHexToHex, nsecToHexOrThrow, shareTransport } = context;
+  return async (eventId: string, npubOrHex: string, opts: { board?: string }) => {
+    const config = await loadConfig(program.opts().profile as string | undefined);
+    const runtime = initRuntime(config);
+    let exitCode = 0;
+    try {
+      const recipient = npubOrHexToHex(npubOrHex);
+      // The runtime adds the invitee, gives them their own token and republishes the event, so
+      // the invitee can open its view copy.
+      const invitation = await runtime.inviteToEvent(eventId, opts.board ? await resolveBoardId(opts.board, config) : undefined, recipient);
+      if (!invitation) throw new Error(`Event not found: ${eventId}`);
+      const { event } = invitation;
+      const senderHex = nsecToHexOrThrow(config.nsec);
+      const senderNpub = nip19.npubEncode(getPublicKey(hexToBytes(senderHex)));
+      const envelope = buildCalendarEventInviteEnvelope({
+        eventId: event.id,
+        canonical: invitation.canonical,
+        view: invitation.view,
+        eventKey: event.eventKey,
+        inviteToken: invitation.inviteToken,
+        title: event.title,
+        start: event.kind === "date" ? event.startDate : event.startISO,
+        end: event.kind === "date" ? event.endDate : event.endISO,
+        relays: invitation.relays,
+      }, { npub: senderNpub });
+      // Sent over the board's relays and this profile's, as the PWA sends invites.
+      const sendRelays = Array.from(new Set([...invitation.relays, ...config.relays]));
+      await shareTransport.send({ envelope, senderSecretHex: senderHex, recipientPubkeyHex: recipient, relays: sendRelays });
+      console.log(chalk.green("✓ Event invite shared."));
+    } catch (err) {
+      rethrowReportedError(err);
+      console.error(chalk.red(String(err)));
+      exitCode = 1;
+    } finally {
+      await runtime.disconnect();
+      process.exitCode = exitCode;
+    }
+  };
 }

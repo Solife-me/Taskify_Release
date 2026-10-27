@@ -23,8 +23,13 @@ public struct ShareAccount: Codable, Equatable, Sendable {
     public let recipients: [ShareRecipient]
     public let server: TaskifyFileServerEntry
     public let senderRelays: [String]
-    public init(publicKey: String, recipients: [ShareRecipient], server: TaskifyFileServerEntry, senderRelays: [String]) {
+    /// Names of the boards a shared item can be saved to as a task, default first. Names only:
+    /// the share group never holds board ids, which are board keys (C10-6).
+    public let taskBoards: [String]?
+    public init(publicKey: String, recipients: [ShareRecipient], server: TaskifyFileServerEntry, senderRelays: [String],
+                taskBoards: [String]? = nil) {
         self.publicKey = publicKey; self.recipients = recipients; self.server = server; self.senderRelays = senderRelays
+        self.taskBoards = taskBoards
     }
 }
 

@@ -1,3 +1,5 @@
+import { parseTimeValue } from "./dateTime.js";
+
 export type BuiltinReminderPreset = "0h" | "5m" | "15m" | "30m" | "1h" | "1d" | "1w" | "0d";
 export type CustomReminderPreset = `custom-${number}`;
 export type ReminderPreset = BuiltinReminderPreset | CustomReminderPreset;
@@ -37,18 +39,6 @@ export const MAX_CUSTOM_REMINDER_MINUTES = 99_999_999;
 export function clampCustomReminderMinutes(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(MIN_CUSTOM_REMINDER_MINUTES, Math.min(MAX_CUSTOM_REMINDER_MINUTES, Math.round(value)));
-}
-
-function parseTimeValue(value: string): { hour: number; minute: number } | null {
-  if (typeof value !== "string" || !value.includes(":")) return null;
-  const [hourRaw, minuteRaw] = value.split(":");
-  const hour = Number.parseInt(hourRaw ?? "", 10);
-  const minute = Number.parseInt(minuteRaw ?? "", 10);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
-  return {
-    hour: Math.min(23, Math.max(0, hour)),
-    minute: Math.min(59, Math.max(0, minute)),
-  };
 }
 
 export function normalizeReminderTime(value: unknown): string | undefined {

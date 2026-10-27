@@ -1,9 +1,9 @@
 import type { Task } from "./taskTypes";
 
 // Fields that never reach other devices: `order` is not part of the published task payload
-// (each device orders its own lists), `lastEditedBy` only describes a publish, and `_nostrAt` /
+// (each device orders its own lists), `lastEditedBy` only describes a publish, and `_nostrAt` / `_nostrId` /
 // `updatedAt` are local bookkeeping. A change confined to these needs no publish.
-const LOCAL_ONLY_TASK_FIELDS = new Set(["order", "lastEditedBy", "_nostrAt", "updatedAt"]);
+const LOCAL_ONLY_TASK_FIELDS = new Set(["order", "lastEditedBy", "_nostrAt", "_nostrId", "updatedAt"]);
 
 function syncedFields(task: Task): string {
   const entries = Object.entries(task as Record<string, unknown>)

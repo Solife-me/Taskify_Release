@@ -34,7 +34,6 @@ export const MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
 export const MERIDIEMS = ["AM", "PM"] as const;
 export type Meridiem = (typeof MERIDIEMS)[number];
 
-export const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+export { ISO_DATE_PATTERN, MS_PER_DAY } from "taskify-core";
 
 export const SATS_PER_BTC = 100_000_000;
-export const MS_PER_DAY = 86400000;

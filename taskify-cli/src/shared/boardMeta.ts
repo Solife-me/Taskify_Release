@@ -9,7 +9,19 @@ export type BoardMeta = {
   clearCompletedDisabled?: boolean;
   hideChildBoardNames?: boolean;
   shareSettings?: Record<string, unknown>;
+  sortMode?: "manual" | "due" | "priority" | "created" | "alpha";
+  sortDirection?: "asc" | "desc";
 };
+
+const SORT_MODES = new Set(["manual", "due", "priority", "created", "alpha"]);
+
+function sortMode(value: unknown): BoardMeta["sortMode"] {
+  return typeof value === "string" && SORT_MODES.has(value) ? (value as BoardMeta["sortMode"]) : undefined;
+}
+
+function sortDirection(value: unknown): BoardMeta["sortDirection"] {
+  return value === "asc" || value === "desc" ? value : undefined;
+}
 
 type EventLike = {
   tags?: string[][];
@@ -47,6 +59,9 @@ export function extractBoardMetaFromEventLike(event: EventLike, _boardId: string
   let clearCompletedDisabled: boolean | undefined;
   let hideChildBoardNames: boolean | undefined;
   let shareSettings: Record<string, unknown> | undefined;
+  const sortTag = tags.find((t) => t[0] === "sort");
+  let definedSortMode = sortMode(sortTag?.[1]);
+  let definedSortDirection = definedSortMode ? sortDirection(sortTag?.[2]) : undefined;
 
   if (event.content) {
     try {
@@ -70,6 +85,10 @@ export function extractBoardMetaFromEventLike(event: EventLike, _boardId: string
       if (typeof parsed?.hideBoardNames === "boolean") hideChildBoardNames = parsed.hideBoardNames;
       if (parsed?.shareSettings && typeof parsed.shareSettings === "object") {
         shareSettings = parsed.shareSettings as Record<string, unknown>;
+      }
+      if (!definedSortMode && sortMode(parsed?.sortMode)) {
+        definedSortMode = sortMode(parsed.sortMode);
+        definedSortDirection = sortDirection(parsed?.sortDirection);
       }
     } catch {
       // content may be encrypted/non-JSON
@@ -97,6 +116,8 @@ export function extractBoardMetaFromEventLike(event: EventLike, _boardId: string
     clearCompletedDisabled,
     hideChildBoardNames,
     shareSettings,
+    sortMode: definedSortMode,
+    sortDirection: definedSortDirection,
   };
 }
 
@@ -114,7 +135,8 @@ export function pickBestBoardMeta(events: EventLike[], boardId: string): BoardMe
       meta.indexCardEnabled !== undefined ||
       meta.clearCompletedDisabled !== undefined ||
       meta.hideChildBoardNames !== undefined ||
-      meta.shareSettings !== undefined
+      meta.shareSettings !== undefined ||
+      meta.sortMode !== undefined
     ) {
       return meta;
     }

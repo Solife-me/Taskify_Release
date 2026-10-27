@@ -4,9 +4,27 @@
     {
       "name": "taskify-pwa",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "dev", "--port", "5175"],
+      "runtimeArgs": [
+        "vite",
+        "dev",
+        "--port",
+        "5175"
+      ],
       "cwd": "taskify-pwa",
       "port": 5175
+    },
+    {
+      "name": "taskify-pwa-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "preview",
+        "--port",
+        "4175",
+        "--strictPort"
+      ],
+      "cwd": "taskify-pwa",
+      "port": 4175
     }
   ]
 }

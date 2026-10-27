@@ -1,7 +1,5 @@
 import React, {
-  createContext,
   useCallback,
-  useContext,
   useMemo,
   useState,
 } from "react";
@@ -9,6 +7,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { generateSecretKey, nip19 } from "nostr-tools";
 import { normalizeNostrPubkey, deriveCompressedPubkeyFromSecret } from "../lib/nostr";
 import { readStoredP2pkKeys, writeStoredP2pkKeys } from "../wallet/p2pkKeyStore";
+import { P2PKContext } from "./walletContexts";
 
 export type P2PKKey = {
   id: string;
@@ -20,7 +19,7 @@ export type P2PKKey = {
   lastUsedAt?: number;
 };
 
-type P2PKContextValue = {
+export type P2PKContextValue = {
   keys: P2PKKey[];
   primaryKeyId: string | null;
   primaryKey: P2PKKey | null;
@@ -32,29 +31,6 @@ type P2PKContextValue = {
   getPrivateKeyForPubkey: (pubkey: string) => string | null;
 };
 
-const defaultValue: P2PKContextValue = {
-  keys: [],
-  primaryKeyId: null,
-  primaryKey: null,
-  generateKeypair: () => {
-    throw new Error("P2PKProvider missing");
-  },
-  importFromNsec: () => {
-    throw new Error("P2PKProvider missing");
-  },
-  removeKey: () => {
-    throw new Error("P2PKProvider missing");
-  },
-  setPrimaryKey: () => {
-    throw new Error("P2PKProvider missing");
-  },
-  markKeyUsed: () => {
-    throw new Error("P2PKProvider missing");
-  },
-  getPrivateKeyForPubkey: () => null,
-};
-
-const P2PKContext = createContext<P2PKContextValue>(defaultValue);
 
 function normalizeStoredPubkey(value: string): string | null {
   if (!value) return null;
@@ -280,8 +256,4 @@ export function P2PKProvider({ children }: { children: React.ReactNode }) {
   );
 
   return <P2PKContext.Provider value={value}>{children}</P2PKContext.Provider>;
-}
-
-export function useP2PK() {
-  return useContext(P2PKContext);
 }

@@ -2974,3 +2974,39 @@ html.light .chat-new-message__action-icon {
   background: rgba(76, 139, 255, 0.12);
   color: #3b5dd9;
 }
+
+/* A Cashu token received in a message: shown and copied, never redeemed (chat has no wallet). */
+.chat-token-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 14rem;
+  padding: 0.25rem 0;
+}
+
+.chat-token-bubble__label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.chat-token-bubble__value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  word-break: break-all;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.75rem;
+  background: var(--surface-muted);
+  border: 1px solid var(--surface-border);
+}
+
+.chat-token-bubble__copy {
+  align-self: flex-start;
+}
+
+.chat-token-bubble__hint {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}

@@ -81,13 +81,20 @@ export type TaskAssignee = { pubkey: string; relay?: string; status?: TaskAssign
 export type Task = {
   id: string; boardId: string; title: string; dueISO: string;
   createdBy?: string; lastEditedBy?: string; createdAt?: number; updatedAt?: string;
-  _nostrAt?: number;
+  /** Local only: the version (event `created_at` and, once known, id) last published or received. */
+  _nostrAt?: number; _nostrId?: string;
   priority?: TaskPriority; note?: string; images?: string[]; documents?: TaskDocument[]; dueDateEnabled?: boolean;
   completed?: boolean; completedAt?: string; completedBy?: string; recurrence?: Recurrence; column?: "day"; columnId?: string;
   hiddenUntilISO?: string; order?: number; streak?: number; longestStreak?: number; seriesId?: string; subtasks?: Subtask[];
   assignees?: TaskAssignee[]; dueTimeEnabled?: boolean; dueTimeZone?: string; reminders?: ReminderPreset[]; reminderTime?: string;
   scriptureMemoryId?: string; scriptureMemoryStage?: number; scriptureMemoryPrevReviewISO?: string | null; scriptureMemoryScheduledAt?: string;
   bountyLists?: string[]; bountyDeletedAt?: string; inboxItem?: InboxItem;
+  /**
+   * Task event payload fields other clients write that this client does not use (iOS publishes
+   * reminders, for example). Kept as received and written back on every publish, so editing a
+   * task here never erases them. Local reminders stay per device and are not among them.
+   */
+  syncExtras?: Record<string, unknown>;
   bounty?: {
     id: string; token: string; amount?: number; mint?: string; lock?: "p2pk" | "htlc" | "none" | "unknown";
     owner?: string; sender?: string; receiver?: string; state: "locked" | "unlocked" | "revoked" | "claimed"; updatedAt: string;
@@ -140,3 +147,8 @@ export type ListLikeBoard = Extract<Board, { kind: "lists" | "compound" }>;
 export function isListLikeBoard(board: Board | null | undefined): board is ListLikeBoard {
   return !!board && (board.kind === "lists" || board.kind === "compound");
 }
+
+/** Ids every client gives the built-in Bible features (native `TaskifySnapshot`, `ScriptureMemory`). */
+export const BIBLE_BOARD_ID = "bible-reading";
+export const SCRIPTURE_MEMORY_SERIES_ID = "scripture-memory";
+export const FASTING_REMINDER_SERIES_ID = "fasting-reminder";

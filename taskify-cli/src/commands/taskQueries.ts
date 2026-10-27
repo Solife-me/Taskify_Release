@@ -2,17 +2,20 @@ import chalk from "chalk";
 import type { Command } from "commander";
 import { createInterface } from "readline";
 import {
-resolveBoardReference
+addDaysToDateKey,
+isoDatePart,
+resolveBoardReference,
+todayDateKey
 } from "taskify-core";
-import { loadConfig,type BoardEntry } from "../config.js";
+import type { BoardEntry } from "../config.js";
 import { renderJson,renderTable,renderTaskCard } from "../render.js";
-import { agentSuccess,writeAgentJson } from "../shared/agentOutput.js";
+import { agentSuccess } from "../shared/agentOutput.js";
 import { resolveCliLocation } from "../shared/cliLocation.js";
 import { formatAvailableColumns,resolveBoardColumn } from "../shared/columnResolution.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerTaskQueriesCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "initRuntime" | "resolveBoardId" | "useHumanOutput" | "CliCommandError" | "writeCoreFailure" | "profilePubkey" | "resolveColumnOrExit">) {
-  const { warnShortTaskId, initRuntime, resolveBoardId, useHumanOutput, CliCommandError, writeCoreFailure, profilePubkey, resolveColumnOrExit } = context;
+export function registerTaskQueriesCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "writeAgentJson" | "now" | "warnShortTaskId" | "initRuntime" | "resolveBoardId" | "useHumanOutput" | "CliCommandError" | "writeCoreFailure" | "profilePubkey" | "resolveColumnOrExit">) {
+  const { loadConfig, writeAgentJson, now: currentTime, warnShortTaskId, initRuntime, resolveBoardId, useHumanOutput, CliCommandError, writeCoreFailure, profilePubkey, resolveColumnOrExit } = context;
   // ---- list ----
   program
     .command("list")
@@ -103,7 +106,8 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
             ?? (config.boards.length === 1 ? config.boards[0].id : undefined);
           if (!singleBoardId) {
             console.error(chalk.red("--column requires --board when multiple boards are configured"));
-            process.exit(1);
+            process.exitCode = 1;
+            return;
           }
           const be = config.boards.find((b) => b.id === singleBoardId)!;
           const resolved = resolveColumnOrExit(be, opts.column);
@@ -128,15 +132,17 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
             }
             if (!boardEntry) {
               console.error(chalk.red(`Could not resolve board "${listBoardName}" from defaultList.`));
-              process.exit(1);
+              process.exitCode = 1;
+              return;
             }
             if (!config.boards.some(b => b.id === boardEntry!.id)) {
               console.error(chalk.red(`Board "${boardEntry!.name}" not found in local config.`));
-              process.exit(1);
+              process.exitCode = 1;
+              return;
             }
             // Sync columns if needed
             const syncedAt = boardEntry.syncedAt ?? 0;
-            if (!boardEntry.columns || Date.now() - syncedAt > 30 * 60 * 1000) {
+            if (!boardEntry.columns || currentTime().getTime() - syncedAt > 30 * 60 * 1000) {
               try {
                 await runtime.syncBoard(boardEntry.id);
                 // Refresh boardEntry from config after sync
@@ -150,15 +156,17 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
             } else {
               console.error(chalk.red(`Column "${listName}" not found on "${boardEntry.name}".`));
               console.error(chalk.dim(`Available columns: ${formatAvailableColumns(boardEntry.columns || [])}`));
-              process.exit(1);
+              process.exitCode = 1;
+              return;
             }
           }
-        } else if (boardEntry) {
-          // Option D: interactive selector
+        } else if (boardEntry && process.stdin.isTTY) {
+          // Option D: interactive selector (a script or pipe gets the whole board instead of a
+          // prompt it can't answer)
           // Ensure columns are available
           let columns = boardEntry.columns;
           const syncedAt = boardEntry.syncedAt ?? 0;
-          if (!columns || Date.now() - syncedAt > 30 * 60 * 1000) {
+          if (!columns || currentTime().getTime() - syncedAt > 30 * 60 * 1000) {
             try {
               await runtime.syncBoard(boardEntry.id);
               boardEntry = config.boards.find(b => b.id === boardEntry!.id) ?? boardEntry;
@@ -211,7 +219,8 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
                     columnName = match.name;
                   } else {
                     console.error(chalk.red(`Could not resolve column "${answer}".`));
-                    process.exit(1);
+                    process.exitCode = 1;
+                    return;
                   }
                 }
               }
@@ -244,11 +253,12 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         exitCode = coreMode ? writeCoreFailure("task.list", err, human) : 1;
         if (!coreMode) console.error(chalk.red(String(err)));
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -268,33 +278,37 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
         const resolvedBoardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
         const allTasks = await runtime.listTasks({ boardId: resolvedBoardId, status: "open" });
 
-        const now = new Date();
-        const todayStr = now.toISOString().slice(0, 10);
-        const cutoff = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-        const cutoffStr = cutoff.toISOString().slice(0, 10);
+        // Days on this device's calendar, as in the apps: a task's day is its due date in its
+        // own time zone (date-only tasks are saved as local midnight), not its UTC timestamp.
+        const today = todayDateKey(currentTime());
+        const cutoff = addDaysToDateKey(today, days) ?? today;
+        const dueDay = (task: (typeof allTasks)[number]) =>
+          Number.isNaN(Date.parse(task.dueISO)) ? null : isoDatePart(task.dueISO, task.dueTimeZone);
 
-        const upcoming = allTasks.filter(
-          (t) => t.dueDateEnabled === true && t.dueISO && t.dueISO >= todayStr && t.dueISO <= cutoffStr,
-        );
-
-        // Sort: primary = dueISO asc, secondary = priority desc (3=high)
-        upcoming.sort((a, b) => {
-          if (a.dueISO < b.dueISO) return -1;
-          if (a.dueISO > b.dueISO) return 1;
-          return (a.priority ?? 0) === (b.priority ?? 0) ? 0 : (b.priority ?? 0) - (a.priority ?? 0);
+        const dated = allTasks.flatMap((task) => {
+          if (task.dueDateEnabled !== true || !task.dueISO) return [];
+          const day = dueDay(task);
+          return day && day >= today && day <= cutoff ? [{ task, day }] : [];
         });
+
+        // Sort: day, then priority (3 = high) first, then time within the day.
+        dated.sort((a, b) => {
+          if (a.day !== b.day) return a.day < b.day ? -1 : 1;
+          const byPriority = (b.task.priority ?? 0) - (a.task.priority ?? 0);
+          if (byPriority !== 0) return byPriority;
+          return Date.parse(a.task.dueISO) - Date.parse(b.task.dueISO);
+        });
+        const upcoming = dated.map(({ task }) => task);
 
         if (opts.json) {
           renderJson(upcoming);
         } else if (upcoming.length === 0) {
           console.log(chalk.dim(`No tasks due in the next ${days} days.`));
         } else {
-          // Group by dueISO date prefix
           const groups = new Map<string, typeof upcoming>();
-          for (const t of upcoming) {
-            const day = t.dueISO.slice(0, 10);
+          for (const { task, day } of dated) {
             if (!groups.has(day)) groups.set(day, []);
-            groups.get(day)!.push(t);
+            groups.get(day)!.push(task);
           }
           for (const [day, tasks] of groups) {
             console.log(chalk.bold(`\n${day}`));
@@ -302,11 +316,12 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -348,10 +363,11 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           renderTaskCard(task, config.trustedNpubs, localReminders);
         }
       } catch (err) {
+        rethrowReportedError(err);
         exitCode = writeCoreFailure("task.get", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -405,10 +421,11 @@ export function registerTaskQueriesCommands(program: Command, context: Pick<Comm
           }
         }
       } catch (err) {
+        rethrowReportedError(err);
         exitCode = writeCoreFailure("task.search", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

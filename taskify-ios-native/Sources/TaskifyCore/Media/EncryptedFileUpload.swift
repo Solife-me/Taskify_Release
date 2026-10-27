@@ -17,10 +17,17 @@ public enum EncryptedFileUpload {
             throw BlossomError.invalidServer
         }
         _ = try AttachmentFiles.size(file, limit: AttachmentFiles.maximumBytes + 32)
-        var endpoint = base.appendingPathComponent("upload")
-        if server.type == .nip96 { endpoint = try await Nip96Client.discover(server: base, session: session).apiURL }
+        let endpoint: URL
+        let method: String
+        if let route = server.type.fixedUploadRoute {
+            endpoint = base.appendingPathComponent(route.path)
+            method = route.method
+        } else {
+            endpoint = try await Nip96Client.discover(server: base, session: session).apiURL
+            method = "POST"
+        }
         var request = URLRequest(url: endpoint)
-        request.httpMethod = server.type == .blossom ? "PUT" : "POST"
+        request.httpMethod = method
         request.timeoutInterval = 120 // inactivity timeout; the resource budget allows slow large transfers
         if server.type != .originless {
             guard let privateKey else { throw URLError(.userAuthenticationRequired) }

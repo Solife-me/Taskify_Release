@@ -1,20 +1,17 @@
 import chalk from "chalk";
 import { planTaskReorder, parseTaskOrder } from "../shared/taskOrdering.js";
 import type { Command } from "commander";
-import { join } from "node:path";
 import {
 normalizeTaskRecurrence,
 normalizeTaskReminders
 } from "taskify-core";
-import { CONFIG_DIR,loadConfig } from "../config.js";
 import { renderJson } from "../render.js";
-import { createFileAgentIdempotencyStore } from "../shared/agentIdempotency.js";
-import { agentSuccess,writeAgentJson } from "../shared/agentOutput.js";
+import { agentSuccess } from "../shared/agentOutput.js";
 import { resolveCliLocation } from "../shared/cliLocation.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
-export function registerTaskMutationsCommands(program: Command, context: Pick<CommandContext, "warnShortTaskId" | "resolveTaskIdByTitle" | "VALID_REMINDER_PRESETS" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "useHumanOutput" | "CliCommandError" | "requireWriteIdentity" | "validateCoreDue" | "validateCorePriority" | "writeCoreFailure" | "profilePubkey">) {
-  const { warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, writeCoreFailure, profilePubkey } = context;
+export function registerTaskMutationsCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "randomUUID" | "createIdempotencyStore" | "writeAgentJson" | "warnShortTaskId" | "resolveTaskIdByTitle" | "VALID_REMINDER_PRESETS" | "parseJsonOption" | "parseReminderOption" | "normalizeAssigneeArgs" | "initRuntime" | "resolveBoardId" | "mergeAttachmentDocuments" | "resolveAttachmentDocuments" | "useHumanOutput" | "CliCommandError" | "requireWriteIdentity" | "validateCoreDue" | "validateCorePriority" | "writeCoreFailure" | "profilePubkey">) {
+  const { loadConfig, randomUUID, createIdempotencyStore, writeAgentJson, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, writeCoreFailure, profilePubkey } = context;
   program
     .command("reorder <taskId> <position>")
     .description("Move a task to a 1-based position within its board or selected list")
@@ -67,7 +64,8 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
             `Invalid reminder preset(s): ${invalid.join(", ")}. Valid: ${[...VALID_REMINDER_PRESETS].join(", ")}`,
           ),
         );
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       const config = await loadConfig(program.opts().profile as string | undefined);
       const runtime = initRuntime(config);
@@ -82,17 +80,21 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
             const task = await runtime.getTask(taskId, boardId);
             if (task?.title) title = task.title;
           }
-        } catch { /* title lookup is best-effort */ }
+        } catch (error) {
+          rethrowReportedError(error);
+          // Title lookup is best-effort once board resolution succeeds.
+        }
         await runtime.remindTask(taskId, presets as Parameters<typeof runtime.remindTask>[1]);
         console.log(
           chalk.green(`✓ Reminders set for ${title}: ${presets.join(", ")} (device-local only, will not sync)`),
         );
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -168,13 +170,13 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
       const runtime = initRuntime(config);
       let exitCode = 0;
       try {
-        const idempotencyStore = createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"));
+        const idempotencyStore = createIdempotencyStore();
         const idempotencyKey = opts.idempotencyKey
           ? `${config.selectedProfile}:${boardId}:${String(opts.idempotencyKey).trim()}`
           : undefined;
         let reservedTaskId: string | undefined;
         if (idempotencyKey) {
-          const reservation = await idempotencyStore.reserve(idempotencyKey, crypto.randomUUID());
+          const reservation = await idempotencyStore.reserve(idempotencyKey, randomUUID());
           reservedTaskId = reservation.taskId;
           if (!reservation.created) {
             const existing = await runtime.getTask(reservation.taskId, boardId);
@@ -193,7 +195,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
           }
         }
         const subtasks = (opts.subtask as string[]).map((text) => ({
-          id: crypto.randomUUID(),
+          id: randomUUID(),
           title: text,
           completed: false,
         }));
@@ -253,7 +255,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.create", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -304,12 +306,15 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
           writeAgentJson(agentSuccess("task.done", { task, location }, { profile: config.selectedProfile }));
         } else {
           console.log(chalk.green(`✓ Marked done: ${task.title}`));
+          if (task.nextOccurrence) {
+            console.log(chalk.dim(`  Next: ${task.nextOccurrence.dueISO.slice(0, 10)} (${task.nextOccurrence.id})`));
+          }
         }
       } catch (err) {
         exitCode = writeCoreFailure("task.done", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -365,7 +370,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.reopen", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -424,8 +429,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
             });
             if (!confirmed) {
               console.log("Aborted.");
-              await runtime.disconnect();
-              process.exit(0);
+              return;
             }
           }
           const deleted = await runtime.deleteTask(taskId, boardId);
@@ -441,7 +445,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.delete", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -458,11 +462,13 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
     .action(async (taskId: string, subtaskRef: string, opts) => {
       if (!opts.done && !opts.reopen) {
         console.error(chalk.red("Specify --done or --reopen."));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       if (opts.done && opts.reopen) {
         console.error(chalk.red("Specify only one of --done or --reopen."));
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       warnShortTaskId(taskId);
       const config = await loadConfig(program.opts().profile as string | undefined);
@@ -497,7 +503,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 
@@ -599,7 +605,7 @@ export function registerTaskMutationsCommands(program: Command, context: Pick<Co
         exitCode = writeCoreFailure("task.update", err, human);
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

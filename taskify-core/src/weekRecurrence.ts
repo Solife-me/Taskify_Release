@@ -105,7 +105,6 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
   isoDatePart: (iso: string, timeZone?: string) => string;
   taskDateKey: (task: TTask) => string;
   nextOrderForBoard: (boardId: string, tasks: TTask[], position: "top" | "bottom") => number;
-  maybePublishTask: (task: TTask) => Promise<unknown> | void;
   now?: () => number;
   /**
    * False while a shared board's initial relay sync is still running. Instances are only
@@ -120,9 +119,13 @@ type EnsureWeekRecurrencesOptions<TTask extends SeriesTaskLike> = {
   isDeletedOccurrence?: (boardId: string, taskId: string) => boolean;
 };
 
+/**
+ * Full-week mode: adds this week's occurrences of daily and weekly series. Returns the new list
+ * (the same array when nothing changed) and the occurrences it created, which the caller publishes.
+ */
 export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike>(
   options: EnsureWeekRecurrencesOptions<TTask>,
-): TTask[] {
+): { tasks: TTask[]; generated: TTask[] } {
   const {
     tasks,
     sources,
@@ -136,13 +139,13 @@ export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike
     isoDatePart,
     taskDateKey,
     nextOrderForBoard,
-    maybePublishTask,
     now = () => Date.now(),
     canGenerateForBoard = () => true,
     isDeletedOccurrence = () => false,
   } = options;
 
   const sow = startOfWeek(new Date(), weekStart).getTime();
+  const generated: TTask[] = [];
   const out = dedupeRecurringInstances(tasks);
   let changed = out !== tasks;
   const src = sources ?? out;
@@ -207,11 +210,7 @@ export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike
             reminders: Array.isArray(task.reminders) ? [...task.reminders] : undefined,
           } as TTask;
 
-          const publishTaskResult = maybePublishTask(clone);
-          if (publishTaskResult && typeof (publishTaskResult as Promise<unknown>).catch === "function") {
-            (publishTaskResult as Promise<unknown>).catch(() => {});
-          }
-
+          generated.push(clone);
           out.push(clone);
           changed = true;
         }
@@ -222,7 +221,7 @@ export function ensureWeekRecurrencesForCurrentWeek<TTask extends SeriesTaskLike
     }
   }
 
-  return changed ? out : tasks;
+  return { tasks: changed ? out : tasks, generated };
 }
 
 type StreakTaskLike = {

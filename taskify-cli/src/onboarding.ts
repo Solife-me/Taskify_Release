@@ -88,7 +88,7 @@ export async function runOnboarding(profileName?: string): Promise<void> {
     const cont = await ask("Continue? [Y/n] ");
     if (cont.trim().toLowerCase() === "n") {
       rl.close();
-      process.exit(0);
+      return;
     }
   }
 

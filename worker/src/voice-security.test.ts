@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { prepareVoiceRequest, reserveVoiceQuota } from "./voice.ts";
+import { prepareVoiceRequest, reserveVoiceBudget, reserveVoiceQuota } from "./voice.ts";
 
 const env = { VOICE_RATE_LIMITER: { limit: async () => ({ success: true }) } } as any;
 const request = (body: string, headers = {}) => new Request("https://taskify.test/api/voice/extract", {
@@ -43,5 +43,27 @@ test("real SQLite conditional reservations cannot overrun a shared quota", async
     assert.equal(await reserveVoiceQuota(db, "shared-ip", "2026-09-23", 10), true);
     assert.equal(await reserveVoiceQuota(db, "user", "2026-09-22", 20, 299), true);
     assert.equal(await reserveVoiceQuota(db, "user", "2026-09-22", 20, 2), false);
+  } finally { sql.close(); }
+});
+
+test("new accounts share part of the daily voice budget, so returning users keep the rest", async () => {
+  const sql = new DatabaseSync(":memory:");
+  sql.exec("CREATE TABLE voice_quota (npub TEXT, date TEXT, session_count INTEGER, total_seconds INTEGER, PRIMARY KEY(npub,date))");
+  const db = { prepare(query: string) { return { bind(...values: any[]) { return { async first() { return sql.prepare(query).get(...values) ?? null; } }; } }; } } as any;
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const request = (ip: string) => new Request("https://taskify.test/api/voice/extract", { headers: { "CF-Connecting-IP": ip } });
+  try {
+    // New accounts have spent their share today; 600 of the 1,000 are used.
+    sql.prepare("INSERT INTO voice_quota VALUES ('global:voice:new', ?, 600, 0), ('global:voice', ?, 600, 0)").run(today, today);
+    const newcomer = await reserveVoiceBudget(request("192.0.2.1"), { TASKIFY_DB: db } as any, "new-npub");
+    assert.equal(newcomer?.status, 429, "a new account waits for tomorrow");
+
+    sql.prepare("INSERT INTO voice_quota VALUES ('returning-npub', ?, 3, 40)").run(yesterday);
+    assert.equal(await reserveVoiceBudget(request("192.0.2.2"), { TASKIFY_DB: db } as any, "returning-npub"), null, "a returning user still can");
+
+    sql.prepare("UPDATE voice_quota SET session_count = 1000 WHERE npub = 'global:voice'").run();
+    const full = await reserveVoiceBudget(request("192.0.2.3"), { TASKIFY_DB: db } as any, "returning-npub");
+    assert.equal(full?.status, 429, "the overall cap still holds");
   } finally { sql.close(); }
 });

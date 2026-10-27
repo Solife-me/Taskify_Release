@@ -1,3 +1,4 @@
+import type { TaskPriority } from "./taskContracts.js";
 import { TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND, parseCalendarAddress } from "./calendarProtocol.js";
 
 export type SharedBoardPayload = {
@@ -126,16 +127,17 @@ export function normalizeTaskTimeZone(value: unknown): string | undefined {
   }
 }
 
-export function normalizeTaskPriority(value: unknown): number | undefined {
+export function normalizeTaskPriority(value: unknown): TaskPriority | undefined {
+  const inRange = (n: number): n is TaskPriority => n === 1 || n === 2 || n === 3;
   if (typeof value === "number" && Number.isFinite(value)) {
     const rounded = Math.round(value);
-    if (rounded >= 1 && rounded <= 3) return rounded;
+    if (inRange(rounded)) return rounded;
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
-    if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!") return trimmed.length;
+    if (trimmed === "!" || trimmed === "!!" || trimmed === "!!!") return trimmed.length as TaskPriority;
     const parsed = Number.parseInt(trimmed, 10);
-    if (parsed >= 1 && parsed <= 3) return parsed;
+    if (inRange(parsed)) return parsed;
   }
   return undefined;
 }
@@ -441,4 +443,9 @@ export function parseShareEnvelope(raw: string): ShareEnvelope | null {
   }
 
   return null;
+}
+
+/** A shared task sent as an assignment, which the recipient answers rather than just copies. */
+export function isAssignedSharedTask(payload: SharedTaskPayload | null | undefined): boolean {
+  return !!(payload && payload.assignment === true && typeof payload.sourceTaskId === "string" && payload.sourceTaskId.trim());
 }

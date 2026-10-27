@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.23.4 <23"
   },
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:lint": "npm run lint"
+    "test:lint": "npm run lint",
+    "check:startup": "node scripts/startup-budget.mjs"
   },
   "dependencies": {
     "@cashu/cashu-ts": "^4.11.0",
@@ -25,12 +26,12 @@
     "@tanstack/react-virtual": "^3.14.13",
     "bech32": "^2.0.0",
     "buffer": "^6.0.3",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "eruda": "3.4.3",
     "events": "^3.3.0",
     "jszip": "^3.10.2",
     "mammoth": "^1.13.0",
-    "markdown-it": "^15.0.2",
+    "markdown-it": "^15.0.3",
     "nostr-tools": "^2.25.2",
     "pdfjs-dist": "^6.4.299",
     "process": "^0.11.10",
@@ -54,6 +55,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "eslint-plugin-unused-imports": "^4.4.1",
+    "fake-indexeddb": "6.2.5",
     "globals": "^17.13.0",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.3",
@@ -61,5 +63,10 @@
     "typescript-eslint": "^8.71.1",
     "vite": "^8.3.4",
     "vitest": "^5.0.3"
+  },
+  "overrides": {
+    "mammoth": {
+      "argparse": "2.0.1"
+    }
   }
 }

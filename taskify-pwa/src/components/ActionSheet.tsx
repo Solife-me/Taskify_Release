@@ -1,5 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
+import { useEscapeToClose } from "../ui/useEscapeToClose";
 
 export function ActionSheet({
   open,
@@ -22,6 +23,7 @@ export function ActionSheet({
   panelClassName?: string;
   inline?: boolean;
 }) {
+  useEscapeToClose(onClose, open && !inline);
   if (!open) return null;
   if (inline) {
     return (

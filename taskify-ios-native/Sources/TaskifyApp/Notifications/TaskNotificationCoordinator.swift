@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import TaskifyCore
+import TaskifyWallet
 import UserNotifications
 #if canImport(AlarmKit)
 import AlarmKit

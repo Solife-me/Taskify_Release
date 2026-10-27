@@ -13,14 +13,26 @@ enum KeychainIdentityError: LocalizedError {
 }
 
 struct KeychainIdentityStore {
-    #if os(macOS)
-    private let service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
-#else
-    private let service = "solife.me.Taskify.Native"
-#endif
+    private let service: String
     private let account = "nostr-identity-private-key"
+    private let usesSharedAccessGroup: Bool
+
+    init(service: String? = nil, usesSharedAccessGroup: Bool = true) {
+        self.usesSharedAccessGroup = usesSharedAccessGroup
+        if let service {
+            self.service = service
+        } else {
+#if os(macOS)
+            self.service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
+#else
+            self.service = "solife.me.Taskify.Native"
+#endif
+        }
+    }
+
     private var sharedAccessGroup: String? {
-        Bundle.main.object(forInfoDictionaryKey: "TaskifyKeychainAccessGroup") as? String
+        guard usesSharedAccessGroup else { return nil }
+        return Bundle.main.object(forInfoDictionaryKey: "TaskifyKeychainAccessGroup") as? String
     }
 
     func loadOrCreate() throws -> NostrIdentity {
@@ -73,92 +85,6 @@ struct KeychainIdentityStore {
         if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
         do {
             return try TaskifyKeychainItem.load(query)
-        } catch let failure as TaskifyKeychainItem.Failure {
-            throw KeychainIdentityError.keychain(failure.status)
-        }
-    }
-}
-
-struct KeychainWalletSeedStore {
-    #if os(macOS)
-    private let service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
-#else
-    private let service = "solife.me.Taskify.Native"
-#endif
-    private let account = "cashu-wallet-mnemonic-v1"
-
-    func loadOrCreate() throws -> String {
-        if let stored = try load() { return stored }
-        let mnemonic = try CashuWalletService.generateMnemonic()
-        try save(mnemonic)
-        return mnemonic
-    }
-
-    func save(_ mnemonic: String) throws {
-        let normalized = CashuWalletService.normalizedMnemonic(mnemonic)
-        guard CashuWalletService.validateMnemonic(normalized) else {
-            throw CashuWalletError.invalidRecoveryPhrase
-        }
-        do {
-            try TaskifyKeychainItem.save(itemQuery, value: Data(normalized.utf8))
-        } catch let failure as TaskifyKeychainItem.Failure {
-            throw KeychainIdentityError.keychain(failure.status)
-        }
-    }
-
-    func load() throws -> String? {
-        let data: Data?
-        do {
-            data = try TaskifyKeychainItem.load(itemQuery)
-        } catch let failure as TaskifyKeychainItem.Failure {
-            throw KeychainIdentityError.keychain(failure.status)
-        }
-        guard let data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private var itemQuery: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-    }
-}
-
-struct KeychainP2PKKeyStore {
-    #if os(macOS)
-    private let service = Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac"
-#else
-    private let service = "solife.me.Taskify.Native"
-#endif
-    private let account = "cashu-p2pk-recipient-keys-v1"
-
-    func load() throws -> CashuP2PKKeyRing {
-        let data: Data?
-        do {
-            data = try TaskifyKeychainItem.load(itemQuery)
-        } catch let failure as TaskifyKeychainItem.Failure {
-            throw KeychainIdentityError.keychain(failure.status)
-        }
-        guard let data else { return CashuP2PKKeyRing() }
-        return try JSONDecoder().decode(CashuP2PKKeyRing.self, from: data)
-    }
-
-    private var itemQuery: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-    }
-
-    func save(_ keyRing: CashuP2PKKeyRing) throws {
-        let data = try JSONEncoder().encode(keyRing)
-        // Background payment-request redemption runs after the first unlock, so these keys use
-        // the same device-only accessibility class as the wallet seed (the helper's default).
-        do {
-            try TaskifyKeychainItem.save(itemQuery, value: data)
         } catch let failure as TaskifyKeychainItem.Failure {
             throw KeychainIdentityError.keychain(failure.status)
         }

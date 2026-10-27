@@ -1,5 +1,6 @@
 import Foundation
 import TaskifyCore
+import TaskifyWallet
 
 /// Local device setting for where a quick-added task lands within its column, matching the
 /// PWA's `newTaskPosition` setting.

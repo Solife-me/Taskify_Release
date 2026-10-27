@@ -58,7 +58,8 @@ Taskify_Release/
 │   └── migrations/            # D1 SQL migrations
 │
 ├── taskify-ios-native/        # Native SwiftUI app and TaskifyCore Swift package
-├── taskify-push-relay/        # NIP-17 inbox relay and APNs bridge
+├── push-relay/                # NIP-17 inbox relay and APNs/FCM/Web Push bridge
+├── taskify-push-relay/        # StartOS package for the published relay image
 │
 ├── docs/                      # Project documentation
 │   ├── README.md             # Documentation index
@@ -102,8 +103,8 @@ The PWA keeps its touch-first mobile shell on phones and tablets. On a desktop b
 ### Worker (local)
 
 ```sh
-# Requires wrangler auth and .dev.vars with VAPID_PUBLIC_KEY, VAPID_SUBJECT, VAPID_PRIVATE_KEY
-npx wrangler dev     # Worker at http://localhost:8787
+# .dev.vars with VAPID_PUBLIC_KEY, VAPID_SUBJECT, VAPID_PRIVATE_KEY for the push routes
+npx wrangler@4.150.0 dev --local     # Worker at http://localhost:8787
 ```
 
 ### Common Commands
@@ -114,8 +115,9 @@ npx wrangler dev     # Worker at http://localhost:8787
 | `cd taskify-pwa && npm test` | Run PWA tests (Vitest) |
 | `cd taskify-pwa && npm run lint` | ESLint check |
 | `cd taskify-pwa && npm run build` | Production PWA build |
-| `npx wrangler dev` | Start Worker locally (from repo root) |
-| `npx wrangler deploy` | Deploy Worker + PWA to Cloudflare |
+| `npx wrangler@4.150.0 dev --local` | Start Worker locally (from repo root); no Cloudflare login needed |
+| `npx wrangler@4.150.0 d1 migrations apply taskify-notifications --remote` | Apply pending D1 migrations; run before every deploy |
+| `npx wrangler@4.150.0 deploy` | Deploy Worker + PWA to Cloudflare (after the PWA build and the migrations) |
 
 ---
 
@@ -130,7 +132,8 @@ Test runners are package-specific:
 | `taskify-runtime-nostr` | `npm test` | Node test runner; builds first |
 | `taskify-cli` | `npm test` | Node test runner; builds first |
 | `worker` | `npm test` | Node test runner |
-| `taskify-push-relay` | `npm test` | Node test runner |
+| `push-relay` | `npm test` | Node test runner |
+| `taskify-push-relay` | `npm test && npm run check && npm run build` | StartOS package checks |
 
 Run commands from the corresponding package directory. Add PWA tests as `*.test.ts` or `*.test.tsx`; Vitest discovers them automatically. See the [native iOS README](taskify-ios-native/README.md) for Swift test instructions.
 

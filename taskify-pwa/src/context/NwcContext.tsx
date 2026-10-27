@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { NwcContext } from "./walletContexts";
 import { NwcClient, parseNwcUri, type ParsedNwcUri } from "../wallet/nwc";
 import { setWalletMode } from "../wallet/walletMode";
 import {
@@ -58,7 +59,7 @@ function mergeInfo(base: NwcInfo | null, next: NwcInfo | null): NwcInfo | null {
   };
 }
 
-type NwcContextValue = {
+export type NwcContextValue = {
   ready: boolean;
   status: NwcStatus;
   connection: ParsedNwcUri | null;
@@ -79,7 +80,6 @@ type NwcContextValue = {
   lookupInvoice: (ref: { paymentHash?: string | null; invoice?: string }) => Promise<NwcLookupInvoiceResponse>;
 };
 
-const NwcContext = createContext<NwcContextValue | null>(null);
 
 function extractInfo(infoRes: Record<string, any> | null | undefined, balanceRes: Record<string, any> | null | undefined): NwcInfo | null {
   if (!infoRes && !balanceRes) return null;
@@ -391,10 +391,4 @@ export function NwcProvider({ children }: { children: React.ReactNode }) {
   }), [ready, status, connection, info, lastError, catalog.wallets, catalog.activeWalletId, activeWallet, connect, selectWallet, updateReceiveAddress, removeWallet, disconnect, refreshInfo, getBalanceMsat, payInvoice, makeInvoice, lookupInvoice]);
 
   return <NwcContext.Provider value={value}>{children}</NwcContext.Provider>;
-}
-
-export function useNwc() {
-  const ctx = useContext(NwcContext);
-  if (!ctx) throw new Error("useNwc must be used within NwcProvider");
-  return ctx;
 }

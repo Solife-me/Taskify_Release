@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import TaskifyCore
+@testable import TaskifyWallet
 
 /// End-to-end sweep with the real CDK wallet against nutshell mints (FakeWallet backend).
 /// Skipped unless CASHU_TEST_MINT_A and CASHU_TEST_MINT_B are set, e.g.

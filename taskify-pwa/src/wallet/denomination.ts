@@ -1,7 +1,7 @@
 import type { WalletDenominationDisplay } from "../domains/tasks/settingsTypes";
+export { DEFAULT_WALLET_DENOMINATION_DISPLAY, normalizeWalletDenominationDisplay } from "../domains/tasks/settingsTypes";
 
 export const BITCOIN_DENOMINATION_SYMBOL = "₿";
-export const DEFAULT_WALLET_DENOMINATION_DISPLAY: WalletDenominationDisplay = "bitcoin-symbol";
 
 export type SatAmountUnitStyle = "sat" | "sats" | "SAT" | "auto";
 
@@ -10,10 +10,6 @@ export type FormatSatAmountOptions = {
   sign?: string;
   unit?: SatAmountUnitStyle;
 };
-
-export function normalizeWalletDenominationDisplay(value: unknown): WalletDenominationDisplay {
-  return value === "sat" ? "sat" : DEFAULT_WALLET_DENOMINATION_DISPLAY;
-}
 
 export function satInputUnitLabel(display: WalletDenominationDisplay): string {
   return display === "bitcoin-symbol" ? BITCOIN_DENOMINATION_SYMBOL : "sats";

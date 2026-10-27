@@ -1,4 +1,5 @@
 import TaskifyCore
+import TaskifyWallet
 
 public enum MacWalletOutcome: Equatable {
     case received(UInt64), alreadyReceived, receiveQueued, paid, paymentPending

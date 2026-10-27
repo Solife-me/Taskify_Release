@@ -1,5 +1,6 @@
 import { Component, StrictMode, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { whenWindowLoaded } from './lib/whenWindowLoaded'
 import './index.css'
 
 // Windows often doesn't render backdrop-filter blur, so the frosted sheets there get an opaque
@@ -108,19 +109,15 @@ async function bootstrapApp(): Promise<void> {
     await storagePromise;
   }
 
+  // Everything imported here is startup code (scripts/startup-budget.mjs counts it): optional
+  // features, the wallet included, load lazily from App instead.
   const [
     { default: App },
-    { CashuProvider },
-    { NwcProvider },
     { ToastProvider },
-    { P2PKProvider },
     { StorageFailureBanner },
   ] = await Promise.all([
     import('./App.tsx'),
-    import('./context/CashuContext'),
-    import('./context/NwcContext.tsx'),
     import('./context/ToastContext.tsx'),
-    import('./context/P2PKContext.tsx'),
     import('./storage/StorageFailureBanner.tsx'),
   ]);
 
@@ -129,13 +126,7 @@ async function bootstrapApp(): Promise<void> {
       <RootErrorBoundary>
         <ToastProvider>
           <StorageFailureBanner />
-          <NwcProvider>
-            <P2PKProvider>
-              <CashuProvider>
-                <App />
-              </CashuProvider>
-            </P2PKProvider>
-          </NwcProvider>
+          <App />
         </ToastProvider>
       </RootErrorBoundary>
     </StrictMode>,
@@ -215,7 +206,9 @@ function setupServiceWorkers() {
       }
     });
 
-    window.addEventListener('load', () => {
+    // This runs at the end of an asynchronous bootstrap, normally after `load` has fired, so a
+    // plain `load` listener would never register the worker (no offline cache, no reminders).
+    whenWindowLoaded(() => {
       navigator.serviceWorker
         .register('/sw.js')
         .then((registration) => {

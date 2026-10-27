@@ -1,10 +1,30 @@
 import { IMPOSSIBLE, VersionInfo } from '@start9labs/start-sdk'
 
 export const current = VersionInfo.of({
-  version: '0.4.1:16',
+  version: '0.5.0:2',
   releaseNotes: {
-    en_US:
-      'Adds Android push for Snapstr through Firebase Cloud Messaging: set it with the new Configure Android Push action. Android devices get a data-only wake carrying only the one-time preview link, and decrypt the alert on the phone. Accepts signed NIP-09 kind-5 deletion requests and removes only referenced events authored by the same key, including any pending alert or preview for a deleted gift wrap. Routes alerts by the sending app: when one account uses both Taskify and Snapstr, a Snapstr message alerts only Snapstr and a Taskify message only Taskify. Includes Snapstr notification delivery alongside Taskify with application-scoped registration, a separate APNs bundle topic, and opaque on-device rich previews; existing registrations remain Taskify-compatible. Several Snapstr profiles on one phone now all stay registered and are all alerted; registering one no longer unregisters the others, while Taskify keeps one account per installation. Also retains the relay hardening for bounded storage, traffic, Watch forwarding, preview access, and stale registrations. Repackages the service with StartOS SDK 3 for StartOS 0.4.0.2 and newer.',
+    en_US: `**Storage**
+
+- The relay now keeps its data in a SQLite database instead of one JSON file it rewrote after every message. Each message costs about the same however much is stored, and memory no longer grows with the stored data.
+- The first start after updating imports the existing data. With a full relay this can take a minute or more on slower hardware, and the relay shows as starting until it is done. The old file is kept beside the database as \`state.json.imported\`.
+- This update cannot be undone by installing an older version.
+
+**Alerts**
+
+- The relay keeps one connection open to Apple's push service instead of opening one per alert.
+- Alerts that all read the same now replace one another on the device instead of piling up. An iPhone alert with a message preview still shows each message.
+- An alert that cannot be delivered within a day is dropped instead of arriving late.
+
+**Security**
+
+- The relay now runs as an unprivileged user instead of root.
+- Pins the Node.js runtime to 22.23.4 for the October 2026 Node.js and eMudhra certificate fixes, if 0.4.1:18 was not installed.
+- Built with StartOS SDK 3.1.0.
+- The public NIP-11 relay information reports the installed relay version instead of the stale 0.4.1 value.
+
+**Packaging**
+
+- The package now pins Taskify's public, multi-architecture relay image instead of rebuilding an embedded source copy.`,
   },
   migrations: {
     up: async () => {},

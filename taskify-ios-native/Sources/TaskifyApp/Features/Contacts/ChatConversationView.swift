@@ -517,7 +517,7 @@ struct DirectMessageConversationView: View {
     }
     private var presentation: ChatConversationPresentation {
         renderCache.presentation(
-            revision: model.snapshotRevision,
+            revision: model.conversationRevision,
             identity: model.identityPublicKey,
             peer: peerPublicKey,
             build: makePresentation
@@ -538,6 +538,8 @@ struct DirectMessageConversationView: View {
     }
 
     private func makePresentation() -> ChatConversationPresentation {
+        let buildStart = CACurrentMediaTime()
+        defer { TaskifyPerfMonitor.shared.recordChatTimelineBuild(seconds: CACurrentMediaTime() - buildStart) }
         let sharedTasks = sharedTasks
         let sharedContacts = sharedContacts
         let calendarInvites = calendarInvites

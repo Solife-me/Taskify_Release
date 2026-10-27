@@ -337,6 +337,8 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+const allowAll = () => ({ limit: async () => ({ success: true }) });
+
 async function makeEnv(db: MockD1) {
   const vapid = await createVapidFixture();
   return {
@@ -344,7 +346,12 @@ async function makeEnv(db: MockD1) {
       fetch: async () => new Response("asset", { status: 200 }),
     },
     TASKIFY_DB: db as any,
-    VOICE_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    // Every limiter production binds (wrangler.toml), each allowing everything.
+    VOICE_RATE_LIMITER: allowAll(),
+    PREVIEW_RATE_LIMITER: allowAll(),
+    NIP05_RATE_LIMITER: allowAll(),
+    PUSH_RATE_LIMITER: allowAll(),
+    WATCH_NOSTR_RATE_LIMITER: allowAll(),
     VAPID_PUBLIC_KEY: vapid.publicKey,
     VAPID_PRIVATE_KEY: vapid.privatePem,
     VAPID_SUBJECT: "mailto:test@example.com",
@@ -927,6 +934,15 @@ class MockD1WithVoice extends MockD1 {
           const row = { session_count: (old?.session_count ?? 0) + 1, total_seconds: (old?.total_seconds ?? 0) + seconds };
           db.quota.set(key, row);
           return row;
+        }
+        // Whether an account used voice on an earlier day: npub = ? AND date < ? AND date >= ?
+        if (/SELECT .* FROM voice_quota .*date < \?/is.test(sql)) {
+          const [npub, before, since] = params as [string, string, string];
+          for (const key of db.quota.keys()) {
+            const date = key.slice(key.lastIndexOf(":") + 1);
+            if (key.slice(0, key.lastIndexOf(":")) === npub && date < before && date >= since) return { used: 1 } as any;
+          }
+          return null;
         }
         // SELECT * FROM voice_quota WHERE npub=? AND date=?
         if (/SELECT .* FROM voice_quota/i.test(sql)) {
@@ -1824,7 +1840,7 @@ test("voice accepts model JSON that is fenced or wrapped in a sentence", async (
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test("provider failures still charge account, IP and global budgets", async () => {
+test("provider failures still charge account, IP, new-account and global budgets", async () => {
   const db = new MockD1WithVoice();
   const env = await makeVoiceEnv(db);
   const originalFetch = globalThis.fetch;
@@ -1835,7 +1851,7 @@ test("provider failures still charge account, IP and global budgets", async () =
       body: JSON.stringify({ npub: VOICE_TEST_PUBLIC_KEY, transcript: "Call dentist" }),
     }), env);
     assert.equal(response.status, 503);
-    assert.equal(db.quota.size, 3);
+    assert.equal(db.quota.size, 4, "an account new to voice also spends the new-account share");
     for (const row of db.quota.values()) assert.equal(row.session_count, 1);
   } finally { globalThis.fetch = originalFetch; }
 });
@@ -1882,7 +1898,7 @@ test("device registration accepts only browser push-service endpoints", async ()
   }
 });
 
-test("reminder saves are capped, de-duplicated, and truncate long titles", async () => {
+test("reminder saves are capped and de-duplicated, and keep no title", async () => {
   const db = new SqliteD1();
   const env = await makeEnv(db);
   const endpoint = "https://fcm.googleapis.com/fcm/send/caps";
@@ -1904,7 +1920,7 @@ test("reminder saves are capped, de-duplicated, and truncate long titles", async
   assert.equal(db.reminders.length, 500);
   assert.equal(db.reminders.filter((row) => row.task_id === "dup").length, 1);
   const long = db.reminders.find((row) => row.task_id === "long");
-  assert.equal(long?.title.length, 200);
+  assert.equal(long?.title, "", "a title, however long, is not stored");
 });
 
 test("oversized push bodies are refused before parsing", async () => {
@@ -2039,14 +2055,21 @@ test("a reminder save writes only what changed, in a fixed number of statements"
   assert.equal((await saveReminders(env, "diff", subscriptionId, schedule(500))).status, 204);
   assert.equal(db.budget("reminders:all"), 500);
 
-  // One title edited and one reminder removed: two changes.
+  // A renamed task costs nothing: the Worker keeps no titles.
+  const renamed = schedule(500);
+  renamed[0].title = "renamed";
+  assert.equal((await saveReminders(env, "diff", subscriptionId, renamed)).status, 204);
+  assert.equal(db.budget("reminders:all"), 500);
+
+  // One due date moved and one reminder removed: two changes.
   const edited = schedule(499);
-  edited[0].title = "renamed";
+  const moved = new Date(Date.parse(SCHEDULE_DUE) + 60 * 60_000).toISOString();
+  edited[0].dueISO = moved;
   assert.equal((await saveReminders(env, "diff", subscriptionId, edited)).status, 204);
   assert.equal(db.budget("reminders:all"), 502);
   const rows = db.reminders;
   assert.equal(rows.length, 499);
-  assert.equal(rows.find((row) => row.task_id === "task-0")?.title, "renamed");
+  assert.equal(rows.find((row) => row.task_id === "task-0")?.due_iso, moved);
   assert.equal(rows.some((row) => row.task_id === "task-499"), false);
 });
 
@@ -2087,6 +2110,19 @@ test("once the day's shared reminder budget is spent, changes are refused but un
   assert.equal((await register("newcomer", "https://fcm.googleapis.com/fcm/send/newcomer")).status, 429);
   const subscriptionId = await sha256Hex("https://fcm.googleapis.com/fcm/send/known");
   assert.equal((await saveReminders(env, "known", subscriptionId, schedule(1), "203.0.113.9")).status, 429);
+});
+
+test("a route whose rate limiter is not bound refuses rather than serving everyone", async () => {
+  for (const [binding, request] of [
+    ["PREVIEW_RATE_LIMITER", new Request("https://taskify.test/api/preview?url=https%3A%2F%2Fexample.com%2F")],
+    ["NIP05_RATE_LIMITER", new Request("https://taskify.test/api/nip05?name=alice%40example.com")],
+    ["PUSH_RATE_LIMITER", new Request("https://taskify.test/api/reminders", { method: "PUT", body: "{}" })],
+  ] as const) {
+    const env = await makeEnv(new SqliteD1());
+    delete env[binding];
+    const response = await worker.fetch(request, env);
+    assert.equal(response.status, 503, `${binding} missing`);
+  }
 });
 
 test("Watch bridge bodies are bounded before the signature is checked", async () => {
@@ -2229,4 +2265,51 @@ test("the library parser gets only the document head", () => {
   assert.ok(head.includes("og:image"));
   assert.ok(!head.includes("<p>body</p>"));
   assert.ok(documentHead("<p>" + "x".repeat(200_000)).length <= 64_000);
+});
+
+test("the Worker keeps no reminder titles: saves drop them, and polls return none", async () => {
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://fcm.googleapis.com/fcm/send/untitled";
+  const subscriptionId = await sha256Hex(endpoint);
+  db.devices.set("untitled", pushDevice("untitled", endpoint, subscriptionId));
+
+  // An older PWA still sends titles; a current one sends none.
+  assert.equal((await saveReminders(env, "untitled", subscriptionId, schedule(2, "Pick up prescription"))).status, 204);
+  const untitled = schedule(2, "", "plain").map(({ title: _title, ...reminder }) => reminder);
+  assert.equal((await saveReminders(env, "untitled", subscriptionId, [...schedule(2, "Pick up prescription"), ...untitled])).status, 204);
+  const stored = db.sqlite.prepare("SELECT task_id, title FROM reminders ORDER BY task_id").all() as Array<{ task_id: string; title: string }>;
+  assert.deepEqual(stored.map((row) => row.task_id), ["plain-0", "plain-1", "task-0", "task-1"]);
+  assert.deepEqual([...new Set(stored.map((row) => row.title))], [""], "no title is stored");
+
+  // A notification an older version queued with its title is delivered without it.
+  db.pending.push({
+    id: 7, device_id: "untitled", task_id: "task-0", board_id: null, title: "Pick up prescription",
+    due_iso: SCHEDULE_DUE, minutes: 0, created_at: Date.now(),
+  } as any);
+  const polled = await worker.fetch(new Request("https://taskify.test/api/reminders/poll", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint }),
+  }), env);
+  const items = await polled.json() as Array<Record<string, unknown>>;
+  assert.equal(items.length, 1);
+  assert.equal("title" in items[0], false);
+  assert.equal(items[0].taskId, "task-0");
+});
+
+test("preview and NIP-05 lookups accept their input in a POST body, kept out of the URL", async () => {
+  const env = await makeEnv(new SqliteD1());
+  const post = (path: string, body: unknown) => worker.fetch(new Request(`https://taskify.test${path}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }), env);
+
+  // The same checks as the query-string form, which older builds still use.
+  const privateTarget = await post("/api/preview", { url: "http://127.0.0.1/" });
+  assert.equal(privateTarget.status, 400);
+  assert.deepEqual(await privateTarget.json(), { error: "URL target is not allowed" });
+  const badAddress = await post("/api/nip05", { address: "not an address" });
+  assert.equal(badAddress.status, 400);
+  assert.deepEqual(await badAddress.json(), { error: "Invalid NIP-05 address" });
+
+  assert.equal((await post("/api/preview", { url: `https://example.com/${"x".repeat(9_000)}` })).status, 413);
+  assert.equal((await post("/api/nip05", "not an object")).status, 400);
 });

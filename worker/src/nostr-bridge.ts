@@ -1,6 +1,6 @@
 import { verifyEvent, type Event as NostrEvent } from "nostr-tools";
 import { verifyTaskifyAuth, type ReplayStore } from "./nostr-auth.ts";
-import { jsonResponse, parseJson } from "./lib.ts";
+import { jsonResponse, parseJson, unboundLimiter } from "./lib.ts";
 import { assertPublicHttpUrl } from "./public-fetch.ts";
 
 const TASK_KIND = 30_301;
@@ -172,7 +172,7 @@ async function queryRelay(relay: string, filter: NostrFilter): Promise<NostrEven
  */
 async function accountRateLimited(env: BridgeEnv | undefined, npub: string): Promise<Response | null> {
   const binding = env?.WATCH_NOSTR_RATE_LIMITER;
-  if (!binding) return null;
+  if (!binding) return unboundLimiter("watch-nostr");
   const { success } = await binding.limit({ key: `watch-nostr:${npub}` });
   if (success) return null;
   const response = jsonResponse({ error: "Too many requests" }, 429);

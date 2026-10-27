@@ -14,10 +14,7 @@ export const manifest = setupManifest({
   images: {
     main: {
       source: {
-        dockerBuild: {
-          workdir: '.',
-          dockerfile: 'Dockerfile',
-        },
+        dockerTag: 'ghcr.io/solife-me/taskify-push-relay:0.5.0',
       },
       arch: ['x86_64', 'aarch64'],
     },

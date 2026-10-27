@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React, { useState, useCallback } from "react";
 import type { PushPlatform, PushPreferences } from "../../domains/tasks/settingsTypes";
+import { pillButtonClass } from "./settingsConstants";
 
 export function PushSection({
   pushPrefs,
@@ -8,6 +9,9 @@ export function PushSection({
   pushError,
   onEnablePush,
   onDisablePush,
+  chatPushBusy,
+  onEnableChatPush,
+  onDisableChatPush,
   workerBaseUrl,
   vapidPublicKey,
 }: {
@@ -16,6 +20,9 @@ export function PushSection({
   pushError: string | null;
   onEnablePush: (platform: PushPlatform) => Promise<void>;
   onDisablePush: () => Promise<void>;
+  chatPushBusy: boolean;
+  onEnableChatPush: () => Promise<void>;
+  onDisableChatPush: () => Promise<void>;
   workerBaseUrl: string;
   vapidPublicKey: string;
 }) {
@@ -77,6 +84,35 @@ export function PushSection({
             </div>
           )}
         </div>
+        {pushPrefs.enabled && (
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">Chat messages</div>
+              <div className="text-xs text-secondary">
+                Get an alert when someone messages you. Alerts never say who wrote or what they said.
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                className={pillButtonClass(!!pushPrefs.chatEnabled)}
+                onClick={() => { if (!pushPrefs.chatEnabled) void onEnableChatPush(); }}
+                disabled={chatPushBusy || pushBusy}
+              >
+                {chatPushBusy && !pushPrefs.chatEnabled ? 'Turning on…' : 'On'}
+              </button>
+              <button
+                className={pillButtonClass(!pushPrefs.chatEnabled)}
+                onClick={() => { if (pushPrefs.chatEnabled) void onDisableChatPush(); }}
+                disabled={chatPushBusy || pushBusy}
+              >
+                Off
+              </button>
+            </div>
+          </div>
+        )}
+        {pushError && (
+          <div className="text-xs text-rose-400 break-words">{pushError}</div>
+        )}
         {showPushAdvanced && (
           <>
             <div>
@@ -96,9 +132,6 @@ export function PushSection({
               <div className="text-xs text-secondary">
                 Configure the Worker runtime (or set VITE_WORKER_BASE_URL and VITE_VAPID_PUBLIC_KEY) to enable push registration.
               </div>
-            )}
-            {pushError && (
-              <div className="text-xs text-rose-400 break-words">{pushError}</div>
             )}
             {pushPrefs.enabled && pushPrefs.deviceId && (
               <div className="text-xs text-secondary break-words">

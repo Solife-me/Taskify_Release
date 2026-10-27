@@ -2066,7 +2066,7 @@ final class TaskifySnapshotTests: XCTestCase {
         snapshot.tasks = [makeSyncTask(id: "task-1", title: "local")]
         snapshot.tasks[0].nostrUpdatedAt = 500
 
-        XCTAssertFalse(snapshot.mergeRemoteTasks([]))
+        XCTAssertFalse(snapshot.mergeRemoteTasks([TaskRelayRecord]()))
         XCTAssertFalse(
             snapshot.mergeRemoteTasks([(makeSyncTask(id: "task-1", title: "stale"), 100)]),
             "A backlog of only-stale records must not report a change (avoids a pointless save + re-render)"

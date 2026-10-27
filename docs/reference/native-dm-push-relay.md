@@ -81,6 +81,6 @@ Kind 10050 is an account-wide replaceable event, not a per-device setting. Every
 
 ## Hosting
 
-A continuously running service is required because it retains events, accepts long-lived relay connections, persists notification jobs, and sends APNs requests. `taskify-push-relay/` packages the service for StartOS 0.4.1 with x86_64 and aarch64 image definitions. Its **Configure Apple Push** action accepts the Apple Team ID, Key ID, `.p8` provider key, and bundle ID; the key is stored mode `0600` in the backed-up StartOS service volume and never included in the package.
+A continuously running service is required because it retains events, accepts long-lived relay connections, persists notification jobs, and sends APNs requests. `taskify-push-relay/` packages the service for StartOS 0.4.1 with x86_64 and aarch64 image definitions. Its **Configure Apple Push** action accepts the Apple Team ID, Key ID, `.p8` provider key, and independent iOS, watchOS, macOS and Snapstr bundle topics; the key is stored mode `0600` in the backed-up StartOS service volume and never included in the package. Older configuration files without a Mac topic use `solife.me.Taskify.Mac` until the action is saved again.
 
 The public StartOS interface must be mapped through a valid TLS gateway to `push.solife.me`. Both HTTPS and WebSocket upgrades share port 8080 inside the container. The packaged runtime pins the public origins so NIP-98 and NIP-42 signatures cannot be replayed against an alternate host.

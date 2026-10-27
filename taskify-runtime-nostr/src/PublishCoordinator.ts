@@ -14,9 +14,10 @@ import {
   type NostrOutboxMutation,
   type NostrOutboxStore,
 } from "./NostrOutbox.js";
-import { applyProofOfWork } from "./ProofOfWork.js";
+import { applyProofOfWork, countLeadingZeroBits, parseProofOfWorkRejection, type ProofOfWorkOptions } from "./ProofOfWork.js";
 import { FIRST_PARTY_RELAYS, RelayPublishBudget, classifyRelayRejection } from "./RelayPublishBudget.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
+import { RuntimeSessionClosedError } from "./sessionErrors.js";
 
 export type RelayResolver = (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
 
@@ -70,6 +71,10 @@ export type PublishCoordinatorOptions = {
   retryMaxMs?: number;
   signal?: AbortSignal;
   resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
+  /** Mining settings (hasher, timeout) used when a publish needs proof of work. */
+  proofOfWork?: Omit<ProofOfWorkOptions, "signal">;
+  /** Called when a relay refuses an event for too little proof of work and names its target. */
+  onProofOfWorkRequired?: (relayUrl: string, difficulty: number) => void;
   /**
    * Per-relay pacing and rate-limit backoff. Applies when an outbox store is configured (a
    * paced relay must stay queued somewhere); pass `false` to disable.
@@ -100,6 +105,8 @@ function hashEventShape(event: NostrEvent): string {
 export class PublishCoordinator {
   private replaceableCache = new Map<string, string>();
   private pending = new Map<string, PendingPublish>();
+  private closed = false;
+  private shutdownPromise: Promise<void> | null = null;
   private readonly debounceDefault = 350;
   private eventCache?: EventCache;
   private resolveRelaySet: RelayResolver;
@@ -109,6 +116,8 @@ export class PublishCoordinator {
   private readonly retryMaxMs: number;
   private readonly signal?: AbortSignal;
   private readonly resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
+  private readonly proofOfWork?: Omit<ProofOfWorkOptions, "signal">;
+  private readonly onProofOfWorkRequired?: (relayUrl: string, difficulty: number) => void;
   private activeOutboxIds = new Set<string>();
   private outboxLocks = new Map<string, Promise<unknown>>();
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -123,6 +132,8 @@ export class PublishCoordinator {
     this.retryBaseMs = options?.retryBaseMs ?? 2_000;
     this.retryMaxMs = options?.retryMaxMs ?? 5 * 60_000;
     this.resolveProofOfWorkDifficulty = options?.resolveProofOfWorkDifficulty;
+    this.proofOfWork = options?.proofOfWork;
+    this.onProofOfWorkRequired = options?.onProofOfWorkRequired;
     this.signal = options?.signal;
     this.publishBudget = options?.publishBudget === false || !options?.outboxStore
       ? null
@@ -203,6 +214,16 @@ export class PublishCoordinator {
         case "terminal":
           refused.push(url);
           break;
+        case "pow": {
+          // This signed event can never satisfy the relay; hold it back and let the caller
+          // re-mine. A named target is remembered so later events are mined to it up front.
+          refused.push(url);
+          const required = parseProofOfWorkRejection(errorToMessageText(relayError));
+          const id = event.id || "";
+          const achieved = /^[0-9a-f]{64}$/i.test(id) ? countLeadingZeroBits(id) : 0;
+          if (required != null && required > achieved) this.onProofOfWorkRequired?.(url, required);
+          break;
+        }
         case "superseded":
           break;
         default:
@@ -237,16 +258,21 @@ export class PublishCoordinator {
 
   private scheduleDebouncedPublish(key: string, pending: PendingPublish, delayMs: number): void {
     if (pending.timer) clearTimeout(pending.timer);
-    pending.timer = setTimeout(async () => {
-      try {
-        const result = await this.publishNowWithOutbox(pending.event, pending.relaySet, pending.outboxId);
-        pending.resolvers.forEach(({ resolve, returnEvent }) => resolve(returnEvent ? toPublicEventResult(result) : result.createdAt));
-      } catch (error) {
-        pending.rejecters.forEach((reject) => reject(error));
-      } finally {
-        this.pending.delete(key);
-      }
-    }, delayMs);
+    pending.timer = setTimeout(() => void this.firePending(key, pending), delayMs);
+  }
+
+  /** Publishes a debounced event now and settles every caller waiting on it. */
+  private async firePending(key: string, pending: PendingPublish): Promise<void> {
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = null;
+    try {
+      const result = await this.publishNowWithOutbox(pending.event, pending.relaySet, pending.outboxId);
+      pending.resolvers.forEach(({ resolve, returnEvent }) => resolve(returnEvent ? toPublicEventResult(result) : result.createdAt));
+    } catch (error) {
+      pending.rejecters.forEach((reject) => reject(error));
+    } finally {
+      if (this.pending.get(key) === pending) this.pending.delete(key);
+    }
   }
 
   private shouldSkipReplaceable(key: string, event: NostrEvent, skipIfIdentical?: boolean): boolean {
@@ -427,7 +453,7 @@ export class PublishCoordinator {
   }
 
   private scheduleOutboxRetry(id: string, delayMs: number): void {
-    if (!this.outboxStore) return;
+    if (!this.outboxStore || this.closed) return;
     this.clearOutboxRetry(id);
     const timer = setTimeout(() => {
       this.retryTimers.delete(id);
@@ -444,6 +470,8 @@ export class PublishCoordinator {
   }
 
   async drainOutbox(options?: { force?: boolean; limit?: number }): Promise<void> {
+    // A closed publisher leaves the outbox for the next session.
+    if (this.closed) return;
     if (!this.outboxStore) return;
     if (this.drainPromise) return this.drainPromise;
     this.drainPromise = this.drainOutboxInternal(options).finally(() => {
@@ -518,18 +546,27 @@ export class PublishCoordinator {
     return changed;
   }
 
-  shutdown(): void {
+  /**
+   * Terminal. Debounced publishes still waiting are sent now, so their callers get the real
+   * result rather than a promise that never settles; retries stop; later publishes fail with
+   * `RuntimeSessionClosedError`. Idempotent: later calls wait for the first.
+   */
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.closed = true;
     for (const timer of this.retryTimers.values()) {
       clearTimeout(timer);
     }
     this.retryTimers.clear();
-    for (const pending of this.pending.values()) {
-      if (pending.timer) clearTimeout(pending.timer);
-    }
-    this.pending.clear();
+    const waiting = Array.from(this.pending.entries());
+    this.shutdownPromise = Promise.all(waiting.map(([key, pending]) => this.firePending(key, pending))).then(() => {
+      this.pending.clear();
+    });
+    return this.shutdownPromise;
   }
 
   async publish(templateOrEvent: EventTemplate | NDKEvent, options?: PublishOptions): Promise<PublishResult> {
+    if (this.closed) throw new RuntimeSessionClosedError("publish");
     const relaySet = await this.resolveRelaySetWithEnsure(options?.relayUrls);
     const signer = signerFromInput(options?.signer);
     const relayUrls = this.relayUrlsForPublish(relaySet, options?.relayUrls);
@@ -549,7 +586,7 @@ export class PublishCoordinator {
 
     if (!event.created_at) event.created_at = Math.floor(Date.now() / 1000);
     if (proofOfWorkDifficulty > 0) {
-      await applyProofOfWork(event, signer, proofOfWorkDifficulty, { signal: this.signal });
+      await applyProofOfWork(event, signer, proofOfWorkDifficulty, { ...this.proofOfWork, signal: this.signal });
     } else if (!event.sig) {
       await event.sign(signer);
     }

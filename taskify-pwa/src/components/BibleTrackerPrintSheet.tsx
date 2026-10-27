@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 
-import { TOTAL_BIBLE_CHAPTERS, type BibleTrackerState } from "./BibleTracker";
+import { TOTAL_BIBLE_CHAPTERS, type BibleTrackerState } from "../domains/scripture/bibleTrackerModel";
 import { buildBiblePrintLayout } from "./BibleTrackerPrintLayout";
 import { getPaperDefinition, PRINT_PAPER_OPTIONS, type PrintPaperSize } from "./printPaper";
 

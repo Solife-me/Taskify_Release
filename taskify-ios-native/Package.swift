@@ -11,6 +11,7 @@ let package = Package(
     ],
     products: [
         .library(name: "TaskifyCore", targets: ["TaskifyCore"]),
+        .library(name: "TaskifyWallet", targets: ["TaskifyWallet"]),
         .library(name: "TaskifyWatchShared", targets: ["TaskifyWatchShared"]),
     ],
     dependencies: [
@@ -36,10 +37,21 @@ let package = Package(
                 "TaskifyWatchShared",
                 "TaskifyFileCipher",
                 .product(name: "P256K", package: "swift-secp256k1"),
+            ],
+            path: "Sources/TaskifyCore"
+        ),
+        // The Cashu wallet, apart from the core so the core builds for watchOS (C10-5). Only the
+        // iPhone and Mac apps link it, and it is deleted after the December 1, 2026 phase-out.
+        .target(
+            name: "TaskifyWallet",
+            dependencies: [
+                "TaskifyCore",
+                "TaskifyWatchShared",
+                .product(name: "P256K", package: "swift-secp256k1"),
                 .product(name: "Cdk", package: "cdk-swift"),
                 .product(name: "URKit", package: "URKit"),
             ],
-            path: "Sources/TaskifyCore"
+            path: "Sources/TaskifyWallet"
         ),
         .target(
             name: "TaskifyWatchShared",
@@ -50,7 +62,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TaskifyCoreTests",
-            dependencies: ["TaskifyCore", "TaskifyWatchShared"],
+            dependencies: ["TaskifyCore", "TaskifyWallet", "TaskifyWatchShared"],
             path: "Tests/TaskifyCoreTests"
         ),
         // Compile the Watch transport, store, and image cache for deterministic runtime
@@ -62,10 +74,11 @@ let package = Package(
             exclude: [
                 "Info.plist", "TaskifyWatchApp.swift", "TaskifyWatchAppModel.swift",
                 "TaskifyWatchRootView.swift", "TaskifyWatchChatView.swift",
-                "TaskifyWatchIndependentClient.swift", "PrivacyInfo.xcprivacy",
+                "PrivacyInfo.xcprivacy",
             ],
             sources: ["TaskifyWatchChatClient.swift", "TaskifyWatchChatStore.swift", "TaskifyWatchAvatarLoader.swift",
-                      "TaskifyWatchPhotoLoader.swift", "TaskifyWatchViewCache.swift", "TaskifyWatchMarkdownCache.swift"]
+                      "TaskifyWatchPhotoLoader.swift", "TaskifyWatchViewCache.swift", "TaskifyWatchMarkdownCache.swift",
+                      "TaskifyWatchIndependentClient.swift"]
         ),
         .testTarget(
             name: "TaskifyWatchChatRuntimeTests",

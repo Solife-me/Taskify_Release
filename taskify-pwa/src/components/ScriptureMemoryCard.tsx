@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getBibleChapterVerseCount } from "../data/bibleVerseCounts";
-import { BIBLE_BOOKS } from "./BibleTracker";
+import { BIBLE_BOOKS } from "../domains/scripture/bibleTrackerModel";
 
 export type ScriptureMemoryListItem = {
   id: string;

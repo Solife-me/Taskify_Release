@@ -1,10 +1,11 @@
 import chalk from "chalk";
 import type { Command } from "commander";
 import { readFile } from "fs/promises";
-import { loadConfig,saveConfig } from "../config.js";
 import { mergeBoardsFromBackup,mergeRelaysFromBackup,parseBackupSnapshot } from "../shared/backupSync.js";
+import type { CommandContext } from "./context.js";
 
-export function registerBackupCommands(program: Command) {
+export function registerBackupCommands(program: Command, context: Pick<CommandContext, "loadConfig" | "saveConfig">) {
+  const { loadConfig, saveConfig } = context;
   // ---- backup snapshot ----
   const backupCmd = program
     .command("backup")
@@ -19,7 +20,7 @@ export function registerBackupCommands(program: Command) {
         raw = await readFile(file, "utf-8");
       } catch {
         console.error(chalk.red(`Cannot read file: ${file}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       try {
@@ -40,10 +41,10 @@ export function registerBackupCommands(program: Command) {
             console.log(`  - ${board.name ?? board.id} (${boardKind}) [nostrId: ${board.nostrId}] relays=${relayCount}`);
           }
         }
-        process.exit(0);
+        return;
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
     });
 
@@ -59,7 +60,7 @@ export function registerBackupCommands(program: Command) {
         raw = await readFile(file, "utf-8");
       } catch {
         console.error(chalk.red(`Cannot read file: ${file}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       try {
@@ -68,7 +69,7 @@ export function registerBackupCommands(program: Command) {
         const changedCount = merged.filter((board, idx) => JSON.stringify(board) !== JSON.stringify(config.boards[idx])).length;
         if (changedCount === 0 && merged.length === config.boards.length) {
           console.log(chalk.dim("No board changes to apply."));
-          process.exit(0);
+          return;
         }
 
         console.log(chalk.bold(`Board merge preview: ${config.boards.length} → ${merged.length}`));
@@ -76,16 +77,16 @@ export function registerBackupCommands(program: Command) {
 
         if (opts.dryRun) {
           console.log(chalk.dim("[dry-run] No config written."));
-          process.exit(0);
+          return;
         }
 
         config.boards = merged;
         await saveConfig(config);
         console.log(chalk.green(`✓ Applied board merge (${changedCount} changed/new)`));
-        process.exit(0);
+        return;
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
     });
 
@@ -101,7 +102,7 @@ export function registerBackupCommands(program: Command) {
         raw = await readFile(file, "utf-8");
       } catch {
         console.error(chalk.red(`Cannot read file: ${file}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       try {
@@ -110,7 +111,7 @@ export function registerBackupCommands(program: Command) {
         const changed = JSON.stringify(mergedRelays) !== JSON.stringify(config.relays);
         if (!changed) {
           console.log(chalk.dim("No relay changes to apply."));
-          process.exit(0);
+          return;
         }
 
         console.log(chalk.bold("Relay merge preview"));
@@ -120,16 +121,16 @@ export function registerBackupCommands(program: Command) {
 
         if (opts.dryRun) {
           console.log(chalk.dim("[dry-run] No config written."));
-          process.exit(0);
+          return;
         }
 
         config.relays = mergeRelaysFromBackup(config.relays, snapshot.defaultRelays);
         await saveConfig(config);
         console.log(chalk.green(`✓ Applied relay merge (${config.relays.length} relay${config.relays.length === 1 ? "" : "s"})`));
-        process.exit(0);
+        return;
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
     });
 

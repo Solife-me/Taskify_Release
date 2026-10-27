@@ -47,7 +47,7 @@ export function buildNostrBackupSnapshot(options) {
         }).filter((board) => !!board).sort((a, b) => (normalizeOrder(a.order) ?? 0) - (normalizeOrder(b.order) ?? 0) || a.id.localeCompare(b.id))
         : [];
     const settingsPayload = includeMetadata ? sanitizeSettingsForBackup(settings) : {};
-    return { boards: boardsPayload, settings: settingsPayload, walletSeed, defaultRelays: defaultRelayList };
+    return { boards: boardsPayload, settings: settingsPayload, ...(walletSeed ? { walletSeed } : {}), defaultRelays: defaultRelayList };
 }
 export function mergeBackupBoards(options) {
     const { currentBoards, incomingBoards, baseRelays, normalizeRelayList, createId } = options;
@@ -128,4 +128,48 @@ export function mergeBackupBoards(options) {
         }
     }
     return changed ? next : currentBoards;
+}
+/**
+ * The backup to publish: the latest one on the relays, updated with this device's snapshot. The
+ * same rule as iOS (`updatingNativeBoards`), and the only safe one for a backup several devices
+ * write:
+ *
+ * - never build a backup without having read the remote one (`remote` null only when the relays
+ *   confirmed there is none);
+ * - boards another device put there stay; the boards this device manages (has published) are
+ *   replaced by its current ones, or dropped when it no longer has them;
+ * - settings keys only other clients write are kept;
+ * - the wallet seed stays when this device has none.
+ *
+ * Without metadata (boards and settings not backed up from this device), only the seed changes.
+ */
+export function updateRemoteNostrBackup(remote, local, options) {
+    const remoteBoards = Array.isArray(remote?.boards) ? remote.boards : [];
+    const remoteSettings = remote?.settings && typeof remote.settings === "object" ? remote.settings : {};
+    const walletSeed = local.walletSeed ?? remote?.walletSeed ?? undefined;
+    const managed = new Set(Array.from(options.managedNostrIds, (id) => id.trim()).filter(Boolean));
+    if (!options.includeMetadata) {
+        return {
+            boards: remoteBoards,
+            settings: remoteSettings,
+            ...(walletSeed ? { walletSeed } : {}),
+            defaultRelays: remote?.defaultRelays ?? [],
+            managedNostrIds: [...managed].sort(),
+        };
+    }
+    const localIds = new Set(local.boards.map((board) => board.nostrId?.trim()).filter((id) => !!id));
+    const kept = remoteBoards.filter((board) => {
+        const id = board?.nostrId?.trim();
+        if (!id)
+            return true;
+        return !localIds.has(id) && !managed.has(id);
+    });
+    localIds.forEach((id) => managed.add(id));
+    return {
+        boards: [...kept, ...local.boards],
+        settings: { ...remoteSettings, ...local.settings },
+        ...(walletSeed ? { walletSeed } : {}),
+        defaultRelays: local.defaultRelays,
+        managedNostrIds: [...managed].sort(),
+    };
 }

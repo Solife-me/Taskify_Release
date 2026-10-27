@@ -39,7 +39,7 @@ export type NostrBackupState = {
 export type NostrBackupSnapshot = {
   boards: NostrAppBackupBoard[];
   settings: Partial<Settings>;
-  walletSeed: WalletSeedBackupPayload;
+  walletSeed?: WalletSeedBackupPayload | null;
   defaultRelays: string[];
 };
 
@@ -81,6 +81,6 @@ export type TaskifyBackupPayload = {
     history: unknown;
     trackedMints: string[];
     pendingTokens: PendingTokenEntry[];
-    walletSeed: WalletSeedBackupPayload;
+    walletSeed?: WalletSeedBackupPayload;
   };
 };

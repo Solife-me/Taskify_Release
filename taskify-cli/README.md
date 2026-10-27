@@ -107,7 +107,7 @@ The CLI never silently picks among multiple boards or lists. Compound boards can
 | `show <taskId>` | Fetch one task; scans configured boards if no location is supplied | `--in`, `--human` |
 | `search <query>` | Search title/note across boards or within one location | `--in`, `--mine`, `--human` |
 | `update <taskId>` | Update fields or move a task | `--in`, `--title`, `--due`, `--priority`, `--note`, `--column` |
-| `done <taskId>` | Mark a task complete | `--in`, `--title`, `--due` |
+| `done <taskId>` | Mark a task complete; a recurring task opens its next occurrence (returned as `nextOccurrence`) | `--in`, `--title`, `--due` |
 | `reopen <taskId>` | Reopen a task | `--in`, `--title`, `--due` |
 | `delete <taskId>` | Delete a task | `--in`, `--force` |
 
@@ -155,7 +155,23 @@ Use `--idempotency-key` whenever an agent might retry task creation. Keys are pe
 
 Writes are persisted to `~/.taskify-cli/nostr-outbox.json` before publication. A write succeeds only after at least one target relay acknowledges it. If no relay acknowledges the event, the CLI returns `WRITE_QUEUED` with exit code `75`; the signed event remains in the outbox and is retried on a later connection. `taskify doctor` reports pending writes.
 
-The transport uses the union of account relays and per-board relays, supports authenticated NIP-42 relays, applies relay health/backoff, and closes connections cleanly after each invocation.
+The transport uses the union of account relays and per-board relays, applies relay health/backoff, and closes connections cleanly after each invocation.
+
+## Relay authentication (NIP-42) and proof of work (NIP-13)
+
+Relays that gate access, including Taskify's own `wss://relay.solife.me`, work without extra setup:
+
+- **NIP-42 auth.** When a relay sends an `AUTH` challenge, the CLI answers with the profile's key. Writes or reads the relay refused with `auth-required:` are resent once it accepts. A relay that refuses the AUTH event (for example an allow-list relay) fails that relay's writes cleanly; it never crashes the command. With no key configured, read-only commands answer challenges with a throwaway key.
+- **NIP-13 proof of work.** Before signing, the CLI reads each target relay's NIP-11 `min_pow_difficulty` and mines a `nonce` tag to the highest one. If a relay doesn't advertise its requirement and rejects a write with `pow: … <target>`, the CLI remembers that target, mines a new copy and resends it once. Learned targets and NIP-11 limits are cached in `~/.taskify-cli/relay-info.json`, so later writes are mined correctly up front.
+
+```bash
+taskify relay info wss://relay.solife.me   # NIP-11 details: auth required? PoW difficulty?
+taskify relay status                        # live connection, auth outcome and PoW per relay
+taskify relay list --json                   # configured relays with access requirements
+taskify config set pow 16                   # optional: mine at least this difficulty into every write (0 turns it off)
+```
+
+Mining uses Node's native SHA-256 on a single core: difficulty 20 typically takes under a second, 24 around 10–20 seconds. One event may be mined for up to two minutes; set `TASKIFY_POW_TIMEOUT_MS` to change that. In an interactive terminal, the CLI says so on stderr when a write needs difficulty 18 or more. `taskify doctor` reports relays that refused authentication and relays that require proof of work.
 
 ## Agent assignment patterns
 

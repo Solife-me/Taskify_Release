@@ -1,4 +1,4 @@
-import { recurringSeriesId } from "../../lib/app/weekRecurrenceDomain";
+import { recurringSeriesId } from "taskify-core";
 import { isoDatePart, isoFromDateTime } from "../dateTime/dateUtils";
 import type { Task } from "./taskTypes";
 

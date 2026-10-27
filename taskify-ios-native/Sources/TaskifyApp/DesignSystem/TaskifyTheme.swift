@@ -34,12 +34,26 @@ enum TaskifyInterfaceScale: String, CaseIterable {
         }
     }
 
-    var dynamicTypeSize: DynamicTypeSize {
+    /// The text size this choice fixes; nil for "System", which follows the iPhone's own text
+    /// size setting, accessibility sizes included (C8-3).
+    var dynamicTypeSize: DynamicTypeSize? {
         switch self {
-        case .system: .large
+        case .system: nil
         case .small: .medium
         case .large: .xLarge
         case .extraLarge: .xxxLarge
+        }
+    }
+}
+
+extension View {
+    /// Applies the in-app text size, or leaves the system's in place for "System".
+    @ViewBuilder
+    func taskifyInterfaceScale(_ scale: TaskifyInterfaceScale) -> some View {
+        if let size = scale.dynamicTypeSize {
+            dynamicTypeSize(size)
+        } else {
+            self
         }
     }
 }
@@ -446,7 +460,11 @@ extension View {
     }
 
     func taskifyScreenTitle() -> some View {
-        font(.system(size: 22, weight: .bold))
+        scaledFont(size: 22, weight: .bold)
+            // One line, shrinking to fit beside the screen's buttons at large text sizes,
+            // rather than breaking the word.
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
             .foregroundStyle(TaskifyTheme.primaryText)
     }
 
@@ -516,7 +534,7 @@ struct HeaderIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(size: 16, weight: .semibold)
                 .frame(width: 42, height: 42)
                 .foregroundStyle(accent ? .white : TaskifyTheme.primaryText)
                 .taskifyGlassControl(

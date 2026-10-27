@@ -3,22 +3,22 @@ import type { Command } from "commander";
 import {
 resolveBoardReference
 } from "taskify-core";
-import { loadConfig } from "../config.js";
 import type { CommandContext } from "./context.js";
 
-export function registerBoardCreationCommands(program: Command, context: Pick<CommandContext, "initRuntime">, boardCmd: Command) {
-  const { initRuntime } = context;
+export function registerBoardCreationCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "loadConfig" | "randomUUID" | "prompt">, boardCmd: Command) {
+  const { initRuntime, loadConfig, randomUUID, prompt } = context;
   // ---- board create ----
   boardCmd
     .command("create <name>")
     .description("Create and publish a new board")
     .option("--kind <lists|week|compound>", "Board kind (default: lists)", "lists")
+    .option("--columns <names>", "List names, comma-separated (lists boards; asked for when omitted in a terminal)")
     .option("--child <id|name>", "Child board id/name (repeatable for compound boards)")
     .option("--relay <url>", "Relay URL hint (informational)")
     .action(async (name: string, opts) => {
       if (!["lists", "week", "compound"].includes(opts.kind)) {
         console.error(chalk.red(`Invalid --kind: "${opts.kind}". Use: lists, week, or compound`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const kind = opts.kind as "lists" | "week" | "compound";
       const config = await loadConfig(program.opts().profile as string | undefined);
@@ -28,17 +28,13 @@ export function registerBoardCreationCommands(program: Command, context: Pick<Co
         let columns: { id: string; name: string }[] = [];
         let children: string[] = [];
         if (kind === "lists") {
-          const { createInterface } = await import("readline");
-          const answer = await new Promise<string>((resolve) => {
-            const rl = createInterface({ input: process.stdin, output: process.stdout });
-            rl.question("Column names (comma-separated, or blank for none): ", (ans: string) => {
-              rl.close();
-              resolve(ans.trim());
-            });
-          });
+          // A script gets a board without lists rather than waiting for an answer.
+          const answer = (opts.columns as string | undefined)
+            ?? await prompt("Column names (comma-separated, or blank for none): ")
+            ?? "";
           if (answer) {
             columns = answer.split(",").map((n) => n.trim()).filter(Boolean).map((n) => ({
-              id: crypto.randomUUID(),
+              id: randomUUID(),
               name: n,
             }));
           }
@@ -54,7 +50,7 @@ export function registerBoardCreationCommands(program: Command, context: Pick<Co
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

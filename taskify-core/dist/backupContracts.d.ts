@@ -47,7 +47,8 @@ export type BackupBoardLike = {
 export type NostrBackupSnapshot<TSettings> = {
     boards: NostrAppBackupBoard[];
     settings: Partial<TSettings>;
-    walletSeed: WalletSeedBackupPayload;
+    /** Only when the device has a wallet seed; a backup never creates one. */
+    walletSeed?: WalletSeedBackupPayload | null;
     defaultRelays: string[];
 };
 export declare function sanitizeSettingsForNostrBackup<TSettings extends Record<string, unknown>>(raw: TSettings | Record<string, unknown>, defaultPushPreferences: Record<string, unknown>): Partial<TSettings>;
@@ -59,7 +60,8 @@ export declare function buildNostrBackupSnapshot<TBoard extends BackupBoardLike,
     fallbackRelays: string[];
     normalizeRelayList: RelayNormalizer;
     sanitizeSettingsForBackup: (raw: TSettings | Record<string, unknown>) => Partial<TSettings>;
-    walletSeed: WalletSeedBackupPayload;
+    /** Only when the device has a wallet seed; a backup never creates one. */
+    walletSeed?: WalletSeedBackupPayload | null;
 }): NostrBackupSnapshot<TSettings>;
 export declare function mergeBackupBoards<TBoard extends BackupBoardLike>(options: {
     currentBoards: TBoard[];
@@ -68,4 +70,36 @@ export declare function mergeBackupBoards<TBoard extends BackupBoardLike>(option
     normalizeRelayList: RelayNormalizer;
     createId: () => string;
 }): TBoard[];
+/** A backup as it is published and read. */
+export type NostrBackupContent = {
+    boards: NostrAppBackupBoard[];
+    settings: Record<string, unknown>;
+    walletSeed?: WalletSeedBackupPayload | null;
+    defaultRelays?: string[];
+};
+/**
+ * The backup to publish: the latest one on the relays, updated with this device's snapshot. The
+ * same rule as iOS (`updatingNativeBoards`), and the only safe one for a backup several devices
+ * write:
+ *
+ * - never build a backup without having read the remote one (`remote` null only when the relays
+ *   confirmed there is none);
+ * - boards another device put there stay; the boards this device manages (has published) are
+ *   replaced by its current ones, or dropped when it no longer has them;
+ * - settings keys only other clients write are kept;
+ * - the wallet seed stays when this device has none.
+ *
+ * Without metadata (boards and settings not backed up from this device), only the seed changes.
+ */
+export declare function updateRemoteNostrBackup(remote: NostrBackupContent | null, local: {
+    boards: NostrAppBackupBoard[];
+    settings: Record<string, unknown>;
+    walletSeed?: WalletSeedBackupPayload | null;
+    defaultRelays: string[];
+}, options: {
+    managedNostrIds: Iterable<string>;
+    includeMetadata: boolean;
+}): NostrBackupContent & {
+    managedNostrIds: string[];
+};
 export {};

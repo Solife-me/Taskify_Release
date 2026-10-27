@@ -35,3 +35,15 @@ test("contactVerifiedNip05 validates against cache", () => {
   const cache = { "1": { status: "valid", nip05: "a@b.com", npub: "a".repeat(64), checkedAt: 1 } };
   assert.equal(contactVerifiedNip05(contact, cache as any), "a@b.com");
 });
+
+test("contactInitials keeps emoji, flags and non-Latin letters whole", () => {
+  assert.equal(contactInitials("Ada Lovelace"), "AL");
+  assert.equal(contactInitials("ada"), "AD");
+  assert.equal(contactInitials("  "), "?");
+  assert.equal(contactInitials("🦊 Fox"), "🦊");
+  assert.equal(contactInitials("👨‍👩‍👧 Family"), "👨‍👩‍👧");
+  assert.equal(contactInitials("🇺🇸 Team"), "🇺🇸");
+  assert.equal(contactInitials("𝓐lice 𝓑ob"), "𝓐𝓑");
+  assert.equal(contactInitials("Zoë"), "ZO");
+  assert.equal(contactInitials("José Ñúñez"), "JÑ");
+});

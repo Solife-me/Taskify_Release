@@ -23,14 +23,14 @@ export function registerAgentCommands(program: Command, context: Pick<CommandCon
       const key = await readSecret(provided, "API key: ");
       if (!key) {
         console.error(chalk.red("No API key given."));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const config = await loadConfig(program.opts().profile as string | undefined);
       if (!config.agent) config.agent = {};
       config.agent.apiKey = key;
       await saveConfig(config);
       console.log(chalk.green("✓ Agent API key saved"));
-      process.exit(0);
+      return;
     });
 
   agentConfigCmd
@@ -42,7 +42,7 @@ export function registerAgentCommands(program: Command, context: Pick<CommandCon
       config.agent.model = model;
       await saveConfig(config);
       console.log(chalk.green(`✓ Agent model set to: ${model}`));
-      process.exit(0);
+      return;
     });
 
   agentConfigCmd
@@ -54,7 +54,7 @@ export function registerAgentCommands(program: Command, context: Pick<CommandCon
       config.agent.baseUrl = url;
       await saveConfig(config);
       console.log(chalk.green(`✓ Agent base URL set to: ${url}`));
-      process.exit(0);
+      return;
     });
 
   agentConfigCmd
@@ -74,7 +74,7 @@ export function registerAgentCommands(program: Command, context: Pick<CommandCon
       console.log(`  baseUrl:        ${ag.baseUrl ?? "https://api.openai.com/v1"}`);
       console.log(`  model:          ${ag.model ?? "gpt-4o-mini"}`);
       console.log(`  defaultBoardId: ${ag.defaultBoardId ?? "(not set)"}`);
-      process.exit(0);
+      return;
     });
 
   agentCmd
@@ -90,7 +90,7 @@ export function registerAgentCommands(program: Command, context: Pick<CommandCon
       if (!apiKey) {
         console.error(chalk.red("No AI API key configured. Run: taskify agent config set-key <key>"));
         console.error(chalk.dim("  or set TASKIFY_AGENT_API_KEY environment variable"));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const baseUrl = config.agent?.baseUrl ?? "https://api.openai.com/v1";
       const model = config.agent?.model ?? "gpt-4o-mini";
@@ -104,7 +104,7 @@ export function registerAgentCommands(program: Command, context: Pick<CommandCon
         }).join("\n");
         console.error(chalk.red("Cannot add tasks directly to a compound board. Use one of its child boards:"));
         if (childNames) console.error(childNames);
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       const today = new Date().toISOString().slice(0, 10);
@@ -139,7 +139,7 @@ Today is ${today}.`;
         extracted = JSON.parse(cleaned);
       } catch (err) {
         console.error(chalk.red(`AI extraction failed: ${String(err)}`));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
 
       // Resolve column hint
@@ -166,7 +166,7 @@ Today is ${today}.`;
 
       if (opts.dryRun) {
         console.log(chalk.dim("\n[dry-run] No task created."));
-        process.exit(0);
+        return;
       }
 
       if (!opts.yes) {
@@ -180,7 +180,7 @@ Today is ${today}.`;
         });
         if (!confirmed) {
           console.log("Aborted.");
-          process.exit(0);
+          return;
         }
       }
 
@@ -208,11 +208,11 @@ Today is ${today}.`;
         }
       } catch (err) {
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1; return;
       } finally {
         await runtime.disconnect();
       }
-      process.exit(0);
+      return;
     });
 
   agentCmd
@@ -227,7 +227,7 @@ Today is ${today}.`;
       const apiKey = config.agent?.apiKey ?? process.env.TASKIFY_AGENT_API_KEY ?? "";
       if (!apiKey) {
         console.error(chalk.red("No AI API key configured. Run: taskify agent config set-key <key>"));
-        process.exit(1);
+        process.exitCode = 1; return;
       }
       const baseUrl = config.agent?.baseUrl ?? "https://api.openai.com/v1";
       const model = config.agent?.model ?? "gpt-4o-mini";
@@ -238,7 +238,7 @@ Today is ${today}.`;
         const tasks = await runtime.listTasks({ boardId, status: "open" });
         if (tasks.length === 0) {
           console.log(chalk.dim("No open tasks to triage."));
-          process.exit(0);
+          return;
         }
 
         const { callAI } = await import("../aiClient.js");
@@ -267,7 +267,8 @@ Return ONLY a valid JSON array (no markdown):
           suggestions = JSON.parse(cleaned);
         } catch (err) {
           console.error(chalk.red(`AI triage failed: ${String(err)}`));
-          process.exit(1);
+          exitCode = 1;
+          return;
         }
 
         // Filter to only changes
@@ -278,12 +279,12 @@ Return ONLY a valid JSON array (no markdown):
 
         if (opts.json) {
           renderJson(suggestions);
-          process.exit(0);
+          return;
         }
 
         if (changes.length === 0) {
           console.log(chalk.dim("No priority changes suggested."));
-          process.exit(0);
+          return;
         }
 
         console.log(chalk.bold("\nSuggested priority changes:"));
@@ -298,7 +299,7 @@ Return ONLY a valid JSON array (no markdown):
 
         if (opts.dryRun) {
           console.log(chalk.dim("\n[dry-run] No changes applied."));
-          process.exit(0);
+          return;
         }
 
         if (!opts.yes) {
@@ -312,7 +313,7 @@ Return ONLY a valid JSON array (no markdown):
           });
           if (!confirmed) {
             console.log("Aborted.");
-            process.exit(0);
+            return;
           }
         }
 
@@ -325,7 +326,7 @@ Return ONLY a valid JSON array (no markdown):
         exitCode = 1;
       } finally {
         await runtime.disconnect();
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     });
 

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { mergeRelayBatches, mergeRelayBatchIntoTasks, type RelayBatchEntry, type SyncedTask } from "./taskSyncMerge";
+import type { BoardSyncLedger } from "./boardSyncLedger";
 import type { NDKKind } from "@nostr-dev-kit/ndk";
 import { recoverRelayHistory } from "taskify-runtime-nostr";
 import { NostrSession } from "./NostrSession";
 import { useSyncResume } from "./useSyncResume";
 import { historyRecoverySince, setHistoryWatermark } from "./historyWatermarks";
 import { boardTag } from "../boardCrypto";
-import type { Board, Task } from "../domains/tasks/taskTypes";
+import type { Board } from "../domains/tasks/taskTypes";
 import { dedupeRecurringInstances } from "../domains/tasks/taskUtils";
 import { TASKIFY_CALENDAR_EVENT_KIND } from "../lib/privateCalendar";
 import { idbKeyValue } from "../storage/idbKeyValue";
@@ -23,13 +25,8 @@ const VERIFY_UNSEEN_BATCH = 100;
 type MutableRef<T> = { current: T };
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
 
-export type BoardSyncTask = Task & { _nostrAt?: number };
-export type BoardSyncRelayBatchEntry = BoardSyncTask | { _deleted: true; _nostrAt: number };
-export type BoardSyncNostrIndex = {
-  boardMeta: Map<string, number>;
-  taskClock: Map<string, Map<string, number>>;
-  calendarClock: Map<string, Map<string, number>>;
-};
+export type BoardSyncTask = SyncedTask;
+export type BoardSyncRelayBatchEntry = RelayBatchEntry;
 export type BoardSyncNostrEvent = {
   id: string;
   kind: number;
@@ -58,12 +55,12 @@ type UseBoardSyncParams = {
   sanitizeTasks?: (tasks: BoardSyncTask[]) => BoardSyncTask[];
   pool: BoardSyncNostrPool;
   getBoardRelays: (board: Board) => string[];
-  nostrIdxRef: MutableRef<BoardSyncNostrIndex>;
+  /** Version clocks and in-flight publishes for every shared board. */
+  ledger: Pick<BoardSyncLedger, "taskAt" | "isTaskPending" | "isTaskEventCurrent">;
   boardSyncCursorsRef: MutableRef<Record<string, number>>;
   relayBatchRef: MutableRef<Map<string, Map<string, Map<string, BoardSyncRelayBatchEntry>>>>;
   pendingRelaysByBoardRef: MutableRef<Map<string, Set<string>>>;
   seenBoardTasksRef: MutableRef<Map<string, Set<string>>>;
-  pendingNostrTasksRef: MutableRef<Set<string>>;
   completedNostrInitialSyncRef: MutableRef<Set<string>>;
   setPendingNostrInitialSyncByBoardTag: StateSetter<Record<string, true>>;
   markNostrBoardInitialSyncComplete: (bTag: string) => void;
@@ -73,29 +70,6 @@ type UseBoardSyncParams = {
   applyCalendarEvent: (ev: BoardSyncNostrEvent) => Promise<void>;
   fullHistorySyncNonce?: number;
 };
-
-function relayBatchEventAt(entry: BoardSyncRelayBatchEntry | undefined): number {
-  if (!entry) return -1;
-  return "_deleted" in entry ? entry._nostrAt : entry._nostrAt ?? 0;
-}
-
-function mergeRelayBatches(
-  batches: Map<string, Map<string, BoardSyncRelayBatchEntry>>,
-  replaceOnEqual: boolean,
-): Map<string, BoardSyncRelayBatchEntry> {
-  const combined = new Map<string, BoardSyncRelayBatchEntry>();
-  for (const relayBatch of batches.values()) {
-    for (const [key, entry] of relayBatch) {
-      const existing = combined.get(key);
-      const incomingAt = relayBatchEventAt(entry);
-      const existingAt = relayBatchEventAt(existing);
-      if (!existing || incomingAt > existingAt || (replaceOnEqual && incomingAt >= existingAt)) {
-        combined.set(key, entry);
-      }
-    }
-  }
-  return combined;
-}
 
 export function buildBoardSyncFilters({
   bTag,
@@ -182,12 +156,11 @@ export function useBoardSync({
   sanitizeTasks,
   pool,
   getBoardRelays,
-  nostrIdxRef,
+  ledger,
   boardSyncCursorsRef,
   relayBatchRef,
   pendingRelaysByBoardRef,
   seenBoardTasksRef,
-  pendingNostrTasksRef,
   completedNostrInitialSyncRef,
   setPendingNostrInitialSyncByBoardTag,
   markNostrBoardInitialSyncComplete,
@@ -228,26 +201,14 @@ export function useBoardSync({
   const flushRelayBatch = useCallback(
     (bTag: string, relayBatch: Map<string, BoardSyncRelayBatchEntry>) => {
       if (!relayBatch.size) return;
-      const bTagClock = nostrIdxRef.current.taskClock.get(bTag);
       setTasks((prev) => {
-        const merged = new Map<string, BoardSyncTask>(
-          prev.map((task) => [`${task.boardId}::${task.id}`, task]),
-        );
-        for (const [key, entry] of relayBatch) {
-          const taskId = key.split("::")[1] ?? "";
-          const incomingNostrAt =
-            "_deleted" in entry ? entry._nostrAt : entry._nostrAt ?? bTagClock?.get(taskId) ?? 0;
-          const existingTask = merged.get(key);
-          const existingNostrAt = Math.max(existingTask?._nostrAt ?? 0, bTagClock?.get(taskId) ?? 0);
-          if (incomingNostrAt < existingNostrAt) continue;
-          if ("_deleted" in entry) merged.delete(key);
-          else merged.set(key, entry);
-        }
-        const deduped = dedupeRecurringInstances(Array.from(merged.values())) as BoardSyncTask[];
+        const merged = mergeRelayBatchIntoTasks(prev, relayBatch, (taskId, version) =>
+          ledger.isTaskEventCurrent(bTag, taskId, version.createdAt, version.id));
+        const deduped = dedupeRecurringInstances(merged) as BoardSyncTask[];
         return sanitizeTasks ? sanitizeTasks(deduped) : deduped;
       });
     },
-    [nostrIdxRef, sanitizeTasks, setTasks],
+    [ledger, sanitizeTasks, setTasks],
   );
 
   const verifyUnseenTasks = useCallback(
@@ -274,7 +235,7 @@ export function useBoardSync({
           if (task.completed) return false;
           if (typeof task._nostrAt !== "number" || task._nostrAt <= 0) return false;
           if (seenIds.has(task.id)) return false;
-          if (pendingNostrTasksRef.current.has(`${bTag}::${task.id}`)) return false;
+          if (ledger.isTaskPending(bTag, task.id)) return false;
           if (nowSecs - task._nostrAt < verifyRecentGraceSecs) return false;
           return true;
         })
@@ -310,7 +271,7 @@ export function useBoardSync({
       applyTaskEvent,
       boardsRef,
       enqueueForBoard,
-      pendingNostrTasksRef,
+      ledger,
       pool,
       seenBoardTasksRef,
       tasksRef,

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildCalendarEventDraft } from "../src/events.ts";
+import { buildCalendarEventDraft } from "../dist/events.js";
 
 test("buildCalendarEventDraft defaults timed events to 09:00 start and 10:00 end when only time mode selected", () => {
   const draft = buildCalendarEventDraft({

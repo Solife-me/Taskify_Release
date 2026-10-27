@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { finalizeEvent, generateSecretKey } from "nostr-tools";
 import { sanitizeRemote, stripControlCharacters } from "../src/shared/displaySafe.ts";
-import { verifiedRawEvents } from "../src/shared/verifiedEvents.ts";
+import { verifiedRawEvents } from "taskify-runtime-nostr";
 
 test("terminal control sequences are removed from other people's text", () => {
   assert.equal(stripControlCharacters("Buy milk\u001b[2K\r\u001b[32m✓ trusted"), "Buy milk[2K[32m✓ trusted");

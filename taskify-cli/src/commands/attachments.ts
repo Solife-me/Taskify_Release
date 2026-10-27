@@ -5,7 +5,7 @@ import { decryptAttachmentToDataUrl } from "../attachmentCrypto.js";
 import { loadConfig } from "../config.js";
 import { renderJson } from "../render.js";
 import { safeDownloadName } from "../shared/safeDownloadName.js";
-import type { CommandContext } from "./context.js";
+import { rethrowReportedError, type CommandContext } from "./context.js";
 
 export function registerAttachmentsCommands(program: Command, context: Pick<CommandContext, "initRuntime" | "resolveBoardId" | "extractDocumentUrl" | "resolveDocumentByRef">) {
   const { initRuntime, resolveBoardId, extractDocumentUrl, resolveDocumentByRef } = context;
@@ -57,10 +57,10 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
           if (typeof hit.doc.encryptionBoardId === "string") console.log(`encryptionBoardId: ${hit.doc.encryptionBoardId}`);
           if (remoteUrl) console.log(`remoteUrl: ${remoteUrl}`);
         }
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -101,10 +101,10 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
         const base64 = dataUrl.split(",", 2)[1] || "";
         await writeFile(outPath, Buffer.from(base64, "base64"), opts.out ? undefined : { flag: "wx" });
         console.log(chalk.green(`✓ Saved attachment to ${outPath}`));
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -137,10 +137,10 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
           if (typeof hit.doc.encryptionBoardId === "string") console.log(`encryptionBoardId: ${hit.doc.encryptionBoardId}`);
           if (remoteUrl) console.log(`remoteUrl: ${remoteUrl}`);
         }
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }
@@ -181,10 +181,10 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
         const base64 = dataUrl.split(",", 2)[1] || "";
         await writeFile(outPath, Buffer.from(base64, "base64"), opts.out ? undefined : { flag: "wx" });
         console.log(chalk.green(`✓ Saved attachment to ${outPath}`));
-        process.exit(0);
       } catch (err) {
+        rethrowReportedError(err);
         console.error(chalk.red(String(err)));
-        process.exit(1);
+        process.exitCode = 1;
       } finally {
         await runtime.disconnect();
       }

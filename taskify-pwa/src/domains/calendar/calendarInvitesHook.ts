@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { InboxSender } from "taskify-core";
+import { ISO_DATE_PATTERN, type InboxSender } from "taskify-core";
 import {
   TASKIFY_CALENDAR_EVENT_KIND,
   TASKIFY_CALENDAR_VIEW_KIND,
@@ -9,7 +9,6 @@ import {
 import { kvStorage } from "../../storage/kvStorage";
 
 const LS_CALENDAR_INVITES = "taskify_calendar_invites_v2";
-const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export type CalendarInviteStatus = "pending" | "read" | CalendarRsvpStatus | "dismissed";
 

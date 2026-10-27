@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 import TaskifyCore
 
@@ -17,6 +18,8 @@ private enum MacDestination: String, CaseIterable {
 
 struct MacWorkspace: View {
     @Environment(AppModel.self) private var model
+    let initialLink: URL?
+    let isWalletRecoveryMode: Bool
     @SceneStorage("mac.destination") private var destination = "today"
     @State private var search = ""
     @State private var selectedTaskID: String?
@@ -31,7 +34,14 @@ struct MacWorkspace: View {
     @State private var chatScrollPositions: [String: String] = [:]
     @State private var chatSelection: String?
     @State private var printingChecklist = false
+    @State private var pendingLink: URL?
+    @State private var didHandleInitialLink = false
     @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
+
+    init(initialLink: URL? = nil, isWalletRecoveryMode: Bool = false) {
+        self.initialLink = initialLink
+        self.isWalletRecoveryMode = isWalletRecoveryMode
+    }
 
     private var board: Board? { model.board(withID: destination) }
     private var title: String { board?.name ?? MacDestination(rawValue: destination)?.title ?? "Taskify" }
@@ -50,6 +60,8 @@ struct MacWorkspace: View {
                     ForEach(model.visibleBoards) { board in
                         Label(board.name, systemImage: board.kind == .week ? "rectangle.split.3x1" : "square.grid.2x2")
                             .tag(board.id)
+                            .accessibilityIdentifier(board.id)
+                            .accessibilityLabel(board.name)
                             .contextMenu {
                                 Button("Board Settings…") { boardToManage = board }
                                 Button("Move Up") { _ = model.moveBoard(boardID: board.id, direction: -1) }
@@ -100,6 +112,7 @@ struct MacWorkspace: View {
                         ToolbarItem {
                             Button { creatingTask = true } label: { Label("New Task", systemImage: "plus") }
                                 .help("New Task (⇧⌘N)")
+                                .accessibilityIdentifier("new-task-button")
                         }
                         ToolbarItem {
                             Button { creatingEvent = true } label: { Label("New Event", systemImage: "calendar.badge.plus") }
@@ -121,6 +134,7 @@ struct MacWorkspace: View {
                 }
 
         }
+        .accessibilityIdentifier("taskify-workspace-\(destination)")
         .focusedSceneValue(\.taskifyActions, MacWindowActions(
             newTask: { creatingTask = true }, newBoard: { creatingBoard = true }, sync: { model.retrySync() }
         ))
@@ -137,7 +151,14 @@ struct MacWorkspace: View {
         .alert("Taskify", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
-        .onChange(of: destination) { _, _ in selectedTaskID = nil; search = "" }
+        .onChange(of: destination) { _, newDestination in
+            selectedTaskID = MacNavigationSelection.retainedTaskID(
+                selectedTaskID: selectedTaskID,
+                selectedTaskBoardID: selectedTask?.boardID,
+                destination: newDestination
+            )
+            search = ""
+        }
         .onChange(of: model.identityPublicKey) { oldValue, newValue in
             // Empty-to-real is ordinary startup (identity loads after the window already exists)
             // and must not disturb the @SceneStorage-restored destination; only a real account
@@ -172,6 +193,13 @@ struct MacWorkspace: View {
         .onAppear {
             // A window restored onto the Wallet page of a device that never used the wallet.
             if destination == MacDestination.wallet.rawValue && !walletEnabled { destination = "today" }
+            guard !didHandleInitialLink, let initialLink else { return }
+            didHandleInitialLink = true
+            openWhenReady(initialLink)
+        }
+        .onChange(of: model.isLoading) { _, isLoading in
+            guard !isLoading, let pendingLink else { return }
+            openWhenReady(pendingLink)
         }
         .background {
             WalletPhaseOutNoticePresenter(
@@ -179,15 +207,38 @@ struct MacWorkspace: View {
                 openWallet: { destination = MacDestination.wallet.rawValue }
             )
         }
-        .onOpenURL { url in
-            guard let link = TaskifyWidgetLink(url: url) else { return }
-            switch link {
-            case .upcoming: destination = "upcoming"
-            case .event(_, let boardID): destination = boardID
-            case .boards: destination = model.selectedBoardID
-            case .task(let id, let boardID): destination = boardID; selectedTaskID = id
-            case .quickAdd(let boardID, _): destination = boardID ?? model.selectedBoardID; creatingTask = true
-            }
+        .onContinueUserActivity(CSSearchableItemActionType, perform: openSearchableItem)
+        .onOpenURL(perform: openWhenReady)
+    }
+
+    private func openSearchableItem(_ activity: NSUserActivity) {
+        if let url = activity.contentAttributeSet?.contentURL {
+            openWhenReady(url)
+            return
+        }
+        // Compatibility fallback for an item produced before C11-4 attached a content URL.
+        guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+              let task = model.task(withID: id) else { return }
+        openWhenReady(TaskifyWidgetLink.task(id: id, boardID: task.boardID).url)
+    }
+
+    private func openWhenReady(_ url: URL) {
+        guard !model.isLoading else {
+            pendingLink = url
+            return
+        }
+        pendingLink = nil
+        open(url)
+    }
+
+    private func open(_ url: URL) {
+        guard let link = TaskifyWidgetLink(url: url) else { return }
+        switch link {
+        case .upcoming: destination = "upcoming"
+        case .event(_, let boardID): destination = boardID
+        case .boards: destination = model.selectedBoardID
+        case .task(let id, let boardID): destination = boardID; selectedTaskID = id
+        case .quickAdd(let boardID, _): destination = boardID ?? model.selectedBoardID; creatingTask = true
         }
     }
 
@@ -201,7 +252,11 @@ struct MacWorkspace: View {
             case .chat: MacChatView(search: search, drafts: $chatDrafts, scrollPositions: $chatScrollPositions, selection: $chatSelection)
             case .wallet:
                 if walletEnabled {
-                    MacWalletView()
+                    if isWalletRecoveryMode {
+                        WalletRecoveryView()
+                    } else {
+                        MacWalletView()
+                    }
                 } else {
                     MacAgendaView(todayOnly: true, search: search, selectedTaskID: $selectedTaskID, edit: { editingTask = $0 })
                 }
@@ -231,6 +286,7 @@ struct MacTaskInspector: View {
                 Text(task.title).font(.title2.bold()).textSelection(.enabled)
                 Button(task.completed ? "Mark Incomplete" : "Complete Task", systemImage: task.completed ? "arrow.uturn.backward" : "checkmark.circle") { model.toggleCompletion(task.id) }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("complete-task-button")
                 Divider()
                 if let date = task.dueDate, task.dueDateEnabled { Label(date.formatted(date: .abbreviated, time: task.dueTimeEnabled ? .shortened : .omitted), systemImage: "calendar") }
                 if let priority = task.priority { Label(String(describing: priority).capitalized, systemImage: "flag") }
@@ -251,6 +307,7 @@ struct MacTaskInspector: View {
                     }
                 }
                 Button("Edit Task…", action: edit)
+                    .accessibilityIdentifier("edit-task-button")
                 Button("Share Task…") { sharing = true }
                 Spacer()
                 Text("Created \(task.createdAt.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.tertiary)

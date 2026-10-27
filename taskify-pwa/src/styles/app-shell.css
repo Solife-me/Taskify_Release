@@ -2305,3 +2305,17 @@ html.light .control-matrix__btn[data-hovered="true"] {
 .text-accent {
   color: var(--accent);
 }
+
+/* Desktop-only pieces (styles/desktop-layout.css shows them): on phones the header's board
+   picker and the bottom tab bar do these jobs. */
+.app-header__board-title,
+.app-header__board-share,
+.rail-boards,
+.board-scroll-edge {
+  display: none;
+}
+
+/* Upcoming's calendar beside the day-by-day list is a desktop navigator (desktop-layout.css). */
+.upcoming-details__calendar {
+  display: none;
+}

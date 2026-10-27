@@ -1,17 +1,13 @@
-// @ts-nocheck
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nip19 } from "nostr-tools";
-import { normalizeCalendarEventPayload, normalizeDelimitedValues, normalizeLocationList } from "taskify-core";
+import { todayDateKey } from "taskify-core";
 
 // Sub-sheet components
-import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
-import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "../recurrence/RecurrencePicker";
 
 // Domain types
 import type {
   CalendarEvent,
-  CalendarEventBase,
   CalendarEventParticipant,
   Board,
   Recurrence,
@@ -24,14 +20,9 @@ import type { CalendarRsvpStatus, CalendarRsvpFb } from "../../lib/privateCalend
 // Reminder utilities (from domains)
 import {
   DEFAULT_DATE_REMINDER_TIME,
-  buildReminderOptions,
-  reminderPresetToMinutes,
-  reminderPresetIdForMode,
-  formatReminderLabel,
   normalizeReminderTime,
   type ReminderPreset,
   type ReminderPresetMode,
-  type ReminderOption,
 } from "../../domains/dateTime/reminderUtils";
 
 // Date utilities (from domains)
@@ -40,16 +31,9 @@ import {
   isoTimePart,
   isoFromDateTime,
   parseDateKey,
-  scrollWheelColumnToIndex,
-  getWheelNearestIndex,
-  scheduleWheelSnap,
-  handleWheelPickerScroll,
   resolveSystemTimeZone,
   normalizeTimeZone,
   formatTimeLabel,
-  parseTimePickerValue,
-  formatTimePickerValue,
-  currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
 // Timezone utilities (from domains)
@@ -68,12 +52,10 @@ import {
 // Contact utilities
 import {
   contactPrimaryName,
-  formatContactNpub,
   contactHasNpub,
 } from "../../lib/contacts";
 import {
   normalizeNostrPubkeyHex,
-  contactInitials,
 } from "../../domains/tasks/contactUtils";
 
 // Nostr key utilities
@@ -88,7 +70,6 @@ import {
 } from "../../lib/shareInbox";
 
 // Document utilities
-import { ensureDocumentPreview } from "../../lib/documents";
 
 // Relay defaults
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
@@ -100,16 +81,19 @@ import { useToast } from "../../context/ToastContext";
 import { Modal } from "../Modal";
 import { ActionSheet } from "../../components/ActionSheet";
 import { DatePickerCalendar } from "../../domains/dateTime/calendarPickerHook";
+import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
+import { ReminderChips } from "../editor/fields/ReminderChips";
+import { RepeatField } from "../editor/fields/RepeatField";
+import { AttachmentList } from "../editor/fields/AttachmentList";
+import { ContactRow } from "../editor/fields/ContactRow";
+import { ContactShareSheet } from "../editor/fields/ContactShareSheet";
+import { buildEventFromEditor, eventEditorStart } from "../../domains/calendar/eventEditorModel";
+import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
 import { readDocumentsFromFiles } from "../../lib/documents";
 
 // Shared primitive constants (appTypes)
-import {
-  ISO_DATE_PATTERN,
-  HOURS_12,
-  MINUTES,
-  MERIDIEMS,
-  type Meridiem,
-} from "../../domains/appTypes";
+
+
 
 // Local type and helpers originally co-located in App.tsx
 type CalendarRsvpEnvelope = {
@@ -122,14 +106,6 @@ type CalendarRsvpEnvelope = {
 };
 
 const R_NONE: Recurrence = { type: "none" };
-
-function labelOf(r: Recurrence): string {
-  if (r.type === "daily") return "Every day";
-  if (r.type === "weekly") return "Weekly";
-  if (r.type === "every") return `Every ${r.n} ${r.unit}${r.n > 1 ? "s" : ""}`;
-  if (r.type === "monthlyDay") return `Monthly (day ${r.day})`;
-  return "None";
-}
 
 function EventEditModal({
   event,
@@ -174,10 +150,6 @@ function EventEditModal({
   const [whenPicker, setWhenPicker] = useState<EventWhenPicker>(null);
   const [timeZoneSheetOpen, setTimeZoneSheetOpen] = useState(false);
   const [boardLocationExpanded, setBoardLocationExpanded] = useState(false);
-  const [repeatSheetOpen, setRepeatSheetOpen] = useState(false);
-  const [repeatCustomSheetOpen, setRepeatCustomSheetOpen] = useState(false);
-  const [endRepeatSheetOpen, setEndRepeatSheetOpen] = useState(false);
-  const [recurrenceModalOpen, setRecurrenceModalOpen] = useState(false);
   const documentInputRef = useRef<HTMLInputElement>(null);
 
   const participantValidation = useMemo(() => {
@@ -296,64 +268,25 @@ function EventEditModal({
     }
   }, [editableBoards, selectedBoardId]);
 
-  const initialAllDay = event.kind === "date";
+  const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
+  const eventStart = useMemo(() => eventEditorStart(event, systemTimeZone), [event, systemTimeZone]);
+  const initialAllDay = eventStart.allDay;
   const [allDay, setAllDay] = useState(initialAllDay);
   const hasEventTime = !allDay;
-  const initialReminderTime = normalizeReminderTime(event.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
+  const initialReminderTime = eventStart.reminderTime;
 
   const [reminderSelection, setReminderSelection] = useState<ReminderPreset[]>(() => {
     return Array.isArray(event.reminders) ? event.reminders : [];
   });
   const [reminderTime, setReminderTime] = useState(initialReminderTime);
   const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
-  const [customReminderSheetOpen, setCustomReminderSheetOpen] = useState(false);
 
-  const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
-  const initialStartTzid = event.kind === "time" ? (normalizeTimeZone(event.startTzid) ?? systemTimeZone) : systemTimeZone;
-  const initialEndTzid = event.kind === "time" ? (normalizeTimeZone(event.endTzid) ?? normalizeTimeZone(event.startTzid) ?? systemTimeZone) : systemTimeZone;
-  const [startTzid, setStartTzid] = useState(initialStartTzid);
-  const [endTzid, setEndTzid] = useState(initialEndTzid);
-
-  const initialStartDate = event.kind === "date" ? event.startDate : isoDatePart(event.startISO, initialStartTzid);
-  const initialEndDate = event.kind === "date"
-    ? (event.endDate || event.startDate)
-    : (() => {
-        if (!event.endISO) {
-          const startMs = Date.parse(event.startISO);
-          if (Number.isNaN(startMs)) return initialStartDate;
-          return isoDatePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
-        }
-        return isoDatePart(event.endISO, initialEndTzid);
-      })();
-  const [startDate, setStartDate] = useState(initialStartDate);
-  const [endDate, setEndDate] = useState(initialEndDate);
-
-  const initialStartTime = event.kind === "time" ? isoTimePart(event.startISO, initialStartTzid) : currentTimeValue(0, initialStartTzid);
-  const initialEndTime = event.kind === "time"
-    ? (() => {
-        if (event.endISO) return isoTimePart(event.endISO, initialEndTzid);
-        const startMs = Date.parse(event.startISO);
-        if (Number.isNaN(startMs)) return currentTimeValue(60, initialStartTzid);
-        return isoTimePart(new Date(startMs + 60 * 60 * 1000).toISOString(), initialEndTzid);
-      })()
-    : currentTimeValue(60, initialStartTzid);
-  const [startTime, setStartTime] = useState(initialStartTime);
-  const [endTime, setEndTime] = useState(initialEndTime);
-  const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerMinuteColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerMeridiemColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerHourScrollFrame = useRef<number | null>(null);
-  const timePickerMinuteScrollFrame = useRef<number | null>(null);
-  const timePickerMeridiemScrollFrame = useRef<number | null>(null);
-  const timePickerHourSnapTimeout = useRef<number | null>(null);
-  const timePickerMinuteSnapTimeout = useRef<number | null>(null);
-  const timePickerMeridiemSnapTimeout = useRef<number | null>(null);
-  const [timePickerHour, setTimePickerHour] = useState(() => parseTimePickerValue(startTime, "09:00").hour);
-  const [timePickerMinute, setTimePickerMinute] = useState(() => parseTimePickerValue(startTime, "09:00").minute);
-  const [timePickerMeridiem, setTimePickerMeridiem] = useState<Meridiem>(() => parseTimePickerValue(startTime, "09:00").meridiem);
-  const timePickerHourValueRef = useRef(0);
-  const timePickerMinuteValueRef = useRef(0);
-  const timePickerMeridiemValueRef = useRef<Meridiem>("AM");
+  const [startTzid, setStartTzid] = useState(eventStart.startTzid);
+  const [endTzid, setEndTzid] = useState(eventStart.endTzid);
+  const [startDate, setStartDate] = useState(eventStart.startDate);
+  const [endDate, setEndDate] = useState(eventStart.endDate);
+  const [startTime, setStartTime] = useState(eventStart.startTime);
+  const [endTime, setEndTime] = useState(eventStart.endTime);
 
   const [selectedColumnId, setSelectedColumnId] = useState<string>(() => {
     if (!selectedBoard || !isListLikeBoard(selectedBoard)) return "";
@@ -378,17 +311,6 @@ function EventEditModal({
   }, [selectedBoard, selectedColumnId]);
 
   const [rule, setRule] = useState<Recurrence>(event.recurrence ?? R_NONE);
-  const repeatLabel = useMemo(() => (rule.type === "none" ? "Never" : labelOf(rule)), [rule]);
-  const endRepeatSummary = useMemo(() => {
-    if (!rule.untilISO) return "Never";
-    const timeZone = allDay ? "UTC" : (normalizeTimeZone(startTzid) ?? systemTimeZone);
-    const dateKey = isoDatePart(rule.untilISO, timeZone);
-    if (!ISO_DATE_PATTERN.test(dateKey)) return "Custom date";
-    const parsed = new Date(`${dateKey}T00:00:00`);
-    if (Number.isNaN(parsed.getTime())) return "Custom date";
-    return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-  }, [allDay, rule.untilISO, startTzid, systemTimeZone]);
-
   const { options: timeZoneOptions, map: timeZoneOptionMap } = useMemo(() => getTimeZoneOptions(), []);
   const safeStartTzid = useMemo(
     () => normalizeTimeZone(startTzid) ?? systemTimeZone,
@@ -422,7 +344,7 @@ function EventEditModal({
   const reminderTimeLabel = useMemo(
     () =>
       formatTimeLabel(
-        isoFromDateTime(startDate || isoDatePart(new Date().toISOString()), reminderTime || DEFAULT_DATE_REMINDER_TIME, systemTimeZone),
+        isoFromDateTime(startDate || todayDateKey(), reminderTime || DEFAULT_DATE_REMINDER_TIME, systemTimeZone),
         systemTimeZone,
       ),
     [reminderTime, startDate, systemTimeZone],
@@ -447,27 +369,10 @@ function EventEditModal({
   }, [participantValidation.normalized.length]);
 
   const reminderPresetMode: ReminderPresetMode = hasEventTime ? "timed" : "date";
-  const reminderOptions = useMemo(
-    () => buildReminderOptions(reminderSelection, reminderPresetMode),
+  const reminderSummary = useMemo(
+    () => reminderSelectionSummary(reminderSelection, reminderPresetMode),
     [reminderPresetMode, reminderSelection],
   );
-  const reminderPresetMap = useMemo(() => {
-    const map = new Map<ReminderPreset, ReminderOption>();
-    for (const opt of reminderOptions) map.set(opt.id, opt);
-    return map;
-  }, [reminderOptions]);
-  const reminderSummary = useMemo(() => {
-    if (!reminderSelection.length) return "";
-    return reminderSelection
-      .map((id) => {
-        const preset = reminderPresetMap.get(id);
-        if (preset) return preset.badge;
-        const minutes = reminderPresetToMinutes(id);
-        if (!Number.isFinite(minutes)) return String(id);
-        return formatReminderLabel(minutes).badge;
-      })
-      .join(", ");
-  }, [reminderPresetMap, reminderSelection]);
   const reminderRowSummary = useMemo(() => {
     if (!reminderSelection.length) return "None";
     return reminderSummary;
@@ -482,48 +387,6 @@ function EventEditModal({
     const iso = isoFromDateTime(startDate, reminderClock, systemTimeZone);
     return Number.isNaN(Date.parse(iso)) ? null : iso;
   }, [hasEventTime, reminderTime, safeStartTzid, startDate, startTime, systemTimeZone]);
-
-  function toggleReminder(id: ReminderPreset) {
-    if (isReadOnly) return;
-    setReminderSelection((prev) => {
-      const exists = prev.includes(id);
-      const targetMinutes = reminderPresetToMinutes(id);
-      const next = exists
-        ? prev.filter((item) => item !== id)
-        : [...prev.filter((item) => reminderPresetToMinutes(item) !== targetMinutes), id];
-      return next.sort((a, b) =>
-        reminderPresetMode === "date"
-          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-      );
-    });
-  }
-
-  const handleAddCustomReminder = useCallback(() => {
-    if (isReadOnly) return;
-    setCustomReminderSheetOpen(true);
-  }, [isReadOnly]);
-
-  const handleApplyCustomReminder = useCallback((minutesBefore: number) => {
-    const id = reminderPresetIdForMode(minutesBefore, reminderPresetMode);
-    setReminderSelection((prev) => {
-      const targetMinutes = reminderPresetToMinutes(id);
-      const nextBase = prev.filter((item) => reminderPresetToMinutes(item) !== targetMinutes || item === id);
-      if (nextBase.includes(id)) {
-        return nextBase.sort((a, b) =>
-          reminderPresetMode === "date"
-            ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-            : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-        );
-      }
-      const next = [...nextBase, id];
-      return next.sort((a, b) =>
-        reminderPresetMode === "date"
-          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-      );
-    });
-  }, [reminderPresetMode]);
 
   const urlValue = useMemo(() => {
     const lines = (referencesText || "")
@@ -588,150 +451,6 @@ function EventEditModal({
     setWhenPicker((prev) => (prev === "startTime" || prev === "endTime" ? null : prev));
   }, [allDay]);
 
-  useEffect(() => {
-    if (!reminderPickerExpanded) {
-      setCustomReminderSheetOpen(false);
-    }
-  }, [reminderPickerExpanded]);
-
-  useEffect(() => {
-    if (whenPicker !== "startTime" && whenPicker !== "endTime" && whenPicker !== "reminderTime") return;
-    const source = whenPicker === "endTime" ? endTime : whenPicker === "reminderTime" ? reminderTime : startTime;
-    const fallback = whenPicker === "endTime" ? "10:00" : "09:00";
-    const parsed = parseTimePickerValue(source, fallback);
-    setTimePickerHour(parsed.hour);
-    setTimePickerMinute(parsed.minute);
-    setTimePickerMeridiem(parsed.meridiem);
-  }, [endTime, reminderTime, startTime, whenPicker]);
-
-  useEffect(() => {
-    timePickerHourValueRef.current = timePickerHour;
-  }, [timePickerHour]);
-  useEffect(() => {
-    timePickerMinuteValueRef.current = timePickerMinute;
-  }, [timePickerMinute]);
-  useEffect(() => {
-    timePickerMeridiemValueRef.current = timePickerMeridiem;
-  }, [timePickerMeridiem]);
-
-  useEffect(
-    () => () => {
-      if (timePickerHourScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerHourScrollFrame.current);
-      }
-      if (timePickerMinuteScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerMinuteScrollFrame.current);
-      }
-      if (timePickerMeridiemScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
-      }
-      const snapRefs = [timePickerHourSnapTimeout, timePickerMinuteSnapTimeout, timePickerMeridiemSnapTimeout];
-      for (const ref of snapRefs) {
-        if (ref.current != null) {
-          window.clearTimeout(ref.current);
-          ref.current = null;
-        }
-      }
-    },
-    [],
-  );
-
-  useLayoutEffect(() => {
-    if (whenPicker !== "startTime" && whenPicker !== "endTime" && whenPicker !== "reminderTime") return;
-    const hourIndex = HOURS_12.indexOf(timePickerHour);
-    if (hourIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
-    }
-    const minuteIndex = MINUTES.indexOf(timePickerMinute);
-    if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
-    }
-    const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
-    if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
-    }
-  }, [whenPicker, timePickerHour, timePickerMinute, timePickerMeridiem]);
-
-  const setTimePickerFromParts = useCallback(
-    (hour: number, minute: number, meridiem: Meridiem) => {
-      const nextValue = formatTimePickerValue(hour, minute, meridiem);
-      setTimePickerHour(hour);
-      setTimePickerMinute(minute);
-      setTimePickerMeridiem(meridiem);
-      if (whenPicker === "endTime") {
-        setEndTime(nextValue);
-      } else if (whenPicker === "reminderTime") {
-        setReminderTime(nextValue);
-      } else {
-        setStartTime(nextValue);
-      }
-    },
-    [whenPicker],
-  );
-
-  const handleTimePickerHourScroll = useCallback(() => {
-    const column = timePickerHourColumnRef.current;
-    if (!column) return;
-    if (timePickerHourScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerHourScrollFrame.current);
-    }
-    timePickerHourScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
-      if (clampedIndex == null) return;
-      const nextHour = HOURS_12[clampedIndex];
-      if (nextHour) {
-        timePickerHourValueRef.current = nextHour;
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-
-  const handleTimePickerMinuteScroll = useCallback(() => {
-    const column = timePickerMinuteColumnRef.current;
-    if (!column) return;
-    if (timePickerMinuteScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerMinuteScrollFrame.current);
-    }
-    timePickerMinuteScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
-      if (clampedIndex == null) return;
-      const nextMinute = MINUTES[clampedIndex];
-      if (Number.isFinite(nextMinute)) {
-        timePickerMinuteValueRef.current = nextMinute as number;
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-
-  const handleTimePickerMeridiemScroll = useCallback(() => {
-    const column = timePickerMeridiemColumnRef.current;
-    if (!column) return;
-    if (timePickerMeridiemScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
-    }
-    timePickerMeridiemScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
-      if (clampedIndex == null) return;
-      const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem) {
-        timePickerMeridiemValueRef.current = nextMeridiem;
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-  const handleTimePickerWheel = useCallback((event: React.WheelEvent<HTMLElement>) => {
-    handleWheelPickerScroll(event, [
-      { ref: timePickerHourColumnRef, optionCount: HOURS_12.length },
-      { ref: timePickerMinuteColumnRef, optionCount: MINUTES.length },
-      { ref: timePickerMeridiemColumnRef, optionCount: MERIDIEMS.length },
-    ]);
-  }, []);
 
   useEffect(() => {
     if (endDate < startDate) setEndDate(startDate);
@@ -750,101 +469,36 @@ function EventEditModal({
     setEndTime(isoTimePart(nextEnd, safeEndTzid));
   }, [allDay, endDate, endTime, safeEndTzid, safeStartTzid, startDate, startTime]);
 
-  const normalizeHashtags = (raw: string): string[] | undefined =>
-    normalizeDelimitedValues(raw, /[,\n]+/g, { stripPrefix: "#" });
-
-  const normalizeReferences = (raw: string): string[] | undefined =>
-    normalizeDelimitedValues(raw, /\n+/g);
-
-  const normalizeLocations = (list: string[]): string[] | undefined => normalizeLocationList(list);
-
-  const buildDraft = (): CalendarEvent => {
-    const boardId = selectedBoardId;
-    const columnId = selectedBoard && isListLikeBoard(selectedBoard) ? (selectedColumnId || undefined) : undefined;
-    const normalizedTitle = title.trim() || "Untitled";
-    const normalizedDescription = description.trim();
-    const derivedSummary = (normalizedDescription || (event.summary || "").trim()).trim();
-    const normalizedDocuments = documents.map(ensureDocumentPreview);
-    const normalizedImage = image.trim();
-    const normalizedGeohash = geohash.trim();
-    const normalizedParticipants = participantValidation.normalized;
-
-    const base: CalendarEventBase = {
-      id: event.id,
-      boardId,
-      columnId,
-      order: event.order,
-      title: normalizedTitle,
-      ...(derivedSummary ? { summary: derivedSummary } : {}),
-      ...(normalizedDescription ? { description: normalizedDescription } : {}),
-      ...(normalizedDocuments.length ? { documents: normalizedDocuments } : {}),
-      ...(normalizedImage ? { image: normalizedImage } : {}),
-      ...(normalizeLocations(locations) ? { locations: normalizeLocations(locations) } : {}),
-      ...(normalizedGeohash ? { geohash: normalizedGeohash } : {}),
-      ...(normalizedParticipants.length ? { participants: normalizedParticipants } : {}),
-      ...(normalizeHashtags(hashtagsText) ? { hashtags: normalizeHashtags(hashtagsText) } : {}),
-      ...(normalizeReferences(referencesText) ? { references: normalizeReferences(referencesText) } : {}),
-      ...(reminderSelection.length ? { reminders: reminderSelection.slice() } : {}),
-      ...(allDay ? { reminderTime: normalizeReminderTime(reminderTime) ?? DEFAULT_DATE_REMINDER_TIME } : {}),
-      ...(rule && rule.type !== "none" ? { recurrence: rule, seriesId: event.seriesId || event.id } : {}),
-      ...(event.readOnly ? { readOnly: true } : {}),
-      ...(event.originBoardId ? { originBoardId: event.originBoardId } : {}),
-      ...(event.eventKey ? { eventKey: event.eventKey } : {}),
-      ...(event.inviteTokens ? { inviteTokens: event.inviteTokens } : {}),
-      ...(event.canonicalAddress ? { canonicalAddress: event.canonicalAddress } : {}),
-      ...(event.viewAddress ? { viewAddress: event.viewAddress } : {}),
-      ...(event.inviteToken ? { inviteToken: event.inviteToken } : {}),
-      ...(event.inviteRelays ? { inviteRelays: event.inviteRelays } : {}),
-    };
-
-    if (allDay) {
-      const core = normalizeCalendarEventPayload({
-        kind: "date",
-        title: normalizedTitle,
+  const buildDraft = (): CalendarEvent =>
+    buildEventFromEditor(
+      event,
+      eventStart,
+      {
+        title,
+        description,
+        documents,
+        image,
+        locations,
+        geohash,
+        participants: participantValidation.normalized,
+        hashtagsText,
+        referencesText,
+        reminders: reminderSelection,
+        reminderTime,
+        rule,
+        boardId: selectedBoardId,
+        board: selectedBoard,
+        columnId: selectedColumnId,
+        allDay,
         startDate,
         endDate,
-      });
-      if (!core) return { ...base, kind: "date", startDate } as CalendarEvent;
-      return {
-        ...base,
-        kind: "date",
-        startDate: core.startDate || startDate,
-        ...(core.endDate ? { endDate: core.endDate } : {}),
-      };
-    }
-
-    const normalizedStartTz = normalizeTimeZone(startTzid) ?? systemTimeZone;
-    const normalizedEndTz = normalizeTimeZone(endTzid) ?? normalizedStartTz;
-    const startISO = isoFromDateTime(startDate, startTime || "09:00", normalizedStartTz);
-    const endISO = isoFromDateTime(endDate || startDate, endTime || "10:00", normalizedEndTz);
-
-    const core = normalizeCalendarEventPayload({
-      kind: "time",
-      title: normalizedTitle,
-      startISO,
-      endISO,
-      startTzid: normalizedStartTz,
-      endTzid: normalizedEndTz,
-    });
-    if (!core) {
-      return {
-        ...base,
-        kind: "time",
-        startISO,
-        ...(normalizedStartTz ? { startTzid: normalizedStartTz } : {}),
-        ...(normalizedEndTz ? { endTzid: normalizedEndTz } : {}),
-      } as CalendarEvent;
-    }
-
-    return {
-      ...base,
-      kind: "time",
-      startISO: core.startISO || startISO,
-      ...(core.endISO ? { endISO: core.endISO } : {}),
-      ...(core.startTzid ? { startTzid: core.startTzid } : {}),
-      ...(core.endTzid ? { endTzid: core.endTzid } : {}),
-    };
-  };
+        startTime,
+        endTime,
+        startTzid,
+        endTzid,
+      },
+      systemTimeZone,
+    );
 
   const handleSave = () => {
     if (isReadOnly) return;
@@ -1037,31 +691,9 @@ function EventEditModal({
 	    }
 	  };
 
-	  const handleRepeatSelect = useCallback((next: Recurrence) => {
-	    setRule((prev) => {
-	      if (prev.untilISO) {
-	        return { ...next, untilISO: prev.untilISO };
-	      }
-	      return next;
-	    });
-	    setRepeatSheetOpen(false);
-	    setRepeatCustomSheetOpen(false);
-	  }, []);
-
-	  const handleOpenCustomRepeat = useCallback(() => {
-	    setRepeatSheetOpen(false);
-	    setRepeatCustomSheetOpen(true);
-	  }, []);
-
-	  const handleOpenAdvancedRepeat = useCallback(() => {
-	    setRepeatSheetOpen(false);
-	    setRepeatCustomSheetOpen(false);
-	    setRecurrenceModalOpen(true);
-	  }, []);
-
 	  return (
 	    <>
-	      <Modal onClose={onCancel} showClose={false} variant="fullscreen">
+	      <Modal onClose={onCancel} showClose={false} variant="fullscreen" desktop="pane">
         <div className="edit-modal">
         <div className="edit-sheet__header">
           <button
@@ -1178,35 +810,12 @@ function EventEditModal({
 			                Attach
 			              </button>
 			            </div>
-			            {documents.length > 0 && (
-			              <ul className="space-y-1">
-			                {documents.map((doc) => (
-			                  <li key={doc.id} className="doc-edit-row">
-			                    <div className="doc-edit-row__info">
-			                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
-			                      <div className="doc-edit-row__meta">{doc.kind.toUpperCase()}</div>
-			                    </div>
-			                    <div className="doc-edit-row__actions">
-			                      <button
-			                        type="button"
-			                        className="ghost-button button-sm pressable"
-			                        onClick={() => onPreviewDocument?.(event, doc)}
-			                      >
-			                        Preview
-			                      </button>
-			                      <button
-			                        type="button"
-			                        className="ghost-button button-sm pressable text-rose-500"
-			                        onClick={() => setDocuments((prev) => prev.filter((item) => item.id !== doc.id))}
-			                        disabled={isReadOnly}
-			                      >
-			                        Remove
-			                      </button>
-			                    </div>
-			                  </li>
-			                ))}
-			              </ul>
-			            )}
+			            <AttachmentList
+			              documents={documents}
+			              onPreview={(doc) => onPreviewDocument?.(event, doc)}
+			              onRemove={(id) => setDocuments((prev) => prev.filter((item) => item.id !== id))}
+			              disabled={isReadOnly}
+			            />
 			          </div>
 			        </section>
 
@@ -1265,71 +874,7 @@ function EventEditModal({
 	          )}
 	          {!allDay && whenPicker === "startTime" && (
 	            <div className="edit-card__detail space-y-2">
-	              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
-	                <div
-	                  className="edit-time-picker__column"
-	                  ref={timePickerHourColumnRef}
-	                  onScroll={handleTimePickerHourScroll}
-	                  role="listbox"
-	                  aria-label="Select hour"
-	                >
-	                  {HOURS_12.map((hour, idx) => (
-	                    <div
-	                      key={`start-hour-${hour}`}
-	                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerHour === hour}
-	                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-	                    >
-	                      {String(hour).padStart(2, "0")}
-	                    </div>
-	                  ))}
-	                </div>
-	                <div className="edit-time-picker__separator" aria-hidden="true">
-	                  :
-	                </div>
-	                <div
-	                  className="edit-time-picker__column"
-	                  ref={timePickerMinuteColumnRef}
-	                  onScroll={handleTimePickerMinuteScroll}
-	                  role="listbox"
-	                  aria-label="Select minute"
-	                >
-	                  {MINUTES.map((minute, idx) => (
-	                    <div
-	                      key={`start-minute-${minute}`}
-	                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerMinute === minute}
-	                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-	                    >
-	                      {String(minute).padStart(2, "0")}
-	                    </div>
-	                  ))}
-	                </div>
-	                <div
-	                  className="edit-time-picker__column edit-time-picker__column--meridiem"
-	                  ref={timePickerMeridiemColumnRef}
-	                  onScroll={handleTimePickerMeridiemScroll}
-	                  role="listbox"
-	                  aria-label="Select AM or PM"
-	                >
-	                  {MERIDIEMS.map((label, idx) => (
-	                    <div
-	                      key={`start-meridiem-${label}`}
-	                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerMeridiem === label}
-	                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-	                    >
-	                      {label}
-	                    </div>
-	                  ))}
-	                </div>
-	              </div>
+	              <WheelTimePicker value={startTime} fallback="09:00" onChange={setStartTime} />
 	              <button
 	                type="button"
 	                className="edit-row edit-row--interactive w-full text-left"
@@ -1383,71 +928,7 @@ function EventEditModal({
 	          )}
 	          {!allDay && whenPicker === "endTime" && (
 	            <div className="edit-card__detail space-y-2">
-	              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
-	                <div
-	                  className="edit-time-picker__column"
-	                  ref={timePickerHourColumnRef}
-	                  onScroll={handleTimePickerHourScroll}
-	                  role="listbox"
-	                  aria-label="Select hour"
-	                >
-	                  {HOURS_12.map((hour, idx) => (
-	                    <div
-	                      key={`end-hour-${hour}`}
-	                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerHour === hour}
-	                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-	                    >
-	                      {String(hour).padStart(2, "0")}
-	                    </div>
-	                  ))}
-	                </div>
-	                <div className="edit-time-picker__separator" aria-hidden="true">
-	                  :
-	                </div>
-	                <div
-	                  className="edit-time-picker__column"
-	                  ref={timePickerMinuteColumnRef}
-	                  onScroll={handleTimePickerMinuteScroll}
-	                  role="listbox"
-	                  aria-label="Select minute"
-	                >
-	                  {MINUTES.map((minute, idx) => (
-	                    <div
-	                      key={`end-minute-${minute}`}
-	                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerMinute === minute}
-	                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-	                    >
-	                      {String(minute).padStart(2, "0")}
-	                    </div>
-	                  ))}
-	                </div>
-	                <div
-	                  className="edit-time-picker__column edit-time-picker__column--meridiem"
-	                  ref={timePickerMeridiemColumnRef}
-	                  onScroll={handleTimePickerMeridiemScroll}
-	                  role="listbox"
-	                  aria-label="Select AM or PM"
-	                >
-	                  {MERIDIEMS.map((label, idx) => (
-	                    <div
-	                      key={`end-meridiem-${label}`}
-	                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-	                      data-picker-index={idx}
-	                      role="option"
-	                      aria-selected={timePickerMeridiem === label}
-	                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-	                    >
-	                      {label}
-	                    </div>
-	                  ))}
-	                </div>
-	              </div>
+	              <WheelTimePicker value={endTime} fallback="10:00" onChange={setEndTime} />
 	              <button
 	                type="button"
 	                className="edit-row edit-row--interactive w-full text-left"
@@ -1466,32 +947,14 @@ function EventEditModal({
 		        </section>
 
 		        <section className="edit-card">
-		          <button
-		            type="button"
-		            className="edit-row edit-row--interactive w-full text-left"
-		            onClick={() => setRepeatSheetOpen(true)}
+		          <RepeatField
+		            rule={rule}
+		            onChange={setRule}
+		            anchorDate={startDate}
+		            timeZone={allDay ? "UTC" : safeStartTzid}
 		            disabled={isReadOnly}
-		          >
-	            <div className="edit-row__content">
-	              <div className="edit-row__label">Repeat</div>
-	            </div>
-		            <div className="edit-row__value">{repeatLabel}</div>
-		            <span className="edit-row__chevron" aria-hidden="true">›</span>
-		          </button>
-              {rule.type !== "none" && (
-                <button
-                  type="button"
-                  className="edit-row edit-row--interactive w-full text-left"
-                  onClick={() => setEndRepeatSheetOpen(true)}
-                  disabled={isReadOnly}
-                >
-                  <div className="edit-row__content">
-                    <div className="edit-row__label">End Repeat</div>
-                  </div>
-                  <div className="edit-row__value">{endRepeatSummary}</div>
-                  <span className="edit-row__chevron" aria-hidden="true">›</span>
-                </button>
-              )}
+		            rowClassName="edit-row edit-row--interactive w-full text-left"
+		          />
 		        </section>
 
 		        <section className="edit-card">
@@ -1603,117 +1066,24 @@ function EventEditModal({
 		          </button>
 		          {reminderPickerExpanded && (
 		            <div className="edit-card__detail space-y-2">
-		              <div className="flex flex-wrap gap-1.5">
-		                {reminderOptions.map((opt) => {
-		                  const active = reminderSelection.includes(opt.id);
-		                  const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-		                  return (
-			                    <button
-			                      key={opt.id}
-			                      type="button"
-			                      className={cls}
-			                      onClick={() => toggleReminder(opt.id)}
-			                      disabled={isReadOnly}
-			                      title={opt.label}
-			                    >
-			                      {opt.badge}
-			                    </button>
-			                  );
-		                })}
-			                <button
-			                  type="button"
-			                  className="ghost-button button-sm pressable"
-			                  onClick={handleAddCustomReminder}
-			                  disabled={isReadOnly}
-			                  title="Add a custom reminder"
-			                >
-			                  Custom…
-			                </button>
-			              </div>
-                    {allDay && (
-                      <div className="space-y-2">
-                        <div className="text-xs text-secondary">Reminder time (current timezone)</div>
-                        <button
-                          type="button"
-                          className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
-                            whenPicker === "reminderTime" ? "text-primary" : "text-secondary"
-                          }`}
-                          onClick={() => toggleWhenPicker("reminderTime")}
-                          aria-pressed={whenPicker === "reminderTime"}
-                          disabled={isReadOnly}
-                        >
-                          {reminderTimeLabel}
-                        </button>
-                        {whenPicker === "reminderTime" && (
-                          <div className="edit-time-picker" role="group" aria-label="Select reminder time" onWheel={handleTimePickerWheel}>
-                            <div
-                              className="edit-time-picker__column"
-                              ref={timePickerHourColumnRef}
-                              onScroll={handleTimePickerHourScroll}
-                              role="listbox"
-                              aria-label="Select hour"
-                            >
-                              {HOURS_12.map((hour, idx) => (
-                                <div
-                                  key={`reminder-hour-${hour}`}
-                                  className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-                                  data-picker-index={idx}
-                                  role="option"
-                                  aria-selected={timePickerHour === hour}
-                                  onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-                                >
-                                  {String(hour).padStart(2, "0")}
-                                </div>
-                              ))}
-                            </div>
-                            <div className="edit-time-picker__separator" aria-hidden="true">
-                              :
-                            </div>
-                            <div
-                              className="edit-time-picker__column"
-                              ref={timePickerMinuteColumnRef}
-                              onScroll={handleTimePickerMinuteScroll}
-                              role="listbox"
-                              aria-label="Select minute"
-                            >
-                              {MINUTES.map((minute, idx) => (
-                                <div
-                                  key={`reminder-minute-${minute}`}
-                                  className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-                                  data-picker-index={idx}
-                                  role="option"
-                                  aria-selected={timePickerMinute === minute}
-                                  onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-                                >
-                                  {String(minute).padStart(2, "0")}
-                                </div>
-                              ))}
-                            </div>
-                            <div
-                              className="edit-time-picker__column edit-time-picker__column--meridiem"
-                              ref={timePickerMeridiemColumnRef}
-                              onScroll={handleTimePickerMeridiemScroll}
-                              role="listbox"
-                              aria-label="Select AM or PM"
-                            >
-                              {MERIDIEMS.map((label, idx) => (
-                                <div
-                                  key={`reminder-meridiem-${label}`}
-                                  className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-                                  data-picker-index={idx}
-                                  role="option"
-                                  aria-selected={timePickerMeridiem === label}
-                                  onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-                                >
-                                  {label}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-			            </div>
+		              <ReminderChips
+		                selection={reminderSelection}
+		                mode={reminderPresetMode}
+		                onChange={setReminderSelection}
+		                disabled={isReadOnly}
+		                anchorISO={reminderAnchorISO}
+		                anchorTimeZone={hasEventTime ? safeStartTzid : systemTimeZone}
+		                anchorLabel={hasEventTime ? "event start" : "reminder time"}
+		                timeOfDay={allDay ? {
+		                  label: reminderTimeLabel,
+		                  open: whenPicker === "reminderTime",
+		                  onToggle: () => toggleWhenPicker("reminderTime"),
+		                  value: reminderTime,
+		                  fallback: "09:00",
+		                  onChange: setReminderTime,
+		                } : undefined}
+		              />
+		            </div>
 			          )}
 			        </section>
 
@@ -2030,35 +1400,15 @@ function EventEditModal({
               {filteredInviteContacts.map((contact) => {
                 const pubkey = resolveInviteInput(contact?.npub ?? "");
                 if (!pubkey) return null;
-                const label = contactPrimaryName(contact);
-                const subtitle = formatContactNpub(contact.npub);
-                const selected = invitedPubkeys.has(pubkey);
                 return (
-                  <button
+                  <ContactRow
                     key={contact.id}
-                    type="button"
-                    className="contact-row pressable"
+                    contact={contact}
+                    selected={invitedPubkeys.has(pubkey)}
+                    selectedLabel="Invited"
                     onClick={() => handleToggleInviteContact(contact)}
-                    aria-pressed={selected}
                     disabled={isReadOnly}
-                  >
-                    <div className="contact-avatar">{contactInitials(label)}</div>
-                    <div className="contact-row__text">
-                      <div className="contact-row__name flex items-center gap-2">
-                        <span className="min-w-0 truncate">{label}</span>
-                        {selected ? (
-                          <span className="text-xs text-secondary" aria-label="Invited">
-                            ✓
-                          </span>
-                        ) : null}
-                      </div>
-                      {subtitle ? (
-                        <div className="contact-row__meta">
-                          <span className="contact-row__meta-text">{subtitle}</span>
-                        </div>
-                      ) : null}
-                    </div>
-                  </button>
+                  />
                 );
               })}
             </div>
@@ -2103,75 +1453,20 @@ function EventEditModal({
         </div>
       </ActionSheet>
 
-      <ActionSheet
+      <ContactShareSheet
         open={shareEventPickerOpen}
+        title="Send event"
+        itemLabel={title.trim() || "this event"}
+        contacts={shareableContacts}
+        busy={shareEventBusy}
+        status={shareEventStatus}
+        onPick={handleShareEventToContact}
         onClose={() => {
-          if (shareEventBusy) return;
           setShareEventPickerOpen(false);
           setShareEventStatus(null);
         }}
-        title="Send event"
-        stackLevel={85}
-      >
-        <div className="text-sm text-secondary mb-2">
-          Choose a contact to send <span className="font-semibold">{title.trim() || "this event"}</span>.
-        </div>
-        {shareEventStatus && (
-          <div className="text-sm text-rose-400 mb-2">{shareEventStatus}</div>
-        )}
-        {shareableContacts.length ? (
-          <div className="space-y-2">
-            {shareableContacts.map((contact) => {
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              return (
-                <button
-                  key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
-                  disabled={shareEventBusy}
-                  onClick={() => handleShareEventToContact(contact)}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name">{label}</div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
-        )}
-        <div className="flex gap-2 mt-3">
-          <button
-            type="button"
-            className="ghost-button button-sm pressable flex-1 justify-center"
-            onClick={() => {
-              if (shareEventBusy) return;
-              setShareEventPickerOpen(false);
-              setShareEventStatus(null);
-            }}
-            disabled={shareEventBusy}
-          >
-            Cancel
-          </button>
-        </div>
-      </ActionSheet>
-
-      <CustomReminderSheet
-        open={customReminderSheetOpen}
-        onClose={() => setCustomReminderSheetOpen(false)}
-        anchorISO={reminderAnchorISO}
-        anchorTimeZone={hasEventTime ? safeStartTzid : systemTimeZone}
-        anchorLabel={hasEventTime ? "event start" : "reminder time"}
-        onApply={handleApplyCustomReminder}
       />
+
 
       <TimeZoneSheet
         open={timeZoneSheetOpen}
@@ -2184,51 +1479,6 @@ function EventEditModal({
 		        }}
 		      />
 
-		      <RepeatPickerSheet
-		        open={repeatSheetOpen}
-		        onClose={() => setRepeatSheetOpen(false)}
-		        rule={rule}
-	        scheduledDate={startDate}
-	        onSelect={handleRepeatSelect}
-	        onOpenCustom={handleOpenCustomRepeat}
-	        onOpenAdvanced={handleOpenAdvancedRepeat}
-	      />
-	      <RepeatCustomSheet
-	        open={repeatCustomSheetOpen}
-	        onClose={() => setRepeatCustomSheetOpen(false)}
-	        scheduledDate={startDate}
-	        rule={rule}
-	        onApply={handleRepeatSelect}
-	        onOpenAdvanced={handleOpenAdvancedRepeat}
-	      />
-        <EndRepeatSheet
-          open={endRepeatSheetOpen}
-          onClose={() => setEndRepeatSheetOpen(false)}
-          rule={rule}
-          scheduledDate={startDate}
-          timeZone={allDay ? "UTC" : safeStartTzid}
-          onSelect={(untilISO) =>
-            setRule((prev) => {
-              const next: Recurrence = { ...prev };
-              if (untilISO) {
-                next.untilISO = untilISO;
-              } else {
-                delete next.untilISO;
-              }
-              return next;
-            })
-          }
-        />
-	      {recurrenceModalOpen && (
-	        <RecurrenceModal
-	          initial={rule}
-	          onClose={() => setRecurrenceModalOpen(false)}
-	          onApply={(next) => {
-	            setRule(next);
-	            setRecurrenceModalOpen(false);
-	          }}
-	        />
-	      )}
 	    </>
 	  );
 }

@@ -1,46 +1,30 @@
-// @ts-nocheck
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { NoteMarkdownView } from "./NoteMarkdown";
 import { NoteEditorModal } from "./NoteModals";
 import { nip19 } from "nostr-tools";
-import { normalizeTaskAssignmentStatus } from "taskify-core";
+import { todayDateKey } from "taskify-core";
 
 // Sub-sheet components
-import { CustomReminderSheet } from "../reminders/CustomReminderSheet";
 import { TimeZoneSheet } from "../reminders/TimeZoneSheet";
-import { LockToNpubSheet } from "../bounty/LockToNpubSheet";
-import { BountyAttachSheet } from "../bounty/BountyAttachSheet";
-import { useWalletEnabled } from "../../wallet/walletAvailability";
-import { RecurrenceModal, RepeatPickerSheet, RepeatCustomSheet, EndRepeatSheet } from "../recurrence/RecurrencePicker";
 
 // Domain types
 import type { Task, TaskAssignee, Board, TaskPriority, Recurrence, Subtask, ReminderPreset, Weekday } from "../../domains/tasks/taskTypes";
-import { HOURS_12, MINUTES, MERIDIEMS, type Meridiem } from "../../domains/appTypes";
 import { TASK_PRIORITY_MARKS } from "../../domains/tasks/taskTypes";
 
 // Task utilities
 import {
   normalizeTaskPriority,
   normalizeTaskBounty,
-  taskHasBountyList,
-  normalizeBounty,
-  bountyStateLabel,
-  ensureXOnlyHex,
-  pubkeysEqual,
 } from "../../domains/tasks/taskUtils";
 
 // Board utilities
 import {
   isFrequentRecurrence,
-  hiddenUntilForBoard,
 } from "../../domains/tasks/boardUtils";
 
 // Contact utilities
 import {
-  compressedToRawHex,
-  contactVerifiedNip05,
-  contactInitials,
   loadNip05Cache,
   type Nip05CheckState,
 } from "../../domains/tasks/contactUtils";
@@ -48,17 +32,10 @@ import {
 // Date/time utilities
 import {
   isoDatePart,
-  isoTimePart,
   isoFromDateTime,
   formatTimeLabel,
   resolveSystemTimeZone,
   normalizeTimeZone,
-  getWheelNearestIndex,
-  scrollWheelColumnToIndex,
-  scheduleWheelSnap,
-  handleWheelPickerScroll,
-  parseTimePickerValue,
-  formatTimePickerValue,
   currentTimeValue,
 } from "../../domains/dateTime/dateUtils";
 
@@ -70,14 +47,9 @@ import {
 
 // Reminder utilities
 import {
-  buildReminderOptions,
-  reminderPresetToMinutes,
-  reminderPresetIdForMode,
-  formatReminderLabel,
   normalizeReminderTime,
   DEFAULT_DATE_REMINDER_TIME,
   type ReminderPresetMode,
-  type ReminderOption,
 } from "../../domains/dateTime/reminderUtils";
 
 // Calendar picker
@@ -97,7 +69,7 @@ import {
   type TaskDocument,
 } from "../../lib/documents";
 import { encryptAndUploadAttachment } from "../../lib/attachmentCrypto";
-import { createUploadingDocumentRow, markStaleUploadingRowsIndeterminate, removeUploadingDocumentRow, setUploadingDocumentRowPhase, startUploadingDotsTimer, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
+import { createUploadingDocumentRow, markStaleUploadingRowsIndeterminate, removeUploadingDocumentRow, setUploadingDocumentRowPhase, updateUploadingDocumentRowProgress, type UploadingDocumentRow } from "./uploadProgress";
 import { findServerEntry, parseFileServers, type FileServerEntry } from "../../lib/fileStorage";
 import {
   buildTaskShareEnvelope,
@@ -107,18 +79,15 @@ import {
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
 
 // Nostr crypto
-import { encryptEcashTokenForRecipient, hexToBytes } from "../../domains/nostr/nostrCrypto";
+import { hexToBytes } from "../../domains/nostr/nostrCrypto";
 
 // Backup utils
-import { appendWalletHistoryEntry } from "../../domains/backup/backupUtils";
 
 // Context hooks
-import { useCashu } from "../../context/CashuContext";
 import { useToast } from "../../context/ToastContext";
 
 // UI components
 import { Modal } from "../Modal";
-import { EcashGlyph } from "../../components/EcashGlyph";
 import { ActionSheet } from "../../components/ActionSheet";
 
 // Local Storage Keys
@@ -126,22 +95,19 @@ import {
   LS_LIGHTNING_CONTACTS,
   LS_CONTACT_NIP05_CACHE,
 } from "../../localStorageKeys";
+import { shortenPubkey, toNpubKey } from "./pubkeyLabels";
+import { TaskBountyToken } from "./TaskBountyToken";
+import { WheelTimePicker } from "../editor/fields/WheelTimePicker";
+import { ReminderChips } from "../editor/fields/ReminderChips";
+import { RepeatField } from "../editor/fields/RepeatField";
+import { AttachmentList } from "../editor/fields/AttachmentList";
+import { ContactRow } from "../editor/fields/ContactRow";
+import { ContactShareSheet } from "../editor/fields/ContactShareSheet";
+import { buildTaskFromEditor, normalizeAssigneeList, normalizeAssigneePubkey, taskEditorStart } from "../../domains/tasks/taskEditorModel";
+import { reminderSelectionSummary } from "../../domains/dateTime/reminderSelection";
+import type { TaskBountyExtension } from "./taskBountyExtension";
 
 // ---- Local types ----
-
-type LockRecipientSelection = {
-  value: string;
-  label: string;
-  contactId?: string;
-};
-
-type QuickLockOption = {
-  id: string;
-  title: string;
-  value: string;
-  label: string;
-  contactId?: string;
-};
 
 // ---- Local constants ----
 
@@ -159,86 +125,27 @@ async function fileToDataURL(file: File): Promise<string> {
 }
 
 
-function labelOf(r: Recurrence): string {
-  if (!r || r.type === "none") return "Never";
-  if (r.type === "daily") return "Daily";
-  if (r.type === "weekly") {
-    const WD_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-    if (!r.days?.length) return "Weekly";
-    if (r.days.length === 7) return "Every day";
-    const WEEKDAYS: Weekday[] = [1, 2, 3, 4, 5];
-    if (
-      r.days.length === 5 &&
-      WEEKDAYS.every((d) => r.days.includes(d)) &&
-      !r.days.includes(0) &&
-      !r.days.includes(6)
-    ) {
-      return "Weekdays";
-    }
-    return r.days.map((d) => WD_SHORT[d]).join(", ");
-  }
-  if (r.type === "every") {
-    const unitLabel = r.n === 1 ? r.unit : `${r.n} ${r.unit}s`;
-    return `Every ${unitLabel}`;
-  }
-  if (r.type === "monthlyDay") {
-    return r.interval && r.interval > 1 ? `Every ${r.interval} months` : "Monthly";
-  }
-  return "Custom";
-}
-
-function normalizeAssigneePubkey(value: string | null | undefined): string | null {
-  const normalized = normalizeNostrPubkey(value);
-  const raw = compressedToRawHex(normalized ?? (value || "")).toLowerCase();
-  return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
-}
-
-function normalizeAssigneeList(value: Task["assignees"] | undefined): TaskAssignee[] {
-  if (!Array.isArray(value)) return [];
-  const normalized: TaskAssignee[] = [];
-  const seen = new Set<string>();
-  value.forEach((assignee) => {
-    const pubkey = normalizeAssigneePubkey(assignee?.pubkey);
-    if (!pubkey || seen.has(pubkey)) return;
-    seen.add(pubkey);
-    const relay = typeof assignee?.relay === "string" ? assignee.relay.trim() : "";
-    const status = normalizeTaskAssignmentStatus(assignee?.status) as TaskAssignee["status"] | undefined;
-    const respondedAtRaw = Number(assignee?.respondedAt);
-    const respondedAt = Number.isFinite(respondedAtRaw) && respondedAtRaw > 0 ? Math.round(respondedAtRaw) : undefined;
-    normalized.push({
-      pubkey,
-      ...(relay ? { relay } : {}),
-      ...(status ? { status } : {}),
-      ...(respondedAt ? { respondedAt } : {}),
-    });
-  });
-  return normalized;
-}
 
 // ---- Sub-components are imported from App.tsx until extracted ----
 // These are forward declarations for components still in App.tsx.
 // They will be properly extracted in subsequent refactor steps.
 
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRedeemCoins, onRevealBounty, onTransferBounty, onPreviewDocument, walletConversionEnabled, walletPrimaryCurrency, bountyListEnabled, bountyListKey, onAddToBountyList, onRemoveFromBountyList, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
+function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRevealBounty, onPreviewDocument, bountyExtension, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
-  onSave: (t: Task)=>void | Promise<void>;
+  /** `opened` is the task as the editor built it on opening, so the save can apply only what changed (C8-2). */
+  onSave: (t: Task, opened: Task | null)=>void | Promise<void>;
   onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
   boards: Board[];
-  onRedeemCoins?: (from: DOMRect)=>void;
+  /** Decrypts a bounty locked to this user (Nostr keys only; no wallet needed). */
   onRevealBounty?: (taskId: string)=>Promise<void>;
-  onTransferBounty?: (taskId: string, recipientHex: string)=>Promise<void>;
   onPreviewDocument?: (task: Task, doc: TaskDocument) => void;
-  walletConversionEnabled: boolean;
-  walletPrimaryCurrency: "sat" | "usd";
-  bountyListEnabled: boolean;
-  bountyListKey?: string | null;
-  onAddToBountyList?: (taskId: string) => void;
-  onRemoveFromBountyList?: (taskId: string) => void;
+  /** Bounty editing, provided by the wallet where it is enabled; otherwise bounties are copy-only. */
+  bountyExtension?: TaskBountyExtension;
   defaultRelays: string[];
   nostrPK: string;
   nostrSkHex: string;
@@ -258,7 +165,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [uploadingCount, setUploadingCount] = useState(0);
   const [uploadingLabel, setUploadingLabel] = useState<string | null>(null);
   const [uploadingDocumentRows, setUploadingDocumentRows] = useState<UploadingDocumentRow[]>([]);
-  const [uploadingDotPhase, setUploadingDotPhase] = useState(0);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
   const [selectedBoardId, setSelectedBoardId] = useState(task.boardId);
@@ -267,19 +173,12 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const documentInputRef = useRef<HTMLInputElement>(null);
   const dragSubtaskIdRef = useRef<string | null>(null);
   const [rule, setRule] = useState<Recurrence>(task.recurrence ?? R_NONE);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [repeatSheetOpen, setRepeatSheetOpen] = useState(false);
-  const [repeatCustomSheetOpen, setRepeatCustomSheetOpen] = useState(false);
-  const [endRepeatSheetOpen, setEndRepeatSheetOpen] = useState(false);
-  const initialDateEnabled = task.dueDateEnabled !== false;
   const systemTimeZone = useMemo(() => resolveSystemTimeZone(), []);
-  const initialTimeZone = useMemo(
-    () => normalizeTimeZone(task.dueTimeEnabled ? task.dueTimeZone : undefined) ?? systemTimeZone,
-    [systemTimeZone, task.dueTimeEnabled, task.dueTimeZone],
-  );
-  const initialDate = initialDateEnabled ? isoDatePart(task.dueISO, initialTimeZone) : "";
-  const initialTime = initialDateEnabled ? isoTimePart(task.dueISO, initialTimeZone) : "";
-  const defaultHasTime = initialDateEnabled && (task.dueTimeEnabled ?? false);
+  const editorStart = useMemo(() => taskEditorStart(task, systemTimeZone), [task, systemTimeZone]);
+  const initialTimeZone = editorStart.timeZone;
+  const initialDate = editorStart.date;
+  const initialTime = editorStart.storedTime;
+  const defaultHasTime = editorStart.hadTime;
   // Only use the task's stored time as the default if time was actually enabled.
   // Otherwise (time disabled / new task) default to current time rounded to next hour,
   // so the picker opens at "now" instead of a stale or midnight time from dueISO.
@@ -288,48 +187,25 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [scheduledTime, setScheduledTime] = useState<string>(defaultHasTime ? initialTime : "");
   const [scheduledTimeZone, setScheduledTimeZone] = useState(initialTimeZone);
   const [timeZoneSheetOpen, setTimeZoneSheetOpen] = useState(false);
-  const initialReminderTime = normalizeReminderTime(task.reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
+  const initialReminderTime = editorStart.reminderTime;
   const [reminderSelection, setReminderSelection] = useState<ReminderPreset[]>(task.reminders ?? []);
   const [reminderTime, setReminderTime] = useState<string>(initialReminderTime);
   const lastTimeRef = useRef<string>(defaultTimeValue);
-  const [dateEnabled, setDateEnabled] = useState(() => initialDateEnabled && !!initialDate);
+  const [dateEnabled, setDateEnabled] = useState(() => editorStart.dateEnabled);
   const hasDueTime = dateEnabled && scheduledTime.trim().length > 0;
   const [dateDetailsOpen, setDateDetailsOpen] = useState(false);
   const [calendarBaseDate, setCalendarBaseDate] = useState(initialDate);
-  const timePickerHourColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerMinuteColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerMeridiemColumnRef = useRef<HTMLDivElement | null>(null);
-  const timePickerHourScrollFrame = useRef<number | null>(null);
-  const timePickerMinuteScrollFrame = useRef<number | null>(null);
-  const timePickerMeridiemScrollFrame = useRef<number | null>(null);
-  const timePickerHourSnapTimeout = useRef<number | null>(null);
-  const timePickerMinuteSnapTimeout = useRef<number | null>(null);
-  const timePickerMeridiemSnapTimeout = useRef<number | null>(null);
-  const timePickerHourValueRef = useRef(0);
-  const timePickerMinuteValueRef = useRef(0);
-  const timePickerMeridiemValueRef = useRef<Meridiem>("AM");
   const [reminderPickerExpanded, setReminderPickerExpanded] = useState(false);
-  const [customReminderSheetOpen, setCustomReminderSheetOpen] = useState(false);
   const [subtasksExpanded, setSubtasksExpanded] = useState(false);
   const [locationExpanded, setLocationExpanded] = useState(false);
   const [assigneesExpanded, setAssigneesExpanded] = useState(false);
   const [timeDetailsOpen, setTimeDetailsOpen] = useState(false);
   const [reminderTimeDetailsOpen, setReminderTimeDetailsOpen] = useState(false);
-  const [, setBountyState] = useState<Task["bounty"]["state"]>(task.bounty?.state || "locked");
-  const { createSendToken, receiveToken, mintUrl } = useCashu();
-  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
-  const [signOverSheetOpen, setSignOverSheetOpen] = useState(false);
-  const [lockToSelf, setLockToSelf] = useState(true);
-  const walletEnabled = useWalletEnabled();
-  const [bountyExpanded, setBountyExpanded] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
   const prefetchedContactPhotos = useRef<Set<string>>(new Set());
   const [nip05Cache, setNip05Cache] = useState<Record<string, Nip05CheckState>>(() =>
     typeof window !== "undefined" ? loadNip05Cache() : {},
   );
-  const [lockNpubSheetOpen, setLockNpubSheetOpen] = useState(false);
-  const [lockRecipientSelection, setLockRecipientSelection] = useState<LockRecipientSelection | null>(null);
-  const [signingBounty, setSigningBounty] = useState(false);
   const [shareTaskPickerOpen, setShareTaskPickerOpen] = useState(false);
   const [shareTaskStatus, setShareTaskStatus] = useState<string | null>(null);
   const [shareTaskBusy, setShareTaskBusy] = useState(false);
@@ -403,16 +279,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     currentStreak,
     typeof task.longestStreak === "number" ? task.longestStreak : currentStreak,
   );
-  const bountyButtonActive = bountyListEnabled && !!bountyListKey;
-  const taskInBountyList = bountyButtonActive && bountyListKey ? taskHasBountyList(task, bountyListKey) : false;
-  const contactsByHex = useMemo(() => {
-    const map = new Map<string, Contact>();
-    contacts.forEach((contact) => {
-      const hex = normalizeNostrPubkey(contact.npub);
-      if (hex) map.set(hex, contact);
-    });
-    return map;
-  }, [contacts]);
   const shareableContacts = useMemo(
     () => contacts.filter((contact) => contactHasNpub(contact)),
     [contacts],
@@ -539,139 +405,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     return "";
   }, []);
 
-  const lockLabelForContact = useCallback(
-    (contact: Contact | null | undefined, fallback: string) => {
-      const verifiedNip05 = contact ? contactVerifiedNip05(contact, nip05Cache) : null;
-      if (verifiedNip05) return verifiedNip05;
-      const primaryName = contact ? contactPrimaryName(contact) : "";
-      if (primaryName && primaryName !== "Contact" && primaryName !== contact?.npub?.trim()) {
-        return primaryName;
-      }
-      return fallback;
-    },
-    [nip05Cache],
-  );
-  const quickLockOptions = useMemo<QuickLockOption[]>(() => {
-    const options: QuickLockOption[] = [];
-    const ownerHex = normalizeNostrPubkey(task.createdBy || "");
-    if (ownerHex) {
-      const contact = contactsByHex.get(ownerHex);
-      const sourceValue = contact?.npub?.trim() || (task.createdBy ? toNpubKey(task.createdBy) : ownerHex);
-      const label = lockLabelForContact(contact, shortenPubkey(sourceValue));
-      options.push({
-        id: "creator",
-        title: "Task creator",
-        value: sourceValue,
-        label,
-        contactId: contact?.id,
-      });
-    }
-    const completerHex = normalizeNostrPubkey(task.completedBy || "");
-    if (completerHex) {
-      const contact = contactsByHex.get(completerHex);
-      const sourceValue = contact?.npub?.trim() || (task.completedBy ? toNpubKey(task.completedBy) : completerHex);
-      const label = lockLabelForContact(contact, shortenPubkey(sourceValue));
-      options.push({
-        id: "completer",
-        title: "Task fulfiller",
-        value: sourceValue,
-        label,
-        contactId: contact?.id,
-      });
-    }
-    return options;
-  }, [contactsByHex, lockLabelForContact, task.completedBy, task.createdBy]);
-  const handleLockRecipientSelect = useCallback((selection: LockRecipientSelection) => {
-    setLockRecipientSelection(selection);
-    setLockToSelf(false);
-    setLockNpubSheetOpen(false);
-  }, []);
-  const handleToggleLockToSelf = useCallback(() => {
-    setLockToSelf((prev) => {
-      const next = !prev;
-      if (next) {
-        setLockRecipientSelection(null);
-      }
-      return next;
-    });
-  }, []);
-  const handleClearLockRecipient = useCallback(() => {
-    setLockRecipientSelection(null);
-  }, []);
-  const handleOpenAttachSheet = useCallback(() => {
-    setLockToSelf(true);
-    setLockRecipientSelection(null);
-    setAttachSheetOpen(true);
-  }, []);
-  async function handleAttachBounty(amountSat: number, overrideMint?: string) {
-    if (!amountSat || amountSat <= 0) {
-      throw new Error("Enter an amount greater than zero.");
-    }
-    const recipientPubkey = lockRecipientSelection
-      ? normalizeNostrPubkey(lockRecipientSelection.value)
-      : null;
-    const recipientHex = ensureXOnlyHex(recipientPubkey);
-    if (lockRecipientSelection && (!recipientPubkey || !recipientHex)) {
-      throw new Error("Selected npub is invalid.");
-    }
-    const sendOptions: { p2pk?: { pubkey: string }; mintUrl?: string } = {};
-    if (recipientPubkey) {
-      sendOptions.p2pk = { pubkey: recipientPubkey };
-    }
-    if (overrideMint?.trim()) {
-      sendOptions.mintUrl = overrideMint.trim();
-    }
-    const { token: tok, lockInfo, mintUrl: sendMintUrl } = await createSendToken(amountSat, sendOptions);
-    const bountyMint = sendMintUrl || overrideMint || mintUrl;
-    const lockType: Task["bounty"]["lock"] =
-      lockInfo?.type === "p2pk" ? "p2pk" : lockToSelf ? "unknown" : "none";
-    const selfPubkey = (window as any).nostrPK as string | undefined;
-    const selfHex = ensureXOnlyHex(selfPubkey);
-    const bounty: Task["bounty"] = {
-      id: crypto.randomUUID(),
-      token: lockToSelf || recipientHex ? "" : tok,
-      amount: amountSat,
-      mint: bountyMint,
-      state: lockToSelf || recipientHex ? "locked" : "unlocked",
-      owner: task.createdBy || (window as any).nostrPK || "",
-      sender: (window as any).nostrPK || "",
-      receiver: recipientHex || (lockToSelf ? selfHex : undefined) || undefined,
-      updatedAt: new Date().toISOString(),
-      lock: lockType,
-    };
-    if (recipientHex) {
-      const enc = await encryptEcashTokenForRecipient(recipientHex, tok);
-      bounty.enc = enc;
-    } else if (lockToSelf) {
-      const funderHex = selfHex || "";
-      if (!funderHex) {
-        throw new Error("Locking to yourself requires a connected Nostr key.");
-      }
-      const enc = await encryptEcashTokenForRecipient(funderHex, tok);
-      bounty.enc = enc;
-    }
-    save({ bounty });
-    const summaryPrefix = recipientHex
-      ? "Locked bounty"
-      : lockToSelf
-        ? "Hidden bounty"
-        : "Attached bounty";
-    appendWalletHistoryEntry({
-      id: `attach-bounty-${bounty.id}`,
-      summary: `${summaryPrefix} • ${amountSat} sats`,
-      detail: tok,
-      detailKind: "token",
-      type: "ecash",
-      direction: "out",
-      amountSat,
-      entryKind: "bounty-attachment",
-      relatedTaskTitle: task.title || undefined,
-      mintUrl: bountyMint ?? undefined,
-    });
-    setAttachSheetOpen(false);
-    setLockToSelf(true);
-    setLockRecipientSelection(null);
-  }
   useEffect(() => {
     if (typeof window === "undefined") return;
     const urls = new Set<string>();
@@ -734,10 +467,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   );
 
   const reminderPresetMode: ReminderPresetMode = hasDueTime ? "timed" : "date";
-  const reminderOptions = useMemo(
-    () => buildReminderOptions(reminderSelection, reminderPresetMode),
-    [reminderPresetMode, reminderSelection],
-  );
   const priorityOptions = useMemo(
     () => [
       { value: 0, label: "None" },
@@ -752,24 +481,10 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     [priority, priorityOptions],
   );
 
-  const reminderPresetMap = useMemo(() => {
-    const map = new Map<ReminderPreset, ReminderOption>();
-    for (const opt of reminderOptions) map.set(opt.id, opt);
-    return map;
-  }, [reminderOptions]);
-
-  const reminderSummary = useMemo(() => {
-    if (!reminderSelection.length) return "";
-    return reminderSelection
-      .map((id) => {
-        const preset = reminderPresetMap.get(id);
-        if (preset) return preset.badge;
-        const minutes = reminderPresetToMinutes(id);
-        if (!Number.isFinite(minutes)) return String(id);
-        return formatReminderLabel(minutes).badge;
-      })
-      .join(', ');
-  }, [reminderPresetMap, reminderSelection]);
+  const reminderSummary = useMemo(
+    () => reminderSelectionSummary(reminderSelection, reminderPresetMode),
+    [reminderPresetMode, reminderSelection],
+  );
   const dateSummary = useMemo(() => {
     if (!scheduledDate) return "Not set";
     const parsed = new Date(`${scheduledDate}T00:00:00`);
@@ -793,7 +508,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     () =>
       formatTimeLabel(
         isoFromDateTime(
-          scheduledDate || isoDatePart(new Date().toISOString()),
+          scheduledDate || todayDateKey(),
           reminderTime || DEFAULT_DATE_REMINDER_TIME,
           systemTimeZone,
         ),
@@ -801,12 +516,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       ),
     [reminderTime, scheduledDate, systemTimeZone],
   );
-  const endRepeatSummary = useMemo(() => {
-    if (!rule.untilISO) return "Never";
-    const parsed = new Date(rule.untilISO);
-    if (Number.isNaN(parsed.getTime())) return "Custom date";
-    return parsed.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
-  }, [rule]);
   const reminderRowSummary = useMemo(() => {
     if (!dateEnabled) return "Enable date";
     if (!reminderSelection.length) return "None";
@@ -822,18 +531,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     const iso = isoFromDateTime(scheduledDate, reminderClock, systemTimeZone);
     return Number.isNaN(Date.parse(iso)) ? null : iso;
   }, [dateEnabled, defaultTimeValue, hasDueTime, reminderTime, safeScheduledTimeZone, scheduledDate, scheduledTime, systemTimeZone]);
-  const editingReminderTime = !hasDueTime && reminderTimeDetailsOpen;
-  const timePickerParts = useMemo(
-    () =>
-      parseTimePickerValue(
-        editingReminderTime ? reminderTime : scheduledTime,
-        editingReminderTime ? DEFAULT_DATE_REMINDER_TIME : defaultTimeValue,
-      ),
-    [defaultTimeValue, editingReminderTime, reminderTime, scheduledTime],
-  );
-  const timePickerHour = timePickerParts.hour;
-  const timePickerMinute = timePickerParts.minute;
-  const timePickerMeridiem = timePickerParts.meridiem;
   useEffect(() => {
     if (scheduledDate) {
       setCalendarBaseDate(scheduledDate);
@@ -854,7 +551,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   }, [dateEnabled]);
   useEffect(() => {
     if (selectedBoardKind !== "week" || dateEnabled) return;
-    const todayISO = isoDatePart(new Date().toISOString());
+    const todayISO = todayDateKey();
     setScheduledDate((prev) => prev || todayISO);
     setCalendarBaseDate((prev) => prev || todayISO);
     setDateEnabled(true);
@@ -869,7 +566,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   useEffect(() => {
     if (!reminderPickerExpanded) {
       setReminderTimeDetailsOpen(false);
-      setCustomReminderSheetOpen(false);
     }
   }, [reminderPickerExpanded]);
   useEffect(() => {
@@ -881,258 +577,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   useEffect(() => {
     setReminderTime(initialReminderTime);
   }, [initialReminderTime, task.id]);
-  useEffect(() => {
-    timePickerHourValueRef.current = timePickerHour;
-  }, [timePickerHour]);
-  useEffect(() => {
-    timePickerMinuteValueRef.current = timePickerMinute;
-  }, [timePickerMinute]);
-  useEffect(() => {
-    timePickerMeridiemValueRef.current = timePickerMeridiem;
-  }, [timePickerMeridiem]);
-  useEffect(
-    () => () => {
-      if (timePickerHourScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerHourScrollFrame.current);
-      }
-      if (timePickerMinuteScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerMinuteScrollFrame.current);
-      }
-      if (timePickerMeridiemScrollFrame.current != null) {
-        cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
-      }
-      const snapRefs = [timePickerHourSnapTimeout, timePickerMinuteSnapTimeout, timePickerMeridiemSnapTimeout];
-      for (const ref of snapRefs) {
-        if (ref.current != null) {
-          window.clearTimeout(ref.current);
-          ref.current = null;
-        }
-      }
-    },
-    [],
-  );
-  useLayoutEffect(() => {
-    if ((hasDueTime && !timeDetailsOpen) || (!hasDueTime && !reminderTimeDetailsOpen)) return;
-    const hourIndex = HOURS_12.indexOf(timePickerHour);
-    if (hourIndex >= 0) {
-      // Use "instant" to avoid firing scroll events mid-animation, which would
-      // cause the snap handler to read a stale position and re-snap to the wrong item.
-      scrollWheelColumnToIndex(timePickerHourColumnRef.current, hourIndex, "instant");
-    }
-    const minuteIndex = MINUTES.indexOf(timePickerMinute);
-    if (minuteIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMinuteColumnRef.current, minuteIndex, "instant");
-    }
-    const meridiemIndex = MERIDIEMS.indexOf(timePickerMeridiem);
-    if (meridiemIndex >= 0) {
-      scrollWheelColumnToIndex(timePickerMeridiemColumnRef.current, meridiemIndex, "instant");
-    }
-  }, [timeDetailsOpen, hasDueTime, reminderTimeDetailsOpen, timePickerHour, timePickerMinute, timePickerMeridiem]);
 
-  useEffect(() => {
-    setSigningBounty(false);
-  }, [task.id]);
   useEffect(() => {
     if (hasDueTime && scheduledTime) {
       lastTimeRef.current = scheduledTime;
     }
   }, [hasDueTime, scheduledTime]);
 
-  const me = (window as any).nostrPK as string | undefined;
-  const meHex = ensureXOnlyHex(me);
-
-  function toNpubKey(value: string): string {
-    const raw = compressedToRawHex(value);
-    try {
-      if (typeof (nip19 as any)?.npubEncode === "function") {
-        return (nip19 as any).npubEncode(raw);
-      }
-      return raw;
-    } catch {
-      return raw;
-    }
-  }
-
-  function shortenPubkey(value: string): string {
-    if (value.length <= 18) return value;
-    return `${value.slice(0, 10)}…${value.slice(-6)}`;
-  }
-
-  const currentReceiverDisplay = useMemo(() => {
-    const receiver = task.bounty?.receiver;
-    if (!receiver) return null;
-    return shortenPubkey(toNpubKey(receiver));
-  }, [task.bounty?.receiver]);
-
-  const bountyReceiverIsViewer = useMemo(() => {
-    const receiver = task.bounty?.receiver;
-    if (!receiver) return false;
-    return pubkeysEqual(receiver, (window as any).nostrPK);
-  }, [task.bounty?.receiver]);
-
-  const bountySenderIsViewer = useMemo(() => {
-    if (!task.bounty?.sender || !meHex) return false;
-    return pubkeysEqual(task.bounty.sender, meHex);
-  }, [meHex, task.bounty?.sender]);
-
-  const canRemoveBounty = useMemo(() => {
-    if (!task.bounty) return false;
-    return task.bounty.state === "unlocked" || bountySenderIsViewer;
-  }, [bountySenderIsViewer, task.bounty]);
-
-  const bountyOwnerIsViewer = useMemo(() => {
-    if (!task.bounty?.owner || !meHex) return false;
-    return pubkeysEqual(task.bounty.owner, meHex);
-  }, [meHex, task.bounty?.owner]);
-
-  const hasTransferableBounty = !!(task.bounty && (task.bounty.token || task.bounty.enc));
-
-  const bountyHasReceiver = !!task.bounty?.receiver;
-  const bountyReceiverGate = bountyHasReceiver ? bountyReceiverIsViewer : true;
-
-  const bountySignerHasKey = useMemo(() => {
-    if (!task.bounty || !meHex) return false;
-    const tokenAvailable = !!task.bounty.token?.trim();
-    if (tokenAvailable) {
-      return bountySenderIsViewer || bountyOwnerIsViewer || bountyReceiverIsViewer;
-    }
-    const enc = task.bounty.enc as any;
-    if (!enc) return false;
-    if (enc.alg === "aes-gcm-256") return bountySenderIsViewer || bountyOwnerIsViewer;
-    if (enc.alg === "nip04") return bountyReceiverIsViewer;
-    return false;
-  }, [bountyOwnerIsViewer, bountyReceiverIsViewer, bountySenderIsViewer, meHex, task.bounty]);
-
-  const bountyTokenReady = !!task.bounty?.token?.trim();
-
-  const canSignOverBounty = useMemo(() => {
-    if (!hasTransferableBounty || !bountySignerHasKey || !onTransferBounty) return false;
-    if (!task.bounty) return false;
-    return task.bounty.state !== "revoked" && task.bounty.state !== "claimed";
-  }, [bountySignerHasKey, hasTransferableBounty, onTransferBounty, task.bounty]);
-
-  const canRedeemBounty = useMemo(() => {
-    if (!task.bounty || !bountyReceiverGate) return false;
-    return task.bounty.state === "unlocked" && bountyTokenReady;
-  }, [bountyReceiverGate, bountyTokenReady, task.bounty]);
-
-  const canRevealBounty = useMemo(() => {
-    if (!task.bounty?.enc) return false;
-    const alg = (task.bounty.enc as any).alg;
-    return bountyReceiverIsViewer || alg === "aes-gcm-256";
-  }, [bountyReceiverIsViewer, task.bounty?.enc]);
-
-  useEffect(() => {
-    if (!task.bounty) {
-      setBountyExpanded(false);
-    }
-  }, [task.bounty]);
-
-  async function handleSignOver(recipientHex: string, displayHint?: string) {
-    if (!onTransferBounty || signingBounty) return;
-    setSigningBounty(true);
-    try {
-      await onTransferBounty(task.id, recipientHex);
-      setBountyState("locked");
-      const label = displayHint || shortenPubkey(toNpubKey(recipientHex));
-      if (label) {
-        showToast(`Bounty locked to ${label}`, 2500);
-      } else {
-        showToast("Bounty locked to recipient", 2500);
-      }
-    } catch (error) {
-      const message = (error as Error)?.message || String(error) || "Unknown error";
-      alert(`Unable to sign bounty: ${message}`);
-    } finally {
-      setSigningBounty(false);
-    }
-  }
-
-  function handleSignOverSelection(selection: LockRecipientSelection) {
-    const trimmed = selection.value.trim();
-    if (!trimmed) return;
-    const normalized = normalizeNostrPubkey(trimmed);
-    if (!normalized) {
-      alert("Enter a valid recipient npub or hex.");
-      return;
-    }
-    if (task.bounty?.receiver && pubkeysEqual(task.bounty.receiver, normalized)) {
-      alert("Bounty is already locked to that recipient.");
-      return;
-    }
-    handleSignOver(normalized, selection.label);
-    setSignOverSheetOpen(false);
-  }
-
-  const handleCopyBountyToken = useCallback(async () => {
-    const token = task.bounty?.token?.trim();
-    if (!token) return;
-    try {
-      await navigator.clipboard.writeText(token);
-      showToast("Bounty token copied", 1800);
-    } catch (error) {
-      console.error("Failed to copy bounty token", error);
-      alert("Unable to copy bounty token.");
-    }
-  }, [showToast, task.bounty?.token]);
-
-  function handleMarkBountyClaimed() {
-    if (!task.bounty) return;
-    const next = normalizeBounty({
-      ...task.bounty,
-      token: "",
-      state: "claimed",
-      updatedAt: new Date().toISOString(),
-    });
-    if (!next) return;
-    setBountyState("claimed");
-    save({ bounty: next });
-  }
-
-  async function redeemCurrentBounty(fromRect?: DOMRect) {
-    if (!task.bounty?.token) return;
-    try {
-      const bountyToken = task.bounty.token;
-      const res = await receiveToken(bountyToken);
-      if (res.savedForLater) {
-        alert("Token saved for later redemption. We'll redeem it when your connection returns.");
-        return;
-      }
-      if (res.crossMint) {
-        alert(`Redeemed to a different mint: ${res.usedMintUrl}. Switch to that mint to view the balance.`);
-      }
-      const amt = res.proofs.reduce((a, p) => a + (p?.amount || 0), 0);
-      appendWalletHistoryEntry({
-        id: `redeem-bounty-${Date.now()}`,
-        summary: `Redeemed bounty • ${amt} sats${res.crossMint ? ` at ${res.usedMintUrl}` : ''}`,
-        detail: bountyToken,
-        detailKind: "token",
-        type: "ecash",
-        direction: "in",
-        amountSat: amt,
-        mintUrl: res.usedMintUrl ?? task.bounty?.mint ?? undefined,
-      });
-      onRedeemCoins?.(fromRect);
-      save({ bounty: undefined });
-    } catch (error) {
-      console.error(error);
-      alert("Unable to redeem bounty token right now.");
-    }
-  }
-
-  function handleRemoveBounty() {
-    if (!task.bounty || !canRemoveBounty) return;
-    save({ bounty: undefined });
-  }
-
-  const handleToggleBountyList = useCallback(() => {
-    if (!bountyButtonActive) return;
-    if (taskInBountyList) {
-      onRemoveFromBountyList?.(task.id);
-    } else {
-      onAddToBountyList?.(task.id);
-    }
-  }, [bountyButtonActive, onAddToBountyList, onRemoveFromBountyList, task.id, taskInBountyList]);
 
 
   async function uploadSharedImage(file: File): Promise<string> {
@@ -1211,10 +662,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     }
     return attached;
   }
-
-  useEffect(() => {
-    return startUploadingDotsTimer(uploadingDocumentRows.length, setUploadingDotPhase);
-  }, [uploadingDocumentRows.length]);
 
   useEffect(() => {
     if (!uploadingDocumentRows.length) return;
@@ -1339,73 +786,10 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     reorderSubtasks(sourceHint, id, position);
   }, [reorderSubtasks]);
 
-  function toggleReminder(id: ReminderPreset) {
-    if (!dateEnabled) return;
-    setReminderSelection((prev) => {
-      const exists = prev.includes(id);
-      const targetMinutes = reminderPresetToMinutes(id);
-      const next = exists
-        ? prev.filter((item) => item !== id)
-        : [...prev.filter((item) => reminderPresetToMinutes(item) !== targetMinutes), id];
-      return [...next].sort((a, b) =>
-        reminderPresetMode === "date"
-          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-      );
-    });
-  }
-
-  const handleAddCustomReminder = useCallback(() => {
-    if (!dateEnabled) return;
-    setCustomReminderSheetOpen(true);
-  }, [dateEnabled]);
-
-  const handleApplyCustomReminder = useCallback((minutesBefore: number) => {
-    const id = reminderPresetIdForMode(minutesBefore, reminderPresetMode);
-    setReminderSelection((prev) => {
-      const targetMinutes = reminderPresetToMinutes(id);
-      const nextBase = prev.filter((item) => reminderPresetToMinutes(item) !== targetMinutes || item === id);
-      if (nextBase.includes(id)) {
-        return nextBase.sort((a, b) =>
-          reminderPresetMode === "date"
-            ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-            : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-        );
-      }
-      const next = [...nextBase, id];
-      return next.sort((a, b) =>
-        reminderPresetMode === "date"
-          ? reminderPresetToMinutes(b) - reminderPresetToMinutes(a)
-          : reminderPresetToMinutes(a) - reminderPresetToMinutes(b),
-      );
-    });
-  }, [reminderPresetMode]);
-
-  const handleRepeatSelect = useCallback((next: Recurrence) => {
-    setRule((prev) => {
-      if (prev.untilISO) {
-        return { ...next, untilISO: prev.untilISO };
-      }
-      return next;
-    });
-    setRepeatSheetOpen(false);
-    setRepeatCustomSheetOpen(false);
-  }, []);
-
-  const handleOpenCustomRepeat = useCallback(() => {
-    setRepeatSheetOpen(false);
-    setRepeatCustomSheetOpen(true);
-  }, []);
-
-  const handleOpenAdvancedRepeat = useCallback(() => {
-    setRepeatSheetOpen(false);
-    setRepeatCustomSheetOpen(false);
-    setShowAdvanced(true);
-  }, []);
   function toggleDateSwitch() {
     if (selectedBoardKind === "week") {
       if (!dateEnabled) {
-        const todayISO = isoDatePart(new Date().toISOString());
+        const todayISO = todayDateKey();
         setScheduledDate((prev) => prev || todayISO);
         setCalendarBaseDate((prev) => prev || todayISO);
         setDateEnabled(true);
@@ -1416,7 +800,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       const next = !prev;
       if (next) {
         if (!scheduledDate) {
-          const todayISO = isoDatePart(new Date().toISOString());
+          const todayISO = todayDateKey();
           setScheduledDate(todayISO);
           setCalendarBaseDate(todayISO);
         } else {
@@ -1441,77 +825,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       return next;
     });
   }
-  const setTimePickerFromParts = useCallback((hour: number, minute: number, meridiem: Meridiem) => {
-    const nextValue = formatTimePickerValue(hour, minute, meridiem);
-    if (editingReminderTime) {
-      setReminderTime((prev) => (prev === nextValue ? prev : nextValue));
-    } else {
-      setScheduledTime((prev) => (prev === nextValue ? prev : nextValue));
-    }
-  }, [editingReminderTime, setReminderTime, setScheduledTime]);
-  const handleTimePickerHourScroll = useCallback(() => {
-    const column = timePickerHourColumnRef.current;
-    if (!column) return;
-    if (timePickerHourScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerHourScrollFrame.current);
-    }
-    timePickerHourScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, HOURS_12.length);
-      if (clampedIndex == null) return;
-      const nextHour = HOURS_12[clampedIndex];
-      if (typeof nextHour === "number") {
-        // Update ref immediately for cross-column coordination; defer state commit to avoid
-        // re-rendering the whole modal during active scroll (which disrupts scroll physics).
-        timePickerHourValueRef.current = nextHour;
-        scheduleWheelSnap(timePickerHourColumnRef, timePickerHourSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-  const handleTimePickerMinuteScroll = useCallback(() => {
-    const column = timePickerMinuteColumnRef.current;
-    if (!column) return;
-    if (timePickerMinuteScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerMinuteScrollFrame.current);
-    }
-    timePickerMinuteScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MINUTES.length);
-      if (clampedIndex == null) return;
-      const nextMinute = MINUTES[clampedIndex];
-      if (typeof nextMinute === "number") {
-        timePickerMinuteValueRef.current = nextMinute;
-        scheduleWheelSnap(timePickerMinuteColumnRef, timePickerMinuteSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-  const handleTimePickerMeridiemScroll = useCallback(() => {
-    const column = timePickerMeridiemColumnRef.current;
-    if (!column) return;
-    if (timePickerMeridiemScrollFrame.current != null) {
-      cancelAnimationFrame(timePickerMeridiemScrollFrame.current);
-    }
-    timePickerMeridiemScrollFrame.current = requestAnimationFrame(() => {
-      const clampedIndex = getWheelNearestIndex(column, MERIDIEMS.length);
-      if (clampedIndex == null) return;
-      const nextMeridiem = MERIDIEMS[clampedIndex];
-      if (nextMeridiem) {
-        timePickerMeridiemValueRef.current = nextMeridiem;
-        scheduleWheelSnap(timePickerMeridiemColumnRef, timePickerMeridiemSnapTimeout, clampedIndex, () => {
-          setTimePickerFromParts(timePickerHourValueRef.current, timePickerMinuteValueRef.current, timePickerMeridiemValueRef.current);
-        });
-      }
-    });
-  }, [setTimePickerFromParts]);
-  const handleTimePickerWheel = useCallback((event: React.WheelEvent<HTMLElement>) => {
-    handleWheelPickerScroll(event, [
-      { ref: timePickerHourColumnRef, optionCount: HOURS_12.length },
-      { ref: timePickerMinuteColumnRef, optionCount: MINUTES.length },
-      { ref: timePickerMeridiemColumnRef, optionCount: MERIDIEMS.length },
-    ]);
-  }, []);
 
   function handleToggleTime() {
     if (hasDueTime) {
@@ -1529,7 +842,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     setReminderTimeDetailsOpen(false);
     setDateDetailsOpen(false);
     if (!dateEnabled) {
-      const todayISO = scheduledDate || isoDatePart(new Date().toISOString());
+      const todayISO = scheduledDate || todayDateKey();
       setScheduledDate(todayISO);
       setCalendarBaseDate(todayISO);
       setDateEnabled(true);
@@ -1548,52 +861,40 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     });
   }
 
+  // The task as built from the untouched editor, recorded on opening (C8-2).
+  const openedTaskRef = useRef<Task | null>(null);
+  useEffect(() => {
+    // Only the first render's values describe the task as opened.
+    openedTaskRef.current ??= buildTask();
+  }, []);
+
   function buildTask(overrides: Partial<Task> = {}): Task {
-    const targetBoardKind = selectedBoardKind;
-    const effectiveDateEnabled = targetBoardKind === "week" ? true : dateEnabled;
-    const baseDate = scheduledDate || initialDate || isoDatePart(task.dueISO, initialTimeZone);
-    const hasTime = effectiveDateEnabled && scheduledTime.trim().length > 0;
-    const dateUnchanged = baseDate === (initialDate || "");
-    const timeUnchanged = hasTime === defaultHasTime && (!hasTime || scheduledTime === initialTime);
-    const timeZoneUnchanged = !hasTime || safeScheduledTimeZone === initialTimeZone;
-    const dueISO = effectiveDateEnabled
-      ? (dateUnchanged && timeUnchanged && timeZoneUnchanged
-        ? task.dueISO
-        : isoFromDateTime(baseDate, hasTime ? scheduledTime : undefined, hasTime ? safeScheduledTimeZone : undefined))
-      : task.dueISO;
-    const targetColumnId =
-      targetBoardKind === "lists"
-        ? selectedColumnId || selectedBoard?.columns[0]?.id
-        : undefined;
-    const targetColumn =
-      targetBoardKind === "week"
-        ? "day"
-        : undefined;
-    const hiddenUntilISO = effectiveDateEnabled ? hiddenUntilForBoard(dueISO, targetBoardKind, weekStart) : undefined;
-    const reminderValues = effectiveDateEnabled ? [...reminderSelection] : [];
-    const normalizedReminderTime = normalizeReminderTime(reminderTime) ?? DEFAULT_DATE_REMINDER_TIME;
-    return {
-      ...task,
-      boardId: selectedBoardId,
-      columnId: targetBoardKind === "lists" ? targetColumnId : undefined,
-      column: targetBoardKind === "week" ? targetColumn : undefined,
-      title,
-      priority: priority === 0 ? undefined : priority,
-      note: note || undefined,
-      images: images.length ? images : undefined,
-      documents: documents.length ? documents : undefined,
-      subtasks: subtasks.length ? subtasks : undefined,
-      assignees: assignees.length ? normalizeAssigneeList(assignees) : undefined,
-      recurrence: rule.type === "none" ? undefined : rule,
-      dueISO,
-      dueDateEnabled: effectiveDateEnabled ? true : false,
-      hiddenUntilISO,
-      dueTimeEnabled: hasTime ? true : undefined,
-      dueTimeZone: hasTime ? safeScheduledTimeZone : undefined,
-      reminders: reminderValues,
-      reminderTime: effectiveDateEnabled && !hasTime ? normalizedReminderTime : undefined,
-      ...overrides,
-    };
+    const saved = buildTaskFromEditor(
+      task,
+      editorStart,
+      {
+        title,
+        note,
+        priority,
+        images,
+        documents,
+        subtasks,
+        assignees,
+        rule,
+        boardId: selectedBoardId,
+        board: selectedBoard,
+        boardKind,
+        columnId: selectedColumnId,
+        dateEnabled,
+        date: scheduledDate,
+        time: scheduledTime,
+        timeZone: safeScheduledTimeZone,
+        reminders: reminderSelection,
+        reminderTime,
+      },
+      weekStart,
+    );
+    return { ...saved, ...overrides };
   }
 
   async function save(overrides: Partial<Task> = {}) {
@@ -1601,7 +902,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     setSaving(true);
     setSaveError(null);
     try {
-      await onSave(normalizeTaskBounty(buildTask(overrides)));
+      const opened = openedTaskRef.current ? normalizeTaskBounty(openedTaskRef.current) : null;
+      await onSave(normalizeTaskBounty(buildTask(overrides)), opened);
     } catch (err: any) {
       console.error("Failed to save task", err);
       setSaveError(err?.message || "Failed to save task.");
@@ -1627,7 +929,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           completed: !!subtask.completed,
         };
       })
-      .filter((subtask): subtask is { title: string; completed?: boolean } => !!subtask);
+      .filter((subtask): subtask is { title: string; completed: boolean } => !!subtask);
     return {
       type: "task",
       title,
@@ -1744,7 +1046,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
 
   return (
     <>
-      <Modal onClose={() => { if (!saving && uploadingCount === 0) onCancel(); }} showClose={false} variant="fullscreen">
+      <Modal onClose={() => { if (!saving && uploadingCount === 0) onCancel(); }} showClose={false} variant="fullscreen" desktop="pane">
       <div className="edit-modal">
         <div className="edit-sheet__header">
           <button
@@ -1897,48 +1199,12 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 ))}
               </div>
             )}
-            {(uploadingDocumentRows.length > 0 || documents.length > 0) && (
-              <ul className="space-y-1">
-                {uploadingDocumentRows.map((doc) => (
-                  <li key={doc.id} className="doc-edit-row doc-edit-row--uploading">
-                    <div className="doc-edit-row__info">
-                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
-                      <div className="doc-edit-row__meta">{doc.kind}</div>
-                    </div>
-                    <div className="doc-edit-row__actions">
-                      <span className="doc-edit-row__status">{doc.phase === "processing" ? "Processing" : "Uploading"}<span className="doc-edit-row__dots">{".".repeat(uploadingDotPhase)}</span></span>
-                    </div>
-                    <div className={`doc-edit-row__progress${doc.indeterminate ? " doc-edit-row__progress--indeterminate" : ""}`} aria-hidden="true">
-                      <div className={`doc-edit-row__progress-bar${doc.indeterminate ? " doc-edit-row__progress-bar--indeterminate" : ""}`} style={doc.indeterminate ? undefined : { width: `${Math.max(12, Math.round(doc.progress * 100))}%` }} />
-                    </div>
-                  </li>
-                ))}
-                {documents.map((doc) => (
-                  <li key={doc.id} className="doc-edit-row">
-                    <div className="doc-edit-row__info">
-                      <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
-                      <div className="doc-edit-row__meta">{doc.kind.toUpperCase()}</div>
-                    </div>
-                    <div className="doc-edit-row__actions">
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable"
-                        onClick={() => onPreviewDocument?.(task, doc)}
-                      >
-                        Preview
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-button button-sm pressable text-rose-500"
-                        onClick={() => setDocuments((prev) => prev.filter((item) => item.id !== doc.id))}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <AttachmentList
+              documents={documents}
+              uploading={uploadingDocumentRows}
+              onPreview={(doc) => onPreviewDocument?.(task, doc)}
+              onRemove={(id) => setDocuments((prev) => prev.filter((item) => item.id !== id))}
+            />
             <div className="edit-card__detail edit-card__detail--field">
               <button
                 type="button"
@@ -2118,71 +1384,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           </div>
           {hasDueTime && timeDetailsOpen && (
             <div className="edit-card__detail space-y-2">
-              <div className="edit-time-picker" role="group" aria-label="Select time" onWheel={handleTimePickerWheel}>
-                <div
-                  className="edit-time-picker__column"
-                  ref={timePickerHourColumnRef}
-                  onScroll={handleTimePickerHourScroll}
-                  role="listbox"
-                  aria-label="Select hour"
-                >
-                  {HOURS_12.map((hour, idx) => (
-                    <div
-                      key={hour}
-                      className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-                      data-picker-index={idx}
-                      role="option"
-                      aria-selected={timePickerHour === hour}
-                      onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-                    >
-                      {String(hour).padStart(2, "0")}
-                    </div>
-                  ))}
-                </div>
-                <div className="edit-time-picker__separator" aria-hidden="true">
-                  :
-                </div>
-                <div
-                  className="edit-time-picker__column"
-                  ref={timePickerMinuteColumnRef}
-                  onScroll={handleTimePickerMinuteScroll}
-                  role="listbox"
-                  aria-label="Select minute"
-                >
-                  {MINUTES.map((minute, idx) => (
-                    <div
-                      key={minute}
-                      className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-                      data-picker-index={idx}
-                      role="option"
-                      aria-selected={timePickerMinute === minute}
-                      onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-                    >
-                      {String(minute).padStart(2, "0")}
-                    </div>
-                  ))}
-                </div>
-                <div
-                  className="edit-time-picker__column edit-time-picker__column--meridiem"
-                  ref={timePickerMeridiemColumnRef}
-                  onScroll={handleTimePickerMeridiemScroll}
-                  role="listbox"
-                  aria-label="Select AM or PM"
-                >
-                  {MERIDIEMS.map((label, idx) => (
-                    <div
-                      key={label}
-                      className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-                      data-picker-index={idx}
-                      role="option"
-                      aria-selected={timePickerMeridiem === label}
-                      onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-                    >
-                      {label}
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <WheelTimePicker value={scheduledTime} fallback={defaultTimeValue} onChange={setScheduledTime} />
             </div>
           )}
 
@@ -2208,42 +1410,13 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             </button>
           )}
 
-          <button
-            type="button"
-            className="edit-row edit-row--interactive"
-            onClick={() => setRepeatSheetOpen(true)}
-          >
-            <span className="edit-row__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
-                <path d="M4 12h16M7 7l-3 5 3 5M17 17l3-5-3-5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </span>
-            <div className="edit-row__content">
-              <div className="edit-row__label">Repeat</div>
-            </div>
-            <div className="edit-row__value">{labelOf(rule)}</div>
-            <span className="edit-row__chevron" aria-hidden="true">›</span>
-          </button>
-
-          {rule.type !== "none" && (
-            <button
-              type="button"
-              className="edit-row edit-row--interactive"
-              onClick={() => setEndRepeatSheetOpen(true)}
-            >
-              <span className="edit-row__icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
-                  <path d="M6 6h12v12H6z" opacity="0.35" />
-                  <path d="M6 12h12" />
-                </svg>
-              </span>
-              <div className="edit-row__content">
-                <div className="edit-row__label">End Repeat</div>
-              </div>
-              <div className="edit-row__value">{endRepeatSummary}</div>
-              <span className="edit-row__chevron" aria-hidden="true">›</span>
-            </button>
-          )}
+          <RepeatField
+            rule={rule}
+            onChange={setRule}
+            anchorDate={scheduledDate}
+            timeZone={safeScheduledTimeZone}
+            showIcons
+          />
 
         {dateEnabled && (
             <>
@@ -2266,116 +1439,23 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
               </button>
               {reminderPickerExpanded && (
                 <div className="edit-card__detail space-y-2">
-                  <div className="flex flex-wrap gap-1.5">
-                    {reminderOptions.map((opt) => {
-                      const active = reminderSelection.includes(opt.id);
-                      const cls = active ? "accent-button button-sm pressable" : "ghost-button button-sm pressable";
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          className={cls}
-                          onClick={() => toggleReminder(opt.id)}
-                          disabled={!dateEnabled}
-                          title={opt.label}
-                        >
-                          {opt.badge}
-                        </button>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      className="ghost-button button-sm pressable"
-                      onClick={handleAddCustomReminder}
-                      disabled={!dateEnabled}
-                      title="Add a custom reminder"
-                    >
-                      Custom…
-                    </button>
-                  </div>
-                  {!hasDueTime && (
-                    <div className="space-y-2">
-                      <div className="text-xs text-secondary">Reminder time (current timezone)</div>
-                      <button
-                        type="button"
-                        className={`pressable rounded-full border border-white/10 bg-white/10 px-3 py-2 text-sm font-medium ${
-                          reminderTimeDetailsOpen ? "text-primary" : "text-secondary"
-                        }`}
-                        onClick={() => setReminderTimeDetailsOpen((prev) => !prev)}
-                        aria-pressed={reminderTimeDetailsOpen}
-                        disabled={!dateEnabled}
-                      >
-                        {reminderTimeSummary}
-                      </button>
-                      {reminderTimeDetailsOpen && (
-                        <div className="edit-time-picker" role="group" aria-label="Select reminder time" onWheel={handleTimePickerWheel}>
-                          <div
-                            className="edit-time-picker__column"
-                            ref={timePickerHourColumnRef}
-                            onScroll={handleTimePickerHourScroll}
-                            role="listbox"
-                            aria-label="Select hour"
-                          >
-                            {HOURS_12.map((hour, idx) => (
-                              <div
-                                key={`task-reminder-hour-${hour}`}
-                                className={`edit-time-picker__option ${timePickerHour === hour ? "is-active" : ""}`}
-                                data-picker-index={idx}
-                                role="option"
-                                aria-selected={timePickerHour === hour}
-                                onClick={() => setTimePickerFromParts(hour, timePickerMinute, timePickerMeridiem)}
-                              >
-                                {String(hour).padStart(2, "0")}
-                              </div>
-                            ))}
-                          </div>
-                          <div className="edit-time-picker__separator" aria-hidden="true">
-                            :
-                          </div>
-                          <div
-                            className="edit-time-picker__column"
-                            ref={timePickerMinuteColumnRef}
-                            onScroll={handleTimePickerMinuteScroll}
-                            role="listbox"
-                            aria-label="Select minute"
-                          >
-                            {MINUTES.map((minute, idx) => (
-                              <div
-                                key={`task-reminder-minute-${minute}`}
-                                className={`edit-time-picker__option ${timePickerMinute === minute ? "is-active" : ""}`}
-                                data-picker-index={idx}
-                                role="option"
-                                aria-selected={timePickerMinute === minute}
-                                onClick={() => setTimePickerFromParts(timePickerHour, minute, timePickerMeridiem)}
-                              >
-                                {String(minute).padStart(2, "0")}
-                              </div>
-                            ))}
-                          </div>
-                          <div
-                            className="edit-time-picker__column edit-time-picker__column--meridiem"
-                            ref={timePickerMeridiemColumnRef}
-                            onScroll={handleTimePickerMeridiemScroll}
-                            role="listbox"
-                            aria-label="Select AM or PM"
-                          >
-                            {MERIDIEMS.map((label, idx) => (
-                              <div
-                                key={`task-reminder-meridiem-${label}`}
-                                className={`edit-time-picker__option ${timePickerMeridiem === label ? "is-active" : ""}`}
-                                data-picker-index={idx}
-                                role="option"
-                                aria-selected={timePickerMeridiem === label}
-                                onClick={() => setTimePickerFromParts(timePickerHour, timePickerMinute, label)}
-                              >
-                                {label}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <ReminderChips
+                    selection={reminderSelection}
+                    mode={reminderPresetMode}
+                    onChange={setReminderSelection}
+                    disabled={!dateEnabled}
+                    anchorISO={reminderAnchorISO}
+                    anchorTimeZone={hasDueTime ? safeScheduledTimeZone : systemTimeZone}
+                    anchorLabel={hasDueTime ? "due time" : "reminder time"}
+                    timeOfDay={hasDueTime ? undefined : {
+                      label: reminderTimeSummary,
+                      open: reminderTimeDetailsOpen,
+                      onToggle: () => setReminderTimeDetailsOpen((prev) => !prev),
+                      value: reminderTime,
+                      fallback: DEFAULT_DATE_REMINDER_TIME,
+                      onChange: setReminderTime,
+                    }}
+                  />
                 </div>
               )}
             </>
@@ -2543,203 +1623,11 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
           )}
         </section>
 
-        {task.bounty ? (
-          <section className="edit-card space-y-2">
-            <div className="edit-card__title">Bounty (ecash)</div>
-            <div className={`wallet-history__item bounty-card${bountyExpanded ? " wallet-history__item--open" : ""}`}>
-              <button
-                type="button"
-                className="wallet-history__summary bounty-card__summary"
-                onClick={() => setBountyExpanded((prev) => !prev)}
-                aria-expanded={bountyExpanded}
-              >
-                <div className="wallet-history__icon" aria-hidden="true">
-                  <EcashGlyph className="wallet-history__glyph" />
-                </div>
-                <div className="wallet-history__body">
-                  <div className="wallet-history__title-row">
-                    <span className="wallet-history__type">Ecash bounty</span>
-                    <span className="wallet-history__time">{bountyStateLabel(task.bounty)}</span>
-                  </div>
-                </div>
-                <div className="wallet-history__value">
-                  {typeof task.bounty.amount === "number" && (
-                    <span className="wallet-history__amount wallet-history__amount--in">+{task.bounty.amount} sats</span>
-                  )}
-                </div>
-              </button>
-
-              {!bountyExpanded && (
-                <div className="bounty-card__actions px-4 pb-3">
-                  {task.bounty.state === "locked" && canRevealBounty && bountySignerHasKey && (
-                    <button
-                      className="accent-button button-sm pressable"
-                      onClick={async () => {
-                        try {
-                          await onRevealBounty?.(task.id);
-                          setBountyState("unlocked");
-                        } catch (error) {
-                          alert((error as Error)?.message || "Unable to reveal bounty token.");
-                        }
-                      }}
-                      disabled={!canRevealBounty}
-                    >
-                      {bountyReceiverIsViewer ? "Unlock" : "Reveal"}
-                    </button>
-                  )}
-
-                  {canSignOverBounty && (
-                    <button
-                      className="ghost-button button-sm pressable"
-                      onClick={() => setSignOverSheetOpen(true)}
-                      disabled={signingBounty}
-                    >
-                      {signingBounty ? "Signing…" : "Sign over"}
-                    </button>
-                  )}
-
-                  {canRedeemBounty && (
-                    <>
-                      <button
-                        className="accent-button button-sm pressable"
-                        onClick={(e) => redeemCurrentBounty((e.currentTarget as HTMLElement).getBoundingClientRect())}
-                        disabled={!bountyTokenReady}
-                      >
-                        Redeem
-                      </button>
-                      <button
-                        className="ghost-button button-sm pressable"
-                        onClick={handleCopyBountyToken}
-                        disabled={!bountyTokenReady}
-                      >
-                        Copy
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {bountyExpanded && (
-                <div className="bounty-card__details">
-                  <div className="bounty-card__meta">
-                    <div>
-                      <div className="bounty-card__label">Status</div>
-                      <div className="bounty-card__value">{bountyStateLabel(task.bounty)}</div>
-                    </div>
-                    <div>
-                      <div className="bounty-card__label">Amount</div>
-                      <div className="bounty-card__value font-semibold">
-                        {typeof task.bounty.amount === "number" ? `${task.bounty.amount} sats` : "Unknown"}
-                      </div>
-                    </div>
-                    {task.bounty.receiver && (
-                      <div>
-                        <div className="bounty-card__label">Locked to</div>
-                        <div className="bounty-card__value">{currentReceiverDisplay || "recipient"}</div>
-                      </div>
-                    )}
-                    {task.bounty.mint && (
-                      <div>
-                        <div className="bounty-card__label">Mint</div>
-                        <div className="bounty-card__value break-all">{task.bounty.mint}</div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="bounty-card__label">Token</div>
-                    {task.bounty.enc && !task.bounty.token ? (
-                      <div className="bounty-card__token-note">
-                        {((task.bounty.enc as any).alg === "aes-gcm-256")
-                          ? "Hidden (encrypted by funder). Only the funder can reveal."
-                          : "Locked to recipient's Nostr key (nip04). Only the recipient can decrypt."}
-                      </div>
-                    ) : (
-                      <textarea
-                        readOnly
-                        value={task.bounty.token || ""}
-                        className="pill-textarea w-full"
-                        rows={3}
-                      />
-                    )}
-                  </div>
-
-                  <div className="bounty-card__actions">
-                    {task.bounty.state === "locked" && task.bounty.enc && bountySignerHasKey && (
-                      <button
-                        className="accent-button button-sm pressable"
-                        onClick={async () => {
-                          try {
-                            await onRevealBounty?.(task.id);
-                            setBountyState("unlocked");
-                          } catch (error) {
-                            alert((error as Error)?.message || "Unable to reveal bounty token.");
-                          }
-                        }}
-                        disabled={!canRevealBounty}
-                      >
-                        {bountyReceiverIsViewer ? "Unlock" : "Reveal"}
-                      </button>
-                    )}
-
-                    {canSignOverBounty && (
-                      <button
-                        className="ghost-button button-sm pressable"
-                        onClick={() => setSignOverSheetOpen(true)}
-                        disabled={signingBounty}
-                      >
-                        {signingBounty ? "Signing…" : "Sign over"}
-                      </button>
-                    )}
-
-                    {canRedeemBounty && (
-                      <>
-                        <button
-                          className="accent-button button-sm pressable"
-                          onClick={(e) => redeemCurrentBounty((e.currentTarget as HTMLElement).getBoundingClientRect())}
-                          disabled={!bountyTokenReady}
-                        >
-                          Redeem
-                        </button>
-                        <button
-                          className="ghost-button button-sm pressable"
-                          onClick={handleCopyBountyToken}
-                          disabled={!bountyTokenReady}
-                        >
-                          Copy
-                        </button>
-                        <button
-                          className="ghost-button button-sm pressable"
-                          onClick={handleMarkBountyClaimed}
-                          disabled={!bountyTokenReady}
-                        >
-                          Mark as claimed
-                        </button>
-                      </>
-                    )}
-
-                    {task.bounty && canRemoveBounty && (
-                      <button
-                        className="ghost-button button-sm pressable text-rose-500"
-                        onClick={handleRemoveBounty}
-                      >
-                        Remove bounty
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-        ) : walletEnabled ? (
-          <button
-            type="button"
-            className="accent-button accent-button--tall pressable w-full text-lg font-semibold"
-            onClick={handleOpenAttachSheet}
-          >
-            Attach bounty
-          </button>
-        ) : null}
+        {bountyExtension
+          ? bountyExtension.renderSection({ task, saveWith: save, contacts, nip05Cache })
+          : task.bounty
+            ? <TaskBountyToken task={task} onReveal={onRevealBounty} />
+            : null}
 
         {streakEligible && (
           <section className="edit-card space-y-2">
@@ -2764,11 +1652,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             Delete
           </button>
           <div className="edit-actions__secondary">
-            {bountyButtonActive && (
-              <button type="button" className="ghost-button button-sm pressable" onClick={handleToggleBountyList}>
-                {taskInBountyList ? "Unpin task" : "Pin task"}
-              </button>
-            )}
+            {bountyExtension?.renderActions?.({ task })}
             <button
               type="button"
               className="ghost-button button-sm pressable"
@@ -2785,16 +1669,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
         </div>
       </div>
 
-      {showAdvanced && (
-        <RecurrenceModal
-          initial={rule}
-          onClose={() => setShowAdvanced(false)}
-          onApply={(r) => {
-            setRule(r);
-            setShowAdvanced(false);
-          }}
-        />
-      )}
     </Modal>
 
     <ActionSheet
@@ -2858,34 +1732,14 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
             {filteredAssigneeContacts.map((contact) => {
               const pubkey = normalizeAssigneePubkey(contact?.npub);
               if (!pubkey) return null;
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              const selected = assignedPubkeys.has(pubkey);
               return (
-                <button
+                <ContactRow
                   key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
+                  contact={contact}
+                  selected={assignedPubkeys.has(pubkey)}
+                  selectedLabel="Assigned"
                   onClick={() => toggleAssigneeContact(contact)}
-                  aria-pressed={selected}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name flex items-center gap-2">
-                      <span className="min-w-0 truncate">{label}</span>
-                      {selected ? (
-                        <span className="text-xs text-secondary" aria-label="Assigned">
-                          ✓
-                        </span>
-                      ) : null}
-                    </div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </button>
+                />
               );
             })}
           </div>
@@ -2907,143 +1761,22 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       </div>
     </ActionSheet>
 
-    <ActionSheet
+    <ContactShareSheet
       open={shareTaskPickerOpen}
+      title="Send task"
+      itemLabel={title.trim() || "this task"}
+      contacts={shareableContacts}
+      busy={shareTaskBusy}
+      status={shareTaskStatus}
+      onPick={handleShareTaskToContact}
       onClose={() => {
-        if (shareTaskBusy) return;
         setShareTaskPickerOpen(false);
         setShareTaskStatus(null);
       }}
-      title="Send task"
-      stackLevel={85}
-    >
-      <div className="text-sm text-secondary mb-2">
-        Choose a contact to send <span className="font-semibold">{title.trim() || "this task"}</span>.
-      </div>
-      {shareTaskStatus && (
-        <div className="text-sm text-rose-400 mb-2">{shareTaskStatus}</div>
-      )}
-      {shareableContacts.length ? (
-        <div className="space-y-2">
-          {shareableContacts.map((contact) => {
-            const label = contactPrimaryName(contact);
-            const subtitle = formatContactNpub(contact.npub);
-            return (
-              <button
-                key={contact.id}
-                type="button"
-                className="contact-row pressable"
-                disabled={shareTaskBusy}
-                onClick={() => handleShareTaskToContact(contact)}
-              >
-                <div className="contact-avatar">{contactInitials(label)}</div>
-                <div className="contact-row__text">
-                  <div className="contact-row__name">{label}</div>
-                  {subtitle ? (
-                    <div className="contact-row__meta">
-                      <span className="contact-row__meta-text">{subtitle}</span>
-                    </div>
-                  ) : null}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
-      )}
-      <div className="flex gap-2 mt-3">
-        <button
-          type="button"
-          className="ghost-button button-sm pressable flex-1 justify-center"
-          onClick={() => {
-            if (shareTaskBusy) return;
-            setShareTaskPickerOpen(false);
-            setShareTaskStatus(null);
-          }}
-          disabled={shareTaskBusy}
-        >
-          Cancel
-        </button>
-      </div>
-    </ActionSheet>
-
-    <CustomReminderSheet
-      open={customReminderSheetOpen}
-      onClose={() => setCustomReminderSheetOpen(false)}
-      anchorISO={reminderAnchorISO}
-      anchorTimeZone={hasDueTime ? safeScheduledTimeZone : systemTimeZone}
-      anchorLabel={hasDueTime ? "due time" : "reminder time"}
-      onApply={handleApplyCustomReminder}
     />
 
-    <RepeatPickerSheet
-      open={repeatSheetOpen}
-      onClose={() => setRepeatSheetOpen(false)}
-      rule={rule}
-      scheduledDate={scheduledDate}
-      onSelect={handleRepeatSelect}
-      onOpenCustom={handleOpenCustomRepeat}
-      onOpenAdvanced={handleOpenAdvancedRepeat}
-    />
-    <RepeatCustomSheet
-      open={repeatCustomSheetOpen}
-      onClose={() => setRepeatCustomSheetOpen(false)}
-      scheduledDate={scheduledDate}
-      rule={rule}
-      onApply={handleRepeatSelect}
-      onOpenAdvanced={handleOpenAdvancedRepeat}
-    />
-    <EndRepeatSheet
-      open={endRepeatSheetOpen}
-      onClose={() => setEndRepeatSheetOpen(false)}
-      rule={rule}
-      scheduledDate={scheduledDate}
-      timeZone={safeScheduledTimeZone}
-      onSelect={(untilISO) =>
-        setRule((prev) => {
-          const next: Recurrence = { ...prev };
-          if (untilISO) {
-            next.untilISO = untilISO;
-          } else {
-            delete next.untilISO;
-          }
-          return next;
-        })
-      }
-    />
 
-    <LockToNpubSheet
-      open={lockNpubSheetOpen}
-      onClose={() => setLockNpubSheetOpen(false)}
-      contacts={contacts}
-      quickOptions={quickLockOptions}
-      nip05Cache={nip05Cache}
-      onSelect={handleLockRecipientSelect}
-      selected={lockRecipientSelection}
-    />
-    <LockToNpubSheet
-      open={signOverSheetOpen}
-      onClose={() => setSignOverSheetOpen(false)}
-      contacts={contacts}
-      quickOptions={quickLockOptions}
-      nip05Cache={nip05Cache}
-      onSelect={handleSignOverSelection}
-      selected={null}
-    />
-    <BountyAttachSheet
-      open={attachSheetOpen}
-      onClose={() => setAttachSheetOpen(false)}
-      onAttach={handleAttachBounty}
-      lockToSelf={lockToSelf}
-      onToggleLockToSelf={handleToggleLockToSelf}
-      onOpenLockContacts={() => setLockNpubSheetOpen(true)}
-      lockRecipient={lockRecipientSelection}
-      onClearRecipient={handleClearLockRecipient}
-      walletConversionEnabled={walletConversionEnabled}
-      walletPrimaryCurrency={walletPrimaryCurrency}
-      mintUrl={mintUrl}
-    />
+
     <TimeZoneSheet
       open={timeZoneSheetOpen}
       onClose={() => setTimeZoneSheetOpen(false)}
@@ -3057,4 +1790,3 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
 }
 
 export { EditModal };
-export type { LockRecipientSelection, QuickLockOption, Nip05CheckState };

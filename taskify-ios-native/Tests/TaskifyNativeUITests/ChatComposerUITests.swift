@@ -300,18 +300,9 @@ final class ChatComposerUITests: XCTestCase {
     }
 
     private func onboard(_ app: XCUIApplication) {
-        XCTAssertTrue(
-            app.staticTexts["Choose how you want to get started."].waitForExistence(timeout: 10)
-        )
-        app.buttons["Create new login"].tap()
-        let nsecText = app.staticTexts.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "nsec1")
-        ).firstMatch
-        XCTAssertTrue(nsecText.waitForExistence(timeout: 5))
-        app.buttons["Copy nsec"].tap()
-        app.buttons["Continue"].tap()
-        XCTAssertTrue(app.staticTexts["Enable reminder notifications?"].waitForExistence(timeout: 5))
-        app.buttons["Not now"].tap()
+        let start = app.buttons["Start using Taskify"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        start.tap()
     }
 
     private func attach(_ app: XCUIApplication, name: String) {

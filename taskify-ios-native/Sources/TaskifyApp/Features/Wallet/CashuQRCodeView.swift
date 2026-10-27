@@ -3,6 +3,7 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import SwiftUI
 import TaskifyCore
+import TaskifyWallet
 import UIKit
 
 private enum CashuQRCodeRenderer {

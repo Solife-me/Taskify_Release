@@ -209,6 +209,7 @@ function replayDb() {
 const routeTestEnv = {
   ASSETS: { fetch: async () => new Response("asset") },
   TASKIFY_DB: replayDb(),
+  WATCH_NOSTR_RATE_LIMITER: { limit: async () => ({ success: true }) },
 } as any;
 
 test("Watch Nostr query requires signed Taskify authentication", async () => {
@@ -218,6 +219,19 @@ test("Watch Nostr query requires signed Taskify authentication", async () => {
     body: JSON.stringify({ relays: ["wss://relay.example"], filter: {} }),
   }), routeTestEnv);
   assert.equal(response.status, 401);
+});
+
+test("the Watch bridge refuses when its rate limiter is not bound", async () => {
+  const privateKey = schnorr.utils.randomSecretKey();
+  const publicKey = bytesToHex(schnorr.getPublicKey(privateKey));
+  const body = JSON.stringify({ relays: ["wss://relay.example"], filter: { kinds: [30_301], authors: [publicKey], limit: 10 } });
+  const { WATCH_NOSTR_RATE_LIMITER: _limiter, ...unbound } = routeTestEnv;
+  const response = await worker.fetch(new Request("https://taskify.example/api/watch/nostr/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...signedHeaders(privateKey, publicKey, body) },
+    body,
+  }), unbound);
+  assert.equal(response.status, 503);
 });
 
 test("Watch Nostr query rejects broad filters before opening relays", async () => {

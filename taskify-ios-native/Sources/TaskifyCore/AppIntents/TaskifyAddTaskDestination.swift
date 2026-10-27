@@ -94,4 +94,53 @@ public struct TaskifyAddTaskDestination {
 
         return addable.compactMap(destination(for:)).first
     }
+
+    /// The visible board a person named or sees for a task stored on `storageBoard`.
+    public static func displayBoard(
+        for storageBoard: Board,
+        requestedBoardName: String?,
+        in snapshot: TaskifySnapshot
+    ) -> Board {
+        if let requested = requestedBoardName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requested.isEmpty,
+           let requestedBoard = matchingNamedBoard(named: requested, in: snapshot),
+           represents(storageBoard: storageBoard, visibleBoard: requestedBoard, in: snapshot) {
+            return requestedBoard
+        }
+        if !storageBoard.isVisible,
+           let parent = snapshot.visibleBoards.first(where: {
+               $0.kind == .compound && represents(
+                   storageBoard: storageBoard,
+                   visibleBoard: $0,
+                   in: snapshot
+               )
+           }) {
+            return parent
+        }
+        return storageBoard
+    }
+
+    private static func matchingNamedBoard(named name: String, in snapshot: TaskifySnapshot) -> Board? {
+        let boards = namedBoards(in: snapshot)
+        return boards.first {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        } ?? boards.first {
+            $0.name.localizedCaseInsensitiveContains(name)
+        } ?? boards.first {
+            name.localizedCaseInsensitiveContains($0.name)
+        }
+    }
+
+    private static func represents(
+        storageBoard: Board,
+        visibleBoard: Board,
+        in snapshot: TaskifySnapshot
+    ) -> Bool {
+        storageBoard.id == visibleBoard.id || (
+            visibleBoard.kind == .compound &&
+                snapshot.compoundChildBoards(for: visibleBoard.id).contains {
+                    $0.id == storageBoard.id
+                }
+        )
+    }
 }

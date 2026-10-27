@@ -129,7 +129,7 @@ struct BibleTrackerView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Bible Reading Tracker")
-                        .font(.system(size: 18, weight: .bold))
+                        .scaledFont(size: 18, weight: .bold)
                         .foregroundStyle(TaskifyTheme.primaryText)
                     Text(subtitleText)
                         .font(.subheadline)
@@ -137,7 +137,7 @@ struct BibleTrackerView: View {
                 }
                 Spacer()
                 Text(percentComplete.formatted(.percent.precision(.fractionLength(0...1))))
-                    .font(.system(size: 15, weight: .bold))
+                    .scaledFont(size: 15, weight: .bold)
                     .foregroundStyle(TaskifyTheme.accent)
             }
 
@@ -247,7 +247,7 @@ struct BibleTrackerView: View {
     private var completedBooksSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("COMPLETED BOOKS")
-                .font(.system(size: 11, weight: .bold))
+                .scaledFont(size: 11, weight: .bold)
                 .tracking(1)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
 
@@ -261,7 +261,7 @@ struct BibleTrackerView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(entry.book.name)
-                                    .font(.system(size: 16, weight: .semibold))
+                                    .scaledFont(size: 16, weight: .semibold)
                                     .foregroundStyle(TaskifyTheme.primaryText)
                                 Text(entry.completedAt.map {
                                     "Completed \($0.formatted(date: .abbreviated, time: .omitted))"
@@ -306,7 +306,7 @@ struct BibleTrackerView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
                 Text("SCRIPTURE MEMORY")
-                    .font(.system(size: 11, weight: .bold))
+                    .scaledFont(size: 11, weight: .bold)
                     .tracking(1)
                     .foregroundStyle(TaskifyTheme.tertiaryText)
                 Spacer()
@@ -352,7 +352,7 @@ struct BibleTrackerView: View {
     private var archiveSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("ARCHIVE")
-                .font(.system(size: 11, weight: .bold))
+                .scaledFont(size: 11, weight: .bold)
                 .tracking(1)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
 
@@ -402,14 +402,14 @@ private struct BibleBookRow: View {
             Button(action: onToggleExpanded) {
                 HStack(spacing: 10) {
                     Text(book.name)
-                        .font(.system(size: 16, weight: .semibold))
+                        .scaledFont(size: 16, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Text("\(chaptersRead.count)/\(book.chapterCount) read")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 12, weight: .bold))
+                        .scaledFont(size: 12, weight: .bold)
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                         .rotationEffect(.degrees(isExpanded ? 180 : 0))
                 }
@@ -477,7 +477,7 @@ private struct ChapterButton: View {
 
     var body: some View {
         Text("\(chapter)")
-            .font(.system(size: 13, weight: .semibold))
+            .scaledFont(size: 13, weight: .semibold)
             .foregroundStyle(isRead ? .white : TaskifyTheme.primaryText)
             .frame(width: 42, height: 36)
             .background(
@@ -563,7 +563,7 @@ private struct VerseEditorSheet: View {
                                 }
                             } label: {
                                 Text("\(verse)")
-                                    .font(.system(size: 12, weight: .semibold))
+                                    .scaledFont(size: 12, weight: .semibold)
                                     .foregroundStyle(selection.contains(verse) ? .white : TaskifyTheme.primaryText)
                                     .frame(width: 44, height: 36)
                                     .background(
@@ -628,7 +628,7 @@ private struct BibleArchiveRow: View {
                     }
                     Spacer()
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 12, weight: .bold))
+                        .scaledFont(size: 12, weight: .bold)
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                         .rotationEffect(.degrees(isExpanded ? 180 : 0))
                 }
@@ -675,7 +675,7 @@ private struct ScriptureMemoryEntryRow: View {
         HStack(alignment: .top, spacing: 11) {
             Button(action: onReview) {
                 Image(systemName: stats.dueNow ? "circle" : "checkmark.circle.fill")
-                    .font(.system(size: 22, weight: .medium))
+                    .scaledFont(size: 22, weight: .medium)
                     .foregroundStyle(stats.dueNow ? TaskifyTheme.secondaryText : TaskifyTheme.accent)
             }
             .buttonStyle(.plain)
@@ -684,7 +684,7 @@ private struct ScriptureMemoryEntryRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .top) {
                     Text(reference)
-                        .font(.system(size: 16, weight: .semibold))
+                        .scaledFont(size: 16, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Button(action: onRemove) {
@@ -697,7 +697,7 @@ private struct ScriptureMemoryEntryRow: View {
                 }
 
                 Text(stats.dueNow ? "Needs review" : "Reviewed")
-                    .font(.system(size: 10, weight: .bold))
+                    .scaledFont(size: 10, weight: .bold)
                     .tracking(0.6)
                     .foregroundStyle(stats.dueNow ? Color.orange : Color.green)
 
@@ -796,7 +796,7 @@ private struct ScripturePickerSheet: View {
     private func bookGroup(title: String, books: [BibleBook]) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(title.uppercased())
-                .font(.system(size: 11, weight: .bold))
+                .scaledFont(size: 11, weight: .bold)
                 .tracking(1)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
             VStack(spacing: 0) {
@@ -838,7 +838,7 @@ private struct ScripturePickerSheet: View {
                         step = .verses(bookID: bookID, chapter: chapter)
                     } label: {
                         Text("\(chapter)")
-                            .font(.system(size: 13, weight: .semibold))
+                            .scaledFont(size: 13, weight: .semibold)
                             .foregroundStyle(TaskifyTheme.primaryText)
                             .frame(width: 44, height: 38)
                             .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -867,7 +867,7 @@ private struct ScripturePickerSheet: View {
                                 selectVerse(verse)
                             } label: {
                                 Text("\(verse)")
-                                    .font(.system(size: 12, weight: .semibold))
+                                    .scaledFont(size: 12, weight: .semibold)
                                     .foregroundStyle(active ? .white : TaskifyTheme.primaryText)
                                     .frame(width: 44, height: 36)
                                     .background(

@@ -32,7 +32,7 @@ final class TaskSelectionUITests: XCTestCase {
         XCTAssertTrue(taskA.waitForExistence(timeout: 5))
         XCTAssertTrue(taskB.waitForExistence(timeout: 5))
 
-        enterSelectionMode(app)
+        try enterSelectionMode(app)
         attach(app, name: "selection-01-mode-entered")
 
         // In selection mode, the entire card becomes one selection target, including previews.
@@ -58,7 +58,7 @@ final class TaskSelectionUITests: XCTestCase {
 
         let task = app.buttons["Edit Move me"]
         XCTAssertTrue(task.waitForExistence(timeout: 10))
-        enterSelectionMode(app)
+        try enterSelectionMode(app)
         app.buttons["Select Move me"].tap()
         app.buttons["Move"].tap()
 
@@ -125,11 +125,12 @@ final class TaskSelectionUITests: XCTestCase {
     }
 
     /// Selection mode starts from a column's menu: "More" on a week day, "Manage … list" on a list.
-    private func enterSelectionMode(_ app: XCUIApplication) {
-        let more = app.buttons.matching(
-            NSPredicate(format: "label == 'More' OR label BEGINSWITH 'Manage '")
-        ).firstMatch
-        XCTAssertTrue(more.waitForExistence(timeout: 5))
+    private func enterSelectionMode(_ app: XCUIApplication) throws {
+        // Each column has a More menu; use the one on screen (neighbouring columns peek in).
+        let menus = app.buttons.matching(NSPredicate(format: "label == 'More' OR label BEGINSWITH 'Manage '"))
+        XCTAssertTrue(menus.firstMatch.waitForExistence(timeout: 5))
+        let width = app.windows.firstMatch.frame.width
+        let more = try XCTUnwrap(menus.allElementsBoundByIndex.first { $0.frame.minX >= 0 && $0.frame.maxX <= width })
         more.tap()
         let select = app.buttons["Select items"]
         XCTAssertTrue(select.waitForExistence(timeout: 5))

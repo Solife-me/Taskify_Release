@@ -1,0 +1,211 @@
+import { createPrivateKey, sign } from 'node:crypto'
+import http2 from 'node:http2'
+
+function base64url(value) {
+  return Buffer.from(value).toString('base64url')
+}
+
+// iPhone alerts add `mutable-content` and a random, short-lived preview capability URL so each
+// app's Notification Service Extension can fetch the encrypted gift wrap, decrypt it on-device,
+// and rewrite the alert. The URL contains no event ID, public key, sender, application, or
+// category. Without a
+// preview token the iPhone receives the same generic alert as the Watch.
+export function genericDMPayload(previewURL = null) {
+  const payload = genericWatchDMPayload()
+  if (!previewURL) return payload
+  payload.aps['mutable-content'] = 1
+  payload.taskify.previewURL = previewURL
+  return payload
+}
+
+export function genericSnapstrPayload(previewURL = null) {
+  const payload = {
+    aps: {
+      alert: {
+        title: 'New Snap',
+        body: 'Open Snapstr to view it.',
+      },
+      sound: 'default',
+      'content-available': 1,
+    },
+    snapstr: { type: 'message-preview' },
+  }
+  if (!previewURL) return payload
+  payload.aps['mutable-content'] = 1
+  payload.snapstr.previewURL = previewURL
+  return payload
+}
+
+// watchOS has no notification service extension, so the Watch keeps the metadata-free generic
+// alert. A generic alert is substantially more reliable than a background-only wake, while
+// content-available still gives watchOS an opportunity to refresh the encrypted inbox before the
+// user opens the app.
+export function genericWatchDMPayload() {
+  return {
+    aps: {
+      alert: {
+        title: 'New Message',
+        body: 'Open Taskify to view it.',
+      },
+      sound: 'default',
+      'content-available': 1,
+    },
+    taskify: { type: 'dm-preview' },
+  }
+}
+
+export function apnsDeliveryProfile(
+  registration,
+  { topic, watchTopic, macTopic, snapstrTopic, previewURL = null },
+) {
+  const isWatch = registration.platform === 'watchos'
+  const isMac = registration.platform === 'macos'
+  const isSnapstr = registration.application === 'snapstr'
+  return {
+    payload: isWatch || isMac
+      ? genericWatchDMPayload()
+      : isSnapstr ? genericSnapstrPayload(previewURL) : genericDMPayload(previewURL),
+    topic: isWatch ? watchTopic : isMac ? macTopic : isSnapstr ? snapstrTopic : topic,
+    pushType: 'alert',
+    priority: '10',
+    // Alerts that all read the same replace one another on the device instead of piling up. One
+    // with a preview link is rewritten into that message's own preview, so it is never collapsed.
+    collapseID: previewURL && !isWatch && !isMac ? null : isSnapstr ? 'snapstr-new-snap' : 'taskify-new-message',
+  }
+}
+
+// An alert still undelivered after this long is about a conversation the person has long since
+// opened on another device, so APNs drops it rather than delivering it late.
+const ALERT_LIFETIME_SECONDS = 24 * 60 * 60
+
+export class APNsClient {
+  constructor({
+    teamID,
+    keyID,
+    privateKey,
+    topic,
+    watchTopic = 'solife.me.Taskify.Native.watchkitapp',
+    macTopic = 'solife.me.Taskify.Mac',
+    snapstrTopic = 'app.snapstr.ios',
+    requestTimeoutMs = 10_000,
+    // Apple's hosts; tests point these at a local HTTP/2 server.
+    authorities = { production: 'https://api.push.apple.com', sandbox: 'https://api.sandbox.push.apple.com' },
+    now = () => Date.now(),
+  }) {
+    this.teamID = teamID
+    this.keyID = keyID
+    this.privateKey = createPrivateKey(privateKey.replaceAll('\\n', '\n'))
+    this.topic = topic
+    this.watchTopic = watchTopic
+    this.macTopic = macTopic
+    this.snapstrTopic = snapstrTopic
+    this.requestTimeoutMs = requestTimeoutMs
+    this.authorities = authorities
+    this.now = now
+    this.cachedToken = null
+    this.sessions = new Map()
+  }
+
+  /// The open HTTP/2 session to `authority`, connecting when there is none. Apple asks providers
+  /// to keep their connection open rather than connect per alert; a session that errors, is told
+  /// to go away, or closes is forgotten, and the next alert connects again.
+  session(authority) {
+    const existing = this.sessions.get(authority)
+    if (existing && !existing.closed && !existing.destroyed) return existing
+    const session = http2.connect(authority)
+    const forget = () => {
+      if (this.sessions.get(authority) === session) this.sessions.delete(authority)
+    }
+    session.on('error', forget)
+    session.on('goaway', forget)
+    session.on('close', forget)
+    // An idle connection must not keep the process alive at shutdown.
+    session.unref()
+    this.sessions.set(authority, session)
+    return session
+  }
+
+  /// Closes every connection; a later alert connects again.
+  close() {
+    for (const session of this.sessions.values()) session.close()
+    this.sessions.clear()
+  }
+
+  providerToken() {
+    const nowSeconds = Math.floor(this.now() / 1000)
+    if (this.cachedToken && nowSeconds - this.cachedToken.issuedAt < 50 * 60) {
+      return this.cachedToken.value
+    }
+    const header = base64url(JSON.stringify({ alg: 'ES256', kid: this.keyID }))
+    const claims = base64url(JSON.stringify({ iss: this.teamID, iat: nowSeconds }))
+    const signingInput = `${header}.${claims}`
+    const signature = sign('sha256', Buffer.from(signingInput), {
+      key: this.privateKey,
+      dsaEncoding: 'ieee-p1363',
+    }).toString('base64url')
+    const value = `${signingInput}.${signature}`
+    this.cachedToken = { issuedAt: nowSeconds, value }
+    return value
+  }
+
+  invalidateProviderToken() {
+    this.cachedToken = null
+  }
+
+  async send(registration, previewURL = null) {
+    const authority = registration.environment === 'sandbox' ? this.authorities.sandbox : this.authorities.production
+    const delivery = apnsDeliveryProfile(registration, {
+      topic: this.topic,
+      watchTopic: this.watchTopic,
+      macTopic: this.macTopic,
+      snapstrTopic: this.snapstrTopic,
+      previewURL,
+    })
+    const body = Buffer.from(JSON.stringify(delivery.payload))
+    const session = this.session(authority)
+    return new Promise((resolve, reject) => {
+      let settled = false
+      let status = 0
+      let timeout = null
+      const chunks = []
+      const onSessionError = (error) => finish(() => reject(error))
+      const finish = (callback) => {
+        if (settled) return
+        settled = true
+        if (timeout) clearTimeout(timeout)
+        session.off('error', onSessionError)
+        callback()
+      }
+      session.once('error', onSessionError)
+      const request = session.request({
+        ':method': 'POST',
+        ':path': `/3/device/${registration.deviceToken}`,
+        authorization: `bearer ${this.providerToken()}`,
+        'apns-topic': delivery.topic,
+        'apns-push-type': delivery.pushType,
+        'apns-priority': delivery.priority,
+        'apns-expiration': String(Math.floor(this.now() / 1000) + ALERT_LIFETIME_SECONDS),
+        ...(delivery.collapseID ? { 'apns-collapse-id': delivery.collapseID } : {}),
+        'content-type': 'application/json',
+        'content-length': String(body.length),
+      })
+      request.on('response', (headers) => {
+        status = Number(headers[':status'] ?? 0)
+      })
+      request.on('data', (chunk) => chunks.push(chunk))
+      request.once('error', (error) => finish(() => reject(error)))
+      request.once('end', () => {
+        let reason = null
+        try {
+          reason = JSON.parse(Buffer.concat(chunks).toString('utf8')).reason ?? null
+        } catch {}
+        finish(() => resolve({ status, reason }))
+      })
+      timeout = setTimeout(() => {
+        request.close(http2.constants.NGHTTP2_CANCEL)
+        finish(() => reject(new Error('APNs request timed out')))
+      }, this.requestTimeoutMs)
+      request.end(body)
+    })
+  }
+}

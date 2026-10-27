@@ -14,7 +14,8 @@
 taskify board list                             # list configured boards with IDs
 taskify board join <uuid> --name <name>        # join an existing board by ID
 taskify board sync [boardId]                   # pull latest board metadata from relay
-taskify board create <name>                    # create a new board on Nostr
+taskify board create <name> [--columns "A, B"]  # create a new board on Nostr; lists are asked for
+                                               # in a terminal, and left empty in a script without --columns
 taskify board leave <boardId>                  # remove board from local config
 taskify board rename <board> <name>
 taskify board archive <board>
