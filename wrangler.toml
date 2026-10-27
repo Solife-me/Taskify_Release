@@ -24,6 +24,9 @@ crons = ["*/1 * * * *"]
 
 [observability.logs]
 enabled = true
+# Request logs would record each request's URL and headers; console logs carry only what the code
+# writes. A deploy applies this, so a dashboard toggle would not last (F1A-9).
+invocation_logs = false
 
 # A deploy replaces every variable with this section, so the push settings live here, not in the
 # dashboard. Both are public: the key is also built into the PWA (VITE_VAPID_PUBLIC_KEY) and served

@@ -4658,3 +4658,26 @@ current Worker alone.
 - delete the `taskify` Worker;
 - check its R2 bucket `TASKIFY_BACKUPS` first.
 
+### Checkpoint — October 27, 2026 (account cleanup)
+
+**Done in the account**, at the maintainer's request:
+- **v1 retired.** The `taskify-v1.solife.me` custom domain and the `taskify` Worker are deleted.
+  Its deployed script and settings were saved locally first. Its R2 bucket `taskify-backups` (one
+  object, 122 bytes) is untouched; deleting it is the maintainer's call.
+- **`GEMINI_API_KEY` deleted** from `taskify-public` (F1A-10). That deployed version `a035b087`,
+  which has every binding, limiter and VAPID variable of `c64fc4fe`. The `GCAL_*` secrets were
+  already gone. The key itself must still be revoked in Google's console.
+
+**Done in the repository, test-first:**
+- **Invocation logs off:** `[observability.logs] invocation_logs = false`, so a deploy applies it
+  and a dashboard toggle cannot drift (F1A-9). Console logs stay on.
+- **Migration 0009** drops the five calendar tables that predate the migrations directory:
+  `caldav_*` and the first integration's `google_calendar_*`. `migrations.test.ts` also checks
+  that every migration can run again, which the first `migrations apply` in production needs,
+  since only 0001 is recorded there.
+
+**Left to the maintainer:** apply migrations 0002–0009. That permanently removes the retired
+calendar data and the stored reminder titles, so the maintainer runs it:
+`npx wrangler@4.150.0 d1 migrations apply taskify-notifications --remote`. Do it after these
+commits reach `main`, and revoke the Google OAuth client and the Gemini key in Google's console.
+
