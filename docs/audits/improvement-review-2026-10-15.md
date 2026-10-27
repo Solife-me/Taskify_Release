@@ -4546,3 +4546,30 @@ registration with the push server failed.
 `534e50c3`. The Native macOS job's "Build the unsigned Mac app" step fails in CI but builds locally
 with the same command. Its CI log is needed.
 
+### Checkpoint — October 27, 2026 (Brave's console on taskify.solife.me)
+
+With Brave's "Use Google services for push messaging" turned on and Brave relaunched,
+registration still failed. The maintainer shared the page's console. Probed from the same Mac:
+
+- **Google's push hosts are reachable:** `mtalk.google.com` on 5228 and 443, and
+  `fcm.googleapis.com` on 443. So the network does not block Brave's push service at the TCP
+  level. The next facts needed are `brave://gcm-internals` (Connection State) and the raw
+  `subscribe()` error.
+- **Ours, fixed test-first:**
+  - The service worker re-fetched relay and `/api/` requests, adding a second uncaught
+    "Failed to fetch" to every failure. It now leaves them to the browser (`3242212b`).
+  - `push.solife.me`'s NIP-11 document had no CORS headers, which NIP-11 requires. It now has
+    them, in relay 0.5.1 (`4207f10b`).
+- **The account's own relay list, not the code:**
+  - `wss://wisp.solife.me` has no DNS record.
+  - `wss://solife.me/nostrrelay/1` answers HTTP 200 instead of upgrading to a WebSocket.
+  - `wss://purplepag.es` returned 502.
+  - None of them is in the repository; remove them from the account's relays.
+- **Seen only in Brave:**
+  - `wss://relay.solife.me` failed with "Invalid frame header" and "Could not decode a text frame
+    as UTF-8", yet it accepts a WebSocket and answers from Node on the same Mac. An extension or a
+    shield in Brave is the likely cause.
+  - Cloudflare's injected Web Analytics beacon and its inline script are blocked by the site's
+    `script-src 'self'`. That is harmless; turn off the zone's automatic Web Analytics injection
+    to silence it.
+
