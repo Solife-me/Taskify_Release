@@ -4606,6 +4606,10 @@ registration still failed. The maintainer shared the page's console. Probed from
   - corrects the Watch fallback after C13-9a: only Taskify's own `push.solife.me` falls back to
     `taskify.solife.me`.
 - **Packed** with `make`: aarch64 52 MB, x86_64 54 MB.
-- **Not yet done:** installing on the StartOS box, and a browser registering for chat alerts.
-  `start-cli` here is 2.3.0, behind 2.5.1.
+- **Installed and verified end to end** by the maintainer:
+  - the live relay reports 0.5.1;
+  - `push.solife.me` answers the registration preflight with 204 and sends CORS headers on its
+    NIP-11 document;
+  - the web app's chat toggle stays on, and a test DM raised a browser notification.
+- `start-cli` here is 2.3.0, behind 2.5.1.
 
