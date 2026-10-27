@@ -114,6 +114,29 @@ test("after a failure, an unchanged schedule is sent again when the effect re-ru
   await h.unmount();
 });
 
+test("a save cut off when the effect re-runs is sent again, even though the schedule is unchanged", async () => {
+  // Seen on an iPhone: the app re-created pushPrefs while its first save was in flight. The
+  // cleanup aborted that save, and the re-run took the schedule for already sent, so the
+  // Worker never got it and the reminder never fired.
+  const fetchMock = vi.fn()
+    .mockImplementationOnce((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }))
+    .mockResolvedValueOnce({ ok: true });
+  vi.stubGlobal("fetch", fetchMock);
+  const h = harness();
+  await h.render();
+  await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+
+  await h.render({ ...pushPrefs });
+  await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+  await flush();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(h.sentPayloadRef.current).toContain('"taskId":"t1"');
+  await h.unmount();
+});
+
 test("the Worker gets no titles; the device keeps them while push is on and drops them when it is off", async () => {
   const fetchMock = vi.fn().mockResolvedValue({ ok: true });
   vi.stubGlobal("fetch", fetchMock);
