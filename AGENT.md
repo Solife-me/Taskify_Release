@@ -196,11 +196,12 @@ npx wrangler@4.150.0 deploy --dry-run --outdir /tmp/wrangler
 ```
 
 **Push relay image:** `push-relay/` is the application and `taskify-push-relay/` is only its
-StartOS package. CI builds the application Dockerfile on every change. A maintainer publishes a
-release only by pushing `push-relay-v<push-relay/package.json version>`; the tag workflow re-runs
-the tests, requires an exact version match, and publishes amd64 and arm64 to
-`ghcr.io/solife-me/taskify-push-relay:<version>`. Agents never push tags. Confirm the exact GHCR
-tag is public and contains both architectures before changing the StartOS image pin.
+StartOS package. CI builds the application Dockerfile on every change. A relay release is a
+version bump in `push-relay/package.json` merged to `main`: `push-relay-image.yml` sees that GHCR
+has no image for that version, re-runs the tests, publishes amd64 and arm64 to
+`ghcr.io/solife-me/taskify-push-relay:<version>`, and records the tag `push-relay-v<version>`. A
+published version is never rebuilt. Agents never push tags or branches. Confirm the exact GHCR tag
+is public and contains both architectures before changing the StartOS image pin.
 
 ### Important Notes
 

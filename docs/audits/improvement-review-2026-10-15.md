@@ -4573,3 +4573,20 @@ registration still failed. The maintainer shared the page's console. Probed from
     `script-src 'self'`. That is harmless; turn off the zone's automatic Web Analytics injection
     to silence it.
 
+### Checkpoint — October 27, 2026 (first reminder test from an iPhone)
+
+- **Registration works:** Safari on iPhone registered with Apple's push service
+  (`web.push.apple.com`) at 04:43 UTC through `PUT /api/devices` on `taskify.solife.me`.
+- **An older client was used first.** It still calls the removed `/api/gcal/*` routes on the
+  workers.dev host, so it was a build from before the calendar removal.
+- **The first sync was accepted but empty** (`PUT /api/reminders` → 204): the reminder set
+  earlier was already past due. A second sync was **canceled by the app** at 04:44:00 and never
+  retried.
+- **Cause, fixed test-first in `useReminderSync`:**
+  - The hook marked a schedule as sent before the Worker accepted it.
+  - When the effect re-ran during the save (a re-created `pushPrefs`, for example), the cleanup
+    aborted the save, and the re-run skipped the "already sent" schedule.
+  - Now a save cut off before it succeeds clears that mark, so the next run sends it.
+- **Chat alerts on the web** still need relay 0.5.1 (CORS) published and the relay's VAPID pair
+  configured.
+

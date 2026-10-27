@@ -17,7 +17,8 @@ export type ReminderSyncItem = {
  * Keeps the Worker's copy of this device's reminder schedule in line with the app's.
  *
  * `sentPayloadRef` holds the schedule the Worker last accepted (or the one in flight), so an
- * unchanged schedule is not sent again; callers clear it when push is enabled or disabled.
+ * unchanged schedule is not sent again; callers clear it when push is enabled or disabled. A
+ * save this effect cuts off before it succeeds gives the schedule back, so the next run sends it.
  * Until a save succeeds it keeps retrying — the Worker's `Retry-After` when it gave one,
  * otherwise backing off from 30 seconds — because a failed save (offline, a server error, the
  * daily change budget) would otherwise leave the server's copy stale and reminders added since
@@ -73,11 +74,13 @@ export function useReminderSync({
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failures = 0;
+    let accepted = false;
     const attempt = (delayMs: number) => {
       timer = setTimeout(() => {
         syncRemindersToWorker(workerBaseUrl, pushPrefs, reminderSyncItems, { signal: controller.signal })
           .then(() => {
             if (controller.signal.aborted) return;
+            accepted = true;
             sentPayloadRef.current = payloadString;
             if (failures > 0) setPushError(null);
           })
@@ -98,6 +101,8 @@ export function useReminderSync({
     return () => {
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
+      // Cut off before the Worker took it: the next run must send it, unchanged or not.
+      if (!accepted && sentPayloadRef.current === payloadString) sentPayloadRef.current = null;
     };
   }, [reminderSyncItems, pushPrefs, workerBaseUrl, sentPayloadRef, setPushError, showToast]);
 }
