@@ -394,6 +394,49 @@ test('APNs registration accepts legacy, iOS, Watch and Mac platforms', async (t)
   )
 })
 
+test('the web app can register from its own origin: the preflight passes and errors are readable', async (t) => {
+  // The PWA on taskify.solife.me calls this relay cross-origin with a NIP-98 header, so the
+  // browser asks first. Without an answer it never sends the request, and reports only a network
+  // failure. Authentication is the signature, never a cookie, so any origin may ask.
+  const { port } = await serverForTest(t)
+  const path = '/v1/registrations/browser-1'
+  const preflight = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'https://taskify.solife.me',
+      'access-control-request-method': 'PUT',
+      'access-control-request-headers': 'authorization,content-type',
+    },
+  })
+  assert.equal(preflight.status, 204)
+  assert.equal(preflight.headers.get('access-control-allow-origin'), '*')
+  assert.match(preflight.headers.get('access-control-allow-methods') ?? '', /\bPUT\b/)
+  assert.match(preflight.headers.get('access-control-allow-methods') ?? '', /\bDELETE\b/)
+  assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /authorization/i)
+  assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /content-type/i)
+  assert.equal(preflight.headers.get('access-control-allow-credentials'), null)
+
+  // A relay without web push refuses the registration, and the page can read why.
+  const secretKey = generateSecretKey()
+  const body = Buffer.from(JSON.stringify({
+    platform: 'web',
+    application: 'taskify',
+    subscription: { endpoint: 'https://web.push.apple.com/x', keys: { p256dh: 'a', auth: 'b' } },
+  }))
+  const refused = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'PUT',
+    headers: {
+      origin: 'https://taskify.solife.me',
+      authorization: nip98(secretKey, `https://push.solife.me${path}`, 'PUT', body),
+      'content-type': 'application/json',
+    },
+    body,
+  })
+  assert.equal(refused.status, 400)
+  assert.equal(refused.headers.get('access-control-allow-origin'), '*')
+  assert.deepEqual(await refused.json(), { error: 'Web push is not configured on this relay' })
+})
+
 test('a request target that URL parsing rejects gets 400 and the server keeps running', async (t) => {
   const { port } = await serverForTest(t)
   const net = await import('node:net')

@@ -771,6 +771,20 @@ export function createTaskifyPushServer({
 
   async function handleHTTPRequest(request, response) {
     const url = new URL(request.url ?? '/', config.publicBaseURL)
+    // The web app registers from its own origin. These requests authenticate by their NIP-98
+    // signature, never a cookie, so any origin may make them and read the answer.
+    if (/^\/v1\/registrations\/[^/]+$/.test(url.pathname)) {
+      response.setHeader('Access-Control-Allow-Origin', '*')
+      if (request.method === 'OPTIONS') {
+        response.writeHead(204, {
+          'Access-Control-Allow-Methods': 'PUT, DELETE',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+          'Access-Control-Max-Age': '86400',
+        })
+        response.end()
+        return
+      }
+    }
     if (request.method === 'GET' && url.pathname === '/healthz') {
       sendJSON(response, 200, { status: 'ok' })
       return

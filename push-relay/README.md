@@ -34,7 +34,9 @@ asked for a list of everyone who uses it.
 
 ## Runtime
 
-- HTTPS registration API: `PUT`/`DELETE /v1/registrations/:installationID`
+- HTTPS registration API: `PUT`/`DELETE /v1/registrations/:installationID`. Browsers may call it
+  from any origin: it answers CORS preflights and sends `Access-Control-Allow-Origin: *`, never with
+  credentials, since every request is authenticated by its NIP-98 signature.
 - Watch inbox API: `POST /v1/watch/inbox/query`
 - Watch propagation API: `POST /v1/watch/outbox/submit` and short-lived NIP-42 continuation at
   `POST /v1/watch/outbox/:session/authorize`

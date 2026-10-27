@@ -4505,3 +4505,33 @@ deployment since 2026-10-12 followed a merge to `main` within a minute.
 **Not yet verified:** a real reminder ping signed by `taskify-public`. No reminder was due during
 the tail; the next stored one is due 2026-11-05. v1's cron still runs alongside.
 
+### Checkpoint — October 27, 2026 (web push from the live site: three faults)
+
+The maintainer set a reminder on `taskify.solife.me` with push on, and the app reported that
+registration with the push server failed.
+
+1. **The relay refused every browser** (fixed in relay 0.5.1, test-first).
+   - The PWA registers chat alerts at `push.solife.me` from `taskify.solife.me`, with a NIP-98
+     `Authorization` header, so the browser sends a CORS preflight first. The relay had no CORS
+     handling and answered the preflight with 404.
+   - Checked in the built-in browser: from `taskify.solife.me`, the call fails as
+     `TypeError: Failed to fetch` before it is sent.
+   - 0.5.1 answers preflights on `/v1/registrations/*` and sends `Access-Control-Allow-Origin: *`
+     on those responses, without credentials. Every request is signed, so the origin grants
+     nothing. A local relay, called cross-origin from the built-in browser, now returns its real
+     JSON error.
+   - The maintainer tags `push-relay-v0.5.1`, then the package pins that image.
+2. **The relay has no VAPID key pair.** The StartOS **Configure Web Push** action needs the
+   Worker's pair: the public key and subject from `wrangler.toml`, and the private key from the
+   `VAPID_PRIVATE_KEY` KV entry. A browser holds one subscription, tied to one key, so the pair must
+   be the same. Until then the relay answers web registrations with "Web push is not configured on
+   this relay", which the PWA can now read.
+3. **Reminders never reached the Worker.** A live tail of both Workers during the test showed no
+   `PUT /api/devices` and no `PUT /api/reminders`, and D1 gained no reminder. The registration
+   failed before the Worker was called. The exact error the app showed is needed to tell which
+   step failed.
+
+**Also found:** CI's gitleaks job had failed since 2026-10-21 on two false positives, fixed in
+`534e50c3`. The Native macOS job's "Build the unsigned Mac app" step fails in CI but builds locally
+with the same command. Its CI log is needed.
+
