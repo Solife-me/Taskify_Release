@@ -4613,3 +4613,23 @@ registration still failed. The maintainer shared the page's console. Probed from
   - the web app's chat toggle stays on, and a test DM raised a browser notification.
 - `start-cli` here is 2.3.0, behind 2.5.1.
 
+### Checkpoint — October 27, 2026 (a web reminder delivered end to end, by v1's cron)
+
+Production `c64fc4fe`, which has the reminder-sync fix, took a reminder from the iPhone's web app.
+Live tails on both Workers recorded:
+
+| Time (UTC) | Event |
+| --- | --- |
+| 13:29:54 | `taskify-public` cron (scheduled :50); nothing due |
+| 13:30:17 | `PUT /api/reminders` from the iPhone → 204 |
+| 13:30:26 | **v1 `taskify` cron** (scheduled :23) |
+| 13:30:27 | `POST /api/reminders/poll` → 200: the service worker woke and collected it |
+| 13:30:28 | `POST /api/reminders/poll` → 204 |
+| 13:30:52 | `taskify-public` cron; nothing left |
+
+The notification arrived on the phone. Sync, storage, Apple push, the service worker's poll and the
+on-device title all work. The ping, though, came from the retired v1 Worker: both crons read the
+same D1 every minute, and v1's slot came first. That `taskify-public` signs pings itself is still
+unproven. Removing v1's cron trigger leaves `taskify-public` as the only sender, and is the first
+part of retiring v1.
+
