@@ -437,6 +437,25 @@ test('the web app can register from its own origin: the preflight passes and err
   assert.deepEqual(await refused.json(), { error: 'Web push is not configured on this relay' })
 })
 
+test('the relay information document can be read from a web page, as NIP-11 requires', async (t) => {
+  const { port } = await serverForTest(t)
+  const preflight = await fetch(`http://127.0.0.1:${port}/`, {
+    method: 'OPTIONS',
+    headers: { origin: 'https://taskify.solife.me', 'access-control-request-method': 'GET', 'access-control-request-headers': 'accept' },
+  })
+  assert.equal(preflight.status, 204)
+  assert.equal(preflight.headers.get('access-control-allow-origin'), '*')
+  assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /accept/i)
+  assert.match(preflight.headers.get('access-control-allow-methods') ?? '', /\bGET\b/)
+
+  const info = await fetch(`http://127.0.0.1:${port}/`, {
+    headers: { origin: 'https://taskify.solife.me', accept: 'application/nostr+json' },
+  })
+  assert.equal(info.status, 200)
+  assert.equal(info.headers.get('access-control-allow-origin'), '*')
+  assert.equal((await info.json()).name, 'Taskify Push Relay')
+})
+
 test('a request target that URL parsing rejects gets 400 and the server keeps running', async (t) => {
   const { port } = await serverForTest(t)
   const net = await import('node:net')

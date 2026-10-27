@@ -771,16 +771,20 @@ export function createTaskifyPushServer({
 
   async function handleHTTPRequest(request, response) {
     const url = new URL(request.url ?? '/', config.publicBaseURL)
-    // The web app registers from its own origin. These requests authenticate by their NIP-98
-    // signature, never a cookie, so any origin may make them and read the answer.
-    if (/^\/v1\/registrations\/[^/]+$/.test(url.pathname)) {
+    // Web pages read these from their own origins: the NIP-11 document (which NIP-11 requires to
+    // allow) and the web app's registrations. Neither uses a cookie. The document is public and a
+    // registration is authenticated by its NIP-98 signature, so any origin may ask.
+    const cors = url.pathname === '/'
+      ? { methods: 'GET', headers: 'Accept' }
+      : /^\/v1\/registrations\/[^/]+$/.test(url.pathname)
+        ? { methods: 'PUT, DELETE', headers: 'Authorization, Content-Type' }
+        : null
+    if (cors) {
       response.setHeader('Access-Control-Allow-Origin', '*')
+      response.setHeader('Access-Control-Allow-Methods', cors.methods)
+      response.setHeader('Access-Control-Allow-Headers', cors.headers)
       if (request.method === 'OPTIONS') {
-        response.writeHead(204, {
-          'Access-Control-Allow-Methods': 'PUT, DELETE',
-          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-          'Access-Control-Max-Age': '86400',
-        })
+        response.writeHead(204, { 'Access-Control-Max-Age': '86400' })
         response.end()
         return
       }
