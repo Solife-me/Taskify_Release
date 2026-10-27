@@ -4535,8 +4535,12 @@ registration with the push server failed.
      the `VAPID_PRIVATE_KEY` KV entry derives exactly that key, and the live service worker is
      active at `/sw.js` with scope `/`.
    - **Remaining causes are on the device:** the site's notification permission, or a browser whose
-     push service is off (Brave without "Google services for push messaging", for example). Which
-     browser it was is needed next.
+     push service is off (Brave without "Google services for push messaging", for example).
+   - **The browser was Chromium-based** (Chrome, Brave or Arc), yet the app's message sent every
+     browser to Safari's settings. `pushErrors.ts` (test-first) now gives Brave its setting
+     (`brave://settings/privacy`), other Chromium browsers a push-service hint, Safari its own
+     path, and others advice that names no browser. Not yet seen in a browser: the built-in one has
+     notifications denied.
 
 **Also found:** CI's gitleaks job had failed since 2026-10-21 on two false positives, fixed in
 `534e50c3`. The Native macOS job's "Build the unsigned Mac app" step fails in CI but builds locally
