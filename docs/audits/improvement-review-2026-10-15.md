@@ -4476,7 +4476,7 @@ Cloudflare API, and nothing in the account was changed.
 - The zone's rate-limit rules (F1A-17) could not be read: the token lacks that permission.
 
 **Maintainer steps, in order:**
-1. Deploy `taskify-public` from this commit. Push from the live site then works without v1.
+1. ~~Deploy `taskify-public` from this commit.~~ Done 2026-10-27 (see the next checkpoint).
 2. Retire v1: remove `taskify-v1.solife.me` and the `taskify` Worker, which stops its competing
    cron. Its R2 binding `TASKIFY_BACKUPS` was not inspected.
 3. Revoke the Google OAuth client, then apply the migrations (0005 drops the `gcal_*` tables and
@@ -4484,4 +4484,24 @@ Cloudflare API, and nothing in the account was changed.
 4. Turn off invocation logs.
 
 C13-5's code steps still wait: legacy KV has keys, and the private key is not yet a secret.
+
+### Checkpoint — October 27, 2026 (`taskify-public` deployed with its push settings)
+
+**How deploys happen:** Cloudflare's Git integration deploys `taskify-public` on a merge to `main`.
+Each push to `Beta` uploads a preview version at the `beta` alias
+(`beta-taskify-public.<account>.workers.dev`), and the cron does not run there. Every production
+deployment since 2026-10-12 followed a merge to `main` within a minute.
+
+**What was checked:**
+- **The preview** (`a5afe45c`, from `ddd3b590`) served the VAPID key at `/api/config`, with the
+  subject and all five limiters bound.
+- **The merge** of PR #218 (`92024519`) was deployed at 02:04 UTC as `a1f7fe3e`.
+- **The live site:**
+  - `taskify.solife.me/api/config` serves the key.
+  - `/`, `/sw.js` and `/reminder-titles.js` answer 200.
+  - A POST preview of example.com answers.
+- **The cron:** four production runs tailed, all `ok`, with no exceptions and no "Push ping error".
+
+**Not yet verified:** a real reminder ping signed by `taskify-public`. No reminder was due during
+the tail; the next stored one is due 2026-11-05. v1's cron still runs alongside.
 
