@@ -8,6 +8,8 @@ description = "Test fixtures use generated or fake secrets"
 paths = [
   '''\.test\.(ts|tsx|js|mjs)$''',
   '''(?i)(^|/)tests?/''',
+  # Cross-client wire vectors: fixed keys every client must decode identically.
+  '''^taskify-core/fixtures/[a-z0-9-]+-vectors\.json$''',
 ]
 
 [[allowlists]]
@@ -23,6 +25,13 @@ regexTarget = "line"
 regexes = [
   '''^\s*(?:export\s+)?const\s+[A-Z0-9_]*(?:KEY|KEYS)\s*=\s*["'](?:cashu|taskify)[._][A-Za-z0-9_.-]+["'];?\s*$''',
   '''^\s*privateKeys:\s*p2pkSigningPrivateKeys\s*$''',
+]
+
+[[allowlists]]
+description = "Versioned storage-key names (cashu_proofs_v1, …), however they are listed, are not credentials"
+regexTarget = "secret"
+regexes = [
+  '''^(?:cashu|taskify)_[a-z0-9_]+_v[0-9]+$''',
 ]
 
 [[allowlists]]
