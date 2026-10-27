@@ -4633,3 +4633,28 @@ same D1 every minute, and v1's slot came first. That `taskify-public` signs ping
 unproven. Removing v1's cron trigger leaves `taskify-public` as the only sender, and is the first
 part of retiring v1.
 
+### Checkpoint — October 27, 2026 (`taskify-public` sends reminders itself; v1's cron removed)
+
+**v1's cron is off.** At the maintainer's request, the old `taskify` Worker's cron trigger
+(`*/1 * * * *`) was removed through the API at 13:32 UTC; it can be restored the same way.
+Cloudflare kept running it until 13:38:24. Since then only `taskify-public`'s cron has run: 88
+runs, all `ok`, none with an exception.
+
+**`taskify-public` delivered the next reminder:**
+
+| Time (UTC) | Event |
+| --- | --- |
+| 13:32:53 | `PUT /api/reminders` from the iPhone → 204 |
+| 13:34:24 | v1 cron, still running; the reminder is not yet due |
+| 13:35:52 | `taskify-public` cron: 2.5 s, against under 1 s idle, because it signed and sent the ping |
+| 13:35:55 | `POST /api/reminders/poll` → 200, then 204 |
+| 13:36:02 | next v1 cron, after delivery |
+
+The maintainer confirmed the notification on the phone. Web reminders now work end to end on the
+current Worker alone.
+
+**Left for v1's retirement**, the maintainer's call:
+- remove `taskify-v1.solife.me`;
+- delete the `taskify` Worker;
+- check its R2 bucket `TASKIFY_BACKUPS` first.
+
