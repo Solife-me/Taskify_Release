@@ -1,13 +1,24 @@
 name: Publish push relay image
 
+# A relay version is released by merging it to main: when push-relay/package.json names a version
+# GHCR does not have yet, this tests the relay, publishes that version for amd64 and arm64, and
+# records the release as the tag push-relay-v<version>. A published version is never rebuilt or
+# overwritten, so merges that leave the version alone publish nothing.
 on:
   push:
-    tags:
-      - "push-relay-v*"
+    branches: [main]
+    paths:
+      - "push-relay/**"
+      - ".github/workflows/push-relay-image.yml"
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
+
+concurrency:
+  group: push-relay-image
+  cancel-in-progress: false
 
 env:
   NODE_VERSION: "22.23.4"
@@ -15,41 +26,17 @@ env:
 
 jobs:
   publish:
-    name: Test and publish multi-architecture image
+    name: Publish a new relay version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: push-relay/package-lock.json
+          fetch-depth: 0
 
-      - name: Tag matches the relay package version
+      - name: Relay version
         id: version
         working-directory: push-relay
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          expected="push-relay-v${version}"
-          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match package version $version (expected $expected)"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Install and test the relay
-        working-directory: push-relay
-        run: |
-          npm ci
-          npm test
-          npm audit --omit=dev --audit-level=high
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -58,7 +45,48 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Is this version already published?
+        id: published
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if docker buildx imagetools inspect "$IMAGE_NAME:$VERSION" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            # Relay changes that kept the published version cannot ship: say so where it is seen.
+            if git rev-parse -q --verify "refs/tags/push-relay-v$VERSION" > /dev/null \
+              && ! git diff --quiet "push-relay-v$VERSION" HEAD -- push-relay/src push-relay/package-lock.json push-relay/Dockerfile; then
+              echo "::warning::push-relay changed since $VERSION was published. Bump push-relay/package.json to release it."
+            fi
+            echo "$IMAGE_NAME:$VERSION is already published; nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v7
+        if: steps.published.outputs.exists == 'false'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: push-relay/package-lock.json
+
+      - name: Install and test the relay
+        if: steps.published.outputs.exists == 'false'
+        working-directory: push-relay
+        run: |
+          npm ci
+          npm test
+          npm audit --omit=dev --audit-level=high
+
+      - name: Set up QEMU
+        if: steps.published.outputs.exists == 'false'
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        if: steps.published.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@v4
+
       - name: Build and publish the relay
+        if: steps.published.outputs.exists == 'false'
         uses: docker/build-push-action@v7
         with:
           context: push-relay
@@ -73,3 +101,11 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: true
           sbom: true
+
+      - name: Record the release as a tag
+        if: steps.published.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "push-relay-v$VERSION" "$GITHUB_SHA"
+          git push origin "push-relay-v$VERSION"
