@@ -35,15 +35,9 @@ let activatedAt = 0;
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
-  if (shouldBypassRelayTraffic(event.request)) {
-    event.respondWith(fetch(event.request));
-    return;
-  }
-
-  if (shouldBypassApi(event.request)) {
-    event.respondWith(fetch(event.request));
-    return;
-  }
+  // Relay and API requests are left to the browser. Re-fetching them here added a hop and, on a
+  // failure, a second uncaught error in this worker on top of the page's own.
+  if (shouldBypassRelayTraffic(event.request) || shouldBypassApi(event.request)) return;
 
   // Do not turn the service worker into a cache for arbitrary cross-origin or
   // data fetches. The app shell and same-origin static assets are the only
