@@ -284,6 +284,8 @@ public struct TaskifyWatchChatProvisioningContext: Codable, Equatable, Sendable 
     public let accountInboxPreferenceEvent: TaskifyWatchNostrEvent?
     public let pushRelayHTTPSURL: URL
     public let pushRelayWSSURL: String
+    public let fileServerURL: String?
+    public let fileServerType: String?
 
     public init(
         contacts: [TaskifyWatchContact] = [],
@@ -291,7 +293,9 @@ public struct TaskifyWatchChatProvisioningContext: Codable, Equatable, Sendable 
         discoveryRelayURLs: [String],
         accountInboxPreferenceEvent: TaskifyWatchNostrEvent? = nil,
         pushRelayHTTPSURL: URL = URL(string: "https://push.solife.me")!,
-        pushRelayWSSURL: String = "wss://push.solife.me"
+        pushRelayWSSURL: String = "wss://push.solife.me",
+        fileServerURL: String? = nil,
+        fileServerType: String? = nil
     ) {
         self.contacts = Array(contacts.prefix(500))
         self.threadSummaries = TaskifyWatchChatProjection(
@@ -301,6 +305,8 @@ public struct TaskifyWatchChatProvisioningContext: Codable, Equatable, Sendable 
         self.accountInboxPreferenceEvent = accountInboxPreferenceEvent
         self.pushRelayHTTPSURL = pushRelayHTTPSURL
         self.pushRelayWSSURL = pushRelayWSSURL
+        self.fileServerURL = fileServerURL
+        self.fileServerType = fileServerType
     }
 }
 
@@ -416,6 +422,8 @@ public struct TaskifyWatchChatProjection: Codable, Equatable, Sendable {
     public let discoveryRelayURLs: [String]?
     public let pushRelayHTTPSURL: URL?
     public let pushRelayWSSURL: String?
+    public let fileServerURL: String?
+    public let fileServerType: String?
     /// Conversations deleted on the paired iPhone. Without ongoing projections this tombstone
     /// list is the only path phone-side deletions have to the Watch cache.
     public let deletedConversationIDs: [String]?
@@ -430,6 +438,8 @@ public struct TaskifyWatchChatProjection: Codable, Equatable, Sendable {
         discoveryRelayURLs: [String]? = nil,
         pushRelayHTTPSURL: URL? = nil,
         pushRelayWSSURL: String? = nil,
+        fileServerURL: String? = nil,
+        fileServerType: String? = nil,
         deletedConversationIDs: [String]? = nil,
         blockedPublicKeys: [String]? = nil,
         generatedAt: Date = Date()
@@ -480,6 +490,8 @@ public struct TaskifyWatchChatProjection: Codable, Equatable, Sendable {
         self.pushRelayWSSURL = pushRelayWSSURL.flatMap {
             TaskifyWatchRelayRouting.normalizedRelayURLs([$0]).first
         }
+        self.fileServerURL = fileServerURL
+        self.fileServerType = fileServerType
         self.deletedConversationIDs = deletedConversationIDs.map { list in
             Self.normalizedTombstoneIDs(list)
         }
@@ -510,6 +522,7 @@ public enum TaskifyWatchChatMessageKind: String, Codable, Equatable, Sendable {
     case text
     case reaction
     case photo
+    case audio
     case unsupportedAttachment
     case unsupportedMessage
 }
@@ -547,6 +560,7 @@ public struct TaskifyWatchChatAttachment: Codable, Equatable, Sendable {
     }
 
     public var isPhoto: Bool { mimeType.hasPrefix("image/") }
+    public var isAudio: Bool { mimeType.hasPrefix("audio/") }
 }
 
 public enum TaskifyWatchChatDeliveryState: String, Codable, Equatable, Sendable {

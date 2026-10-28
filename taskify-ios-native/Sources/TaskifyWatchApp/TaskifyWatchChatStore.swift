@@ -732,7 +732,9 @@ actor TaskifyWatchChatCoordinator {
                 pushRelayHTTPSURL: projection.pushRelayHTTPSURL
                     ?? current.pushRelayHTTPSURL,
                 pushRelayWSSURL: projection.pushRelayWSSURL
-                    ?? current.pushRelayWSSURL
+                    ?? current.pushRelayWSSURL,
+                fileServerURL: projection.fileServerURL ?? current.fileServerURL,
+                fileServerType: projection.fileServerType ?? current.fileServerType
             )
             if updated.pushRelayHTTPSURL != current.pushRelayHTTPSURL {
                 gateway = try TaskifyWatchChatGatewayClient(
@@ -835,6 +837,7 @@ actor TaskifyWatchChatCoordinator {
         subject: String? = nil,
         replyToRumorID: String? = nil,
         reactionToRumorID: String? = nil,
+        attachment: TaskifyWatchChatAttachment? = nil,
         privateKey: Data
     ) async throws -> TaskifyWatchChatSnapshot {
         guard context != nil, gateway != nil else {
@@ -853,9 +856,12 @@ actor TaskifyWatchChatCoordinator {
             subject: subject,
             replyToRumorID: replyToRumorID,
             reactionToRumorID: reactionToRumorID,
-            kind: reactionToRumorID == nil
-                ? TaskifyWatchNIP17.textKind
-                : TaskifyWatchNIP17.reactionKind
+            attachment: attachment,
+            kind: attachment != nil
+                ? TaskifyWatchNIP17.attachmentKind
+                : (reactionToRumorID == nil
+                    ? TaskifyWatchNIP17.textKind
+                    : TaskifyWatchNIP17.reactionKind)
         )
         // Persist the complete encrypted envelope set before doing any network discovery. A
         // Watch app can be suspended moments after text input closes; resolving every member
@@ -986,7 +992,9 @@ actor TaskifyWatchChatCoordinator {
             discoveryRelayURLs: context.discoveryRelayURLs,
             accountInboxPreferenceEvent: preference,
             pushRelayHTTPSURL: context.pushRelayHTTPSURL,
-            pushRelayWSSURL: context.pushRelayWSSURL
+            pushRelayWSSURL: context.pushRelayWSSURL,
+            fileServerURL: context.fileServerURL,
+            fileServerType: context.fileServerType
         )
         self.context = prepared
         return prepared

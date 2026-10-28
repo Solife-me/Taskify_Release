@@ -73,7 +73,7 @@ let package = Package(
             path: "Sources/TaskifyWatchApp",
             exclude: [
                 "Info.plist", "TaskifyWatchApp.swift", "TaskifyWatchAppModel.swift",
-                "TaskifyWatchRootView.swift", "TaskifyWatchChatView.swift",
+                "TaskifyWatchRootView.swift", "TaskifyWatchChatView.swift", "TaskifyWatchAudioMessaging.swift",
                 "PrivacyInfo.xcprivacy",
             ],
             sources: ["TaskifyWatchChatClient.swift", "TaskifyWatchChatStore.swift", "TaskifyWatchAvatarLoader.swift",

@@ -930,10 +930,12 @@ final class ScrollPerformanceUITests: XCTestCase {
 
         let composer = app.textViews["Message"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        let sendButton = app.buttons["Send message"]
-        XCTAssertTrue(sendButton.waitForExistence(timeout: 3))
+        // An empty composer ends in the record button (Send appears once there is a draft);
+        // a tap just before it, far from the placeholder, must still focus the field.
+        let recordButton = app.buttons["Record audio message"]
+        XCTAssertTrue(recordButton.waitForExistence(timeout: 3))
         app.coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: sendButton.frame.minX - 12, dy: composer.frame.midY))
+            .withOffset(CGVector(dx: recordButton.frame.minX - 12, dy: composer.frame.midY))
             .tap()
         XCTAssertTrue(
             app.keyboards.element.waitForExistence(timeout: 3),

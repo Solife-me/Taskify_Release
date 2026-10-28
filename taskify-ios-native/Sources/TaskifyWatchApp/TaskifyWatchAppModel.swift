@@ -482,6 +482,74 @@ final class TaskifyWatchAppModel: NSObject {
         }
     }
 
+    @discardableResult
+    func sendChatAudio(
+        fileURL: URL,
+        filename: String,
+        memberPublicKeys: [String],
+        subject: String? = nil,
+        replyToRumorID: String? = nil
+    ) async -> Bool {
+        let revision = chatAccountRevision
+        guard let chatContext,
+              let serverURL = chatContext.fileServerURL,
+              let serverType = chatContext.fileServerType else {
+            chatStatusMessage = TaskifyWatchAudioError.fileServerUnavailable.localizedDescription
+            return false
+        }
+        let privateKey: Data
+        do {
+            privateKey = try identityStore.load()
+        } catch {
+            chatStatusMessage = error.localizedDescription
+            return false
+        }
+        do {
+            let encrypted = try TaskifyWatchAudioTransfer.encrypt(fileURL)
+            let remoteURL = try await TaskifyWatchAudioTransfer.upload(
+                encrypted,
+                filename: filename,
+                serverURL: serverURL,
+                serverType: serverType,
+                privateKey: privateKey
+            )
+            guard let URL = URL(string: remoteURL),
+                  let attachment = TaskifyWatchChatAttachment(
+                    url: URL,
+                    mimeType: "audio/mp4",
+                    filename: filename,
+                    keyHex: encrypted.keyHex,
+                    nonceHex: encrypted.nonceHex,
+                    ciphertextSHA256: encrypted.sha256,
+                    size: encrypted.plaintextSize
+                  ) else { throw TaskifyWatchAudioError.invalidAttachment }
+            let previousOutboxIDs = Set(chatSnapshot.outbox.map(\.rumorID))
+            _ = try await chatCoordinator.configure(chatContext)
+            let queued = try await chatCoordinator.send(
+                content: remoteURL,
+                memberPublicKeys: memberPublicKeys,
+                subject: subject,
+                replyToRumorID: replyToRumorID,
+                attachment: attachment,
+                privateKey: privateKey
+            )
+            guard revision == chatAccountRevision else { return false }
+            chatSnapshot = queued
+            let newEntry = chatSnapshot.outbox.first { !previousOutboxIDs.contains($0.rumorID) }
+            chatStatusMessage = newEntry?.areRecipientCopiesDelivered == true
+                ? "Audio sent"
+                : "Audio queued — retrying"
+            scheduleChatOutboxRetry()
+            return true
+        } catch {
+            guard revision == chatAccountRevision else { return false }
+            chatSnapshot = await chatCoordinator.snapshot()
+            chatStatusMessage = error.localizedDescription
+            scheduleChatOutboxRetry()
+            return false
+        }
+    }
+
     /// Keeps durable sends moving while the app remains active. watchOS may suspend this task in
     /// the background, but the encrypted outbox survives and foreground refresh resumes it.
     private func scheduleChatOutboxRetry(minimumDelayMilliseconds: Int64 = 0) {

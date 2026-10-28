@@ -4334,6 +4334,7 @@ final class AppModel {
         let discoveryRelays = TaskifyRelayURL.normalizedList(
             appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
+        let watchFileServer = TaskifyMediaServerSettings.configuredEntry
         guard identity.count == 64 else {
             return TaskifyWatchChatProjection(
                 threads: [],
@@ -4341,6 +4342,8 @@ final class AppModel {
                 discoveryRelayURLs: discoveryRelays,
                 pushRelayHTTPSURL: URL(string: dmPushServerURL),
                 pushRelayWSSURL: dmPushRelayURL,
+                fileServerURL: watchFileServer.url,
+                fileServerType: watchFileServer.type.rawValue,
                 generatedAt: now
             )
         }
@@ -4400,6 +4403,8 @@ final class AppModel {
             discoveryRelayURLs: discoveryRelays,
             pushRelayHTTPSURL: URL(string: dmPushServerURL),
             pushRelayWSSURL: dmPushRelayURL,
+            fileServerURL: watchFileServer.url,
+            fileServerType: watchFileServer.type.rawValue,
             deletedConversationIDs: deletedConversations.keys.sorted(),
             blockedPublicKeys: snapshot.directMessageBlockedPeers,
             generatedAt: now
@@ -4455,6 +4460,7 @@ final class AppModel {
                 from: JSONEncoder().encode($0)
             )
         }
+        let watchFileServer = TaskifyMediaServerSettings.configuredEntry
         let chatContext = TaskifyWatchChatProvisioningContext(
             contacts: watchContacts,
             threadSummaries: watchChatProjection().threads,
@@ -4462,7 +4468,9 @@ final class AppModel {
             accountInboxPreferenceEvent: watchAccountPreference,
             pushRelayHTTPSURL: URL(string: dmPushServerURL)
                 ?? URL(string: "https://push.solife.me")!,
-            pushRelayWSSURL: dmPushRelayURL
+            pushRelayWSSURL: dmPushRelayURL,
+            fileServerURL: watchFileServer.url,
+            fileServerType: watchFileServer.type.rawValue
         )
         return try TaskifyWatchProvisioningPayload(
             privateKey: identity.privateKey,
@@ -5081,6 +5089,23 @@ final class AppModel {
                 isIncoming: incoming,
                 replyToEventID: index == 298 ? "ui-message-297" : nil
             )
+        }
+        let attachmentFixtures = ChatAttachmentUITestFixture.entries
+        if !attachmentFixtures.isEmpty, var messages = snapshot.directMessages,
+           messages.count > attachmentFixtures.count {
+            // The newest messages become attachments whose decrypted files are already in the
+            // attachment disk cache, so they render and play without a file server.
+            for (offset, entry) in attachmentFixtures.enumerated() {
+                let index = messages.count - attachmentFixtures.count + offset
+                messages[index].content = entry.attachment.url
+                messages[index].attachment = entry.attachment
+                messages[index].isIncoming = entry.isIncoming
+                messages[index].senderPublicKey = entry.isIncoming ? peerPublicKey : ownPublicKey
+                messages[index].deliveryState = entry.isIncoming ? nil : .sent
+                messages[index].replyToEventID = nil
+            }
+            snapshot.directMessages = messages
+            Task { await ChatAttachmentUITestFixture.seedDiskCache(attachmentFixtures) }
         }
         snapshot.directMessageReactions = [
             NostrDirectMessageReaction(

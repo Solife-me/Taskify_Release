@@ -60,12 +60,31 @@ enum MacUITestFixture {
             createdAt: 1_700_000_000,
             isIncoming: true
         )
+        // TASKIFY_UI_TEST_CHAT_ATTACHMENTS adds the shared attachment fixture (a photo stack, a
+        // PDF, a photo and an audio message) with its decrypted files already cached.
+        let attachmentEntries = ChatAttachmentUITestFixture.entries
+        let attachmentMessages = attachmentEntries.enumerated().map { offset, entry in
+            NostrDirectMessage(
+                rumorEventID: String(format: "%064x", 0xA000 + offset),
+                wrapEventID: String(format: "%064x", 0xB000 + offset),
+                peerPublicKey: chatPeerPublicKey,
+                senderPublicKey: entry.isIncoming ? chatPeerPublicKey : String(repeating: "5", count: 64),
+                content: entry.attachment.url,
+                createdAt: 1_700_000_010 + offset,
+                isIncoming: entry.isIncoming,
+                attachment: entry.attachment,
+                deliveryState: entry.isIncoming ? nil : .sent
+            )
+        }
+        if !attachmentEntries.isEmpty {
+            Task { await ChatAttachmentUITestFixture.seedDiskCache(attachmentEntries) }
+        }
         let snapshot = TaskifySnapshot(
             boards: [board],
             tasks: [task],
             selectedBoardID: board.id,
             contacts: [contact],
-            directMessages: [message]
+            directMessages: [message] + attachmentMessages
         )
         try JSONEncoder().encode(snapshot).write(to: configuration.storeURL, options: .atomic)
     }

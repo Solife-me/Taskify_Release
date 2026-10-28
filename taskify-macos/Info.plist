@@ -13,7 +13,7 @@
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSCalendarsFullAccessUsageDescription</key><string>Show and manage your calendar events in Taskify.</string>
 <key>NSRemindersFullAccessUsageDescription</key><string>Show and complete your reminders in Taskify.</string>
-<key>NSMicrophoneUsageDescription</key><string>Dictate tasks and messages.</string>
+<key>NSMicrophoneUsageDescription</key><string>Record audio messages and dictate tasks and messages.</string>
 <key>NSSpeechRecognitionUsageDescription</key><string>Turn your spoken words into tasks and messages.</string>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>Taskify</string><key>CFBundleURLSchemes</key><array><string>taskify</string></array></dict></array>
 </dict></plist>

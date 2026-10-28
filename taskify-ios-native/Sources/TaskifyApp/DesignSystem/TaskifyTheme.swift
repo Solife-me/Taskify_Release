@@ -468,15 +468,20 @@ extension View {
             .foregroundStyle(TaskifyTheme.primaryText)
     }
 
+    /// - Parameter interactive: glass that reacts to presses. Pass false for surfaces that hold
+    ///   editable text: interactive glass claims the long-press and drag touches UITextView
+    ///   needs for the loupe and selection handles.
     func taskifyGlassControl<ControlShape: Shape>(
         in shape: ControlShape,
         tint: Color? = nil,
-        fallbackFill: Color = TaskifyTheme.raisedFill
+        fallbackFill: Color = TaskifyTheme.raisedFill,
+        interactive: Bool = true
     ) -> some View {
         modifier(TaskifyGlassControlModifier(
             shape: shape,
             tint: tint,
-            fallbackFill: fallbackFill
+            fallbackFill: fallbackFill,
+            interactive: interactive
         ))
     }
 }
@@ -485,17 +490,14 @@ private struct TaskifyGlassControlModifier<ControlShape: Shape>: ViewModifier {
     let shape: ControlShape
     let tint: Color?
     let fallbackFill: Color
+    let interactive: Bool
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            if let tint {
-                content
-                    .glassEffect(.regular.tint(tint).interactive(), in: shape)
-            } else {
-                content
-                    .glassEffect(.regular.interactive(), in: shape)
-            }
+            let glass = tint.map { Glass.regular.tint($0) } ?? .regular
+            content
+                .glassEffect(glass.interactive(interactive), in: shape)
         } else {
             content
                 .background(fallbackFill, in: shape)

@@ -66,6 +66,13 @@ struct ChatConversationPresentation {
     let senderContacts: [String: NostrContact]
     let senderNames: [String: String]
     let structuredSenderName: String?
+    /// Runs of a sender's consecutive photos, keyed by the newest photo's message ID, which
+    /// draws the whole run as one stack.
+    let photoStacks: [String: [NostrDirectMessage]]
+    /// The earlier photos of each run; their rows stay in the timeline (so scrolling and search
+    /// targets keep working) but draw nothing.
+    let stackedMessageIDs: Set<String>
+
 }
 
 /// A conversation owns only its current snapshot projection and a bounded amount of parsed
@@ -260,6 +267,13 @@ struct ChatComposerTextView: UIViewRepresentable {
     let accessibilityLabel: String
     let pasteAttachment: ([NSItemProvider]) -> Bool
     var onCommandReturn: (() -> Void)? = nil
+    /// The tallest the editor may grow, from the room the conversation has left; beyond it the
+    /// draft scrolls inside the editor. Without it a long draft plus staged attachments pushed
+    /// the composer under the keyboard, hiding the caret.
+    var maximumHeight: CGFloat? = nil
+    /// Whether the editor holds the keyboard. `isFocused` only requests focus: with no
+    /// `.focused` view bound to it, SwiftUI does not keep it true while editing.
+    var onEditingChanged: ((Bool) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -292,19 +306,20 @@ struct ChatComposerTextView: UIViewRepresentable {
         view.accessibilityLabel = accessibilityLabel
         view.pasteAttachment = pasteAttachment
         view.commandReturn = onCommandReturn
-        let tapRecognizer = UITapGestureRecognizer(
-            target: context.coordinator,
-            action: #selector(Coordinator.focusComposer(_:))
-        )
-        tapRecognizer.cancelsTouchesInView = false
-        view.addGestureRecognizer(tapRecognizer)
+        // No extra tap recognizer: UITextView focuses itself, and any recognizer added here
+        // competes with its caret placement, double-tap and selection gestures.
         return view
     }
 
     func updateUIView(_ view: ChatPasteTextView, context: Context) {
         context.coordinator.parent = self
         if view.text != text { view.text = text }
-        view.isEditable = isEnabled
+        if view.isEditable != isEnabled { view.isEditable = isEnabled }
+        if context.coordinator.lastMaximumHeight != maximumHeight {
+            context.coordinator.lastMaximumHeight = maximumHeight
+            view.invalidateIntrinsicContentSize()
+            context.coordinator.scrollCaretIntoView(view)
+        }
         view.accessibilityLabel = accessibilityLabel
         view.pasteAttachment = pasteAttachment
         view.commandReturn = onCommandReturn
@@ -327,25 +342,18 @@ struct ChatComposerTextView: UIViewRepresentable {
         )
         let lineHeight = uiView.font?.lineHeight ?? 20
         let insetHeight = uiView.textContainerInset.top + uiView.textContainerInset.bottom
-        let maximumHeight = lineHeight * 15 + insetHeight
+        let minimumCap = lineHeight * 2 + insetHeight
+        let maximumHeight = min(lineHeight * 15 + insetHeight, max(minimumCap, self.maximumHeight ?? .infinity))
         let height = min(max(fitting.height, 42), maximumHeight)
         return CGSize(width: width, height: height)
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ChatComposerTextView
+        var lastMaximumHeight: CGFloat?
 
         init(parent: ChatComposerTextView) { self.parent = parent }
 
-        @objc func focusComposer(_ recognizer: UITapGestureRecognizer) {
-            guard recognizer.state == .ended,
-                  parent.isEnabled,
-                  let textView = recognizer.view as? ChatPasteTextView else { return }
-            textView.requestFocus()
-            if !parent.isFocused.wrappedValue {
-                parent.isFocused.wrappedValue = true
-            }
-        }
 
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
@@ -398,11 +406,13 @@ struct ChatComposerTextView: UIViewRepresentable {
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
+            parent.onEditingChanged?(true)
             guard !parent.isFocused.wrappedValue else { return }
             DispatchQueue.main.async { self.parent.isFocused.wrappedValue = true }
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
+            parent.onEditingChanged?(false)
             (textView as? ChatPasteTextView)?.markFocusEnded()
             guard parent.isFocused.wrappedValue else { return }
             DispatchQueue.main.async { self.parent.isFocused.wrappedValue = false }
@@ -429,6 +439,29 @@ struct DirectMessageConversationView: View {
     @State private var attachmentSendError: String?
     @State private var attachmentUploadFileIndex = 0
     @State private var attachmentUploadFileTotal = 0
+    @State private var audioRecorder = ChatAudioRecorder(
+        directory: { try AttachmentFiles.directory() },
+        prepare: { try AttachmentFiles.protect($0) },
+        onWillRecord: { DirectMessageAudioPlayback.shared.pauseForRecording() }
+    )
+    /// A finished recording waiting in the composer to be played back, sent or discarded.
+    @State private var recordedAudio: ChatAudioRecorder.Recording?
+    @State private var recordedAudioPlayer = ChatAudioDraftPlayer(
+        onWillPlay: { DirectMessageAudioPlayback.shared.pauseForRecording() }
+    )
+    @GestureState private var isPressingRecordButton = false
+    @State private var recordPressBegan = false
+    @State private var holdRecordingTask: Task<Void, Never>?
+    @State private var isHoldRecording = false
+    @State private var holdRecordingReleased = false
+    @State private var showsRecordHint = false
+    @State private var isComposerEditing = false
+    @State private var recordHintTask: Task<Void, Never>?
+    /// The timeline's visible height and the editor's height, which together size the editor.
+    @State private var timelineVisibleHeight: CGFloat = 0
+    /// Where the visible timeline ends (the composer's top), in the scroll view's own space.
+    @State private var timelineVisibleBottom: CGFloat = 0
+    @State private var composerTextHeight: CGFloat = 0
     @State private var replyingTo: NostrDirectMessage?
     @State private var showingPhotoPicker = false
     @State private var photoSelections: [PhotosPickerItem] = []
@@ -446,6 +479,8 @@ struct DirectMessageConversationView: View {
     @State private var timelineHistoryLoadTask: Task<Void, Never>?
     @State private var isScrolledAwayFromBottom = false
     @State private var followsLatestMessage = true
+    /// The timeline is being dragged or is still decelerating from a fling.
+    @State private var isTimelineMoving = false
     @State private var sentMessageScrollRequest = 0
     @State private var loadedTimelineItemCount = 100
     @State private var isLoadingEarlierTimelineItems = false
@@ -599,6 +634,10 @@ struct DirectMessageConversationView: View {
                 ($0, senderName(for: $0))
             }
         )
+        let photoStacks = DirectMessagePhotoStacks.group(timeline.map { item in
+            if case let .message(message) = item { return message }
+            return nil
+        })
         return ChatConversationPresentation(
             timeline: timeline,
             lastSentItemID: lastSentItemID,
@@ -606,7 +645,9 @@ struct DirectMessageConversationView: View {
             reactionLookup: model.directMessageReactionLookup(peerPublicKey: peerPublicKey),
             senderContacts: senderContacts,
             senderNames: senderNames,
-            structuredSenderName: values.max { $0.0 < $1.0 }?.1
+            structuredSenderName: values.max { $0.0 < $1.0 }?.1,
+            photoStacks: photoStacks.stacks,
+            stackedMessageIDs: photoStacks.stackedMessageIDs
         )
     }
     private var isStranger: Bool {
@@ -684,96 +725,8 @@ struct DirectMessageConversationView: View {
                             )
                         }
                         ForEach(Array(currentTimeline.enumerated()), id: \.element.id) { index, item in
-                            // One stable child per timeline item preserves lazy row creation.
-                            // A conditional divider beside the bubble makes the child count
-                            // depend on evaluating off-screen messages.
-                            VStack(spacing: 0) {
-                                if shouldShowDayDivider(at: index, in: currentTimeline) {
-                                    ChatDayDivider(timestamp: item.timestamp)
-                                }
-
-                                switch item {
-                                case let .message(message):
-                                    let groupedWithPrevious = isMessageGrouped(at: index, with: index - 1, in: currentTimeline)
-                                    let groupedWithNext = isMessageGrouped(at: index + 1, with: index, in: currentTimeline)
-                                    let reactions = (presentation.reactionLookup[message.rumorEventID] ?? [])
-                                        + (message.wrapEventID == message.rumorEventID
-                                            ? []
-                                            : presentation.reactionLookup[message.wrapEventID] ?? [])
-                                    DirectMessageBubble(
-                                        renderCache: renderCache,
-                                        message: message,
-                                        repliedMessage: message.replyToEventID.flatMap {
-                                            presentation.messageLookup[$0]
-                                        },
-                                        reactions: reactions,
-                                        senderName: group != nil && message.isIncoming && !groupedWithPrevious
-                                            ? presentation.senderNames[message.senderPublicKey] : nil,
-                                        senderContact: group != nil && message.isIncoming
-                                            ? presentation.senderContacts[message.senderPublicKey] : nil,
-                                        showsSenderAvatar: group != nil && message.isIncoming,
-                                        isGroupedWithPrevious: groupedWithPrevious,
-                                        isGroupedWithNext: groupedWithNext,
-                                        showsSentStatus: item.id == presentation.lastSentItemID,
-                                        isSearchMatch: currentSearchMatches.contains(item.id),
-                                        isSelectedSearchResult: selectedSearchResultID == item.id
-                                    )
-                                    .equatable()
-                                    .contextMenu {
-                                        Label(
-                                            "Sent \(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(date: .abbreviated, time: .shortened))",
-                                            systemImage: "clock"
-                                        )
-                                        Menu("React", systemImage: "face.smiling") {
-                                            ForEach(["❤️", "👍", "👎", "😂", "😮", "😢"], id: \.self) { emoji in
-                                                Button(emoji) { react(to: message, with: emoji) }
-                                            }
-                                        }
-                                        if reactions.contains(where: {
-                                            $0.senderPublicKey == model.identityPublicKey
-                                        }) {
-                                            Button("Remove Reaction", systemImage: "minus.circle") {
-                                                react(to: message, with: "-")
-                                            }
-                                        }
-                                        Button("Reply", systemImage: "arrowshape.turn.up.left") {
-                                            replyingTo = message
-                                            composerFocused = true
-                                        }
-                                        if message.attachment == nil {
-                                            Button("Copy", systemImage: "doc.on.doc") {
-                                                UIPasteboard.general.string = message.content
-                                            }
-                                        }
-                                    }
-                                case let .sharedTask(sharedTask):
-                                    SharedTaskChatCard(
-                                        item: sharedTask,
-                                        isSearchMatch: currentSearchMatches.contains(item.id),
-                                        isSelectedSearchResult: selectedSearchResultID == item.id
-                                    )
-                                case let .sharedContact(sharedContact):
-                                    SharedContactChatCard(
-                                        item: sharedContact,
-                                        showsSentStatus: item.id == presentation.lastSentItemID,
-                                        isSearchMatch: currentSearchMatches.contains(item.id),
-                                        isSelectedSearchResult: selectedSearchResultID == item.id
-                                    )
-                                case let .calendarInvite(invite):
-                                    SharedCalendarInviteChatCard(
-                                        item: invite,
-                                        isSearchMatch: currentSearchMatches.contains(item.id),
-                                        isSelectedSearchResult: selectedSearchResultID == item.id
-                                    )
-                                case let .sharedBoard(sharedBoard):
-                                    SharedBoardChatCard(
-                                        item: sharedBoard,
-                                        isSearchMatch: currentSearchMatches.contains(item.id),
-                                        isSelectedSearchResult: selectedSearchResultID == item.id
-                                    )
-                                }
-                            }
-                            .id(item.id)
+                            timelineRow(index: index, item: item, currentTimeline: currentTimeline,
+                                presentation: presentation, currentSearchMatches: currentSearchMatches)
                         }
                     }
                 }
@@ -793,11 +746,32 @@ struct DirectMessageConversationView: View {
                 }
             }
             .coordinateSpace(name: "conversationViewport")
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.height - geometry.safeAreaInsets.bottom
+            } action: { bottom in
+                timelineVisibleBottom = bottom
+            }
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.height - geometry.safeAreaInsets.top - geometry.safeAreaInsets.bottom
+            } action: { height in
+                timelineVisibleHeight = height
+            }
             // Scope interactive dismissal to the timeline, outside the composer.
             .scrollDismissesKeyboard(.interactively)
-            .onTapGesture { dismissComposerKeyboard() }
+            // The scroll view runs on under the composer (a bottom safe-area inset), so its tap
+            // gesture also saw taps in the message field. As an exclusive gesture it won over
+            // the text view's own tap recognizers (no caret placement, no double-tap word
+            // selection) and then dismissed the keyboard mid-edit. It is simultaneous, so it
+            // never competes with them, and only taps on the visible timeline dismiss.
+            .simultaneousGesture(
+                SpatialTapGesture(coordinateSpace: .local).onEnded { tap in
+                    guard timelineVisibleBottom == 0 || tap.location.y < timelineVisibleBottom else { return }
+                    dismissComposerKeyboard()
+                }
+            )
             .conversationScrollBehavior(
                 followsLatest: $followsLatestMessage,
+                isMoving: $isTimelineMoving,
                 isAwayFromBottom: $isScrolledAwayFromBottom,
                 allowsFollowing: !isSearchingConversation && !protectsInitialScrollTarget,
                 canLoadEarlier: hasEarlierTimelineItems,
@@ -815,21 +789,15 @@ struct DirectMessageConversationView: View {
             )
             .overlay(alignment: .bottom) {
                 if isScrolledAwayFromBottom, !currentTimeline.isEmpty {
-                    Button {
+                    // A UIKit button: while the timeline is still gliding, the scroll view takes
+                    // the first touch to stop the momentum, so a SwiftUI overlay button never saw
+                    // the tap. A real view above the scroll view receives it directly.
+                    ChatScrollToLatestButton {
                         markReadAndScroll(proxy: proxy, animated: !reduceMotion)
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(TaskifyTheme.primaryText)
-                            .frame(width: 32, height: 32)
-                            .taskifyGlassControl(in: Circle())
-                            .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
-                            .contentShape(Circle())
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Scroll to latest message")
-                    .accessibilityIdentifier("chatScrollToBottom")
-                    .padding(.bottom, 12)
+                    .frame(width: 40, height: 40)
+                    .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+                    .padding(.bottom, 8)
                 }
             }
             .safeAreaInset(edge: .top, spacing: 6) {
@@ -853,15 +821,14 @@ struct DirectMessageConversationView: View {
                         protectsInitialScrollTarget = false
                     }
                 }
-                if #available(iOS 18.0, *), initialTimelineItemID == nil {
-                    model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
-                } else {
-                    markReadAndScroll(
-                        proxy: proxy,
-                        targetID: initialTimelineItemID,
-                        animated: false
-                    )
-                }
+                // The bottom scroll anchor alone can leave the offset past the last row once
+                // lazy rows replace their estimated heights (long or media-heavy threads opened
+                // blank), so settle on the newest row explicitly on every system.
+                markReadAndScroll(
+                    proxy: proxy,
+                    targetID: initialTimelineItemID,
+                    animated: false
+                )
             }
             // Track the stable newest ID so earlier-page loads do not look like arrivals.
             .onChange(of: currentTimeline.last?.id) { _, _ in
@@ -897,6 +864,14 @@ struct DirectMessageConversationView: View {
             .onChange(of: searchQuery) { _, _ in
                 scheduleNewestSearchResult(proxy: proxy)
             }
+            .onChange(of: timelineVisibleHeight) { oldHeight, newHeight in
+                // The keyboard, a growing draft or staged attachments changed the room above the
+                // composer; keep the newest message in view if that is where the reader is.
+                guard abs(newHeight - oldHeight) > 1, oldHeight > 0,
+                      followsLatestMessage, !isTimelineMoving, !isSearchingConversation,
+                      let latestID = currentTimeline.last?.id else { return }
+                proxy.scrollTo(latestID, anchor: .bottom)
+            }
             .onChange(of: sentMessageScrollRequest) { _, _ in
                 // Sending from history is explicit navigation. Wait until the send succeeds
                 // and the draft clears; arrivals need no competing imperative animation.
@@ -905,8 +880,11 @@ struct DirectMessageConversationView: View {
                 }
             }
             .onChange(of: completeTimeline.count) { oldCount, newCount in
-                guard newCount > oldCount,
-                      isScrolledAwayFromBottom || !followsLatestMessage else { return }
+                // Grow the window by each arrival instead of sliding it: dropping the oldest
+                // rows while the newest are added moved the content under a reader at the
+                // bottom, and the lazy stack could settle past its last row, leaving the
+                // thread blank until it was scrolled.
+                guard newCount > oldCount else { return }
                 loadedTimelineItemCount = min(
                     newCount,
                     loadedTimelineItemCount + (newCount - oldCount)
@@ -1023,6 +1001,8 @@ struct DirectMessageConversationView: View {
             // so the list must not badge the thread afterwards.
             model.markDirectMessageThreadRead(peerPublicKey: peerPublicKey)
             attachmentPreparationTask?.cancel()
+            audioRecorder.cancel()
+            discardRecordedAudio()
             timelineScrollTask?.cancel()
             timelineHistoryLoadTask?.cancel()
             renderCache.clear()
@@ -1036,6 +1016,8 @@ struct DirectMessageConversationView: View {
         .onChange(of: model.identityPublicKey) { _, _ in
             renderCache.clear()
             attachmentPreparationTask?.cancel()
+            audioRecorder.cancel()
+            discardRecordedAudio()
             attachmentDrafts.removeAll()
             draft = ""
             replyingTo = nil
@@ -1253,6 +1235,121 @@ struct DirectMessageConversationView: View {
         }
     }
 
+    /// One timeline item: its day divider and its bubble or card.
+    @ViewBuilder
+    private func timelineRow(
+        index: Int,
+        item: ChatTimelineItem,
+        currentTimeline: [ChatTimelineItem],
+        presentation: ChatConversationPresentation,
+        currentSearchMatches: Set<String>
+    ) -> some View {
+        // One stable child per timeline item preserves lazy row creation.
+        // A conditional divider beside the bubble makes the child count
+        // depend on evaluating off-screen messages.
+        VStack(spacing: 0) {
+            if shouldShowDayDivider(at: index, in: currentTimeline) {
+                ChatDayDivider(timestamp: item.timestamp)
+            }
+
+            switch item {
+            case let .message(message) where presentation.stackedMessageIDs.contains(message.id):
+                // Drawn by the photo stack its run's newest photo hosts.
+                Color.clear.frame(height: 0)
+            case let .message(message):
+                let photoStack = presentation.photoStacks[message.id]
+                // A stack's grouping follows the message before its first photo.
+                let runStart = index - (photoStack?.count ?? 1) + 1
+                let groupedWithPrevious = isMessageGrouped(at: runStart, with: runStart - 1, in: currentTimeline)
+                let groupedWithNext = isMessageGrouped(at: index + 1, with: index, in: currentTimeline)
+                let reactions = (photoStack ?? [message]).flatMap { member in
+                    (presentation.reactionLookup[member.rumorEventID] ?? [])
+                        + (member.wrapEventID == member.rumorEventID
+                            ? []
+                            : presentation.reactionLookup[member.wrapEventID] ?? [])
+                }
+                DirectMessageBubble(
+                    renderCache: renderCache,
+                    message: message,
+                    repliedMessage: message.replyToEventID.flatMap {
+                        presentation.messageLookup[$0]
+                    },
+                    reactions: reactions,
+                    senderName: group != nil && message.isIncoming && !groupedWithPrevious
+                        ? presentation.senderNames[message.senderPublicKey] : nil,
+                    senderContact: group != nil && message.isIncoming
+                        ? presentation.senderContacts[message.senderPublicKey] : nil,
+                    showsSenderAvatar: group != nil && message.isIncoming,
+                    isGroupedWithPrevious: groupedWithPrevious,
+                    isGroupedWithNext: groupedWithNext,
+                    showsSentStatus: item.id == presentation.lastSentItemID,
+                    isSearchMatch: currentSearchMatches.contains(item.id),
+                    isSelectedSearchResult: selectedSearchResultID == item.id,
+                    photoStack: photoStack
+                )
+                .equatable()
+                .contextMenu {
+                    Label(
+                        "Sent \(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(date: .abbreviated, time: .shortened))",
+                        systemImage: "clock"
+                    )
+                    Menu("React", systemImage: "face.smiling") {
+                        ForEach(["❤️", "👍", "👎", "😂", "😮", "😢"], id: \.self) { emoji in
+                            Button(emoji) { react(to: message, with: emoji) }
+                        }
+                    }
+                    if reactions.contains(where: {
+                        $0.senderPublicKey == model.identityPublicKey
+                    }) {
+                        Button("Remove Reaction", systemImage: "minus.circle") {
+                            react(to: message, with: "-")
+                        }
+                    }
+                    Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                        replyingTo = message
+                        composerFocused = true
+                    }
+                    if message.attachment == nil {
+                        Button("Copy", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = message.content
+                        }
+                    } else {
+                        Section {
+                            DirectMessageAttachmentMenuItems(
+                                attachments: (photoStack ?? [message]).compactMap(\.attachment)
+                            )
+                        }
+                    }
+                }
+            case let .sharedTask(sharedTask):
+                SharedTaskChatCard(
+                    item: sharedTask,
+                    isSearchMatch: currentSearchMatches.contains(item.id),
+                    isSelectedSearchResult: selectedSearchResultID == item.id
+                )
+            case let .sharedContact(sharedContact):
+                SharedContactChatCard(
+                    item: sharedContact,
+                    showsSentStatus: item.id == presentation.lastSentItemID,
+                    isSearchMatch: currentSearchMatches.contains(item.id),
+                    isSelectedSearchResult: selectedSearchResultID == item.id
+                )
+            case let .calendarInvite(invite):
+                SharedCalendarInviteChatCard(
+                    item: invite,
+                    isSearchMatch: currentSearchMatches.contains(item.id),
+                    isSelectedSearchResult: selectedSearchResultID == item.id
+                )
+            case let .sharedBoard(sharedBoard):
+                SharedBoardChatCard(
+                    item: sharedBoard,
+                    isSearchMatch: currentSearchMatches.contains(item.id),
+                    isSelectedSearchResult: selectedSearchResultID == item.id
+                )
+            }
+        }
+        .id(item.id)
+    }
     private func earlierTimelineLoader(
         completeTimeline: [ChatTimelineItem],
         currentTimeline: [ChatTimelineItem],
@@ -1565,6 +1662,61 @@ struct DirectMessageConversationView: View {
                 .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
 
+            if isAudioComposerActive {
+                audioComposer
+            } else {
+                // The record button's touch target sits over both the message row and, during a
+                // hold, the recording controls that replace it, so the press keeps running until
+                // the finger lifts.
+                ZStack(alignment: .bottomTrailing) {
+                    if isHoldRecording {
+                        audioControls
+                    } else {
+                        messageComposerRow
+                    }
+                    if showsRecordButton || isHoldRecording {
+                        recordAudioButton
+                            .padding(3)
+                    }
+                }
+            }
+        }
+        // Each control floats on its own glass surface; the spacing between them
+        // stays transparent so the conversation remains visible underneath.
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
+        .fullScreenCover(isPresented: $showingCamera) {
+            TaskAttachmentCameraPicker(
+                onCapture: { image in
+                    showingCamera = false
+                    attachmentPreparationTask?.cancel()
+                    attachmentPreparationTask = Task { await stageCapturedPhoto(image) }
+                },
+                onCancel: { showingCamera = false }
+            )
+            .ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showingDocumentScanner) {
+            TaskAttachmentDocumentScanner(
+                onScan: { pages in
+                    showingDocumentScanner = false
+                    attachmentPreparationTask?.cancel()
+                    attachmentPreparationTask = Task { await stageScannedDocument(pages) }
+                },
+                onCancel: { showingDocumentScanner = false },
+                onError: { error in
+                    showingDocumentScanner = false
+                    model.errorMessage = error.localizedDescription
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                }
+            )
+            .ignoresSafeArea()
+        }
+        }
+    }
+
+    private var messageComposerRow: some View {
             HStack(alignment: .bottom, spacing: 9) {
                 Menu {
                     // Compile-time simulator exclusion, not a runtime availability check:
@@ -1653,7 +1805,9 @@ struct DirectMessageConversationView: View {
                         Divider().padding(.horizontal, 9)
                     }
                     HStack(alignment: .bottom, spacing: 4) {
-                        let composerPrompt = attachmentDrafts.isEmpty ? "Message" : "Add comment or Send"
+                        let composerPrompt = showsRecordHint
+                            ? "Tap and hold to record and send audio"
+                            : (attachmentDrafts.isEmpty ? "Message" : "Add comment or Send")
                         ZStack(alignment: .topLeading) {
                             if draft.isEmpty {
                                 Text(composerPrompt)
@@ -1670,68 +1824,274 @@ struct DirectMessageConversationView: View {
                                 accessibilityLabel: composerPrompt,
                                 pasteAttachment: pasteAttachmentProviders,
                                 // Command-Return sends from a hardware keyboard.
-                                onCommandReturn: { if canSend { send() } }
+                                onCommandReturn: { if canSend { send() } },
+                                maximumHeight: composerTextBudget,
+                                onEditingChanged: { isComposerEditing = $0 }
                             )
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                                composerTextHeight = height
+                            }
                         }
                         .padding(.leading, 15)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                        Button(action: send) {
-                            Group {
-                                if isSending { ProgressView().tint(.white) }
-                                else {
-                                    Image(systemName: "arrow.up")
-                                        .font(.system(size: 17, weight: .bold))
+                        if canSend || isSending {
+                            Button(action: send) {
+                                Group {
+                                    if isSending { ProgressView().tint(.white) }
+                                    else {
+                                        Image(systemName: "arrow.up")
+                                            .font(.system(size: 17, weight: .bold))
+                                    }
                                 }
+                                .foregroundStyle(.white)
+                                .frame(width: 40, height: 40)
+                                .taskifyGlassControl(in: Circle(), tint: TaskifyTheme.accent.opacity(0.72),
+                                    fallbackFill: TaskifyTheme.accent)
                             }
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .taskifyGlassControl(in: Circle(), tint: TaskifyTheme.accent.opacity(0.72),
-                                fallbackFill: TaskifyTheme.accent)
+                            .buttonStyle(.plain)
+                            .opacity(canSend ? 1 : 0.45)
+                            .disabled(!canSend)
+                            .accessibilityLabel(attachmentDrafts.isEmpty ? "Send message" : "Send attachments")
+                        } else {
+                            // Drawn here; the touch target over it is `recordAudioButton`.
+                            Image(systemName: "waveform")
+                                .font(.system(size: 19, weight: .medium))
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .frame(width: 40, height: 40)
+                                .accessibilityHidden(true)
                         }
-                        .buttonStyle(.plain)
-                        .opacity(canSend ? 1 : 0.45)
-                        .disabled(!canSend)
-                        .accessibilityLabel(attachmentDrafts.isEmpty ? "Send message" : "Send attachments")
                     }
                 }
                 .padding(3)
-                .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 21, style: .continuous))
+                .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 21, style: .continuous), interactive: false)
+            }
+    }
+
+    /// Tap-to-record and a stopped clip take over the whole composer; a hold-to-record shows
+    /// its controls over the hidden message row instead (see `composer`).
+    private var isAudioComposerActive: Bool {
+        (audioRecorder.isRecording && !isHoldRecording) || recordedAudio != nil
+    }
+
+    /// The editor may grow until the timeline above it is down to a sliver. Timeline and editor
+    /// heights trade off one for one, so their sum is stable and the budget never oscillates.
+    private var composerTextBudget: CGFloat? {
+        guard timelineVisibleHeight > 0, composerTextHeight > 0 else { return nil }
+        return timelineVisibleHeight + composerTextHeight - 120
+    }
+
+    /// Messages' waveform button in the message field. With the keyboard open a tap starts
+    /// recording; with it closed, press and hold records and lifting the finger sends, and a
+    /// quick tap explains that.
+    private var showsRecordButton: Bool {
+        !(canSend || isSending)
+    }
+
+    private var recordAudioButton: some View {
+        Color.clear
+            .frame(width: 40, height: 40)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($isPressingRecordButton) { _, pressing, _ in pressing = true }
+            )
+            .onChange(of: isPressingRecordButton) { _, pressing in
+                pressing ? recordButtonPressBegan() : recordButtonPressEnded()
+            }
+            .disabled(isSendingAttachment || audioRecorder.isRequestingPermission)
+            .accessibilityElement()
+            .accessibilityLabel("Record audio message")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { beginTapRecording() }
+    }
+
+    /// Recording: the live waveform, time and stop. Stopped: cancel outside the capsule, then
+    /// play, the clip's waveform, "+ time" to record more, and send — as in Messages.
+    private var audioComposer: some View {
+        HStack(alignment: .center, spacing: 9) {
+            if recordedAudio != nil, !audioRecorder.isRecording {
+                Button(action: cancelAudioRecording) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .frame(width: 44, height: 44)
+                        .taskifyGlassControl(in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isSending)
+                .accessibilityLabel("Cancel audio message")
+            }
+            audioControls
+        }
+    }
+
+    private var audioControls: some View {
+        ChatAudioComposerControls(
+            recorder: audioRecorder,
+            recording: recordedAudio,
+            player: recordedAudioPlayer,
+            isBusy: isSending,
+            accent: TaskifyTheme.accent,
+            onStop: stopAudioRecording,
+            onContinue: continueAudioRecording,
+            onSend: sendRecordedAudio
+        )
+        .foregroundStyle(TaskifyTheme.primaryText)
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 48)
+        .taskifyGlassControl(in: Capsule(), interactive: false)
+    }
+
+    private func recordButtonPressBegan() {
+        guard !isSending, !isSendingAttachment, !isAudioComposerActive, !isHoldRecording else { return }
+        recordPressBegan = true
+        holdRecordingReleased = false
+        // With the keyboard open the button is tapped; holding only applies to a closed composer.
+        guard !isComposerEditing else { return }
+        holdRecordingTask?.cancel()
+        holdRecordingTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, isPressingRecordButton else { return }
+            beginHoldRecording()
+        }
+    }
+
+    private func recordButtonPressEnded() {
+        holdRecordingTask?.cancel()
+        holdRecordingTask = nil
+        guard recordPressBegan else { return }
+        recordPressBegan = false
+        if isHoldRecording {
+            holdRecordingReleased = true
+            finishHoldRecording()
+        } else if isComposerEditing {
+            beginTapRecording()
+        } else {
+            showRecordHint()
+        }
+    }
+
+    private func showRecordHint() {
+        recordHintTask?.cancel()
+        withAnimation(.easeOut(duration: 0.15)) { showsRecordHint = true }
+        recordHintTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) { showsRecordHint = false }
+        }
+    }
+
+    private func beginTapRecording() {
+        guard !isSending, !isSendingAttachment, !isAudioComposerActive, !isHoldRecording else { return }
+        dismissComposerKeyboard()
+        startRecording(continuing: nil)
+    }
+
+    private func beginHoldRecording() {
+        isHoldRecording = true
+        showsRecordHint = false
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        Task { @MainActor in
+            do {
+                try await audioRecorder.start()
+                // The finger lifted while the microphone was opening (or a permission prompt
+                // took the touch): finish now, which discards anything too short to be meant.
+                if holdRecordingReleased { finishHoldRecording() }
+            } catch {
+                isHoldRecording = false
+                if !(error is CancellationError) { reportAudioError(error) }
             }
         }
-        // Each control floats on its own glass surface; the spacing between them
-        // stays transparent so the conversation remains visible underneath.
-        .padding(.horizontal, 10)
-        .padding(.top, 6)
-        .padding(.bottom, 6)
-        .fullScreenCover(isPresented: $showingCamera) {
-            TaskAttachmentCameraPicker(
-                onCapture: { image in
-                    showingCamera = false
-                    attachmentPreparationTask?.cancel()
-                    attachmentPreparationTask = Task { await stageCapturedPhoto(image) }
-                },
-                onCancel: { showingCamera = false }
-            )
-            .ignoresSafeArea()
+    }
+
+    /// Lifting the finger sends, as Messages does; a press too short to hold speech is dropped.
+    private func finishHoldRecording() {
+        guard audioRecorder.isRecording else { return }
+        guard audioRecorder.elapsed >= 0.6 else {
+            audioRecorder.cancel()
+            isHoldRecording = false
+            showRecordHint()
+            return
         }
-        .fullScreenCover(isPresented: $showingDocumentScanner) {
-            TaskAttachmentDocumentScanner(
-                onScan: { pages in
-                    showingDocumentScanner = false
-                    attachmentPreparationTask?.cancel()
-                    attachmentPreparationTask = Task { await stageScannedDocument(pages) }
-                },
-                onCancel: { showingDocumentScanner = false },
-                onError: { error in
-                    showingDocumentScanner = false
-                    model.errorMessage = error.localizedDescription
-                    UINotificationFeedbackGenerator().notificationOccurred(.error)
-                }
-            )
-            .ignoresSafeArea()
+        Task { @MainActor in
+            defer { isHoldRecording = false }
+            do {
+                sendRecording(try await audioRecorder.finish())
+            } catch {
+                reportAudioError(error)
+            }
         }
+    }
+
+    private func startRecording(continuing previous: ChatAudioRecorder.Recording?) {
+        Task { @MainActor in
+            do {
+                try await audioRecorder.start(continuing: previous)
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } catch is CancellationError {
+                // The conversation disappeared while microphone permission was pending.
+            } catch {
+                reportAudioError(error)
+            }
         }
+    }
+
+    /// Stops recording and keeps the clip in the composer so it can be heard before sending.
+    private func stopAudioRecording() {
+        Task { @MainActor in
+            do {
+                recordedAudio = try await audioRecorder.finish()
+                attachmentSendError = nil
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            } catch {
+                reportAudioError(error)
+            }
+        }
+    }
+
+    /// "+ 0:01": records more onto the stopped clip.
+    private func continueAudioRecording() {
+        guard let recordedAudio, !audioRecorder.isRecording else { return }
+        recordedAudioPlayer.stop()
+        startRecording(continuing: recordedAudio)
+    }
+
+    private func sendRecordedAudio() {
+        guard !isSending, let recording = recordedAudio else { return }
+        recordedAudioPlayer.stop()
+        recordedAudio = nil
+        sendRecording(recording)
+    }
+
+    private func sendRecording(_ recording: ChatAudioRecorder.Recording) {
+        let draft = ChatAttachmentDraft(
+            fileURL: recording.fileURL,
+            name: recording.suggestedName,
+            mimeType: "audio/mp4",
+            size: recording.size
+        )
+        // The draft owns the file from here on; a failed send leaves it staged for retry.
+        guard appendDraft(draft) else { return }
+        send()
+    }
+
+    private func cancelAudioRecording() {
+        audioRecorder.cancel()
+        discardRecordedAudio()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func discardRecordedAudio() {
+        recordedAudioPlayer.stop()
+        if let recordedAudio { try? FileManager.default.removeItem(at: recordedAudio.fileURL) }
+        recordedAudio = nil
+        isHoldRecording = false
+    }
+
+    private func reportAudioError(_ error: Error) {
+        model.errorMessage = error.localizedDescription
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
     }
 
     /// Tapping the timeline while the keyboard is open closes it. The FocusState alone
@@ -2194,22 +2554,73 @@ struct DirectMessageConversationView: View {
         timelineScrollTask = Task { @MainActor in
             await Task.yield()
             guard !Task.isCancelled else { return }
-            if animated {
+            let anchor: UnitPoint = targetID == nil ? .bottom : .center
+            if animated, !isTimelineMoving {
                 withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(timelineItemID, anchor: targetID == nil ? .bottom : .center)
+                    proxy.scrollTo(timelineItemID, anchor: anchor)
                 }
-                return
+                try? await Task.sleep(for: .milliseconds(260))
+            } else {
+                // A timeline still carried by a fling overrides an animated scroll; a direct
+                // one also stops the momentum, so the button works mid-scroll.
+                proxy.scrollTo(timelineItemID, anchor: anchor)
+                try? await Task.sleep(for: .milliseconds(50))
             }
+            // Lazy rows revise their heights once realized; settle on the target again.
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo(timelineItemID, anchor: anchor)
+        }
+    }
+}
 
-            proxy.scrollTo(timelineItemID, anchor: targetID == nil ? .bottom : .center)
-            do {
-                try await Task.sleep(for: .milliseconds(50))
-            } catch {
-                return
+/// The round "scroll to latest message" button, built in UIKit so it sits above the timeline's
+/// scroll view in hit testing (see its use in the conversation).
+private struct ChatScrollToLatestButton: UIViewRepresentable {
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeUIView(context: Context) -> UIButton {
+        var configuration: UIButton.Configuration
+        if #available(iOS 26.0, *) {
+            configuration = .glass()
+        } else {
+            configuration = .gray()
+        }
+        configuration.image = UIImage(
+            systemName: "arrow.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        )
+        configuration.baseForegroundColor = UIColor(TaskifyTheme.primaryText)
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10)
+        let button = UIButton(configuration: configuration)
+        button.addTarget(context.coordinator, action: #selector(Coordinator.tapped(_:)), for: .touchUpInside)
+        button.accessibilityLabel = "Scroll to latest message"
+        button.accessibilityIdentifier = "chatScrollToBottom"
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        context.coordinator.action = action
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func tapped(_ sender: UIButton) {
+            // SwiftUI's scrollTo does not stop a fling, and the remaining momentum would carry
+            // the timeline away again. Halting it is UIKit's own idiom: set the current offset
+            // without animation.
+            if let window = sender.window { Self.stopMomentum(in: window) }
+            action()
+        }
+
+        private static func stopMomentum(in view: UIView) {
+            if let scrollView = view as? UIScrollView, scrollView.isDecelerating {
+                scrollView.setContentOffset(scrollView.contentOffset, animated: false)
             }
-            if !Task.isCancelled {
-                proxy.scrollTo(timelineItemID, anchor: targetID == nil ? .bottom : .center)
-            }
+            view.subviews.forEach(stopMomentum)
         }
     }
 }

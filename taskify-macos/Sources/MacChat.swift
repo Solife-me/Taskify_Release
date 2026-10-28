@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import TaskifyCore
 import TaskifyWallet
+import TaskifyWatchShared
 
 struct MacChatView: View {
     let search: String
@@ -84,6 +85,15 @@ private struct MacConversation: View {
     @Environment(AppModel.self) private var model
     @Environment(\.controlActiveState) private var activeState
     @StateObject private var attachments = MacAttachmentQueue()
+    @State private var audioRecorder = ChatAudioRecorder(
+        directory: { try AttachmentFiles.directory() },
+        onWillRecord: { MacChatAudioPlayback.shared.pauseForRecording() }
+    )
+    /// A stopped recording waiting to be played back, sent or discarded.
+    @State private var recordedAudio: ChatAudioRecorder.Recording?
+    @State private var recordedAudioPlayer = ChatAudioDraftPlayer(
+        onWillPlay: { MacChatAudioPlayback.shared.pauseForRecording() }
+    )
     @State private var sending = false
     @State private var deleting = false
     @State private var groupDetails = false
@@ -147,6 +157,13 @@ private struct MacConversation: View {
         guard !search.isEmpty else { return timeline }
         return timeline.filter { $0.matchesSearch(search) }
     }
+    /// A sender's back-to-back photos collapse into one stack, drawn by the newest photo.
+    private var photoStacks: DirectMessagePhotoStacks.Grouping {
+        DirectMessagePhotoStacks.group(visibleTimeline.map { item in
+            if case .message(let message) = item { return message }
+            return nil
+        })
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -169,9 +186,17 @@ private struct MacConversation: View {
             Divider()
             ScrollView {
                 LazyVStack(spacing: 14) {
-                    ForEach(visibleTimeline) { item in
+                    let stacks = photoStacks
+                    ForEach(visibleTimeline.filter { item in
+                        if case .message(let message) = item { return !stacks.stackedMessageIDs.contains(message.id) }
+                        return true
+                    }) { item in
                         MacChatTimelineRow(
                             item: item,
+                            photoStack: {
+                                if case .message(let message) = item { return stacks.stacks[message.id] }
+                                return nil
+                            }(),
                             parent: { id in messages.first { $0.id == id } },
                             reactions: { message in model.directMessageReactions(for: message) },
                             reply: { reply = $0 },
@@ -214,6 +239,9 @@ private struct MacConversation: View {
                     }.frame(maxHeight: 160).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                 }
                 MacAttachmentQueueView(queue: attachments, busy: sending, onCancel: { sendTask?.cancel() })
+                if isAudioComposerActive {
+                    audioComposer
+                } else {
                 HStack(alignment: .bottom, spacing: 12) {
                     Button { attachments.chooseFiles() } label: { Image(systemName: "paperclip") }.disabled(sending || attachments.importing)
                     PasteButton(payloadType: MacAttachmentTransferPayload.self) { payloads in
@@ -232,6 +260,21 @@ private struct MacConversation: View {
                             onSubmit: { if canSend { send() } }
                         )
                     }
+                    .overlay(alignment: .trailing) {
+                        // Messages' waveform button in the empty field: click to record.
+                        if composer.isEmpty, attachments.files.isEmpty {
+                            Button(action: startAudioRecording) {
+                                Image(systemName: "waveform").font(.title3).foregroundStyle(.secondary)
+                                    .frame(width: 28, height: 28).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(sending || attachments.importing || audioRecorder.isRequestingPermission
+                                || model.isDirectMessagePeerBlocked(peer))
+                            .help("Record Audio Message")
+                            .accessibilityLabel("Record audio message")
+                            .accessibilityIdentifier("chat-audio-record-button")
+                        }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(isDropTargeted ? Color.accentColor : .clear, lineWidth: 2))
@@ -244,6 +287,7 @@ private struct MacConversation: View {
                     attachments.stage(urls)
                     return true
                 } isTargeted: { isDropTargeted = $0 }
+                }
             }.padding(16)
         }
         .sheet(isPresented: $groupDetails) { MacGroupDetails(groupID: peer) }
@@ -254,6 +298,71 @@ private struct MacConversation: View {
         .task { await model.prepareDirectMessageRecipient(peer) }
         .task(id: peer) { if !isGroup { await model.refreshBotCommands(publicKey: peer) } }
         .onChange(of: activeState) { _, _ in markRead() }
+        .onDisappear {
+            audioRecorder.cancel()
+            discardRecordedAudio()
+        }
+    }
+    private var isAudioComposerActive: Bool { audioRecorder.isRecording || recordedAudio != nil }
+    /// Recording: the live waveform, time and stop. Stopped: discard, then play, the clip's
+    /// waveform, "+ time" to record more, and send — the iPhone composer's controls.
+    private var audioComposer: some View {
+        HStack(spacing: 10) {
+            if recordedAudio != nil, !audioRecorder.isRecording {
+                Button(action: discardRecordedAudio) {
+                    Image(systemName: "xmark").frame(width: 30, height: 30)
+                        .background(.quaternary.opacity(0.5), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(sending)
+                .help("Discard Recording")
+                .accessibilityLabel("Cancel audio message")
+            }
+            ChatAudioComposerControls(
+                recorder: audioRecorder,
+                recording: recordedAudio,
+                player: recordedAudioPlayer,
+                isBusy: sending,
+                accent: .accentColor,
+                onStop: stopAudioRecording,
+                onContinue: {
+                    guard let recordedAudio else { return }
+                    recordedAudioPlayer.stop()
+                    startAudioRecording(continuing: recordedAudio)
+                },
+                onSend: sendRecordedAudio
+            )
+            .frame(maxWidth: .infinity)
+            .background(.quaternary.opacity(0.4), in: Capsule())
+        }
+    }
+    private func startAudioRecording() { startAudioRecording(continuing: nil) }
+    private func startAudioRecording(continuing previous: ChatAudioRecorder.Recording?) {
+        Task {
+            do { try await audioRecorder.start(continuing: previous) }
+            catch is CancellationError {}
+            catch { self.error = error.localizedDescription }
+        }
+    }
+    private func stopAudioRecording() {
+        Task {
+            do { recordedAudio = try await audioRecorder.finish() }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+    private func sendRecordedAudio() {
+        guard let recording = recordedAudio, !sending else { return }
+        recordedAudioPlayer.stop()
+        recordedAudio = nil
+        // The queue owns the file from here on; a failed send leaves it staged for retry.
+        attachments.stagePrepared(MacStagedFile(url: recording.fileURL, name: recording.suggestedName, mimeType: "audio/mp4"))
+        if canSend { send() }
+    }
+    private func discardRecordedAudio() {
+        audioRecorder.cancel()
+        recordedAudioPlayer.stop()
+        if let recordedAudio { try? FileManager.default.removeItem(at: recordedAudio.fileURL) }
+        recordedAudio = nil
     }
     private func markRead() { if activeState == .key { model.markDirectMessageThreadRead(peerPublicKey: peer) } }
     private func send() {
@@ -398,6 +507,7 @@ private enum MacChatTimelineItem: Identifiable {
 
 private struct MacChatTimelineRow: View {
     let item: MacChatTimelineItem
+    var photoStack: [NostrDirectMessage]? = nil
     var parent: (String) -> NostrDirectMessage?
     var reactions: (NostrDirectMessage) -> [NostrDirectMessageReaction]
     var reply: (NostrDirectMessage) -> Void
@@ -410,7 +520,8 @@ private struct MacChatTimelineRow: View {
             MacMessageRow(
                 message: message,
                 parent: message.replyToEventID.flatMap(parent),
-                reactions: reactions(message),
+                reactions: (photoStack ?? [message]).flatMap(reactions),
+                photoStack: photoStack,
                 reply: reply,
                 react: react,
                 reportError: reportError
@@ -539,6 +650,9 @@ private struct MacMessageRow: View {
     let message: NostrDirectMessage
     let parent: NostrDirectMessage?
     let reactions: [NostrDirectMessageReaction]
+    /// The sender's consecutive photos this message stands for, oldest first, when it hosts a
+    /// photo stack.
+    var photoStack: [NostrDirectMessage]? = nil
     var reply: (NostrDirectMessage) -> Void
     var react: (NostrDirectMessage, String) -> Void
     var reportError: (String) -> Void
@@ -547,42 +661,89 @@ private struct MacMessageRow: View {
         guard message.isIncoming, message.attachment == nil else { return nil }
         return CashuPaymentRequestContract.firstTokenSubstring(in: message.content)
     }
+    private var attachments: [NostrDirectMessageAttachment] { (photoStack ?? [message]).compactMap(\.attachment) }
+    /// A stack reports its least-delivered photo.
+    private var deliveryState: NostrDirectMessageDeliveryState? {
+        let states = (photoStack ?? [message]).compactMap(\.deliveryState)
+        if states.contains(.failed) { return .failed }
+        if states.contains(.queued) { return .queued }
+        return states.isEmpty ? nil : .sent
+    }
 
     var body: some View {
         HStack {
             if !message.isIncoming { Spacer(minLength: 60) }
-            VStack(alignment: .leading, spacing: 5) {
-                if let parent {
-                    Text(parent.displayContent).font(.caption).lineLimit(2).foregroundStyle(.secondary).padding(.leading, 8)
-                        .overlay(alignment: .leading) { Rectangle().fill(Color.accentColor).frame(width: 2) }
-                }
-                content
-                HStack {
-                    Text(Date(timeIntervalSince1970: Double(message.createdAt)).formatted(date: .omitted, time: .shortened))
-                    if !message.isIncoming { Text(message.deliveryState.map { String(describing: $0).capitalized } ?? "Queued") }
-                }.font(.caption2).foregroundStyle(.secondary)
-                if !reactions.isEmpty { Text(reactions.map(\.emoji).joined(separator: " ")).font(.caption) }
-            }.padding(12)
-                .background(message.isIncoming ? Color(nsColor: .controlBackgroundColor) : Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
-                .contextMenu {
-                    Button("Reply") { reply(message) }
-                    Button("Copy") { macCopy(message.content) }
-                    ForEach(["❤️", "👍", "✅", "😂"], id: \.self) { emoji in
-                        Button(emoji) { react(message, emoji) }
+            if message.attachment != nil {
+                // Attachments carry their own shape, so no message bubble around them.
+                VStack(alignment: message.isIncoming ? .leading : .trailing, spacing: 5) {
+                    replyContext
+                    HStack(alignment: .center, spacing: 10) {
+                        attachmentContent
+                        if message.isIncoming, attachments.allSatisfy(\.isImage) {
+                            MacChatPhotoSaveButton(attachments: attachments, reportError: reportError)
+                        }
                     }
+                    metadata
                 }
+                .contextMenu {
+                    messageActions
+                    Divider()
+                    MacChatAttachmentMenu(attachments: attachments, reportError: reportError)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 5) {
+                    replyContext
+                    content
+                    metadata
+                }.padding(12)
+                    .background(message.isIncoming ? Color(nsColor: .controlBackgroundColor) : Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                    .contextMenu {
+                        messageActions
+                        Button("Copy") { macCopy(message.content) }
+                    }
+            }
             if message.isIncoming { Spacer(minLength: 60) }
         }
     }
 
-    @ViewBuilder private var content: some View {
-        if let attachment = message.attachment {
-            if attachment.mimeType.hasPrefix("image/") {
-                MacChatImageAttachment(attachment: attachment)
+    @ViewBuilder private var replyContext: some View {
+        if let parent {
+            Text(parent.displayContent).font(.caption).lineLimit(2).foregroundStyle(.secondary).padding(.leading, 8)
+                .overlay(alignment: .leading) { Rectangle().fill(Color.accentColor).frame(width: 2) }
+        }
+    }
+
+    @ViewBuilder private var metadata: some View {
+        HStack {
+            Text(Date(timeIntervalSince1970: Double(message.createdAt)).formatted(date: .omitted, time: .shortened))
+            if !message.isIncoming { Text(deliveryState.map { String(describing: $0).capitalized } ?? "Queued") }
+        }.font(.caption2).foregroundStyle(.secondary)
+        if !reactions.isEmpty { Text(reactions.map(\.emoji).joined(separator: " ")).font(.caption) }
+    }
+
+    @ViewBuilder private var messageActions: some View {
+        Button("Reply") { reply(message) }
+        ForEach(["❤️", "👍", "✅", "😂"], id: \.self) { emoji in
+            Button(emoji) { react(message, emoji) }
+        }
+    }
+
+    @ViewBuilder private var attachmentContent: some View {
+        if let photoStack, photoStack.count > 1 {
+            MacChatPhotoStack(attachments: attachments, reportError: reportError)
+        } else if let attachment = message.attachment {
+            if attachment.isImage {
+                MacChatPhotoBubble(attachment: attachment, reportError: reportError)
+            } else if attachment.isAudio {
+                MacChatAudioAttachment(attachment: attachment)
             } else {
-                Button("Save Attachment…") { Task { do { try await MacAttachmentExport.chat(attachment) } catch { reportError(error.localizedDescription) } } }
+                MacChatFileRow(attachment: attachment, reportError: reportError)
             }
-        } else if case .assignmentResponse(let response) = envelope?.item {
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        if case .assignmentResponse(let response) = envelope?.item {
             Label("Assignment \(response.status.rawValue)", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
         } else if envelope != nil {
             // A shared task/contact/event/board rumor: its card is rendered as its own,
