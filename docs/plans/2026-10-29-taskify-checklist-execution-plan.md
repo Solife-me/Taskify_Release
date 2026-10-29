@@ -51,7 +51,7 @@ User testing is valuable but is not a prerequisite for marking work complete.
 | 4 | Stop PWA task editing from waiting for relay publication | Complete | `4917b490` | PWA 768 passed/14 skipped; lint; build; startup 420.2/440 KB; relay failures stay queued |
 | 5 | Show attachment download progress across clients | Complete | `798dffe3` | PWA 770/14 skipped; lint/build/startup 420.7 KB; Swift 5/5; iOS/Watch/share/Mac builds |
 | 6 | Add shared Hermes bot-menu parser | Complete | `c1c56eeb` | core 182/182; TypeScript + standalone Swift fixture parity |
-| 7 | Add interactive bot model picker to PWA | Not started | - | PWA tests + browser check |
+| 7 | Add interactive bot model picker to PWA | Complete | `9ed1e11a` | PWA 779/14 skipped; lint; build; startup 418.1 KB; DOM interaction tests |
 | 8 | Add interactive bot model picker to iOS/macOS | Not started | - | Swift tests + simulator |
 | 9 | Paste clipboard photos into iOS task notes as attachments | Not started | - | paste UI test |
 | 10 | Capture multiple chat photos in one iOS camera session | Not started | - | camera model + simulator |
@@ -326,6 +326,7 @@ Verification: tests for confirmation/deselection, wrong page, duplicate task IDs
 | 2026-10-29 | 4 | `codex/checklist-iterations-2-4` | `4917b490` | PWA 768 passed/14 skipped; lint; production build; startup 420.2 KB gz of 440 KB budget | Added non-blocking durable queue path; editor now closes after local intent acceptance and relay failures remain queued |
 | 2026-10-29 | 5 | `codex/checklist-iterations-5-9` | `798dffe3` | PWA 770 passed/14 skipped; lint; build; startup 420.7 KB; Swift 5/5; unsigned iOS app/Watch/share extension and Mac app builds | Streamed body progress in PWA; native URLSession byte progress in chat/task attachments; indeterminate fallback when length is unknown |
 | 2026-10-29 | 6 | `codex/checklist-iterations-5-9` | `c1c56eeb` | core 182/182; TypeScript and Swift consumed the same Hermes listing/catalog/confirmation vectors; Swift parser executable passed | Added strict provider/model parsing, page sizes, confirmation parsing, and encrypted bot-UI action tags |
+| 2026-10-29 | 7 | `codex/checklist-iterations-5-9` | `9ed1e11a` | PWA 779 passed/14 skipped; lint; production build; startup 418.1 KB gz of 440 KB; 9 focused parser/component tests | Added provider/model buttons, 10/8 pagination, encrypted action tags, history reconstruction, hidden internal traffic, 10-minute listing-scoped cache, stale revalidation and manual Refresh; live browser/live-Hermes check deferred because the Mac was locked and local browser control was disabled |
 
 ## Handoff checklist
 
