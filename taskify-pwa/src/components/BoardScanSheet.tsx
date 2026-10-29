@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { buildBoardPrintLayout, type BoardPrintJob, type BoardPrintLayout, type BoardPrintTask } from "./BoardPrintLayout";
 import { scanPage, type ScanMark, type ScanMarkGeometry } from "../domains/print/scanEngine";
 import { scanPhotoFromCanvas } from "../domains/print/scanCanvas";
+import { applyableScanIds, defaultSelectedScanIds, mergeBoardScanReview } from "../domains/print/scanReviewState";
 
 type ScanAnalysis = {
   taskIds: string[];
@@ -88,6 +89,8 @@ export function BoardScanPanel({
   const [scanBusy, setScanBusy] = useState(false);
   const [scanResult, setScanResult] = useState<ScanAnalysis | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [reviewTasks, setReviewTasks] = useState<BoardPrintTask[]>([]);
+  const [selectedReviewIds, setSelectedReviewIds] = useState<Set<string>>(() => new Set());
 
   const stopCamera = useCallback(() => {
     const stream = streamRef.current;
@@ -155,6 +158,11 @@ export function BoardScanPanel({
     setCameraActive(true);
   }, [pageSelection]);
 
+  useEffect(() => {
+    setReviewTasks([]);
+    setSelectedReviewIds(new Set());
+  }, [job.id]);
+
   useEffect(() => () => stopCamera(), [stopCamera]);
 
   const captureVideoFrame = useCallback(() => {
@@ -192,6 +200,15 @@ export function BoardScanPanel({
           setDetectedPageIndex(null);
         }
         setScanResult(result);
+        const detectedTasks = result.taskIds
+          .map((id) => taskLookup.get(id))
+          .filter((task): task is BoardPrintTask => !!task);
+        setReviewTasks((current) => mergeBoardScanReview(current, detectedTasks));
+        setSelectedReviewIds((current) => {
+          const next = new Set(current);
+          defaultSelectedScanIds(detectedTasks).forEach((id) => next.add(id));
+          return next;
+        });
         if (shouldSetPreview) {
           setPreviewUrl(canvas.toDataURL("image/jpeg", 0.85));
         }
@@ -207,7 +224,7 @@ export function BoardScanPanel({
         setScanBusy(false);
       }
     },
-    [layout, pageSelection]
+    [layout, pageSelection, taskLookup]
   );
 
   const handleCapture = useCallback(async () => {
@@ -253,17 +270,29 @@ export function BoardScanPanel({
     [analyzeCanvas]
   );
 
-  const detectedTasks = useMemo(() => {
-    if (!scanResult) return [] as BoardPrintTask[];
-    return scanResult.taskIds
-      .map((id) => taskLookup.get(id))
-      .filter(Boolean) as BoardPrintTask[];
-  }, [scanResult, taskLookup]);
+  const selectableReviewIds = useMemo(
+    () => defaultSelectedScanIds(reviewTasks),
+    [reviewTasks],
+  );
+  const selectedApplyableIds = useMemo(
+    () => applyableScanIds(reviewTasks, selectedReviewIds),
+    [reviewTasks, selectedReviewIds],
+  );
+
+  const toggleReviewTask = useCallback((task: BoardPrintTask) => {
+    if (task.completed) return;
+    setSelectedReviewIds((current) => {
+      const next = new Set(current);
+      if (next.has(task.id)) next.delete(task.id);
+      else next.add(task.id);
+      return next;
+    });
+  }, []);
 
   const handleApply = useCallback(() => {
-    if (!scanResult) return;
-    onApply(scanResult.taskIds);
-  }, [onApply, scanResult]);
+    if (!selectedApplyableIds.length) return;
+    onApply(selectedApplyableIds);
+  }, [onApply, selectedApplyableIds]);
 
   if (!job.tasks.length) {
     return (
@@ -369,28 +398,53 @@ export function BoardScanPanel({
       {scanResult && (
         <div className="board-scan-results">
           <div className="text-sm font-medium text-primary">
-            Detected {scanResult.filledCount} filled task{scanResult.filledCount === 1 ? "" : "s"}
+            Detected {scanResult.filledCount} filled mark{scanResult.filledCount === 1 ? "" : "s"} on page {scanResult.pageIndex + 1}
           </div>
           <div className="text-xs text-secondary">
-            Page {scanResult.pageIndex + 1} captured.
+            {reviewTasks.length} unique task{reviewTasks.length === 1 ? "" : "s"} in this review. Select the changes to apply.
           </div>
-          <div className="text-xs text-secondary">
-            {detectedTasks.length > 0
-              ? `${detectedTasks.length} task${detectedTasks.length === 1 ? "" : "s"} ready to update.`
-              : "No tasks found on this page."}
-          </div>
-          {detectedTasks.length > 0 && (
+          {reviewTasks.length > 0 && (
             <div className="board-scan-tasks">
-              <div className="text-xs font-semibold text-primary">Review detected tasks</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-primary">Verify detected tasks</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="text-xs text-secondary hover:text-primary pressable"
+                    onClick={() => setSelectedReviewIds(new Set(selectableReviewIds))}
+                    disabled={scanBusy || !selectableReviewIds.size}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="text-xs text-secondary hover:text-primary pressable"
+                    onClick={() => setSelectedReviewIds(new Set())}
+                    disabled={scanBusy || !selectedReviewIds.size}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
               <div className="board-scan-task-list">
-                {detectedTasks.map((task) => (
-                  <div key={task.id} className="board-scan-task-row">
-                    {task.label ? (
-                      <span className="board-scan-task-label text-xs">{task.label}</span>
-                    ) : null}
-                    <span className="board-scan-task-title text-sm">{task.title}</span>
-                  </div>
-                ))}
+                {reviewTasks.map((task) => {
+                  const checked = !task.completed && selectedReviewIds.has(task.id);
+                  return (
+                    <label key={task.id} className={`board-scan-task-row${task.completed ? " is-completed" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={scanBusy || task.completed}
+                        onChange={() => toggleReviewTask(task)}
+                      />
+                      {task.label ? (
+                        <span className="board-scan-task-label text-xs">{task.label}</span>
+                      ) : null}
+                      <span className="board-scan-task-title text-sm">{task.title}</span>
+                      {task.completed ? <span className="text-xs text-tertiary">Already completed</span> : null}
+                    </label>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -399,9 +453,9 @@ export function BoardScanPanel({
               type="button"
               className="accent-button button-sm pressable"
               onClick={handleApply}
-              disabled={scanBusy || detectedTasks.length === 0}
+              disabled={scanBusy || selectedApplyableIds.length === 0}
             >
-              Mark complete
+              Apply {selectedApplyableIds.length || ""} completed mark{selectedApplyableIds.length === 1 ? "" : "s"}
             </button>
             <button
               type="button"
@@ -415,7 +469,7 @@ export function BoardScanPanel({
               }}
               disabled={scanBusy}
             >
-              Scan again
+              Scan another page
             </button>
           </div>
         </div>

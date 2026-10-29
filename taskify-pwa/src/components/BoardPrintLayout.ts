@@ -9,6 +9,7 @@ export type BoardPrintTask = {
   label?: string;
   /** Stable list/day identifier used when the user prints only selected lists. */
   listId?: string;
+  completed?: boolean;
 };
 
 export type BoardPrintScope =

@@ -21,7 +21,13 @@ function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
         if (!taskId || !title) return null;
         const label = typeof task.label === "string" ? task.label : undefined;
         const listId = typeof task.listId === "string" ? task.listId : undefined;
-        return { id: taskId, title, ...(label ? { label } : {}), ...(listId ? { listId } : {}) };
+        return {
+          id: taskId,
+          title,
+          ...(label ? { label } : {}),
+          ...(listId ? { listId } : {}),
+          ...(task.completed === true ? { completed: true } : {}),
+        };
       })
       .filter(Boolean) as BoardPrintTask[]
     : [];

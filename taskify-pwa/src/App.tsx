@@ -2581,7 +2581,7 @@ export default function App() {
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         dayTasks.forEach((task) => {
-          output.push({ id: task.id, title: titleForTask(task), label, listId });
+          output.push({ id: task.id, title: titleForTask(task), label, listId, completed: task.completed });
         });
         const dayEvents = (calendarByDay.get(day) ?? []).filter((ev) => includeId(ev.id));
         dayEvents.forEach((ev) => {
@@ -2614,7 +2614,7 @@ export default function App() {
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         taskBucket.forEach((task) => {
-          output.push({ id: task.id, title: titleForTask(task), label: col.name, listId: col.id });
+          output.push({ id: task.id, title: titleForTask(task), label: col.name, listId: col.id, completed: task.completed });
         });
         const eventBucket = (calendarItemsByColumn.get(col.id) ?? []).filter((ev) => includeId(ev.id));
         eventBucket.forEach((ev) => {
@@ -2624,7 +2624,7 @@ export default function App() {
       return output;
     }
 
-    const tasksOutput = visibleTasks.map((task) => ({ id: task.id, title: titleForTask(task) }));
+    const tasksOutput = visibleTasks.map((task) => ({ id: task.id, title: titleForTask(task), completed: task.completed }));
     const eventsOutput = calendarEventsForBoard
       .filter((ev) => includeId(ev.id))
       .map((ev) => ({ id: ev.id, title: titleForEvent(ev) }));
