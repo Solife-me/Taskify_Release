@@ -62,6 +62,7 @@ User testing is valuable but is not a prerequisite for marking work complete.
 | 15 | Print whole board or selected lists, respecting completed settings | Complete | `7038a6c1`, `e1da933b` | PWA scope/filter tests; iOS/macOS multi-list chooser; unsigned app builds |
 | 16 | Refactor print/scan format and make scan round-trip reliable | Complete | `b0b44081`, `e1da933b` | core 184/184; focused Swift 6/6; PWA 792/14; iOS/macOS builds; synthetic round-trip coverage |
 | 17 | Add scan result verification before completing tasks | Complete | `e2e5099a` | PWA review tests; Swift review tests 2/2; PWA 792/14; lint/build/startup; iOS/macOS builds |
+| 18 | Resolve final thread-review findings before Beta merge | Complete | `81cdbd5e` | core 185/185; PWA 794/14; Swift 901/14 plus 44 focused; lint/build/startup; iOS/macOS builds |
 | - | Chat polls | Out of scope | - | user decision |
 
 Status values: `Not started`, `In progress`, `Blocked`, `Complete`.
@@ -316,6 +317,17 @@ Verification: synthetic image round-trip tests generated from actual print layou
 
 Verification: tests for confirmation/deselection, wrong page, duplicate task IDs, recurrence, offline apply, and partial sync; manual end-to-end print-fill-scan-confirm flow.
 
+### 18. Final review hardening
+
+- Synchronize the latest printable task manifest through the existing encrypted account backup so a sheet printed by PWA, iOS, or macOS can be scanned by another signed-in client.
+- Use stable board/tracker owner IDs across clients and resolve manifests against boards imported in the same backup event.
+- Fail closed when a multi-page scan cannot read its page ID instead of guessing from marks or image order.
+- Reuse Hermes provider catalogs across new `/model` listing messages while treating the previous catalog as stale and refreshing it in the background.
+- Balance every camera configuration transaction even when camera-input creation fails.
+- Multicast attachment progress to every thumbnail/viewer waiting on the same in-flight download.
+
+Verification: cross-client manifest merge tests, unreadable-page regression coverage, Hermes cache tests, complete PWA/core/Swift suites, PWA lint/build/startup budget, and cold unsigned iOS/macOS app builds.
+
 ## Evidence log
 
 | Date | Iteration | Branch | Commit | Verification | Notes |
@@ -337,13 +349,14 @@ Verification: tests for confirmation/deselection, wrong page, duplicate task IDs
 | 2026-10-29 | 15 | `codex/checklist-iterations-14-17` | `7038a6c1`, `e1da933b` | PWA scope/filter tests and full 792/14; unsigned iOS and macOS builds | PWA, iOS, and macOS can print the whole board or one or more lists. Compound-board child columns are de-duplicated; selection print remains available. Completed tasks are included only when the shared completed-tab setting is enabled |
 | 2026-10-29 | 16 | `codex/checklist-iterations-14-17` | `b0b44081`, `e1da933b` | TaskifyCore 184/184; focused Swift 6/6; PWA 790/14 at contract commit and 792/14 final; unsigned iOS/macOS builds | Added the shared v3 paper contract with job validation, page patterns, A4/Letter/A6 support, and legacy read support. PWA, iOS, and macOS now draw the same job/page markers and reject stale or wrong-board pages |
 | 2026-10-29 | 17 | `codex/checklist-iterations-14-17` | `e2e5099a` | PWA 792 passed/14 skipped; lint/build/startup 422.8 KB; Swift review tests 2/2; focused Swift 6/6; unsigned iOS/macOS builds | Scan results merge into one deduplicated review across pages. Only newly detected incomplete tasks are selected by default; rows can be toggled, select-all/clear are available, already-completed and unknown IDs cannot be applied, and apply uses the normal completion path |
+| 2026-10-29 | 18 | `codex/checklist-iterations-14-17` | `81cdbd5e` | core 185/185; PWA 794 passed/14 skipped; lint; production build; startup 423.5 KB; Swift 901 passed/14 skipped plus 44 focused; unsigned iOS/macOS builds | Added encrypted cross-client print manifests, fail-closed page detection, reusable-but-stale Hermes catalogs, balanced camera configuration, and shared in-flight attachment progress; the app-target build caught and verified the shared manifest-store placement |
 
 ## Final verification
 
-- `taskify-pwa`: 145 files passed / 4 skipped; 792 tests passed / 14 skipped. ESLint, production build, and startup budget passed at 422.8 KB gzip of 440 KB.
-- `taskify-core`: 184/184 tests passed, including shared print-contract vectors and TypeScript/Swift parity.
-- Swift focused suite: 6/6 passed across board print contract, physical layout, and scan-review selection.
-- Unsigned app builds succeeded for the iOS `TaskifyNative` scheme and the separate macOS `TaskifyMac` scheme.
+- `taskify-pwa`: 145 files passed / 4 skipped; 794 tests passed / 14 skipped. ESLint, production build, and startup budget passed at 423.5 KB gzip of 440 KB.
+- `taskify-core`: 185/185 tests passed, including encrypted print-manifest merge and shared print-contract vectors.
+- Swift package suite: 901 tests passed / 14 skipped, plus all 44 focused Swift Testing cases.
+- Cold unsigned app builds succeeded for the iOS `TaskifyNative` scheme and the separate macOS `TaskifyMac` scheme.
 - Final repository diff checks passed with no whitespace errors.
 
 ## Residual limitations
@@ -354,11 +367,11 @@ Verification: tests for confirmation/deselection, wrong page, duplicate task IDs
 
 ## Handoff checklist
 
-All checklist and follow-up iterations are complete. The branch is
-`codex/checklist-iterations-14-17`; its final implementation commit is `e2e5099a` and
-the tracker commit follows immediately after it. No work is left in progress. If a
-future agent resumes, start with the residual limitations above rather than
-reopening completed implementation work.
+All checklist, follow-up, and review iterations are complete. The branch is
+`codex/checklist-iterations-14-17`; its final implementation commit is `81cdbd5e` and
+the tracker commit follows immediately after it. The branch is ready to merge into
+`Beta`. If a future agent resumes, start with the residual limitations above rather
+than reopening completed implementation work.
 
 Before ending an iteration, record:
 
