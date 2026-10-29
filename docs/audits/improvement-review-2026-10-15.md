@@ -4681,3 +4681,21 @@ calendar data and the stored reminder titles, so the maintainer runs it:
 `npx wrangler@4.150.0 d1 migrations apply taskify-notifications --remote`. Do it after these
 commits reach `main`, and revoke the Google OAuth client and the Gemini key in Google's console.
 
+### Checkpoint — October 29, 2026 (production D1 migrated)
+
+The maintainer applied migrations 0002–0009 to `taskify-notifications`. A first attempt failed
+with 7403 right after an OAuth token refresh; the retry succeeded.
+
+Checked afterwards:
+- **All nine migrations are recorded**, 0002–0009 at 10:37 UTC, and `migrations list` reports
+  none pending.
+- **The remaining tables** are `devices`, `reminders`, `pending_notifications`, `voice_quota`,
+  `request_signatures` and `write_budget`. Every `gcal_*`, `caldav_*` and `google_calendar_*`
+  table is gone.
+- **No title remains:** none of the 74 reminders or the pending notifications carries one, and
+  all 38 devices are unchanged.
+
+This unblocks C13-5's first code step: `ensureSchema` duplicates migrations 0006–0007, which are
+now applied in production. Still waiting: the legacy KV namespaces (`TASKIFY_DEVICES` 9 keys,
+`TASKIFY_PENDING` 2) and moving `VAPID_PRIVATE_KEY` from KV to a secret.
+
