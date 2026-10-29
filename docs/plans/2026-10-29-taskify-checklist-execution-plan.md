@@ -48,7 +48,7 @@ User testing is valuable but is not a prerequisite for marking work complete.
 | 1 | Create and commit this living plan | Complete | `6a864fa2` | plan reviewed |
 | 2 | Finish and commit CLI relay rate-limit work | Complete | `a5ef6b1a` | 91 runtime tests + 225 CLI tests |
 | 3 | Keep attachment file names private on every upload path | Complete | `ea845460` | cross-client tests + iOS/Watch build |
-| 4 | Stop PWA task editing from waiting for relay publication | Complete | `4917b490` | PWA 768 passed/14 skipped; lint; build; startup budget 420.2/440 KB | Editor closes after durable intent; relay attempts continue with the existing pending indicator and retry policy |
+| 4 | Stop PWA task editing from waiting for relay publication | Complete | `4917b490` | PWA 768 passed/14 skipped; lint; build; startup 420.2/440 KB; relay failures stay queued |
 | 5 | Show attachment download progress across clients | Not started | - | progress/error tests |
 | 6 | Add shared Hermes bot-menu parser | Not started | - | TS + Swift vectors |
 | 7 | Add interactive bot model picker to PWA | Not started | - | PWA tests + browser check |
