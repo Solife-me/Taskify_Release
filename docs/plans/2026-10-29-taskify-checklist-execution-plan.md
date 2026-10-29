@@ -45,7 +45,7 @@ User testing is valuable but is not a prerequisite for marking work complete.
 
 | Iteration | Item | Status | Commit | Verification |
 |---|---|---|---|---|
-| 1 | Create and commit this living plan | Complete | see git log | plan reviewed |
+| 1 | Create and commit this living plan | Complete | `6a864fa2` | plan reviewed |
 | 2 | Finish and commit CLI relay rate-limit work | In progress | pending | runtime + CLI tests |
 | 3 | Keep attachment file names private on every upload path | Not started | - | cross-client tests |
 | 4 | Stop PWA task editing from waiting for relay publication | Not started | - | slow/failing publish tests |
@@ -320,7 +320,7 @@ Verification: tests for confirmation/deselection, wrong page, duplicate task IDs
 
 | Date | Iteration | Branch | Commit | Verification | Notes |
 |---|---|---|---|---|---|
-| 2026-10-29 | 1 | Beta | see git log | Checklist and repository reviewed | Living plan created |
+| 2026-10-29 | 1 | Beta | `6a864fa2` | Checklist and repository reviewed | Living plan created |
 
 ## Handoff checklist
 
