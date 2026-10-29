@@ -83,3 +83,154 @@ final class HermesModelMenuTests: XCTestCase {
         XCTAssertFalse(HermesModelMenuParser.isValidModelId("model with spaces"))
     }
 }
+
+extension HermesModelMenuTests {
+    private static let listingText = """
+    Current: `deepseek-v4.1-flash:cloud` on custom:local
+
+    **local** `--provider custom:local` (current):
+      `lfm3-audio:latest`, `deepseek-v4.1-flash:cloud` (+11 more)
+
+    **Nous Portal** `--provider nous`:
+      `anthropic/claude-opus-5.5`, `anthropic/claude-sonnet-5.5` (+67 more)
+    """
+
+    private static let menuID = String(repeating: "c", count: 64)
+    private static let peer = String(repeating: "b", count: 64)
+
+    private func message(
+        id: String,
+        content: String,
+        incoming: Bool,
+        createdAt: Int,
+        action: TaskifyBotUiAction? = nil
+    ) -> NostrDirectMessage {
+        NostrDirectMessage(
+            rumorEventID: id,
+            wrapEventID: id,
+            peerPublicKey: Self.peer,
+            senderPublicKey: incoming ? Self.peer : String(repeating: "a", count: 64),
+            content: content,
+            createdAt: createdAt,
+            isIncoming: incoming,
+            botUiAction: action
+        )
+    }
+
+    func testProjectionHidesCatalogTrafficAndReconstructsCatalog() throws {
+        let listing = message(id: Self.menuID, content: Self.listingText, incoming: true, createdAt: 1)
+        let action = TaskifyBotUiAction(kind: .catalogRequest, menuId: Self.menuID, providerSlug: "custom:local")
+        let request = message(
+            id: String(repeating: "d", count: 64),
+            content: try TaskifyBotUiContract.catalogRequestPrompt(providerSlug: "custom:local"),
+            incoming: false,
+            createdAt: 2,
+            action: action
+        )
+        let response = message(
+            id: String(repeating: "e", count: 64),
+            content: #"{"provider":"custom:local","models":["lfm3-audio:latest","deepseek-v4.1-flash:cloud"]}"#,
+            incoming: true,
+            createdAt: 3
+        )
+
+        let projection = HermesModelPickerProjection.project(
+            messages: [listing, request, response],
+            enabled: true
+        )
+        XCTAssertTrue(projection.hiddenMessageIDs.contains(request.id))
+        XCTAssertTrue(projection.hiddenMessageIDs.contains(response.id))
+        XCTAssertEqual(
+            projection.menusByListingMessageID[listing.id]?.catalogs["custom:local"]?.models,
+            ["lfm3-audio:latest", "deepseek-v4.1-flash:cloud"]
+        )
+        XCTAssertNil(projection.menusByListingMessageID[listing.id]?.pendingAction)
+    }
+
+    func testProjectionReconstructsCompletedModelSwitch() throws {
+        let listing = message(id: Self.menuID, content: Self.listingText, incoming: true, createdAt: 1)
+        let action = TaskifyBotUiAction(
+            kind: .modelSelect,
+            menuId: Self.menuID,
+            providerSlug: "custom:local",
+            modelId: "deepseek-v4.1-flash:cloud"
+        )
+        let request = message(
+            id: String(repeating: "d", count: 64),
+            content: try TaskifyBotUiContract.modelSwitchCommand(
+                providerSlug: "custom:local",
+                modelId: "deepseek-v4.1-flash:cloud"
+            ),
+            incoming: false,
+            createdAt: 2,
+            action: action
+        )
+        let response = message(
+            id: String(repeating: "e", count: 64),
+            content: "Model switched to `deepseek-v4.1-flash:cloud`\nProvider: local\nContext: 1,048,576 tokens",
+            incoming: true,
+            createdAt: 3
+        )
+
+        let projection = HermesModelPickerProjection.project(
+            messages: [listing, request, response],
+            enabled: true
+        )
+        XCTAssertTrue(projection.hiddenMessageIDs.contains(response.id))
+        XCTAssertEqual(
+            projection.menusByListingMessageID[listing.id]?.selectedModel,
+            HermesSelectedModel(
+                modelId: "deepseek-v4.1-flash:cloud",
+                providerSlug: "custom:local",
+                providerName: "local"
+            )
+        )
+    }
+
+    func testUnexpectedResponseStaysVisibleAndActionSurvivesSnapshotRoundTrip() throws {
+        let listing = message(id: Self.menuID, content: Self.listingText, incoming: true, createdAt: 1)
+        let action = TaskifyBotUiAction(kind: .catalogRequest, menuId: Self.menuID, providerSlug: "nous")
+        let request = message(
+            id: String(repeating: "d", count: 64),
+            content: "request",
+            incoming: false,
+            createdAt: 2,
+            action: action
+        )
+        let response = message(
+            id: String(repeating: "e", count: 64),
+            content: "I could not list those models.",
+            incoming: true,
+            createdAt: 3
+        )
+
+        let projection = HermesModelPickerProjection.project(
+            messages: [listing, request, response],
+            enabled: true
+        )
+        XCTAssertFalse(projection.hiddenMessageIDs.contains(response.id))
+        XCTAssertEqual(
+            projection.menusByListingMessageID[listing.id]?.failure?.responseEventId,
+            response.id
+        )
+
+        let decoded = try JSONDecoder().decode(
+            NostrDirectMessage.self,
+            from: JSONEncoder().encode(request)
+        )
+        XCTAssertEqual(decoded.botUiAction, action)
+    }
+
+    func testCatalogPromptAndSwitchCommandMatchTheTestedHermesFlow() throws {
+        let prompt = try TaskifyBotUiContract.catalogRequestPrompt(providerSlug: "custom:local")
+        XCTAssertTrue(prompt.contains("provider slug `custom:local`"))
+        XCTAssertTrue(prompt.contains(#"{"provider":"custom:local","models":["model-id"]}"#))
+        XCTAssertEqual(
+            try TaskifyBotUiContract.modelSwitchCommand(
+                providerSlug: "custom:local",
+                modelId: "deepseek-v4.1-flash:cloud"
+            ),
+            "/model deepseek-v4.1-flash:cloud --provider custom:local"
+        )
+    }
+}

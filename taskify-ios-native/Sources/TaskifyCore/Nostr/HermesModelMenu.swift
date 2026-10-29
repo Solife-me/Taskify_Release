@@ -272,8 +272,8 @@ public enum HermesModelMenuParser {
 }
 
 /// Encrypted rumor tags used to hide Taskify bot-UI commands and correlate their replies.
-public struct TaskifyBotUiAction: Equatable, Sendable {
-    public enum Kind: String, Equatable, Sendable {
+public struct TaskifyBotUiAction: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Equatable, Sendable {
         case catalogRequest = "catalog-request"
         case modelSelect = "model-select"
     }
@@ -331,5 +331,193 @@ public enum TaskifyBotUiContract {
             }
         }
         return nil
+    }
+
+    public static func catalogRequestPrompt(providerSlug: String) throws -> String {
+        let slug = providerSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard HermesModelMenuParser.isValidProviderSlug(slug) else {
+            throw TaskifyBotUiError.invalidAction
+        }
+        return """
+        List only the models available for provider slug `\(slug)` on this Hermes instance. Include every model ID accepted by `/model <model-id> --provider \(slug)`, without truncating or omitting any. Do not include API keys, credentials, endpoints, filesystem paths, or other secrets. Return only one fenced JSON code block in this exact shape:
+
+        {"provider":"\(slug)","models":["model-id"]}
+        """
+    }
+
+    public static func modelSwitchCommand(providerSlug: String, modelId: String) throws -> String {
+        let slug = providerSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard HermesModelMenuParser.isValidProviderSlug(slug),
+              HermesModelMenuParser.isValidModelId(model) else {
+            throw TaskifyBotUiError.invalidAction
+        }
+        return "/model \(model) --provider \(slug)"
+    }
+}
+
+public struct HermesSelectedModel: Equatable, Sendable {
+    public var modelId: String
+    public var providerSlug: String
+    public var providerName: String?
+
+    public init(modelId: String, providerSlug: String, providerName: String?) {
+        self.modelId = modelId
+        self.providerSlug = providerSlug
+        self.providerName = providerName
+    }
+}
+
+public struct HermesBotUiFailure: Equatable, Sendable {
+    public var action: TaskifyBotUiAction
+    public var responseEventId: String
+    public var responseContent: String
+
+    public init(action: TaskifyBotUiAction, responseEventId: String, responseContent: String) {
+        self.action = action
+        self.responseEventId = responseEventId
+        self.responseContent = responseContent
+    }
+}
+
+public struct HermesModelMenuProjection: Equatable, Sendable {
+    public var listingEventId: String
+    public var menuId: String
+    public var listing: HermesModelListing
+    public var catalogs: [String: HermesProviderCatalog]
+    public var selectedModel: HermesSelectedModel?
+    public var pendingAction: TaskifyBotUiAction?
+    public var failure: HermesBotUiFailure?
+
+    public init(
+        listingEventId: String,
+        menuId: String,
+        listing: HermesModelListing,
+        catalogs: [String: HermesProviderCatalog] = [:],
+        selectedModel: HermesSelectedModel? = nil,
+        pendingAction: TaskifyBotUiAction? = nil,
+        failure: HermesBotUiFailure? = nil
+    ) {
+        self.listingEventId = listingEventId
+        self.menuId = menuId
+        self.listing = listing
+        self.catalogs = catalogs
+        self.selectedModel = selectedModel
+        self.pendingAction = pendingAction
+        self.failure = failure
+    }
+}
+
+public struct HermesBotUiProjection: Equatable, Sendable {
+    public var hiddenMessageIDs: Set<String>
+    public var menusByListingMessageID: [String: HermesModelMenuProjection]
+
+    public init(
+        hiddenMessageIDs: Set<String> = [],
+        menusByListingMessageID: [String: HermesModelMenuProjection] = [:]
+    ) {
+        self.hiddenMessageIDs = hiddenMessageIDs
+        self.menusByListingMessageID = menusByListingMessageID
+    }
+}
+
+/// Reconstructs Hermes's button menu from encrypted message history. Internal commands carry a
+/// typed tag; only the next incoming message that parses as the exact expected response is hidden.
+public enum HermesModelPickerProjection {
+    public static func project(messages: [NostrDirectMessage], enabled: Bool) -> HermesBotUiProjection {
+        guard enabled else { return HermesBotUiProjection() }
+        let ordered = messages.enumerated().sorted {
+            if $0.element.createdAt != $1.element.createdAt {
+                return $0.element.createdAt < $1.element.createdAt
+            }
+            return $0.offset < $1.offset
+        }.map(\.element)
+
+        var hidden = Set<String>()
+        var menusByListingMessageID: [String: HermesModelMenuProjection] = [:]
+        var menusByMenuID: [String: HermesModelMenuProjection] = [:]
+        for message in ordered where message.isIncoming && message.groupID == nil && message.attachment == nil {
+            guard let listing = HermesModelMenuParser.parseListing(message.content) else { continue }
+            let menuId = message.rumorEventID
+            guard menuId.range(of: #"^[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil else {
+                continue
+            }
+            let menu = HermesModelMenuProjection(
+                listingEventId: message.rumorEventID,
+                menuId: menuId,
+                listing: listing
+            )
+            menusByListingMessageID[message.rumorEventID] = menu
+            menusByMenuID[menuId] = menu
+        }
+        guard !menusByMenuID.isEmpty else {
+            return HermesBotUiProjection(hiddenMessageIDs: hidden, menusByListingMessageID: menusByListingMessageID)
+        }
+
+        var pending: TaskifyBotUiAction?
+        for message in ordered {
+            if !message.isIncoming, let action = message.botUiAction {
+                hidden.insert(message.rumorEventID)
+                guard var menu = menusByMenuID[action.menuId] else { continue }
+                menu.pendingAction = action
+                menu.failure = nil
+                menusByMenuID[action.menuId] = menu
+                menusByListingMessageID[menu.listingEventId] = menu
+                pending = action
+                continue
+            }
+            guard message.isIncoming, let action = pending else { continue }
+            guard var menu = menusByMenuID[action.menuId] else {
+                pending = nil
+                continue
+            }
+
+            if action.kind == .catalogRequest {
+                if let catalog = HermesModelMenuParser.parseProviderCatalog(
+                    message.content,
+                    expectedProviderSlug: action.providerSlug
+                ) {
+                    hidden.insert(message.rumorEventID)
+                    menu.catalogs[catalog.providerSlug.lowercased()] = catalog
+                    menu.pendingAction = nil
+                    menu.failure = nil
+                    menusByMenuID[action.menuId] = menu
+                    menusByListingMessageID[menu.listingEventId] = menu
+                    pending = nil
+                    continue
+                }
+            } else if let expectedModel = action.modelId,
+                      let confirmation = HermesModelMenuParser.parseConfirmation(message.content),
+                      confirmation.modelId.lowercased() == expectedModel.lowercased() {
+                hidden.insert(message.rumorEventID)
+                let catalog = menu.catalogs[action.providerSlug.lowercased()]
+                menu.selectedModel = HermesSelectedModel(
+                    modelId: confirmation.modelId,
+                    providerSlug: action.providerSlug,
+                    providerName: confirmation.providerName ?? catalog?.providerName
+                )
+                menu.pendingAction = nil
+                menu.failure = nil
+                menusByMenuID[action.menuId] = menu
+                menusByListingMessageID[menu.listingEventId] = menu
+                pending = nil
+                continue
+            }
+
+            menu.pendingAction = nil
+            menu.failure = HermesBotUiFailure(
+                action: action,
+                responseEventId: message.rumorEventID,
+                responseContent: message.content
+            )
+            menusByMenuID[action.menuId] = menu
+            menusByListingMessageID[menu.listingEventId] = menu
+            pending = nil
+        }
+
+        return HermesBotUiProjection(
+            hiddenMessageIDs: hidden,
+            menusByListingMessageID: menusByListingMessageID
+        )
     }
 }

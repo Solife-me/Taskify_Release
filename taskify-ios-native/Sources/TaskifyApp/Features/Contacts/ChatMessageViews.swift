@@ -1849,3 +1849,585 @@ extension ScrollGeometry {
         visibleRect.minY <= contentInsets.top + 24
     }
 }
+
+// MARK: - Hermes model picker
+
+private struct HermesModelCatalogCacheEntry: Codable, Equatable {
+    let providerSlug: String
+    let providerName: String?
+    let models: [String]
+    let listingID: String
+    let fetchedAt: TimeInterval
+
+    var isFresh: Bool {
+        let age = Date().timeIntervalSince1970 - fetchedAt
+        return age >= 0 && age < 10 * 60
+    }
+}
+
+@MainActor
+private final class HermesModelCatalogCache {
+    static let shared = HermesModelCatalogCache()
+
+    private let defaults: UserDefaults
+    private let storageKey = "taskify_hermes_model_catalog_cache_v1"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    private func key(peer: String, listingID: String, provider: String) -> String {
+        "\(peer.lowercased())|\(listingID)|\(provider.lowercased())"
+    }
+
+    private func loadMap() -> [String: HermesModelCatalogCacheEntry] {
+        guard let data = defaults.data(forKey: storageKey),
+              let map = try? JSONDecoder().decode([String: HermesModelCatalogCacheEntry].self, from: data) else {
+            return [:]
+        }
+        return map
+    }
+
+    func load(peer: String, listingID: String, provider: String) -> HermesModelCatalogCacheEntry? {
+        let entry = loadMap()[key(peer: peer, listingID: listingID, provider: provider)]
+        guard let entry,
+              entry.listingID == listingID,
+              entry.providerSlug.caseInsensitiveCompare(provider) == .orderedSame,
+              entry.models.allSatisfy(HermesModelMenuParser.isValidModelId) else { return nil }
+        return entry
+    }
+
+    func save(peer: String, listingID: String, catalog: HermesProviderCatalog) {
+        var map = loadMap()
+        map[key(peer: peer, listingID: listingID, provider: catalog.providerSlug)] =
+            HermesModelCatalogCacheEntry(
+                providerSlug: catalog.providerSlug,
+                providerName: catalog.providerName,
+                models: catalog.models,
+                listingID: listingID,
+                fetchedAt: Date().timeIntervalSince1970
+            )
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
+}
+
+private enum HermesModelPickerPage: Equatable {
+    case overview
+    case providers
+    case models(String)
+}
+
+/// Native counterpart to the PWA's interactive Hermes model card. The listing response is the
+/// visible card; generated commands and matching JSON/confirmation responses are filtered by the
+/// shared projection before the timeline is built.
+struct HermesModelPickerChatView: View {
+    @Environment(AppModel.self) private var model
+    let peerPublicKey: String
+    let projection: HermesModelMenuProjection
+
+    @State private var page: HermesModelPickerPage = .overview
+    @State private var providerPage = 0
+    @State private var modelPage = 0
+    @State private var cachedCatalogs: [String: HermesModelCatalogCacheEntry] = [:]
+    @State private var loadingProvider: String?
+    @State private var switchingModel: String?
+    @State private var actionError: String?
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 7),
+        GridItem(.flexible(), spacing: 7),
+    ]
+
+    private var providers: [HermesModelProvider] { projection.listing.providers }
+    private var providerPageCount: Int {
+        max(1, Int(ceil(Double(providers.count) / Double(HermesModelMenuParser.providerPageSize))))
+    }
+    private var safeProviderPage: Int {
+        min(max(providerPage, 0), providerPageCount - 1)
+    }
+    private var providerRows: ArraySlice<HermesModelProvider> {
+        let start = min(providers.count, safeProviderPage * HermesModelMenuParser.providerPageSize)
+        let end = min(providers.count, start + HermesModelMenuParser.providerPageSize)
+        return providers[start..<end]
+    }
+    private var activeProvider: HermesModelProvider? {
+        guard case let .models(slug) = page else { return nil }
+        return providers.first { $0.slug == slug }
+    }
+    private var currentProviderSlug: String? {
+        projection.selectedModel?.providerSlug ?? projection.listing.currentProviderSlug
+    }
+    private var currentModel: String {
+        projection.selectedModel?.modelId ?? projection.listing.currentModel ?? "Model not reported"
+    }
+    private var currentProviderName: String? {
+        projection.selectedModel?.providerName
+            ?? providers.first { $0.slug == currentProviderSlug }?.name
+            ?? currentProviderSlug
+    }
+    private var requestInFlight: Bool {
+        projection.pendingAction != nil || loadingProvider != nil || switchingModel != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+
+            if page == .overview, let selected = projection.selectedModel {
+                confirmation(selected)
+            } else if page == .providers || (page == .overview && projection.selectedModel == nil) {
+                providerPicker
+            } else if let provider = activeProvider {
+                modelPicker(provider)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            DirectMessageAttachmentStyle.cardFill,
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(TaskifyTheme.border.opacity(0.8), lineWidth: 1)
+        )
+        .onAppear(perform: hydrateCachedCatalogs)
+        .onChange(of: projection.catalogs) { _, catalogs in
+            persist(catalogs)
+        }
+        .onChange(of: projection.selectedModel) { _, selected in
+            guard selected != nil else { return }
+            page = .overview
+            switchingModel = nil
+            actionError = nil
+        }
+        .onChange(of: projection.pendingAction) { _, action in
+            guard let action else { return }
+            if action.kind == .catalogRequest {
+                loadingProvider = action.providerSlug
+            } else {
+                switchingModel = action.modelId
+            }
+        }
+        .onChange(of: projection.failure) { _, failure in
+            guard failure != nil else { return }
+            loadingProvider = nil
+            switchingModel = nil
+            actionError = "Hermes replied in an unexpected format. The raw response is shown below."
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(TaskifyTheme.accent)
+                .frame(width: 30, height: 30)
+                .background(TaskifyTheme.accent.opacity(0.14), in: Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Model configuration")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                HStack(spacing: 5) {
+                    Text(currentModel)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let currentProviderName, !currentProviderName.isEmpty {
+                        Text(currentProviderName)
+                            .foregroundStyle(TaskifyTheme.accent)
+                            .lineLimit(1)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func providerButton(_ provider: HermesModelProvider) -> some View {
+        let fill: Color = provider.isCurrent
+            ? TaskifyTheme.accent.opacity(0.14)
+            : TaskifyTheme.panelFill
+        let stroke: Color = provider.isCurrent
+            ? TaskifyTheme.accent.opacity(0.42)
+            : TaskifyTheme.border.opacity(0.7)
+        let accessibility = "\(provider.name), \(provider.totalModels) models"
+            + (provider.isCurrent ? ", current provider" : "")
+        return Button {
+            openProvider(provider)
+        } label: {
+            HStack(spacing: 5) {
+                if provider.isCurrent {
+                    Image(systemName: "checkmark")
+                        .font(.caption2.bold())
+                        .foregroundStyle(TaskifyTheme.accent)
+                }
+                Text(provider.name)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 2)
+                Text("\(provider.totalModels)")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+            .foregroundStyle(TaskifyTheme.primaryText)
+            .padding(.horizontal, 9)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(fill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(stroke, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(requestInFlight)
+        .accessibilityLabel(accessibility)
+    }
+
+    private func modelButton(_ modelID: String, provider: HermesModelProvider) -> some View {
+        Button {
+            switchModel(provider: provider, modelID: modelID)
+        } label: {
+            HStack(spacing: 5) {
+                Text(modelID)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                if switchingModel == modelID {
+                    ProgressView().controlSize(.mini)
+                }
+            }
+            .foregroundStyle(TaskifyTheme.primaryText)
+            .padding(.horizontal, 9)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(
+                TaskifyTheme.panelFill,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(TaskifyTheme.border.opacity(0.7), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(requestInFlight)
+        .accessibilityLabel("Switch to \(modelID)")
+    }
+
+    private var providerPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Select a provider")
+                Spacer()
+                if providers.isEmpty {
+                    Text("None reported")
+                } else {
+                    let first = safeProviderPage * HermesModelMenuParser.providerPageSize + 1
+                    let last = min(providers.count, first + providerRows.count - 1)
+                    Text("\(first)–\(last) of \(providers.count)")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+
+            LazyVGrid(columns: columns, spacing: 7) {
+                ForEach(Array(providerRows), id: \.slug) { provider in
+                    providerButton(provider)
+                }
+            }
+
+            HStack(spacing: 7) {
+                pickerControl("Prev", systemImage: "chevron.left", disabled: safeProviderPage == 0 || requestInFlight) {
+                    providerPage = max(0, providerPage - 1)
+                }
+                pickerControl(
+                    "Next",
+                    systemImage: "chevron.right",
+                    disabled: safeProviderPage >= providerPageCount - 1 || requestInFlight
+                ) {
+                    providerPage = min(providerPageCount - 1, providerPage + 1)
+                }
+                pickerControl(
+                    projection.selectedModel == nil ? "Cancel" : "Done",
+                    systemImage: projection.selectedModel == nil ? "xmark" : "checkmark"
+                ) {
+                    page = .overview
+                    actionError = nil
+                }
+            }
+        }
+    }
+
+    private func modelPicker(_ provider: HermesModelProvider) -> some View {
+        let liveCatalog = projection.catalogs[provider.slug]
+        let cacheEntry = cachedCatalogs[provider.slug]
+            ?? HermesModelCatalogCache.shared.load(
+                peer: peerPublicKey,
+                listingID: projection.listingEventId,
+                provider: provider.slug
+            )
+        let models = liveCatalog?.models ?? cacheEntry?.models ?? []
+        let pageCount = max(1, Int(ceil(Double(models.count) / Double(HermesModelMenuParser.modelPageSize))))
+        let safePage = min(max(modelPage, 0), pageCount - 1)
+        let start = min(models.count, safePage * HermesModelMenuParser.modelPageSize)
+        let end = min(models.count, start + HermesModelMenuParser.modelPageSize)
+        let rows = Array(models[start..<end])
+        let isLoading = loadingProvider == provider.slug
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                pickerControl("Back", systemImage: "chevron.left") {
+                    page = .providers
+                    modelPage = 0
+                    actionError = nil
+                }
+                .frame(width: 88)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(provider.name)
+                        .font(.caption.bold())
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(1)
+                    Text(
+                        models.isEmpty
+                            ? (isLoading ? "Loading…" : "No models loaded")
+                            : "\(start + 1)–\(end) of \(models.count)"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if rows.isEmpty {
+                HStack(spacing: 8) {
+                    if isLoading { ProgressView().controlSize(.small) }
+                    Text(isLoading ? "Loading \(provider.name) models…" : "No models were returned for this provider.")
+                        .font(.caption)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                .padding(9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(TaskifyTheme.panelFill, in: RoundedRectangle(cornerRadius: 9))
+            } else {
+                LazyVGrid(columns: columns, spacing: 7) {
+                    ForEach(rows, id: \.self) { modelID in
+                        modelButton(modelID, provider: provider)
+                    }
+                }
+            }
+
+            if isLoading, !rows.isEmpty {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("Refreshing model list…")
+                }
+                .font(.caption2)
+                .foregroundStyle(TaskifyTheme.secondaryText)
+            } else if let cacheEntry, !cacheEntry.isFresh, !isLoading {
+                Text("Cached list · refresh to check for new models")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            if let actionError {
+                Text(actionError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+            }
+
+            HStack(spacing: 7) {
+                pickerControl("Prev", systemImage: "chevron.left", disabled: safePage == 0 || requestInFlight) {
+                    modelPage = max(0, modelPage - 1)
+                }
+                pickerControl(
+                    "Next",
+                    systemImage: "chevron.right",
+                    disabled: safePage >= pageCount - 1 || requestInFlight
+                ) {
+                    modelPage = min(pageCount - 1, modelPage + 1)
+                }
+                pickerControl("Refresh", systemImage: "arrow.clockwise", disabled: requestInFlight) {
+                    requestCatalog(provider.slug)
+                }
+                pickerControl("Cancel", systemImage: "xmark") {
+                    page = projection.selectedModel == nil ? .providers : .overview
+                    actionError = nil
+                }
+            }
+        }
+    }
+
+    private func confirmation(_ selected: HermesSelectedModel) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: "checkmark")
+                .font(.caption.bold())
+                .foregroundStyle(.green)
+                .frame(width: 28, height: 28)
+                .background(Color.green.opacity(0.13), in: Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Current model")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                Text(selected.modelId)
+                    .font(.caption.bold())
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let providerName = selected.providerName, !providerName.isEmpty {
+                    Text(providerName)
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+            Spacer(minLength: 4)
+            pickerControl("Change", systemImage: "slider.horizontal.3") {
+                page = .providers
+                actionError = nil
+            }
+            .frame(width: 92)
+        }
+        .padding(9)
+        .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(Color.green.opacity(0.18), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private func pickerControl(
+        _ title: String,
+        systemImage: String,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(TaskifyTheme.primaryText)
+        .background(
+            TaskifyTheme.panelFill,
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(TaskifyTheme.border.opacity(0.7), lineWidth: 1)
+        )
+        .disabled(disabled)
+        .opacity(disabled ? 0.46 : 1)
+    }
+
+    private func hydrateCachedCatalogs() {
+        var next = cachedCatalogs
+        for provider in providers {
+            if next[provider.slug] == nil,
+               let entry = HermesModelCatalogCache.shared.load(
+                   peer: peerPublicKey,
+                   listingID: projection.listingEventId,
+                   provider: provider.slug
+               ) {
+                next[provider.slug] = entry
+            }
+        }
+        cachedCatalogs = next
+    }
+
+    private func persist(_ catalogs: [String: HermesProviderCatalog]) {
+        guard !catalogs.isEmpty else { return }
+        var next = cachedCatalogs
+        for (slug, catalog) in catalogs {
+            HermesModelCatalogCache.shared.save(
+                peer: peerPublicKey,
+                listingID: projection.listingEventId,
+                catalog: catalog
+            )
+            next[slug] = HermesModelCatalogCacheEntry(
+                providerSlug: catalog.providerSlug,
+                providerName: catalog.providerName,
+                models: catalog.models,
+                listingID: projection.listingEventId,
+                fetchedAt: Date().timeIntervalSince1970
+            )
+        }
+        cachedCatalogs = next
+        loadingProvider = nil
+        actionError = nil
+    }
+
+    private func openProvider(_ provider: HermesModelProvider) {
+        page = .models(provider.slug)
+        modelPage = 0
+        actionError = nil
+        let liveCatalog = projection.catalogs[provider.slug]
+        let cached = HermesModelCatalogCache.shared.load(
+            peer: peerPublicKey,
+            listingID: projection.listingEventId,
+            provider: provider.slug
+        )
+        if let cached { cachedCatalogs[provider.slug] = cached }
+        if liveCatalog == nil, cached?.isFresh != true {
+            requestCatalog(provider.slug)
+        }
+    }
+
+    private func requestCatalog(_ providerSlug: String) {
+        guard projection.pendingAction == nil, loadingProvider == nil else { return }
+        loadingProvider = providerSlug
+        actionError = nil
+        Task { @MainActor in
+            do {
+                try await model.sendBotUiCommand(
+                    to: peerPublicKey,
+                    content: TaskifyBotUiContract.catalogRequestPrompt(providerSlug: providerSlug),
+                    action: TaskifyBotUiAction(
+                        kind: .catalogRequest,
+                        menuId: projection.menuId,
+                        providerSlug: providerSlug
+                    )
+                )
+            } catch {
+                loadingProvider = nil
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func switchModel(provider: HermesModelProvider, modelID: String) {
+        guard projection.pendingAction == nil, switchingModel == nil else { return }
+        switchingModel = modelID
+        actionError = nil
+        Task { @MainActor in
+            do {
+                try await model.sendBotUiCommand(
+                    to: peerPublicKey,
+                    content: TaskifyBotUiContract.modelSwitchCommand(
+                        providerSlug: provider.slug,
+                        modelId: modelID
+                    ),
+                    action: TaskifyBotUiAction(
+                        kind: .modelSelect,
+                        menuId: projection.menuId,
+                        providerSlug: provider.slug,
+                        modelId: modelID
+                    )
+                )
+            } catch {
+                switchingModel = nil
+                actionError = error.localizedDescription
+            }
+        }
+    }
+}

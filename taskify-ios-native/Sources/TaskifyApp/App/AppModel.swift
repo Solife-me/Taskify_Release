@@ -5145,6 +5145,39 @@ final class AppModel {
                 createdAt: fixtureStart + 303
             ),
         ]
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_HERMES_MENU"] == "1" {
+            botCommandsCache.save(
+                [
+                    BotCommand(name: "model", description: "Configure the Hermes model"),
+                    BotCommand(name: "status", description: "Show session status"),
+                ],
+                for: peerPublicKey
+            )
+            botCommandsVersion += 1
+            let listingID = String(repeating: "a", count: 64)
+            var messages = snapshot.directMessages ?? []
+            messages.append(NostrDirectMessage(
+                rumorEventID: listingID,
+                wrapEventID: String(repeating: "b", count: 64),
+                peerPublicKey: peerPublicKey,
+                senderPublicKey: peerPublicKey,
+                content: """
+                Current: `deepseek-v4.1-flash:cloud` on custom:local
+
+                **local** `--provider custom:local` (current):
+                  `lfm3-audio:latest`, `lfm3-omni:latest`, `phonon:40m-multilingual`, `phonon:latest`, `bonsai-2:27b` (+8 more)
+
+                **Nous Portal** `--provider nous`:
+                  `anthropic/claude-fable-5.1`, `anthropic/claude-fable-5`, `anthropic/claude-opus-5.5`, `anthropic/claude-opus-5`, `anthropic/claude-opus-4.8` (+64 more)
+
+                **Ollama Cloud** `--provider ollama-cloud`:
+                  `nemotron-3-nano:30b`, `minimax-m3.1-flash`, `glm-5.3`, `mistral-large-3:675b`, `clef:27b` (+19 more)
+                """,
+                createdAt: fixtureStart + fixtureMessageCount + 1,
+                isIncoming: true
+            ))
+            snapshot.directMessages = messages
+        }
         snapshot.directMessageReadAt = [:]
         snapshot.directMessageArchivedAt = [:]
         snapshot.directMessageDeletedEventIDs = [:]
