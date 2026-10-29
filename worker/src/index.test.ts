@@ -78,10 +78,6 @@ class MockD1 {
         return this;
       },
       async run() {
-        if (/^PRAGMA /i.test(sql) || /^CREATE TABLE/i.test(sql) || /^CREATE INDEX/i.test(sql)) {
-          return { success: true };
-        }
-
         if (sql.startsWith("INSERT INTO devices ")) {
           const [device_id, platform, endpoint, endpoint_hash, auth, p256dh, updated_at] = params as [
             string,
@@ -908,9 +904,6 @@ class MockD1WithVoice extends MockD1 {
         return this;
       },
       async run() {
-        // CREATE TABLE
-        if (/^CREATE TABLE/i.test(sql)) return { success: true };
-
         // INSERT ... ON CONFLICT DO UPDATE (upsert quota)
         if (/^INSERT INTO voice_quota/i.test(sql)) {
           const [npub, date, , addSeconds] = params as [string, string, number, number];

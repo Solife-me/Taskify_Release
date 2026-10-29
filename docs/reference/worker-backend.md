@@ -99,7 +99,7 @@ iPhone to be reachable for task creation, completion, Dictation processing, or t
 
 ## 4) Data model (D1 source-of-truth)
 
-`ensureSchema()` creates/updates these core tables:
+The migrations in `worker/migrations/` define these core tables (the Worker itself runs no schema statements):
 
 - `devices`
   - key: `device_id`
@@ -220,8 +220,9 @@ Common failure classes:
    - Cron granularity is 1 minute + network/runtime latency
    - System is at-least-once wake + at-most-once queue drain per row
 
-4. **Schema mismatch in older environments**
-   - `ensureSchema()` runs at request/scheduled entry to reduce cold migration issues
+4. **Schema mismatch**
+   - The schema comes only from `worker/migrations/`, applied before every deploy (README deploy
+     steps). A deploy whose migrations were not applied fails on its first query, not silently.
 
 Operational references:
 - Error wrappers/logging in `fetch` and `scheduled`: `worker/src/index.ts:309–333`
@@ -391,8 +392,8 @@ This section documents the exact scheduler sequencing contract. Preserve it unle
 
 Within `scheduled()`, the runner currently executes in strict sequence:
 
-1. `ensureSchema(env)`
-2. `processDueReminders(env)`
+1. `processDueReminders(env)`
+2. `pruneStaleRows(env)`, once an hour
 
 Anchor: `worker/src/index.ts:317–323`
 
@@ -424,7 +425,7 @@ Anchor: `worker/src/index.ts:323–326`
 
 If you modify scheduled flow:
 
-- Keep `ensureSchema` before D1-dependent jobs.
+- Add any table or column a job needs as a migration, never as runtime DDL (`schema.test.ts`).
 - Preserve explicit ordering decisions (or document intentional reordering in this file).
 - Do not convert failures into silent success without adding equivalent observability.
 
@@ -667,51 +668,40 @@ If you modify preview or NIP-05 logic, preserve:
 - HTTPS-only NIP-05 lookup with private-network and redirect-hop rejection,
 - stable response shape consumed by existing PWA callers.
 
-## 19) Schema bootstrap + concurrency contract (agent verification chunk)
+## 19) Schema contract (agent verification chunk)
 
-The Worker does runtime schema bootstrapping and intentionally de-duplicates concurrent bootstrap attempts in-process.
+The schema is defined by the migrations in `worker/migrations/` and nowhere else. The Worker runs
+no `CREATE`, `DROP`, `ALTER` or `PRAGMA` statement at runtime; requests and the cron only read and
+write rows. Until 2026-10-29 an `ensureSchema()` bootstrap re-ran the core DDL on the first request
+of every isolate and on every cron tick; production now has every migration applied, and it is gone.
 
-### 19.1 `ensureSchema` single-flight behavior
+### 19.1 Applying migrations
 
-Anchors:
-- schema gate state: `worker/src/index.ts:165` (`schemaReadyPromise`)
-- bootstrap function: `worker/src/index.ts:174–235`
+Apply before every deploy (README deploy steps):
 
-Contract:
-1. First caller creates `schemaReadyPromise` and runs DDL.
-2. Concurrent callers await the same promise instead of issuing duplicate DDL.
-3. If bootstrap fails, `.catch(...)` resets `schemaReadyPromise = null` so a later request/cron tick can retry.
+```bash
+npx wrangler@4.150.0 d1 migrations apply taskify-notifications --remote
+```
 
-Operational implication:
-- cold starts with concurrent requests should not race schema creation in the same isolate.
-- transient D1 errors do not permanently poison future bootstrap attempts.
+Guardrails:
+- every migration is idempotent (`IF NOT EXISTS`, `IF EXISTS`, plain `UPDATE`), so a database
+  whose tables already exist can apply it (`migrations.test.ts`);
+- `schema.test.ts` fails if a request or the cron issues a schema statement.
 
-### 19.2 DDL + index invariants
+### 19.2 Table and index invariants
 
-Current bootstrapped objects:
+Defined in `worker/migrations/0001_init.sql` and later migrations:
 - `devices`
 - `reminders` (FK to `devices` with `ON DELETE CASCADE`)
 - `pending_notifications` (FK to `devices` with `ON DELETE CASCADE`)
 - indexes: `idx_reminders_send_at`, `idx_pending_device`
 
-Anchors:
-- table creation block: `worker/src/index.ts:186–226`
-- index creation: `worker/src/index.ts:227–228`
+D1 enforces foreign keys itself, so no `PRAGMA foreign_keys` is needed.
 
-Guardrails when editing:
-- preserve `ON DELETE CASCADE` for reminder/pending rows unless deletion semantics are intentionally changed across handlers.
-- preserve `send_at` and `pending device_id` indexes or provide equivalent query-path indexing before merge.
-- keep bootstrap idempotent (`CREATE ... IF NOT EXISTS`) because it runs from both fetch and scheduled entry points.
-
-### 19.3 Entry-point dependency ordering
-
-Both HTTP and cron paths call `ensureSchema` before touching D1-backed flows.
-
-Anchors:
-- fetch path: `worker/src/index.ts:275`
-- scheduled runner sequence: `worker/src/index.ts:320–322`
-
-This ordering is required so first-run deployments do not fail reminder or device operations due to missing tables.
+Guardrails when adding a migration:
+- preserve `ON DELETE CASCADE` for reminder and pending rows unless deletion semantics change across
+  handlers;
+- preserve the `send_at` and pending `device_id` indexes, or index the same query paths another way.
 
 ## 20) Device identity reconciliation contract (agent verification chunk)
 
@@ -735,7 +725,7 @@ Operational implication:
 ### 20.2 D1 uniqueness and upsert semantics
 
 Anchors:
-- schema uniqueness: `worker/src/index.ts:187–195` (`endpoint_hash TEXT NOT NULL UNIQUE`)
+- schema uniqueness: `worker/migrations/0001_init.sql` (`endpoint_hash TEXT NOT NULL UNIQUE`)
 - upsert query: `worker/src/index.ts:2530–2555` (`upsertDevice`)
 
 Invariants:
