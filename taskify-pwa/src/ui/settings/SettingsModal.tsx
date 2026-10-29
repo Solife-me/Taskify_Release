@@ -120,31 +120,6 @@ export function SettingsModal({
   const [shareBoardStatus, setShareBoardStatus] = useState<string | null>(null);
   const [shareBoardBusy, setShareBoardBusy] = useState(false);
 
-  // AI import
-  const taskifyAiInstructionBlock = useMemo(() => [
-    "When I ask \"create a Taskify task/event\", return JSON Taskify can import.",
-    "",
-    "Rules:",
-    "- Use conversation context.",
-    "- If date/time/timezone is missing, make a reasonable assumption.",
-    "- Output JSON only (no explanation text).",
-    "- Use plain ASCII double quotes only (\") and valid JSON.",
-    "- Escape quotes inside string values (or write 1.5 in instead of 1.5\").",
-    "- Do not include app-generated fields: id, boardId, column, columnId, createdAt, createdBy, completed.",
-    "- Root format must be one of: {\"items\":[...]}, [...], or a single object.",
-    "",
-    "Task template:",
-    "{\"type\":\"task\",\"title\":\"...\",\"note\":\"...\",\"priority\":1,\"dueISO\":\"2026-03-01T15:00:00.000Z\",\"dueDateEnabled\":true,\"dueTimeEnabled\":true,\"dueTimeZone\":\"America/New_York\",\"reminders\":[\"15m\"],\"reminderTime\":\"09:00\",\"subtasks\":[{\"title\":\"...\",\"completed\":false}],\"recurrence\":{\"type\":\"daily\"}}",
-    "",
-    "Timed event template:",
-    "{\"type\":\"event\",\"kind\":\"time\",\"title\":\"...\",\"description\":\"...\",\"startISO\":\"2026-03-01T16:00:00.000Z\",\"endISO\":\"2026-03-01T16:30:00.000Z\",\"startTzid\":\"America/New_York\",\"endTzid\":\"America/New_York\",\"reminders\":[\"15m\"],\"recurrence\":{\"type\":\"weekly\",\"days\":[1,3,5]}}",
-    "",
-    "All-day event template:",
-    "{\"type\":\"event\",\"kind\":\"date\",\"title\":\"...\",\"startDate\":\"2026-03-01\",\"endDate\":\"2026-03-03\",\"reminderTime\":\"09:00\"}",
-    "",
-    "Reminder IDs: \"0h\",\"5m\",\"15m\",\"30m\",\"1h\",\"1d\",\"1w\",\"0d\", or \"custom-<signed_minutes>\" (for example: \"custom--30\" or \"custom-90\").",
-    "Recurrence: {\"type\":\"none\"}, {\"type\":\"daily\"}, or {\"type\":\"weekly\",\"days\":[0-6]} with optional \"untilISO\".",
-  ].join("\n"), []);
 
   // ─── Derived ────────────────────────────────────────────────────────────────
   const currentBoard = useMemo(
@@ -246,18 +221,6 @@ export function SettingsModal({
     },
     [defaultRelays, readNostrSecret, shareBoardTarget, showToast],
   );
-
-  const handleCopyTaskifyAiInstructions = useCallback(async () => {
-    try {
-      await navigator.clipboard?.writeText(taskifyAiInstructionBlock);
-      showToast("Taskify AI instructions copied", 2000);
-    } catch {
-      showToast("Unable to copy instructions", 2000);
-    }
-  }, [showToast, taskifyAiInstructionBlock]);
-
-
-
 
   const handleClose = useCallback(() => {
     onClose();
@@ -373,35 +336,6 @@ export function SettingsModal({
         summary="Download or restore a complete offline backup"
       >
         <BackupSection embedded onReloadNeeded={onReloadNeeded} />
-      </SettingsAccordion>
-
-      <SettingsAccordion
-        title="AI prompts"
-        summary="Task and event JSON import instructions"
-      >
-        <section className="space-y-3">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">Task/event import prompt</div>
-              <button
-                className="ghost-button button-sm pressable ml-auto"
-                onClick={handleCopyTaskifyAiInstructions}
-              >
-                Copy instructions
-              </button>
-            </div>
-            <div className="text-xs text-secondary">
-              Paste this prompt into your AI app, ask it to make Taskify tasks/events, then paste the JSON response into any
-              board&apos;s add box.
-            </div>
-            <textarea
-              readOnly
-              value={taskifyAiInstructionBlock}
-              className="pill-textarea w-full min-h-[16rem] font-mono text-[11px] leading-relaxed"
-              spellCheck={false}
-            />
-          </div>
-        </section>
       </SettingsAccordion>
 
       <SettingsAccordion

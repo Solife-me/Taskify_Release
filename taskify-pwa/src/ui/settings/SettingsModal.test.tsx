@@ -71,9 +71,11 @@ test("every settings group starts collapsed, expands independently, and resets o
 
   await renderSettings(container, root);
   const groups = [...container.querySelectorAll<HTMLButtonElement>(".settings-accordion__header")];
-  expect(groups).toHaveLength(11);
+  expect(groups).toHaveLength(10);
   expect(groups.every((button) => button.getAttribute("aria-expanded") === "false")).toBe(true);
   expect(container.textContent).not.toContain("View body");
+  expect(container.textContent).not.toContain("AI prompts");
+  expect(container.textContent).not.toContain("Task/event import prompt");
 
   await act(async () => groupButton(container, "View").click());
   expect(groupButton(container, "View").getAttribute("aria-expanded")).toBe("true");
