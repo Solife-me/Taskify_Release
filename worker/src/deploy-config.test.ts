@@ -14,9 +14,12 @@ function topLevel(key: string): string | undefined {
   return head.match(new RegExp(`^${key}\\s*=\\s*"([^"]*)"`, "m"))?.[1];
 }
 
+function section(name: string): string {
+  return toml.match(new RegExp(`^\\[${name.replace(".", "\\.")}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m"))?.[1] ?? "";
+}
+
 function variable(key: string): string | undefined {
-  const section = toml.match(/^\[vars\]\s*$([\s\S]*?)(?=^\[|(?![\s\S]))/m)?.[1] ?? "";
-  return section.match(new RegExp(`^${key}\\s*=\\s*"([^"]*)"`, "m"))?.[1];
+  return section("vars").match(new RegExp(`^${key}\\s*=\\s*"([^"]*)"`, "m"))?.[1];
 }
 
 test("a deploy replaces the Worker that serves taskify.solife.me", () => {
@@ -32,3 +35,18 @@ test("a deploy carries the push settings reminders are sent with", () => {
   assert.equal(point[0], 0x04);
   assert.match(variable("VAPID_SUBJECT") ?? "", /^(mailto:[^\s@]+@[^\s@]+|https:\/\/\S+)$/);
 });
+
+test("a deploy keeps request URLs out of the Worker's logs", () => {
+  // Invocation logs record every request's URL and headers (F1A-9). Console logs stay on; they
+  // carry only what the code chooses to write.
+  const logs = section("observability.logs");
+  assert.match(logs, /^enabled\s*=\s*true\s*$/m);
+  assert.match(logs, /^invocation_logs\s*=\s*false\s*$/m);
+});
+
+test("a deploy binds no KV namespace: state is in D1 and the VAPID private key is a secret", () => {
+  // The device stores moved to D1, and the private key lived in a KV namespace that was deleted
+  // on 2026-10-29. A binding to a missing namespace makes every deploy and secret change fail.
+  assert.doesNotMatch(toml, /^\[\[kv_namespaces\]\]/m);
+});
+

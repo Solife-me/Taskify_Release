@@ -69,7 +69,9 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>Protect access to your Cashu wallet recovery words.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Add tasks by speaking them out loud.</string>
+	<string>Record audio messages and add tasks by speaking them out loud.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save photos and videos from your chats to your library.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Show and complete your Apple Reminders alongside Taskify tasks in Upcoming.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -85,6 +87,7 @@
 	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>audio</string>
 		<string>fetch</string>
 		<string>remote-notification</string>
 	</array>

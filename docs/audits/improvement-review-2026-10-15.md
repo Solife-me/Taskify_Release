@@ -4147,7 +4147,7 @@ repository:
 | C13-2 | Approve | 2026-10-26 | Done (`7bea41fd`). One HTTP/2 session per APNs host, reconnected after an error, GOAWAY or close. Per-app `apns-collapse-id` on alerts that read the same (not on iPhone preview alerts), and `apns-expiration` a day out. Tested against a local HTTP/2 server |
 | C13-3 | Approve | 2026-10-26 | Done (`27e35505`). The image runs as `node` and gives it /data; a StartOS `chown` oneshot runs before the daemon. Checked with Docker; not yet on a StartOS box |
 | C13-4 | Approve | 2026-10-26 | Done. The account shows taskify.solife.me is served by `taskify-public`; `wrangler.toml` now deploys that name, with the VAPID settings in `[vars]` (test-first, see the account checkpoint). Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
-| C13-5 | Approve | 2026-10-26 | Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes). Checked on 2026-10-26: none of the three holds yet (see the account checkpoint) |
+| C13-5 | Approve | 2026-10-26 | Code done 2026-10-29: the Worker binds no KV namespace; the VAPID private key is read only from the `VAPID_PRIVATE_KEY` secret, which the maintainer sets after deploy. Legacy KV import and its three bindings removed 2026-10-29. `ensureSchema` removed 2026-10-29, after production applied every migration (see that day's checkpoint). Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes). Checked on 2026-10-26: none of the three holds yet (see the account checkpoint) |
 | C13-6 | Approve | 2026-10-26 | Done. SDK 3.1.0 (the dev-only zod advisory is gone; full audit clean), `UPDATING.md`, package `AGENTS.md` and `CLAUDE.md`. `make arm` packs 0.5.0:0. `start-cli` here is 2.3.0, behind the published 2.5.1 |
 | C13-7a | Approve | 2026-10-26 | Done. An exact `push-relay-v<version>` tag tests and publishes amd64/arm64 to GHCR. The relay application now lives in `push-relay/`; `taskify-push-relay/` contains only the StartOS package and pins the public versioned image. The two packages have independent dependencies, tests and CI jobs, with no duplicated application source |
 | C13-8 | Approve | 2026-10-26 | Reminder titles done: the PWA sends none, and the Worker stores none and returns none; migration 0008 clears stored titles. The service worker names a fired reminder from the device's IndexedDB copy (`public/reminder-titles.js`), kept only while push is on. Checked in a production build in the browser. Found on the way and fixed separately: the PWA's service worker never registered after the async bootstrap (`020e78df`). Preview and NIP-05 lookups now send their input in a POST body (`workerLookups.ts`). The Worker answers both forms, and in its local runtime the POST log lines show no link or name. **Remove the GET forms** once builds before this change are gone, about a month after it ships |
@@ -4589,4 +4589,193 @@ registration still failed. The maintainer shared the page's console. Probed from
   - Now a save cut off before it succeeds clears that mark, so the next run sends it.
 - **Chat alerts on the web** still need relay 0.5.1 (CORS) published and the relay's VAPID pair
   configured.
+
+### Checkpoint — October 27, 2026 (relay 0.5.1 published by merge, package 0.5.1:0)
+
+- **The release flow is now hands-off.** The maintainer can only make tags through GitHub's
+  website, so `push-relay-image.yml` now publishes on a push to `main` when GHCR lacks the version
+  in `push-relay/package.json`, and records the tag itself.
+- **The first run worked.** On the merge `14d4effc` it tested, published amd64 and arm64, and
+  tagged `push-relay-v0.5.1` in 100 seconds.
+- **The image checks out:** it pulls anonymously, reports version 0.5.1, contains the CORS
+  handling, and runs as `node`.
+- **The package now pins** `ghcr.io/solife-me/taskify-push-relay:0.5.1` at version `0.5.1:0`, with
+  release notes for 0.5.1 alone.
+- **`instructions.md`:**
+  - adds the Configure Web Push step for the web app's chat alerts;
+  - corrects the Watch fallback after C13-9a: only Taskify's own `push.solife.me` falls back to
+    `taskify.solife.me`.
+- **Packed** with `make`: aarch64 52 MB, x86_64 54 MB.
+- **Installed and verified end to end** by the maintainer:
+  - the live relay reports 0.5.1;
+  - `push.solife.me` answers the registration preflight with 204 and sends CORS headers on its
+    NIP-11 document;
+  - the web app's chat toggle stays on, and a test DM raised a browser notification.
+- `start-cli` here is 2.3.0, behind 2.5.1.
+
+### Checkpoint — October 27, 2026 (a web reminder delivered end to end, by v1's cron)
+
+Production `c64fc4fe`, which has the reminder-sync fix, took a reminder from the iPhone's web app.
+Live tails on both Workers recorded:
+
+| Time (UTC) | Event |
+| --- | --- |
+| 13:29:54 | `taskify-public` cron (scheduled :50); nothing due |
+| 13:30:17 | `PUT /api/reminders` from the iPhone → 204 |
+| 13:30:26 | **v1 `taskify` cron** (scheduled :23) |
+| 13:30:27 | `POST /api/reminders/poll` → 200: the service worker woke and collected it |
+| 13:30:28 | `POST /api/reminders/poll` → 204 |
+| 13:30:52 | `taskify-public` cron; nothing left |
+
+The notification arrived on the phone. Sync, storage, Apple push, the service worker's poll and the
+on-device title all work. The ping, though, came from the retired v1 Worker: both crons read the
+same D1 every minute, and v1's slot came first. That `taskify-public` signs pings itself is still
+unproven. Removing v1's cron trigger leaves `taskify-public` as the only sender, and is the first
+part of retiring v1.
+
+### Checkpoint — October 27, 2026 (`taskify-public` sends reminders itself; v1's cron removed)
+
+**v1's cron is off.** At the maintainer's request, the old `taskify` Worker's cron trigger
+(`*/1 * * * *`) was removed through the API at 13:32 UTC; it can be restored the same way.
+Cloudflare kept running it until 13:38:24. Since then only `taskify-public`'s cron has run: 88
+runs, all `ok`, none with an exception.
+
+**`taskify-public` delivered the next reminder:**
+
+| Time (UTC) | Event |
+| --- | --- |
+| 13:32:53 | `PUT /api/reminders` from the iPhone → 204 |
+| 13:34:24 | v1 cron, still running; the reminder is not yet due |
+| 13:35:52 | `taskify-public` cron: 2.5 s, against under 1 s idle, because it signed and sent the ping |
+| 13:35:55 | `POST /api/reminders/poll` → 200, then 204 |
+| 13:36:02 | next v1 cron, after delivery |
+
+The maintainer confirmed the notification on the phone. Web reminders now work end to end on the
+current Worker alone.
+
+**Left for v1's retirement**, the maintainer's call:
+- remove `taskify-v1.solife.me`;
+- delete the `taskify` Worker;
+- check its R2 bucket `TASKIFY_BACKUPS` first.
+
+### Checkpoint — October 27, 2026 (account cleanup)
+
+**Done in the account**, at the maintainer's request:
+- **v1 retired.** The `taskify-v1.solife.me` custom domain and the `taskify` Worker are deleted.
+  Its deployed script and settings were saved locally first. Its R2 bucket `taskify-backups` (one
+  object, 122 bytes) is untouched; deleting it is the maintainer's call.
+- **`GEMINI_API_KEY` deleted** from `taskify-public` (F1A-10). That deployed version `a035b087`,
+  which has every binding, limiter and VAPID variable of `c64fc4fe`. The `GCAL_*` secrets were
+  already gone. The key itself must still be revoked in Google's console.
+
+**Done in the repository, test-first:**
+- **Invocation logs off:** `[observability.logs] invocation_logs = false`, so a deploy applies it
+  and a dashboard toggle cannot drift (F1A-9). Console logs stay on.
+- **Migration 0009** drops the five calendar tables that predate the migrations directory:
+  `caldav_*` and the first integration's `google_calendar_*`. `migrations.test.ts` also checks
+  that every migration can run again, which the first `migrations apply` in production needs,
+  since only 0001 is recorded there.
+
+**Left to the maintainer:** apply migrations 0002–0009. That permanently removes the retired
+calendar data and the stored reminder titles, so the maintainer runs it:
+`npx wrangler@4.150.0 d1 migrations apply taskify-notifications --remote`. Do it after these
+commits reach `main`, and revoke the Google OAuth client and the Gemini key in Google's console.
+
+### Checkpoint — October 29, 2026 (production D1 migrated)
+
+The maintainer applied migrations 0002–0009 to `taskify-notifications`. A first attempt failed
+with 7403 right after an OAuth token refresh; the retry succeeded.
+
+Checked afterwards:
+- **All nine migrations are recorded**, 0002–0009 at 10:37 UTC, and `migrations list` reports
+  none pending.
+- **The remaining tables** are `devices`, `reminders`, `pending_notifications`, `voice_quota`,
+  `request_signatures` and `write_budget`. Every `gcal_*`, `caldav_*` and `google_calendar_*`
+  table is gone.
+- **No title remains:** none of the 74 reminders or the pending notifications carries one, and
+  all 38 devices are unchanged.
+
+This unblocks C13-5's first code step: `ensureSchema` duplicates migrations 0006–0007, which are
+now applied in production. Still waiting: the legacy KV namespaces (`TASKIFY_DEVICES` 9 keys,
+`TASKIFY_PENDING` 2) and moving `VAPID_PRIVATE_KEY` from KV to a secret.
+
+### Checkpoint — October 29, 2026 (C13-5: `ensureSchema` removed)
+
+- **Removed:** the Worker's `ensureSchema`, its cached promise, and the route check that gated it.
+  It re-ran a `PRAGMA` and eight `CREATE` statements on the first database request of each isolate
+  and on every cron tick. The schema now comes only from `worker/migrations`, which production has
+  fully applied.
+- **Test first:** `schema.test.ts` drives a database route and a cron run against a recording D1.
+  It failed with the nine statements before the removal.
+- **Also removed:** the mock D1s' dead `CREATE`/`PRAGMA` branches.
+- **Updated:** `docs/reference/worker-backend.md` §§4, 15 and 19.
+- **Checks:** Worker suite 97/97, type check and dry-run deploy clean.
+- **C13-5 still waiting on:** the legacy KV namespaces (`TASKIFY_DEVICES` 9 keys,
+  `TASKIFY_PENDING` 2) and `VAPID_PRIVATE_KEY` as a secret.
+
+### Checkpoint — October 29, 2026 (C13-5: the legacy KV stores retired)
+
+**What was left in them:**
+- `TASKIFY_DEVICES`: 4 device records (all Safari, Apple web push) and 5 endpoint pointers, one of
+  them orphaned.
+- `TASKIFY_PENDING`: 2 lists with 3 entries, all due 2025-09-26.
+- `TASKIFY_REMINDERS`: empty.
+
+None of these devices is in D1. They have not contacted the Worker since D1 took over in September
+2025, when the import would have moved them.
+
+**Removed, test-first:**
+- the import (`migrateDeviceFromKv`, `migrateRemindersFromKv`, `migratePendingFromKv`, their key
+  helpers, and `appendPending`, which only the import used);
+- the KV deletes in `deleteDeviceData`, with the endpoint-hash lookup that existed only for them;
+- the three `Env` fields and the three `wrangler.toml` bindings.
+
+A device D1 does not know now registers afresh.
+
+**Tests:**
+- `index.test.ts`: a device only the KV store knows gets 404 on a reminder save, and no request or
+  cron run touches the namespaces. Before the removal it got a 500 from the import.
+- `deploy-config.test.ts`: `wrangler.toml` binds none of the three.
+
+**Docs:** the KV sections of `worker-backend.md` (§§3, 7, 10, 13, 20), the architecture overview,
+the flows reference and `AGENT.md` are updated. `taskify-pwa/README.md`'s setup now creates the D1
+database and applies migrations, with the VAPID values in `[vars]`.
+
+**Checks:** Worker suite 99/99, type check clean with no unused locals in `reminders.ts` or
+`lib.ts`, and the dry-run deploy binds only `VAPID_PRIVATE_KEY` among KV namespaces.
+
+**Maintainer, after this deploys:** delete the three namespaces. C13-5 then has only
+`VAPID_PRIVATE_KEY` left to move to a secret.
+
+### Checkpoint — October 29, 2026 (every KV namespace deleted before the code shipped)
+
+**What happened:**
+- The maintainer deleted all the account's KV namespaces, including `VAPID_PRIVATE_KEY` (the
+  Worker's signing key) and the unbound `VAPID_PUBLIC_KEY` and `WORKER_BASE_URL`.
+- The change that drops the three device stores (`6231b909`) had not been merged. Production
+  version `a035b087` still binds all four deleted namespaces.
+
+**Effects until the fix deploys:**
+- The cron cannot load the private key, so web reminder pings are not signed.
+- `wrangler secret put VAPID_PRIVATE_KEY` fails: it builds from the deployed version, whose
+  namespaces no longer exist.
+
+**The key is not lost.** The same private key was pasted into the relay's Configure Web Push
+action on StartOS.
+
+**Fixed in code, test-first:**
+- `wrangler.toml` binds no KV namespace. `deploy-config.test.ts` failed until the last binding
+  went.
+- `resolvePrivateKeyPem` reads only the secret.
+- The `KVNamespace` type is gone.
+- `vapid-secret.test.ts` confirms a raw base64url secret, the format the KV held, signs a cron ping
+  that verifies against the public key.
+
+**Checks:** Worker suite 100/100, type check clean, and the dry-run deploy binds D1, limiters,
+assets and the two VAPID `[vars]` only.
+
+**Maintainer steps:**
+1. Push and merge Beta. The deploy no longer references any namespace.
+2. Run `wrangler secret put VAPID_PRIVATE_KEY --name taskify-public` with the key from the relay's
+   configuration.
 

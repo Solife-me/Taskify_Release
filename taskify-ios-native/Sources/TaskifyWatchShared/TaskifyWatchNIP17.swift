@@ -120,6 +120,7 @@ public enum TaskifyWatchNIP17 {
         subject: String? = nil,
         replyToRumorID: String? = nil,
         reactionToRumorID: String? = nil,
+        attachment: TaskifyWatchChatAttachment? = nil,
         kind: Int = textKind,
         createdAt: Int = Int(Date().timeIntervalSince1970)
     ) throws -> TaskifyWatchNIP17EnvelopeSet {
@@ -148,8 +149,20 @@ public enum TaskifyWatchNIP17 {
             tags.removeAll { $0.first == "e" }
             tags.append(["e", target])
         }
-        guard [textKind, reactionKind].contains(kind),
-              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        if kind == attachmentKind, let attachment {
+            tags.append(contentsOf: [
+                ["file-type", attachment.mimeType],
+                ["encryption-algorithm", "aes-gcm"],
+                ["decryption-key", attachment.keyHex],
+                ["decryption-nonce", attachment.nonceHex],
+            ])
+            if let hash = attachment.ciphertextSHA256 { tags.append(["x", hash]) }
+            if let size = attachment.size { tags.append(["size", String(size)]) }
+            if let filename = attachment.filename { tags.append(["filename", filename]) }
+        }
+        guard [textKind, reactionKind, attachmentKind].contains(kind),
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              kind != attachmentKind || attachment?.url.absoluteString == content else {
             throw TaskifyWatchNIP17Error.unsupportedMessage
         }
         let rumor = try TaskifyWatchNIP17Rumor(
@@ -306,7 +319,13 @@ public enum TaskifyWatchNIP17 {
         if rumor.kind == reactionKind {
             messageKind = .reaction
         } else if rumor.kind == attachmentKind {
-            messageKind = attachment?.isPhoto == true ? .photo : .unsupportedAttachment
+            if attachment?.isPhoto == true {
+                messageKind = .photo
+            } else if attachment?.isAudio == true {
+                messageKind = .audio
+            } else {
+                messageKind = .unsupportedAttachment
+            }
         } else if rumor.kind == textKind {
             messageKind = .text
         } else {
@@ -316,7 +335,13 @@ public enum TaskifyWatchNIP17 {
         }
         let content: String
         if rumor.kind == attachmentKind {
-            content = attachment?.isPhoto == true ? "Photo" : "Open attachment on iPhone"
+            if attachment?.isPhoto == true {
+                content = "Photo"
+            } else if attachment?.isAudio == true {
+                content = "Audio"
+            } else {
+                content = "Open attachment on iPhone"
+            }
         } else if messageKind == .unsupportedMessage {
             content = "Open this message on iPhone"
         } else {

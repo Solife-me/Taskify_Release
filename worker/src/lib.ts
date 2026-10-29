@@ -14,12 +14,6 @@ export interface AssetFetcher {
   fetch(request: Request): Promise<Response>;
 }
 
-export interface KVNamespace {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-}
-
 export interface D1Result<T = unknown> {
   success: boolean;
   results?: T[];
@@ -45,11 +39,8 @@ export interface RateLimitBinding {
 export interface Env {
   ASSETS: AssetFetcher;
   TASKIFY_DB: D1Database;
-  TASKIFY_DEVICES?: KVNamespace;
-  TASKIFY_REMINDERS?: KVNamespace;
-  TASKIFY_PENDING?: KVNamespace;
   VAPID_PUBLIC_KEY: string;
-  VAPID_PRIVATE_KEY: string | KVNamespace;
+  VAPID_PRIVATE_KEY: string;
   VAPID_SUBJECT: string;
   // Workers AI credentials for the voice routes.
   CLOUDFLARE_ACCOUNT_ID?: string;

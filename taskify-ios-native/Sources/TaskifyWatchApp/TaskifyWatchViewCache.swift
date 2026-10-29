@@ -190,6 +190,7 @@ struct TaskifyWatchChatIndex {
     static func chatPreview(for message: TaskifyWatchChatMessage) -> String {
         switch message.kind {
         case .photo: "Photo"
+        case .audio: "Audio"
         case .unsupportedAttachment: "Attachment — open on iPhone"
         case .unsupportedMessage: "Message — open on iPhone"
         case .reaction: "Reaction \(message.content)"

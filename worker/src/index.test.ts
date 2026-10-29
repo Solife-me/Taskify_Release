@@ -78,10 +78,6 @@ class MockD1 {
         return this;
       },
       async run() {
-        if (/^PRAGMA /i.test(sql) || /^CREATE TABLE/i.test(sql) || /^CREATE INDEX/i.test(sql)) {
-          return { success: true };
-        }
-
         if (sql.startsWith("INSERT INTO devices ")) {
           const [device_id, platform, endpoint, endpoint_hash, auth, p256dh, updated_at] = params as [
             string,
@@ -908,9 +904,6 @@ class MockD1WithVoice extends MockD1 {
         return this;
       },
       async run() {
-        // CREATE TABLE
-        if (/^CREATE TABLE/i.test(sql)) return { success: true };
-
         // INSERT ... ON CONFLICT DO UPDATE (upsert quota)
         if (/^INSERT INTO voice_quota/i.test(sql)) {
           const [npub, date, , addSeconds] = params as [string, string, number, number];
@@ -1970,6 +1963,33 @@ test("cron removes devices stored with endpoints that are no longer allowed, wit
   }
   assert.deepEqual(calls, []);
   assert.equal(db.devices.has("legacy"), false);
+});
+
+test("the retired KV device store is never read: a device only it knows registers afresh", async () => {
+  // Devices moved from KV to D1 on first contact until 2026-10-29. The four that never came back
+  // had pending reminders due 2025-09-26; their KV records are no longer imported.
+  const db = new SqliteD1();
+  const env = await makeEnv(db);
+  const endpoint = "https://web.push.apple.com/QOs0retired";
+  const subscriptionId = await sha256Hex(endpoint);
+  const touched: string[] = [];
+  const retiredStore = (name: string, entries: Record<string, string>) => ({
+    get: async (key: string) => { touched.push(`${name} get ${key}`); return entries[key] ?? null; },
+    put: async (key: string) => { touched.push(`${name} put ${key}`); },
+    delete: async (key: string) => { touched.push(`${name} delete ${key}`); },
+  });
+  env.TASKIFY_DEVICES = retiredStore("devices", {
+    "device:retired": JSON.stringify({ deviceId: "retired", platform: "ios", endpointHash: subscriptionId, subscription: { endpoint, keys: { auth: "a", p256dh: "b" } } }),
+    [`endpoint:${subscriptionId}`]: "retired",
+  });
+  env.TASKIFY_REMINDERS = retiredStore("reminders", {});
+  env.TASKIFY_PENDING = retiredStore("pending", { "pending:retired": JSON.stringify([{ taskId: "t", dueISO: "2025-09-26T09:00:00Z", minutes: 0 }]) });
+
+  const save = await saveReminders(env, "retired", subscriptionId, schedule(1));
+  assert.equal(save.status, 404, "unknown to D1, so unknown");
+  await runCronTick(env);
+  assert.deepEqual(touched, []);
+  assert.equal(db.devices.has("retired"), false);
 });
 
 async function runCronTick(env: any): Promise<string[]> {

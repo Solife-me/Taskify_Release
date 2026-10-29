@@ -54,6 +54,16 @@ final class MacAttachmentQueue: ObservableObject {
         }
     }
 
+    func stagePrepared(_ file: MacStagedFile) {
+        guard files.count < NostrDirectMessageAttachment.maximumBatchCount else {
+            try? FileManager.default.removeItem(at: file.url)
+            error = "Choose up to ten attachments at a time."
+            return
+        }
+        error = nil
+        files.append(file)
+    }
+
     func remove(_ id: UUID) {
         guard let file = files.first(where: { $0.id == id }) else { return }
         try? FileManager.default.removeItem(at: file.url)
@@ -121,59 +131,6 @@ struct MacAttachmentQueueView: View {
 }
 
 @MainActor
-final class MacChatImageLoader: ObservableObject {
-    static let shared = MacChatImageLoader()
-    private var cache: [String: NSImage] = [:]
-    private var inFlight: [String: Task<NSImage?, Never>] = [:]
-    private init() {}
-
-    func image(for attachment: NostrDirectMessageAttachment) async -> NSImage? {
-        if let cached = cache[attachment.url] { return cached }
-        if let existing = inFlight[attachment.url] { return await existing.value }
-        let task = Task<NSImage?, Never> {
-            guard let url = URL(string: attachment.url), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return nil }
-            do {
-                let ciphertext = try await AttachmentDownload.file(from: url)
-                defer { try? FileManager.default.removeItem(at: ciphertext) }
-                let file = try await AttachmentFileCrypto.decryptChat(ciphertext, attachment: attachment)
-                defer { try? FileManager.default.removeItem(at: file) }
-                let data = try Data(contentsOf: file, options: .alwaysMapped)
-                return NSImage(data: data)
-            } catch { return nil }
-        }
-        inFlight[attachment.url] = task
-        let result = await task.value
-        inFlight[attachment.url] = nil
-        if let result { cache[attachment.url] = result }
-        return result
-    }
-}
-
-struct MacChatImageAttachment: View {
-    let attachment: NostrDirectMessageAttachment
-    @State private var image: NSImage?
-    @State private var loaded = false
-    var body: some View {
-        Group {
-            if let image {
-                Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 240, maxHeight: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else if loaded {
-                Button("Save Attachment…") { Task { try? await MacAttachmentExport.chat(attachment) } }
-            } else {
-                ProgressView().frame(width: 80, height: 80)
-            }
-        }
-        .task(id: attachment.url) {
-            image = await MacChatImageLoader.shared.image(for: attachment)
-            loaded = true
-        }
-        .onTapGesture { if image != nil { Task { try? await MacAttachmentExport.chat(attachment) } } }
-        .help("Click to save")
-    }
-}
-
-@MainActor
 enum MacAttachmentExport {
     static func document(_ document: TaskDocument, boardID: String) async throws {
         let source = document.remoteURL ?? document.dataURL
@@ -186,14 +143,6 @@ enum MacAttachmentExport {
         let file = try await taskFile(source: source, encrypted: !source.hasPrefix("data:"), boardID: boardID)
         defer { try? FileManager.default.removeItem(at: file) }
         try save(file, name: "Taskify-image.jpg")
-    }
-    static func chat(_ attachment: NostrDirectMessageAttachment) async throws {
-        guard let url = URL(string: attachment.url), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { throw URLError(.badURL) }
-        let ciphertext = try await AttachmentDownload.file(from: url)
-        defer { try? FileManager.default.removeItem(at: ciphertext) }
-        let file = try await AttachmentFiles.work { try AttachmentFileCrypto.decryptChat(ciphertext, attachment: attachment) }
-        defer { try? FileManager.default.removeItem(at: file) }
-        try save(file, name: attachment.displayName)
     }
     private static func taskFile(source: String, encrypted: Bool, boardID: String) async throws -> URL {
         if source.hasPrefix("data:") { return try await AttachmentFiles.work { try AttachmentFiles.write(TaskAttachmentCrypto.data(from: source)) } }

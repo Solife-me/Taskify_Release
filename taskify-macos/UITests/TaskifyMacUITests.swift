@@ -399,6 +399,44 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Pasted Image.png"].waitForExistence(timeout: 5))
     }
 
+    func testChatAttachmentsRenderInThreadWithRecordButton() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_ATTACHMENTS"] = "1"
+        app.launch()
+
+        let chat = app.staticTexts["Chat"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        chat.click()
+        let fixturePeer = app.staticTexts["Paste Test Contact"]
+        XCTAssertTrue(fixturePeer.waitForExistence(timeout: 5))
+        fixturePeer.click()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["3 photos"].waitForExistence(timeout: 10),
+            "Consecutive photos should collapse into one stack"
+        )
+        XCTAssertTrue(app.staticTexts["Trip Itinerary.pdf"].exists, "A file renders as its own row")
+        XCTAssertTrue(app.buttons["Save Trip Itinerary.pdf"].exists)
+        XCTAssertTrue(app.buttons["Save 3 photos"].exists, "Incoming photos get a save button beside them")
+        XCTAssertTrue(app.staticTexts["Audio Message UI Test"].exists)
+        XCTAssertTrue(
+            app.buttons["chat-audio-record-button"].exists,
+            "The empty message field offers the waveform record button"
+        )
+        let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+        shot.name = "mac-chat-attachments"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        app.descendants(matching: .any)["3 photos"].click()
+        XCTAssertTrue(app.staticTexts["3 Photos"].waitForExistence(timeout: 5), "The stack opens every photo")
+        let gallery = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+        gallery.name = "mac-chat-photo-gallery"
+        gallery.lifetime = .keepAlways
+        add(gallery)
+    }
+
     private func waitForSpotlightItem(
         present: Bool,
         timeout: TimeInterval = 15

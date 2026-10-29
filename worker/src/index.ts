@@ -51,108 +51,6 @@ export {
   base64UrlDecode,
 } from "./lib.ts";
 
-let schemaReadyPromise: Promise<void> | null = null;
-
-async function ensureSchema(env: Env): Promise<void> {
-  if (schemaReadyPromise) {
-    return schemaReadyPromise;
-  }
-  const db = requireDb(env);
-  const ready = (async () => {
-    try {
-      await db.prepare(`PRAGMA foreign_keys = ON`).run();
-    } catch {
-      // ignore; some environments may not support PRAGMA
-    }
-
-    await db.prepare(
-      `CREATE TABLE IF NOT EXISTS devices (
-         device_id TEXT PRIMARY KEY,
-         platform TEXT NOT NULL,
-         endpoint TEXT NOT NULL,
-         endpoint_hash TEXT NOT NULL UNIQUE,
-         subscription_auth TEXT NOT NULL,
-         subscription_p256dh TEXT NOT NULL,
-         updated_at INTEGER NOT NULL
-       )`,
-    ).run();
-
-    await db.prepare(
-      `CREATE TABLE IF NOT EXISTS reminders (
-         device_id TEXT NOT NULL,
-         reminder_key TEXT NOT NULL,
-         task_id TEXT NOT NULL,
-         board_id TEXT,
-         title TEXT NOT NULL,
-         due_iso TEXT NOT NULL,
-         minutes INTEGER NOT NULL,
-         send_at INTEGER NOT NULL,
-         PRIMARY KEY (device_id, reminder_key),
-         FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
-       )`,
-    ).run();
-
-    await db.prepare(
-      `CREATE TABLE IF NOT EXISTS pending_notifications (
-         id INTEGER PRIMARY KEY AUTOINCREMENT,
-         device_id TEXT NOT NULL,
-         task_id TEXT NOT NULL,
-         board_id TEXT,
-         title TEXT NOT NULL,
-         due_iso TEXT NOT NULL,
-         minutes INTEGER NOT NULL,
-         created_at INTEGER NOT NULL,
-         FOREIGN KEY (device_id) REFERENCES devices(device_id) ON DELETE CASCADE
-       )`,
-    ).run();
-
-    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_reminders_send_at ON reminders(send_at)`).run();
-    await db.prepare(`CREATE INDEX IF NOT EXISTS idx_pending_device ON pending_notifications(device_id)`).run();
-
-    await db.prepare(
-      `CREATE TABLE IF NOT EXISTS voice_quota (
-         npub          TEXT    NOT NULL,
-         date          TEXT    NOT NULL,
-         session_count INTEGER NOT NULL DEFAULT 0,
-         total_seconds INTEGER NOT NULL DEFAULT 0,
-         PRIMARY KEY (npub, date)
-       )`,
-    ).run();
-
-    await db.prepare(
-      `CREATE TABLE IF NOT EXISTS request_signatures (
-         signature  TEXT    PRIMARY KEY,
-         expires_at INTEGER NOT NULL
-       )`,
-    ).run();
-
-    await db.prepare(
-      `CREATE TABLE IF NOT EXISTS write_budget (
-         key  TEXT    NOT NULL,
-         date TEXT    NOT NULL,
-         used INTEGER NOT NULL DEFAULT 0,
-         PRIMARY KEY (key, date)
-       )`,
-    ).run();
-  })()
-    .catch((err) => {
-      schemaReadyPromise = null;
-      throw err;
-    });
-
-  schemaReadyPromise = ready;
-  return ready;
-}
-
-function routeUsesDatabase(pathname: string): boolean {
-  return pathname === "/api/devices"
-    || pathname.startsWith("/api/devices/")
-    || pathname === "/api/reminders"
-    || pathname === "/api/reminders/poll"
-    || pathname.startsWith("/api/voice/")
-    || pathname === "/api/watch/nostr/publish";
-}
-
 // Rows kept only as long as they are useful: daily voice and write-budget counters for a week,
 // reminder notifications a device never fetched for two weeks, and used request signatures until
 // expiry.
@@ -234,12 +132,6 @@ export default {
     const url = new URL(request.url);
 
     try {
-      // Static assets, config, link previews, and NIP-05 lookups do not touch
-      // D1. Avoid running schema DDL on those hot paths and on static assets.
-      if (routeUsesDatabase(url.pathname)) {
-        await ensureSchema(env);
-      }
-
       if (url.pathname === "/api/config" && request.method === "GET") {
         return jsonResponse({
           workerBaseUrl: url.origin,
@@ -314,7 +206,6 @@ export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: SchedulerController): Promise<void> {
     const runner = async () => {
       try {
-        await ensureSchema(env);
         await processDueReminders(env);
         // Once an hour is plenty, and keeps the other 59 ticks to their own work.
         if (new Date().getUTCMinutes() === PRUNE_MINUTE) await pruneStaleRows(env);

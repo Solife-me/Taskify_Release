@@ -924,6 +924,9 @@ struct DirectMessageBubble: View, Equatable {
     let showsSentStatus: Bool
     let isSearchMatch: Bool
     let isSelectedSearchResult: Bool
+    /// The sender's consecutive photos this message stands for, oldest first, when it hosts a
+    /// photo stack; the other photos in the run render nothing of their own.
+    var photoStack: [NostrDirectMessage]? = nil
 
     private var links: [URL] {
         Array(TaskContentLinks.allURLs(in: message.content).prefix(2))
@@ -977,47 +980,25 @@ struct DirectMessageBubble: View, Equatable {
                             .padding(.leading, 2)
                     }
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        if let attachment = message.attachment {
-                            DirectMessageAttachmentView(attachment: attachment)
-                        } else if let detectedPaymentToken {
-                            DirectMessagePaymentCard(token: detectedPaymentToken)
-                        } else if let preview = message.sharedItemPreview {
-                            Label(preview, systemImage: "square.and.arrow.up")
-                        } else {
-                            DirectMessageMarkdownText(
-                                markdown: message.content,
-                                isIncoming: message.isIncoming,
-                                renderCache: renderCache
-                            )
-
-                            ForEach(links, id: \.absoluteString) { url in
-                                DirectMessageLinkCard(url: url, isIncoming: message.isIncoming)
+                    HStack(alignment: .center, spacing: 10) {
+                        messageBody
+                            .overlay(alignment: message.isIncoming ? .topTrailing : .topLeading) {
+                                if !reactions.isEmpty {
+                                    DirectMessageReactionBadge(
+                                        reactions: reactions,
+                                        isIncoming: message.isIncoming
+                                    )
+                                    .offset(x: message.isIncoming ? 10 : -10, y: -30)
+                                }
                             }
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background {
-                        bubbleShape
-                            .fill(
-                                message.isIncoming
-                                    ? Color(red: 44 / 255, green: 44 / 255, blue: 48 / 255).opacity(0.98)
-                                    : TaskifyTheme.accent
-                            )
-                    }
-                    .overlay(alignment: message.isIncoming ? .topTrailing : .topLeading) {
-                        if !reactions.isEmpty {
-                            DirectMessageReactionBadge(
-                                reactions: reactions,
-                                isIncoming: message.isIncoming
-                            )
-                            .offset(x: message.isIncoming ? 10 : -10, y: -30)
+                        // Messages offers a save button beside photos someone sent you.
+                        if message.isIncoming, !savablePhotos.isEmpty {
+                            DirectMessagePhotoSaveButton(attachments: savablePhotos)
                         }
                     }
                     .padding(.top, reactions.isEmpty ? 0 : 30)
 
-                    if !message.isIncoming, let deliveryState = message.deliveryState,
+                    if !message.isIncoming, let deliveryState,
                        deliveryState != .sent || showsSentStatus {
                         HStack(spacing: 3) {
                             Image(systemName: deliveryStateSymbol(deliveryState))
@@ -1049,6 +1030,59 @@ struct DirectMessageBubble: View, Equatable {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: isSelectedSearchResult)
+    }
+
+    private var savablePhotos: [NostrDirectMessageAttachment] {
+        (photoStack ?? [message]).compactMap(\.attachment).filter(\.isImage)
+    }
+
+    /// A stack reports its least-delivered photo, so one still sending keeps the stack "Sending…".
+    private var deliveryState: NostrDirectMessageDeliveryState? {
+        let states = (photoStack ?? [message]).compactMap(\.deliveryState)
+        if states.contains(.failed) { return .failed }
+        if states.contains(.queued) { return .queued }
+        return states.isEmpty ? nil : .sent
+    }
+
+    @ViewBuilder
+    private var messageBody: some View {
+        if let attachment = message.attachment {
+            // Attachments carry their own shape; wrapping them in the colored text bubble would
+            // put a photo inside a frame and a file inside a second card.
+            if let photoStack, photoStack.count > 1 {
+                DirectMessagePhotoStack(attachments: photoStack.compactMap(\.attachment))
+            } else {
+                DirectMessageAttachmentView(attachment: attachment)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if let detectedPaymentToken {
+                    DirectMessagePaymentCard(token: detectedPaymentToken)
+                } else if let preview = message.sharedItemPreview {
+                    Label(preview, systemImage: "square.and.arrow.up")
+                } else {
+                    DirectMessageMarkdownText(
+                        markdown: message.content,
+                        isIncoming: message.isIncoming,
+                        renderCache: renderCache
+                    )
+
+                    ForEach(links, id: \.absoluteString) { url in
+                        DirectMessageLinkCard(url: url, isIncoming: message.isIncoming)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background {
+                bubbleShape
+                    .fill(
+                        message.isIncoming
+                            ? DirectMessageAttachmentStyle.cardFill
+                            : TaskifyTheme.accent
+                    )
+            }
+        }
     }
 
     private var bubbleShape: DirectMessageBubbleShape {
@@ -1435,206 +1469,140 @@ struct DirectMessagePaymentCard: View {
 
 struct DirectMessageAttachmentView: View {
     let attachment: NostrDirectMessageAttachment
+    /// Square-ish grid tile, used by conversation details and the photo gallery.
     var compact = false
 
-    @State private var image: UIImage?
     @State private var isLoading = false
     @State private var failed = false
     @State private var previewURL: URL?
-    @State private var retryID = UUID()
+    @State private var isSaving = false
+    @Environment(AppModel.self) private var model
 
+    @ViewBuilder
     var body: some View {
-        Button(action: openAttachment) {
-            Group {
-                if compact {
-                    compactPreview
-                } else if attachment.isImage {
-                    imagePreview
-                } else {
-                    filePreview
+        if attachment.isAudio, !compact {
+            DirectMessageAudioAttachmentView(attachment: attachment)
+        } else if attachment.isImage || compact {
+            Button(action: openAttachment) {
+                Group {
+                    if compact { compactPreview } else { photoBubble }
                 }
+                .contentShape(RoundedRectangle(cornerRadius: DirectMessageAttachmentStyle.cornerRadius, style: .continuous))
             }
-            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .buttonStyle(.plain)
+            .disabled(isLoading)
+            .modifier(AttachmentQuickLook(previewURL: $previewURL))
+            .accessibilityLabel("Open \(attachment.displayName)")
+        } else {
+            fileRow
         }
-        .buttonStyle(.plain)
-        .disabled(isLoading)
-        .task(id: retryID) {
-            guard attachment.isImage else { return }
-            await loadImage()
-        }
-        .quickLookPreview($previewURL)
-        .onChange(of: previewURL) { old, new in
-            if let old, old != new { try? FileManager.default.removeItem(at: old) }
-        }
-        .accessibilityLabel("Open \(attachment.displayName)")
+    }
+
+    /// The photo is the bubble: no colored chrome around it, just rounded corners.
+    private var photoBubble: some View {
+        DirectMessageAttachmentThumbnail(attachment: attachment)
+            .frame(width: DirectMessageAttachmentStyle.photoWidth, height: photoHeight)
+            .clipShape(RoundedRectangle(cornerRadius: DirectMessageAttachmentStyle.cornerRadius, style: .continuous))
+            .overlay {
+                if isLoading { ProgressView().tint(.white) }
+            }
     }
 
     private var compactPreview: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(Color.black.opacity(0.2))
-
-            if attachment.isImage, let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            } else if failed {
-                VStack(spacing: 7) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.title2.weight(.semibold))
-                    Text("Retry")
-                        .font(.caption.weight(.semibold))
-                }
-                .foregroundStyle(TaskifyTheme.secondaryText)
-            } else if isLoading {
-                ProgressView()
+            if attachment.isImage {
+                DirectMessageAttachmentThumbnail(attachment: attachment, maximumPixelSize: 600)
             } else {
-                VStack(spacing: 8) {
-                    Image(systemName: attachmentIcon)
-                        .font(.title2)
-                    Text(attachment.displayName)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
+                Rectangle().fill(DirectMessageAttachmentStyle.cardFill)
+                if failed {
+                    VStack(spacing: 7) {
+                        Image(systemName: "arrow.clockwise").font(.title2.weight(.semibold))
+                        Text("Retry").font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                } else if isLoading {
+                    ProgressView()
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: attachment.detailIcon).font(.title2)
+                        Text(attachment.displayName)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                    }
+                    .foregroundStyle(TaskifyTheme.primaryText)
+                    .padding(10)
                 }
-                .foregroundStyle(TaskifyTheme.primaryText)
-                .padding(10)
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 150)
         .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(TaskifyTheme.border, lineWidth: 0.8)
-        )
     }
 
-    @ViewBuilder
-    private var imagePreview: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(Color.black.opacity(0.2))
-
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: imageHeight)
-                    .clipped()
-            } else if failed {
-                VStack(spacing: 7) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.title3.weight(.semibold))
-                    Text("Photo unavailable · Retry")
-                        .font(.caption.weight(.medium))
+    /// A file sits in the thread as its own gray card, the same for sent and received files:
+    /// tap to open it, or use the button to save it to Files.
+    private var fileRow: some View {
+        HStack(spacing: 10) {
+            Button(action: openAttachment) {
+                HStack(spacing: 12) {
+                    DirectMessageFileGlyph(attachment: attachment, isLoading: isLoading)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(attachment.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        Text(failed ? "Couldn't open · Tap to retry" : attachment.kindAndSizeLabel)
+                            .font(.caption)
+                            .foregroundStyle(failed ? Color.red : TaskifyTheme.secondaryText)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
                 }
-                .foregroundStyle(TaskifyTheme.secondaryText)
-                .frame(maxWidth: .infinity, minHeight: 150)
-            } else {
-                VStack(spacing: 8) {
-                    ProgressView()
-                    Text("Decrypting photo")
-                        .font(.caption2)
-                }
-                .foregroundStyle(TaskifyTheme.secondaryText)
-                .frame(maxWidth: .infinity, minHeight: 150)
+                .contentShape(Rectangle())
             }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: imageHeight)
-        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(TaskifyTheme.border, lineWidth: 0.8)
-        )
-    }
+            .buttonStyle(.plain)
+            .disabled(isLoading)
+            .accessibilityLabel("Open \(attachment.displayName)")
 
-    private var filePreview: some View {
-        HStack(spacing: 11) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(0.1))
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: attachmentIcon)
-                        .font(.title3)
-                }
-            }
-            .frame(width: 44, height: 50)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(attachment.displayName)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-                HStack(spacing: 5) {
-                    Text(fileKind)
-                    if let size = attachment.size {
-                        Text("·")
-                        Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+            Button(action: saveToFiles) {
+                ZStack {
+                    if isSaving {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(TaskifyTheme.primaryText)
                     }
                 }
-                .font(.caption2)
-                .foregroundStyle(TaskifyTheme.secondaryText)
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(0.1), in: Circle())
             }
-            Spacer(minLength: 3)
-            Image(systemName: failed ? "arrow.clockwise" : "arrow.up.forward.app")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(TaskifyTheme.secondaryText)
+            .buttonStyle(.plain)
+            .disabled(isSaving)
+            .accessibilityLabel("Save \(attachment.displayName) to Files")
         }
-        .padding(9)
-        .frame(minWidth: 220)
-        .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(TaskifyTheme.border, lineWidth: 0.8)
+        .padding(.leading, 12)
+        .padding(.trailing, 10)
+        .padding(.vertical, 10)
+        .frame(width: 270)
+        .background(
+            DirectMessageAttachmentStyle.cardFill,
+            in: RoundedRectangle(cornerRadius: DirectMessageAttachmentStyle.cornerRadius, style: .continuous)
         )
+        .modifier(AttachmentQuickLook(previewURL: $previewURL))
     }
 
-    private var imageHeight: CGFloat {
-        guard let width = attachment.width,
-              let height = attachment.height,
-              width > 0 else { return 190 }
-        return min(250, max(140, 265 * CGFloat(height) / CGFloat(width)))
-    }
-
-    private var attachmentIcon: String { attachment.detailIcon }
-
-    private var fileKind: String { attachment.detailKindLabel }
-
-    @MainActor
-    private func loadImage() async {
-        isLoading = true
-        defer { isLoading = false }
-        do {
-            let file = try await DirectMessageAttachmentDataLoader.shared.file(for: attachment)
-            guard !Task.isCancelled else { return }
-            guard let decoded = await DirectMessageAttachmentImageLoader.shared.image(
-                fileURL: file,
-                cacheKey: attachment.cacheKey,
-                maximumPixelSize: 1_080
-            ) else {
-                throw ChatAttachmentError.unreadableFile
-            }
-            image = decoded
-            failed = false
-        } catch {
-            guard !Task.isCancelled else { return }
-            failed = true
+    private var photoHeight: CGFloat {
+        let width = DirectMessageAttachmentStyle.photoWidth
+        guard let pixelWidth = attachment.width, let pixelHeight = attachment.height, pixelWidth > 0 else {
+            return 300
         }
+        return min(320, max(150, width * CGFloat(pixelHeight) / CGFloat(pixelWidth)))
     }
 
     private func openAttachment() {
-        if failed && attachment.isImage {
-            failed = false
-            retryID = UUID()
-            return
-        }
         isLoading = true
         Task { @MainActor in
             defer { isLoading = false }
@@ -1650,145 +1618,58 @@ struct DirectMessageAttachmentView: View {
             }
         }
     }
-}
 
-actor DirectMessageAttachmentDataLoader {
-    static let shared = DirectMessageAttachmentDataLoader()
-    private var files: [String: URL] = [:]
-    private var order: [String] = []
-
-    func file(for attachment: NostrDirectMessageAttachment) async throws -> URL {
-        if let file = files[attachment.cacheKey], FileManager.default.fileExists(atPath: file.path) { return file }
-        if let cached = await DirectMessageAttachmentDiskCache.shared.file(forKey: attachment.cacheKey) {
-            remember(cached, forKey: attachment.cacheKey)
-            return cached
-        }
-        guard let url = URL(string: attachment.url) else { throw ChatAttachmentError.invalidURL }
-        let ciphertext = try await AttachmentDownload.file(from: url, limit: AttachmentFiles.maximumBytes + 16)
-        defer { try? FileManager.default.removeItem(at: ciphertext) }
-        let plaintext = try await AttachmentFiles.work {
-            try AttachmentFileCrypto.decryptChat(ciphertext, attachment: attachment)
-        }
-        // The disk cache owns stored files from here on; if storing fails, the
-        // plaintext temp file still works and is purged with other temporary files.
-        let stored = await DirectMessageAttachmentDiskCache.shared.store(plaintext, forKey: attachment.cacheKey)
-        remember(stored ?? plaintext, forKey: attachment.cacheKey)
-        return stored ?? plaintext
-    }
-
-    private func remember(_ file: URL, forKey key: String) {
-        files[key] = file
-        order.removeAll { $0 == key }
-        order.append(key)
-        while order.count > 2 {
-            files.removeValue(forKey: order.removeFirst())
-        }
-    }
-
-    nonisolated static func previewFile(file: URL, attachment: NostrDirectMessageAttachment) throws -> URL {
-        let directory = try AttachmentFiles.directory().appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try AttachmentFiles.protect(directory)
-        let cleaned = attachment.displayName.replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-").trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = cleaned.isEmpty || cleaned == "." || cleaned == ".." ? "Attachment" : String(cleaned.prefix(160))
-        let url = directory.appendingPathComponent(name)
-        try FileManager.default.copyItem(at: file, to: url)
-        try AttachmentFiles.protect(url)
-        return url
-    }
-}
-
-/// Persistently caches decrypted chat attachments so returning to a conversation or
-/// relaunching the app renders immediately instead of re-downloading and
-/// re-decrypting every image and file again. Entries live in the OS-managed caches
-/// directory, are keyed by the full attachment descriptor (URL + key + nonce — a
-/// key therefore maps to exactly one plaintext), and are evicted least-recently-used
-/// once the total size exceeds `byteLimit`. Files carry the same owner-only
-/// permissions and first-unlock protection as every other Taskify media file.
-actor DirectMessageAttachmentDiskCache {
-    static let shared = DirectMessageAttachmentDiskCache()
-
-    /// Bounds total disk usage; decrypted attachments are already capped at 500 MB
-    /// individually by `AttachmentFiles.maximumBytes`.
-    private static let byteLimit = 256 * 1_024 * 1_024
-
-    private let directory: URL
-
-    init() {
-        // The system may empty the caches directory under storage pressure; that is
-        // acceptable for a cache — the loader just falls back to downloading again.
-        let fileManager = FileManager.default
-        let base = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? fileManager.temporaryDirectory
-        directory = base.appendingPathComponent("TaskifyChatAttachments", isDirectory: true)
-        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
-                                          attributes: [.posixPermissions: 0o700])
-        try? AttachmentFiles.protect(directory)
-    }
-
-    private func filename(forKey key: String) -> String {
-        Data(SHA256.hash(data: Data(key.utf8))).hexString
-    }
-
-    /// Returns the cached plaintext for `key`, refreshing its recency so eviction
-    /// is least-recently-used.
-    func file(forKey key: String) -> URL? {
-        let fileManager = FileManager.default
-        let url = directory.appendingPathComponent(filename(forKey: key))
-        guard fileManager.fileExists(atPath: url.path) else { return nil }
-        touchRecency(of: url)
-        return url
-    }
-
-    /// Moves a freshly decrypted file into the cache, evicting least-recently-used
-    /// entries past the byte limit. Returns the cache URL, or nil if storing failed.
-    func store(_ file: URL, forKey key: String) -> URL? {
-        let fileManager = FileManager.default
-        let destination = directory.appendingPathComponent(filename(forKey: key))
-        if fileManager.fileExists(atPath: destination.path) {
-            try? fileManager.removeItem(at: file)
-            touchRecency(of: destination)
-            return destination
-        }
-        do {
-            try fileManager.moveItem(at: file, to: destination)
-        } catch {
-            return nil
-        }
-        try? AttachmentFiles.protect(destination)
-        trimToByteLimit()
-        return destination
-    }
-
-    private func touchRecency(of url: URL) {
-        var mutableURL = url
-        var values = URLResourceValues()
-        values.contentModificationDate = Date()
-        try? mutableURL.setResourceValues(values)
-    }
-
-    private func trimToByteLimit() {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: keys
-        ) else { return }
-        var candidates: [(url: URL, size: Int, date: Date)] = []
-        var total = 0
-        for entry in entries {
-            guard let values = try? entry.resourceValues(forKeys: Set(keys)),
-                  values.isRegularFile == true,
-                  let size = values.fileSize else { continue }
-            total += size
-            candidates.append((entry, size, values.contentModificationDate ?? .distantPast))
-        }
-        guard total > Self.byteLimit else { return }
-        for entry in candidates.sorted(by: { $0.date < $1.date }) {
-            guard total > Self.byteLimit else { break }
-            if (try? FileManager.default.removeItem(at: entry.url)) != nil {
-                total -= entry.size
+    private func saveToFiles() {
+        isSaving = true
+        Task { @MainActor in
+            defer { isSaving = false }
+            do {
+                try await DirectMessageAttachmentExport.saveToFiles([attachment])
+            } catch {
+                model.errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
         }
+    }
+}
+
+/// Quick Look owns the named preview copy only while it is showing.
+private struct AttachmentQuickLook: ViewModifier {
+    @Binding var previewURL: URL?
+
+    func body(content: Content) -> some View {
+        content
+            .quickLookPreview($previewURL)
+            .onChange(of: previewURL) { old, new in
+                if let old, old != new { try? FileManager.default.removeItem(at: old) }
+            }
+    }
+}
+
+/// A page with the file's extension on it, like Messages' document icon.
+private struct DirectMessageFileGlyph: View {
+    let attachment: NostrDirectMessageAttachment
+    let isLoading: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Image(systemName: "doc.fill")
+                .font(.system(size: 40))
+                .foregroundStyle(Color.white.opacity(0.92))
+            if isLoading {
+                ProgressView().controlSize(.small).tint(.gray).padding(.bottom, 12)
+            } else if !attachment.fileExtensionLabel.isEmpty {
+                Text(attachment.fileExtensionLabel)
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Color.gray)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .frame(width: 26)
+                    .padding(.bottom, 6)
+            }
+        }
+        .frame(width: 38, height: 48)
+        .accessibilityHidden(true)
     }
 }
 
@@ -1847,26 +1728,6 @@ actor DirectMessageAttachmentImageLoader {
     }
 }
 
-extension NostrDirectMessageAttachment {
-    var cacheKey: String {
-        "\(url)::\(keyHex)::\(nonceHex)"
-    }
-
-    var detailIcon: String {
-        if isVideo { return "video.fill" }
-        if isAudio { return "waveform" }
-        if mimeType.lowercased().contains("pdf") { return "doc.richtext.fill" }
-        return "doc.fill"
-    }
-
-    var detailKindLabel: String {
-        if isVideo { return "VIDEO" }
-        if isAudio { return "AUDIO" }
-        if mimeType.lowercased().contains("pdf") { return "PDF" }
-        return "FILE"
-    }
-}
-
 enum ChatAttachmentError: LocalizedError {
     case invalidURL
     case unreadableFile
@@ -1881,13 +1742,14 @@ enum ChatAttachmentError: LocalizedError {
     }
 }
 
-/// Follow layout changes only while viewing the latest messages. Suspending the size
-/// anchor as soon as a finger touches the timeline lets lazy rows settle during history
-/// scrolling without pulling the reader back to the bottom.
+/// Opens at the latest messages and tracks whether the reader has scrolled away from them.
+/// A finger on the timeline stops following the latest message, so lazy rows settle during
+/// history scrolling without pulling the reader back to the bottom.
 extension View {
     @ViewBuilder
     func conversationScrollBehavior(
         followsLatest: Binding<Bool>,
+        isMoving: Binding<Bool>,
         isAwayFromBottom: Binding<Bool>,
         allowsFollowing: Bool,
         canLoadEarlier: Bool,
@@ -1897,10 +1759,10 @@ extension View {
         if #available(iOS 18.0, *) {
             self
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .defaultScrollAnchor(
-                    followsLatest.wrappedValue && allowsFollowing ? .bottom : nil,
-                    for: .sizeChanges
-                )
+                // No `.sizeChanges` anchor: it fought the explicit settles on arrivals and on
+                // open, leaving the offset past the last row once lazy rows replaced their
+                // estimated heights (a blank thread until scrolled). The conversation keeps the
+                // newest message in view itself when its viewport changes.
                 // Observe complete geometry so an intermediate initial offset cannot leave
                 // a cached Boolean out of sync as lazy layout settles. State still changes
                 // only when crossing the near-bottom threshold.
@@ -1914,6 +1776,8 @@ extension View {
                     }
                 }
                 .onScrollPhaseChange { previousPhase, phase, context in
+                    let moving = phase != .idle
+                    if isMoving.wrappedValue != moving { isMoving.wrappedValue = moving }
                     switch phase {
                     case .tracking, .interacting:
                         followsLatest.wrappedValue = false

@@ -7,7 +7,7 @@
 //   - VAPID-authenticated Web Push delivery
 //   - PEM/JSON key resolution for the VAPID private key
 
-import type { Env, D1Database, D1PreparedStatement, KVNamespace } from "./lib.ts";
+import type { Env, D1Database, D1PreparedStatement } from "./lib.ts";
 import {
   requireDb,
   jsonResponse,
@@ -22,7 +22,6 @@ import {
 // ---- Module-level state (caches + key-lookup constants) ----
 
 let cachedPrivateKey: CryptoKey | null = null;
-const PRIVATE_KEY_KV_KEYS = ["VAPID_PRIVATE_KEY", "private-key", "key"] as const;
 
 // Bounds on what one unauthenticated device can store. A save replaces the device's whole
 // schedule, so the reminder cap is also the per-device cap; the soonest reminders are kept.
@@ -225,34 +224,17 @@ async function handleDeleteDevice(request: Request, deviceId: string, env: Env):
     return jsonResponse({ error: "Device not found" }, 404);
   }
 
-  await deleteDeviceData(deviceId, env, device.endpointHash);
+  await deleteDeviceData(deviceId, env);
   return new Response(null, { status: 204, headers: JSON_HEADERS });
 }
 
-async function deleteDeviceData(deviceId: string, env: Env, knownEndpointHash?: string): Promise<void> {
+async function deleteDeviceData(deviceId: string, env: Env): Promise<void> {
   const db = requireDb(env);
-  const endpointHash = knownEndpointHash ?? (await db
-    .prepare<{ endpoint_hash: string | null }>(
-      `SELECT endpoint_hash FROM devices WHERE device_id = ?`,
-    )
-    .bind(deviceId)
-    .first<{ endpoint_hash: string | null }>())?.endpoint_hash;
-
   await db.batch([
     db.prepare("DELETE FROM pending_notifications WHERE device_id = ?").bind(deviceId),
     db.prepare("DELETE FROM reminders WHERE device_id = ?").bind(deviceId),
     db.prepare("DELETE FROM devices WHERE device_id = ?").bind(deviceId),
   ]);
-
-  if (env.TASKIFY_DEVICES) {
-    await env.TASKIFY_DEVICES.delete(deviceKey(deviceId)).catch(() => {});
-    if (endpointHash) {
-      await env.TASKIFY_DEVICES.delete(endpointKey(endpointHash)).catch(() => {});
-    }
-  }
-  await env.TASKIFY_REMINDERS?.delete(remindersKey(deviceId)).catch(() => {});
-  await env.TASKIFY_PENDING?.delete(pendingKey(deviceId)).catch(() => {});
-
 }
 
 async function handleSaveReminders(request: Request, env: Env): Promise<Response> {
@@ -583,7 +565,7 @@ async function processDueReminders(env: Env): Promise<void> {
   });
 }
 
-/// Devices by ID in one query; an ID missing from D1 falls back to the legacy KV record.
+/// Devices by ID in one query.
 async function getDeviceRecords(env: Env, deviceIds: string[]): Promise<Map<string, DeviceRecord>> {
   const records = new Map<string, DeviceRecord>();
   if (!deviceIds.length) return records;
@@ -598,11 +580,6 @@ async function getDeviceRecords(env: Env, deviceIds: string[]): Promise<Map<stri
     .all<DeviceRow>();
   for (const row of rows.results ?? []) {
     records.set(row.device_id, deviceRecordFromRow(row));
-  }
-  for (const deviceId of deviceIds) {
-    if (records.has(deviceId)) continue;
-    const legacy = await migrateDeviceFromKv(env, deviceId);
-    if (legacy) records.set(deviceId, legacy);
   }
   return records;
 }
@@ -620,29 +597,6 @@ function deviceRecordFromRow(row: DeviceRow): DeviceRecord {
       },
     },
   };
-}
-
-async function appendPending(env: Env, deviceId: string, notifications: PendingReminder[]): Promise<void> {
-  if (!notifications.length) return;
-  const now = Date.now();
-  const db = requireDb(env);
-  const statements = notifications.map((notification) =>
-    db
-      .prepare(
-        `INSERT INTO pending_notifications (device_id, task_id, board_id, title, due_iso, minutes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        deviceId,
-        notification.taskId,
-        notification.boardId ?? null,
-        notification.title,
-        notification.dueISO,
-        notification.minutes,
-        now,
-      ),
-  );
-  await db.batch(statements);
 }
 
 async function upsertDevice(env: Env, record: DeviceRecord, updatedAt: number): Promise<void> {
@@ -682,10 +636,7 @@ async function getDeviceRecord(env: Env, deviceId: string): Promise<DeviceRecord
     )
     .bind(deviceId)
     .first<DeviceRow>();
-  if (!row) {
-    return migrateDeviceFromKv(env, deviceId);
-  }
-  return deviceRecordFromRow(row);
+  return row ? deviceRecordFromRow(row) : null;
 }
 
 async function findDeviceIdByEndpoint(env: Env, endpoint: string): Promise<string | undefined> {
@@ -699,175 +650,7 @@ async function findDeviceIdByEndpoint(env: Env, endpoint: string): Promise<strin
     )
     .bind(hash)
     .first<{ device_id: string }>();
-  if (row?.device_id) {
-    return row.device_id;
-  }
-  if (!env.TASKIFY_DEVICES) {
-    return undefined;
-  }
-  const legacyDeviceId = await env.TASKIFY_DEVICES.get(endpointKey(hash));
-  if (!legacyDeviceId) {
-    return undefined;
-  }
-  await migrateDeviceFromKv(env, legacyDeviceId);
-  return legacyDeviceId;
-}
-
-async function migrateDeviceFromKv(env: Env, deviceId: string): Promise<DeviceRecord | null> {
-  const kvDevices = env.TASKIFY_DEVICES;
-  if (!kvDevices) return null;
-
-  const raw = await kvDevices.get(deviceKey(deviceId));
-  if (!raw) return null;
-
-  let parsed: DeviceRecord | null = null;
-  try {
-    const maybe = JSON.parse(raw) as DeviceRecord;
-    if (
-      maybe &&
-      typeof maybe.deviceId === "string" &&
-      (maybe.platform === "ios" || maybe.platform === "android") &&
-      maybe.subscription &&
-      typeof maybe.subscription.endpoint === "string" &&
-      maybe.subscription.keys &&
-      typeof maybe.subscription.keys.auth === "string" &&
-      typeof maybe.subscription.keys.p256dh === "string"
-    ) {
-      parsed = maybe;
-    }
-  } catch (err) {
-    console.warn("Failed to parse legacy device record", err instanceof Error ? err.name : "Error");
-    return null;
-  }
-
-  if (!parsed) return null;
-
-  if (!parsed.endpointHash) {
-    parsed.endpointHash = await hashEndpoint(parsed.subscription.endpoint);
-  }
-
-  await upsertDevice(env, parsed, Date.now());
-
-  await migrateRemindersFromKv(env, deviceId);
-  await migratePendingFromKv(env, deviceId);
-
-  await Promise.all([
-    kvDevices.delete(deviceKey(deviceId)).catch(() => {}),
-    parsed.endpointHash ? kvDevices.delete(endpointKey(parsed.endpointHash)).catch(() => {}) : Promise.resolve(),
-  ]);
-
-  return parsed;
-}
-
-async function migrateRemindersFromKv(env: Env, deviceId: string): Promise<void> {
-  const kvReminders = env.TASKIFY_REMINDERS;
-  if (!kvReminders) return;
-
-  const raw = await kvReminders.get(remindersKey(deviceId));
-  if (!raw) return;
-
-  let entries: ReminderEntry[] = [];
-  try {
-    const maybe = JSON.parse(raw);
-    if (Array.isArray(maybe)) {
-      entries = maybe as ReminderEntry[];
-    }
-  } catch (err) {
-    console.warn("Failed to parse legacy reminders", err instanceof Error ? err.name : "Error");
-    entries = [];
-  }
-
-  if (!entries.length) {
-    await kvReminders.delete(remindersKey(deviceId)).catch(() => {});
-    return;
-  }
-
-  const db = requireDb(env);
-  const statements = [db.prepare("DELETE FROM reminders WHERE device_id = ?").bind(deviceId)];
-  entries.sort((a, b) => (a?.sendAt ?? 0) - (b?.sendAt ?? 0));
-  for (const entry of entries) {
-    if (!entry || typeof entry.reminderKey !== "string" || typeof entry.taskId !== "string") continue;
-    if (typeof entry.dueISO !== "string" || typeof entry.minutes !== "number") continue;
-    if (typeof entry.sendAt !== "number") continue;
-    statements.push(
-      db
-        .prepare(
-          `INSERT INTO reminders (device_id, reminder_key, task_id, board_id, title, due_iso, minutes, send_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-          )
-        .bind(
-          deviceId,
-          entry.reminderKey,
-          entry.taskId,
-          entry.boardId ?? null,
-          "",
-          entry.dueISO,
-          entry.minutes,
-          entry.sendAt,
-        ),
-    );
-  }
-
-  if (statements.length > 1) {
-    await db.batch(statements);
-  } else {
-    await statements[0].run();
-  }
-
-  await kvReminders.delete(remindersKey(deviceId)).catch(() => {});
-}
-
-async function migratePendingFromKv(env: Env, deviceId: string): Promise<void> {
-  const kvPending = env.TASKIFY_PENDING;
-  if (!kvPending) return;
-
-  const raw = await kvPending.get(pendingKey(deviceId));
-  if (!raw) return;
-
-  let entries: PendingReminder[] = [];
-  try {
-    const maybe = JSON.parse(raw);
-    if (Array.isArray(maybe)) {
-      entries = maybe as PendingReminder[];
-    }
-  } catch (err) {
-    console.warn("Failed to parse legacy pending payload", err instanceof Error ? err.name : "Error");
-    entries = [];
-  }
-
-  const normalized = entries.filter(
-    (entry) =>
-      entry &&
-      typeof entry.taskId === "string" &&
-      typeof entry.dueISO === "string" &&
-      typeof entry.minutes === "number",
-  );
-
-  if (!normalized.length) {
-    await kvPending.delete(pendingKey(deviceId)).catch(() => {});
-    return;
-  }
-
-  const db = requireDb(env);
-  await db.prepare("DELETE FROM pending_notifications WHERE device_id = ?").bind(deviceId).run();
-  await appendPending(env, deviceId, normalized);
-  await kvPending.delete(pendingKey(deviceId)).catch(() => {});
-}
-
-function deviceKey(deviceId: string): string {
-  return `device:${deviceId}`;
-}
-
-function remindersKey(deviceId: string): string {
-  return `reminders:${deviceId}`;
-}
-
-function pendingKey(deviceId: string): string {
-  return `pending:${deviceId}`;
-}
-
-function endpointKey(hash: string): string {
-  return `endpoint:${hash}`;
+  return row?.device_id ?? undefined;
 }
 
 function computeReminderTTL(reminders: PendingReminder[], now: number): number {
@@ -887,7 +670,7 @@ async function sendPushPing(env: Env, device: DeviceRecord, deviceId: string, tt
     const endpoint = device.subscription.endpoint;
     // Devices stored before endpoints were checked are removed rather than contacted.
     if (!isAllowedPushEndpoint(endpoint)) {
-      await deleteDeviceData(deviceId, env, device.endpointHash);
+      await deleteDeviceData(deviceId, env);
       return;
     }
     const url = new URL(endpoint);
@@ -905,7 +688,7 @@ async function sendPushPing(env: Env, device: DeviceRecord, deviceId: string, tt
     });
 
     if (response.status === 404 || response.status === 410) {
-      await deleteDeviceData(deviceId, env, device.endpointHash);
+      await deleteDeviceData(deviceId, env);
       return;
     }
 
@@ -967,26 +750,11 @@ async function getPrivateKey(env: Env): Promise<CryptoKey> {
   }
 }
 
+/// The `VAPID_PRIVATE_KEY` secret: PKCS#8 PEM, or the raw 32-byte scalar in base64url.
 async function resolvePrivateKeyPem(env: Env): Promise<string> {
-  const binding = env.VAPID_PRIVATE_KEY as unknown;
-  if (typeof binding === "string") {
-    const trimmed = binding.trim();
-    if (trimmed) return trimmed;
-  }
-
-  const maybeKv = binding as KVNamespace | undefined;
-  if (maybeKv && typeof maybeKv.get === "function") {
-    for (const candidate of PRIVATE_KEY_KV_KEYS) {
-      try {
-        const value = await maybeKv.get(candidate);
-        if (value && value.trim()) return value.trim();
-      } catch {
-        // ignore and try next candidate
-      }
-    }
-  }
-
-  throw new Error("VAPID private key is not configured");
+  const secret = typeof env.VAPID_PRIVATE_KEY === "string" ? env.VAPID_PRIVATE_KEY.trim() : "";
+  if (!secret) throw new Error("VAPID private key is not configured");
+  return secret;
 }
 
 function shouldAttemptRawVapidImport(err: unknown, keyBytes: Uint8Array): boolean {

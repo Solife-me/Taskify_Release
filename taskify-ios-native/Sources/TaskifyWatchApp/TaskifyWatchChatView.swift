@@ -462,9 +462,13 @@ private struct TaskifyWatchConversationView: View {
     @State private var replyTarget: TaskifyWatchChatMessage?
     @State private var messageAction: TaskifyWatchMessageAction?
     @State private var isSending = false
+    @State private var audioRecorder = TaskifyWatchAudioRecorder()
+    @State private var audioError: String?
 
     private var bottomAnchorID: String { "chat-bottom-\(conversationID)" }
-    private var composerClearance: CGFloat { replyTarget == nil ? 52 : 76 }
+    private var composerClearance: CGFloat {
+        (replyTarget == nil ? 52 : 76) + (audioRecorder.isRecording || audioError != nil ? 34 : 0)
+    }
 
     private var subject: String? {
         guard let groupID else { return nil }
@@ -635,6 +639,7 @@ private struct TaskifyWatchConversationView: View {
                 onReply: { replyTarget = action.message }
             )
         }
+        .onDisappear { audioRecorder.cancel() }
     }
 
     private var composer: some View {
@@ -655,26 +660,56 @@ private struct TaskifyWatchConversationView: View {
                 .padding(.horizontal, 8)
             }
 
-            TextFieldLink(prompt: Text(replyTarget == nil ? "Message" : "Reply")) {
-                HStack(spacing: 6) {
-                    Text(isSending ? "Sending…" : (replyTarget == nil ? "Message" : "Reply"))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 2)
-                    Image(systemName: "mic.fill")
-                        .foregroundStyle(.secondary)
+            if audioRecorder.isRecording {
+                HStack(spacing: 8) {
+                    Button(role: .destructive) { audioRecorder.cancel() } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.bordered)
+                    Circle().fill(.red).frame(width: 7, height: 7)
+                    Text(audioTime(audioRecorder.elapsed)).font(.caption.monospacedDigit())
+                    Spacer(minLength: 0)
+                    Button { finishAndSendAudio() } label: {
+                        Image(systemName: "paperplane.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .padding(.leading, 13)
-                .padding(.trailing, 11)
-                .frame(maxWidth: .infinity)
-                .frame(height: 38)
-                .contentShape(Capsule())
-                .modifier(TaskifyWatchComposerGlass())
-            } onSubmit: { value in
-                send(value)
+                .padding(.horizontal, 7)
+            } else {
+                HStack(spacing: 5) {
+                    TextFieldLink(prompt: Text(replyTarget == nil ? "Message" : "Reply")) {
+                        HStack(spacing: 6) {
+                            Text(isSending ? "Sending…" : (replyTarget == nil ? "Message" : "Reply"))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 2)
+                        }
+                        .padding(.leading, 13)
+                        .padding(.trailing, 8)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .contentShape(Capsule())
+                        .modifier(TaskifyWatchComposerGlass())
+                    } onSubmit: { value in
+                        send(value)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSending || !model.isChatConfigured)
+
+                    Button { startAudioRecording() } label: {
+                        Image(systemName: "mic.fill")
+                            .frame(width: 34, height: 34)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.circle)
+                    .disabled(isSending || audioRecorder.isRequestingPermission || !model.isChatConfigured)
+                    .accessibilityLabel("Record audio message")
+                }
+                .padding(.horizontal, 7)
             }
-            .buttonStyle(.plain)
-            .disabled(isSending || !model.isChatConfigured)
-            .padding(.horizontal, 7)
+            if let audioError {
+                Text(audioError).font(.caption2).foregroundStyle(.red).lineLimit(2)
+                    .padding(.horizontal, 8)
+            }
         }
         .padding(.top, 2)
         .padding(.bottom, 1)
@@ -797,6 +832,52 @@ private struct TaskifyWatchConversationView: View {
                 WKInterfaceDevice.current().play(.failure)
             }
         }
+    }
+
+    private func startAudioRecording() {
+        audioError = nil
+        Task { @MainActor in
+            do { try await audioRecorder.start() }
+            catch { audioError = error.localizedDescription; WKInterfaceDevice.current().play(.failure) }
+        }
+    }
+
+    private func finishAndSendAudio() {
+        guard !isSending else { return }
+        do {
+            let recording = try audioRecorder.finish()
+            isSending = true
+            let replyID = replyTarget?.rumorID
+            Task { @MainActor in
+                defer {
+                    try? FileManager.default.removeItem(at: recording.fileURL)
+                    isSending = false
+                }
+                let sent = await model.sendChatAudio(
+                    fileURL: recording.fileURL,
+                    filename: recording.filename,
+                    memberPublicKeys: memberPublicKeys,
+                    subject: subject,
+                    replyToRumorID: replyID
+                )
+                if sent {
+                    replyTarget = nil
+                    audioError = nil
+                    WKInterfaceDevice.current().play(.click)
+                } else {
+                    audioError = model.chatStatusMessage
+                    WKInterfaceDevice.current().play(.failure)
+                }
+            }
+        } catch {
+            audioError = error.localizedDescription
+            WKInterfaceDevice.current().play(.failure)
+        }
+    }
+
+    private func audioTime(_ value: TimeInterval) -> String {
+        let seconds = max(0, Int(value))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private func sendReaction(
@@ -956,6 +1037,12 @@ private struct TaskifyWatchChatMessageRow: View {
                 )
             } else {
                 Label("Photo unavailable", systemImage: "photo")
+            }
+        case .audio:
+            if let attachment = message.attachment {
+                TaskifyWatchAudioAttachmentView(attachment: attachment)
+            } else {
+                Label("Audio unavailable", systemImage: "waveform")
             }
         case .unsupportedAttachment:
             Label("Open attachment on iPhone", systemImage: "iphone")

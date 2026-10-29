@@ -734,7 +734,7 @@ Worker cron trigger (*/1 * * * *)
 ### State Touched
 - `TASKIFY_DB` D1 `reminders` table — rewritten per device on each PUT `/api/reminders`
 - `TASKIFY_DB` D1 `pending_notifications` table — filled by cron, drained by `/api/reminders/poll`
-- `TASKIFY_DEVICES` KV — device lookup/registration source (reminders require known device)
+- `TASKIFY_DB` D1 `devices` table — reminders require a registered device
 
 ### Persistence Side Effects
 - Existing reminder rows for the device are replaced atomically via D1 batch

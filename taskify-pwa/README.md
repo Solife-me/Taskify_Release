@@ -47,31 +47,23 @@ The Worker lives in `worker/src/index.ts` and shares this repository. It serves 
    npx web-push generate-vapid-keys
    ```
 
-   - Put the generated **public key** into `.env.local` as `VITE_VAPID_PUBLIC_KEY`.
-   - Store the **private key** as a Worker secret:
+   - Put the **public key** in `wrangler.toml` under `[vars]` as `VAPID_PUBLIC_KEY`, and in
+     `.env.local` as `VITE_VAPID_PUBLIC_KEY`. Set `VAPID_SUBJECT` under `[vars]` to a `mailto:` or
+     `https://` contact. Both are public; a deploy replaces every variable with `[vars]`.
+   - Store the **private key** as a Worker secret: `wrangler secret put VAPID_PRIVATE_KEY`
+     (PKCS#8 PEM or the raw base64url key).
 
-     ```bash
-     wrangler secret put VAPID_PRIVATE_KEY
-     ```
-
-2. **Create KV namespaces** (production + preview) for devices, reminders, and pending payloads:
+2. **Create the D1 database** and put its ID in `wrangler.toml` (`[[d1_databases]]`):
 
    ```bash
-   wrangler kv:namespace create TASKIFY_DEVICES
-   wrangler kv:namespace create TASKIFY_DEVICES --preview
-   wrangler kv:namespace create TASKIFY_REMINDERS
-   wrangler kv:namespace create TASKIFY_REMINDERS --preview
-   wrangler kv:namespace create TASKIFY_PENDING
-   wrangler kv:namespace create TASKIFY_PENDING --preview
+   wrangler d1 create taskify-notifications
    ```
 
-   Update the placeholder IDs in `wrangler.toml` with the values printed by each command.
-
-3. **Set remaining Worker vars/secrets** (public key + VAPID subject/email):
+3. **Apply the migrations** in `worker/migrations/`, before the first deploy and before every
+   deploy after it. The Worker creates no tables itself:
 
    ```bash
-   wrangler secret put VAPID_PUBLIC_KEY
-   wrangler secret put VAPID_SUBJECT
+   wrangler d1 migrations apply taskify-notifications --remote
    ```
 
 4. **Build the frontend** so the assets directory is populated:
@@ -114,7 +106,7 @@ Inside `taskify-pwa`:
 At repository root:
 
 - `wrangler dev` – run Worker locally (requires built assets).
-- `wrangler deploy` – deploy Worker + cron + KV bindings.
+- `wrangler deploy` – deploy the Worker, its cron and its D1 binding (apply migrations first).
 
 ## Linting & QA
 
@@ -129,7 +121,7 @@ npm run lint
 | Location | Purpose |
 | --- | --- |
 | `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY` |
-| `wrangler.toml` | Worker name, KV namespace IDs, asset config |
+| `wrangler.toml` | Worker name, D1 database, rate limiters, VAPID `[vars]`, asset config |
 | Worker vars/secrets | `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`, `VAPID_PRIVATE_KEY` |
 
 Keep VAPID private keys out of version control. Each device uses the Worker API to synchronise reminders; if you rotate keys, re-enable push in Settings so browsers resubscribe.

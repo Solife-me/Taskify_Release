@@ -29,13 +29,12 @@ Primary entry points:
 
 - Cron cadence: `*/1 * * * *` (`wrangler.toml:16–17`)
 - D1: `TASKIFY_DB` (`wrangler.toml:47–52`)
-- KV (legacy/compat): `TASKIFY_DEVICES`, `TASKIFY_REMINDERS`, `TASKIFY_PENDING` (`wrangler.toml:26–36`)
-- VAPID key binding: `VAPID_PRIVATE_KEY` as string secret or KV namespace (`wrangler.toml:38–40`)
+- VAPID private key: the `VAPID_PRIVATE_KEY` secret; its public key and subject are `[vars]`
 
 `Env` typing in code confirms mixed binding support:
 - `TASKIFY_DB` required D1 source-of-truth
-- KV namespaces optional fallback/migration path
-- `VAPID_PRIVATE_KEY: string | KVNamespace`
+- no KV namespaces (`deploy-config.test.ts`)
+- `VAPID_PRIVATE_KEY: string` (a secret)
 
 Reference: `worker/src/index.ts:37–44`.
 
@@ -99,7 +98,7 @@ iPhone to be reachable for task creation, completion, Dictation processing, or t
 
 ## 4) Data model (D1 source-of-truth)
 
-`ensureSchema()` creates/updates these core tables:
+The migrations in `worker/migrations/` define these core tables (the Worker itself runs no schema statements):
 
 - `devices`
   - key: `device_id`
@@ -181,7 +180,6 @@ Reference: `handleRegisterDevice` in `worker/src/reminders.ts`.
 - device row
 - reminders for device
 - pending notifications for device
-- legacy KV mirrors (best-effort)
 
 Reference: `worker/src/index.ts:2305–2333`.
 
@@ -192,9 +190,9 @@ Reference: `worker/src/index.ts:2305–2333`.
 Push ping signing uses ES256 JWT + VAPID headers.
 
 Key loading sequence in `resolvePrivateKeyPem`:
-1. If `env.VAPID_PRIVATE_KEY` is a non-empty string, use it
-2. Else if it behaves like KV, try keys: `VAPID_PRIVATE_KEY`, `private-key`, `key`
-3. Else throw configuration error
+1. Read the `VAPID_PRIVATE_KEY` secret: PKCS#8 PEM, or the raw 32-byte scalar in base64url
+   (imported with the public key's coordinates; `vapid-secret.test.ts`)
+2. If it is empty or missing, throw a configuration error
 
 References:
 - `resolvePrivateKeyPem`: `worker/src/index.ts:2859+`
@@ -220,52 +218,24 @@ Common failure classes:
    - Cron granularity is 1 minute + network/runtime latency
    - System is at-least-once wake + at-most-once queue drain per row
 
-4. **Schema mismatch in older environments**
-   - `ensureSchema()` runs at request/scheduled entry to reduce cold migration issues
+4. **Schema mismatch**
+   - The schema comes only from `worker/migrations/`, applied before every deploy (README deploy
+     steps). A deploy whose migrations were not applied fails on its first query, not silently.
 
 Operational references:
 - Error wrappers/logging in `fetch` and `scheduled`: `worker/src/index.ts:309–333`
 
 ---
 
-## 10) KV→D1 migration contract (legacy compatibility)
+## 10) Storage contract
 
-The worker still supports progressive migration from legacy KV namespaces into D1 at read time. This path is easy to break during “cleanup” refactors, so verify these invariants before deleting any fallback logic.
-
-Primary anchors:
-- Device read fallback: `getDeviceRecord` → `migrateDeviceFromKv` (`worker/src/index.ts:2557–2653`)
-- Endpoint reverse lookup fallback: `findDeviceIdByEndpoint` (`worker/src/index.ts:2584–2607`)
-- Reminder migration: `migrateRemindersFromKv` (`worker/src/index.ts:2655–2711`)
-- Pending queue migration: `migratePendingFromKv` (`worker/src/index.ts:2713–2749`)
-
-### Migration behavior that must stay true
-
-1. **D1 is preferred; KV is fallback-only.**
-   - Reads hit D1 first, then attempt KV migration only on miss.
-2. **Migration is destructive to legacy KV once imported.**
-   - After successful import, legacy keys are deleted best-effort.
-3. **Malformed KV payloads fail closed.**
-   - Parse/shape failures are logged and ignored, not partially imported.
-4. **Reminder and pending payloads are normalized before insert.**
-   - Invalid entries are dropped before D1 writes.
-5. **Endpoint hash consistency is repaired during migration.**
-   - Missing `endpointHash` in legacy records is recomputed before upsert.
-
-### Agent verification pseudocode
-
-```text
-read device from D1
-if missing and TASKIFY_DEVICES exists:
-  parse legacy device JSON
-  validate shape
-  compute endpointHash if absent
-  upsert to D1
-  migrate reminders/pending arrays from KV to D1
-  delete legacy KV keys best-effort
-```
-
-Refactor warning:
-- `findDeviceIdByEndpoint` can trigger migration as a side effect (`endpoint:{hash}` lookup → device id). Do not assume endpoint lookup is read-only in mixed deployments.
+D1 (`TASKIFY_DB`) is the only store for devices, reminders and pending notifications. Until
+2026-10-29 the Worker also imported devices from three KV namespaces (`TASKIFY_DEVICES`,
+`TASKIFY_REMINDERS`, `TASKIFY_PENDING`) on first contact. The four devices still there had not
+contacted the Worker since D1 took over in September 2025, so the import, the bindings and the
+namespaces were retired. A device D1 does not know is unknown: it registers afresh with
+`PUT /api/devices`. `deploy-config.test.ts` keeps the bindings out of `wrangler.toml`, and
+`index.test.ts` checks that no request or cron run reads them.
 
 ---
 
@@ -280,8 +250,8 @@ Before changing reminder/backend logic, verify:
    - `handleSaveReminders`
    - `processDueReminders`
    - `handlePollReminders`
-3. Device deletion still clears all three stores (D1 + optional KV mirrors)
-4. VAPID key resolution still supports both string and KV binding modes
+3. Device deletion still clears the device's row, reminders and pending notifications
+4. VAPID key loading still accepts the secret as PEM or raw base64url
 5. Any behavior change is mirrored in docs (`architecture-overview.md`, this file)
 
 ---
@@ -342,46 +312,18 @@ Anchors:
 
 Operational implication: endpoint expiry is treated as terminal device invalidation, not temporary backoff.
 
-## 13) D1↔KV migration fallback matrix (agent verification chunk)
+## 13) Device lookup and deletion (agent verification chunk)
 
-This is the concrete fallback behavior while legacy KV bindings still exist.
-Use it before touching device lookup, poll, or migration code.
+| Entry point | Behavior | Anchors |
+|---|---|---|
+| `getDeviceRecord(env, deviceId)` | `SELECT ... FROM devices WHERE device_id = ?`; no row → unknown device | `worker/src/reminders.ts` |
+| `findDeviceIdByEndpoint(env, endpoint)` | hash the endpoint, then `SELECT device_id FROM devices WHERE endpoint_hash = ?` | `worker/src/reminders.ts` |
+| `/api/reminders/poll` | resolves the device by `deviceId` or endpoint, then drains `pending_notifications` by row id | `worker/src/reminders.ts` |
 
-### 13.1 Read path decision tree
-
-| Entry point | D1-first behavior | KV fallback trigger | Migration side effects | Anchors |
-|---|---|---|---|---|
-| `getDeviceRecord(env, deviceId)` | `SELECT ... FROM devices WHERE device_id = ?` | No D1 row found | Calls `migrateDeviceFromKv`; can migrate device + reminders + pending into D1 and delete KV keys | `worker/src/index.ts:2557–2569`, `:2609–2653` |
-| `findDeviceIdByEndpoint(env, endpoint)` | hash endpoint then `SELECT device_id FROM devices WHERE endpoint_hash = ?` | No D1 row and `TASKIFY_DEVICES` bound | Reads `endpoint:{hash}` KV index, migrates mapped device id to D1, returns migrated id | `worker/src/index.ts:2584–2607` |
-| `/api/reminders/poll` endpoint lookup | resolves `deviceId` from explicit `deviceId` or endpoint lookup | same as `findDeviceIdByEndpoint` | Poll then drains `pending_notifications` by selected row ids | `worker/src/index.ts:2404–2431`, `:2584–2607` |
-
-### 13.2 Migration contract details
-
-`migrateDeviceFromKv` is not a plain read-through; it performs a one-time import pipeline:
-
-1. Parse + validate legacy device payload from `TASKIFY_DEVICES` (`device:{id}`)
-2. Backfill `endpointHash` if missing (derived from endpoint)
-3. Upsert device row into D1
-4. Migrate reminders (`TASKIFY_REMINDERS`) into `reminders`
-5. Migrate pending payload (`TASKIFY_PENDING`) into `pending_notifications`
-6. Delete legacy KV keys (`device:{id}`, `endpoint:{hash}`, `reminders:{id}`, `pending:{id}`)
-
-Anchors:
-- Device migration core: `worker/src/index.ts:2609–2653`
-- Reminder migration: `worker/src/index.ts:2655–2711`
-- Pending migration: `worker/src/index.ts:2713–2749`
-
-### 13.3 Invariants to preserve when editing
-
-- A successful KV migration must leave D1 authoritative and remove migrated KV keys.
-- Endpoint-hash lookup must remain consistent across register (`upsertDevice`) and poll (`findDeviceIdByEndpoint`).
-- Poll acknowledgement must delete only explicitly acknowledged `pending_notifications` row IDs for the authenticated device/endpoint.
-- Device deletion must continue clearing D1 + best-effort KV mirrors to avoid zombie registrations.
-
-Quick re-check anchors:
-- Upsert with endpoint hash: `worker/src/index.ts:2530–2555`
-- Poll read+delete ids: `worker/src/index.ts:2415–2431`
-- Delete fan-out: `worker/src/index.ts:2305–2333`
+Invariants to preserve when editing:
+- Endpoint-hash lookup must stay consistent across register (`upsertDevice`) and poll (`findDeviceIdByEndpoint`).
+- Poll acknowledgement deletes only explicitly acknowledged `pending_notifications` row IDs for the authenticated device.
+- Device deletion removes the device row, its reminders and its pending notifications in one batch.
 
 ## 15) Scheduled execution ordering + failure isolation (agent verification chunk)
 
@@ -391,8 +333,8 @@ This section documents the exact scheduler sequencing contract. Preserve it unle
 
 Within `scheduled()`, the runner currently executes in strict sequence:
 
-1. `ensureSchema(env)`
-2. `processDueReminders(env)`
+1. `processDueReminders(env)`
+2. `pruneStaleRows(env)`, once an hour
 
 Anchor: `worker/src/index.ts:317–323`
 
@@ -424,7 +366,7 @@ Anchor: `worker/src/index.ts:323–326`
 
 If you modify scheduled flow:
 
-- Keep `ensureSchema` before D1-dependent jobs.
+- Add any table or column a job needs as a migration, never as runtime DDL (`schema.test.ts`).
 - Preserve explicit ordering decisions (or document intentional reordering in this file).
 - Do not convert failures into silent success without adding equivalent observability.
 
@@ -667,51 +609,40 @@ If you modify preview or NIP-05 logic, preserve:
 - HTTPS-only NIP-05 lookup with private-network and redirect-hop rejection,
 - stable response shape consumed by existing PWA callers.
 
-## 19) Schema bootstrap + concurrency contract (agent verification chunk)
+## 19) Schema contract (agent verification chunk)
 
-The Worker does runtime schema bootstrapping and intentionally de-duplicates concurrent bootstrap attempts in-process.
+The schema is defined by the migrations in `worker/migrations/` and nowhere else. The Worker runs
+no `CREATE`, `DROP`, `ALTER` or `PRAGMA` statement at runtime; requests and the cron only read and
+write rows. Until 2026-10-29 an `ensureSchema()` bootstrap re-ran the core DDL on the first request
+of every isolate and on every cron tick; production now has every migration applied, and it is gone.
 
-### 19.1 `ensureSchema` single-flight behavior
+### 19.1 Applying migrations
 
-Anchors:
-- schema gate state: `worker/src/index.ts:165` (`schemaReadyPromise`)
-- bootstrap function: `worker/src/index.ts:174–235`
+Apply before every deploy (README deploy steps):
 
-Contract:
-1. First caller creates `schemaReadyPromise` and runs DDL.
-2. Concurrent callers await the same promise instead of issuing duplicate DDL.
-3. If bootstrap fails, `.catch(...)` resets `schemaReadyPromise = null` so a later request/cron tick can retry.
+```bash
+npx wrangler@4.150.0 d1 migrations apply taskify-notifications --remote
+```
 
-Operational implication:
-- cold starts with concurrent requests should not race schema creation in the same isolate.
-- transient D1 errors do not permanently poison future bootstrap attempts.
+Guardrails:
+- every migration is idempotent (`IF NOT EXISTS`, `IF EXISTS`, plain `UPDATE`), so a database
+  whose tables already exist can apply it (`migrations.test.ts`);
+- `schema.test.ts` fails if a request or the cron issues a schema statement.
 
-### 19.2 DDL + index invariants
+### 19.2 Table and index invariants
 
-Current bootstrapped objects:
+Defined in `worker/migrations/0001_init.sql` and later migrations:
 - `devices`
 - `reminders` (FK to `devices` with `ON DELETE CASCADE`)
 - `pending_notifications` (FK to `devices` with `ON DELETE CASCADE`)
 - indexes: `idx_reminders_send_at`, `idx_pending_device`
 
-Anchors:
-- table creation block: `worker/src/index.ts:186–226`
-- index creation: `worker/src/index.ts:227–228`
+D1 enforces foreign keys itself, so no `PRAGMA foreign_keys` is needed.
 
-Guardrails when editing:
-- preserve `ON DELETE CASCADE` for reminder/pending rows unless deletion semantics are intentionally changed across handlers.
-- preserve `send_at` and `pending device_id` indexes or provide equivalent query-path indexing before merge.
-- keep bootstrap idempotent (`CREATE ... IF NOT EXISTS`) because it runs from both fetch and scheduled entry points.
-
-### 19.3 Entry-point dependency ordering
-
-Both HTTP and cron paths call `ensureSchema` before touching D1-backed flows.
-
-Anchors:
-- fetch path: `worker/src/index.ts:275`
-- scheduled runner sequence: `worker/src/index.ts:320–322`
-
-This ordering is required so first-run deployments do not fail reminder or device operations due to missing tables.
+Guardrails when adding a migration:
+- preserve `ON DELETE CASCADE` for reminder and pending rows unless deletion semantics change across
+  handlers;
+- preserve the `send_at` and pending `device_id` indexes, or index the same query paths another way.
 
 ## 20) Device identity reconciliation contract (agent verification chunk)
 
@@ -735,7 +666,7 @@ Operational implication:
 ### 20.2 D1 uniqueness and upsert semantics
 
 Anchors:
-- schema uniqueness: `worker/src/index.ts:187–195` (`endpoint_hash TEXT NOT NULL UNIQUE`)
+- schema uniqueness: `worker/migrations/0001_init.sql` (`endpoint_hash TEXT NOT NULL UNIQUE`)
 - upsert query: `worker/src/index.ts:2530–2555` (`upsertDevice`)
 
 Invariants:
@@ -755,7 +686,6 @@ Anchors:
 If you change registration identity behavior, re-verify:
 - endpoint-based poll still resolves the intended device,
 - stale/expired endpoint cleanup (`404/410` push result) still deletes the same canonical `device_id`,
-- KV fallback migration (`migrateDeviceFromKv`) still preserves endpoint index parity.
 
 ## 21) CORS + request trust boundary contract (agent verification chunk)
 

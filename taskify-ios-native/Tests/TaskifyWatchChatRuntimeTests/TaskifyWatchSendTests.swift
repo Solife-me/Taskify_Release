@@ -124,6 +124,32 @@ final class TaskifyWatchSendTests: XCTestCase {
         XCTAssertEqual(restored.messages, queued.messages)
     }
 
+    func testAudioAttachmentIsQueuedWithPlayableMetadata() async throws {
+        let (coordinator, _, recipient) = try await configuredCoordinator()
+        let URL = try XCTUnwrap(URL(string: "https://files.example/audio-message"))
+        let attachment = try XCTUnwrap(TaskifyWatchChatAttachment(
+            url: URL,
+            mimeType: "audio/mp4",
+            filename: "Audio Message.m4a",
+            keyHex: String(repeating: "11", count: 32),
+            nonceHex: String(repeating: "22", count: 16),
+            ciphertextSHA256: String(repeating: "33", count: 32),
+            size: 1_024
+        ))
+        let queued = try await coordinator.send(
+            content: URL.absoluteString,
+            memberPublicKeys: [recipient],
+            attachment: attachment,
+            privateKey: senderKey
+        )
+        let message = try XCTUnwrap(queued.messages.first)
+        XCTAssertEqual(message.kind, .audio)
+        XCTAssertEqual(message.content, "Audio")
+        XCTAssertEqual(message.attachment, attachment)
+        XCTAssertEqual(queued.outbox.first?.rumorID, message.rumorID)
+        XCTAssertTrue(GatewayStub.requests.isEmpty)
+    }
+
     func testOverlappingRetriesShareOneFlushAndPreserveUnfinishedReplicas() async throws {
         let (coordinator, _, recipient) = try await configuredCoordinator()
         let queued = try await coordinator.send(

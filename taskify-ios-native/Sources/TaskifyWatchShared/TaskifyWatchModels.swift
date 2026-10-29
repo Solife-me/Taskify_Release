@@ -835,6 +835,8 @@ public enum TaskifyWatchTransfer {
                         discoveryRelayURLs: projection.discoveryRelayURLs,
                         pushRelayHTTPSURL: projection.pushRelayHTTPSURL,
                         pushRelayWSSURL: projection.pushRelayWSSURL,
+                        fileServerURL: projection.fileServerURL,
+                        fileServerType: projection.fileServerType,
                         // Tombstones survive trimming: they are the only path phone-side
                         // deletions and blocks have to the Watch cache.
                         deletedConversationIDs: projection.deletedConversationIDs,
@@ -1145,7 +1147,9 @@ public enum TaskifyWatchTransfer {
                 ? source.accountInboxPreferenceEvent
                 : nil,
             pushRelayHTTPSURL: source.pushRelayHTTPSURL,
-            pushRelayWSSURL: source.pushRelayWSSURL
+            pushRelayWSSURL: source.pushRelayWSSURL,
+            fileServerURL: source.fileServerURL,
+            fileServerType: source.fileServerType
         )
     }
 

@@ -95,9 +95,9 @@ User action (PWA)
   → Local state updated via nostrAppState reconciler
 
 Reminders (Worker cron, every 1 min)
-  → Reads TASKIFY_REMINDERS KV
-  → Sends Web Push via VAPID to registered devices
-  → Logs to D1 database
+  → Reads due rows from D1 `reminders`, moves them to `pending_notifications`
+  → Sends an empty Web Push ping via VAPID to each device
+  → The service worker polls /api/reminders/poll and names the reminder from its own copy
 
 Backups
   → Encrypted Nostr event export stored in R2 (taskify-backups)
@@ -263,7 +263,10 @@ is public and contains both architectures before changing the StartOS image pin.
 | `src/lib/workerLookups.test.ts` | Worker lookups | Link previews and NIP-05 names are asked for in a POST body, never in the URL the Worker's logs record |
 | `src/domains/push/pushErrors.test.ts` | Push setup errors | A push service refusal gets advice for the browser that refused (Brave's push messaging setting, Chromium, Safari's settings path, or none), and other setup errors keep their messages |
 | `src/serviceWorkerFetch.test.ts` | Service worker fetch routing | Runs the real `public/sw.js`: relay (NIP-11, relay hosts) and `/api/` requests are left to the browser, while the app shell is still served by the worker |
-| `worker/src/deploy-config.test.ts` | Worker deploy target | `wrangler.toml` deploys `taskify-public` (the Worker behind taskify.solife.me, not the retired v1 `taskify`) and carries the VAPID public key and subject, which a deploy would otherwise drop |
+| `worker/src/deploy-config.test.ts` | Worker deploy target | `wrangler.toml` deploys `taskify-public` (the Worker behind taskify.solife.me), carries the VAPID public key and subject, which a deploy would otherwise drop, keeps invocation logs off, and binds no KV namespace |
+| `worker/src/migrations.test.ts` | D1 migrations | On a database shaped like production, the migrations remove every retired calendar table (CalDAV, both Google Calendar integrations) and keep devices and reminders; every migration can run again on a database that already has it |
+| `worker/src/schema.test.ts` | Worker schema ownership | A database request and a cron run issue no `CREATE`, `DROP`, `ALTER` or `PRAGMA`: the schema comes only from `worker/migrations` |
+| `worker/src/vapid-secret.test.ts` | VAPID private key as a secret | A raw base64url `VAPID_PRIVATE_KEY` secret signs a cron reminder ping whose token verifies against the public key |
 | `src/chat/cashuTokenText.test.ts`, `src/chat/ChatTokenBubble.test.tsx` | Wallet-independent PWA Chat | Cashu token recognition without loading the Cashu SDK; received tokens are displayed as copy-only and the complete token, not its shortened display, is copied |
 | `src/chat/ChatShell.test.tsx`, `src/ui/wallet/useWalletShellState.test.tsx`, `src/ui/wallet/WalletContactsPickerSheet.test.tsx` | PWA Chat/wallet boundary | Chat's background runtime stays mounted off-page while its page is lazy; Chat never opens or prefetches the wallet, wallet prefetch is explicit, and the wallet contact picker reads Chat-owned contacts while contributing only the payment-selection callback |
 | `src/chat/hooks/useDmState.test.ts` | PWA Chat DM cache | Recognizes documented attachment type tags (not full payload validation); cached profile relays are trimmed and deduplicated, with empty/non-string entries discarded |
