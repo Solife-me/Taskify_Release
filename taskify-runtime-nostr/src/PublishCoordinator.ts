@@ -154,13 +154,14 @@ export class PublishCoordinator {
     const intendedRelays = relaySet ? relayUrlsFromRelaySet(relaySet) : [];
     let targetSet = relaySet;
     let notBefore: number | null = null;
+    const attemptedRelays: string[] = [];
     if (this.publishBudget && intendedRelays.length) {
       const { ready, deferredUntil } = this.publishBudget.take(intendedRelays, Date.now());
       notBefore = deferredUntil;
       if (!ready.length) {
         return { createdAt, event: event.rawEvent() as NostrEvent, ackedRelays: [], refusedRelays: [], notBefore, transientFailure: false };
       }
-      if (ready.length < intendedRelays.length) targetSet = await this.resolveRelaySetWithEnsure(ready);
+      attemptedRelays.push(...ready);
     }
 
     // NDK reports each relay's rejection as an event emission even when the publish as a whole
@@ -178,6 +179,9 @@ export class PublishCoordinator {
     let publishedRelays: unknown;
     let thrown: unknown = null;
     try {
+      if (this.publishBudget && targetSet && attemptedRelays.length < intendedRelays.length) {
+        targetSet = await this.resolveRelaySetWithEnsure(attemptedRelays);
+      }
       publishedRelays = await event.publish(targetSet);
     } catch (error) {
       thrown = error;
@@ -188,6 +192,8 @@ export class PublishCoordinator {
       for (const [relay, relayError] of errors) onRelayFailed(relay as { url?: string }, relayError);
     } finally {
       emitter.off?.("relay:publish:failed", onRelayFailed);
+      const releasedAt = Date.now();
+      for (const relay of attemptedRelays) this.publishBudget?.release(relay, releasedAt);
     }
 
     const now = Date.now();

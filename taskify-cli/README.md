@@ -155,7 +155,7 @@ Use `--idempotency-key` whenever an agent might retry task creation. Keys are pe
 
 Writes are persisted to `~/.taskify-cli/nostr-outbox.json` before publication. A write succeeds only after at least one target relay acknowledges it. If no relay acknowledges the event, the CLI returns `WRITE_QUEUED` with exit code `75`; the signed event remains in the outbox and is retried on a later connection. `taskify doctor` reports pending writes.
 
-The transport uses the union of account relays and per-board relays, applies relay health/backoff, and closes connections cleanly after each invocation.
+The transport uses the union of account relays and per-board relays, applies relay health/backoff, and closes connections cleanly after each invocation. Public relays receive one event immediately and then one every 10–12 seconds with jitter; pacing and rate-limit backoff are shared across CLI invocations in `~/.taskify-cli/relay-publish-budget.json`, so a rapid series of agent commands does not reset Damus's publish allowance on every process.
 
 ## Relay authentication (NIP-42) and proof of work (NIP-13)
 

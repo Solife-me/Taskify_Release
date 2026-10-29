@@ -35,8 +35,12 @@ export declare const FIRST_PARTY_RELAYS: readonly string[];
 export type RelayPublishBudgetOptions = {
     /** Events a relay may receive back to back. */
     burst?: number;
-    /** One more event is allowed per interval once the burst is spent. */
+    /** Minimum delay before one more event is allowed once the burst is spent. */
     refillIntervalMs?: number;
+    /** Random delay added once per relay, keeping clients on one public IP from synchronizing. */
+    refillJitterMs?: number;
+    /** Lease preventing a second serial attempt while the first has not acknowledged (45 s). */
+    publishLeaseMs?: number;
     /** First backoff after a rate-limit rejection; doubles on each consecutive one. */
     rateLimitBackoffMs?: number;
     maxBackoffMs?: number;
@@ -46,20 +50,50 @@ export type RelayPublishBudgetOptions = {
     firstPartyRelays?: readonly string[];
     firstPartyBurst?: number;
     firstPartyRefillIntervalMs?: number;
+    /** Optional synchronous persistence, used by short-lived clients such as the CLI. */
+    stateStore?: RelayPublishBudgetStateStore;
+};
+type RelayState = {
+    tokens: number;
+    updatedAt: number;
+    blockedUntil: number;
+    consecutiveRateLimits: number;
+    /** Selected base-plus-jitter interval; absent in snapshots written by older clients. */
+    refillIntervalMs?: number;
+    /** Only used for one-slot relays; expires so a crashed CLI cannot wedge the shared budget. */
+    inFlightUntil?: number;
+};
+export type RelayPublishBudgetSnapshot = {
+    version: 1;
+    relays: Record<string, RelayState>;
+};
+/**
+ * Atomically updates a publish-budget snapshot. The callback form lets a file-backed client hold
+ * a cross-process lock across read/modify/write, so simultaneous CLI commands share one budget.
+ */
+export type RelayPublishBudgetStateStore = {
+    update(operation: (snapshot: RelayPublishBudgetSnapshot | null) => RelayPublishBudgetSnapshot): RelayPublishBudgetSnapshot;
 };
 export declare class RelayPublishBudget {
     readonly burst: number;
     readonly refillIntervalMs: number;
+    readonly refillJitterMs: number;
+    readonly publishLeaseMs: number;
     readonly rateLimitBackoffMs: number;
     readonly maxBackoffMs: number;
     readonly banBackoffMs: number;
     readonly firstPartyBurst: number;
     readonly firstPartyRefillIntervalMs: number;
     private readonly firstPartyRelays;
+    private readonly stateStore?;
     private relays;
     constructor(options?: RelayPublishBudgetOptions);
+    private snapshot;
+    private restore;
+    private withPersistentState;
     private isFirstParty;
     private burstFor;
+    private newRefillInterval;
     private refillFor;
     private state;
     private availableAt;
@@ -73,8 +107,24 @@ export declare class RelayPublishBudget {
     };
     /** When a relay could next receive an event, without taking a slot. */
     nextAvailableAt(relays: string[], now: number): number | null;
+    /** Marks an attempted relay complete. Idempotent; callers use it for every outcome. */
+    release(relay: string, now: number): void;
     recordRateLimited(relay: string, now: number): void;
     /** Nothing gets through a `banned:` relay until the ban lifts; then it resumes slowly. */
     recordBanned(relay: string, now: number): void;
     recordAccepted(relay: string, now: number): void;
 }
+/**
+ * Takes a publish slot when one becomes available. Used for retries that must complete in the
+ * same short-lived operation, such as re-mining after a `pow:` refusal. Normal queued writes use
+ * `take` directly and leave deferral to the durable outbox.
+ */
+export declare function takeWhenPublishSlotIsAvailable(budget: RelayPublishBudget, relays: string[], options?: {
+    maxWaitMs?: number;
+    now?: () => number;
+    sleep?: (milliseconds: number) => Promise<void>;
+}): Promise<{
+    ready: string[];
+    deferredUntil: number | null;
+}>;
+export {};

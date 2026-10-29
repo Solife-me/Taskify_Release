@@ -51,7 +51,8 @@ function buildCoordinator(store: NostrOutboxStore): PublishCoordinator {
     ndk,
     async (relayUrls) => relaySet(relayUrls || []) as never,
     undefined,
-    { outboxStore: store, retryBaseMs: 60_000 },
+    // Relay pacing has its own coordinator suite; these tests isolate durable outbox semantics.
+    { outboxStore: store, retryBaseMs: 60_000, publishBudget: false },
   );
 }
 

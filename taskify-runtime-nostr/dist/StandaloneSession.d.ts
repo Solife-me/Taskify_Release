@@ -1,11 +1,14 @@
 import { NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk";
 import { type NostrEvent } from "nostr-tools";
+import type { RelayPublishBudget } from "./RelayPublishBudget.js";
 export type StandaloneSessionOptions = {
     relays: string[];
     /** The account that signs writes and answers AUTH; reads without one use an ephemeral key. */
     secretKeyHex?: string;
     /** How long to wait for relays before working with those that connected (default 3 s). */
     connectTimeoutMs?: number;
+    /** Optional shared pacing/backoff for writes from short-lived clients. */
+    publishBudget?: RelayPublishBudget;
 };
 /**
  * A short-lived relay connection for one-off reads and writes outside a `RuntimeNostrSession`:
@@ -16,6 +19,7 @@ export type StandaloneSessionOptions = {
 export declare class StandaloneNostrSession {
     private readonly ndk;
     readonly relays: string[];
+    private readonly publishBudget?;
     private closed;
     private closing;
     private constructor();

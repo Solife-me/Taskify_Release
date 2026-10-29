@@ -5,6 +5,7 @@ import { createRelayAuthPolicy, type RelayAuthOutcome } from "./RelayAuth.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
 import { PublishCoordinator, type PublishOptions, type PublishResult } from "./PublishCoordinator.js";
+import type { RelayPublishBudget } from "./RelayPublishBudget.js";
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
 import type { NostrOutboxStore } from "./NostrOutbox.js";
@@ -74,6 +75,8 @@ export type RuntimeNostrSessionDeps<TWalletClient> = {
     resolveRelaySet: (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
   }) => TWalletClient;
   outboxStore?: NostrOutboxStore;
+  /** Shared per-relay publish pacing. Short-lived clients may supply a persisted budget. */
+  publishBudget?: RelayPublishBudget | false;
   isDev?: boolean;
   proofOfWork?: RuntimeProofOfWorkSettings;
   /** How long to wait for a relay to accept an AUTH event (default 10 s). */
@@ -127,6 +130,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     const relayResolver = this.buildRelaySet.bind(this);
     this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, {
       outboxStore: deps.outboxStore,
+      publishBudget: deps.publishBudget,
       resolveProofOfWorkDifficulty: this.resolveProofOfWorkDifficulty.bind(this),
       proofOfWork: this.miningOptions(),
       onProofOfWorkRequired: (relayUrl, difficulty) => {

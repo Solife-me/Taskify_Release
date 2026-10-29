@@ -48,6 +48,7 @@ export class RuntimeNostrSession {
         const relayResolver = this.buildRelaySet.bind(this);
         this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, {
             outboxStore: deps.outboxStore,
+            publishBudget: deps.publishBudget,
             resolveProofOfWorkDifficulty: this.resolveProofOfWorkDifficulty.bind(this),
             proofOfWork: this.miningOptions(),
             onProofOfWorkRequired: (relayUrl, difficulty) => {

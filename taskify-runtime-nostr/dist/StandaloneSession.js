@@ -13,11 +13,13 @@ import { RuntimeSessionClosedError } from "./sessionErrors.js";
 export class StandaloneNostrSession {
     ndk;
     relays;
+    publishBudget;
     closed = false;
     closing = null;
-    constructor(ndk, relays) {
+    constructor(ndk, relays, publishBudget) {
         this.ndk = ndk;
         this.relays = relays;
+        this.publishBudget = publishBudget;
     }
     static async open(options) {
         const relays = normalizeRelayUrls(options.relays);
@@ -32,7 +34,7 @@ export class StandaloneNostrSession {
             ...(options.secretKeyHex ? { signer: new NDKPrivateKeySigner(options.secretKeyHex) } : {}),
         });
         configureRelayAccess(ndk, options.secretKeyHex);
-        const session = new StandaloneNostrSession(ndk, relays);
+        const session = new StandaloneNostrSession(ndk, relays, options.publishBudget);
         let timer;
         try {
             await Promise.race([
@@ -81,7 +83,7 @@ export class StandaloneNostrSession {
         event.content = template.content;
         event.tags = template.tags;
         event.created_at = template.created_at ?? Math.floor(Date.now() / 1000);
-        const published = await publishStandaloneEvent(event, this.relays);
+        const published = await publishStandaloneEvent(event, this.relays, this.publishBudget);
         return {
             event: event.rawEvent(),
             relays: normalizeRelayUrls(Array.from(published).map((relay) => relay.url)),

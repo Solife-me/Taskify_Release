@@ -20,7 +20,8 @@ import { CliLocationError } from "../shared/cliLocation.js";
 import { formatAvailableColumns,resolveBoardColumn } from "../shared/columnResolution.js";
 import { resolveBoardForCommand } from "../shared/commandResolution.js";
 import {
-secretKeyHexFromNsec
+secretKeyHexFromNsec,
+withCliStandaloneSession
 } from "../shared/nodeRuntimeSession.js";
 
 export type CoreErrorDetails = {
@@ -428,6 +429,6 @@ export function createCommandContext(program: Command, dependencies: CommandCont
   }
 
 
-  return { loadConfig: dependencies.loadConfig ?? loadConfig, saveConfig: dependencies.saveConfig ?? saveConfig, now: dependencies.now ?? (() => new Date()), prompt: dependencies.prompt ?? promptTerminal, shareTransport: dependencies.shareTransport ?? { send: sendShareEnvelopeNip17, fetchInbox: fetchShareInboxNip17 }, withStandaloneSession: dependencies.withStandaloneSession ?? withStandaloneSession, randomUUID: dependencies.randomUUID ?? nodeRandomUUID, createIdempotencyStore: dependencies.createIdempotencyStore ?? (() => createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"))), writeAgentJson: dependencies.writeAgentJson ?? writeAgentJson, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
+  return { loadConfig: dependencies.loadConfig ?? loadConfig, saveConfig: dependencies.saveConfig ?? saveConfig, now: dependencies.now ?? (() => new Date()), prompt: dependencies.prompt ?? promptTerminal, shareTransport: dependencies.shareTransport ?? { send: sendShareEnvelopeNip17, fetchInbox: fetchShareInboxNip17 }, withStandaloneSession: dependencies.withStandaloneSession ?? withCliStandaloneSession, randomUUID: dependencies.randomUUID ?? nodeRandomUUID, createIdempotencyStore: dependencies.createIdempotencyStore ?? (() => createFileAgentIdempotencyStore(join(CONFIG_DIR, "idempotency.json"))), writeAgentJson: dependencies.writeAgentJson ?? writeAgentJson, validateDue, validatePriority, warnShortTaskId, resolveTaskIdByTitle, VALID_REMINDER_PRESETS, parseJsonOption, parseReminderOption, normalizeAssigneeArgs, initRuntime, resolveBoardId, mergeAttachmentDocuments, resolveAttachmentDocuments, extractDocumentUrl, resolveDocumentByRef, useHumanOutput, CliCommandError, requireWriteIdentity, validateCoreDue, validateCorePriority, commandErrorDetails, writeCoreFailure, profilePubkey, resolveColumnOrExit, npubOrHexToHex, nsecToHexOrThrow };
 }
 export type CommandContext = ReturnType<typeof createCommandContext>;

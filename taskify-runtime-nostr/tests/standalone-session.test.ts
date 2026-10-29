@@ -4,7 +4,13 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { RuntimeSessionClosedError, StandaloneNostrSession, normalizeRelayUrls, withStandaloneSession } from "../dist/index.js";
+import {
+  RelayPublishBudget,
+  RuntimeSessionClosedError,
+  StandaloneNostrSession,
+  normalizeRelayUrls,
+  withStandaloneSession,
+} from "../dist/index.js";
 import { startMockRelay } from "./helpers/mockRelay.ts";
 
 /** C12-3: one-off reads and writes share verification, bounded waits and a complete close. */
@@ -39,6 +45,29 @@ test("writes are signed by the account and accepted by the relay", async () => {
       withStandaloneSession({ relays: [relay.url] }, (session) => session.publish({ kind: 1, content: "x", tags: [] })),
       /signing identity is required/,
     );
+  } finally {
+    await relay.close();
+  }
+});
+
+test("one-off publishers honor a shared relay budget across sessions", async () => {
+  const relay = await startMockRelay();
+  try {
+    const secretKeyHex = bytesToHex(generateSecretKey());
+    const publishBudget = new RelayPublishBudget({
+      burst: 1,
+      refillIntervalMs: 60_000,
+      refillJitterMs: 0,
+      firstPartyRelays: [],
+    });
+    await withStandaloneSession({ relays: [relay.url], secretKeyHex, publishBudget }, (session) =>
+      session.publish({ kind: 1, content: "first", tags: [] }));
+    await assert.rejects(
+      withStandaloneSession({ relays: [relay.url], secretKeyHex, publishBudget }, (session) =>
+        session.publish({ kind: 1, content: "second", tags: [] })),
+      /being paced/,
+    );
+    assert.deepEqual(relay.events.map((event) => event.content), ["first"]);
   } finally {
     await relay.close();
   }

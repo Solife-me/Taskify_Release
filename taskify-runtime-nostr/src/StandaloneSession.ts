@@ -4,6 +4,7 @@ import { closeNdkPools, installNdkRelayTimerFix } from "./ndkLifecycle.js";
 import { configureRelayAccess, publishStandaloneEvent } from "./RelayAccess.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 import { RuntimeSessionClosedError } from "./sessionErrors.js";
+import type { RelayPublishBudget } from "./RelayPublishBudget.js";
 
 export type StandaloneSessionOptions = {
   relays: string[];
@@ -11,6 +12,8 @@ export type StandaloneSessionOptions = {
   secretKeyHex?: string;
   /** How long to wait for relays before working with those that connected (default 3 s). */
   connectTimeoutMs?: number;
+  /** Optional shared pacing/backoff for writes from short-lived clients. */
+  publishBudget?: RelayPublishBudget;
 };
 
 /**
@@ -23,7 +26,11 @@ export class StandaloneNostrSession {
   private closed = false;
   private closing: Promise<void> | null = null;
 
-  private constructor(private readonly ndk: NDK, readonly relays: string[]) {}
+  private constructor(
+    private readonly ndk: NDK,
+    readonly relays: string[],
+    private readonly publishBudget?: RelayPublishBudget,
+  ) {}
 
   static async open(options: StandaloneSessionOptions): Promise<StandaloneNostrSession> {
     const relays = normalizeRelayUrls(options.relays);
@@ -37,7 +44,7 @@ export class StandaloneNostrSession {
       ...(options.secretKeyHex ? { signer: new NDKPrivateKeySigner(options.secretKeyHex) } : {}),
     });
     configureRelayAccess(ndk, options.secretKeyHex);
-    const session = new StandaloneNostrSession(ndk, relays);
+    const session = new StandaloneNostrSession(ndk, relays, options.publishBudget);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -84,7 +91,7 @@ export class StandaloneNostrSession {
     event.content = template.content;
     event.tags = template.tags;
     event.created_at = template.created_at ?? Math.floor(Date.now() / 1000);
-    const published = await publishStandaloneEvent(event, this.relays);
+    const published = await publishStandaloneEvent(event, this.relays, this.publishBudget);
     return {
       event: event.rawEvent() as NostrEvent,
       relays: normalizeRelayUrls(Array.from(published).map((relay) => relay.url)),
