@@ -6,6 +6,9 @@ import TaskifyCore
 import UIKit
 import UniformTypeIdentifiers
 
+private struct BoardPrintRequest: Identifiable {
+    let id = UUID()
+}
 
 struct BoardsView: View {
     @Environment(AppModel.self) private var model
@@ -24,6 +27,9 @@ struct BoardsView: View {
     @State private var showingVoiceDictation = false
     @State private var detailedTaskDraft: TaskItem?
     @State private var physicalChecklistJob: PhysicalChecklistJob?
+    @State private var boardPrintRequest: BoardPrintRequest?
+    @State private var pendingBoardPrintJob: PhysicalChecklistJob?
+    @State private var requestBoardPrintAfterShare = false
     /// Raised by a quick-add deep link from a widget or the Control Center button. Cleared as soon
     /// as the field takes focus so a later return to Boards doesn't pop the keyboard again.
     @Binding var focusQuickAdd: Bool
@@ -86,7 +92,7 @@ struct BoardsView: View {
                     selection: selection,
                     onMove: { showingSelectionMoveSheet = true },
                     onPrint: {
-                        physicalChecklistJob = makeBoardPrintJob(taskIDs: selection.selectedTaskIDs)
+                        physicalChecklistJob = makeSelectedTaskPrintJob(taskIDs: selection.selectedTaskIDs)
                         selection.exit()
                     },
                     onComplete: {
@@ -137,6 +143,26 @@ struct BoardsView: View {
                 model.completeTasks(scannedIDs)
             }
         }
+        .sheet(item: $boardPrintRequest, onDismiss: {
+            if let job = pendingBoardPrintJob {
+                pendingBoardPrintJob = nil
+                physicalChecklistJob = job
+            }
+        }) { _ in
+            if let board = model.selectedBoard {
+                BoardPrintChooserSheet(
+                    title: board.name,
+                    choices: makeBoardPrintChoices(for: board),
+                    includeCompleted: completedTabEnabled
+                ) { selectedListIDs in
+                    pendingBoardPrintJob = makeBoardPrintJob(
+                        for: board,
+                        selectedListIDs: selectedListIDs,
+                        includeCompleted: completedTabEnabled
+                    )
+                }
+            }
+        }
         .sheet(isPresented: $showingAddBoard) {
             BoardAddSheet()
                 .environment(model)
@@ -158,10 +184,14 @@ struct BoardsView: View {
         } message: {
             Text("Create another column on \(model.selectedBoard?.name ?? "this board").")
         }
-        .sheet(isPresented: $showingBoardShare) {
+        .sheet(isPresented: $showingBoardShare, onDismiss: {
+            guard requestBoardPrintAfterShare else { return }
+            requestBoardPrintAfterShare = false
+            boardPrintRequest = BoardPrintRequest()
+        }) {
             if let board = model.selectedBoard {
                 BoardShareSheet(board: board) {
-                    physicalChecklistJob = makeBoardPrintJob()
+                    requestBoardPrintAfterShare = true
                 }
             }
         }
@@ -553,37 +583,17 @@ struct BoardsView: View {
         }
     }
 
-    private func makeBoardPrintJob(taskIDs: Set<String>? = nil) -> PhysicalChecklistJob? {
+    private func makeSelectedTaskPrintJob(taskIDs: Set<String>) -> PhysicalChecklistJob? {
         guard let board = model.selectedBoard, board.kind != .bible else { return nil }
-        let rows: [(task: TaskItem, section: String)]
-
-        if let taskIDs {
-            rows = taskIDs.compactMap { taskID in
-                guard let task = model.task(withID: taskID), !task.completed, !task.isDeleted else { return nil }
-                return (task, printSection(for: task, selectedBoard: board))
+        let rows = taskIDs.compactMap { taskID -> (task: TaskItem, section: String)? in
+            guard let task = model.task(withID: taskID), !task.completed, !task.isDeleted else { return nil }
+            return (task, printSection(for: task, selectedBoard: board))
+        }
+        .sorted {
+            if $0.section != $1.section {
+                return $0.section.localizedStandardCompare($1.section) == .orderedAscending
             }
-            .sorted {
-                if $0.section != $1.section {
-                    return $0.section.localizedStandardCompare($1.section) == .orderedAscending
-                }
-                return $0.task.order < $1.task.order
-            }
-        } else {
-            let boards = board.kind == .compound ? model.compoundChildBoards(for: board.id) : [board]
-            rows = boards.flatMap { scopedBoard in
-                scopedBoard.columns.sorted { $0.order < $1.order }.flatMap { column in
-                    model.tasks(
-                        boardID: scopedBoard.id,
-                        columnID: column.id,
-                        includeCompleted: false
-                    ).map { task in
-                        let section = board.kind == .compound
-                            ? "\(scopedBoard.name) — \(column.name)"
-                            : column.name
-                        return (task, section)
-                    }
-                }
-            }
+            return $0.task.order < $1.task.order
         }
 
         guard !rows.isEmpty else { return nil }
@@ -593,6 +603,55 @@ struct BoardsView: View {
             items: rows.map {
                 PhysicalChecklistItem(id: $0.task.id, title: $0.task.title, section: $0.section)
             }
+        )
+    }
+
+    private func makeBoardPrintChoices(for board: Board) -> [BoardPrintListChoice] {
+        let boards = board.kind == .compound ? model.compoundChildBoards(for: board.id) : [board]
+        return boards.flatMap { scopedBoard in
+            scopedBoard.columns.sorted { $0.order < $1.order }.map { column in
+                let section = board.kind == .compound
+                    ? "\(scopedBoard.name) — \(column.name)"
+                    : column.name
+                let items = model.tasks(
+                    boardID: scopedBoard.id,
+                    columnID: column.id,
+                    includeCompleted: true
+                ).map { task in
+                    PhysicalChecklistItem(
+                        id: task.id,
+                        title: task.title,
+                        section: section,
+                        filled: task.completed
+                    )
+                }
+                return BoardPrintListChoice(
+                    id: "\(scopedBoard.id):\(column.id)",
+                    name: section,
+                    items: items
+                )
+            }
+        }
+    }
+
+    private func makeBoardPrintJob(
+        for board: Board,
+        selectedListIDs: Set<String>?,
+        includeCompleted: Bool
+    ) -> PhysicalChecklistJob? {
+        let choices = makeBoardPrintChoices(for: board)
+        let scopedChoices = selectedListIDs.map { selected in
+            choices.filter { selected.contains($0.id) }
+        } ?? choices
+        let items = scopedChoices
+            .flatMap(\.items)
+            .filter { includeCompleted || !$0.filled }
+
+        guard !items.isEmpty else { return nil }
+        return PhysicalChecklistJob(
+            ownerID: "board:\(board.id)",
+            title: board.name,
+            items: items
         )
     }
 

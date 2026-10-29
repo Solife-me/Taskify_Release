@@ -9,6 +9,8 @@ struct MacSettingsView: View {
     @EnvironmentObject private var wallet: WalletViewModel
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
     private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
+    @AppStorage(TaskPresentationSettings.completedTabKey)
+    private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var relay = ""
     @State private var identity = ""
     @State private var message: String?
@@ -27,6 +29,7 @@ struct MacSettingsView: View {
                         Text("Top").tag(NewTaskPosition.top); Text("Bottom").tag(NewTaskPosition.bottom)
                     }
                     Toggle("Show Full Week Recurrences", isOn: Binding(get: { model.showFullWeekRecurring }, set: { model.setShowFullWeekRecurring($0) }))
+                    Toggle("Show Completed Tasks Tab", isOn: $completedTabEnabled)
                     Toggle("Hide Completed Subtasks", isOn: $hideCompletedSubtasks)
                     Toggle("Track Streaks", isOn: Binding(get: { model.streaksEnabled }, set: { model.setStreaksEnabled($0) }))
                     Toggle("Bible Tracker", isOn: Binding(get: { model.visibleBoards.contains { $0.kind == .bible } }, set: { _ = model.setBibleTrackerEnabled($0) }))

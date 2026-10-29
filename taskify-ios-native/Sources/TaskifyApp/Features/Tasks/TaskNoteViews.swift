@@ -511,16 +511,29 @@ struct TaskNoteEditorView: View {
         _markdown = State(initialValue: note)
     }
 
+    private var richTextEditor: some View {
+        #if os(iOS)
+        TaskNoteRichTextEditor(
+            initialMarkdown: originalNote,
+            controller: controller,
+            onPasteImage: onPasteImage == nil ? nil : receivePastedImage,
+            onChange: { markdown = $0 }
+        )
+        #else
+        TaskNoteRichTextEditor(
+            initialMarkdown: originalNote,
+            controller: controller,
+            onChange: { markdown = $0 }
+        )
+        #endif
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 formatBar
                 Divider()
-                TaskNoteRichTextEditor(
-                    initialMarkdown: originalNote,
-                    controller: controller,
-                    onPasteImage: onPasteImage == nil ? nil : receivePastedImage
-                ) { markdown = $0 }
+                richTextEditor
                     .overlay(alignment: .topLeading) {
                         if markdown.isEmpty {
                             Text("Write your note")

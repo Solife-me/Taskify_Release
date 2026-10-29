@@ -145,7 +145,13 @@ struct MacWorkspace: View {
         .sheet(isPresented: $creatingBoard) { MacBoardEditor(board: nil) }
         .sheet(item: $boardToManage) { board in MacBoardEditor(board: board) }
         .sheet(isPresented: $printingChecklist) {
-            if let board { MacPrintChecklistSheet(title: board.name, allItems: MacChecklistItems.forBoard(board, model: model)) }
+            if let board {
+                MacPrintChecklistSheet(
+                    title: board.name,
+                    allItems: MacChecklistItems.forBoard(board, model: model),
+                    groups: MacChecklistItems.groups(forBoard: board, model: model)
+                )
+            }
         }
         .sheet(isPresented: Binding(get: { model.showsFirstRunOnboarding }, set: { _ in })) { MacOnboarding() }
         .alert("Taskify", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
