@@ -47,7 +47,7 @@ User testing is valuable but is not a prerequisite for marking work complete.
 |---|---|---|---|---|
 | 1 | Create and commit this living plan | Complete | `6a864fa2` | plan reviewed |
 | 2 | Finish and commit CLI relay rate-limit work | Complete | `a5ef6b1a` | 91 runtime tests + 225 CLI tests |
-| 3 | Keep attachment file names private on every upload path | Not started | - | cross-client tests |
+| 3 | Keep attachment file names private on every upload path | Complete | `ea845460` | cross-client tests + iOS/Watch build |
 | 4 | Stop PWA task editing from waiting for relay publication | Not started | - | slow/failing publish tests |
 | 5 | Show attachment download progress across clients | Not started | - | progress/error tests |
 | 6 | Add shared Hermes bot-menu parser | Not started | - | TS + Swift vectors |
@@ -322,6 +322,7 @@ Verification: tests for confirmation/deselection, wrong page, duplicate task IDs
 |---|---|---|---|---|---|
 | 2026-10-29 | 1 | Beta | `6a864fa2` | Checklist and repository reviewed | Living plan created |
 | 2026-10-29 | 2 | `codex/checklist-iterations-2-4` | `a5ef6b1a` | `taskify-runtime-nostr`: 91/91; `taskify-cli`: 225/225 | Finished existing WIP; committed only CLI/runtime rate-limit files and regenerated runtime dist |
+| 2026-10-29 | 3 | `codex/checklist-iterations-2-4` | `ea845460` | core 175/175; PWA 765 passed/14 skipped; CLI 226/226; PWA lint; Swift filename tests 3/3; unsigned iOS app + Watch + share extension build | Shared opaque filename rule; original names remain only in encrypted metadata; legacy URLs unchanged |
 
 ## Handoff checklist
 
