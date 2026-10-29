@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import React, { act, createRef } from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
 import { DroppableColumn } from "./DroppableColumn";
@@ -69,4 +71,38 @@ test("keeps selection controls and keyboard title activation wired to callbacks"
   const title = host.querySelector('[role="button"]')!;
   await act(async () => title.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
   expect(activate).toHaveBeenCalledOnce();
+});
+
+
+test("contains long task content inside the list instead of creating an inner horizontal scroller", async () => {
+  const host = document.createElement("div");
+  root = createRoot(host);
+  await act(async () => root!.render(
+    <DroppableColumn title="Today" scrollable onDropCard={vi.fn()}>
+      <div className="task-card">
+        <div className="task-card__title">{"unbroken".repeat(80)}</div>
+        <div className="task-card__details">https://example.com/{ "x".repeat(300) }</div>
+      </div>
+    </DroppableColumn>,
+  ));
+
+  const column = host.firstElementChild as HTMLElement;
+  const scroller = column.querySelector<HTMLElement>("[data-column-scroll]")!;
+  const stack = scroller.firstElementChild as HTMLElement;
+  expect(column.className).toContain("overflow-hidden");
+  expect(column.className).toContain("min-w-0");
+  expect(scroller.className).toContain("min-w-0");
+  expect(scroller.className).toContain("overflow-x-hidden");
+  expect(stack.className).toContain("min-w-0");
+  expect(stack.className).toContain("max-w-full");
+
+  const css = readFileSync(resolve(process.cwd(), "src/styles/boards-and-tasks.css"), "utf8");
+  const boardScroller = css.match(/\.board-scroller\s*\{([\s\S]*?)\}/)?.[1] ?? "";
+  const taskCard = css.match(/\.task-card\s*\{([\s\S]*?)\}/)?.[1] ?? "";
+  const columnScroll = css.match(/\.board-column \[data-column-scroll\]\s*\{([\s\S]*?)\}/)?.[1] ?? "";
+  expect(boardScroller).toContain("overflow-y: hidden");
+  expect(columnScroll).toContain("overflow-x: hidden");
+  expect(taskCard).toContain("min-width: 0");
+  expect(taskCard).toContain("max-width: 100%");
+  expect(taskCard).toContain("overflow-wrap: anywhere");
 });

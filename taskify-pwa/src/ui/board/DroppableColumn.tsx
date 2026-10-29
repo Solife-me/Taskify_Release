@@ -109,7 +109,7 @@ export const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
       ref={setRef}
       data-column-title={title}
       data-drop-over={isDragOver || undefined}
-      className={`board-column surface-panel w-[325px] shrink-0 ${scrollable ? 'flex h-full min-h-0 flex-col overflow-hidden pt-2 px-2 pb-1' : 'min-h-[320px] p-2'} ${isDragOver ? 'board-column--active' : ''} ${className ?? ''}`}
+      className={`board-column surface-panel w-[325px] max-w-[325px] min-w-0 shrink-0 ${scrollable ? 'flex h-full min-h-0 flex-col overflow-hidden pt-2 px-2 pb-1' : 'min-h-[320px] p-2'} ${isDragOver ? 'board-column--active' : ''} ${className ?? ''}`}
       {...props}
     >
       {header ?? (
@@ -161,8 +161,8 @@ export const DroppableColumn = React.memo(React.forwardRef<HTMLDivElement, {
           </button>
         </div>
       )}
-      <div className={scrollable ? 'flex-1 min-h-0 overflow-y-auto pr-1' : ''} data-column-scroll={scrollable ? "" : undefined}>
-        <div className="space-y-.25">{children}</div>
+      <div className={scrollable ? 'flex-1 min-w-0 max-w-full overflow-x-hidden overflow-y-auto pr-1' : ''} data-column-scroll={scrollable ? "" : undefined}>
+        <div className="min-w-0 max-w-full space-y-.25">{children}</div>
       </div>
       {scrollable && footer ? <div className="mt-auto flex-shrink-0 pt-2">{footer}</div> : null}
       {!scrollable && footer}

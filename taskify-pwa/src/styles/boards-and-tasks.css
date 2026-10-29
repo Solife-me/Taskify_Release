@@ -1,6 +1,8 @@
 /* ================= Board columns ================= */
 .board-column {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   background: transparent;
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow:
@@ -42,10 +44,37 @@ html.light .board-column[data-drop-over="true"] {
   background: rgba(255, 255, 255, 0.6);
 }
 
+.board-scroller {
+  min-width: 0;
+  max-width: 100%;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+}
+
+.board-column [data-column-scroll] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.board-column [data-column-scroll] > * {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
 /* ================= Task cards ================= */
 .task-card {
   position: relative;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03));
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--radius-pill);
@@ -78,6 +107,8 @@ html.light .task-card:hover {
   display: flex;
   align-items: center;
   gap: 0.2rem;
+  min-width: 0;
+  max-width: 100%;
   margin-left: -1.1rem;
   font-size: 0.75rem;
 }
@@ -89,7 +120,10 @@ html.light .task-card:hover {
 }
 
 .subtask-row__text {
+  min-width: 0;
   flex: 1;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .icon-button {
@@ -205,8 +239,17 @@ html.light .task-card[data-state="completed"] {
   border-radius: var(--radius-tight);
 }
 
+.task-card > .flex,
+.task-card > .task-card__details,
+.task-card__details {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .task-card__details {
   margin-left: calc(var(--icon-size, 2.2rem) + 0.75rem);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .task-card__trailing {
@@ -229,6 +272,8 @@ html.light .task-card[data-state="completed"] {
 .task-card__schedule-row > span:first-child,
 .task-card__meta--inline > span:first-child {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .task-card__reminder-indicator {
@@ -303,6 +348,10 @@ html.light .board-list-item {
 }
 
 .task-card__title {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-weight: 600;
   font-size: 0.95rem;
   line-height: 1.24;
@@ -2918,6 +2967,8 @@ html.light .wallet-modal__unit {
 
 .doc-thumb {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   text-align: left;
@@ -2936,6 +2987,8 @@ html.light .wallet-modal__unit {
 
 .doc-thumb__preview {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   min-height: 9rem;
   display: flex;
   align-items: center;
