@@ -31,6 +31,8 @@ import {
 } from "../chatHelpers";
 import { ChatTokenBubble } from "../ChatTokenBubble";
 import { useChatRuntime } from "../ChatRuntime";
+import { HermesModelPicker } from "../HermesModelPicker";
+import { projectHermesBotUi } from "../hermesModelPickerState";
 
 export function ChatConversationView() {
   const {
@@ -96,6 +98,7 @@ export function ChatConversationView() {
     replyToMessage,
     resolveNip17Relays,
     safePublish,
+    sendBotUiCommand,
     sendMessengerFileAttachments,
     setActiveContactId,
     setActiveGroupId,
@@ -117,6 +120,14 @@ export function ChatConversationView() {
     upsertContact,
     visiblePendingMessages,
   } = useChatRuntime();
+
+  const hermesBotUi = React.useMemo(
+    () => projectHermesBotUi(
+      activeThread?.messages ?? [],
+      !!activeBotCommands && !activeThread?.groupId,
+    ),
+    [activeBotCommands, activeThread?.groupId, activeThread?.messages],
+  );
 
   return (
     <>
@@ -295,7 +306,7 @@ export function ChatConversationView() {
                 }}
               >
                 <div ref={messagesInnerRef} className="chat-messages-inner">
-                  {activeThread.messages.filter((msg) => !msg.eventId.startsWith("draft-")).map((msg, idx, arr) => {
+                  {activeThread.messages.filter((msg) => !msg.eventId.startsWith("draft-") && !hermesBotUi.hiddenEventIds.has(msg.eventId)).map((msg, idx, arr) => {
                     const prevMsg = idx > 0 ? arr[idx - 1] : null;
                     const prevDay = prevMsg ? new Date(prevMsg.createdAt * 1000) : null;
                     const msgDay = new Date(msg.createdAt * 1000);
@@ -563,6 +574,16 @@ export function ChatConversationView() {
                                 />
                               )}
                               {msg.attachment?.type === "text" && (() => {
+                                const hermesMenu = hermesBotUi.menusByListingEventId.get(msg.eventId);
+                                if (hermesMenu) {
+                                  return (
+                                    <HermesModelPicker
+                                      peerPubkey={activeThread.peerPubkey}
+                                      projection={hermesMenu}
+                                      sendBotUiCommand={sendBotUiCommand}
+                                    />
+                                  );
+                                }
                                 const msgUrls = extractUrlsFromText(msg.content);
                                 const repliedMsg = msg.replyToEventId
                                   ? dmMessages.find(
