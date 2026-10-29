@@ -1,6 +1,6 @@
 # Taskify checklist execution plan
 
-Status: active
+Status: complete
 Created: 2026-10-29
 Source: Taskify to-do checklist supplied 2026-10-29
 Baseline: `Beta` at `e8eaca27`
@@ -58,10 +58,10 @@ User testing is valuable but is not a prerequisite for marking work complete.
 | 11 | Make every PWA settings group collapsible | Complete | `f9c382f0` | PWA 780/14 skipped; accordion behavior test; lint/build/startup 420.7 KB; visual check deferred |
 | 12 | Remove PWA AI instruction block | Complete | `d44d7ae5` | PWA 780/14 skipped; lint/build; production grep |
 | 13 | Prevent task content from scrolling sideways inside lists | Complete | `95410844` | PWA 781/14 skipped; board DOM/CSS regression; lint/build/startup 420.7 KB |
-| 14 | Add adaptive Mac-like PWA desktop layout for wide touch screens | Not started | - | Mac/iPad screenshots |
-| 15 | Print whole board or selected lists, respecting completed settings | Not started | - | layout tests |
-| 16 | Refactor print/scan format and make scan round-trip reliable | Not started | - | synthetic scan tests |
-| 17 | Add scan result verification before completing tasks | Not started | - | verification UI tests |
+| 14 | Add adaptive Mac-like PWA desktop layout for wide touch screens | Complete | `9d30a1f0` | responsive CSS tests; PWA 792 passed/14 skipped; lint/build; visual check deferred |
+| 15 | Print whole board or selected lists, respecting completed settings | Complete | `7038a6c1`, `e1da933b` | PWA scope/filter tests; iOS/macOS multi-list chooser; unsigned app builds |
+| 16 | Refactor print/scan format and make scan round-trip reliable | Complete | `b0b44081`, `e1da933b` | core 184/184; focused Swift 6/6; PWA 792/14; iOS/macOS builds; synthetic round-trip coverage |
+| 17 | Add scan result verification before completing tasks | Complete | `e2e5099a` | PWA review tests; Swift review tests 2/2; PWA 792/14; lint/build/startup; iOS/macOS builds |
 | - | Chat polls | Out of scope | - | user decision |
 
 Status values: `Not started`, `In progress`, `Blocked`, `Complete`.
@@ -333,8 +333,32 @@ Verification: tests for confirmation/deselection, wrong page, duplicate task IDs
 | 2026-10-29 | 11 | `codex/checklist-iterations-10-13` | `f9c382f0` | PWA 780 passed/14 skipped; accordion test; lint; production build; startup 420.7 KB of 440 KB | Added a shared accessible accordion for all settings groups, collapsed-by-default expansion, independent state, remount reset, nested public/encrypted file-server groups, and embedded section headers without double toggles; live visual QA could not run because the Mac auto-locked and local browser control remained disabled |
 | 2026-10-29 | 12 | `codex/checklist-iterations-10-13` | `d44d7ae5` | PWA 780 passed/14 skipped; lint; production build; production-source search finds no prompt builder or copy handler | Removed the obsolete AI instructions group, prompt text, copy callback, and related settings imports while leaving JSON task/event paste/import behavior untouched |
 | 2026-10-29 | 13 | `codex/checklist-iterations-10-13` | `95410844` | PWA 781 passed/14 skipped; focused board tests 4/4; lint; production build; startup 420.7 KB of 440 KB | Removed the inner horizontal scroll axis from list bodies, constrained cards and media to the list width, made long titles/notes/subtasks break safely, and kept horizontal panning on the board scroller; live browser width check deferred because the Mac locked |
+| 2026-10-29 | 14 | `codex/checklist-iterations-14-17` | `9d30a1f0` | PWA 792 passed/14 skipped; lint; production build; startup 422.8 KB of 440 KB | Wide layouts now activate from 900px without requiring a fine pointer; coarse-pointer overrides keep 48px controls, safe-area spacing, and touch gestures. One responsive PWA remains the architecture; live Mac/iPad screenshots were unavailable because the host stayed locked and local browser control was disabled |
+| 2026-10-29 | 15 | `codex/checklist-iterations-14-17` | `7038a6c1`, `e1da933b` | PWA scope/filter tests and full 792/14; unsigned iOS and macOS builds | PWA, iOS, and macOS can print the whole board or one or more lists. Compound-board child columns are de-duplicated; selection print remains available. Completed tasks are included only when the shared completed-tab setting is enabled |
+| 2026-10-29 | 16 | `codex/checklist-iterations-14-17` | `b0b44081`, `e1da933b` | TaskifyCore 184/184; focused Swift 6/6; PWA 790/14 at contract commit and 792/14 final; unsigned iOS/macOS builds | Added the shared v3 paper contract with job validation, page patterns, A4/Letter/A6 support, and legacy read support. PWA, iOS, and macOS now draw the same job/page markers and reject stale or wrong-board pages |
+| 2026-10-29 | 17 | `codex/checklist-iterations-14-17` | `e2e5099a` | PWA 792 passed/14 skipped; lint/build/startup 422.8 KB; Swift review tests 2/2; focused Swift 6/6; unsigned iOS/macOS builds | Scan results merge into one deduplicated review across pages. Only newly detected incomplete tasks are selected by default; rows can be toggled, select-all/clear are available, already-completed and unknown IDs cannot be applied, and apply uses the normal completion path |
+
+## Final verification
+
+- `taskify-pwa`: 145 files passed / 4 skipped; 792 tests passed / 14 skipped. ESLint, production build, and startup budget passed at 422.8 KB gzip of 440 KB.
+- `taskify-core`: 184/184 tests passed, including shared print-contract vectors and TypeScript/Swift parity.
+- Swift focused suite: 6/6 passed across board print contract, physical layout, and scan-review selection.
+- Unsigned app builds succeeded for the iOS `TaskifyNative` scheme and the separate macOS `TaskifyMac` scheme.
+- Final repository diff checks passed with no whitespace errors.
+
+## Residual limitations
+
+- No live phone-camera/paper scan or physical print-panel run was possible in this environment. Synthetic layout and contract tests cover page/job validation, multi-page review, and selection rules, but real camera perspective, lighting, and printer scaling still need user-device testing.
+- Live browser screenshots for the wide touch layout, settings accordion, and board overflow behavior were blocked because the Mac host remained locked and local browser use was disabled. Automated responsive, accordion, and board-overflow tests pass.
+- Scan application uses the existing local-first completion command; recurrence and offline behavior therefore inherit the already-tested normal completion path. A device-level end-to-end check remains advisable.
 
 ## Handoff checklist
+
+All checklist and follow-up iterations are complete. The branch is
+`codex/checklist-iterations-14-17`; its final implementation commit is `e2e5099a` and
+the tracker commit follows immediately after it. No work is left in progress. If a
+future agent resumes, start with the residual limitations above rather than
+reopening completed implementation work.
 
 Before ending an iteration, record:
 
