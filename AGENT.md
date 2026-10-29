@@ -95,9 +95,9 @@ User action (PWA)
   → Local state updated via nostrAppState reconciler
 
 Reminders (Worker cron, every 1 min)
-  → Reads TASKIFY_REMINDERS KV
-  → Sends Web Push via VAPID to registered devices
-  → Logs to D1 database
+  → Reads due rows from D1 `reminders`, moves them to `pending_notifications`
+  → Sends an empty Web Push ping via VAPID to each device
+  → The service worker polls /api/reminders/poll and names the reminder from its own copy
 
 Backups
   → Encrypted Nostr event export stored in R2 (taskify-backups)
@@ -263,7 +263,7 @@ is public and contains both architectures before changing the StartOS image pin.
 | `src/lib/workerLookups.test.ts` | Worker lookups | Link previews and NIP-05 names are asked for in a POST body, never in the URL the Worker's logs record |
 | `src/domains/push/pushErrors.test.ts` | Push setup errors | A push service refusal gets advice for the browser that refused (Brave's push messaging setting, Chromium, Safari's settings path, or none), and other setup errors keep their messages |
 | `src/serviceWorkerFetch.test.ts` | Service worker fetch routing | Runs the real `public/sw.js`: relay (NIP-11, relay hosts) and `/api/` requests are left to the browser, while the app shell is still served by the worker |
-| `worker/src/deploy-config.test.ts` | Worker deploy target | `wrangler.toml` deploys `taskify-public` (the Worker behind taskify.solife.me), carries the VAPID public key and subject, which a deploy would otherwise drop, and keeps invocation logs off |
+| `worker/src/deploy-config.test.ts` | Worker deploy target | `wrangler.toml` deploys `taskify-public` (the Worker behind taskify.solife.me), carries the VAPID public key and subject, which a deploy would otherwise drop, keeps invocation logs off, and binds none of the retired KV stores |
 | `worker/src/migrations.test.ts` | D1 migrations | On a database shaped like production, the migrations remove every retired calendar table (CalDAV, both Google Calendar integrations) and keep devices and reminders; every migration can run again on a database that already has it |
 | `worker/src/schema.test.ts` | Worker schema ownership | A database request and a cron run issue no `CREATE`, `DROP`, `ALTER` or `PRAGMA`: the schema comes only from `worker/migrations` |
 | `src/chat/cashuTokenText.test.ts`, `src/chat/ChatTokenBubble.test.tsx` | Wallet-independent PWA Chat | Cashu token recognition without loading the Cashu SDK; received tokens are displayed as copy-only and the complete token, not its shortened display, is copied |

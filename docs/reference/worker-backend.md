@@ -29,7 +29,6 @@ Primary entry points:
 
 - Cron cadence: `*/1 * * * *` (`wrangler.toml:16–17`)
 - D1: `TASKIFY_DB` (`wrangler.toml:47–52`)
-- KV (legacy/compat): `TASKIFY_DEVICES`, `TASKIFY_REMINDERS`, `TASKIFY_PENDING` (`wrangler.toml:26–36`)
 - VAPID key binding: `VAPID_PRIVATE_KEY` as string secret or KV namespace (`wrangler.toml:38–40`)
 
 `Env` typing in code confirms mixed binding support:
@@ -181,7 +180,6 @@ Reference: `handleRegisterDevice` in `worker/src/reminders.ts`.
 - device row
 - reminders for device
 - pending notifications for device
-- legacy KV mirrors (best-effort)
 
 Reference: `worker/src/index.ts:2305–2333`.
 
@@ -229,44 +227,15 @@ Operational references:
 
 ---
 
-## 10) KV→D1 migration contract (legacy compatibility)
+## 10) Storage contract
 
-The worker still supports progressive migration from legacy KV namespaces into D1 at read time. This path is easy to break during “cleanup” refactors, so verify these invariants before deleting any fallback logic.
-
-Primary anchors:
-- Device read fallback: `getDeviceRecord` → `migrateDeviceFromKv` (`worker/src/index.ts:2557–2653`)
-- Endpoint reverse lookup fallback: `findDeviceIdByEndpoint` (`worker/src/index.ts:2584–2607`)
-- Reminder migration: `migrateRemindersFromKv` (`worker/src/index.ts:2655–2711`)
-- Pending queue migration: `migratePendingFromKv` (`worker/src/index.ts:2713–2749`)
-
-### Migration behavior that must stay true
-
-1. **D1 is preferred; KV is fallback-only.**
-   - Reads hit D1 first, then attempt KV migration only on miss.
-2. **Migration is destructive to legacy KV once imported.**
-   - After successful import, legacy keys are deleted best-effort.
-3. **Malformed KV payloads fail closed.**
-   - Parse/shape failures are logged and ignored, not partially imported.
-4. **Reminder and pending payloads are normalized before insert.**
-   - Invalid entries are dropped before D1 writes.
-5. **Endpoint hash consistency is repaired during migration.**
-   - Missing `endpointHash` in legacy records is recomputed before upsert.
-
-### Agent verification pseudocode
-
-```text
-read device from D1
-if missing and TASKIFY_DEVICES exists:
-  parse legacy device JSON
-  validate shape
-  compute endpointHash if absent
-  upsert to D1
-  migrate reminders/pending arrays from KV to D1
-  delete legacy KV keys best-effort
-```
-
-Refactor warning:
-- `findDeviceIdByEndpoint` can trigger migration as a side effect (`endpoint:{hash}` lookup → device id). Do not assume endpoint lookup is read-only in mixed deployments.
+D1 (`TASKIFY_DB`) is the only store for devices, reminders and pending notifications. Until
+2026-10-29 the Worker also imported devices from three KV namespaces (`TASKIFY_DEVICES`,
+`TASKIFY_REMINDERS`, `TASKIFY_PENDING`) on first contact. The four devices still there had not
+contacted the Worker since D1 took over in September 2025, so the import, the bindings and the
+namespaces were retired. A device D1 does not know is unknown: it registers afresh with
+`PUT /api/devices`. `deploy-config.test.ts` keeps the bindings out of `wrangler.toml`, and
+`index.test.ts` checks that no request or cron run reads them.
 
 ---
 
@@ -343,46 +312,18 @@ Anchors:
 
 Operational implication: endpoint expiry is treated as terminal device invalidation, not temporary backoff.
 
-## 13) D1↔KV migration fallback matrix (agent verification chunk)
+## 13) Device lookup and deletion (agent verification chunk)
 
-This is the concrete fallback behavior while legacy KV bindings still exist.
-Use it before touching device lookup, poll, or migration code.
+| Entry point | Behavior | Anchors |
+|---|---|---|
+| `getDeviceRecord(env, deviceId)` | `SELECT ... FROM devices WHERE device_id = ?`; no row → unknown device | `worker/src/reminders.ts` |
+| `findDeviceIdByEndpoint(env, endpoint)` | hash the endpoint, then `SELECT device_id FROM devices WHERE endpoint_hash = ?` | `worker/src/reminders.ts` |
+| `/api/reminders/poll` | resolves the device by `deviceId` or endpoint, then drains `pending_notifications` by row id | `worker/src/reminders.ts` |
 
-### 13.1 Read path decision tree
-
-| Entry point | D1-first behavior | KV fallback trigger | Migration side effects | Anchors |
-|---|---|---|---|---|
-| `getDeviceRecord(env, deviceId)` | `SELECT ... FROM devices WHERE device_id = ?` | No D1 row found | Calls `migrateDeviceFromKv`; can migrate device + reminders + pending into D1 and delete KV keys | `worker/src/index.ts:2557–2569`, `:2609–2653` |
-| `findDeviceIdByEndpoint(env, endpoint)` | hash endpoint then `SELECT device_id FROM devices WHERE endpoint_hash = ?` | No D1 row and `TASKIFY_DEVICES` bound | Reads `endpoint:{hash}` KV index, migrates mapped device id to D1, returns migrated id | `worker/src/index.ts:2584–2607` |
-| `/api/reminders/poll` endpoint lookup | resolves `deviceId` from explicit `deviceId` or endpoint lookup | same as `findDeviceIdByEndpoint` | Poll then drains `pending_notifications` by selected row ids | `worker/src/index.ts:2404–2431`, `:2584–2607` |
-
-### 13.2 Migration contract details
-
-`migrateDeviceFromKv` is not a plain read-through; it performs a one-time import pipeline:
-
-1. Parse + validate legacy device payload from `TASKIFY_DEVICES` (`device:{id}`)
-2. Backfill `endpointHash` if missing (derived from endpoint)
-3. Upsert device row into D1
-4. Migrate reminders (`TASKIFY_REMINDERS`) into `reminders`
-5. Migrate pending payload (`TASKIFY_PENDING`) into `pending_notifications`
-6. Delete legacy KV keys (`device:{id}`, `endpoint:{hash}`, `reminders:{id}`, `pending:{id}`)
-
-Anchors:
-- Device migration core: `worker/src/index.ts:2609–2653`
-- Reminder migration: `worker/src/index.ts:2655–2711`
-- Pending migration: `worker/src/index.ts:2713–2749`
-
-### 13.3 Invariants to preserve when editing
-
-- A successful KV migration must leave D1 authoritative and remove migrated KV keys.
-- Endpoint-hash lookup must remain consistent across register (`upsertDevice`) and poll (`findDeviceIdByEndpoint`).
-- Poll acknowledgement must delete only explicitly acknowledged `pending_notifications` row IDs for the authenticated device/endpoint.
-- Device deletion must continue clearing D1 + best-effort KV mirrors to avoid zombie registrations.
-
-Quick re-check anchors:
-- Upsert with endpoint hash: `worker/src/index.ts:2530–2555`
-- Poll read+delete ids: `worker/src/index.ts:2415–2431`
-- Delete fan-out: `worker/src/index.ts:2305–2333`
+Invariants to preserve when editing:
+- Endpoint-hash lookup must stay consistent across register (`upsertDevice`) and poll (`findDeviceIdByEndpoint`).
+- Poll acknowledgement deletes only explicitly acknowledged `pending_notifications` row IDs for the authenticated device.
+- Device deletion removes the device row, its reminders and its pending notifications in one batch.
 
 ## 15) Scheduled execution ordering + failure isolation (agent verification chunk)
 
@@ -745,7 +686,6 @@ Anchors:
 If you change registration identity behavior, re-verify:
 - endpoint-based poll still resolves the intended device,
 - stale/expired endpoint cleanup (`404/410` push result) still deletes the same canonical `device_id`,
-- KV fallback migration (`migrateDeviceFromKv`) still preserves endpoint index parity.
 
 ## 21) CORS + request trust boundary contract (agent verification chunk)
 

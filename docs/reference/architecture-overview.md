@@ -210,9 +210,6 @@ The router delegates feature-specific behavior to modules under `worker/src/`. R
 
 **Cloudflare bindings** (`wrangler.toml`):
 - `TASKIFY_DB` D1 — source-of-truth for `devices`, `reminders`, and `pending_notifications`
-- `TASKIFY_DEVICES` KV (optional) — legacy/cache lookup for device records
-- `TASKIFY_REMINDERS` KV (optional) — legacy reminder storage keyspace
-- `TASKIFY_PENDING` KV (optional) — legacy pending-notification keyspace
 - `VAPID_PRIVATE_KEY` env or KV binding — VAPID signing key material
 - `PREVIEW_RATE_LIMITER` — 30 requests/minute per connecting IP
 - `NIP05_RATE_LIMITER` — 60 requests/minute per connecting IP
@@ -369,7 +366,7 @@ Cloudflare Worker cron (every minute)
   ├─ For each device with due reminders:
   │    ├─ Deletes fired rows from `reminders`
   │    ├─ Appends payload rows into `pending_notifications`
-  │    ├─ Resolves device subscription (D1, with KV fallback)
+  │    ├─ Resolves device subscription (D1)
   │    ├─ Signs Web Push ping with VAPID private key (P-256 ECDSA)
   │    └─ POSTs ping to device endpoint (410 triggers subscription cleanup)
   │

@@ -44,3 +44,11 @@ test("a deploy keeps request URLs out of the Worker's logs", () => {
   assert.match(logs, /^invocation_logs\s*=\s*false\s*$/m);
 });
 
+test("a deploy binds none of the retired KV stores", () => {
+  // Devices, reminders and pending notifications live in D1. The KV namespaces they came from
+  // are retired; binding them again would invite code that reads them.
+  for (const binding of ["TASKIFY_DEVICES", "TASKIFY_REMINDERS", "TASKIFY_PENDING"]) {
+    assert.doesNotMatch(toml, new RegExp(`binding\\s*=\\s*"${binding}"`), binding);
+  }
+});
+

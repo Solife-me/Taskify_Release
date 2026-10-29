@@ -45,9 +45,6 @@ export interface RateLimitBinding {
 export interface Env {
   ASSETS: AssetFetcher;
   TASKIFY_DB: D1Database;
-  TASKIFY_DEVICES?: KVNamespace;
-  TASKIFY_REMINDERS?: KVNamespace;
-  TASKIFY_PENDING?: KVNamespace;
   VAPID_PUBLIC_KEY: string;
   VAPID_PRIVATE_KEY: string | KVNamespace;
   VAPID_SUBJECT: string;

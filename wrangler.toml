@@ -39,18 +39,6 @@ VAPID_SUBJECT = "mailto:dev@solife.me"
 # - CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN (Workers AI for the voice routes)
 
 [[kv_namespaces]]
-binding = "TASKIFY_DEVICES"
-id = "c22ac7468ada4612b14690ecfebef904"
-
-[[kv_namespaces]]
-binding = "TASKIFY_REMINDERS"
-id = "03a8da2b890b4d33b7ddc9273ada7868"
-
-[[kv_namespaces]]
-binding = "TASKIFY_PENDING"
-id = "448d7dc7170c4aff81c2a58c5e07e739"
-
-[[kv_namespaces]]
 binding = "VAPID_PRIVATE_KEY"
 id = "45bbad6e354443ff9b101d61a27e5dd9"
 
