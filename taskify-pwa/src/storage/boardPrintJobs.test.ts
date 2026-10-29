@@ -8,11 +8,15 @@ afterEach(() => vi.restoreAllMocks());
 test("recovers legacy print jobs with defaults and filters malformed tasks", () => {
   vi.spyOn(kvStorage, "getItem").mockReturnValue(JSON.stringify({ board: {
     id: "print", boardId: "board", paperSize: "invalid",
-    tasks: [null, { id: "empty" }, { id: "task", title: "Print me", label: "Monday" }],
+    scope: { kind: "lists", listIds: ["monday", 4] },
+    tasks: [null, { id: "empty" }, { id: "task", title: "Print me", label: "Monday", listId: "monday" }],
   } }));
   const job = loadBoardPrintJob("board");
-  expect(job).toMatchObject({ id: "print", boardName: "Board", layoutVersion: "v1", paperSize: "letter",
-    tasks: [{ id: "task", title: "Print me", label: "Monday" }] });
+  expect(job).toMatchObject({
+    id: "print", boardName: "Board", layoutVersion: "v1", paperSize: "letter",
+    scope: { kind: "lists", listIds: ["monday"] },
+    tasks: [{ id: "task", title: "Print me", label: "Monday", listId: "monday" }],
+  });
   expect(Number.isFinite(Date.parse(job!.printedAtISO))).toBe(true);
 });
 

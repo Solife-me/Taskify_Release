@@ -1,5 +1,5 @@
 import { kvStorage } from "./kvStorage";
-import type { BoardPrintJob, BoardPrintTask } from "../components/BoardPrintLayout";
+import type { BoardPrintJob, BoardPrintScope, BoardPrintTask } from "../components/BoardPrintLayout";
 import { isPrintPaperSize } from "../components/printPaper";
 
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
@@ -19,11 +19,21 @@ function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
         const title = typeof task.title === "string" ? task.title : "";
         if (!taskId || !title) return null;
         const label = typeof task.label === "string" ? task.label : undefined;
-        return { id: taskId, title, ...(label ? { label } : {}) };
+        const listId = typeof task.listId === "string" ? task.listId : undefined;
+        return { id: taskId, title, ...(label ? { label } : {}), ...(listId ? { listId } : {}) };
       })
       .filter(Boolean) as BoardPrintTask[]
     : [];
   const paperSize = isPrintPaperSize(value.paperSize) ? value.paperSize : "letter";
+  let scope: BoardPrintScope | undefined;
+  if (value.scope?.kind === "board" || value.scope?.kind === "selection") {
+    scope = { kind: value.scope.kind };
+  } else if (value.scope?.kind === "lists" && Array.isArray(value.scope.listIds)) {
+    scope = {
+      kind: "lists",
+      listIds: value.scope.listIds.filter((id: unknown): id is string => typeof id === "string" && !!id),
+    };
+  }
   return {
     id,
     boardId,
@@ -31,6 +41,7 @@ function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
     printedAtISO: typeof value.printedAtISO === "string" ? value.printedAtISO : new Date().toISOString(),
     layoutVersion: typeof value.layoutVersion === "string" ? value.layoutVersion : "v1",
     paperSize,
+    ...(scope ? { scope } : {}),
     tasks,
   };
 }

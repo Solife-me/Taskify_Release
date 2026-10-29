@@ -6,6 +6,18 @@ export type BoardPrintTask = {
   id: string;
   title: string;
   label?: string;
+  /** Stable list/day identifier used when the user prints only selected lists. */
+  listId?: string;
+};
+
+export type BoardPrintScope =
+  | { kind: "board" }
+  | { kind: "lists"; listIds: string[] }
+  | { kind: "selection" };
+
+export type BoardPrintListChoice = {
+  id: string;
+  label: string;
 };
 
 export type BoardPrintJob = {
@@ -15,8 +27,25 @@ export type BoardPrintJob = {
   printedAtISO: string;
   layoutVersion: string;
   paperSize: PrintPaperSize;
+  scope?: BoardPrintScope;
   tasks: BoardPrintTask[];
 };
+
+export function isTaskPrintable(
+  task: { completed?: boolean },
+  includeCompleted: boolean,
+): boolean {
+  return includeCompleted || task.completed !== true;
+}
+
+export function tasksForBoardPrintScope(
+  tasks: BoardPrintTask[],
+  scope: BoardPrintScope | null | undefined,
+): BoardPrintTask[] {
+  if (scope?.kind !== "lists") return tasks;
+  const selected = new Set(scope.listIds);
+  return selected.size ? tasks.filter((task) => task.listId && selected.has(task.listId)) : [];
+}
 
 type BoardPrintMarkerStyle = "solid" | "finder";
 

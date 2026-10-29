@@ -2,7 +2,8 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useToast } from "../../context/ToastContext";
-import type { BoardPrintJob } from "../../components/BoardPrintLayout";
+import { tasksForBoardPrintScope, type BoardPrintJob, type BoardPrintListChoice, type BoardPrintScope } from "../../components/BoardPrintLayout";
+import { BoardPrintChooser } from "../../components/BoardPrintChooser";
 import { BoardPrintPreview } from "../../components/BoardPrintSheet";
 import { BoardScanPanel } from "../../components/BoardScanSheet";
 import type { BiblePrintMeta } from "../../components/BibleTrackerPrintSheet";
@@ -22,15 +23,22 @@ export type PrintSheetsProps = {
   bibleTracker: BibleTrackerState;
   boardPrintJob: BoardPrintJob | null;
   boardPrintOpen: boolean;
+  boardPrintChooserOpen: boolean;
+  boardPrintListChoices: BoardPrintListChoice[];
+  boardPrintBoardName: string;
+  boardPrintSelectedCount: number;
+  boardPrintIncludeCompleted: boolean;
   boardPrintPortal: HTMLDivElement | null;
   boardScanOpen: boolean;
   handleApplyBibleScan: (scanProgress: BibleTrackerProgress) => void;
   handleApplyBoardScan: (taskIds: string[]) => void;
+  handleContinueBoardPrint: (scope: BoardPrintScope) => void;
   handleBiblePaperSizeChange: (paperSize: PrintPaperSize) => void;
   handleBoardPaperSizeChange: (paperSize: PrintPaperSize) => void;
   setBiblePrintOpen: (open: boolean) => void;
   setBibleScanOpen: (open: boolean) => void;
   setBoardPrintOpen: (open: boolean) => void;
+  setBoardPrintChooserOpen: (open: boolean) => void;
   setBoardScanOpen: (open: boolean) => void;
 };
 
@@ -43,20 +51,30 @@ export function PrintSheets({
   bibleTracker,
   boardPrintJob,
   boardPrintOpen,
+  boardPrintChooserOpen,
+  boardPrintListChoices,
+  boardPrintBoardName,
+  boardPrintSelectedCount,
+  boardPrintIncludeCompleted,
   boardPrintPortal,
   boardScanOpen,
   handleApplyBibleScan,
   handleApplyBoardScan,
+  handleContinueBoardPrint,
   handleBiblePaperSizeChange,
   handleBoardPaperSizeChange,
   setBiblePrintOpen,
   setBibleScanOpen,
   setBoardPrintOpen,
+  setBoardPrintChooserOpen,
   setBoardScanOpen,
 }: PrintSheetsProps) {
   const { show: showToast } = useToast();
   const [biblePrintPdfBusy, setBiblePrintPdfBusy] = useState(false);
   const [boardPrintPdfBusy, setBoardPrintPdfBusy] = useState(false);
+  const scopedBoardPrintJob = boardPrintJob
+    ? { ...boardPrintJob, tasks: tasksForBoardPrintScope(boardPrintJob.tasks, boardPrintJob.scope) }
+    : null;
 
   const handlePrintBibleWindow = async () => {
     if (!biblePrintMeta || !biblePrintPortal) return;
@@ -91,16 +109,16 @@ export function PrintSheets({
   };
 
   const handlePrintBoardWindow = async () => {
-    if (!boardPrintJob || !boardPrintPortal) return;
+    if (!scopedBoardPrintJob || !boardPrintPortal) return;
     const printWindow = openPrintWindow();
     if (!printWindow) {
       showToast("Popup blocked. Allow popups to print.", 3000);
       return;
     }
     const { buildBoardPrintLayout } = await import("../../components/BoardPrintLayout");
-    const { page } = buildBoardPrintLayout(boardPrintJob.tasks, {
-      layoutVersion: boardPrintJob.layoutVersion,
-      paperSize: boardPrintJob.paperSize,
+    const { page } = buildBoardPrintLayout(scopedBoardPrintJob.tasks, {
+      layoutVersion: scopedBoardPrintJob.layoutVersion,
+      paperSize: scopedBoardPrintJob.paperSize,
     });
     printInWindow(printWindow, {
       title: "Board print",
@@ -110,14 +128,14 @@ export function PrintSheets({
   };
 
   const handleExportBoardPdf = async () => {
-    if (!boardPrintJob || boardPrintPdfBusy) return;
+    if (!scopedBoardPrintJob || boardPrintPdfBusy) return;
     setBoardPrintPdfBusy(true);
     try {
       const { buildBoardPrintPdf } = await import("../../lib/printPdf");
-      const blob = await buildBoardPrintPdf({ job: boardPrintJob, paperSize: boardPrintJob.paperSize });
-      const boardName = fileNamePart(boardPrintJob.boardName || "board");
-      const fileName = `taskify-board-${boardName}-${fileNamePart(boardPrintJob.paperSize)}-${boardPrintJob.id.slice(0, 8)}.pdf`;
-      await openOrSharePdf(blob, fileName, `${boardPrintJob.boardName || "Board"} print`);
+      const blob = await buildBoardPrintPdf({ job: scopedBoardPrintJob, paperSize: scopedBoardPrintJob.paperSize });
+      const boardName = fileNamePart(scopedBoardPrintJob.boardName || "board");
+      const fileName = `taskify-board-${boardName}-${fileNamePart(scopedBoardPrintJob.paperSize)}-${scopedBoardPrintJob.id.slice(0, 8)}.pdf`;
+      await openOrSharePdf(blob, fileName, `${scopedBoardPrintJob.boardName || "Board"} print`);
     } catch (err) {
       console.warn("Failed to generate board PDF", err);
       showToast("Failed to generate PDF. Try again.", 3000);
@@ -178,20 +196,30 @@ export function PrintSheets({
         </Modal>
       )}
 
-      {boardPrintPortal && boardPrintOpen && boardPrintJob &&
+      <BoardPrintChooser
+        open={boardPrintChooserOpen}
+        boardName={boardPrintBoardName}
+        lists={boardPrintListChoices}
+        selectedCount={boardPrintSelectedCount}
+        includeCompleted={boardPrintIncludeCompleted}
+        onClose={() => setBoardPrintChooserOpen(false)}
+        onContinue={handleContinueBoardPrint}
+      />
+
+      {boardPrintPortal && boardPrintOpen && scopedBoardPrintJob &&
         createPortal(
           <BoardPrintPreview
-            job={boardPrintJob}
-            paperSize={boardPrintJob.paperSize}
+            job={scopedBoardPrintJob}
+            paperSize={scopedBoardPrintJob.paperSize}
             onPaperSizeChange={handleBoardPaperSizeChange}
           />,
           boardPrintPortal
         )}
 
-      {boardPrintOpen && boardPrintJob && (
+      {boardPrintOpen && scopedBoardPrintJob && (
         <Modal
           onClose={() => setBoardPrintOpen(false)}
-          title={`Print ${boardPrintJob.boardName || "board"}`}
+          title={`Print ${scopedBoardPrintJob.boardName || "board"}`}
           actions={(
             <>
               <button
@@ -208,16 +236,16 @@ export function PrintSheets({
           )}
         >
           <BoardPrintPreview
-            job={boardPrintJob}
-            paperSize={boardPrintJob.paperSize}
+            job={scopedBoardPrintJob}
+            paperSize={scopedBoardPrintJob.paperSize}
             onPaperSizeChange={handleBoardPaperSizeChange}
           />
         </Modal>
       )}
 
-      {boardScanOpen && boardPrintJob && (
-        <Modal onClose={() => setBoardScanOpen(false)} title={`Scan ${boardPrintJob.boardName || "board"}`}>
-          <BoardScanPanel job={boardPrintJob} onApply={handleApplyBoardScan} />
+      {boardScanOpen && scopedBoardPrintJob && (
+        <Modal onClose={() => setBoardScanOpen(false)} title={`Scan ${scopedBoardPrintJob.boardName || "board"}`}>
+          <BoardScanPanel job={scopedBoardPrintJob} onApply={handleApplyBoardScan} />
         </Modal>
       )}
     </>
