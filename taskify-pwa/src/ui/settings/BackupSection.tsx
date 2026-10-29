@@ -37,8 +37,10 @@ import {
 
 export function BackupSection({
   onReloadNeeded,
+  embedded = false,
 }: {
   onReloadNeeded: () => void;
+  embedded?: boolean;
 }) {
   const [backupExpanded, setBackupExpanded] = useState(false);
 
@@ -147,16 +149,18 @@ export function BackupSection({
 
   return (
     <section className="wallet-section space-y-3">
-      <button
-        className="flex w-full items-center gap-2 mb-3 text-left"
-        onClick={() => setBackupExpanded((prev) => !prev)}
-        aria-expanded={backupExpanded}
-      >
-        <div className="text-sm font-medium flex-1">Backup</div>
-        <span className="text-xs text-tertiary">{backupExpanded ? "Hide" : "Show"}</span>
-        <span className="text-tertiary">{backupExpanded ? "−" : "+"}</span>
-      </button>
-      {backupExpanded ? (
+      {!embedded && (
+        <button
+          className="flex w-full items-center gap-2 mb-3 text-left"
+          onClick={() => setBackupExpanded((prev) => !prev)}
+          aria-expanded={backupExpanded}
+        >
+          <div className="text-sm font-medium flex-1">Backup</div>
+          <span className="text-xs text-tertiary">{backupExpanded ? "Hide" : "Show"}</span>
+          <span className="text-tertiary">{backupExpanded ? "−" : "+"}</span>
+        </button>
+      )}
+      {(embedded || backupExpanded) ? (
         <div className="space-y-3">
           <div className="text-xs text-secondary">
             Shared app data continues to be backed up through encrypted Nostr events. Use a file backup for an additional offline copy or a manual restore.

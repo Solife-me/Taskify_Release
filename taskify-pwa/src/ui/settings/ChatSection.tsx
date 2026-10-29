@@ -32,9 +32,11 @@ async function getStorageEstimateMb(): Promise<number | null> {
 export function ChatSection({
   settings,
   setSettings,
+  embedded = false,
 }: {
   settings: Settings;
   setSettings: (s: Partial<Settings>) => void;
+  embedded?: boolean;
 }) {
   const [messageCount, setMessageCount] = useState<number>(() => getMessageCount());
   const [storageMb, setStorageMb] = useState<number | null>(null);
@@ -67,16 +69,24 @@ export function ChatSection({
 
   return (
     <section className="wallet-section space-y-3">
-      <div className="flex items-center gap-2">
-        <div className="text-sm font-medium">Chat</div>
-        <button
-          className="ghost-button button-sm pressable ml-auto"
-          onClick={refreshCount}
-          title="Refresh counts"
-        >
-          Refresh
-        </button>
-      </div>
+      {embedded ? (
+        <div className="flex justify-end">
+          <button className="ghost-button button-sm pressable" onClick={refreshCount} title="Refresh counts">
+            Refresh
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-medium">Chat</div>
+          <button
+            className="ghost-button button-sm pressable ml-auto"
+            onClick={refreshCount}
+            title="Refresh counts"
+          >
+            Refresh
+          </button>
+        </div>
+      )}
 
       {/* Retention */}
       <div className="space-y-1.5">

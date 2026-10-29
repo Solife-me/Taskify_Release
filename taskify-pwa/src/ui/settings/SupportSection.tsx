@@ -6,7 +6,7 @@ import { useToast } from "../../context/ToastContext";
 
 export const SUPPORT_LIGHTNING_ADDRESS = "dev@solife.me";
 
-export function SupportSection() {
+export function SupportSection({ embedded = false }: { embedded?: boolean }) {
   const { show: showToast } = useToast();
   const copy = async () => {
     try {
@@ -18,7 +18,7 @@ export function SupportSection() {
   };
   return (
     <section className="wallet-section space-y-3">
-      <div className="text-sm font-medium">Support development</div>
+      {!embedded && <div className="text-sm font-medium">Support development</div>}
       <div className="text-xs text-secondary">
         Send a Lightning tip to {SUPPORT_LIGHTNING_ADDRESS} from any Lightning wallet.
       </div>

@@ -32,6 +32,8 @@ import { NostrSection } from "./NostrSection";
 import { BackupSection } from "./BackupSection";
 import { ChatSection } from "./ChatSection";
 import { SupportSection } from "./SupportSection";
+import { StorageSection } from "./StorageSection";
+import { SettingsAccordion } from "./SettingsAccordion";
 import { ManageBoardModal } from "./ManageBoardModal";
 
 
@@ -273,9 +275,12 @@ export function SettingsModal({
   // ─── Render ─────────────────────────────────────────────────────────────────
   const settingsBody = (
     <div className="space-y-2">
-
-        {/* Boards & Columns */}
+      <SettingsAccordion
+        title="Boards & Lists"
+        summary="Create, join, reorder, archive, and share boards"
+      >
         <BoardsSection
+          embedded
           boards={boards}
           currentBoardId={currentBoardId}
           setBoards={setBoards}
@@ -288,30 +293,41 @@ export function SettingsModal({
           onClose={handleClose}
           defaultRelays={defaultRelays}
         />
+      </SettingsAccordion>
 
-        {/* View */}
-        <ViewSection
-          settings={settings}
-          setSettings={setSettings}
-          boards={boards}
-        />
+      <SettingsAccordion
+        title="View"
+        summary="Task placement, theme, accent, startup view, and display options"
+      >
+        <ViewSection embedded settings={settings} setSettings={setSettings} boards={boards} />
+      </SettingsAccordion>
 
-        {/* Chat */}
-        <ChatSection
-          settings={settings}
-          setSettings={setSettings}
-        />
+      <SettingsAccordion
+        title="Chat"
+        summary="Message retention, local storage usage, and chat history"
+      >
+        <ChatSection embedded settings={settings} setSettings={setSettings} />
+      </SettingsAccordion>
 
-        {/* Bible */}
+      <SettingsAccordion
+        title="Bible"
+        summary="Bible tracker, scripture memory, and fasting reminders"
+      >
         <BibleSection
+          embedded
           settings={settings}
           setSettings={setSettings}
           boards={boards}
           currentBoard={currentBoard}
         />
+      </SettingsAccordion>
 
-        {/* Push notifications */}
+      <SettingsAccordion
+        title="Push notifications"
+        summary="Device alerts and private chat notification preferences"
+      >
         <PushSection
+          embedded
           pushPrefs={settings.pushNotifications}
           pushWorkState={pushWorkState}
           pushError={pushError}
@@ -323,9 +339,14 @@ export function SettingsModal({
           workerBaseUrl={workerBaseUrl}
           vapidPublicKey={vapidPublicKey}
         />
+      </SettingsAccordion>
 
-        {/* Nostr */}
+      <SettingsAccordion
+        title="Nostr & Sync"
+        summary="Identity, relays, encrypted sync, and board history recovery"
+      >
         <NostrSection
+          embedded
           settings={settings}
           setSettings={setSettings}
           defaultRelays={defaultRelays}
@@ -338,18 +359,27 @@ export function SettingsModal({
           onResyncBoardHistory={onResyncBoardHistory}
           sharedBoardCount={boards.filter((board) => !!board.nostr?.boardId).length}
         />
+      </SettingsAccordion>
 
-        {/* Backup & Restore */}
-        <BackupSection
-          onReloadNeeded={onReloadNeeded}
-        />
+      <SettingsAccordion
+        title="Storage & file servers"
+        summary="Choose public and encrypted attachment hosts"
+      >
+        <StorageSection settings={settings} setSettings={setSettings} />
+      </SettingsAccordion>
 
-        {/* AI prompts */}
-        <section className="wallet-section space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">AI prompts</div>
-          </div>
+      <SettingsAccordion
+        title="Backup & Restore"
+        summary="Download or restore a complete offline backup"
+      >
+        <BackupSection embedded onReloadNeeded={onReloadNeeded} />
+      </SettingsAccordion>
 
+      <SettingsAccordion
+        title="AI prompts"
+        summary="Task and event JSON import instructions"
+      >
+        <section className="space-y-3">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <div className="text-sm font-medium">Task/event import prompt</div>
@@ -371,33 +401,40 @@ export function SettingsModal({
               spellCheck={false}
             />
           </div>
-
-
         </section>
+      </SettingsAccordion>
 
-        <SupportSection />
+      <SettingsAccordion
+        title="Support development"
+        summary="Send a Lightning tip or copy the support address"
+      >
+        <SupportSection embedded />
+      </SettingsAccordion>
 
-        {/* Feedback / Feature requests */}
-        <section className="wallet-section space-y-2 text-xs text-secondary">
-          <div>
-            Please submit feedback or feature requests to{' '}
-            <button
-              className="link-accent"
-              onClick={async ()=>{ try { await navigator.clipboard?.writeText('dev@solife.me'); showToast('Copied dev@solife.me'); } catch {} }}
-            >dev@solife.me</button>{' '}or share Board ID{' '}
-            <button
-              className="link-accent"
-              onClick={async ()=>{ try { await navigator.clipboard?.writeText('c3db0d84-ee89-43df-a31e-edb4c75be32b'); showToast('Copied Board ID'); } catch {} }}
-            >c3db0d84-ee89-43df-a31e-edb4c75be32b</button>
-          </div>
-        </section>
+      <SettingsAccordion
+        title="Feedback & feature requests"
+        summary="Contact the developer or share the support board ID"
+      >
+        <div className="text-xs text-secondary">
+          Please submit feedback or feature requests to{' '}
+          <button
+            className="link-accent"
+            onClick={async () => { try { await navigator.clipboard?.writeText('dev@solife.me'); showToast('Copied dev@solife.me'); } catch {} }}
+          >dev@solife.me</button>{' '}
+          or share Board ID{' '}
+          <button
+            className="link-accent"
+            onClick={async () => { try { await navigator.clipboard?.writeText('c3db0d84-ee89-43df-a31e-edb4c75be32b'); showToast('Copied Board ID'); } catch {} }}
+          >c3db0d84-ee89-43df-a31e-edb4c75be32b</button>
+        </div>
+      </SettingsAccordion>
 
-        {!embedded && (
-          <div className="flex justify-end">
-            <button className="ghost-button button-sm pressable" onClick={handleClose}>Close</button>
-          </div>
-        )}
-      </div>
+      {!embedded && (
+        <div className="flex justify-end">
+          <button className="ghost-button button-sm pressable" onClick={handleClose}>Close</button>
+        </div>
+      )}
+    </div>
   );
 
   return (
