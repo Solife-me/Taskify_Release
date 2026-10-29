@@ -502,3 +502,56 @@ final class ChatComposerUITests: XCTestCase {
         add(attachment)
     }
 }
+
+extension ChatComposerUITests {
+    func testMultiPhotoCameraKeepsCaptureSessionOpenAndStagesAcceptedBatch() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_MULTI_PHOTO_CAMERA"] = "1"
+        app.launch()
+
+        app.buttons["Chat"].firstMatch.tap()
+        let contact = app.staticTexts["UI Test Contact"].firstMatch
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+
+        let attachmentMenu = app.buttons["Add attachment"]
+        XCTAssertTrue(attachmentMenu.waitForExistence(timeout: 5))
+        attachmentMenu.tap()
+        app.buttons["Camera"].tap()
+
+        let capture = app.buttons["multi-photo-camera-capture"]
+        XCTAssertTrue(capture.waitForExistence(timeout: 5))
+        capture.tap()
+        XCTAssertTrue(app.buttons["multi-photo-camera-remove-0"].waitForExistence(timeout: 3))
+        app.buttons["multi-photo-camera-cancel"].tap()
+        XCTAssertTrue(capture.waitForNonExistence(timeout: 5), "Camera cancel must dismiss the session")
+
+        let removeDrafts = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Remove photo-")
+        )
+        XCTAssertFalse(removeDrafts.firstMatch.exists, "Cancel must discard the camera batch")
+
+        attachmentMenu.tap()
+        app.buttons["Camera"].tap()
+        XCTAssertTrue(capture.waitForExistence(timeout: 5))
+        for index in 0..<3 {
+            capture.tap()
+            XCTAssertTrue(
+                app.buttons["multi-photo-camera-remove-\(index)"]
+                    .waitForExistence(timeout: 3)
+            )
+        }
+        app.buttons["multi-photo-camera-remove-1"].tap()
+        app.buttons["multi-photo-camera-done"].tap()
+
+        let staged = expectation(for: NSPredicate(format: "count == 2"), evaluatedWith: removeDrafts)
+        wait(for: [staged], timeout: 10)
+        attach(app, name: "chat-multi-photo-camera-staged-two")
+
+        removeDrafts.element(boundBy: 0).tap()
+        let remaining = expectation(for: NSPredicate(format: "count == 1"), evaluatedWith: removeDrafts)
+        wait(for: [remaining], timeout: 5)
+    }
+}

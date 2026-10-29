@@ -1708,15 +1708,18 @@ struct DirectMessageConversationView: View {
         .padding(.top, 6)
         .padding(.bottom, 6)
         .fullScreenCover(isPresented: $showingCamera) {
-            TaskAttachmentCameraPicker(
-                onCapture: { image in
+            MultiPhotoCameraPicker(
+                maximumCount: max(
+                    0,
+                    NostrDirectMessageAttachment.maximumBatchCount - attachmentDrafts.count
+                ),
+                onDone: { images in
                     showingCamera = false
                     attachmentPreparationTask?.cancel()
-                    attachmentPreparationTask = Task { await stageCapturedPhoto(image) }
+                    attachmentPreparationTask = Task { await stageCapturedPhotos(images) }
                 },
                 onCancel: { showingCamera = false }
             )
-            .ignoresSafeArea()
         }
         .fullScreenCover(isPresented: $showingDocumentScanner) {
             TaskAttachmentDocumentScanner(
@@ -1740,6 +1743,18 @@ struct DirectMessageConversationView: View {
     private var messageComposerRow: some View {
             HStack(alignment: .bottom, spacing: 9) {
                 Menu {
+#if DEBUG
+                    // The simulator has no camera. This deterministic camera surface exists only
+                    // for UI tests so capture, thumbnail removal, and cancellation stay covered.
+                    if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_MULTI_PHOTO_CAMERA"] == "1" {
+                        Button {
+                            showingCamera = true
+                        } label: {
+                            Label("Camera", systemImage: "camera")
+                        }
+                        .disabled(attachmentDrafts.count >= NostrDirectMessageAttachment.maximumBatchCount)
+                    }
+#endif
                     // Compile-time simulator exclusion, not a runtime availability check:
                     // device users always get the entries, and the Simulator (no camera)
                     // never does.
@@ -1749,6 +1764,7 @@ struct DirectMessageConversationView: View {
                     } label: {
                         Label("Camera", systemImage: "camera")
                     }
+                    .disabled(attachmentDrafts.count >= NostrDirectMessageAttachment.maximumBatchCount)
                     Button {
                         showingDocumentScanner = true
                     } label: {
@@ -2297,28 +2313,36 @@ struct DirectMessageConversationView: View {
     }
 
     @MainActor
-    private func stageCapturedPhoto(_ image: UIImage) async {
-        guard !isSending, !isSendingAttachment else { return }
+    private func stageCapturedPhotos(_ images: [UIImage]) async {
+        guard !isSending, !isSendingAttachment, !images.isEmpty else { return }
         isSendingAttachment = true
         defer { isSendingAttachment = false }
+        let available = max(
+            0,
+            NostrDirectMessageAttachment.maximumBatchCount - attachmentDrafts.count
+        )
+        let accepted = Array(images.prefix(available))
         var staged: URL?
         do {
-            guard let jpegData = image.jpegData(compressionQuality: 0.88) else {
-                throw AttachmentFileError.invalidFile
-            }
-            let url = try await AttachmentFiles.work { try AttachmentFiles.write(jpegData) }
-            staged = url
-            try Task.checkCancellation()
-            let size = try AttachmentFiles.size(url)
             let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
-            let draftAttachment = ChatAttachmentDraft(
-                fileURL: url,
-                name: "photo-\(timestamp).jpg",
-                mimeType: "image/jpeg",
-                size: size
-            )
-            staged = nil
-            guard appendDraft(draftAttachment) else { return }
+            for (index, image) in accepted.enumerated() {
+                try Task.checkCancellation()
+                guard let jpegData = image.jpegData(compressionQuality: 0.88) else {
+                    throw AttachmentFileError.invalidFile
+                }
+                let url = try await AttachmentFiles.work { try AttachmentFiles.write(jpegData) }
+                staged = url
+                try Task.checkCancellation()
+                let size = try AttachmentFiles.size(url)
+                let draftAttachment = ChatAttachmentDraft(
+                    fileURL: url,
+                    name: "photo-\(timestamp)-\(index + 1).jpg",
+                    mimeType: "image/jpeg",
+                    size: size
+                )
+                staged = nil
+                guard appendDraft(draftAttachment) else { return }
+            }
             attachmentSendError = nil
             composerFocused = true
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
