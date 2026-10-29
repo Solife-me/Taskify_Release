@@ -54,7 +54,7 @@ User testing is valuable but is not a prerequisite for marking work complete.
 | 7 | Add interactive bot model picker to PWA | Complete | `9ed1e11a` | PWA 779/14 skipped; lint; build; startup 418.1 KB; DOM interaction tests; visual check at 390px and 700px |
 | 8 | Add interactive bot model picker to iOS/macOS | Complete | `73a2b251` | Core 897/14 skipped; iOS UI test; iOS + macOS builds |
 | 9 | Paste clipboard photos into iOS task notes as attachments | Complete | `3e4556cb` | iPhone simulator paste UI test; iOS + macOS builds |
-| 10 | Capture multiple chat photos in one iOS camera session | Not started | - | camera model + simulator |
+| 10 | Capture multiple chat photos in one iOS camera session | Complete | `9a0cb75d` | selection tests 4/4; iPhone simulator camera UI test; iOS + macOS builds |
 | 11 | Make every PWA settings group collapsible | Not started | - | PWA tests + visual check |
 | 12 | Remove PWA AI instruction block | Not started | - | tests + grep |
 | 13 | Prevent task content from scrolling sideways inside lists | Not started | - | browser width tests |
@@ -329,6 +329,7 @@ Verification: tests for confirmation/deselection, wrong page, duplicate task IDs
 | 2026-10-29 | 7 | `codex/checklist-iterations-5-9` | `9ed1e11a` | PWA 779 passed/14 skipped; lint; production build; startup 418.1 KB gz of 440 KB; 9 focused parser/component tests | Added provider/model buttons, 10/8 pagination, encrypted action tags, history reconstruction, hidden internal traffic, 10-minute listing-scoped cache, stale revalidation and manual Refresh; visually verified the provider and eight-model pages in a true 390px viewport and at 700px desktop width |
 | 2026-10-29 | 8 | `codex/checklist-iterations-5-9` | `73a2b251` | TaskifyCore 897 passed/14 skipped; focused Hermes tests 9/9; iPhone simulator Hermes picker UI test passed; unsigned iOS and macOS builds succeeded | Preserved encrypted action tags in native messages, reconstructed menus from history, shared catalog/confirmation projection, hid internal prompt/JSON/confirmation traffic, added iOS/macOS SwiftUI picker with 10/8 pages and 10-minute cache; Watch retains readable raw fallback |
 | 2026-10-29 | 9 | `codex/checklist-iterations-5-9` | `3e4556cb` | iPhone simulator mixed image/text clipboard test passed; production upload path compiles into iOS/macOS apps; existing upload/privacy tests remain green | Task Notes now intercepts image paste before text, imports one clipboard image through the same encrypted TaskDocument upload pipeline as Capture a Photo, shows in-sheet upload status plus removable photo preview, and leaves plain-text paste and note Markdown unchanged |
+| 2026-10-29 | 10 | `codex/checklist-iterations-10-13` | `9a0cb75d` | MultiPhotoCaptureSelection 4/4; simulator multi-capture/cancel/remove UI test passed; unsigned iOS and macOS builds succeeded | Added an AVCapture multi-photo session with retained thumbnails, remove/retake, flash and camera switching, a ten-photo cap including already staged files, batch staging into the existing encrypted attachment composer, and deterministic simulator coverage |
 
 ## Handoff checklist
 
