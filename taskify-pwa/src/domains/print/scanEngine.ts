@@ -27,6 +27,7 @@ export type ScanLayout = {
     styles?: Partial<Record<Corner, "solid" | "finder">>;
   };
   pageId?: { sizeMm: number; count: number; positionsMm: ScanPoint[]; patterns: number[][] };
+  jobCode?: { sizeMm: number; count: number; positionsMm: ScanPoint[]; pattern: number[] };
 };
 
 /** A mark that can be filled in, at its center on the page. */
@@ -48,6 +49,8 @@ export type ScanResult<K> = {
   pageIndex: number;
   /** The page was identified by its page-id marks (not chosen by the user or by elimination). */
   pageIdDetected: boolean;
+  jobCodeDetected: boolean;
+  jobCodeMatches: boolean;
 };
 
 type MarkerSet = Record<Corner, ScanPoint>;
@@ -584,6 +587,32 @@ function detectPageIdIndex(
   return bestIndex;
 }
 
+function readJobCode(
+  context: ScanContext,
+  layout: ScanLayout,
+  backgroundMedian: number,
+  markerMedian: number,
+): { detected: boolean; matches: boolean } {
+  const jobCode = layout.jobCode;
+  if (!jobCode?.positionsMm?.length || !jobCode.pattern.length) {
+    return { detected: false, matches: true };
+  }
+  const threshold = markerMedian + Math.max(18, (backgroundMedian - markerMedian) * 0.35);
+  const sampleOffset = jobCode.sizeMm * 0.4;
+  const observed = jobCode.positionsMm.map((pos) => {
+    const center = { x: pos.x + jobCode.sizeMm / 2, y: pos.y + jobCode.sizeMm / 2 };
+    return samplePageBrightness(context, center, sampleOffset) < threshold ? 1 : 0;
+  });
+  const errors = jobCode.pattern.reduce(
+    (total, bit, index) => total + (bit !== observed[index] ? 1 : 0),
+    0,
+  );
+  return {
+    detected: true,
+    matches: observed.length === jobCode.pattern.length && errors <= Math.max(1, Math.floor(jobCode.count / 5)),
+  };
+}
+
 function buildScanContext(photo: ScanPhoto, layout: ScanLayout): ScanContext {
   const { full } = photo;
   if (!full.width || !full.height) {
@@ -689,7 +718,16 @@ function analyzeMarks<K>(
     filled.push(mark.key);
   }
 
-  return { filled, filledCount, threshold: normalizedThreshold, backgroundMedian, pageIndex, pageIdDetected: false };
+  return {
+    filled,
+    filledCount,
+    threshold: normalizedThreshold,
+    backgroundMedian,
+    pageIndex,
+    pageIdDetected: false,
+    jobCodeDetected: false,
+    jobCodeMatches: true,
+  };
 }
 
 /**
@@ -717,8 +755,18 @@ export function scanPage<K>(
   if (backgroundMedian < MIN_PAGE_BACKGROUND_LUMA && contrast < MIN_MARKER_CONTRAST) {
     throw new Error("Page background not detected. Keep the full page visible and well lit.");
   }
-  const analyze = (pageIndex: number) =>
-    analyzeMarks(context, options.marksOnPage(pageIndex), options.geometry, pageIndex, backgroundMedian, markerMedian);
+  const jobCode = readJobCode(context, layout, backgroundMedian, markerMedian);
+  if (layout.jobCode && !jobCode.detected) {
+    throw new Error("Print code not detected. Make sure the full page is visible.");
+  }
+  if (layout.jobCode && !jobCode.matches) {
+    throw new Error("This page belongs to a different print or board. Reprint the current checklist.");
+  }
+  const analyze = (pageIndex: number): ScanResult<K> => ({
+    ...analyzeMarks(context, options.marksOnPage(pageIndex), options.geometry, pageIndex, backgroundMedian, markerMedian),
+    jobCodeDetected: jobCode.detected,
+    jobCodeMatches: jobCode.matches,
+  });
   if (options.pageSelection !== "auto") return analyze(options.pageSelection);
 
   const pageIdIndex = detectPageIdIndex(context, layout, backgroundMedian, markerMedian);

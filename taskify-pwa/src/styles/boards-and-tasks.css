@@ -3915,14 +3915,16 @@ html.light .wallet-modal__unit {
   border-radius: 1px;
 }
 
-.board-print-page-id__bit {
+.board-print-page-id__bit,
+.board-print-job-code__bit {
   position: absolute;
   border-radius: 0.4mm;
   border: 0.2mm solid rgba(16, 24, 40, 0.2);
   background: #ffffff;
 }
 
-.board-print-page-id__bit[data-filled="true"] {
+.board-print-page-id__bit[data-filled="true"],
+.board-print-job-code__bit[data-filled="true"] {
   background: #101828;
   border-color: #101828;
 }

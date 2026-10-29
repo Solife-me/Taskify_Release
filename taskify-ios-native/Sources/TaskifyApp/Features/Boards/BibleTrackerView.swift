@@ -1078,7 +1078,9 @@ struct PhysicalChecklistSheet: View {
                 guard let scanJob else { return }
                 let result = PhysicalChecklistScanAnalyzer.scan(images: images, job: scanJob)
                 detectedIDs = result.detectedIDs
-                if result.recognizedPages == 0 {
+                if result.mismatchedJobs > 0 {
+                    scanMessage = "This sheet belongs to a different print or board. Reprint the current checklist before scanning."
+                } else if result.recognizedPages == 0 {
                     scanMessage = "No Taskify checklist page was recognized. Keep the whole page visible and try again in even light."
                 } else if result.detectedIDs.isEmpty {
                     scanMessage = "The page was recognized, but no newly filled circles were found."
@@ -1210,23 +1212,37 @@ private enum PhysicalChecklistPDFRenderer {
                 .foregroundColor: UIColor.black,
             ]
         )
-        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count)"
+        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count) • Print \(PhysicalChecklistLayout.version)"
         (subtitle as NSString).draw(
             in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5),
             withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.darkGray]
         )
 
-        let bits = page.index + 1
         for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
             let side = PhysicalChecklistLayout.pageIDSizeMM
             let rect = rectMM(center.x - side / 2, center.y - side / 2, side, side)
             let path = UIBezierPath(rect: rect)
-            if bits & (1 << bit) != 0 {
+            if BoardPrintContract.pagePattern(pageIndex: page.index)[bit] != 0 {
                 UIColor.black.setFill()
                 path.fill()
             } else {
                 UIColor.black.setStroke()
                 path.lineWidth = 0.7
+                path.stroke()
+            }
+        }
+
+        let jobCode = BoardPrintContract.jobCodePattern(jobID: job.id)
+        for (bit, center) in layout.jobCodeBitCentersMM(jobID: job.id).enumerated() {
+            let side = BoardPrintContract.jobCodeMarkerSizeMM
+            let rect = rectMM(center.x - side / 2, center.y - side / 2, side, side)
+            let path = UIBezierPath(rect: rect)
+            if jobCode[bit] != 0 {
+                UIColor.black.setFill()
+                path.fill()
+            } else {
+                UIColor.black.setStroke()
+                path.lineWidth = 0.6
                 path.stroke()
             }
         }
@@ -1331,6 +1347,7 @@ private enum PhysicalChecklistScanAnalyzer {
     struct Result {
         var detectedIDs: [String]
         var recognizedPages: Int
+        var mismatchedJobs: Int
     }
 
     private struct GrayImage {
@@ -1362,6 +1379,7 @@ private enum PhysicalChecklistScanAnalyzer {
         let paperSize = job.paper.sizeMM
         var detected = Set<String>()
         var recognized = Set<Int>()
+        var mismatchedJobs = 0
 
         for (inputIndex, image) in images.enumerated() {
             autoreleasepool {
@@ -1373,6 +1391,21 @@ private enum PhysicalChecklistScanAnalyzer {
                     gray.mean(x: $0.0, y: $0.1, radius: 0.004) < 185
                 }.count
                 guard darkMarkerCount >= 3 else { return }
+
+                let expectedJobCode = BoardPrintContract.jobCode(jobID: job.id)
+                var observedJobCode = 0
+                for (bit, center) in layout.jobCodeBitCentersMM(jobID: job.id).enumerated() {
+                    let value = gray.mean(
+                        x: center.x / paperSize.width,
+                        y: center.y / paperSize.height,
+                        radius: 0.002
+                    )
+                    if value < 170 { observedJobCode |= 1 << bit }
+                }
+                guard observedJobCode == expectedJobCode else {
+                    mismatchedJobs += 1
+                    return
+                }
 
                 var encodedPage = 0
                 for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
@@ -1403,7 +1436,11 @@ private enum PhysicalChecklistScanAnalyzer {
             }
         }
 
-        return Result(detectedIDs: detected.sorted(), recognizedPages: recognized.count)
+        return Result(
+            detectedIDs: detected.sorted(),
+            recognizedPages: recognized.count,
+            mismatchedJobs: mismatchedJobs
+        )
     }
 
     private static func makeGrayImage(_ source: UIImage) -> GrayImage? {

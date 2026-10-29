@@ -70,8 +70,8 @@ export function BoardScanPanel({
   onApply: (taskIds: string[]) => void;
 }) {
   const layout = useMemo(
-    () => buildBoardPrintLayout(job.tasks, { layoutVersion: job.layoutVersion, paperSize: job.paperSize }),
-    [job.layoutVersion, job.paperSize, job.tasks],
+    () => buildBoardPrintLayout(job.tasks, { layoutVersion: job.layoutVersion, paperSize: job.paperSize, jobId: job.id }),
+    [job.id, job.layoutVersion, job.paperSize, job.tasks],
   );
   const printedDate = useMemo(() => formatPrintDate(job.printedAtISO), [job.printedAtISO]);
   const taskLookup = useMemo(

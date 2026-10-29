@@ -12,6 +12,7 @@ export * from "./weekRecurrence.js";
 export * from "./reminderUtils.js";
 export * from "./taskContracts.js";
 export * from "./boardContracts.js";
+export * from "./boardPrintContract.js";
 export * from "./contactContracts.js";
 export * from "./shareContracts.js";
 export * from "./backupContracts.js";

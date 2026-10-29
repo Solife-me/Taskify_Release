@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { isTaskPrintable, tasksForBoardPrintScope, type BoardPrintTask } from "./BoardPrintLayout";
+import { BOARD_PRINT_LAYOUT_VERSION, buildBoardPrintLayout, isTaskPrintable, tasksForBoardPrintScope, type BoardPrintTask } from "./BoardPrintLayout";
 
 const tasks: BoardPrintTask[] = [
   { id: "a", title: "A", listId: "list-a" },
@@ -23,4 +23,16 @@ test("completed tasks require the Completed-tab print setting", () => {
   expect(isTaskPrintable({ completed: true }, false)).toBe(false);
   expect(isTaskPrintable({ completed: true }, true)).toBe(true);
   expect(isTaskPrintable({ completed: false }, false)).toBe(true);
+});
+
+
+test("v3 sheets carry a job-validation code while legacy jobs remain readable", () => {
+  const current = buildBoardPrintLayout(tasks, { jobId: "current-print" });
+  const legacy = buildBoardPrintLayout(tasks, { jobId: "legacy-print", layoutVersion: "v2" });
+  expect(BOARD_PRINT_LAYOUT_VERSION).toBe("v3");
+  expect(current.version).toBe("v3");
+  expect(current.jobCode?.pattern).toHaveLength(10);
+  expect(legacy.version).toBe("v2");
+  expect(legacy.jobCode).toBeUndefined();
+  expect(() => buildBoardPrintLayout(tasks, { layoutVersion: "v4" })).toThrow(/unsupported/i);
 });

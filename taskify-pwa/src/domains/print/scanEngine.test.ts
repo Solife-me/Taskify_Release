@@ -83,6 +83,9 @@ function printedFrame(layout: ScanLayout & { markers: { positionsMm: Record<stri
   layout.pageId?.positionsMm.forEach((pos, bit) => {
     if (layout.pageId!.patterns[pageIndex]?.[bit]) shapes.push({ kind: "rect", x: pos.x, y: pos.y, size: layout.pageId!.sizeMm });
   });
+  layout.jobCode?.positionsMm.forEach((pos, bit) => {
+    if (layout.jobCode!.pattern[bit]) shapes.push({ kind: "rect", x: pos.x, y: pos.y, size: layout.jobCode!.sizeMm });
+  });
   return shapes;
 }
 
@@ -108,7 +111,7 @@ function boardGeometry(layout: BoardPrintLayout): ScanMarkGeometry {
 }
 
 const tasks = Array.from({ length: 12 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}` }));
-const board = buildBoardPrintLayout(tasks);
+const board = buildBoardPrintLayout(tasks, { jobId: "scan-test-job" });
 const scanBoard = (photo: ScanPhoto, pageSelection: number | "auto" = "auto") =>
   scanPage(photo, board, {
     pageSelection,
@@ -125,6 +128,22 @@ describe("scanning a board sheet", () => {
     expect(result.filled).toEqual(["t1", "t4", "t9"]);
     expect(result.pageIndex).toBe(0);
     expect(result.pageIdDetected).toBe(true);
+    expect(result.jobCodeDetected).toBe(true);
+    expect(result.jobCodeMatches).toBe(true);
+  });
+
+  test("refuses a sheet printed for a different job or stale board", () => {
+    const otherBoard = buildBoardPrintLayout(tasks, { jobId: "different-print-job" });
+    expect(() => scanPage(
+      photograph(board, boardSheet(board, 0, new Set(["t1"])), upright),
+      otherBoard,
+      {
+        pageSelection: "auto",
+        pageCount: otherBoard.pages.length,
+        marksOnPage: (pageIndex) => boardScanMarks(otherBoard, pageIndex),
+        geometry: boardGeometry(otherBoard),
+      },
+    )).toThrow(/different print|different board/i);
   });
 
   test("a blank sheet reads as nothing filled", () => {

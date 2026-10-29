@@ -94,14 +94,14 @@ public struct PhysicalChecklistPage: Equatable, Sendable {
 }
 
 public struct PhysicalChecklistLayout: Equatable, Sendable {
-    public static let version = "v2-native"
-    public static let marginMM = 10.0
-    public static let markerSizeMM = 6.0
-    public static let circleSizeMM = 4.2
-    public static let rowHeightMM = 7.0
-    public static let pageIDBitCount = 6
-    public static let pageIDSizeMM = 2.4
-    public static let pageIDGapMM = 1.2
+    public static let version = BoardPrintContract.version
+    public static let marginMM = BoardPrintContract.baseMarginMM
+    public static let markerSizeMM = BoardPrintContract.markerSizeMM
+    public static let circleSizeMM = BoardPrintContract.circleSizeMM
+    public static let rowHeightMM = BoardPrintContract.rowHeightMM
+    public static let pageIDBitCount = BoardPrintContract.pageIDBits
+    public static let pageIDSizeMM = BoardPrintContract.pageIDMarkerSizeMM
+    public static let pageIDGapMM = BoardPrintContract.pageIDMarkerGapMM
 
     public var paper: PhysicalChecklistPaper
     public var pages: [PhysicalChecklistPage]
@@ -112,8 +112,8 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
     public static func build(job: PhysicalChecklistJob) -> Self {
         let size = job.paper.sizeMM
         let leftMargin = marginMM + (job.paper == .a6 ? 4 : 0)
-        let headerTop = marginMM + markerSizeMM + 2
-        let contentTop = headerTop + 14.5
+        let headerTop = marginMM + markerSizeMM + BoardPrintContract.markerGapMM
+        let contentTop = headerTop + BoardPrintContract.headerHeightMM + BoardPrintContract.headerGapMM
         let contentHeight = size.height - marginMM - contentTop
         let compact = job.format == .bibleChapters
         let rowHeight = compact ? 5.5 : rowHeightMM
@@ -181,6 +181,21 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
             (
                 originX + Double(bit) * (Self.pageIDSizeMM + Self.pageIDGapMM) + Self.pageIDSizeMM / 2,
                 headerTopMM + 0.4 + Self.pageIDSizeMM / 2
+            )
+        }
+    }
+
+    public func jobCodeBitCentersMM(jobID: String) -> [(x: Double, y: Double)] {
+        let size = paper.sizeMM
+        let totalWidth = Double(BoardPrintContract.jobCodeBits) * BoardPrintContract.jobCodeMarkerSizeMM +
+            Double(BoardPrintContract.jobCodeBits - 1) * BoardPrintContract.jobCodeMarkerGapMM
+        let originX = size.width - Self.marginMM - totalWidth
+        let originY = headerTopMM + 0.4 + Self.pageIDSizeMM + 0.6
+        return (0..<BoardPrintContract.jobCodeBits).map { bit in
+            (
+                originX + Double(bit) * (BoardPrintContract.jobCodeMarkerSizeMM + BoardPrintContract.jobCodeMarkerGapMM) +
+                    BoardPrintContract.jobCodeMarkerSizeMM / 2,
+                originY + BoardPrintContract.jobCodeMarkerSizeMM / 2
             )
         }
     }

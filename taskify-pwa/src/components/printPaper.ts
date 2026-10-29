@@ -1,4 +1,6 @@
-export type PrintPaperSize = "letter" | "a6";
+import { BOARD_PRINT_PAPER_MM } from "taskify-core";
+
+export type PrintPaperSize = keyof typeof BOARD_PRINT_PAPER_MM;
 
 export const PRINT_PAPER_OPTIONS: Array<{
   value: PrintPaperSize;
@@ -15,11 +17,18 @@ export const PRINT_PAPER_OPTIONS: Array<{
     heightMm: 279.4,
   },
   {
+    value: "a4",
+    label: "A4 (210 x 297 mm)",
+    shortLabel: "A4",
+    widthMm: BOARD_PRINT_PAPER_MM.a4.widthMm,
+    heightMm: BOARD_PRINT_PAPER_MM.a4.heightMm,
+  },
+  {
     value: "a6",
     label: "A6 (105 x 148 mm)",
     shortLabel: "A6",
-    widthMm: 105,
-    heightMm: 148,
+    widthMm: BOARD_PRINT_PAPER_MM.a6.widthMm,
+    heightMm: BOARD_PRINT_PAPER_MM.a6.heightMm,
   },
 ];
 
@@ -36,5 +45,5 @@ export function getPaperDefinition(paperSize: PrintPaperSize) {
 }
 
 export function isPrintPaperSize(value: unknown): value is PrintPaperSize {
-  return value === "letter" || value === "a6";
+  return value === "letter" || value === "a4" || value === "a6";
 }

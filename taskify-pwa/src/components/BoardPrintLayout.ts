@@ -1,6 +1,7 @@
+import { BOARD_PRINT_CONTRACT_VERSION, BOARD_PRINT_LAYOUT_MM, BOARD_PRINT_MAX_PAGES, boardPrintJobCodePattern, boardPrintPagePattern, isSupportedBoardPrintVersion } from "taskify-core";
 import { getPaperDefinition, type PrintPaperSize } from "./printPaper";
 
-export const BOARD_PRINT_LAYOUT_VERSION = "v2";
+export const BOARD_PRINT_LAYOUT_VERSION = BOARD_PRINT_CONTRACT_VERSION;
 
 export type BoardPrintTask = {
   id: string;
@@ -49,20 +50,23 @@ export function tasksForBoardPrintScope(
 
 type BoardPrintMarkerStyle = "solid" | "finder";
 
-const BASE_MARGIN_MM = 10;
-const A6_BINDING_MARGIN_MM = 4;
-const MARKER_SIZE_MM = 6;
-const MARKER_GAP_MM = 2;
-const HEADER_HEIGHT_MM = 11;
-const HEADER_GAP_MM = 3.5;
+const BASE_MARGIN_MM = BOARD_PRINT_LAYOUT_MM.baseMarginMm;
+const A6_BINDING_MARGIN_MM = BOARD_PRINT_LAYOUT_MM.a6BindingMarginMm;
+const MARKER_SIZE_MM = BOARD_PRINT_LAYOUT_MM.markerSizeMm;
+const MARKER_GAP_MM = BOARD_PRINT_LAYOUT_MM.markerGapMm;
+const HEADER_HEIGHT_MM = BOARD_PRINT_LAYOUT_MM.headerHeightMm;
+const HEADER_GAP_MM = BOARD_PRINT_LAYOUT_MM.headerGapMm;
 const COLUMN_GAP_MM = 8;
 const COLUMN_COUNT = 1;
-const ROW_HEIGHT_MM = 7;
-const CIRCLE_SIZE_MM = 4.2;
-const CIRCLE_TEXT_GAP_MM = 2.4;
-const PAGE_ID_MARKER_SIZE_MM = 2.4;
-const PAGE_ID_MARKER_GAP_MM = 1.2;
-const PAGE_ID_BITS = 6;
+const ROW_HEIGHT_MM = BOARD_PRINT_LAYOUT_MM.rowHeightMm;
+const CIRCLE_SIZE_MM = BOARD_PRINT_LAYOUT_MM.circleSizeMm;
+const CIRCLE_TEXT_GAP_MM = BOARD_PRINT_LAYOUT_MM.circleTextGapMm;
+const PAGE_ID_MARKER_SIZE_MM = BOARD_PRINT_LAYOUT_MM.pageIdMarkerSizeMm;
+const PAGE_ID_MARKER_GAP_MM = BOARD_PRINT_LAYOUT_MM.pageIdMarkerGapMm;
+const PAGE_ID_BITS = BOARD_PRINT_LAYOUT_MM.pageIdBits;
+const JOB_CODE_MARKER_SIZE_MM = BOARD_PRINT_LAYOUT_MM.jobCodeMarkerSizeMm;
+const JOB_CODE_MARKER_GAP_MM = BOARD_PRINT_LAYOUT_MM.jobCodeMarkerGapMm;
+const JOB_CODE_BITS = BOARD_PRINT_LAYOUT_MM.jobCodeBits;
 
 type BoardPrintMargins = {
   top: number;
@@ -178,14 +182,25 @@ export type BoardPrintLayout = {
     };
   };
   pageId: BoardPrintPageId;
+  jobCode?: {
+    sizeMm: number;
+    gapMm: number;
+    count: number;
+    positionsMm: { x: number; y: number }[];
+    pattern: number[];
+  };
   pages: BoardPrintPage[];
 };
 
 export function buildBoardPrintLayout(
   tasks: BoardPrintTask[],
-  options?: { layoutVersion?: string; paperSize?: PrintPaperSize },
+  options?: { layoutVersion?: string; paperSize?: PrintPaperSize; jobId?: string },
 ): BoardPrintLayout {
   const paperSize = options?.paperSize ?? "letter";
+  const layoutVersion = options?.layoutVersion ?? BOARD_PRINT_LAYOUT_VERSION;
+  if (!isSupportedBoardPrintVersion(layoutVersion)) {
+    throw new Error(`Unsupported board print layout ${layoutVersion}. Reprint the board with this version of Taskify.`);
+  }
   const paperDefinition = getPaperDefinition(paperSize);
   const margin = getBoardPrintMargins(paperSize);
   const pageWidthMm = paperDefinition.widthMm;
@@ -201,6 +216,10 @@ export function buildBoardPrintLayout(
     PAGE_ID_BITS * PAGE_ID_MARKER_SIZE_MM + (PAGE_ID_BITS - 1) * PAGE_ID_MARKER_GAP_MM;
   const pageIdOriginXMm = pageWidthMm - margin.right - pageIdWidthMm;
   const pageIdOriginYMm = headerTopMm + 0.4;
+  const jobCodeWidthMm =
+    JOB_CODE_BITS * JOB_CODE_MARKER_SIZE_MM + (JOB_CODE_BITS - 1) * JOB_CODE_MARKER_GAP_MM;
+  const jobCodeOriginXMm = pageWidthMm - margin.right - jobCodeWidthMm;
+  const jobCodeOriginYMm = pageIdOriginYMm + PAGE_ID_MARKER_SIZE_MM + 0.6;
   const marginMm = Math.min(margin.top, margin.right, margin.bottom, margin.left);
   const markerPositions = {
     topLeft: { x: margin.left, y: margin.top },
@@ -231,7 +250,6 @@ export function buildBoardPrintLayout(
   };
 
   const rows: Array<{ kind: "header"; label: string } | { kind: "task"; task: BoardPrintTask }> = [];
-  const layoutVersion = options?.layoutVersion ?? BOARD_PRINT_LAYOUT_VERSION;
   const allowHeaders = layoutVersion !== "v1";
   if (allowHeaders) {
     let activeLabel: string | null = null;
@@ -252,6 +270,9 @@ export function buildBoardPrintLayout(
   }
 
   const pageCount = Math.max(1, Math.ceil(rows.length / rowsPerPage));
+  if (pageCount > BOARD_PRINT_MAX_PAGES) {
+    throw new Error(`This print needs ${pageCount} pages; the versioned scan format supports ${BOARD_PRINT_MAX_PAGES}.`);
+  }
   const pages: BoardPrintPage[] = Array.from({ length: pageCount }, (_, index) => ({
     index,
     rows: [],
@@ -261,10 +282,13 @@ export function buildBoardPrintLayout(
     x: pageIdOriginXMm + index * (PAGE_ID_MARKER_SIZE_MM + PAGE_ID_MARKER_GAP_MM),
     y: pageIdOriginYMm,
   }));
-  const pageIdPatterns = pages.map((page) => {
-    const value = page.index + 1;
-    return Array.from({ length: PAGE_ID_BITS }, (_, bit) => (value >> bit) & 1);
-  });
+  const pageIdPatterns = pages.map((page) => boardPrintPagePattern(page.index));
+  const jobCodePositions = Array.from({ length: JOB_CODE_BITS }, (_, index) => ({
+    x: jobCodeOriginXMm + index * (JOB_CODE_MARKER_SIZE_MM + JOB_CODE_MARKER_GAP_MM),
+    y: jobCodeOriginYMm,
+  }));
+  const includeJobCode = layoutVersion === BOARD_PRINT_CONTRACT_VERSION;
+  const jobCodePattern = boardPrintJobCodePattern(options?.jobId || "unknown");
 
   rows.forEach((rowItem, index) => {
     const pageIndex = Math.floor(index / rowsPerPage);
@@ -355,6 +379,17 @@ export function buildBoardPrintLayout(
       positionsMm: pageIdPositions,
       patterns: pageIdPatterns,
     },
+    ...(includeJobCode
+      ? {
+          jobCode: {
+            sizeMm: JOB_CODE_MARKER_SIZE_MM,
+            gapMm: JOB_CODE_MARKER_GAP_MM,
+            count: JOB_CODE_BITS,
+            positionsMm: jobCodePositions,
+            pattern: jobCodePattern,
+          },
+        }
+      : {}),
     pages,
   };
 }

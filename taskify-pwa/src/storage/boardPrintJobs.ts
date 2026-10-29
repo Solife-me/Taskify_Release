@@ -1,6 +1,7 @@
 import { kvStorage } from "./kvStorage";
 import type { BoardPrintJob, BoardPrintScope, BoardPrintTask } from "../components/BoardPrintLayout";
 import { isPrintPaperSize } from "../components/printPaper";
+import { isSupportedBoardPrintVersion } from "taskify-core";
 
 const LS_BOARD_PRINT_JOBS = "taskify_board_print_jobs_v1";
 
@@ -39,7 +40,7 @@ function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
     boardId,
     boardName: typeof value.boardName === "string" ? value.boardName : "Board",
     printedAtISO: typeof value.printedAtISO === "string" ? value.printedAtISO : new Date().toISOString(),
-    layoutVersion: typeof value.layoutVersion === "string" ? value.layoutVersion : "v1",
+    layoutVersion: isSupportedBoardPrintVersion(value.layoutVersion) ? value.layoutVersion : "v1",
     paperSize,
     ...(scope ? { scope } : {}),
     tasks,

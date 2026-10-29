@@ -119,6 +119,7 @@ export function PrintSheets({
     const { page } = buildBoardPrintLayout(scopedBoardPrintJob.tasks, {
       layoutVersion: scopedBoardPrintJob.layoutVersion,
       paperSize: scopedBoardPrintJob.paperSize,
+      jobId: scopedBoardPrintJob.id,
     });
     printInWindow(printWindow, {
       title: "Board print",
