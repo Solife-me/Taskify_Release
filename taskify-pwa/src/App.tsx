@@ -4573,7 +4573,9 @@ export default function App() {
         : plan.tasks,
     );
     reminderNotificationOffer.noteReminderSave(!!previous && taskHasReminders(previous), taskHasReminders(plan.saved));
-    await maybePublishTask(plan.saved);
+    // Relay work is retried from the durable queue. Only local intent storage can keep the editor
+    // open; a slow or rate-limited relay must not hold the UI.
+    durablePublisher.queueTask(plan.saved);
     void maybeSendTaskAssignments(plan.saved, { previousAssignees: plan.previousAssignees }).catch((err) => {
       console.warn("Failed to send task assignments", err);
     });
@@ -6338,7 +6340,7 @@ export default function App() {
             }}
             onSave={(updated, opened) => {
               if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
-              saveEdit(updated, opened);
+              return saveEdit(updated, opened);
             }}
             onSwitchToEvent={(draftTask) => {
               const nextEvent = convertTaskToCalendarEvent(draftTask);

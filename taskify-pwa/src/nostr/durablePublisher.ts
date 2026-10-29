@@ -127,6 +127,40 @@ export class DurablePublisher {
     return this.publish("task", task, board, options);
   }
 
+  /**
+   * Persists a task change for background publication and returns without waiting for a relay
+   * attempt. Editors can close as soon as the intent is accepted by local storage; the task stays
+   * visibly pending until the latest version is sent or remains queued for retry.
+   */
+  queueTask(task: Task, board?: Board, options?: PublishOptions): void {
+    const key = keyOf("task", task.id);
+    const oppositeKey = keyOf(OPPOSITE.task, task.id);
+    const previous = this.intents.get(key);
+    const previousOpposite = this.intents.get(oppositeKey);
+    const now = this.deps.now();
+    this.intents.delete(oppositeKey);
+    this.intents.set(key, {
+      kind: "task",
+      id: task.id,
+      ...(board ? { boardId: board.id } : {}),
+      ...(options ? { options } : {}),
+      queuedAt: previous?.queuedAt ?? now,
+      attempts: 0,
+      nextAt: now,
+      gen: (previous?.gen ?? 0) + 1,
+    });
+    try {
+      this.save(true);
+    } catch (error) {
+      if (previous) this.intents.set(key, previous);
+      else this.intents.delete(key);
+      if (previousOpposite) this.intents.set(oppositeKey, previousOpposite);
+      throw error;
+    }
+    this.deps.onPending("task", task.id, true);
+    void this.attempt(key, task).finally(() => this.schedule());
+  }
+
   publishTaskDeleted(task: Task): Promise<void> {
     return this.publish("taskDelete", task);
   }
@@ -243,11 +277,12 @@ export class DurablePublisher {
     this.schedule();
   }
 
-  private save(): void {
+  private save(throwOnError = false): void {
     try {
       this.deps.storage.save(JSON.stringify(Array.from(this.intents.values())));
     } catch (error) {
       this.deps.log?.("[sync] could not store publish intents", error);
+      if (throwOnError) throw error;
     }
   }
 }
