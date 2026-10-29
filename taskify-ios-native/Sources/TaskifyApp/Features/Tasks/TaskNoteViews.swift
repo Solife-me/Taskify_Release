@@ -1,5 +1,6 @@
 import SwiftUI
 import TaskifyCore
+import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
 #else
@@ -490,9 +491,22 @@ struct TaskNoteEditorView: View {
     @State private var controller = TaskNoteRichEditorController()
     @State private var linkPromptVisible = false
     @State private var linkURL = "https://"
+    private let onPasteImage: (@MainActor (NoteImage) async -> TaskDocument?)?
+    private let onRemovePastedAttachment: ((String) -> Void)?
+    @State private var pastedPhotoPreview: NoteImage?
+    @State private var pastedPhotoDocument: TaskDocument?
+    @State private var isPastingPhoto = false
+    @State private var pastedPhotoError: String?
 
-    init(note: String, onSave: @escaping (String, [TaskSubtask]) -> Void) {
+    init(
+        note: String,
+        onPasteImage: (@MainActor (NoteImage) async -> TaskDocument?)? = nil,
+        onRemovePastedAttachment: ((String) -> Void)? = nil,
+        onSave: @escaping (String, [TaskSubtask]) -> Void
+    ) {
         self.onSave = onSave
+        self.onPasteImage = onPasteImage
+        self.onRemovePastedAttachment = onRemovePastedAttachment
         originalNote = note
         _markdown = State(initialValue: note)
     }
@@ -502,7 +516,11 @@ struct TaskNoteEditorView: View {
             VStack(spacing: 0) {
                 formatBar
                 Divider()
-                TaskNoteRichTextEditor(initialMarkdown: originalNote, controller: controller) { markdown = $0 }
+                TaskNoteRichTextEditor(
+                    initialMarkdown: originalNote,
+                    controller: controller,
+                    onPasteImage: onPasteImage == nil ? nil : receivePastedImage
+                ) { markdown = $0 }
                     .overlay(alignment: .topLeading) {
                         if markdown.isEmpty {
                             Text("Write your note")
@@ -512,6 +530,11 @@ struct TaskNoteEditorView: View {
                                 .allowsHitTesting(false)
                         }
                     }
+                #if os(iOS)
+                if isPastingPhoto || pastedPhotoDocument != nil || pastedPhotoError != nil {
+                    pastedPhotoFooter
+                }
+                #endif
                 if TaskNoteMarkdown.hasChecklistItems(markdown) || !convertedSubtasks.isEmpty {
                     conversionFooter
                 }
@@ -557,6 +580,88 @@ struct TaskNoteEditorView: View {
         let canonicalOriginal = TaskNoteDocument.markdown(from: TaskNoteDocument.lines(fromMarkdown: originalNote))
         return markdown == canonicalOriginal ? originalNote : markdown
     }
+
+    @MainActor
+    private func receivePastedImage(_ image: NoteImage) async -> Bool {
+        guard let onPasteImage, !isPastingPhoto else { return false }
+        pastedPhotoPreview = image
+        pastedPhotoDocument = nil
+        pastedPhotoError = nil
+        isPastingPhoto = true
+        defer { isPastingPhoto = false }
+        guard let document = await onPasteImage(image) else {
+            pastedPhotoError = "Couldn’t attach the pasted photo."
+            return true
+        }
+        pastedPhotoDocument = document
+        return true
+    }
+
+    #if os(iOS)
+    private var pastedPhotoFooter: some View {
+        HStack(spacing: 10) {
+            if let pastedPhotoPreview {
+                Image(uiImage: pastedPhotoPreview)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(TaskifyTheme.border, lineWidth: 1)
+                    )
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: "photo")
+                    .frame(width: 44, height: 44)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(
+                    isPastingPhoto
+                        ? "Encrypting and uploading pasted photo…"
+                        : pastedPhotoDocument != nil
+                            ? "Photo attached to task"
+                            : "Couldn’t attach the pasted photo."
+                )
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(pastedPhotoError == nil ? Color.primary : Color.red)
+                if pastedPhotoDocument != nil {
+                    Text("1 photo attached")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("task-note-pasted-photo-status")
+
+            Spacer(minLength: 4)
+            if isPastingPhoto {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Uploading pasted photo")
+            } else if let document = pastedPhotoDocument {
+                Button(role: .destructive) {
+                    onRemovePastedAttachment?(document.id)
+                    pastedPhotoDocument = nil
+                    pastedPhotoPreview = nil
+                    pastedPhotoError = nil
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove pasted photo")
+                .accessibilityIdentifier("task-note-remove-pasted-photo")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+    #endif
 
     private var formatBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -688,6 +793,7 @@ typealias TaskNotePlatformTextView = NSTextView
 final class TaskNoteRichEditorController {
     weak var textView: TaskNotePlatformTextView?
     var onChange: ((String) -> Void)?
+    var onPasteImage: ((NoteImage) async -> Bool)?
     /// Formatting toggled with nothing selected, applied to what's typed next.
     private var pendingMarks: TaskNoteRun.Marks?
     private(set) var isApplying = false
@@ -1116,6 +1222,13 @@ final class TaskNoteRichEditorController {
         return TaskNoteRichText.markdown(of: storage, range: selection)
     }
 
+    func paste(image: NoteImage) {
+        guard let onPasteImage else { return }
+        Task { @MainActor in
+            _ = await onPasteImage(image)
+        }
+    }
+
     func paste(_ string: String) {
         guard storage != nil else { return }
         let fragment = TaskNoteRichText.pastedFragment(string, theme: theme, width: layoutWidth)
@@ -1129,6 +1242,27 @@ final class TaskNoteRichEditorController {
 }
 
 #if os(iOS)
+private enum TaskNoteClipboardImage {
+    static func firstProvider(in providers: [NSItemProvider]) -> NSItemProvider? {
+        providers.first { provider in
+            provider.registeredTypeIdentifiers.contains { identifier in
+                UTType(identifier)?.conforms(to: .image) == true
+            }
+        }
+    }
+
+    static func load(_ provider: NSItemProvider) async -> UIImage? {
+        guard let identifier = provider.registeredTypeIdentifiers.first(where: { identifier in
+            UTType(identifier)?.conforms(to: .image) == true
+        }) else { return nil }
+        return await withCheckedContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: identifier) { data, _ in
+                continuation.resume(returning: data.flatMap(UIImage.init(data:)))
+            }
+        }
+    }
+}
+
 /// UITextView that copies Markdown, pastes Markdown as formatting, and ticks checkboxes on tap.
 final class TaskNoteRichUITextView: UITextView {
     weak var controller: TaskNoteRichEditorController?
@@ -1145,9 +1279,30 @@ final class TaskNoteRichUITextView: UITextView {
         controller?.textChanged()
     }
 
+    override func paste(itemProviders: [NSItemProvider]) {
+        guard let provider = TaskNoteClipboardImage.firstProvider(in: itemProviders) else {
+            return super.paste(itemProviders: itemProviders)
+        }
+        Task { @MainActor [weak self] in
+            guard let self, let image = await TaskNoteClipboardImage.load(provider) else { return }
+            self.controller?.paste(image: image)
+        }
+    }
+
     override func paste(_ sender: Any?) {
+        if UIPasteboard.general.hasImages, let image = UIPasteboard.general.image {
+            controller?.paste(image: image)
+            return
+        }
         guard let string = UIPasteboard.general.string else { return super.paste(sender) }
         controller?.paste(string)
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), UIPasteboard.general.hasImages {
+            return true
+        }
+        return super.canPerformAction(action, withSender: sender)
     }
 
     @objc func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -1167,6 +1322,7 @@ final class TaskNoteRichUITextView: UITextView {
 struct TaskNoteRichTextEditor: UIViewRepresentable {
     let initialMarkdown: String
     let controller: TaskNoteRichEditorController
+    let onPasteImage: (@MainActor (NoteImage) async -> Bool)?
     let onChange: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
@@ -1189,6 +1345,7 @@ struct TaskNoteRichTextEditor: UIViewRepresentable {
         view.addGestureRecognizer(tap)
         controller.textView = view
         controller.onChange = onChange
+        controller.onPasteImage = onPasteImage
         DispatchQueue.main.async {
             controller.load(markdown: initialMarkdown)
             view.becomeFirstResponder()
@@ -1198,6 +1355,7 @@ struct TaskNoteRichTextEditor: UIViewRepresentable {
 
     func updateUIView(_ view: TaskNoteRichUITextView, context: Context) {
         controller.onChange = onChange
+        controller.onPasteImage = onPasteImage
     }
 
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {

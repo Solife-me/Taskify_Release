@@ -342,7 +342,13 @@ struct TaskEditorView: View {
             Text("Allow Taskify to schedule alarms in iOS Settings, then turn Urgent on again.")
         }
         .sheet(isPresented: $showingNoteEditor) {
-            TaskNoteEditorView(note: note) { updatedNote, convertedSubtasks in
+            TaskNoteEditorView(
+                note: note,
+                onPasteImage: { image in await addPastedPhoto(image) },
+                onRemovePastedAttachment: { documentID in
+                    documents.removeAll { $0.id == documentID }
+                }
+            ) { updatedNote, convertedSubtasks in
                 note = updatedNote
                 if !convertedSubtasks.isEmpty {
                     subtasks.append(contentsOf: convertedSubtasks)
@@ -1082,17 +1088,50 @@ struct TaskEditorView: View {
 
     @MainActor
     private func addCapturedPhoto(_ image: UIImage) async {
+        _ = await uploadPhoto(
+            image,
+            status: "Encrypting and uploading captured photo…"
+        )
+    }
+
+    /// A clipboard image follows the exact same encrypted document path as the attach menu's
+    /// captured photo. It is staged in the task editor's attachment list immediately.
+    @MainActor
+    private func addPastedPhoto(_ image: UIImage) async -> TaskDocument? {
+#if DEBUG
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_PASTE_PHOTO"] == "1",
+           let jpegData = image.jpegData(compressionQuality: 0.88) {
+            let document = TaskDocument(
+                name: "Pasted Photo.jpg",
+                mimeType: "image/jpeg",
+                kind: "jpg",
+                size: jpegData.count,
+                dataURL: "data:image/jpeg;base64,\(jpegData.base64EncodedString())",
+                encrypted: false
+            )
+            documents.append(document)
+            return document
+        }
+#endif
+        return await uploadPhoto(
+            image,
+            status: "Encrypting and uploading pasted photo…"
+        )
+    }
+
+    @MainActor
+    private func uploadPhoto(_ image: UIImage, status: String) async -> TaskDocument? {
         guard let boardID = board?.effectiveNostrBoardID else {
             attachmentError = "This task's board is unavailable."
-            return
+            return nil
         }
         guard let jpegData = image.jpegData(compressionQuality: 0.88) else {
             attachmentError = TaskAttachmentUploadError.unsupportedFile.localizedDescription
-            return
+            return nil
         }
 
         isUploadingAttachment = true
-        attachmentStatus = "Encrypting and uploading captured photo…"
+        attachmentStatus = status
         defer {
             isUploadingAttachment = false
             attachmentStatus = nil
@@ -1107,8 +1146,10 @@ struct TaskEditorView: View {
                 boardID: boardID
             )
             documents.append(document)
+            return document
         } catch {
             attachmentError = error.localizedDescription
+            return nil
         }
     }
 
