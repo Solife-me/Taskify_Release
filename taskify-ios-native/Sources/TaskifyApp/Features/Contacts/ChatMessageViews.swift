@@ -1476,6 +1476,7 @@ struct DirectMessageAttachmentView: View {
     @State private var failed = false
     @State private var previewURL: URL?
     @State private var isSaving = false
+    @State private var downloadMessage: String?
     @Environment(AppModel.self) private var model
 
     @ViewBuilder
@@ -1504,7 +1505,18 @@ struct DirectMessageAttachmentView: View {
             .frame(width: DirectMessageAttachmentStyle.photoWidth, height: photoHeight)
             .clipShape(RoundedRectangle(cornerRadius: DirectMessageAttachmentStyle.cornerRadius, style: .continuous))
             .overlay {
-                if isLoading { ProgressView().tint(.white) }
+                if isLoading {
+                    VStack(spacing: 5) {
+                        ProgressView().tint(.white)
+                        if let downloadMessage {
+                            Text(downloadMessage)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                }
             }
     }
 
@@ -1521,7 +1533,16 @@ struct DirectMessageAttachmentView: View {
                     }
                     .foregroundStyle(TaskifyTheme.secondaryText)
                 } else if isLoading {
-                    ProgressView()
+                    VStack(spacing: 6) {
+                        ProgressView()
+                        if let downloadMessage {
+                            Text(downloadMessage)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 8)
+                        }
+                    }
                 } else {
                     VStack(spacing: 8) {
                         Image(systemName: attachment.detailIcon).font(.title2)
@@ -1553,7 +1574,9 @@ struct DirectMessageAttachmentView: View {
                             .foregroundStyle(TaskifyTheme.primaryText)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
-                        Text(failed ? "Couldn't open · Tap to retry" : attachment.kindAndSizeLabel)
+                        Text(failed
+                             ? "Couldn't open · Tap to retry"
+                             : isLoading ? (downloadMessage ?? "Downloading attachment…") : attachment.kindAndSizeLabel)
                             .font(.caption)
                             .foregroundStyle(failed ? Color.red : TaskifyTheme.secondaryText)
                             .lineLimit(1)
@@ -1604,10 +1627,19 @@ struct DirectMessageAttachmentView: View {
 
     private func openAttachment() {
         isLoading = true
+        downloadMessage = nil
         Task { @MainActor in
-            defer { isLoading = false }
+            defer {
+                isLoading = false
+                downloadMessage = nil
+            }
             do {
-                let file = try await DirectMessageAttachmentDataLoader.shared.file(for: attachment)
+                let file = try await DirectMessageAttachmentDataLoader.shared.file(
+                    for: attachment,
+                    progress: { update in
+                        Task { @MainActor in downloadMessage = update.message }
+                    }
+                )
                 previewURL = try DirectMessageAttachmentDataLoader.previewFile(
                     file: file,
                     attachment: attachment

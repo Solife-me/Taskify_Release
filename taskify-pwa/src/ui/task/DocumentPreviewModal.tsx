@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type { TaskDocument } from "../../lib/documents";
 import { resolveDocumentAsset } from "./documentAsset";
+import type { DownloadProgress } from "../../lib/binary";
 import { PdfViewer } from "./viewers/PdfViewer";
 import { ImageViewer } from "./viewers/ImageViewer";
 import { VideoViewer } from "./viewers/VideoViewer";
@@ -76,6 +77,7 @@ export function DocumentPreviewModal({
 }) {
   const [resolvedDocument, setResolvedDocument] = useState<TaskDocument>(document);
   const [loadingRemote, setLoadingRemote] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   const label = document.name || "Document";
@@ -86,16 +88,19 @@ export function DocumentPreviewModal({
     if (!document.remoteUrl) {
       setResolvedDocument(document);
       setLoadingRemote(false);
+      setDownloadProgress(null);
       setRemoteError(null);
       return;
     }
     setLoadingRemote(true);
+    setDownloadProgress(null);
     setRemoteError(null);
-    resolveDocumentAsset(document, boardId)
+    resolveDocumentAsset(document, boardId, (next) => { if (!cancelled) setDownloadProgress(next); })
       .then((resolved) => {
         if (cancelled) return;
         setResolvedDocument(resolved);
         setLoadingRemote(false);
+        setDownloadProgress(null);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -132,9 +137,10 @@ const actions = (
   let content: React.ReactNode;
 
   if (loadingRemote) {
+    const percent = downloadProgress?.fraction == null ? null : Math.round(downloadProgress.fraction * 100);
     content = (
-      <div className="flex h-full items-center justify-center text-white/70">
-        Decrypting document…
+      <div className="flex h-full items-center justify-center text-white/70" role="status">
+        {percent == null ? "Downloading document…" : percent >= 100 ? "Decrypting document…" : `Downloading ${percent}%`}
       </div>
     );
   } else if (remoteError) {

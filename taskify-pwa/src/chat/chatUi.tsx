@@ -12,6 +12,7 @@ import {
   isImageMime,
   isVideoMime,
 } from "../lib/messengerAttachmentCrypto";
+import type { DownloadProgress } from "../lib/binary";
 
 type ScanResult = QrScannerLib.ScanResult;
 
@@ -806,6 +807,29 @@ export type MessengerFileDescriptor = {
   nonceHex: string;
 };
 
+function attachmentLoadLabel(progress: DownloadProgress | null | undefined): string {
+  if (!progress || progress.fraction == null) return "Downloading…";
+  if (progress.fraction >= 1) return "Decrypting…";
+  return `Downloading ${Math.round(progress.fraction * 100)}%`;
+}
+
+function AttachmentLoadProgress({ progress }: { progress: DownloadProgress | null }) {
+  const fraction = progress?.fraction;
+  return (
+    <div className="chat-file__loading">
+      <div style={{ display: "flex", width: "9rem", flexDirection: "column", alignItems: "center", gap: "0.5rem" }}>
+        {fraction == null ? <div className="chat-sending-spinner" /> : null}
+        <span className="chat-file__progress-label">{attachmentLoadLabel(progress)}</span>
+        {fraction != null ? (
+          <div className="chat-file__progress-track" style={{ width: "100%" }}>
+            <div className="chat-file__progress-bar" style={{ width: `${Math.round(fraction * 100)}%` }} />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function MessengerFileBubble({
   descriptor,
   isIncoming,
@@ -815,7 +839,7 @@ export function MessengerFileBubble({
 }) {
   const [state, setState] = useState<
     | { kind: "idle" }
-    | { kind: "loading" }
+    | { kind: "loading"; progress: DownloadProgress | null }
     | { kind: "ready"; objectUrl: string; blob: Blob }
     | { kind: "error"; message: string }
   >(() => ({ kind: "idle" }));
@@ -825,9 +849,10 @@ export function MessengerFileBubble({
   const isAudio = isAudioMime(mimeLc);
   const filename = descriptor.filename || "attachment";
   const sizeLabel = formatByteSize(descriptor.size ?? 0);
+  const progress = state.kind === "loading" ? state.progress : null;
 
   const loadDescriptor = useCallback(async () => {
-    setState({ kind: "loading" });
+    setState({ kind: "loading", progress: null });
     try {
       const result = await decryptMessengerAttachment({
         url: descriptor.url,
@@ -835,6 +860,8 @@ export function MessengerFileBubble({
         keyHex: descriptor.keyHex,
         nonceHex: descriptor.nonceHex,
         algorithm: descriptor.algorithm,
+      }, {
+        onProgress: (next) => setState({ kind: "loading", progress: next }),
       });
       setState({ kind: "ready", objectUrl: result.objectUrl, blob: result.blob });
     } catch (err: any) {
@@ -853,6 +880,7 @@ export function MessengerFileBubble({
     if (state.kind === "ready") {
       url = state.objectUrl;
     } else {
+      setState({ kind: "loading", progress: null });
       try {
         const result = await decryptMessengerAttachment({
           url: descriptor.url,
@@ -860,6 +888,8 @@ export function MessengerFileBubble({
           keyHex: descriptor.keyHex,
           nonceHex: descriptor.nonceHex,
           algorithm: descriptor.algorithm,
+        }, {
+          onProgress: (next) => setState({ kind: "loading", progress: next }),
         });
         url = result.objectUrl;
         setState({ kind: "ready", objectUrl: result.objectUrl, blob: result.blob });
@@ -898,9 +928,7 @@ export function MessengerFileBubble({
               </button>
             </div>
           ) : (
-            <div className="chat-file__loading">
-              <div className="chat-sending-spinner" />
-            </div>
+            <AttachmentLoadProgress progress={progress} />
           )}
         </div>
       </div>
@@ -921,9 +949,7 @@ export function MessengerFileBubble({
               </button>
             </div>
           ) : (
-            <div className="chat-file__loading">
-              <div className="chat-sending-spinner" />
-            </div>
+            <AttachmentLoadProgress progress={progress} />
           )}
         </div>
       </div>
@@ -943,8 +969,8 @@ export function MessengerFileBubble({
             </button>
           </div>
         ) : (
-          <div className="chat-file__loading">
-            <div className="chat-sending-spinner" />
+          <div style={{ position: "relative", minHeight: "4rem" }}>
+            <AttachmentLoadProgress progress={progress} />
           </div>
         )}
         <div className="chat-file__meta">
@@ -973,11 +999,16 @@ export function MessengerFileBubble({
           <div className="chat-file__name" title={filename}>{filename}</div>
           <div className="chat-file__size">
             {state.kind === "loading"
-              ? "Decrypting…"
+              ? attachmentLoadLabel(progress)
               : state.kind === "error"
                 ? state.message
                 : sizeLabel || "Download"}
           </div>
+          {state.kind === "loading" && progress?.fraction != null ? (
+            <div className="chat-file__progress-track chat-file__progress-track--doc">
+              <div className="chat-file__progress-bar" style={{ width: `${Math.round(progress.fraction * 100)}%` }} />
+            </div>
+          ) : null}
         </div>
         <div className="chat-file__doc-action">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -990,4 +1021,3 @@ export function MessengerFileBubble({
     </div>
   );
 }
-

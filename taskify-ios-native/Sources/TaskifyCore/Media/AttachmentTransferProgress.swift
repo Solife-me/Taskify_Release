@@ -6,12 +6,15 @@ public enum AttachmentTransferProgress: Equatable, Sendable {
     case uploading(completed: Int64, total: Int64)
     case awaitingServer
     case sendingMessage
+    case downloading(completed: Int64, total: Int64)
 
     public var fractionCompleted: Double? {
         switch self {
         case let .encrypting(completed, total):
             total > 0 ? min(1, max(0, Double(completed) / Double(total))) : nil
         case let .uploading(completed, total):
+            total > 0 ? min(1, max(0, Double(completed) / Double(total))) : nil
+        case let .downloading(completed, total):
             total > 0 ? min(1, max(0, Double(completed) / Double(total))) : nil
         default: nil
         }
@@ -29,6 +32,10 @@ public enum AttachmentTransferProgress: Equatable, Sendable {
             "Waiting for the file server…"
         case .sendingMessage:
             "Sending message…"
+        case let .downloading(completed, total):
+            total > 0
+                ? "Downloading \(min(100, Int((Double(completed) / Double(total)) * 100)))%…"
+                : "Downloading attachment…"
         }
     }
 }
