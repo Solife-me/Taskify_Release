@@ -7,7 +7,7 @@
 //   - VAPID-authenticated Web Push delivery
 //   - PEM/JSON key resolution for the VAPID private key
 
-import type { Env, D1Database, D1PreparedStatement, KVNamespace } from "./lib.ts";
+import type { Env, D1Database, D1PreparedStatement } from "./lib.ts";
 import {
   requireDb,
   jsonResponse,
@@ -22,7 +22,6 @@ import {
 // ---- Module-level state (caches + key-lookup constants) ----
 
 let cachedPrivateKey: CryptoKey | null = null;
-const PRIVATE_KEY_KV_KEYS = ["VAPID_PRIVATE_KEY", "private-key", "key"] as const;
 
 // Bounds on what one unauthenticated device can store. A save replaces the device's whole
 // schedule, so the reminder cap is also the per-device cap; the soonest reminders are kept.
@@ -751,26 +750,11 @@ async function getPrivateKey(env: Env): Promise<CryptoKey> {
   }
 }
 
+/// The `VAPID_PRIVATE_KEY` secret: PKCS#8 PEM, or the raw 32-byte scalar in base64url.
 async function resolvePrivateKeyPem(env: Env): Promise<string> {
-  const binding = env.VAPID_PRIVATE_KEY as unknown;
-  if (typeof binding === "string") {
-    const trimmed = binding.trim();
-    if (trimmed) return trimmed;
-  }
-
-  const maybeKv = binding as KVNamespace | undefined;
-  if (maybeKv && typeof maybeKv.get === "function") {
-    for (const candidate of PRIVATE_KEY_KV_KEYS) {
-      try {
-        const value = await maybeKv.get(candidate);
-        if (value && value.trim()) return value.trim();
-      } catch {
-        // ignore and try next candidate
-      }
-    }
-  }
-
-  throw new Error("VAPID private key is not configured");
+  const secret = typeof env.VAPID_PRIVATE_KEY === "string" ? env.VAPID_PRIVATE_KEY.trim() : "";
+  if (!secret) throw new Error("VAPID private key is not configured");
+  return secret;
 }
 
 function shouldAttemptRawVapidImport(err: unknown, keyBytes: Uint8Array): boolean {

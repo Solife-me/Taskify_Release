@@ -29,12 +29,12 @@ Primary entry points:
 
 - Cron cadence: `*/1 * * * *` (`wrangler.toml:16–17`)
 - D1: `TASKIFY_DB` (`wrangler.toml:47–52`)
-- VAPID key binding: `VAPID_PRIVATE_KEY` as string secret or KV namespace (`wrangler.toml:38–40`)
+- VAPID private key: the `VAPID_PRIVATE_KEY` secret; its public key and subject are `[vars]`
 
 `Env` typing in code confirms mixed binding support:
 - `TASKIFY_DB` required D1 source-of-truth
-- KV namespaces optional fallback/migration path
-- `VAPID_PRIVATE_KEY: string | KVNamespace`
+- no KV namespaces (`deploy-config.test.ts`)
+- `VAPID_PRIVATE_KEY: string` (a secret)
 
 Reference: `worker/src/index.ts:37–44`.
 
@@ -190,9 +190,9 @@ Reference: `worker/src/index.ts:2305–2333`.
 Push ping signing uses ES256 JWT + VAPID headers.
 
 Key loading sequence in `resolvePrivateKeyPem`:
-1. If `env.VAPID_PRIVATE_KEY` is a non-empty string, use it
-2. Else if it behaves like KV, try keys: `VAPID_PRIVATE_KEY`, `private-key`, `key`
-3. Else throw configuration error
+1. Read the `VAPID_PRIVATE_KEY` secret: PKCS#8 PEM, or the raw 32-byte scalar in base64url
+   (imported with the public key's coordinates; `vapid-secret.test.ts`)
+2. If it is empty or missing, throw a configuration error
 
 References:
 - `resolvePrivateKeyPem`: `worker/src/index.ts:2859+`
@@ -250,8 +250,8 @@ Before changing reminder/backend logic, verify:
    - `handleSaveReminders`
    - `processDueReminders`
    - `handlePollReminders`
-3. Device deletion still clears all three stores (D1 + optional KV mirrors)
-4. VAPID key resolution still supports both string and KV binding modes
+3. Device deletion still clears the device's row, reminders and pending notifications
+4. VAPID key loading still accepts the secret as PEM or raw base64url
 5. Any behavior change is mirrored in docs (`architecture-overview.md`, this file)
 
 ---

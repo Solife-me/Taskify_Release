@@ -50,8 +50,8 @@ The Worker lives in `worker/src/index.ts` and shares this repository. It serves 
    - Put the **public key** in `wrangler.toml` under `[vars]` as `VAPID_PUBLIC_KEY`, and in
      `.env.local` as `VITE_VAPID_PUBLIC_KEY`. Set `VAPID_SUBJECT` under `[vars]` to a `mailto:` or
      `https://` contact. Both are public; a deploy replaces every variable with `[vars]`.
-   - Provide the **private key** as the `VAPID_PRIVATE_KEY` binding: a Worker secret
-     (`wrangler secret put VAPID_PRIVATE_KEY`) or a KV namespace holding it under that key.
+   - Store the **private key** as a Worker secret: `wrangler secret put VAPID_PRIVATE_KEY`
+     (PKCS#8 PEM or the raw base64url key).
 
 2. **Create the D1 database** and put its ID in `wrangler.toml` (`[[d1_databases]]`):
 
@@ -106,7 +106,7 @@ Inside `taskify-pwa`:
 At repository root:
 
 - `wrangler dev` – run Worker locally (requires built assets).
-- `wrangler deploy` – deploy Worker + cron + KV bindings.
+- `wrangler deploy` – deploy the Worker, its cron and its D1 binding (apply migrations first).
 
 ## Linting & QA
 
@@ -121,7 +121,7 @@ npm run lint
 | Location | Purpose |
 | --- | --- |
 | `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY` |
-| `wrangler.toml` | Worker name, KV namespace IDs, asset config |
+| `wrangler.toml` | Worker name, D1 database, rate limiters, VAPID `[vars]`, asset config |
 | Worker vars/secrets | `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`, `VAPID_PRIVATE_KEY` |
 
 Keep VAPID private keys out of version control. Each device uses the Worker API to synchronise reminders; if you rotate keys, re-enable push in Settings so browsers resubscribe.

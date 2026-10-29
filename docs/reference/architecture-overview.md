@@ -206,11 +206,11 @@ The router delegates feature-specific behavior to modules under `worker/src/`. R
 | **Reminder delivery polling** | `POST /api/reminders/poll` — drains pending reminder rows for clients that poll after push wake-up |
 | **Cron handler** | Runs every minute; reads due reminders from D1, appends pending notifications, sends Web Push ping |
 | **Independent Apple Watch sync** | Authenticated HTTPS transport forwards Watch-signed, board-encrypted kind-30301 events to configured public Nostr relays without receiving decryption keys or task plaintext |
-| **VAPID signing** | Signs Web Push requests using P-256 ECDSA; private key resolved from `VAPID_PRIVATE_KEY` env/KV binding |
+| **VAPID signing** | Signs Web Push requests using P-256 ECDSA; private key from the `VAPID_PRIVATE_KEY` secret |
 
 **Cloudflare bindings** (`wrangler.toml`):
 - `TASKIFY_DB` D1 — source-of-truth for `devices`, `reminders`, and `pending_notifications`
-- `VAPID_PRIVATE_KEY` env or KV binding — VAPID signing key material
+- `VAPID_PRIVATE_KEY` secret — VAPID signing key material
 - `PREVIEW_RATE_LIMITER` — 30 requests/minute per connecting IP
 - `NIP05_RATE_LIMITER` — 60 requests/minute per connecting IP
 
@@ -583,7 +583,7 @@ lastEditedBy set but not trusted → "untrusted"
 
 ### Push Notification Security
 
-- VAPID keys generated at deploy time; private key stored in Cloudflare KV (`VAPID_PRIVATE_KEY` binding), never in PWA
+- VAPID keys generated at deploy time; private key stored as a Worker secret (`VAPID_PRIVATE_KEY`), never in PWA
 - Device push endpoints stored in D1; Worker verifies VAPID signature on every push send
 - No user-identifiable data in push payloads beyond reminder text
 

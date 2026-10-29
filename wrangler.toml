@@ -30,17 +30,13 @@ invocation_logs = false
 
 # A deploy replaces every variable with this section, so the push settings live here, not in the
 # dashboard. Both are public: the key is also built into the PWA (VITE_VAPID_PUBLIC_KEY) and served
-# at /api/config. Its private half is the VAPID_PRIVATE_KEY binding below.
+# at /api/config. Its private half is the VAPID_PRIVATE_KEY secret (`wrangler secret put`).
 [vars]
 VAPID_PUBLIC_KEY = "BA5BrwPUO-j5WzaaPe28CApexdCiLMHgHrh40LoXyz_OmA21gId1yw5IxWqpIOVEnKGiXfI0FEiFDr1Kl8rj6Dw"
 VAPID_SUBJECT = "mailto:dev@solife.me"
 
 # Secrets, set with `wrangler secret put` (or `.dev.vars` for local dev):
 # - CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN (Workers AI for the voice routes)
-
-[[kv_namespaces]]
-binding = "VAPID_PRIVATE_KEY"
-id = "45bbad6e354443ff9b101d61a27e5dd9"
 
 [[d1_databases]]
 binding = "TASKIFY_DB"
