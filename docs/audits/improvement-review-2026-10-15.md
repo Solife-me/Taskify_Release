@@ -4147,7 +4147,7 @@ repository:
 | C13-2 | Approve | 2026-10-26 | Done (`7bea41fd`). One HTTP/2 session per APNs host, reconnected after an error, GOAWAY or close. Per-app `apns-collapse-id` on alerts that read the same (not on iPhone preview alerts), and `apns-expiration` a day out. Tested against a local HTTP/2 server |
 | C13-3 | Approve | 2026-10-26 | Done (`27e35505`). The image runs as `node` and gives it /data; a StartOS `chown` oneshot runs before the daemon. Checked with Docker; not yet on a StartOS box |
 | C13-4 | Approve | 2026-10-26 | Done. The account shows taskify.solife.me is served by `taskify-public`; `wrangler.toml` now deploys that name, with the VAPID settings in `[vars]` (test-first, see the account checkpoint). Limiters fail closed (503, test-first). CI dry-runs the deploy with wrangler 4.150.0 and checks every limiter is bound. A weekly `dependency-audit` workflow. `compatibility_date` 2024-03-01 → 2026-10-12, checked in Cloudflare's local runtime: identical responses on 11 route probes, and the cron runs clean |
-| C13-5 | Approve | 2026-10-26 | Code done 2026-10-29: the Worker binds no KV namespace; the VAPID private key is read only from the `VAPID_PRIVATE_KEY` secret, which the maintainer sets after deploy. Legacy KV import and its three bindings removed 2026-10-29. `ensureSchema` removed 2026-10-29, after production applied every migration (see that day's checkpoint). Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes). Checked on 2026-10-26: none of the three holds yet (see the account checkpoint) |
+| C13-5 | Approve | 2026-10-26 | Done 2026-10-29. The Worker binds no KV namespace, and the VAPID private key is the `VAPID_PRIVATE_KEY` secret, verified by a signed reminder ping delivered to an iPhone. Legacy KV import and its three bindings removed 2026-10-29. `ensureSchema` removed 2026-10-29, after production applied every migration (see that day's checkpoint). Stage 1 done: the README's deploy steps apply D1 migrations before every deploy. The code steps wait on account checks only the maintainer can make: migrations 0006–0007 applied in production (then `ensureSchema` goes), the three legacy KV namespaces empty (then the fallback and bindings go), and `VAPID_PRIVATE_KEY` set as a secret (then its KV binding goes). Checked on 2026-10-26: none of the three holds yet (see the account checkpoint) |
 | C13-6 | Approve | 2026-10-26 | Done. SDK 3.1.0 (the dev-only zod advisory is gone; full audit clean), `UPDATING.md`, package `AGENTS.md` and `CLAUDE.md`. `make arm` packs 0.5.0:0. `start-cli` here is 2.3.0, behind the published 2.5.1 |
 | C13-7a | Approve | 2026-10-26 | Done. An exact `push-relay-v<version>` tag tests and publishes amd64/arm64 to GHCR. The relay application now lives in `push-relay/`; `taskify-push-relay/` contains only the StartOS package and pins the public versioned image. The two packages have independent dependencies, tests and CI jobs, with no duplicated application source |
 | C13-8 | Approve | 2026-10-26 | Reminder titles done: the PWA sends none, and the Worker stores none and returns none; migration 0008 clears stored titles. The service worker names a fired reminder from the device's IndexedDB copy (`public/reminder-titles.js`), kept only while push is on. Checked in a production build in the browser. Found on the way and fixed separately: the PWA's service worker never registered after the async bootstrap (`020e78df`). Preview and NIP-05 lookups now send their input in a POST body (`workerLookups.ts`). The Worker answers both forms, and in its local runtime the POST log lines show no link or name. **Remove the GET forms** once builds before this change are gone, about a month after it ships |
@@ -4778,4 +4778,27 @@ assets and the two VAPID `[vars]` only.
 1. Push and merge Beta. The deploy no longer references any namespace.
 2. Run `wrangler secret put VAPID_PRIVATE_KEY --name taskify-public` with the key from the relay's
    configuration.
+
+### Checkpoint — October 29, 2026 (the VAPID key is a secret, and pings are signed again)
+
+- **The merge deployed** (`e31209ef` → version `22cb0dd0`, 11:13 UTC) with no KV binding.
+- **The first `secret put` had not taken.** The last secret change on `taskify-public` was still
+  from Oct 27, which fits a run before the deploy that hit the deleted namespace again. The rerun
+  succeeded and deployed `fa92ec91` at 11:24 UTC. The Worker's secrets are now
+  `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` and `VAPID_PRIVATE_KEY`.
+- **A reminder from the iPhone proved it:**
+
+  | Time (UTC) | Event |
+  | --- | --- |
+  | 11:25:14 | the sync is stored, due 11:30:00 |
+  | 11:30:51 | cron run on `fa92ec91`: 741 ms against 100–250 ms idle, with no "Push ping error" or "Push ping failed" logged |
+  | 11:30:52 | the service worker's poll → 200, then 204 |
+
+  The Worker has no key source other than the secret, so the secret signs pings and Apple accepts
+  them.
+
+**C13-5 is complete:**
+- the schema comes from migrations;
+- no KV namespace is bound or exists;
+- the private key is a secret.
 
