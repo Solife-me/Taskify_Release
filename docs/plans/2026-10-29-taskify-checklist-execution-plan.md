@@ -49,7 +49,7 @@ User testing is valuable but is not a prerequisite for marking work complete.
 | 2 | Finish and commit CLI relay rate-limit work | Complete | `a5ef6b1a` | 91 runtime tests + 225 CLI tests |
 | 3 | Keep attachment file names private on every upload path | Complete | `ea845460` | cross-client tests + iOS/Watch build |
 | 4 | Stop PWA task editing from waiting for relay publication | Complete | `4917b490` | PWA 768 passed/14 skipped; lint; build; startup 420.2/440 KB; relay failures stay queued |
-| 5 | Show attachment download progress across clients | Not started | - | progress/error tests |
+| 5 | Show attachment download progress across clients | Complete | `798dffe3` | PWA 770/14 skipped; lint/build/startup 420.7 KB; Swift 5/5; iOS/Watch/share/Mac builds |
 | 6 | Add shared Hermes bot-menu parser | Not started | - | TS + Swift vectors |
 | 7 | Add interactive bot model picker to PWA | Not started | - | PWA tests + browser check |
 | 8 | Add interactive bot model picker to iOS/macOS | Not started | - | Swift tests + simulator |
@@ -324,6 +324,7 @@ Verification: tests for confirmation/deselection, wrong page, duplicate task IDs
 | 2026-10-29 | 2 | `codex/checklist-iterations-2-4` | `a5ef6b1a` | `taskify-runtime-nostr`: 91/91; `taskify-cli`: 225/225 | Finished existing WIP; committed only CLI/runtime rate-limit files and regenerated runtime dist |
 | 2026-10-29 | 3 | `codex/checklist-iterations-2-4` | `ea845460` | core 175/175; PWA 765 passed/14 skipped; CLI 226/226; PWA lint; Swift filename tests 3/3; unsigned iOS app + Watch + share extension build | Shared opaque filename rule; original names remain only in encrypted metadata; legacy URLs unchanged |
 | 2026-10-29 | 4 | `codex/checklist-iterations-2-4` | `4917b490` | PWA 768 passed/14 skipped; lint; production build; startup 420.2 KB gz of 440 KB budget | Added non-blocking durable queue path; editor now closes after local intent acceptance and relay failures remain queued |
+| 2026-10-29 | 5 | `codex/checklist-iterations-5-9` | `798dffe3` | PWA 770 passed/14 skipped; lint; build; startup 420.7 KB; Swift 5/5; unsigned iOS app/Watch/share extension and Mac app builds | Streamed body progress in PWA; native URLSession byte progress in chat/task attachments; indeterminate fallback when length is unknown |
 
 ## Handoff checklist
 
