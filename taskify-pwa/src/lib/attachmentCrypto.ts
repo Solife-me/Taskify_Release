@@ -1,3 +1,4 @@
+import { opaqueUploadFilename } from "taskify-core";
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
 import { toBufferSource } from "./binary";
@@ -104,6 +105,9 @@ export async function encryptAndUploadAttachment(opts: {
   combined.set(iv, ATTACHMENT_V2_MAGIC.length);
   combined.set(new Uint8Array(ctBuf), ATTACHMENT_V2_MAGIC.length + iv.length);
   const ciphertextSha256 = await sha256Hex(combined);
+  // The file host sees only a content-addressed ciphertext name. This prevents the original
+  // filename or extension from becoming public through multipart metadata or the returned URL.
+  const uploadFilename = opaqueUploadFilename(ciphertextSha256);
   attachmentDebug("encrypt:complete", {
     filename: opts.filename,
     plaintextBytes: opts.data.byteLength,
@@ -111,7 +115,7 @@ export async function encryptAndUploadAttachment(opts: {
     ciphertextSha256,
     ciphertextSampleHex: sampleHex(combined),
     uploadContentType: "application/octet-stream",
-    uploadFilename: opts.filename,
+    uploadFilename,
     plaintextUploaded: false,
   });
   const blob = new Blob([combined], { type: "application/octet-stream" });
@@ -124,11 +128,12 @@ export async function encryptAndUploadAttachment(opts: {
       plaintextBytes: opts.data.byteLength,
       ciphertextBytes: combined.byteLength,
       ciphertextSha256,
+      uploadFilename,
       plaintextUploaded: false,
     },
     serverEntry: opts.serverEntry,
     file: blob,
-    filename: opts.filename,
+    filename: uploadFilename,
     contentType: "application/octet-stream",
     signer: opts.nostrSkHex,
     signal: opts.signal,

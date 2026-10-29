@@ -353,13 +353,21 @@ enum TaskifyWatchAudioTransfer {
         return file
     }
 
+    static func opaqueUploadFilename(ciphertextSHA256: String) -> String? {
+        let hash = ciphertextSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else { return nil }
+        return hash + ".bin"
+    }
+
     static func upload(
         _ encrypted: TaskifyWatchEncryptedAudio,
-        filename: String,
         serverURL: String,
         serverType: String,
         privateKey: Data
     ) async throws -> String {
+        guard let uploadFilename = opaqueUploadFilename(ciphertextSHA256: encrypted.sha256) else {
+            throw TaskifyWatchAudioError.invalidAttachment
+        }
         guard let base = URL(string: serverURL), base.scheme?.lowercased() == "https", base.host != nil else {
             throw TaskifyWatchAudioError.invalidServer
         }
@@ -395,7 +403,7 @@ enum TaskifyWatchAudioTransfer {
             let boundary = "TaskifyWatch-\(UUID().uuidString)"
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.httpBody = multipart(
-                encrypted.ciphertext, filename: filename, boundary: boundary, includeMetadata: isNIP96
+                encrypted.ciphertext, filename: uploadFilename, boundary: boundary, includeMetadata: isNIP96
             )
             if isNIP96 {
                 request.setValue(try authHeader(

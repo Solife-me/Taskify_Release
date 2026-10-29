@@ -9,6 +9,7 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 - [Taskify Agent Mode](reference/agent-mode.md)
 - [Cross-Device App State Sync](reference/app-state-sync.md)
 - [Taskify Shared Architecture Boundaries](reference/architecture-boundaries.md)
+- [Encrypted Attachment Filename Privacy](reference/attachment-file-privacy.md)
 - [Taskify Architecture Overview](reference/architecture-overview.md)
 - [Bot Command Lists (NIP-51)](reference/bot-command-lists.md)
 - [Cashu Wallet Layer](reference/cashu-wallet-layer.md)

@@ -17,6 +17,7 @@
 //   0xchat-app-business ox_chat/lib/utils/send_message/chat_send_message_helper.dart:105-111
 //   0xchat-app-base ox_common/lib/utils/aes_encrypt_utils.dart:15-43
 
+import { opaqueUploadFilename } from "taskify-core";
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
 import { toBlobPart, toBufferSource } from "./binary";
@@ -108,7 +109,7 @@ export async function encryptAndUploadMessengerAttachment(opts: {
   // filename still rides along in the NIP-17 rumor's `filename` tag, so the
   // recipient sees the original name. This also avoids leaking the user's
   // filename to the file host.
-  const uploadFilename = `${ciphertextSha256}.bin`;
+  const uploadFilename = opaqueUploadFilename(ciphertextSha256);
   const blob = new Blob([ciphertext], { type: "application/octet-stream" });
   const upload = await uploadFile({
     debugMeta: {

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fixedFileUploadURL, resolveOriginlessUploadURL } from "taskify-core";
 import { uploadImageToNip96 } from "./nip96Upload.js";
+import { attachmentUploadFilename } from "./attachmentUploadNaming.js";
 import type { TaskifyConfig } from "./config.js";
 
 export type CliTaskDocument = {
@@ -151,10 +152,11 @@ export async function buildAttachmentDocuments(opts: {
     if (!nsec) throw new Error("Shared attachment upload requires an nsec in CLI config.");
     const serverUrl = opts.fileServer || opts.config.encryptedFileStorageServer || "https://originless.solife.me";
     const encrypted = encryptAttachmentBytes(opts.boardId, new Uint8Array(bytes));
+    const uploadFilename = attachmentUploadFilename(encrypted);
     const serverType = inferServerType(serverUrl);
     let remoteUrl = "";
     if (serverType === "originless" || serverType === "blossom") {
-      remoteUrl = await uploadBlobToOriginless(serverUrl, encrypted, `${name}.bin`, "application/octet-stream");
+      remoteUrl = await uploadBlobToOriginless(serverUrl, encrypted, uploadFilename, "application/octet-stream");
     } else {
       // A private directory and owner-only file, not a guessable name in the shared /tmp.
       const fs = await import("node:fs/promises");

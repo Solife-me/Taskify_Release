@@ -10,6 +10,18 @@ export function fixedFileUploadRoute(type) {
 export function fixedFileUploadURL(serverURL, type) {
     return `${serverURL.replace(/\/+$/, "")}${fixedFileUploadRoute(type).path}`;
 }
+export const OPAQUE_UPLOAD_FILENAME_SUFFIX = ".bin";
+/**
+ * A content-addressed name for encrypted upload bytes. It deliberately contains no original
+ * filename, extension, MIME type, or account metadata; only ciphertext is reachable at this name.
+ */
+export function opaqueUploadFilename(ciphertextSha256) {
+    const hash = ciphertextSha256.trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hash)) {
+        throw new Error("Ciphertext SHA-256 must be 64 hexadecimal characters.");
+    }
+    return `${hash}${OPAQUE_UPLOAD_FILENAME_SUFFIX}`;
+}
 /** Deliberately shallow: enough to distinguish a CID from a path or sentence. */
 function isPlausibleCID(value) {
     return (value.length >= 46 || value.startsWith("b")) && /^[A-Za-z0-9]+$/.test(value);

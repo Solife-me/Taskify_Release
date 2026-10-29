@@ -7,5 +7,11 @@ export declare const TASKIFY_IPFS_GATEWAY_BASE = "https://dweb.link";
 /** Fixed upload routes shared by the PWA, CLI and native clients. NIP-96 discovers its route. */
 export declare function fixedFileUploadRoute(type: FixedFileUploadServerType): FixedFileUploadRoute;
 export declare function fixedFileUploadURL(serverURL: string, type: FixedFileUploadServerType): string;
+export declare const OPAQUE_UPLOAD_FILENAME_SUFFIX = ".bin";
+/**
+ * A content-addressed name for encrypted upload bytes. It deliberately contains no original
+ * filename, extension, MIME type, or account metadata; only ciphertext is reachable at this name.
+ */
+export declare function opaqueUploadFilename(ciphertextSha256: string): string;
 /** Resolves the URL shapes returned by Originless, including its CID-only response. */
 export declare function resolveOriginlessUploadURL(serverURL: string, payload: unknown): string;

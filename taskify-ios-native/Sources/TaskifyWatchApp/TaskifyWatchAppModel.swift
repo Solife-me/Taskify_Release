@@ -508,7 +508,6 @@ final class TaskifyWatchAppModel: NSObject {
             let encrypted = try TaskifyWatchAudioTransfer.encrypt(fileURL)
             let remoteURL = try await TaskifyWatchAudioTransfer.upload(
                 encrypted,
-                filename: filename,
                 serverURL: serverURL,
                 serverType: serverType,
                 privateKey: privateKey

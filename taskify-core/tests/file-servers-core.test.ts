@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   fixedFileUploadRoute,
   fixedFileUploadURL,
+  opaqueUploadFilename,
   resolveOriginlessUploadURL,
   type FixedFileUploadServerType,
 } from "../dist/index.js";
@@ -23,9 +24,27 @@ type ResponseVector = {
   remoteURL: string;
 };
 
+type OpaqueUploadVector = {
+  name: string;
+  sha256: string;
+  filename: string;
+};
+
 const fixture = JSON.parse(
   readFileSync(new URL("../fixtures/file-server-upload-vectors.json", import.meta.url), "utf8"),
-) as { routes: RouteVector[]; responses: ResponseVector[] };
+) as { opaqueUploads: OpaqueUploadVector[]; routes: RouteVector[]; responses: ResponseVector[] };
+
+for (const vector of fixture.opaqueUploads) {
+  test(`opaque upload filename: ${vector.name}`, () => {
+    assert.equal(opaqueUploadFilename(vector.sha256), vector.filename);
+  });
+}
+
+test("opaque upload filenames reject anything except a SHA-256 digest", () => {
+  assert.throws(() => opaqueUploadFilename("contract-final.pdf"), /SHA-256/);
+  assert.throws(() => opaqueUploadFilename("a".repeat(63)), /SHA-256/);
+  assert.throws(() => opaqueUploadFilename(`${"a".repeat(63)}z`), /SHA-256/);
+});
 
 for (const vector of fixture.routes) {
   test(`file upload route: ${vector.name}`, () => {

@@ -10,6 +10,22 @@ public struct EncryptedFileUploadRequest: Sendable {
 /// Shared by in-app transfers and the share extension's background URL session.
 /// The input must already be authenticated ciphertext; only ciphertext touches the host.
 public enum EncryptedFileUpload {
+    public static let opaqueUploadSuffix = ".bin"
+
+    /// Content-addressed name for encrypted bytes. It deliberately carries no original filename,
+    /// extension, MIME type, or account metadata.
+    public static func opaqueFilename(ciphertextSHA256: String) throws -> String {
+        let hash = ciphertextSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else {
+            throw AttachmentFileError.invalidFile
+        }
+        return hash + opaqueUploadSuffix
+    }
+
+    public static func opaqueFilename(for ciphertext: URL) throws -> String {
+        try opaqueFilename(ciphertextSHA256: AttachmentFiles.sha256(ciphertext))
+    }
+
     public static func prepare(file: URL, filename: String, server: TaskifyFileServerEntry,
                                privateKey: Data?, directory: URL? = nil,
                                session: URLSession = .shared) async throws -> EncryptedFileUploadRequest {

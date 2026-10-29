@@ -174,7 +174,7 @@ actor TaskAttachmentUploadService {
         }
         let encrypted = try AttachmentFileCrypto.encryptTask(fileURL, boardID: boardID)
         defer { try? FileManager.default.removeItem(at: encrypted) }
-        let remote = try await upload(encrypted, filename: name)
+        let remote = try await upload(encrypted, filename: try EncryptedFileUpload.opaqueFilename(for: encrypted))
         guard let document = TaskDocumentContract.remoteDocument(name: name, mimeType: mimeType,
             size: size, remoteURL: remote, boardID: boardID) else { throw TaskAttachmentUploadError.unsupportedFile }
         return document
@@ -195,7 +195,8 @@ actor TaskAttachmentUploadService {
         let encrypted = try AttachmentFileCrypto.encryptChat(fileURL, progress: progress)
         defer { try? FileManager.default.removeItem(at: encrypted.url) }
         try Task.checkCancellation()
-        let remote = try await upload(encrypted.url, filename: "\(encrypted.sha256).bin", progress: progress)
+        let uploadFilename = try EncryptedFileUpload.opaqueFilename(ciphertextSHA256: encrypted.sha256)
+        let remote = try await upload(encrypted.url, filename: uploadFilename, progress: progress)
         guard let attachment = NostrDirectMessageAttachment(url: remote, mimeType: mimeType, filename: name,
             size: encrypted.plaintextSize, width: width, height: height,
             keyHex: encrypted.keyHex, nonceHex: encrypted.nonceHex, sha256: encrypted.sha256) else {
