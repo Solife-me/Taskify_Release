@@ -598,7 +598,7 @@ struct BoardsView: View {
 
         guard !rows.isEmpty else { return nil }
         return PhysicalChecklistJob(
-            ownerID: "board:\(board.id)",
+            ownerID: "board:\(board.effectiveNostrBoardID)",
             title: board.name,
             items: rows.map {
                 PhysicalChecklistItem(id: $0.task.id, title: $0.task.title, section: $0.section)
@@ -649,7 +649,7 @@ struct BoardsView: View {
 
         guard !items.isEmpty else { return nil }
         return PhysicalChecklistJob(
-            ownerID: "board:\(board.id)",
+            ownerID: "board:\(board.effectiveNostrBoardID)",
             title: board.name,
             items: items
         )

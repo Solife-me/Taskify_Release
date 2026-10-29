@@ -4657,6 +4657,7 @@ final class AppModel {
         managedAccountBackupBoardIDs = payload.nativeManagedNostrBoardIDs
         lastAccountBackupCreatedAt = max(lastAccountBackupCreatedAt, payload.timestamp)
         applySyncedSettings(from: payload)
+        PhysicalChecklistJobStore.merge(payload.printJobs)
         let result = snapshot.mergePWAAccountBackup(payload)
         let imported = result.importedBoardCount
         let updated = result.updatedBoardCount
@@ -7084,6 +7085,19 @@ final class AppModel {
         }
     }
 
+    /// Saves the printable row-to-task manifest locally and queues it in encrypted account sync.
+    func recordPhysicalChecklistJob(_ job: PhysicalChecklistJob) {
+        PhysicalChecklistJobStore.save(job)
+        if var baseline = accountBackupBaseline {
+            baseline.printJobs = NostrPrintJobManifest.merged(
+                remote: baseline.printJobs,
+                local: [NostrPrintJobManifest(job: job)]
+            )
+            accountBackupBaseline = baseline
+        }
+        scheduleAccountBackupPublish()
+    }
+
     private func publishAccountBackupSafely() async {
         guard accountBackupBaseline != nil else { return }
         let identity: NostrIdentity
@@ -7132,6 +7146,11 @@ final class AppModel {
             snapshot.boards,
             managedNostrBoardIDs: managedAccountBackupBoardIDs,
             timestamp: createdAt
+        )
+        let localPrintJobs = PhysicalChecklistJobStore.loadAll().values.map(NostrPrintJobManifest.init(job:))
+        updatedPayload.printJobs = NostrPrintJobManifest.merged(
+            remote: remotePayload.printJobs,
+            local: localPrintJobs
         )
         updatedPayload.settings[TaskifyMediaServerSettings.selectedServerPWAKey] = .string(
             encryptedMediaServerURL

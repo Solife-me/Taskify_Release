@@ -69,6 +69,112 @@ public struct PhysicalChecklistJob: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Wire representation stored in the encrypted account backup so any Taskify client can scan
+/// the latest sheet printed for a board. Dates use epoch seconds for TypeScript compatibility.
+public struct NostrPrintJobManifest: Codable, Equatable, Sendable {
+    public var version = 1
+    public var layoutVersion: String
+    public var id: String
+    public var ownerID: String
+    public var title: String
+    public var createdAt: Int
+    public var paper: PhysicalChecklistPaper
+    public var format: PhysicalChecklistJob.Format
+    public var items: [PhysicalChecklistItem]
+
+    public init(job: PhysicalChecklistJob) {
+        layoutVersion = BoardPrintContract.version
+        id = job.id
+        ownerID = job.ownerID
+        title = job.title
+        createdAt = Int(job.createdAt.timeIntervalSince1970)
+        paper = job.paper
+        format = job.format
+        items = job.items
+    }
+
+    public var job: PhysicalChecklistJob? {
+        guard version == 1, BoardPrintContract.isSupportedVersion(layoutVersion),
+              !id.isEmpty, !ownerID.isEmpty else { return nil }
+        return PhysicalChecklistJob(
+            id: id,
+            ownerID: ownerID,
+            title: title,
+            createdAt: Date(timeIntervalSince1970: TimeInterval(createdAt)),
+            paper: paper,
+            format: format,
+            items: items
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, layoutVersion, id, ownerID = "ownerId", title, createdAt, paper, format, items
+    }
+
+    public static func merged(
+        remote: [NostrPrintJobManifest],
+        local: [NostrPrintJobManifest],
+        limit: Int = 20
+    ) -> [NostrPrintJobManifest] {
+        var newest: [String: NostrPrintJobManifest] = [:]
+        for manifest in remote + local where manifest.version == 1 && !manifest.ownerID.isEmpty {
+            guard let current = newest[manifest.ownerID] else {
+                newest[manifest.ownerID] = manifest
+                continue
+            }
+            if manifest.createdAt > current.createdAt
+                || (manifest.createdAt == current.createdAt && manifest.id > current.id) {
+                newest[manifest.ownerID] = manifest
+            }
+        }
+        return Array(newest.values)
+            .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.ownerID < $1.ownerID }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
+
+/// Device-local cache for the most recent printable manifest per logical owner.
+///
+/// The cache lives in TaskifyCore because both the iOS and macOS app targets use the
+/// shared `AppModel` account-backup integration, while their presentation sources differ.
+public enum PhysicalChecklistJobStore {
+    private static let key = "taskify.physical-checklist.latest-jobs.v1"
+
+    public static func save(_ job: PhysicalChecklistJob) {
+        var jobs = loadAll()
+        jobs[job.ownerID] = job
+        persist(jobs)
+    }
+
+    public static func load(ownerID: String) -> PhysicalChecklistJob? {
+        loadAll()[ownerID]
+    }
+
+    public static func loadAll() -> [String: PhysicalChecklistJob] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let jobs = try? JSONDecoder().decode([String: PhysicalChecklistJob].self, from: data) else {
+            return [:]
+        }
+        return jobs
+    }
+
+    public static func merge(_ manifests: [NostrPrintJobManifest]) {
+        var jobs = loadAll()
+        for manifest in manifests {
+            guard let job = manifest.job else { continue }
+            if let current = jobs[job.ownerID], current.createdAt > job.createdAt { continue }
+            jobs[job.ownerID] = job
+        }
+        persist(jobs)
+    }
+
+    private static func persist(_ jobs: [String: PhysicalChecklistJob]) {
+        guard let data = try? JSONEncoder().encode(jobs) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+}
+
 public struct PhysicalChecklistRow: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case section(String)

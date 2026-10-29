@@ -50,3 +50,17 @@ test("the first backup (none on the relays) is this device's snapshot", () => {
   assert.deepEqual(next.boards.map((b) => b.nostrId), ["mine"]);
   assert.equal(next.walletSeed, undefined);
 });
+
+test("the newest encrypted print manifest survives per board across client publishes", () => {
+  const manifest = (id: string, ownerId: string, createdAt: number) => ({
+    version: 1 as const, layoutVersion: "v3", id, ownerId, title: ownerId,
+    createdAt, paper: "letter" as const, format: "taskList" as const,
+    items: [{ id: `task-${id}`, title: "Task" }],
+  });
+  const next = updateRemoteNostrBackup(
+    { boards: [], settings: {}, printJobs: [manifest("remote-new", "board:a", 20), manifest("remote-only", "board:b", 10)] },
+    { boards: [], settings: {}, defaultRelays: [], printJobs: [manifest("local-old", "board:a", 15), manifest("local", "board:c", 30)] },
+    { managedNostrIds: [], includeMetadata: true },
+  );
+  assert.deepEqual(next.printJobs?.map((job) => job.id), ["local", "remote-new", "remote-only"]);
+});

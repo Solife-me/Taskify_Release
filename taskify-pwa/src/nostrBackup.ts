@@ -1,7 +1,7 @@
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip44 } from "nostr-tools";
 import type { WalletSeedBackupPayload } from "./wallet/seed";
-import type { NostrAppBackupBoard } from "taskify-core";
+import type { NostrAppBackupBoard, NostrPrintJobManifest } from "taskify-core";
 
 export const NOSTR_APP_BACKUP_KIND = 30078;
 export const NOSTR_APP_BACKUP_D_TAG = "taskify-app-backup";
@@ -16,6 +16,7 @@ export type NostrAppBackupPayload = {
   settings: Record<string, unknown>;
   walletSeed?: WalletSeedBackupPayload | null;
   defaultRelays?: string[];
+  printJobs?: NostrPrintJobManifest[];
 };
 
 function ensureNip44v2() {
@@ -59,6 +60,9 @@ export async function decryptNostrBackupPayload(
   const defaultRelays = Array.isArray(defaultRelaysRaw)
     ? defaultRelaysRaw.filter((r) => typeof r === "string" && r.trim())
     : undefined;
+  const printJobs = Array.isArray((parsed as any).printJobs)
+    ? (parsed as any).printJobs.filter((job: unknown) => job && typeof job === "object") as NostrPrintJobManifest[]
+    : undefined;
   return {
     version: 1,
     timestamp,
@@ -66,5 +70,6 @@ export async function decryptNostrBackupPayload(
     settings,
     walletSeed: (parsed as any).walletSeed as WalletSeedBackupPayload,
     defaultRelays,
+    printJobs,
   };
 }

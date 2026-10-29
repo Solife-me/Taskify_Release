@@ -1,6 +1,6 @@
 import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
 import { useReminderSync } from "./domains/push/useReminderSync";
-import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
+import { loadBoardPrintJobs, saveBoardPrintJobs } from "./storage/boardPrintJobs";
 import { useAppRouter } from "./routing/appRouter";
 import { routeForPage, type ActivePage, type AppOverlayRoute, type AppSheetRoute } from "./routing/appRoute";
 import { useOverlayHistory, useRouteOverlayOpener } from "./routing/useOverlayHistory";
@@ -646,6 +646,7 @@ export default function App() {
   const [boardPrintChooserOpen, setBoardPrintChooserOpen] = useState(false);
   const [boardScanOpen, setBoardScanOpen] = useState(false);
   const [boardPrintJob, setBoardPrintJob] = useState<BoardPrintJob | null>(null);
+  const [boardPrintJobs, setBoardPrintJobs] = useState<Record<string, BoardPrintJob>>(() => loadBoardPrintJobs());
   const boardPrintPortal = usePrintPortal("board-print-portal");
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
   scriptureEntriesRef.current = scriptureMemory.entries;
@@ -1463,10 +1464,12 @@ export default function App() {
     nostrPublishRef,
     nostrSK,
     pool,
+    printJobs: boardPrintJobs,
     scriptureMemory,
     setBibleTracker,
     setBoards,
     setDefaultRelays,
+    setPrintJobs: setBoardPrintJobs,
     setScriptureMemory,
     setSettings,
     settings,
@@ -2637,6 +2640,14 @@ export default function App() {
     setBoardPrintChooserOpen(true);
   }, [closeShareBoard, currentBoard]);
 
+  const rememberBoardPrintJob = useCallback((job: BoardPrintJob) => {
+    setBoardPrintJobs((previous) => {
+      const next = { ...previous, [job.boardId]: job };
+      saveBoardPrintJobs(next);
+      return next;
+    });
+  }, []);
+
   const handleContinueBoardPrint = useCallback((scope: BoardPrintScope) => {
     if (!currentBoard) return;
     const tasks = scope.kind === "selection"
@@ -2653,6 +2664,7 @@ export default function App() {
     const job: BoardPrintJob = {
       id: crypto.randomUUID(),
       boardId: currentBoard.id,
+      ownerId: `board:${currentBoard.nostr?.boardId || currentBoard.id}`,
       boardName: scope.kind === "lists" ? `${currentBoard.name || "Board"} – Lists` : currentBoard.name || "Board",
       printedAtISO: new Date().toISOString(),
       layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
@@ -2662,9 +2674,9 @@ export default function App() {
     };
     setBoardPrintChooserOpen(false);
     setBoardPrintJob(job);
-    persistBoardPrintJob(job);
+    rememberBoardPrintJob(job);
     setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, currentBoard, selectedItemIds, settings.completedTab, showToast]);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, currentBoard, rememberBoardPrintJob, selectedItemIds, settings.completedTab, showToast]);
 
   const listColumnGroupIds = useCallback((columnId: string): string[] => {
     const taskIds = (itemsByColumn.get(columnId) ?? []).filter((t) => !t.completed).map((t) => t.id);
@@ -2713,6 +2725,7 @@ export default function App() {
     const job: BoardPrintJob = {
       id: crypto.randomUUID(),
       boardId: currentBoard.id,
+      ownerId: `board:${currentBoard.nostr?.boardId || currentBoard.id}`,
       boardName: `${currentBoard.name || "Board"} – Selected`,
       printedAtISO: new Date().toISOString(),
       layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
@@ -2721,29 +2734,29 @@ export default function App() {
       tasks,
     };
     setBoardPrintJob(job);
-    persistBoardPrintJob(job);
+    rememberBoardPrintJob(job);
     setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, selectedItemIds, settings.completedTab, showToast]);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, rememberBoardPrintJob, selectedItemIds, settings.completedTab, showToast]);
 
   const handleBoardPaperSizeChange = useCallback((paperSize: PrintPaperSize) => {
     setBoardPrintJob((prev) => {
       if (!prev || prev.paperSize === paperSize) return prev;
       const next = { ...prev, paperSize };
-      persistBoardPrintJob(next);
+      rememberBoardPrintJob(next);
       return next;
     });
-  }, []);
+  }, [rememberBoardPrintJob]);
 
   const handleOpenBoardScan = useCallback(() => {
     if (!currentBoard) return;
-    const job = loadBoardPrintJob(currentBoard.id);
+    const job = boardPrintJobs[currentBoard.id];
     if (!job || job.tasks.length === 0) {
       showToast("Print this board before scanning.", 2500);
       return;
     }
     setBoardPrintJob(job);
     setBoardScanOpen(true);
-  }, [currentBoard, showToast]);
+  }, [boardPrintJobs, currentBoard, showToast]);
 
   function handleApplyBoardScan(taskIds: string[]) {
     if (!taskIds.length) {

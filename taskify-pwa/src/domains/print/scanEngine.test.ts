@@ -164,6 +164,22 @@ describe("scanning a board sheet", () => {
     const cropped: Placement = [{ x: -200, y: -150 }, { x: 900, y: -150 }, { x: 900, y: 1300 }, { x: -200, y: 1300 }];
     expect(() => scanBoard(photograph(board, boardSheet(board, 0, new Set(["t1"])), cropped))).toThrow(/markers/i);
   });
+
+  test("does not guess a task page when a multi-page page ID is unreadable", () => {
+    const manyTasks = Array.from({ length: 80 }, (_, i) => ({ id: `multi-${i}`, title: `Task ${i}` }));
+    const multi = buildBoardPrintLayout(manyTasks, { jobId: "multi-page-job" });
+    expect(multi.pages.length).toBeGreaterThan(1);
+    const pageIdPositions = new Set(multi.pageId.positionsMm.map((point) => `${point.x}:${point.y}`));
+    const withoutPageId = boardSheet(multi, 1, new Set([manyTasks[30].id])).filter((shape) =>
+      shape.kind !== "rect" || !pageIdPositions.has(`${shape.x}:${shape.y}`),
+    );
+    expect(() => scanPage(photograph(multi, withoutPageId, upright), multi, {
+      pageSelection: "auto",
+      pageCount: multi.pages.length,
+      marksOnPage: (pageIndex) => boardScanMarks(multi, pageIndex),
+      geometry: boardGeometry(multi),
+    })).toThrow(/page number/i);
+  });
 });
 
 describe("scanning the Bible tracker", () => {

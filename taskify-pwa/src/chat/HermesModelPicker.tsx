@@ -21,6 +21,7 @@ type PickerView =
 type CachedCatalogView = {
   catalog: HermesProviderCatalog;
   fetchedAt: number;
+  listingId: string;
 };
 
 export type HermesModelPickerProps = {
@@ -82,7 +83,7 @@ export function HermesModelPicker({ peerPubkey, projection, sendBotUiCommand }: 
       for (const [slug, catalog] of projection.catalogs) {
         const existing = next.get(slug);
         if (!existing || existing.catalog !== catalog) {
-          next.set(slug, { catalog, fetchedAt });
+          next.set(slug, { catalog, fetchedAt, listingId: listingEventId });
           saveHermesCatalogCache(peerPubkey, listingEventId, catalog, fetchedAt);
         }
       }
@@ -140,6 +141,7 @@ export function HermesModelPicker({ peerPubkey, projection, sendBotUiCommand }: 
           models: entry.models,
         },
         fetchedAt: entry.fetchedAt,
+        listingId: entry.listingId,
       });
       return next;
     });
@@ -153,7 +155,7 @@ export function HermesModelPicker({ peerPubkey, projection, sendBotUiCommand }: 
     const cacheEntry = loadHermesCatalogCache(peerPubkey, listingEventId, providerSlug);
     rememberCache(providerSlug, cacheEntry);
     const hasAnyCatalog = !!liveCatalog || !!cacheEntry;
-    const isFresh = !!liveCatalog || (!!cacheEntry && isHermesCatalogCacheFresh(cacheEntry));
+    const isFresh = !!liveCatalog || (!!cacheEntry && isHermesCatalogCacheFresh(cacheEntry, Date.now(), listingEventId));
     if (!hasAnyCatalog || !isFresh) {
       void requestCatalog(providerSlug);
     }
@@ -211,8 +213,8 @@ export function HermesModelPicker({ peerPubkey, projection, sendBotUiCommand }: 
       providerName: activeCatalogView.catalog.providerName,
       models: activeCatalogView.catalog.models,
       fetchedAt: activeCatalogView.fetchedAt,
-      listingId: listingEventId,
-    });
+      listingId: activeCatalogView.listingId,
+    }, Date.now(), listingEventId);
   const showConfirmation = view.kind === "overview" && !!projection.selectedModel;
   const currentLabel = projection.selectedModel?.modelId || listing.currentModel || "Model not reported";
   const currentProviderSlug = projection.selectedModel?.providerSlug || listing.currentProviderSlug;

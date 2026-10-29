@@ -129,6 +129,26 @@ export function mergeBackupBoards(options) {
     }
     return changed ? next : currentBoards;
 }
+const MAX_SYNCED_PRINT_JOBS = 20;
+function validPrintJob(job) {
+    return !!job && job.version === 1 && !!job.id && !!job.ownerId && Number.isFinite(job.createdAt)
+        && Array.isArray(job.items);
+}
+/** Newest manifest wins per stable board/tracker owner; cap history to keep the event bounded. */
+export function mergeNostrPrintJobs(remote, local) {
+    const newest = new Map();
+    for (const job of [...(remote ?? []), ...(local ?? [])]) {
+        if (!validPrintJob(job))
+            continue;
+        const current = newest.get(job.ownerId);
+        if (!current || job.createdAt > current.createdAt || (job.createdAt === current.createdAt && job.id > current.id)) {
+            newest.set(job.ownerId, job);
+        }
+    }
+    return [...newest.values()]
+        .sort((a, b) => b.createdAt - a.createdAt || a.ownerId.localeCompare(b.ownerId))
+        .slice(0, MAX_SYNCED_PRINT_JOBS);
+}
 /**
  * The backup to publish: the latest one on the relays, updated with this device's snapshot. The
  * same rule as iOS (`updatingNativeBoards`), and the only safe one for a backup several devices
@@ -154,6 +174,7 @@ export function updateRemoteNostrBackup(remote, local, options) {
             settings: remoteSettings,
             ...(walletSeed ? { walletSeed } : {}),
             defaultRelays: remote?.defaultRelays ?? [],
+            printJobs: mergeNostrPrintJobs(remote?.printJobs, local.printJobs),
             managedNostrIds: [...managed].sort(),
         };
     }
@@ -170,6 +191,7 @@ export function updateRemoteNostrBackup(remote, local, options) {
         settings: { ...remoteSettings, ...local.settings },
         ...(walletSeed ? { walletSeed } : {}),
         defaultRelays: local.defaultRelays,
+        printJobs: mergeNostrPrintJobs(remote?.printJobs, local.printJobs),
         managedNostrIds: [...managed].sort(),
     };
 }

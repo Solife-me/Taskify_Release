@@ -1859,9 +1859,9 @@ private struct HermesModelCatalogCacheEntry: Codable, Equatable {
     let listingID: String
     let fetchedAt: TimeInterval
 
-    var isFresh: Bool {
+    func isFresh(for currentListingID: String) -> Bool {
         let age = Date().timeIntervalSince1970 - fetchedAt
-        return age >= 0 && age < 10 * 60
+        return listingID == currentListingID && age >= 0 && age < 10 * 60
     }
 }
 
@@ -1876,8 +1876,8 @@ private final class HermesModelCatalogCache {
         self.defaults = defaults
     }
 
-    private func key(peer: String, listingID: String, provider: String) -> String {
-        "\(peer.lowercased())|\(listingID)|\(provider.lowercased())"
+    private func key(peer: String, provider: String) -> String {
+        "\(peer.lowercased())|\(provider.lowercased())"
     }
 
     private func loadMap() -> [String: HermesModelCatalogCacheEntry] {
@@ -1889,9 +1889,8 @@ private final class HermesModelCatalogCache {
     }
 
     func load(peer: String, listingID: String, provider: String) -> HermesModelCatalogCacheEntry? {
-        let entry = loadMap()[key(peer: peer, listingID: listingID, provider: provider)]
+        let entry = loadMap()[key(peer: peer, provider: provider)]
         guard let entry,
-              entry.listingID == listingID,
               entry.providerSlug.caseInsensitiveCompare(provider) == .orderedSame,
               entry.models.allSatisfy(HermesModelMenuParser.isValidModelId) else { return nil }
         return entry
@@ -1899,7 +1898,7 @@ private final class HermesModelCatalogCache {
 
     func save(peer: String, listingID: String, catalog: HermesProviderCatalog) {
         var map = loadMap()
-        map[key(peer: peer, listingID: listingID, provider: catalog.providerSlug)] =
+        map[key(peer: peer, provider: catalog.providerSlug)] =
             HermesModelCatalogCacheEntry(
                 providerSlug: catalog.providerSlug,
                 providerName: catalog.providerName,
@@ -2228,7 +2227,7 @@ struct HermesModelPickerChatView: View {
                 }
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.secondaryText)
-            } else if let cacheEntry, !cacheEntry.isFresh, !isLoading {
+            } else if let cacheEntry, !cacheEntry.isFresh(for: projection.listingEventId), !isLoading {
                 Text("Cached list · refresh to check for new models")
                     .font(.caption2)
                     .foregroundStyle(TaskifyTheme.secondaryText)
@@ -2378,7 +2377,7 @@ struct HermesModelPickerChatView: View {
             provider: provider.slug
         )
         if let cached { cachedCatalogs[provider.slug] = cached }
-        if liveCatalog == nil, cached?.isFresh != true {
+        if liveCatalog == nil, cached?.isFresh(for: projection.listingEventId) != true {
             requestCatalog(provider.slug)
         }
     }

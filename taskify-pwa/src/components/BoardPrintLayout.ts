@@ -25,6 +25,8 @@ export type BoardPrintListChoice = {
 export type BoardPrintJob = {
   id: string;
   boardId: string;
+  /** Stable Nostr board/tracker identifier used to find this manifest on another client. */
+  ownerId?: string;
   boardName: string;
   printedAtISO: string;
   layoutVersion: string;

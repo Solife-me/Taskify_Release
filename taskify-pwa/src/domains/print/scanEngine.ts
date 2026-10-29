@@ -771,12 +771,8 @@ export function scanPage<K>(
 
   const pageIdIndex = detectPageIdIndex(context, layout, backgroundMedian, markerMedian);
   if (pageIdIndex != null) return { ...analyze(pageIdIndex), pageIdDetected: true };
-  let best = analyze(0);
-  for (let index = 1; index < options.pageCount; index += 1) {
-    const analysis = analyze(index);
-    if (analysis.filledCount > best.filledCount) best = analysis;
-  }
-  return best;
+  if (options.pageCount === 1) return analyze(0);
+  throw new Error("Page number not detected. Select the printed page number and scan again.");
 }
 
 /** Exposed for tests: the projective transform between four point pairs. */

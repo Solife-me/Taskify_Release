@@ -142,6 +142,7 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
     public var settings: [String: TaskPayloadValue]
     public var walletSeed: TaskPayloadValue?
     public var defaultRelayURLs: [String]
+    public var printJobs: [NostrPrintJobManifest]
     public var preservedFields: [String: TaskPayloadValue]
 
     public var id: String { "\(timestamp)-\(boards.count)" }
@@ -162,6 +163,7 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
         settings: [String: TaskPayloadValue] = [:],
         walletSeed: TaskPayloadValue? = nil,
         defaultRelayURLs: [String] = [],
+        printJobs: [NostrPrintJobManifest] = [],
         preservedFields: [String: TaskPayloadValue] = [:]
     ) {
         self.version = version
@@ -170,12 +172,13 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
         self.settings = settings
         self.walletSeed = walletSeed
         self.defaultRelayURLs = TaskifyRelayURL.normalizedList(defaultRelayURLs)
+        self.printJobs = printJobs
         self.preservedFields = preservedFields
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, timestamp, boards, settings, walletSeed
-        case defaultRelayURLs = "defaultRelays"
+        case defaultRelayURLs = "defaultRelays", printJobs
     }
 
     public init(from decoder: Decoder) throws {
@@ -188,6 +191,7 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
         defaultRelayURLs = TaskifyRelayURL.normalizedList(
             try container.decodeIfPresent([String].self, forKey: .defaultRelayURLs) ?? []
         )
+        printJobs = try container.decodeIfPresent([NostrPrintJobManifest].self, forKey: .printJobs) ?? []
         let arbitrary = try decoder.container(keyedBy: BackupPayloadCodingKey.self)
         var fields: [String: TaskPayloadValue] = [:]
         for key in arbitrary.allKeys {
@@ -195,7 +199,7 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
                 fields[key.stringValue] = value
             }
         }
-        ["version", "timestamp", "boards", "settings", "walletSeed", "defaultRelays"]
+        ["version", "timestamp", "boards", "settings", "walletSeed", "defaultRelays", "printJobs"]
             .forEach { fields.removeValue(forKey: $0) }
         preservedFields = fields
     }
@@ -210,6 +214,7 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
         if !defaultRelayURLs.isEmpty {
             try container.encode(defaultRelayURLs, forKey: .defaultRelayURLs)
         }
+        if !printJobs.isEmpty { try container.encode(printJobs, forKey: .printJobs) }
         var arbitrary = encoder.container(keyedBy: BackupPayloadCodingKey.self)
         for (name, value) in preservedFields {
             try arbitrary.encode(value, forKey: BackupPayloadCodingKey(name))

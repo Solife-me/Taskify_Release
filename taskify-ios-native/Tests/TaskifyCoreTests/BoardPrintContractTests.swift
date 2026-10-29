@@ -45,3 +45,25 @@ private let boardPrintVectorsURL = URL(fileURLWithPath: #filePath)
     #expect(BoardPrintContract.isSupportedVersion("v1"))
     #expect(!BoardPrintContract.isSupportedVersion("v4"))
 }
+
+@Test func encryptedPrintManifestUsesCrossClientKeysAndNewestOwnerWins() throws {
+    let old = PhysicalChecklistJob(
+        id: "old", ownerID: "board:shared", title: "Board",
+        createdAt: Date(timeIntervalSince1970: 10),
+        items: [PhysicalChecklistItem(id: "task-1", title: "First")]
+    )
+    let new = PhysicalChecklistJob(
+        id: "new", ownerID: "board:shared", title: "Board",
+        createdAt: Date(timeIntervalSince1970: 20), paper: .a4,
+        items: [PhysicalChecklistItem(id: "task-2", title: "Second", section: "Today")]
+    )
+    let merged = NostrPrintJobManifest.merged(
+        remote: [NostrPrintJobManifest(job: old)],
+        local: [NostrPrintJobManifest(job: new)]
+    )
+    #expect(merged.map(\.id) == ["new"])
+    #expect(merged.first?.job == new)
+    let json = String(decoding: try JSONEncoder().encode(merged[0]), as: UTF8.self)
+    #expect(json.contains("\"ownerId\":\"board:shared\""))
+    #expect(json.contains("\"createdAt\":20"))
+}

@@ -277,33 +277,31 @@ final class MultiPhotoCameraModel: NSObject, ObservableObject, @unchecked Sendab
         ) else {
             return "No camera is available on this device."
         }
+        let input: AVCaptureDeviceInput
         do {
-            let input = try AVCaptureDeviceInput(device: device)
-            session.beginConfiguration()
-            if let currentInput { session.removeInput(currentInput) }
-            session.sessionPreset = .photo
-            guard session.canAddInput(input) else {
-                session.commitConfiguration()
-                return "The camera could not start."
-            }
-            if !session.outputs.contains(where: { $0 === photoOutput }) {
-                guard session.canAddOutput(photoOutput) else {
-                    session.commitConfiguration()
-                    return "The camera could not start."
-                }
-                session.addOutput(photoOutput)
-            }
-            session.addInput(input)
-            photoOutput.maxPhotoQualityPrioritization = .balanced
-            session.commitConfiguration()
-            currentInput = input
-            currentPosition = position
-            if !session.isRunning { session.startRunning() }
-            return nil
+            input = try AVCaptureDeviceInput(device: device)
         } catch {
-            session.commitConfiguration()
             return error.localizedDescription
         }
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        if let currentInput { session.removeInput(currentInput) }
+        session.sessionPreset = .photo
+        guard session.canAddInput(input) else {
+            return "The camera could not start."
+        }
+        if !session.outputs.contains(where: { $0 === photoOutput }) {
+            guard session.canAddOutput(photoOutput) else {
+                return "The camera could not start."
+            }
+            session.addOutput(photoOutput)
+        }
+        session.addInput(input)
+        photoOutput.maxPhotoQualityPrioritization = .balanced
+        currentInput = input
+        currentPosition = position
+        if !session.isRunning { session.startRunning() }
+        return nil
     }
 
     private func hasCamera(_ position: AVCaptureDevice.Position) -> Bool {

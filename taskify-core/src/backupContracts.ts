@@ -188,7 +188,51 @@ export type NostrBackupContent = {
   settings: Record<string, unknown>;
   walletSeed?: WalletSeedBackupPayload | null;
   defaultRelays?: string[];
+  printJobs?: NostrPrintJobManifest[];
 };
+
+/** A portable, encrypted print manifest shared by the PWA and native clients. */
+export type NostrPrintJobManifest = {
+  version: 1;
+  layoutVersion: string;
+  id: string;
+  ownerId: string;
+  title: string;
+  createdAt: number;
+  paper: "letter" | "a4" | "a6";
+  format: "taskList" | "bibleChapters";
+  items: Array<{
+    id: string;
+    title: string;
+    section?: string;
+    filled?: boolean;
+  }>;
+};
+
+const MAX_SYNCED_PRINT_JOBS = 20;
+
+function validPrintJob(job: NostrPrintJobManifest | null | undefined): job is NostrPrintJobManifest {
+  return !!job && job.version === 1 && !!job.id && !!job.ownerId && Number.isFinite(job.createdAt)
+    && Array.isArray(job.items);
+}
+
+/** Newest manifest wins per stable board/tracker owner; cap history to keep the event bounded. */
+export function mergeNostrPrintJobs(
+  remote: NostrPrintJobManifest[] | null | undefined,
+  local: NostrPrintJobManifest[] | null | undefined,
+): NostrPrintJobManifest[] {
+  const newest = new Map<string, NostrPrintJobManifest>();
+  for (const job of [...(remote ?? []), ...(local ?? [])]) {
+    if (!validPrintJob(job)) continue;
+    const current = newest.get(job.ownerId);
+    if (!current || job.createdAt > current.createdAt || (job.createdAt === current.createdAt && job.id > current.id)) {
+      newest.set(job.ownerId, job);
+    }
+  }
+  return [...newest.values()]
+    .sort((a, b) => b.createdAt - a.createdAt || a.ownerId.localeCompare(b.ownerId))
+    .slice(0, MAX_SYNCED_PRINT_JOBS);
+}
 
 /**
  * The backup to publish: the latest one on the relays, updated with this device's snapshot. The
@@ -206,7 +250,7 @@ export type NostrBackupContent = {
  */
 export function updateRemoteNostrBackup(
   remote: NostrBackupContent | null,
-  local: { boards: NostrAppBackupBoard[]; settings: Record<string, unknown>; walletSeed?: WalletSeedBackupPayload | null; defaultRelays: string[] },
+  local: { boards: NostrAppBackupBoard[]; settings: Record<string, unknown>; walletSeed?: WalletSeedBackupPayload | null; defaultRelays: string[]; printJobs?: NostrPrintJobManifest[] },
   options: { managedNostrIds: Iterable<string>; includeMetadata: boolean },
 ): NostrBackupContent & { managedNostrIds: string[] } {
   const remoteBoards = Array.isArray(remote?.boards) ? remote!.boards : [];
@@ -219,6 +263,7 @@ export function updateRemoteNostrBackup(
       settings: remoteSettings,
       ...(walletSeed ? { walletSeed } : {}),
       defaultRelays: remote?.defaultRelays ?? [],
+      printJobs: mergeNostrPrintJobs(remote?.printJobs, local.printJobs),
       managedNostrIds: [...managed].sort(),
     };
   }
@@ -234,6 +279,7 @@ export function updateRemoteNostrBackup(
     settings: { ...remoteSettings, ...local.settings },
     ...(walletSeed ? { walletSeed } : {}),
     defaultRelays: local.defaultRelays,
+    printJobs: mergeNostrPrintJobs(remote?.printJobs, local.printJobs),
     managedNostrIds: [...managed].sort(),
   };
 }

@@ -186,8 +186,8 @@ export const LS_HERMES_MODEL_CATALOG_CACHE = "taskify_hermes_model_catalog_cache
 
 type CatalogCacheMap = Record<string, HermesCatalogCacheEntry>;
 
-function catalogCacheKey(peerPubkey: string, listingId: string, providerSlug: string): string {
-  return `${peerPubkey.trim().toLowerCase()}|${listingId}|${providerSlug.trim().toLowerCase()}`;
+function catalogCacheKey(peerPubkey: string, providerSlug: string): string {
+  return `${peerPubkey.trim().toLowerCase()}|${providerSlug.trim().toLowerCase()}`;
 }
 
 function loadCatalogCacheMap(): CatalogCacheMap {
@@ -229,15 +229,21 @@ export function loadHermesCatalogCache(
   listingId: string,
   providerSlug: string,
 ): HermesCatalogCacheEntry | null {
-  const key = catalogCacheKey(peerPubkey, listingId, providerSlug);
+  const key = catalogCacheKey(peerPubkey, providerSlug);
   const entry = loadCatalogCacheMap()[key];
   if (!isCacheEntry(entry)) return null;
-  if (entry.listingId !== listingId || entry.providerSlug.toLowerCase() !== providerSlug.toLowerCase()) return null;
+  if (entry.providerSlug.toLowerCase() !== providerSlug.toLowerCase()) return null;
   return entry;
 }
 
-export function isHermesCatalogCacheFresh(entry: HermesCatalogCacheEntry, now = Date.now()): boolean {
-  return now - entry.fetchedAt >= 0 && now - entry.fetchedAt < HERMES_CATALOG_CACHE_TTL_MS;
+export function isHermesCatalogCacheFresh(
+  entry: HermesCatalogCacheEntry,
+  now = Date.now(),
+  currentListingId?: string,
+): boolean {
+  return (!currentListingId || entry.listingId === currentListingId)
+    && now - entry.fetchedAt >= 0
+    && now - entry.fetchedAt < HERMES_CATALOG_CACHE_TTL_MS;
 }
 
 export function saveHermesCatalogCache(
@@ -254,7 +260,7 @@ export function saveHermesCatalogCache(
     listingId,
   };
   const map = loadCatalogCacheMap();
-  map[catalogCacheKey(peerPubkey, listingId, catalog.providerSlug)] = entry;
+  map[catalogCacheKey(peerPubkey, catalog.providerSlug)] = entry;
   persistCatalogCacheMap(map);
   return entry;
 }

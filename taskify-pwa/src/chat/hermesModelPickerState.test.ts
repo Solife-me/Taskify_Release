@@ -123,7 +123,8 @@ describe("Hermes model picker helpers", () => {
     };
     const saved = saveHermesCatalogCache("bot", "listing-1", catalog, 1_000);
     expect(loadHermesCatalogCache("bot", "listing-1", "custom:local")).toEqual(saved);
-    expect(loadHermesCatalogCache("bot", "listing-2", "custom:local")).toBeNull();
+    expect(loadHermesCatalogCache("bot", "listing-2", "custom:local")).toEqual(saved);
+    expect(isHermesCatalogCacheFresh(saved, 1_001, "listing-2")).toBe(false);
     expect(isHermesCatalogCacheFresh(saved, 1_000 + HERMES_CATALOG_CACHE_TTL_MS - 1)).toBe(true);
     expect(isHermesCatalogCacheFresh(saved, 1_000 + HERMES_CATALOG_CACHE_TTL_MS)).toBe(false);
   });

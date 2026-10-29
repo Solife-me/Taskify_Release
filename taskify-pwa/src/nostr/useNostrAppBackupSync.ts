@@ -9,6 +9,7 @@ import {
   scriptureMemorySyncKey,
   type Board,
   type NostrBackupContent,
+  type NostrPrintJobManifest,
   updateRemoteNostrBackup,
 } from "taskify-core";
 import {
@@ -32,6 +33,8 @@ import {
   NOSTR_SCRIPTURE_MEMORY_D_TAG,
 } from "../nostrAppState";
 import { kvStorage } from "../storage/kvStorage";
+import { boardPrintJobManifest, mergeSyncedBoardPrintJobs, saveBoardPrintJobs } from "../storage/boardPrintJobs";
+import type { BoardPrintJob } from "../components/BoardPrintLayout";
 import {
   LS_NOSTR_BACKUP_STATE,
   LS_NOSTR_BIBLE_TRACKER_SYNC_BASE,
@@ -63,6 +66,8 @@ import { useMergedDocumentSync } from "./useMergedDocumentSync";
 const NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS = 1500;
 const NOSTR_BACKUP_RETRY_MS = 60_000;
 const LS_NOSTR_BACKUP_MANAGED_BOARDS = "taskify_nostr_backup_managed_boards_v1";
+const EMPTY_PRINT_JOBS: Record<string, BoardPrintJob> = {};
+const ignorePrintJobUpdate: Dispatch<SetStateAction<Record<string, BoardPrintJob>>> = () => {};
 
 /** The boards this device has put in the account backup (so it removes them when they go). */
 function loadManagedBackupBoardIds(pubkey: string): string[] {
@@ -110,6 +115,7 @@ type NostrBackupSnapshot = {
   settings: Partial<Settings>;
   defaultRelays: string[];
   walletSeed?: ReturnType<typeof walletSeedForBackup>;
+  printJobs: NostrPrintJobManifest[];
 };
 
 type UseNostrAppBackupSyncParams = {
@@ -120,10 +126,12 @@ type UseNostrAppBackupSyncParams = {
   nostrPublishRef: MutableRefObject<NostrPublishFn>;
   nostrSK: Uint8Array;
   pool: any;
+  printJobs?: Record<string, BoardPrintJob>;
   scriptureMemory: ScriptureMemoryState;
   setBibleTracker: Dispatch<SetStateAction<BibleTrackerState>>;
   setBoards: Dispatch<SetStateAction<Board[]>>;
   setDefaultRelays: Dispatch<SetStateAction<string[]>>;
+  setPrintJobs?: Dispatch<SetStateAction<Record<string, BoardPrintJob>>>;
   setScriptureMemory: Dispatch<SetStateAction<ScriptureMemoryState>>;
   setSettings: SetSettingsFn;
   settings: Settings;
@@ -144,10 +152,12 @@ export function useNostrAppBackupSync({
   nostrPublishRef,
   nostrSK,
   pool,
+  printJobs = EMPTY_PRINT_JOBS,
   scriptureMemory,
   setBibleTracker,
   setBoards,
   setDefaultRelays,
+  setPrintJobs = ignorePrintJobUpdate,
   setScriptureMemory,
   setSettings,
   settings,
@@ -201,8 +211,8 @@ export function useNostrAppBackupSync({
   );
 
   const buildNostrBackupSnapshot = useCallback(
-    (): NostrBackupSnapshot =>
-      buildNostrBackupSnapshotDomain({
+    (): NostrBackupSnapshot => ({
+      ...buildNostrBackupSnapshotDomain({
         boards,
         settings,
         includeMetadata: settings.nostrBackupEnabled,
@@ -212,7 +222,9 @@ export function useNostrAppBackupSync({
         sanitizeSettingsForBackup,
         walletSeed: walletSeedForBackup(),
       }),
-    [boards, defaultRelays, sanitizeSettingsForBackup, settings],
+      printJobs: Object.values(printJobs).map(boardPrintJobManifest),
+    }),
+    [boards, defaultRelays, printJobs, sanitizeSettingsForBackup, settings],
   );
 
   const serializeNostrBackupSnapshot = useCallback(
@@ -256,23 +268,30 @@ export function useNostrAppBackupSync({
           console.warn("Failed to restore wallet seed from Nostr backup", error);
         }
       }
-      if (includeMetadata && Array.isArray(payload.boards)) {
-        setBoards((prev) =>
-          mergeBackupBoards({
-            currentBoards: prev,
+      const mergedBoards = includeMetadata && Array.isArray(payload.boards)
+        ? mergeBackupBoards({
+            currentBoards: boards,
             incomingBoards: payload.boards,
             baseRelays,
             normalizeRelayList: normalizeNostrRelayList,
             createId: () => crypto.randomUUID(),
-          }),
-        );
+          })
+        : boards;
+      if (mergedBoards !== boards) setBoards(mergedBoards);
+      if (includeMetadata && Array.isArray(payload.printJobs)) {
+        setPrintJobs((previous) => {
+          // Resolve stable owner IDs against boards imported by this same payload, too.
+          const next = mergeSyncedBoardPrintJobs(previous, payload.printJobs, mergedBoards);
+          saveBoardPrintJobs(next);
+          return next;
+        });
       }
       if (source === "remote") {
         const message = includeMetadata ? "Synced boards and settings from Nostr" : "Synced wallet backup from Nostr";
         showToast(message, 2600);
       }
     },
-    [defaultRelays, sanitizeSettingsForBackup, setBoards, setDefaultRelays, setSettings, settings.nostrBackupEnabled, showToast],
+    [boards, defaultRelays, sanitizeSettingsForBackup, setBoards, setDefaultRelays, setPrintJobs, setSettings, settings.nostrBackupEnabled, showToast],
   );
 
   const handleIncomingNostrBackupEvent = useCallback(
@@ -374,6 +393,7 @@ export function useNostrAppBackupSync({
         settings: snapshot.settings as Record<string, unknown>,
         walletSeed: snapshot.walletSeed,
         defaultRelays: snapshot.defaultRelays,
+        printJobs: snapshot.printJobs,
       },
       { managedNostrIds: loadManagedBackupBoardIds(nostrPK), includeMetadata: settings.nostrBackupEnabled },
     );
@@ -390,6 +410,7 @@ export function useNostrAppBackupSync({
       settings: updated.settings,
       walletSeed: updated.walletSeed,
       defaultRelays: updated.defaultRelays,
+      printJobs: updated.printJobs,
     };
     const skHex = bytesToHex(nostrSK);
     const content = await encryptNostrBackupPayload(payload, skHex, nostrPK);

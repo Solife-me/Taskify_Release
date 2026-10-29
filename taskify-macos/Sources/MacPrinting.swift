@@ -50,6 +50,7 @@ struct MacPrintChecklistSheet: View {
     }
 
     let title: String
+    let ownerID: String
     let allItems: [PhysicalChecklistItem]
     let groups: [MacChecklistGroup]
     let format: PhysicalChecklistJob.Format
@@ -65,12 +66,14 @@ struct MacPrintChecklistSheet: View {
 
     init(
         title: String,
+        ownerID: String,
         allItems: [PhysicalChecklistItem],
         groups: [MacChecklistGroup] = [],
         format: PhysicalChecklistJob.Format = .taskList,
         showsIncludeCompletedToggle: Bool = true
     ) {
         self.title = title
+        self.ownerID = ownerID
         self.allItems = allItems
         self.groups = groups
         self.format = format
@@ -169,7 +172,7 @@ struct MacPrintChecklistSheet: View {
     }
 
     private func printChecklist() {
-        let job = PhysicalChecklistJob(ownerID: model.identityPublicKey, title: title, paper: paper, format: format, items: items)
+        let job = PhysicalChecklistJob(ownerID: ownerID, title: title, paper: paper, format: format, items: items)
         let view = MacPhysicalChecklistPrintView(job: job)
         let pointsPerMM = 72.0 / 25.4
         let sizeMM = paper.sizeMM
@@ -190,6 +193,7 @@ struct MacPrintChecklistSheet: View {
             error = "Printing could not start. Choose a printer or PDF destination and try again."
             return
         }
+        model.recordPhysicalChecklistJob(job)
         dismiss()
     }
 }

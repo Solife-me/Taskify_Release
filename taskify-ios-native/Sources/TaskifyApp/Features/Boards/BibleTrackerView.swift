@@ -948,6 +948,7 @@ private struct ScripturePickerSheet: View {
 /// Native counterpart to the PWA's fiducial-marker print/scan flow. The latest print job is kept
 /// locally so a scan can resolve marks to stable task/chapter IDs even after the live data changes.
 struct PhysicalChecklistSheet: View {
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var job: PhysicalChecklistJob
     @State private var showingScanner = false
@@ -1130,6 +1131,8 @@ struct PhysicalChecklistSheet: View {
                 let result = PhysicalChecklistScanAnalyzer.scan(images: images, job: scanJob)
                 if result.mismatchedJobs > 0 {
                     scanMessage = "This sheet belongs to a different print or board. Reprint the current checklist before scanning."
+                } else if result.unreadablePageIDs > 0 {
+                    scanMessage = "The page number could not be read. Keep the complete header visible and scan that page again."
                 } else if result.recognizedPages == 0 {
                     scanMessage = "No Taskify checklist page was recognized. Keep the whole page visible and try again in even light."
                 } else {
@@ -1151,7 +1154,7 @@ struct PhysicalChecklistSheet: View {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(safeTitle)-checklist-\(job.id.prefix(8)).pdf")
         try data.write(to: url, options: .atomic)
-        PhysicalChecklistJobStore.save(job)
+        model.recordPhysicalChecklistJob(job)
         return url
     }
 
@@ -1190,30 +1193,6 @@ struct PhysicalChecklistSheet: View {
 private struct PhysicalChecklistSharePayload: Identifiable {
     let id = UUID()
     let url: URL
-}
-
-private enum PhysicalChecklistJobStore {
-    private static let key = "taskify.physical-checklist.latest-jobs.v1"
-
-    static func save(_ job: PhysicalChecklistJob) {
-        var jobs = loadAll()
-        jobs[job.ownerID] = job
-        if let data = try? JSONEncoder().encode(jobs) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
-    }
-
-    static func load(ownerID: String) -> PhysicalChecklistJob? {
-        loadAll()[ownerID]
-    }
-
-    private static func loadAll() -> [String: PhysicalChecklistJob] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let jobs = try? JSONDecoder().decode([String: PhysicalChecklistJob].self, from: data) else {
-            return [:]
-        }
-        return jobs
-    }
 }
 
 private enum PhysicalChecklistPDFRenderer {
@@ -1408,6 +1387,7 @@ private enum PhysicalChecklistScanAnalyzer {
         var detectedIDs: [String]
         var recognizedPages: Int
         var mismatchedJobs: Int
+        var unreadablePageIDs: Int
     }
 
     private struct GrayImage {
@@ -1440,8 +1420,9 @@ private enum PhysicalChecklistScanAnalyzer {
         var detected = Set<String>()
         var recognized = Set<Int>()
         var mismatchedJobs = 0
+        var unreadablePageIDs = 0
 
-        for (inputIndex, image) in images.enumerated() {
+        for image in images {
             autoreleasepool {
                 guard let gray = makeGrayImage(image) else { return }
                 let markerCenters = layout.markerRectsMM().map {
@@ -1477,9 +1458,15 @@ private enum PhysicalChecklistScanAnalyzer {
                     if value < 170 { encodedPage |= 1 << bit }
                 }
                 let decodedIndex = encodedPage - 1
-                let pageIndex = layout.pages.indices.contains(decodedIndex)
-                    ? decodedIndex
-                    : min(inputIndex, layout.pages.count - 1)
+                let pageIndex: Int
+                if layout.pages.count == 1 {
+                    pageIndex = 0
+                } else if layout.pages.indices.contains(decodedIndex) {
+                    pageIndex = decodedIndex
+                } else {
+                    unreadablePageIDs += 1
+                    return
+                }
                 recognized.insert(pageIndex)
 
                 for row in layout.pages[pageIndex].rows {
@@ -1499,7 +1486,8 @@ private enum PhysicalChecklistScanAnalyzer {
         return Result(
             detectedIDs: detected.sorted(),
             recognizedPages: recognized.count,
-            mismatchedJobs: mismatchedJobs
+            mismatchedJobs: mismatchedJobs,
+            unreadablePageIDs: unreadablePageIDs
         )
     }
 

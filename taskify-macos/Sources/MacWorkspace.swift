@@ -148,6 +148,7 @@ struct MacWorkspace: View {
             if let board {
                 MacPrintChecklistSheet(
                     title: board.name,
+                    ownerID: "board:\(board.effectiveNostrBoardID)",
                     allItems: MacChecklistItems.forBoard(board, model: model),
                     groups: MacChecklistItems.groups(forBoard: board, model: model)
                 )

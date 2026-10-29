@@ -76,7 +76,27 @@ export type NostrBackupContent = {
     settings: Record<string, unknown>;
     walletSeed?: WalletSeedBackupPayload | null;
     defaultRelays?: string[];
+    printJobs?: NostrPrintJobManifest[];
 };
+/** A portable, encrypted print manifest shared by the PWA and native clients. */
+export type NostrPrintJobManifest = {
+    version: 1;
+    layoutVersion: string;
+    id: string;
+    ownerId: string;
+    title: string;
+    createdAt: number;
+    paper: "letter" | "a4" | "a6";
+    format: "taskList" | "bibleChapters";
+    items: Array<{
+        id: string;
+        title: string;
+        section?: string;
+        filled?: boolean;
+    }>;
+};
+/** Newest manifest wins per stable board/tracker owner; cap history to keep the event bounded. */
+export declare function mergeNostrPrintJobs(remote: NostrPrintJobManifest[] | null | undefined, local: NostrPrintJobManifest[] | null | undefined): NostrPrintJobManifest[];
 /**
  * The backup to publish: the latest one on the relays, updated with this device's snapshot. The
  * same rule as iOS (`updatingNativeBoards`), and the only safe one for a backup several devices
@@ -96,6 +116,7 @@ export declare function updateRemoteNostrBackup(remote: NostrBackupContent | nul
     settings: Record<string, unknown>;
     walletSeed?: WalletSeedBackupPayload | null;
     defaultRelays: string[];
+    printJobs?: NostrPrintJobManifest[];
 }, options: {
     managedNostrIds: Iterable<string>;
     includeMetadata: boolean;
