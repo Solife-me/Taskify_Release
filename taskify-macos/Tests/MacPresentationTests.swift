@@ -488,6 +488,37 @@ final class MacPresentationTests: XCTestCase {
         )
     }
 
+    func testWeekBoardOpeningRequestChangesWhenSwitchingWeekBoards() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Chicago"))
+        let date = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 12))
+        )
+        let orderedIDs = WeekdayColumn.ordered(startingAt: .sunday).map(\.rawValue)
+        let first = try XCTUnwrap(
+            MacWeekBoardScroll.request(
+                boardID: "first-week",
+                orderedColumnIDs: orderedIDs,
+                date: date,
+                calendar: calendar
+            )
+        )
+        let second = try XCTUnwrap(
+            MacWeekBoardScroll.request(
+                boardID: "second-week",
+                orderedColumnIDs: orderedIDs,
+                date: date,
+                calendar: calendar
+            )
+        )
+
+        XCTAssertEqual(first.columnID, WeekdayColumn.wednesday.rawValue)
+        XCTAssertEqual(first.targetID, MacWeekBoardScroll.scrollID(boardID: first.boardID, columnID: first.columnID))
+        XCTAssertEqual(first.dayKey, "2026-10-28")
+        XCTAssertNotEqual(first, second)
+        XCTAssertNotEqual(first.targetID, second.targetID)
+    }
+
     func testWeekBoardCenteringFallsBackToTheFirstAvailableColumn() {
         XCTAssertEqual(
             MacWeekBoardScroll.currentDayColumnID(

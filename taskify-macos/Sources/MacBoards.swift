@@ -9,7 +9,6 @@ struct MacBoardView: View {
     @Environment(AppModel.self) private var model
     @State private var showCompleted = false
     @State private var tableView = false
-    @State private var weekCenteringTask: Task<Void, Never>?
     @State private var taskSelection = MacTaskSelection()
     @State private var deletingSelectedTasks = false
     private var boards: [Board] { board.kind == .compound ? model.compoundChildBoards(for: board.id) : [board] }
@@ -58,11 +57,10 @@ struct MacBoardView: View {
                         }.padding(24)
                     }
                     .background(Color(nsColor: .underPageBackgroundColor))
-                    .onAppear { centerCurrentWeekDay(proxy: proxy) }
-                    .onChange(of: board.id) { _, _ in centerCurrentWeekDay(proxy: proxy) }
-                    .onChange(of: model.currentCalendarDay) { _, _ in centerCurrentWeekDay(proxy: proxy) }
-                    .onChange(of: model.weekStart) { _, _ in centerCurrentWeekDay(proxy: proxy) }
-                    .onDisappear { weekCenteringTask?.cancel() }
+                    .task(id: weekScrollRequest) {
+                        guard let request = weekScrollRequest else { return }
+                        await centerCurrentWeekDay(request, proxy: proxy)
+                    }
                 }
             }
         }
@@ -97,6 +95,15 @@ struct MacBoardView: View {
     private func columns(_ board: Board) -> [BoardColumn] {
         guard board.kind == .week else { return board.columns.sorted { $0.order < $1.order } }
         return WeekdayColumn.ordered(startingAt: model.weekStart).compactMap { day in board.columns.first { $0.id == day.rawValue } }
+    }
+
+    private var weekScrollRequest: MacWeekBoardScrollRequest? {
+        guard board.kind == .week else { return nil }
+        return MacWeekBoardScroll.request(
+            boardID: board.id,
+            orderedColumnIDs: columns(board).map(\.id),
+            date: model.currentCalendarDay
+        )
     }
 
     private func displayedTasks(board: Board, column: BoardColumn) -> [TaskItem] {
@@ -161,26 +168,25 @@ struct MacBoardView: View {
         .overlay(alignment: .top) { Divider() }
     }
 
-    private func centerCurrentWeekDay(proxy: ScrollViewProxy) {
-        guard board.kind == .week else { return }
-        let orderedColumns = columns(board)
-        guard let columnID = MacWeekBoardScroll.currentDayColumnID(
-            orderedColumnIDs: orderedColumns.map(\.id),
-            date: model.currentCalendarDay
-        ) else { return }
-
-        let targetID = MacWeekBoardScroll.scrollID(boardID: board.id, columnID: columnID)
-        weekCenteringTask?.cancel()
-        weekCenteringTask = Task { @MainActor in
-            await Task.yield()
-            withAnimation(.easeInOut(duration: 0.22)) {
-                proxy.scrollTo(targetID, anchor: UnitPoint(x: 0.5, y: 0))
-            }
-            // Lazy column heights can settle after the first layout pass.
-            try? await Task.sleep(for: .milliseconds(100))
+    private func centerCurrentWeekDay(
+        _ request: MacWeekBoardScrollRequest,
+        proxy: ScrollViewProxy
+    ) async {
+        // SwiftUI can reuse the horizontal ScrollView across board switches. Retry after layout
+        // so the newly selected week board always opens on today rather than retaining the old
+        // board's offset or scrolling before the new columns have been registered.
+        for attempt in 0..<3 {
             guard !Task.isCancelled else { return }
-            proxy.scrollTo(targetID, anchor: UnitPoint(x: 0.5, y: 0))
-            weekCenteringTask = nil
+            if attempt == 0 {
+                await Task.yield()
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    proxy.scrollTo(request.targetID, anchor: UnitPoint(x: 0.5, y: 0))
+                }
+            } else {
+                try? await Task.sleep(for: .milliseconds(80 * attempt))
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo(request.targetID, anchor: UnitPoint(x: 0.5, y: 0))
+            }
         }
     }
 }
