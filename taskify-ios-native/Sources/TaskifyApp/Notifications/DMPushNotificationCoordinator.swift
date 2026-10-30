@@ -19,22 +19,22 @@ enum TaskifyDMPushSettings {
     private static let installationIDKey = "taskify.dmPush.installationID"
     private static let deviceTokenKey = "taskify.dmPush.deviceToken"
 
-    static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
-    static var selection: DMPushNotificationSelection {
-        let shared = DMPushNotificationSharedSettings.selection
-        guard UserDefaults(suiteName: TaskifySharedContainer.appGroupID)?
-            .object(forKey: selectionKey) == nil,
-              let legacy = DMPushNotificationSelection(
-                rawValue: UserDefaults.standard.string(forKey: selectionKey) ?? ""
-              ) else { return shared }
-        DMPushNotificationSharedSettings.saveSelection(legacy)
-        return legacy
+    static var isEnabled: Bool { isEnabled(defaults: .standard) }
+    static func isEnabled(defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: enabledKey)
     }
-    static var relayURL: String {
-        UserDefaults.standard.string(forKey: relayURLKey) ?? defaultRelayURL
+
+    static var selection: DMPushNotificationSelection { selection(defaults: .standard) }
+    static func selection(defaults: UserDefaults) -> DMPushNotificationSelection {
+        defaults.string(forKey: selectionKey).flatMap(DMPushNotificationSelection.init(rawValue:)) ?? .both
     }
-    static var serverURL: String {
-        UserDefaults.standard.string(forKey: serverURLKey) ?? defaultServerURL
+    static var relayURL: String { relayURL(defaults: .standard) }
+    static func relayURL(defaults: UserDefaults) -> String {
+        defaults.string(forKey: relayURLKey) ?? defaultRelayURL
+    }
+    static var serverURL: String { serverURL(defaults: .standard) }
+    static func serverURL(defaults: UserDefaults) -> String {
+        defaults.string(forKey: serverURLKey) ?? defaultServerURL
     }
     static var installationID: String {
         if let existing = UserDefaults.standard.string(forKey: installationIDKey), !existing.isEmpty {
@@ -49,30 +49,33 @@ enum TaskifyDMPushSettings {
         selection: DMPushNotificationSelection,
         relayURL: String,
         serverURL: String,
-        deviceToken: String
+        deviceToken: String,
+        accountID: String,
+        defaults: UserDefaults = .standard
     ) {
-        let defaults = UserDefaults.standard
         defaults.set(true, forKey: enabledKey)
         defaults.set(selection.rawValue, forKey: selectionKey)
-        DMPushNotificationSharedSettings.saveSelection(selection)
+        DMPushNotificationSharedSettings.saveSelection(selection, accountID: accountID)
         defaults.set(relayURL, forKey: relayURLKey)
         defaults.set(serverURL, forKey: serverURLKey)
-        defaults.set(deviceToken, forKey: deviceTokenKey)
+        UserDefaults.standard.set(deviceToken, forKey: deviceTokenKey)
     }
 
-    static func saveSelection(_ selection: DMPushNotificationSelection) {
-        UserDefaults.standard.set(selection.rawValue, forKey: selectionKey)
-        DMPushNotificationSharedSettings.saveSelection(selection)
+    static func saveSelection(
+        _ selection: DMPushNotificationSelection,
+        accountID: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(selection.rawValue, forKey: selectionKey)
+        DMPushNotificationSharedSettings.saveSelection(selection, accountID: accountID)
     }
 
     static func saveDeviceToken(_ token: String) {
         UserDefaults.standard.set(token, forKey: deviceTokenKey)
     }
 
-    static func clearEnabled() {
-        let defaults = UserDefaults.standard
+    static func clearEnabled(defaults: UserDefaults = .standard) {
         defaults.set(false, forKey: enabledKey)
-        defaults.removeObject(forKey: deviceTokenKey)
     }
 }
 
@@ -105,8 +108,12 @@ final class TaskifyDMPushCoordinator {
 
     func register(model: AppModel) {
         self.model = model
-        guard TaskifyDMPushSettings.isEnabled else { return }
+        guard model.dmPushEnabled else { return }
         UIApplication.shared.registerForRemoteNotifications()
+    }
+
+    func unregister(model: AppModel) {
+        if self.model === model { self.model = nil }
     }
 
     func requestDeviceToken() async throws -> String {
@@ -140,8 +147,8 @@ final class TaskifyDMPushCoordinator {
             continuation.resume(returning: token)
             return
         }
-        guard TaskifyDMPushSettings.isEnabled else { return }
-        Task { await model?.refreshDMPushRegistration(deviceToken: token) }
+        guard let model, model.dmPushEnabled else { return }
+        Task { await model.refreshDMPushRegistration(deviceToken: token) }
     }
 
     func didFailRegistration(_ error: Error) {
@@ -219,10 +226,14 @@ final class TaskifyDMPushCoordinator {
 
     func register(model: AppModel) {
         self.model = model
-        guard TaskifyDMPushSettings.isEnabled else { return }
+        guard model.dmPushEnabled else { return }
         // Apple may rotate a token. Register on every launch and treat the saved value only as a
         // status hint, never as the canonical token for this app/device/environment combination.
         NSApplication.shared.registerForRemoteNotifications()
+    }
+
+    func unregister(model: AppModel) {
+        if self.model === model { self.model = nil }
     }
 
     func requestDeviceToken() async throws -> String {
@@ -256,8 +267,8 @@ final class TaskifyDMPushCoordinator {
             continuation.resume(returning: token)
             return
         }
-        guard TaskifyDMPushSettings.isEnabled else { return }
-        Task { await model?.refreshDMPushRegistration(deviceToken: token) }
+        guard let model, model.dmPushEnabled else { return }
+        Task { await model.refreshDMPushRegistration(deviceToken: token) }
     }
 
     func didFailRegistration(_ error: Error) {
@@ -273,12 +284,13 @@ final class TaskifyDMPushCoordinator {
 actor TaskifyDMPushLocalNotifier {
     static let shared = TaskifyDMPushLocalNotifier()
 
-    func notifyNewMessage() async {
+    func notifyNewMessage(accountID: String) async {
         let content = UNMutableNotificationContent()
         content.title = "New Message"
         content.sound = .default
         content.threadIdentifier = "taskify-direct-messages"
         content.userInfo = [
+            TaskifyNotificationContract.accountIDKey: accountID,
             TaskifyNotificationContract.destinationKey:
                 TaskifyNotificationContract.Destination.chat.rawValue,
         ]
@@ -290,13 +302,14 @@ actor TaskifyDMPushLocalNotifier {
         try? await UNUserNotificationCenter.current().add(request)
     }
 
-    func notifyReplyFailed(text: String) async {
+    func notifyReplyFailed(text: String, accountID: String) async {
         let content = UNMutableNotificationContent()
         content.title = "Reply Not Sent"
         content.body = "Open Taskify to send it again: \(DMPushNotificationPreviewPolicy.messagePreview(text, maximumLines: 1, maximumCharacters: 120))"
         content.sound = .default
         content.threadIdentifier = "taskify-direct-messages"
         content.userInfo = [
+            TaskifyNotificationContract.accountIDKey: accountID,
             TaskifyNotificationContract.destinationKey:
                 TaskifyNotificationContract.Destination.chat.rawValue,
         ]
@@ -344,7 +357,10 @@ extension AppModel {
             try await sendDirectMessage(to: target.conversationID, content: text)
             markDirectMessageThreadRead(peerPublicKey: target.conversationID)
         } catch {
-            await TaskifyDMPushLocalNotifier.shared.notifyReplyFailed(text: text)
+            await TaskifyDMPushLocalNotifier.shared.notifyReplyFailed(
+                text: text,
+                accountID: identityPublicKey
+            )
         }
 #if os(iOS)
         if UIApplication.shared.applicationState != .active {

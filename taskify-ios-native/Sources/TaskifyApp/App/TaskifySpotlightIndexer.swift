@@ -8,6 +8,11 @@ import UniformTypeIdentifiers
 /// through the shared `taskify://task` link on both iOS and macOS.
 actor TaskifySpotlightIndexer {
     static let shared = TaskifySpotlightIndexer()
+
+    private struct StoredState: Codable {
+        var accountID: String
+        var fingerprints: [String: String]
+    }
 #if os(macOS)
     /// The bundle-scoped domain keeps the isolated Mac UI host out of the production Mac index.
     static var domain: String {
@@ -21,6 +26,7 @@ actor TaskifySpotlightIndexer {
     private let index = CSSearchableIndex.default()
     /// Task id -> fingerprint of what the index holds. Nil until read from disk.
     private var indexed: [String: String]?
+    private var activeAccountID: String?
 
     private var stateURL: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -29,8 +35,25 @@ actor TaskifySpotlightIndexer {
             .appendingPathComponent("spotlight-index.json", isDirectory: false)
     }
 
-    func update(with items: [TaskifySpotlightItem]) async {
-        var current = indexed ?? loadState()
+    /// Clears the device-visible Spotlight index when another account becomes active. Each model
+    /// update also carries its account ID, so a delayed old-account task cannot repopulate it.
+    func activate(accountID: String) async {
+        let normalized = accountID.lowercased()
+        guard activeAccountID != normalized else { return }
+        activeAccountID = normalized
+        indexed = [:]
+        try? await index.deleteSearchableItems(withDomainIdentifiers: [Self.domain])
+        saveState(StoredState(accountID: normalized, fingerprints: [:]))
+    }
+
+    func update(with items: [TaskifySpotlightItem], accountID: String) async {
+        if activeAccountID == nil {
+            await activate(accountID: accountID)
+        }
+        // An update request may outlive the model that scheduled it. It may never select an
+        // account; only the runtime's explicit activation can change the active Spotlight scope.
+        guard TaskifyAccountScope.isSame(activeAccountID, accountID) else { return }
+        var current = indexed ?? loadState(for: accountID)
         if current == nil {
             // No record of what an earlier install or version indexed: start clean.
             try? await index.deleteSearchableItems(withDomainIdentifiers: [Self.domain])
@@ -72,13 +95,25 @@ actor TaskifySpotlightIndexer {
         return CSSearchableItem(uniqueIdentifier: item.id, domainIdentifier: domain, attributeSet: attributes)
     }
 
-    private func loadState() -> [String: String]? {
+    private func loadState(for accountID: String) -> [String: String]? {
         guard let data = FileManager.default.contents(atPath: stateURL.path) else { return nil }
-        return try? JSONDecoder().decode([String: String].self, from: data)
+        if let state = try? JSONDecoder().decode(StoredState.self, from: data),
+           state.accountID == accountID.lowercased() {
+            return state.fingerprints
+        }
+        // A legacy unqualified state map is never trusted across an account boundary.
+        return nil
     }
 
     private func saveState(_ fingerprints: [String: String]) {
-        guard let data = try? JSONEncoder().encode(fingerprints) else { return }
+        saveState(StoredState(
+            accountID: activeAccountID ?? "",
+            fingerprints: fingerprints
+        ))
+    }
+
+    private func saveState(_ state: StoredState) {
+        guard let data = try? JSONEncoder().encode(state) else { return }
         try? FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: stateURL, options: .atomic)
     }

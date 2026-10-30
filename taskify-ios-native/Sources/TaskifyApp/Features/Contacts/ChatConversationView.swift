@@ -2171,7 +2171,10 @@ struct DirectMessageConversationView: View {
                         } else {
                             attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(
                                 fileURL: draftAttachment.fileURL, name: draftAttachment.name,
-                                mimeType: draftAttachment.mimeType, progress: { progress in
+                                mimeType: draftAttachment.mimeType,
+                                identity: model.cachedIdentity,
+                                settingsDefaults: model.accountDefaults,
+                                progress: { progress in
                                     Task { @MainActor in
                                         guard isSending, attachmentProgress != .sendingMessage else { return }
                                         attachmentProgress = progress

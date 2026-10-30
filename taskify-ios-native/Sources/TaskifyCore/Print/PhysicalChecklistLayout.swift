@@ -141,37 +141,46 @@ public struct NostrPrintJobManifest: Codable, Equatable, Sendable {
 public enum PhysicalChecklistJobStore {
     private static let key = "taskify.physical-checklist.latest-jobs.v1"
 
-    public static func save(_ job: PhysicalChecklistJob) {
-        var jobs = loadAll()
+    public static func save(_ job: PhysicalChecklistJob, defaults: UserDefaults = .standard) {
+        var jobs = loadAll(defaults: defaults)
         jobs[job.ownerID] = job
-        persist(jobs)
+        persist(jobs, defaults: defaults)
     }
 
-    public static func load(ownerID: String) -> PhysicalChecklistJob? {
-        loadAll()[ownerID]
+    public static func load(
+        ownerID: String,
+        defaults: UserDefaults = .standard
+    ) -> PhysicalChecklistJob? {
+        loadAll(defaults: defaults)[ownerID]
     }
 
-    public static func loadAll() -> [String: PhysicalChecklistJob] {
-        guard let data = UserDefaults.standard.data(forKey: key),
+    public static func loadAll(defaults: UserDefaults = .standard) -> [String: PhysicalChecklistJob] {
+        guard let data = defaults.data(forKey: key),
               let jobs = try? JSONDecoder().decode([String: PhysicalChecklistJob].self, from: data) else {
             return [:]
         }
         return jobs
     }
 
-    public static func merge(_ manifests: [NostrPrintJobManifest]) {
-        var jobs = loadAll()
+    public static func merge(
+        _ manifests: [NostrPrintJobManifest],
+        defaults: UserDefaults = .standard
+    ) {
+        var jobs = loadAll(defaults: defaults)
         for manifest in manifests {
             guard let job = manifest.job else { continue }
             if let current = jobs[job.ownerID], current.createdAt > job.createdAt { continue }
             jobs[job.ownerID] = job
         }
-        persist(jobs)
+        persist(jobs, defaults: defaults)
     }
 
-    private static func persist(_ jobs: [String: PhysicalChecklistJob]) {
+    private static func persist(
+        _ jobs: [String: PhysicalChecklistJob],
+        defaults: UserDefaults
+    ) {
         guard let data = try? JSONEncoder().encode(jobs) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+        defaults.set(data, forKey: key)
     }
 }
 

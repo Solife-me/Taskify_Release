@@ -882,6 +882,7 @@ func taskifyRebasedWallClock(_ date: Date, from oldZoneID: String, to newZoneID:
 /// An event's image and documents in its editor (C8-5): shown, removable, and added through the
 /// same encrypted upload as task attachments, keyed to the event's board.
 struct TaskifyEventAttachmentsSection: View {
+    @Environment(AppModel.self) private var model
     @Binding var imageURL: String?
     @Binding var documents: [TaskDocument]
     let boardKey: String?
@@ -966,7 +967,12 @@ struct TaskifyEventAttachmentsSection: View {
                 let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
                 let name = "event-photo-\(timestamp)-\(index + 1).\(type.preferredFilenameExtension ?? "jpg")"
                 documents.append(try await TaskAttachmentUploadService.shared.uploadDocument(
-                    fileURL: file.url, name: name, mimeType: type.preferredMIMEType ?? "image/jpeg", boardID: boardKey
+                    fileURL: file.url,
+                    name: name,
+                    mimeType: type.preferredMIMEType ?? "image/jpeg",
+                    boardID: boardKey,
+                    identity: model.cachedIdentity,
+                    settingsDefaults: model.accountDefaults
                 ))
             }
         } catch {
@@ -982,7 +988,12 @@ struct TaskifyEventAttachmentsSection: View {
         do {
             for (index, url) in urls.enumerated() {
                 uploadStatus = "Encrypting and uploading \(url.lastPathComponent) (\(index + 1) of \(urls.count))…"
-                documents.append(try await TaskAttachmentUploadService.shared.uploadDocument(fileURL: url, boardID: boardKey))
+                documents.append(try await TaskAttachmentUploadService.shared.uploadDocument(
+                    fileURL: url,
+                    boardID: boardKey,
+                    identity: model.cachedIdentity,
+                    settingsDefaults: model.accountDefaults
+                ))
             }
         } catch {
             uploadError = error.localizedDescription

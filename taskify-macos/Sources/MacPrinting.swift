@@ -55,10 +55,9 @@ struct MacPrintChecklistSheet: View {
     let groups: [MacChecklistGroup]
     let format: PhysicalChecklistJob.Format
     let showsIncludeCompletedToggle: Bool
+    let includeCompletedDefault: Bool
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(TaskPresentationSettings.completedTabKey)
-    private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var paper = PhysicalChecklistPaper.letter
     @State private var scope = Scope.board
     @State private var selectedListIDs: Set<String>
@@ -70,7 +69,8 @@ struct MacPrintChecklistSheet: View {
         allItems: [PhysicalChecklistItem],
         groups: [MacChecklistGroup] = [],
         format: PhysicalChecklistJob.Format = .taskList,
-        showsIncludeCompletedToggle: Bool = true
+        showsIncludeCompletedToggle: Bool = true,
+        includeCompletedDefault: Bool = true
     ) {
         self.title = title
         self.ownerID = ownerID
@@ -78,17 +78,17 @@ struct MacPrintChecklistSheet: View {
         self.groups = groups
         self.format = format
         self.showsIncludeCompletedToggle = showsIncludeCompletedToggle
-        let includeCompleted = (UserDefaults.standard.object(forKey: TaskPresentationSettings.completedTabKey) as? Bool)
-            ?? TaskPresentationSettings.completedTabDefault
+        self.includeCompletedDefault = includeCompletedDefault
         _selectedListIDs = State(initialValue: Set(
             groups.filter { group in
-                group.items.contains { includeCompleted || !$0.filled }
+                group.items.contains { includeCompletedDefault || !$0.filled }
             }.map(\.id)
         ))
     }
 
     private var includeCompleted: Bool {
-        !showsIncludeCompletedToggle || completedTabEnabled
+        !showsIncludeCompletedToggle
+            || MacAccountViewPreferences(defaults: model.accountDefaults).completedTabEnabled
     }
 
     private var scopedItems: [PhysicalChecklistItem] {

@@ -2,6 +2,14 @@ import Foundation
 import Security
 import TaskifyCore
 
+enum MacAccountVaultError: LocalizedError {
+    case verificationFailed
+
+    var errorDescription: String? {
+        "The saved-account list could not be verified after writing it."
+    }
+}
+
 struct MacAccountVaultState: Codable, Equatable {
     var primaryAccountID: String?
     var accounts: [MacSavedAccount] = []
@@ -38,6 +46,7 @@ struct MacAccountVault {
         ]
         if let sharedAccessGroup { query[kSecAttrAccessGroup as String] = sharedAccessGroup }
         try TaskifyKeychainItem.save(query, value: JSONEncoder().encode(state))
+        guard try load() == state else { throw MacAccountVaultError.verificationFailed }
     }
 
     private var sharedAccessGroup: String? {

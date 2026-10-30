@@ -7,6 +7,14 @@ import TaskifyWallet
 import TaskifyWatchShared
 import WidgetKit
 
+private enum AppModelAccountError: LocalizedError {
+    case identityChanged
+
+    var errorDescription: String? {
+        "The signed-in account changed before this operation completed."
+    }
+}
+
 // @Observable (vs. the old ObservableObject + @Published) makes SwiftUI track which of these
 // properties each view actually reads, so e.g. a relay-status tick no longer re-renders every
 // board and chat view in the app — with 26 frequently-churning properties and every screen
@@ -141,39 +149,37 @@ final class AppModel {
     /// Queue diagnostics for the settings screen: what is queued and which relays are holding it.
     private(set) var pendingPublishRecords: [TaskPendingOutboxRecord] = []
     private(set) var notificationStatus = "Checking"
-    private(set) var dmPushEnabled = TaskifyDMPushSettings.isEnabled
-    private(set) var dmPushSelection = TaskifyDMPushSettings.selection
-    private(set) var dmPushRelayURL = TaskifyDMPushSettings.relayURL
-    private(set) var dmPushServerURL = TaskifyDMPushSettings.serverURL
-    private(set) var dmPushStatus = TaskifyDMPushSettings.isEnabled ? "Enabled" : "Off"
+    private(set) var dmPushEnabled: Bool
+    private(set) var dmPushSelection: DMPushNotificationSelection
+    private(set) var dmPushRelayURL: String
+    private(set) var dmPushServerURL: String
+    private(set) var dmPushStatus: String
     private(set) var backgroundSyncStatus = "Ready"
-    private(set) var encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
-    private(set) var encryptedFileServers = TaskifyMediaServerSettings.servers
-    private(set) var fastingRemindersEnabled = FastingRemindersSettings.enabled
-    private(set) var fastingRemindersMode = FastingRemindersSettings.mode
-    private(set) var fastingRemindersPerMonth = FastingRemindersSettings.perMonth
-    private(set) var fastingRemindersWeekday = FastingRemindersSettings.weekday
-    var scriptureMemoryState = AppModel.loadScriptureMemoryState()
-    private(set) var scriptureMemoryEnabled = ScriptureMemorySettings.enabled
-    private(set) var scriptureMemoryBoardID = ScriptureMemorySettings.boardID
-    private(set) var scriptureMemoryFrequency = ScriptureMemorySettings.frequency
-    private(set) var scriptureMemorySort = ScriptureMemorySettings.sort
+    private(set) var encryptedMediaServerURL: String
+    private(set) var encryptedFileServers: [TaskifyFileServerEntry]
+    private(set) var fastingRemindersEnabled: Bool
+    private(set) var fastingRemindersMode: FastingRemindersMode
+    private(set) var fastingRemindersPerMonth: Int
+    private(set) var fastingRemindersWeekday: Int
+    var scriptureMemoryState: ScriptureMemoryState
+    private(set) var scriptureMemoryEnabled: Bool
+    private(set) var scriptureMemoryBoardID: String?
+    private(set) var scriptureMemoryFrequency: ScriptureMemoryFrequency
+    private(set) var scriptureMemorySort: ScriptureMemorySort
     // Mirrored to the App Group for the widget, Siri and Shortcuts (C10-1).
-    private(set) var streaksEnabled = TaskStreakSettings.enabled { didSet { mirrorDeviceTaskSettings() } }
-    private(set) var newTaskPosition = TaskOrderingSettings.position { didSet { mirrorDeviceTaskSettings() } }
-    private(set) var weekStart = WeekLayoutSettings.start { didSet { mirrorDeviceTaskSettings() } }
-    private(set) var showFullWeekRecurring = (UserDefaults.standard.object(
-        forKey: TaskPresentationSettings.showFullWeekRecurringKey
-    ) as? Bool) ?? TaskPresentationSettings.showFullWeekRecurringDefault
-    private(set) var chatMessageRetention = ChatHistorySettings.retention
+    private(set) var streaksEnabled: Bool { didSet { mirrorDeviceTaskSettings() } }
+    private(set) var newTaskPosition: NewTaskPosition { didSet { mirrorDeviceTaskSettings() } }
+    private(set) var weekStart: WeekdayColumn { didSet { mirrorDeviceTaskSettings() } }
+    private(set) var showFullWeekRecurring: Bool
+    private(set) var chatMessageRetention: ChatMessageRetention
     private(set) var walletConversionEnabled = WalletCurrencySettings.conversionEnabled
     private(set) var walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
     private(set) var walletDenominationDisplay = WalletCurrencySettings.denominationDisplay
-    private(set) var startupTab = StartupViewSettings.tab
-    private(set) var startupBoardIDsByWeekday = StartupViewSettings.boardIDsByWeekday
-    private(set) var appRelays = AppRelaySettings.urls
+    private(set) var startupTab: StartupTab
+    private(set) var startupBoardIDsByWeekday: [Int: String]
+    private(set) var appRelays: [String]
     private(set) var nip17InboxRelayURLs: [String] = []
-    private(set) var excludedSyncRelayURLs = SyncExcludedRelaySettings.urls
+    private(set) var excludedSyncRelayURLs: Set<String>
     private(set) var isCheckingAccountBackup = false
     private(set) var isRefreshingContacts = false
     private(set) var contactSyncStatus = "Preparing private contact sync"
@@ -202,6 +208,10 @@ final class AppModel {
     // tracking (they churn constantly during sync).
     @ObservationIgnored private let store: JSONTaskStore
     @ObservationIgnored private let identityStore: KeychainIdentityStore
+    @ObservationIgnored let accountDefaults: UserDefaults
+    @ObservationIgnored private let expectedAccountID: String?
+    @ObservationIgnored private let mirrorsPrimaryDeviceTaskSettings: Bool
+    @ObservationIgnored private(set) var isAccountActive = true
     @ObservationIgnored let syncEngine: TaskSyncEngine
     @ObservationIgnored private let notificationCoordinator: TaskNotificationCoordinator
     @ObservationIgnored private let snapshotLookupCache = SnapshotLookupCache()
@@ -244,10 +254,10 @@ final class AppModel {
     @ObservationIgnored private var ownProfileEventID: String?
     @ObservationIgnored private var ownProfileEventContent: String?
     @ObservationIgnored private var ownProfileLoadTask: Task<Void, Never>?
-    /// The one Bible tracker store for the app, so a change synced from another device reaches
-    /// every view showing it.
-    @ObservationIgnored let bibleTrackerStore = BibleTrackerStore()
-    @ObservationIgnored var appStateLedger = AppModel.loadAppStateLedger()
+    /// The one Bible tracker store for this account, so a change synced from another device
+    /// reaches every view showing it without crossing the account boundary.
+    @ObservationIgnored let bibleTrackerStore: BibleTrackerStore
+    @ObservationIgnored var appStateLedger: AppStateSyncLedger
     @ObservationIgnored var appStateFetchTask: Task<Void, Never>?
     @ObservationIgnored var appStatePublishTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored var lastAppStateFetchAt: Date?
@@ -282,12 +292,54 @@ final class AppModel {
         store: JSONTaskStore = JSONTaskStore(migratesLegacyStore: true),
         identityStore: KeychainIdentityStore = KeychainIdentityStore(),
         syncEngine: TaskSyncEngine = TaskSyncEngine(),
-        notificationCoordinator: TaskNotificationCoordinator = TaskNotificationCoordinator()
+        notificationCoordinator: TaskNotificationCoordinator? = nil,
+        accountDefaults: UserDefaults = .standard,
+        expectedAccountID: String? = nil,
+        isPrimaryAccount: Bool = true
     ) {
         self.store = store
         self.identityStore = identityStore
+        self.accountDefaults = accountDefaults
+        self.expectedAccountID = expectedAccountID?.lowercased()
+        self.mirrorsPrimaryDeviceTaskSettings = isPrimaryAccount
         self.syncEngine = syncEngine
-        self.notificationCoordinator = notificationCoordinator
+        self.notificationCoordinator = notificationCoordinator ?? TaskNotificationCoordinator(defaults: accountDefaults)
+        self.encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
+        self.encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
+        self.fastingRemindersEnabled = FastingRemindersSettings.enabled(defaults: accountDefaults)
+        self.fastingRemindersMode = FastingRemindersSettings.mode(defaults: accountDefaults)
+        self.fastingRemindersPerMonth = FastingRemindersSettings.perMonth(defaults: accountDefaults)
+        self.fastingRemindersWeekday = FastingRemindersSettings.weekday(defaults: accountDefaults)
+        self.scriptureMemoryState = AppModel.loadScriptureMemoryState(defaults: accountDefaults)
+        self.scriptureMemoryEnabled = ScriptureMemorySettings.enabled(defaults: accountDefaults)
+        self.scriptureMemoryBoardID = ScriptureMemorySettings.boardID(defaults: accountDefaults)
+        self.scriptureMemoryFrequency = ScriptureMemorySettings.frequency(defaults: accountDefaults)
+        self.scriptureMemorySort = ScriptureMemorySettings.sort(defaults: accountDefaults)
+        self.streaksEnabled = TaskStreakSettings.enabled(defaults: accountDefaults)
+        self.newTaskPosition = TaskOrderingSettings.position(defaults: accountDefaults)
+        self.weekStart = WeekLayoutSettings.start(defaults: accountDefaults)
+        self.showFullWeekRecurring = (accountDefaults.object(
+            forKey: TaskPresentationSettings.showFullWeekRecurringKey
+        ) as? Bool) ?? TaskPresentationSettings.showFullWeekRecurringDefault
+        self.chatMessageRetention = ChatHistorySettings.retention(defaults: accountDefaults)
+        self.startupTab = StartupViewSettings.tab(defaults: accountDefaults)
+        self.startupBoardIDsByWeekday = StartupViewSettings.boardIDsByWeekday(defaults: accountDefaults)
+        self.appRelays = AppRelaySettings.urls(defaults: accountDefaults)
+        self.excludedSyncRelayURLs = SyncExcludedRelaySettings.urls(defaults: accountDefaults)
+        let dmPushEnabled = TaskifyDMPushSettings.isEnabled(defaults: accountDefaults)
+        self.dmPushEnabled = dmPushEnabled
+        self.dmPushSelection = TaskifyDMPushSettings.selection(defaults: accountDefaults)
+        self.dmPushRelayURL = TaskifyDMPushSettings.relayURL(defaults: accountDefaults)
+        self.dmPushServerURL = TaskifyDMPushSettings.serverURL(defaults: accountDefaults)
+        self.dmPushStatus = dmPushEnabled ? "Enabled" : "Off"
+        self.bibleTrackerStore = BibleTrackerStore(defaults: accountDefaults)
+        self.appStateLedger = AppModel.loadAppStateLedger(defaults: accountDefaults)
+        if dmPushEnabled, let expectedAccountID {
+            DMPushNotificationSharedSettings.saveSelection(
+                dmPushSelection,
+                accountID: expectedAccountID
+            )
+        }
         bibleTrackerStore.onLocalChange = { [weak self] _ in
             self?.scheduleAppStatePublish(AppStateSyncContract.bibleTrackerDTag)
         }
@@ -298,17 +350,61 @@ final class AppModel {
 
     deinit {
         saveTask?.cancel()
+        widgetReloadTask?.cancel()
+        searchIndexTask?.cancel()
         syncListenerTask?.cancel()
+        taskPublicationTask?.cancel()
+        pendingTaskRepublishTask?.cancel()
         notificationTask?.cancel()
         accountBackupSearchTask?.cancel()
         accountBackupPublishTask?.cancel()
         contactRefreshTask?.cancel()
         relayDependentRefreshTask?.cancel()
         sharedInboxProcessingTask?.cancel()
-        ownProfileLoadTask?.cancel()
         deferredStartupTask?.cancel()
+        ownProfileLoadTask?.cancel()
         appStateFetchTask?.cancel()
         appStatePublishTasks.values.forEach { $0.cancel() }
+        relayHistorySettleTask?.cancel()
+        openTaskVerificationTask?.cancel()
+        shareRefreshTask?.cancel()
+    }
+
+    /// Fences all callbacks and outbound work before the Keychain identity is changed for another
+    /// account. The old model must be quiesced before `identityStore.save(target)` so an in-flight
+    /// task can never sign old content with the newly active key.
+    func stopForAccountSwitch() async {
+        guard isAccountActive else { return }
+        isAccountActive = false
+        cancelAccountWork()
+        cachedIdentity = nil
+        await syncEngine.stop()
+        await syncEngine.setIdentity(nil)
+        await notificationCoordinator.cancelAllScheduledNotifications()
+    }
+
+    private func cancelAccountWork() {
+        saveTask?.cancel()
+        widgetReloadTask?.cancel()
+        searchIndexTask?.cancel()
+        syncListenerTask?.cancel()
+        taskPublicationTask?.cancel()
+        pendingTaskRepublishTask?.cancel()
+        notificationTask?.cancel()
+        accountBackupSearchTask?.cancel()
+        accountBackupPublishTask?.cancel()
+        contactRefreshTask?.cancel()
+        relayDependentRefreshTask?.cancel()
+        sharedInboxProcessingTask?.cancel()
+        deferredStartupTask?.cancel()
+        ownProfileLoadTask?.cancel()
+        appStateFetchTask?.cancel()
+        appStatePublishTasks.values.forEach { $0.cancel() }
+        relayHistorySettleTask?.cancel()
+        openTaskVerificationTask?.cancel()
+        shareRefreshTask?.cancel()
+        walletPaymentDeliveryHandler = nil
+        walletDMPushRefreshHandler = nil
     }
 
     var visibleBoards: [Board] {
@@ -406,7 +502,7 @@ final class AppModel {
         let normalized = TaskifyRelayURL.normalizedList(urls)
         guard !normalized.isEmpty, normalized != appRelays else { return }
         appRelays = normalized
-        AppRelaySettings.setURLs(normalized)
+        AppRelaySettings.setURLs(normalized, defaults: accountDefaults)
         // Direct messages, shared-task delivery and account backup all resolve their relays
         // through this set, so the engine needs to pick up the new connections now.
         if reconfigure {
@@ -432,7 +528,7 @@ final class AppModel {
         var updated = excludedSyncRelayURLs
         updated.insert(normalized)
         excludedSyncRelayURLs = updated
-        SyncExcludedRelaySettings.setURLs(updated)
+        SyncExcludedRelaySettings.setURLs(updated, defaults: accountDefaults)
         reconfigureSync()
         return .changed
     }
@@ -444,7 +540,7 @@ final class AppModel {
         var updated = excludedSyncRelayURLs
         updated.remove(normalized)
         excludedSyncRelayURLs = updated
-        SyncExcludedRelaySettings.setURLs(updated)
+        SyncExcludedRelaySettings.setURLs(updated, defaults: accountDefaults)
         reconfigureSync()
     }
 
@@ -759,7 +855,7 @@ final class AppModel {
 
     func setChatMessageRetention(_ retention: ChatMessageRetention) {
         guard retention != chatMessageRetention else { return }
-        ChatHistorySettings.setRetention(retention)
+        ChatHistorySettings.setRetention(retention, defaults: accountDefaults)
         chatMessageRetention = retention
         if let cutoff = retention.cutoffTimestamp(),
            snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed {
@@ -1951,11 +2047,7 @@ final class AppModel {
         }
         let identity: NostrIdentity
         do {
-            guard let storedIdentity = try identityStore.load() else {
-                dmPushStatus = "A Nostr identity is required"
-                return
-            }
-            identity = storedIdentity
+            identity = try activeIdentity()
         } catch {
             dmPushStatus = error.localizedDescription
             return
@@ -1964,6 +2056,7 @@ final class AppModel {
         dmPushStatus = "Registering with Apple…"
         do {
             let deviceToken = try await TaskifyDMPushCoordinator.shared.requestDeviceToken()
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             dmPushStatus = "Registering this device…"
             _ = try await DMPushRegistrationClient.register(
                 deviceToken: deviceToken,
@@ -1973,6 +2066,7 @@ final class AppModel {
                 baseURL: serverURL,
                 identity: identity
             )
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
 
             if nip17InboxRelayURLs.isEmpty {
                 await ensureNIP17InboxRelayPreference()
@@ -1991,12 +2085,15 @@ final class AppModel {
                     throw error
                 }
             }
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
 
             TaskifyDMPushSettings.saveEnabled(
                 selection: selection,
                 relayURL: relayURL,
                 serverURL: serverURL.absoluteString,
-                deviceToken: deviceToken
+                deviceToken: deviceToken,
+                accountID: identity.publicKeyHex,
+                defaults: accountDefaults
             )
             dmPushEnabled = true
             dmPushSelection = selection
@@ -2009,7 +2106,12 @@ final class AppModel {
     }
 
     func setDMPushSelection(_ selection: DMPushNotificationSelection) {
-        TaskifyDMPushSettings.saveSelection(selection)
+        guard isAccountActive, !identityPublicKey.isEmpty else { return }
+        TaskifyDMPushSettings.saveSelection(
+            selection,
+            accountID: identityPublicKey,
+            defaults: accountDefaults
+        )
         dmPushSelection = selection
         if dmPushEnabled {
             dmPushStatus = "Enabled for \(selection.title.lowercased())"
@@ -2019,7 +2121,7 @@ final class AppModel {
     func disableDMPushNotifications() async {
         guard dmPushEnabled else { return }
         guard let serverURL = Self.normalizedDMPushServerURL(dmPushServerURL),
-              let identity = try? identityStore.load() else {
+              let identity = try? activeIdentity() else {
             dmPushStatus = "The current push registration could not be authenticated"
             return
         }
@@ -2030,6 +2132,7 @@ final class AppModel {
                 baseURL: serverURL,
                 identity: identity
             )
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             if response.remainingRegistrations == 0,
                nip17InboxRelayURLs.contains(dmPushRelayURL) {
                 var remaining = nip17InboxRelayURLs.filter { $0 != dmPushRelayURL }
@@ -2040,7 +2143,7 @@ final class AppModel {
                     try await updateNIP17InboxRelayPreference(remaining, identity: identity)
                 }
             }
-            TaskifyDMPushSettings.clearEnabled()
+            TaskifyDMPushSettings.clearEnabled(defaults: accountDefaults)
             dmPushEnabled = false
             dmPushStatus = "Off"
         } catch {
@@ -2051,7 +2154,7 @@ final class AppModel {
     func refreshDMPushRegistration(deviceToken: String) async {
         guard dmPushEnabled,
               let serverURL = Self.normalizedDMPushServerURL(dmPushServerURL),
-              let identity = try? identityStore.load() else { return }
+              let identity = try? activeIdentity() else { return }
         do {
             _ = try await DMPushRegistrationClient.register(
                 deviceToken: deviceToken,
@@ -2061,6 +2164,7 @@ final class AppModel {
                 baseURL: serverURL,
                 identity: identity
             )
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             TaskifyDMPushSettings.saveDeviceToken(deviceToken)
             if nip17InboxRelayURLs.isEmpty {
                 await ensureNIP17InboxRelayPreference()
@@ -2069,6 +2173,7 @@ final class AppModel {
                 let existing = nip17InboxRelayURLs.isEmpty ? appRelays : nip17InboxRelayURLs
                 try await updateNIP17InboxRelayPreference(existing + [dmPushRelayURL], identity: identity)
             }
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             dmPushStatus = "Enabled for \(dmPushSelection.title.lowercased())"
         } catch {
             dmPushStatus = "Needs attention: \(error.localizedDescription)"
@@ -2094,7 +2199,7 @@ final class AppModel {
         if notifyMessages,
            categories.contains(.message),
            dmPushSelection.allows(.message) {
-            await TaskifyDMPushLocalNotifier.shared.notifyNewMessage()
+            await TaskifyDMPushLocalNotifier.shared.notifyNewMessage(accountID: identityPublicKey)
         }
         let paymentReceived = await walletDMPushRefreshHandler?(
             dmPushSelection.allows(.paymentReceived)
@@ -2131,7 +2236,7 @@ final class AppModel {
     }
 
     func selectEncryptedFileServer(_ url: String) {
-        guard let normalized = TaskifyMediaServerSettings.selectServer(url) else { return }
+        guard let normalized = TaskifyMediaServerSettings.selectServer(url, defaults: accountDefaults) else { return }
         encryptedMediaServerURL = normalized
         scheduleShareRefresh()
         scheduleAccountBackupPublish()
@@ -2139,28 +2244,28 @@ final class AppModel {
 
     @discardableResult
     func addEncryptedFileServer(url: String, type: TaskifyFileServerType) -> TaskifyMediaServerSettings.AddResult {
-        let result = TaskifyMediaServerSettings.addServer(url: url, type: type)
+        let result = TaskifyMediaServerSettings.addServer(url: url, type: type, defaults: accountDefaults)
         if case .added = result {
-            encryptedFileServers = TaskifyMediaServerSettings.servers
-            encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
+            encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
+            encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
             scheduleShareRefresh()
-        scheduleAccountBackupPublish()
+            scheduleAccountBackupPublish()
         }
         return result
     }
 
     func removeEncryptedFileServer(_ url: String) {
-        guard TaskifyMediaServerSettings.removeServer(url) else { return }
-        encryptedFileServers = TaskifyMediaServerSettings.servers
-        encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
+        guard TaskifyMediaServerSettings.removeServer(url, defaults: accountDefaults) else { return }
+        encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
+        encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
         scheduleShareRefresh()
         scheduleAccountBackupPublish()
     }
 
     func resetEncryptedFileServers() {
-        TaskifyMediaServerSettings.resetToDefaults()
-        encryptedFileServers = TaskifyMediaServerSettings.servers
-        encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
+        TaskifyMediaServerSettings.resetToDefaults(defaults: accountDefaults)
+        encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
+        encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
         scheduleShareRefresh()
         scheduleAccountBackupPublish()
     }
@@ -2420,9 +2525,7 @@ final class AppModel {
               let item = snapshot.sharedCalendarInvites.first(where: { $0.id == itemID }) else {
             return
         }
-        guard let identity = try identityStore.load() else {
-            throw StructuredShareSendError.identityUnavailable
-        }
+        let identity = try activeIdentity()
         let relayURLs = TaskifyRelayURL.normalizedList(
             (item.event.relayURLs ?? []) + sharedInboxRelayURLs
         )
@@ -2434,6 +2537,9 @@ final class AppModel {
                 status: status,
                 relayURLs: relayURLs
             )
+            guard acceptsAccountActivity(identity.publicKeyHex) else {
+                throw StructuredShareSendError.identityUnavailable
+            }
             _ = snapshot.upsertTaskifyEvent(taskifyEvent)
             scheduleSave()
         }
@@ -2444,12 +2550,16 @@ final class AppModel {
             identity: identity,
             createdAt: nextNostrTimestamp()
         )
+        guard acceptsAccountActivity(identity.publicKeyHex) else {
+            throw StructuredShareSendError.identityUnavailable
+        }
         try await syncEngine.publish(
             event,
             relayURLs: relayURLs,
             outboxScope: Self.sharedInboxOutboxScope,
             recordID: "calendar-rsvp:\(item.event.eventID):\(identity.publicKeyHex)"
         )
+        guard acceptsAccountActivity(identity.publicKeyHex) else { return }
         guard snapshot.setSharedCalendarInviteStatus(itemID: itemID, status: status) != nil else {
             return
         }
@@ -2802,9 +2912,7 @@ final class AppModel {
         petname: String?,
         relayURL: String?
     ) async throws -> NostrContact {
-        guard let identity = try identityStore.load() else {
-            throw NostrContactDirectoryError.identityUnavailable
-        }
+        let identity = try activeIdentity()
         guard let key = NostrPublicKey.parse(publicKeyValue) else {
             throw NostrContactDirectoryError.invalidPublicKey
         }
@@ -2814,6 +2922,9 @@ final class AppModel {
 
         contactSyncStatus = "Checking the latest private contact list…"
         await refreshContactsBeforeMutation()
+        guard acceptsAccountActivity(identity.publicKeyHex) else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
         let fallback = TaskifyRelayURL.normalizedList(
             (relayURL.map { [$0] } ?? []) + contactsSyncRelayURLs
         )
@@ -2822,6 +2933,9 @@ final class AppModel {
             recipientPublicKey: key.hexString,
             discoveryRelayURLs: fallback
         )
+        guard acceptsAccountActivity(identity.publicKeyHex) else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
         let timestamp = nextNostrTimestamp(after: snapshot.contactsListUpdatedAt ?? 0)
         guard let contact = snapshot.upsertContact(
             publicKeyValue: key.hexString,
@@ -2837,20 +2951,24 @@ final class AppModel {
             relayURLs: discovered,
             fetcher: syncEngine
         )
+        guard acceptsAccountActivity(identity.publicKeyHex) else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
         if snapshot.applyContactProfiles(profiles) { scheduleSave() }
         contactSyncStatus = "Contacts synced privately"
         return snapshot.contact(publicKeyValue: contact.publicKey) ?? contact
     }
 
     func deleteNostrContact(publicKey: String) async throws {
-        guard let identity = try identityStore.load() else {
-            throw NostrContactDirectoryError.identityUnavailable
-        }
+        let identity = try activeIdentity()
         guard snapshot.contact(publicKeyValue: publicKey) != nil else {
             throw NostrContactDirectoryError.contactUnavailable
         }
         contactSyncStatus = "Checking the latest private contact list…"
         await refreshContactsBeforeMutation()
+        guard acceptsAccountActivity(identity.publicKeyHex) else {
+            throw NostrContactDirectoryError.identityUnavailable
+        }
         let timestamp = nextNostrTimestamp(after: snapshot.contactsListUpdatedAt ?? 0)
         guard snapshot.removeContact(publicKeyValue: publicKey, updatedAt: timestamp) else {
             throw NostrContactDirectoryError.contactUnavailable
@@ -2913,9 +3031,7 @@ final class AppModel {
     /// Publishes the edited profile as a NIP-01 kind:0 event and deletes the superseded profile
     /// event, mirroring the PWA's `publishProfileMetadata` (`taskify-pwa/src/nostr/ProfilePublisher.ts`).
     func publishOwnProfile(_ draft: NostrProfileDraft) async throws {
-        guard let identity = try identityStore.load() else {
-            throw NostrContactDirectoryError.identityUnavailable
-        }
+        let identity = try activeIdentity()
         let relays = contactsSyncRelayURLs
         guard !relays.isEmpty else { throw NostrContactDirectoryError.noRelays }
 
@@ -2942,6 +3058,9 @@ final class AppModel {
             identity: identity,
             createdAt: createdAt
         )
+        }
+        guard acceptsAccountActivity(identity.publicKeyHex) else {
+            throw NostrContactDirectoryError.identityUnavailable
         }
         await syncEngine.configure(
             boards: snapshot.boardsForSync,
@@ -2973,6 +3092,7 @@ final class AppModel {
         profilePublishMessage = "Profile published"
 
         if let previousEventID, previousEventID != event.id {
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             let deletionTimestamp = nextNostrTimestamp()
             let deletion = try await TaskifyRelayProofOfWork.prepare(relays: relays) {
                 try NostrProfileContract.deletionEvent(
@@ -2993,10 +3113,8 @@ final class AppModel {
     /// Uploads a profile picture to the configured file server (plain, unencrypted — the URL
     /// goes into the public kind:0 content). Mirrors the PWA's `uploadAvatar` NIP-96 path.
     func uploadProfilePicture(_ imageData: Data, filename: String) async throws -> String {
-        guard let identity = try identityStore.load() else {
-            throw NostrContactDirectoryError.identityUnavailable
-        }
-        let entry = TaskifyMediaServerSettings.configuredEntry
+        let identity = try activeIdentity()
+        let entry = TaskifyMediaServerSettings.configuredEntry(defaults: accountDefaults)
         guard let server = URL(string: entry.url) else {
             throw ProfilePictureUploadError.invalidServer
         }
@@ -3136,11 +3254,17 @@ final class AppModel {
         fromSync: Bool = false
     ) {
         let wasEnabled = fastingRemindersEnabled
-        FastingRemindersSettings.save(enabled: enabled, mode: mode, perMonth: perMonth, weekday: weekday)
-        fastingRemindersEnabled = FastingRemindersSettings.enabled
-        fastingRemindersMode = FastingRemindersSettings.mode
-        fastingRemindersPerMonth = FastingRemindersSettings.perMonth
-        fastingRemindersWeekday = FastingRemindersSettings.weekday
+        FastingRemindersSettings.save(
+            enabled: enabled,
+            mode: mode,
+            perMonth: perMonth,
+            weekday: weekday,
+            defaults: accountDefaults
+        )
+        fastingRemindersEnabled = FastingRemindersSettings.enabled(defaults: accountDefaults)
+        fastingRemindersMode = FastingRemindersSettings.mode(defaults: accountDefaults)
+        fastingRemindersPerMonth = FastingRemindersSettings.perMonth(defaults: accountDefaults)
+        fastingRemindersWeekday = FastingRemindersSettings.weekday(defaults: accountDefaults)
         // Turning the feature off here clears pending reminders; a synced "off" doesn't publish
         // deletions (the PWA only hides them locally).
         reconcileFastingReminders(removeExistingWhenDisabled: wasEnabled && !enabled && !fromSync)
@@ -3164,7 +3288,7 @@ final class AppModel {
             mode: fastingRemindersMode,
             weekday: fastingRemindersWeekday,
             perMonth: fastingRemindersPerMonth,
-            seed: FastingRemindersSettings.seed,
+            seed: FastingRemindersSettings.seed(defaults: accountDefaults),
             calendar: weekCalendar,
             removeExistingWhenDisabled: removeExistingWhenDisabled
         )
@@ -3185,8 +3309,8 @@ final class AppModel {
     private static let scriptureMemorySeriesID = ScriptureMemoryAlgorithm.seriesID
     private static let scriptureMemoryStorageKey = "taskify.scriptureMemory.state.v1"
 
-    static func loadScriptureMemoryState() -> ScriptureMemoryState {
-        guard let data = UserDefaults.standard.data(forKey: scriptureMemoryStorageKey),
+    static func loadScriptureMemoryState(defaults: UserDefaults) -> ScriptureMemoryState {
+        guard let data = defaults.data(forKey: scriptureMemoryStorageKey),
               let decoded = try? JSONDecoder().decode(ScriptureMemoryState.self, from: data) else {
             return ScriptureMemoryState()
         }
@@ -3195,7 +3319,7 @@ final class AppModel {
 
     func persistScriptureMemoryState() {
         guard let data = try? JSONEncoder().encode(scriptureMemoryState) else { return }
-        UserDefaults.standard.set(data, forKey: Self.scriptureMemoryStorageKey)
+        accountDefaults.set(data, forKey: Self.scriptureMemoryStorageKey)
         if !isApplyingSyncedScriptureMemory {
             scheduleAppStatePublish(AppStateSyncContract.scriptureMemoryDTag)
         }
@@ -3241,18 +3365,18 @@ final class AppModel {
         frequency: ScriptureMemoryFrequency,
         publish: Bool = true
     ) {
-        ScriptureMemorySettings.setEnabled(enabled)
-        ScriptureMemorySettings.setBoardID(boardID)
-        ScriptureMemorySettings.setFrequency(frequency)
-        scriptureMemoryEnabled = ScriptureMemorySettings.enabled
-        scriptureMemoryBoardID = ScriptureMemorySettings.boardID
-        scriptureMemoryFrequency = ScriptureMemorySettings.frequency
+        ScriptureMemorySettings.setEnabled(enabled, defaults: accountDefaults)
+        ScriptureMemorySettings.setBoardID(boardID, defaults: accountDefaults)
+        ScriptureMemorySettings.setFrequency(frequency, defaults: accountDefaults)
+        scriptureMemoryEnabled = ScriptureMemorySettings.enabled(defaults: accountDefaults)
+        scriptureMemoryBoardID = ScriptureMemorySettings.boardID(defaults: accountDefaults)
+        scriptureMemoryFrequency = ScriptureMemorySettings.frequency(defaults: accountDefaults)
         reconcileScriptureMemory()
         if publish { scheduleAccountBackupPublish() }
     }
 
     func setScriptureMemorySort(_ sort: ScriptureMemorySort) {
-        ScriptureMemorySettings.setSort(sort)
+        ScriptureMemorySettings.setSort(sort, defaults: accountDefaults)
         scriptureMemorySort = sort
     }
 
@@ -3451,7 +3575,7 @@ final class AppModel {
         // Scripture Memory was enabled before any board existed. Persist that fallback instead of
         // merely displaying it in the picker while task creation remains blocked by a nil id.
         if scriptureMemoryBoardID != targetBoard.id {
-            ScriptureMemorySettings.setBoardID(targetBoard.id)
+            ScriptureMemorySettings.setBoardID(targetBoard.id, defaults: accountDefaults)
             scriptureMemoryBoardID = targetBoard.id
         }
 
@@ -3685,6 +3809,9 @@ final class AppModel {
 
     /// Lets edits made outside the app (`TaskifyExternalActions`) use this device's settings.
     private func mirrorDeviceTaskSettings() {
+        // Widgets, App Intents and the Watch bridge use the default/primary account store only.
+        // A secondary Mac account must not rewrite that shared projection with its own identity.
+        guard mirrorsPrimaryDeviceTaskSettings else { return }
         let editor = identityPublicKey.nilIfEmpty
         let streaks = streaksEnabled, weekStart = weekStart, position = newTaskPosition
         TaskifyDeviceTaskSettings.update {
@@ -3696,19 +3823,19 @@ final class AppModel {
     }
 
     func setStreaksEnabled(_ enabled: Bool) {
-        TaskStreakSettings.setEnabled(enabled)
+        TaskStreakSettings.setEnabled(enabled, defaults: accountDefaults)
         streaksEnabled = enabled
     }
 
     func setNewTaskPosition(_ position: NewTaskPosition) {
-        TaskOrderingSettings.setPosition(position)
+        TaskOrderingSettings.setPosition(position, defaults: accountDefaults)
         newTaskPosition = position
     }
 
     func setWeekStart(_ weekday: WeekdayColumn) {
         guard WeekdayColumn.supportedWeekStarts.contains(weekday),
               weekday != weekStart else { return }
-        WeekLayoutSettings.setStart(weekday)
+        WeekLayoutSettings.setStart(weekday, defaults: accountDefaults)
         weekStart = weekday
 
         var updated = snapshot
@@ -3728,13 +3855,13 @@ final class AppModel {
     }
 
     func setShowFullWeekRecurring(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: TaskPresentationSettings.showFullWeekRecurringKey)
+        accountDefaults.set(enabled, forKey: TaskPresentationSettings.showFullWeekRecurringKey)
         showFullWeekRecurring = enabled
         if enabled { ensureFullWeekTaskRecurrences() }
     }
 
     func setStartupTab(_ tab: StartupTab) {
-        StartupViewSettings.setTab(tab)
+        StartupViewSettings.setTab(tab, defaults: accountDefaults)
         startupTab = tab
     }
 
@@ -3750,7 +3877,7 @@ final class AppModel {
         } else {
             startupBoardIDsByWeekday.removeValue(forKey: weekdayIndex)
         }
-        StartupViewSettings.setBoardIDsByWeekday(startupBoardIDsByWeekday)
+        StartupViewSettings.setBoardIDsByWeekday(startupBoardIDsByWeekday, defaults: accountDefaults)
     }
 
     /// Reorders a board relative to its neighbors in the switcher. Local-only (no board-order
@@ -4312,7 +4439,7 @@ final class AppModel {
     /// meant to be read from that one deliberate, user-initiated screen — everywhere else in the
     /// app only exposes the public npub.
     func currentIdentityNsec() -> String? {
-        guard let identity = try? identityStore.load(), !identity.nsec.isEmpty else { return nil }
+        guard let identity = try? activeIdentity(), !identity.nsec.isEmpty else { return nil }
         return identity.nsec
     }
 
@@ -4348,7 +4475,7 @@ final class AppModel {
         let discoveryRelays = TaskifyRelayURL.normalizedList(
             appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
-        let watchFileServer = TaskifyMediaServerSettings.configuredEntry
+        let watchFileServer = TaskifyMediaServerSettings.configuredEntry(defaults: accountDefaults)
         guard identity.count == 64 else {
             return TaskifyWatchChatProjection(
                 threads: [],
@@ -4455,9 +4582,7 @@ final class AppModel {
     /// binary (never converted to an nsec string) and is immediately handed to the encrypted,
     /// reachable-only WatchConnectivity message path.
     func watchProvisioningPayload() throws -> TaskifyWatchProvisioningPayload {
-        guard let identity = try identityStore.load() else {
-            throw KeychainIdentityError.keychain(errSecItemNotFound)
-        }
+        let identity = try activeIdentity()
         let discoveryRelays = TaskifyRelayURL.normalizedList(
             appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
         )
@@ -4474,7 +4599,7 @@ final class AppModel {
                 from: JSONEncoder().encode($0)
             )
         }
-        let watchFileServer = TaskifyMediaServerSettings.configuredEntry
+        let watchFileServer = TaskifyMediaServerSettings.configuredEntry(defaults: accountDefaults)
         let chatContext = TaskifyWatchChatProvisioningContext(
             contacts: watchContacts,
             threadSummaries: watchChatProjection().threads,
@@ -4505,12 +4630,7 @@ final class AppModel {
     /// authentication before displaying or copying it — the model performs no auth of its own,
     /// matching how `WalletViewModel.recoveryPhrase()` leaves Face ID/passcode to the view layer.
     func exportIdentityNsec() throws -> String {
-        if let cachedIdentity { return cachedIdentity.nsec }
-        guard let identity = try identityStore.load() else {
-            throw NostrContactDirectoryError.identityUnavailable
-        }
-        cachedIdentity = identity
-        return identity.nsec
+        return try activeIdentity().nsec
     }
 
     @discardableResult
@@ -4599,7 +4719,7 @@ final class AppModel {
             return
         }
         do {
-            guard let identity = try identityStore.load() else {
+            guard let identity = try? activeIdentity() else {
                 accountBackupMessage = "Import a Nostr identity before checking account sync."
                 return
             }
@@ -4711,7 +4831,7 @@ final class AppModel {
         managedAccountBackupBoardIDs = payload.nativeManagedNostrBoardIDs
         lastAccountBackupCreatedAt = max(lastAccountBackupCreatedAt, payload.timestamp)
         applySyncedSettings(from: payload)
-        PhysicalChecklistJobStore.merge(payload.printJobs)
+        PhysicalChecklistJobStore.merge(payload.printJobs, defaults: accountDefaults)
         let result = snapshot.mergePWAAccountBackup(payload)
         let imported = result.importedBoardCount
         let updated = result.updatedBoardCount
@@ -4743,6 +4863,9 @@ final class AppModel {
             OnboardingSettings.determineEligibilityIfNeeded(hadExistingIdentity: hadExistingIdentity)
             showsFirstRunOnboarding = !OnboardingSettings.completed
             let identity = try identityStore.loadOrCreate()
+            guard expectedAccountID == nil || identity.publicKeyHex == expectedAccountID else {
+                throw AppModelAccountError.identityChanged
+            }
             applyIdentity(identity)
         } catch {
             errorMessage = error.localizedDescription
@@ -4883,7 +5006,7 @@ final class AppModel {
         case .bible:
             return
         }
-        let completedTabEnabled = (UserDefaults.standard.object(
+        let completedTabEnabled = (accountDefaults.object(
             forKey: TaskPresentationSettings.completedTabKey
         ) as? Bool) ?? TaskPresentationSettings.completedTabDefault
         snapshotLookupCache.prewarmBoardTasks(
@@ -4922,7 +5045,7 @@ final class AppModel {
         )
         guard sanitized != startupBoardIDsByWeekday else { return }
         startupBoardIDsByWeekday = sanitized
-        StartupViewSettings.setBoardIDsByWeekday(sanitized)
+        StartupViewSettings.setBoardIDsByWeekday(sanitized, defaults: accountDefaults)
     }
 
 #if DEBUG
@@ -5048,8 +5171,8 @@ final class AppModel {
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_FRESH_STORE"] == "1" else { return false }
         snapshot = .empty
         // Device relay edits from earlier tests would otherwise carry over.
-        AppRelaySettings.reset()
-        appRelays = AppRelaySettings.urls
+        AppRelaySettings.reset(defaults: accountDefaults)
+        appRelays = AppRelaySettings.urls(defaults: accountDefaults)
         errorMessage = nil
         return true
     }
@@ -5286,7 +5409,42 @@ final class AppModel {
     }
 #endif
 
+    /// Every signing/decryption lookup is bound to this model's account. A Keychain identity can
+    /// change globally during an account switch, so the current key must never be accepted merely
+    /// because it exists.
+    private func activeIdentity() throws -> NostrIdentity {
+        guard isAccountActive else { throw AppModelAccountError.identityChanged }
+        if let cachedIdentity,
+           expectedAccountID == nil || cachedIdentity.publicKeyHex == expectedAccountID {
+            return cachedIdentity
+        }
+        guard let identity = try identityStore.load(),
+              expectedAccountID == nil || identity.publicKeyHex == expectedAccountID,
+              identityPublicKey.isEmpty || identity.publicKeyHex == identityPublicKey else {
+            throw AppModelAccountError.identityChanged
+        }
+        cachedIdentity = identity
+        return identity
+    }
+
+    private func acceptsAccountActivity(_ accountID: String) -> Bool {
+        isAccountActive && identityPublicKey == accountID
+    }
+
+    /// Captures the active account before a wallet-adjacent operation that authenticates with a
+    /// Nostr identity. Wallet funds remain device-wide, but solife.me/NWC-forwarding operations
+    /// must keep the identity that initiated them instead of rereading a newly switched key.
+    func accountIdentityForScopedWalletOperation() throws -> NostrIdentity {
+        try activeIdentity()
+    }
+
     private func applyIdentity(_ identity: NostrIdentity) {
+        guard isAccountActive,
+              expectedAccountID == nil || identity.publicKeyHex == expectedAccountID else {
+            errorMessage = AppModelAccountError.identityChanged.localizedDescription
+            isAccountActive = false
+            return
+        }
         if identityPublicKey != identity.publicKeyHex {
             ownProfileLoadTask?.cancel()
             ownProfileLoadTask = nil
@@ -5373,6 +5531,7 @@ final class AppModel {
     }
 
     private func handleSyncUpdate(_ update: TaskSyncUpdate) async {
+        guard isAccountActive else { return }
         switch update {
         // Each of these merges runs against a copy and assigns back only when it reports a real
         // change. Merging straight into `snapshot` fired its `didSet` for every event — and a
@@ -5572,13 +5731,7 @@ final class AppModel {
         if let cachedIdentity {
             identity = cachedIdentity
         } else {
-            do {
-                guard let storedIdentity = try identityStore.load() else { return }
-                identity = storedIdentity
-            } catch {
-                return
-            }
-            cachedIdentity = identity
+            do { identity = try activeIdentity() } catch { return }
         }
 
         while !sharedInboxQueue.isEmpty, !Task.isCancelled,
@@ -6044,6 +6197,7 @@ final class AppModel {
         scheduleSave()
         // Preserve edit order while moving expensive encoding/encryption/signing off
         // MainActor. Await only durable queueing, never a slow relay's delivery window.
+        let accountID = identityPublicKey
         let previousPublication = taskPublicationTask
         taskPublicationTask = Task { [syncEngine, weak self] in
             await previousPublication?.value
@@ -6068,12 +6222,15 @@ final class AppModel {
                     }
                     return requests
                 }.value
+                guard let self, self.acceptsAccountActivity(accountID) else { return }
                 try await syncEngine.enqueueForPublish(requests)
-                self?.markTasksQueued(stamps, requests: requests)
+                guard self.acceptsAccountActivity(accountID) else { return }
+                self.markTasksQueued(stamps, requests: requests)
             } catch {
-                self?.errorMessage = "Taskify could not queue these tasks for Nostr sync. It will try again."
+                guard let self, self.acceptsAccountActivity(accountID) else { return }
+                self.errorMessage = "Taskify could not queue these tasks for Nostr sync. It will try again."
                 // Nothing was queued: the tasks stay pending and are published again shortly.
-                self?.schedulePendingTaskRepublish()
+                self.schedulePendingTaskRepublish()
             }
         }
     }
@@ -6120,7 +6277,8 @@ final class AppModel {
         pendingTaskRepublishTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
-            self?.republishPendingTasks()
+            guard let self, self.isAccountActive else { return }
+            self.republishPendingTasks()
         }
     }
 
@@ -6487,11 +6645,17 @@ final class AppModel {
                 for file in draft.files {
                     documents.append(try await TaskAttachmentUploadService.shared.uploadDocument(
                         fileURL: ShareTaskDraftStore.fileURL(file, of: draft),
-                        name: file.name, mimeType: file.mimeType, boardID: board.effectiveNostrBoardID))
+                        name: file.name,
+                        mimeType: file.mimeType,
+                        boardID: board.effectiveNostrBoardID,
+                        identity: cachedIdentity,
+                        settingsDefaults: accountDefaults
+                    ))
                 }
             } catch {
                 continue
             }
+            guard acceptsAccountActivity(draft.account) else { continue }
             guard task(withID: draft.taskID) == nil else {
                 ShareTaskDraftStore.remove(draft)
                 continue
@@ -6510,7 +6674,7 @@ final class AppModel {
     }
 
     func refreshShareState(retry: Bool = false) async {
-        guard !isLoading, let identity = try? identityStore.load() else { return }
+        guard !isLoading, let identity = try? activeIdentity() else { return }
         do {
             let old = try? ShareTransferStore.account()
             if old?.publicKey != identity.publicKeyHex {
@@ -6554,7 +6718,8 @@ final class AppModel {
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
             let account = ShareAccount(publicKey: identity.publicKeyHex, recipients: recipients,
-                server: TaskifyMediaServerSettings.configuredEntry, senderRelays: effectiveNIP17InboxRelayURLs,
+                server: TaskifyMediaServerSettings.configuredEntry(defaults: accountDefaults),
+                senderRelays: effectiveNIP17InboxRelayURLs,
                 taskBoards: shareTaskBoardNames())
             if account != old { try ShareTransferStore.saveAccount(account) }
 #if os(iOS)
@@ -6629,6 +6794,7 @@ final class AppModel {
             // reading `snapshot` only after) collapses a burst into one save of the final state.
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled, let self else { return }
+            guard self.isAccountActive else { return }
             // Never write over a change the widget or a shortcut made since our last write.
             await self.absorbExternalStoreChanges()
             guard !Task.isCancelled else { return }
@@ -6665,18 +6831,21 @@ final class AppModel {
         searchIndexTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(2500))
             guard !Task.isCancelled, let self else { return }
+            guard self.isAccountActive else { return }
             searchIndexTask = nil
             let items = TaskifySpotlightIndex.items(in: tasksSnapshot)
-            await TaskifySpotlightIndexer.shared.update(with: items)
+            await TaskifySpotlightIndexer.shared.update(with: items, accountID: identityPublicKey)
         }
 #endif
     }
 
     private func scheduleWidgetReload() {
+        guard mirrorsPrimaryDeviceTaskSettings else { return }
         widgetReloadTask?.cancel()
         widgetReloadTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(2500))
             guard !Task.isCancelled, let self else { return }
+            guard self.isAccountActive else { return }
             widgetReloadTask = nil
             WidgetCenter.shared.reloadAllTimelines()
         }
@@ -6691,7 +6860,9 @@ final class AppModel {
         do {
             try await store.save(snapshot)
             noteStoreWritten(snapshot)
-            WidgetCenter.shared.reloadAllTimelines()
+            if mirrorsPrimaryDeviceTaskSettings {
+                WidgetCenter.shared.reloadAllTimelines()
+            }
         } catch {
             errorMessage = "Taskify could not save the latest change."
         }
@@ -6768,9 +6939,7 @@ final class AppModel {
     /// registration remains an authenticated HTTPS concern; only standard relay URLs are
     /// published to Nostr.
     func updateNIP17InboxRelayPreference(_ relayURLs: [String]) async throws {
-        guard let identity = try identityStore.load() else {
-            throw NostrDirectMessageError.identityUnavailable
-        }
+        let identity = try activeIdentity()
         try await updateNIP17InboxRelayPreference(relayURLs, identity: identity)
     }
 
@@ -6871,12 +7040,7 @@ final class AppModel {
     }
 
     func outboundIdentity() throws -> NostrIdentity {
-        if let cachedIdentity { return cachedIdentity }
-        guard let identity = try identityStore.load() else {
-            throw NostrDirectMessageError.identityUnavailable
-        }
-        cachedIdentity = identity
-        return identity
+        try activeIdentity()
     }
 
     /// Relay discovery for one peer is intentionally scoped to that peer. The previous global
@@ -7011,15 +7175,8 @@ final class AppModel {
 
     private func refreshContactsFromNostr(silent: Bool) async {
         guard !isRefreshingContacts else { return }
-        let identity: NostrIdentity
-        do {
-            guard let storedIdentity = try identityStore.load() else {
-                if !silent { contactSyncStatus = "Import a Nostr identity to sync contacts" }
-                return
-            }
-            identity = storedIdentity
-        } catch {
-            if !silent { contactSyncStatus = "Private contact sync is unavailable" }
+        guard let identity = try? activeIdentity() else {
+            if !silent { contactSyncStatus = "Import a Nostr identity to sync contacts" }
             return
         }
         let relays = contactsSyncRelayURLs
@@ -7040,7 +7197,7 @@ final class AppModel {
             relayURLs: relays,
             fetcher: syncEngine
         )
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
         let decodedList: NIP51ContactList? = await Task.detached(priority: .utility) {
             () -> NIP51ContactList? in
             for event in candidates {
@@ -7053,6 +7210,7 @@ final class AppModel {
             }
             return nil
         }.value
+        guard acceptsAccountActivity(identity.publicKeyHex) else { return }
         if let decodedList {
             lastNostrCreatedAt = max(lastNostrCreatedAt, decodedList.eventCreatedAt)
             if snapshot.replaceContacts(from: decodedList) { scheduleSave() }
@@ -7066,7 +7224,7 @@ final class AppModel {
             relayURLs: profileRelays,
             fetcher: syncEngine
         )
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
         if snapshot.applyContactProfiles(profiles) { scheduleSave() }
         if !silent {
             if decodedList != nil || !(snapshot.contacts ?? []).isEmpty {
@@ -7092,6 +7250,9 @@ final class AppModel {
             createdAt: createdAt,
             extraTags: extraTags
         )
+        }
+        guard acceptsAccountActivity(identity.publicKeyHex) else {
+            throw AppModelAccountError.identityChanged
         }
         await syncEngine.configure(
             boards: snapshot.boardsForSync,
@@ -7121,7 +7282,7 @@ final class AppModel {
     }
 
     private func scheduleAccountBackupPublish() {
-        guard accountBackupBaseline != nil else { return }
+        guard isAccountActive, accountBackupBaseline != nil else { return }
         accountBackupPublishPending = true
         accountBackupPublishTask?.cancel()
         accountBackupPublishTask = Task { [weak self] in
@@ -7137,7 +7298,7 @@ final class AppModel {
 
     /// Saves the printable row-to-task manifest locally and queues it in encrypted account sync.
     func recordPhysicalChecklistJob(_ job: PhysicalChecklistJob) {
-        PhysicalChecklistJobStore.save(job)
+        PhysicalChecklistJobStore.save(job, defaults: accountDefaults)
         if var baseline = accountBackupBaseline {
             baseline.printJobs = NostrPrintJobManifest.merged(
                 remote: baseline.printJobs,
@@ -7150,11 +7311,7 @@ final class AppModel {
 
     private func publishAccountBackupSafely() async {
         guard accountBackupBaseline != nil else { return }
-        let identity: NostrIdentity
-        do {
-            guard let storedIdentity = try identityStore.load() else { return }
-            identity = storedIdentity
-        } catch {
+        guard let identity = try? activeIdentity() else {
             accountBackupMessage = "The native account backup is waiting for access to your identity."
             return
         }
@@ -7167,7 +7324,7 @@ final class AppModel {
             relayURLs: lookupRelays,
             fetcher: syncEngine
         )
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
 
         var latestPayload: NostrAppBackupPayload?
         var latestEventCreatedAt = 0
@@ -7197,7 +7354,8 @@ final class AppModel {
             managedNostrBoardIDs: managedAccountBackupBoardIDs,
             timestamp: createdAt
         )
-        let localPrintJobs = PhysicalChecklistJobStore.loadAll().values.map(NostrPrintJobManifest.init(job:))
+        let localPrintJobs = PhysicalChecklistJobStore.loadAll(defaults: accountDefaults)
+            .values.map(NostrPrintJobManifest.init(job:))
         updatedPayload.printJobs = NostrPrintJobManifest.merged(
             remote: remotePayload.printJobs,
             local: localPrintJobs
@@ -7226,7 +7384,9 @@ final class AppModel {
         )
         updatedPayload.settings[FastingRemindersSettings.perMonthPWAKey] = .integer(Int64(fastingRemindersPerMonth))
         updatedPayload.settings[FastingRemindersSettings.weekdayPWAKey] = .integer(Int64(fastingRemindersWeekday))
-        updatedPayload.settings[FastingRemindersSettings.seedPWAKey] = .string(FastingRemindersSettings.seed)
+        updatedPayload.settings[FastingRemindersSettings.seedPWAKey] = .string(
+            FastingRemindersSettings.seed(defaults: accountDefaults)
+        )
         updatedPayload.settings[ScriptureMemorySettings.enabledPWAKey] = .boolean(scriptureMemoryEnabled)
         updatedPayload.settings[ScriptureMemorySettings.frequencyPWAKey] = .string(scriptureMemoryFrequency.rawValue)
         if let nostrBoardID = scriptureMemoryBoardID
@@ -7250,6 +7410,7 @@ final class AppModel {
                 createdAt: createdAt
             )
             }
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             await syncEngine.configure(
                 boards: snapshot.boardsForSync,
                 auxiliaryRelayURLs: auxiliaryRelayURLs,
@@ -7262,6 +7423,7 @@ final class AppModel {
                 outboxScope: Self.accountBackupOutboxScope,
                 recordID: NostrAppBackupContract.eventDTag
             )
+            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             accountBackupBaseline = updatedPayload
             lastAccountBackupCreatedAt = createdAt
             managedAccountBackupBoardIDs.formUnion(
@@ -7280,17 +7442,20 @@ final class AppModel {
         // Applied before the selected-server value below, since selectServer only accepts a URL
         // that's already present in the list.
         if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.serverListPWAKey] {
-            encryptedFileServers = TaskifyMediaServerSettings.applyServerList(value)
+            encryptedFileServers = TaskifyMediaServerSettings.applyServerList(
+                value,
+                defaults: accountDefaults
+            )
         }
         if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.selectedServerPWAKey],
-           let normalized = TaskifyMediaServerSettings.selectServer(value) {
+           let normalized = TaskifyMediaServerSettings.selectServer(value, defaults: accountDefaults) {
             encryptedMediaServerURL = normalized
         } else {
-            encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer
+            encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
         }
         if case .string(let value)? = payload.settings[ChatHistorySettings.pwaSettingsKey],
            let retention = ChatMessageRetention(rawValue: value) {
-            ChatHistorySettings.setRetention(retention)
+            ChatHistorySettings.setRetention(retention, defaults: accountDefaults)
             chatMessageRetention = retention
             if let cutoff = retention.cutoffTimestamp(),
                snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed {
@@ -7328,8 +7493,8 @@ final class AppModel {
     private func applySyncedFastingReminderSettings(from payload: NostrAppBackupPayload) {
         var seedChanged = false
         if case .string(let seed)? = payload.settings[FastingRemindersSettings.seedPWAKey],
-           !seed.isEmpty, seed != FastingRemindersSettings.seed {
-            FastingRemindersSettings.setSeed(seed)
+           !seed.isEmpty, seed != FastingRemindersSettings.seed(defaults: accountDefaults) {
+            FastingRemindersSettings.setSeed(seed, defaults: accountDefaults)
             seedChanged = true
         }
         var enabled = fastingRemindersEnabled
@@ -7377,6 +7542,8 @@ final class AppModel {
     }
 
     private func refreshNotifications(requestPermission: Bool) {
+        guard isAccountActive, !identityPublicKey.isEmpty else { return }
+        let accountID = identityPublicKey
         notificationTask?.cancel()
         notificationTask = Task { [notificationCoordinator, weak self] in
             // Debounce: this is called once per merged task during initial sync, and a
@@ -7396,11 +7563,12 @@ final class AppModel {
             let tasks = self.snapshot.tasks
             let events = self.taskifyEvents
             let status = await notificationCoordinator.reschedule(
+                accountID: accountID,
                 tasks: tasks,
                 events: events,
                 requestPermission: requestPermission
             )
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.acceptsAccountActivity(accountID) else { return }
             await MainActor.run {
                 self.notificationStatus = status
             }
@@ -7408,13 +7576,18 @@ final class AppModel {
     }
 
     private func refreshNotificationsImmediately() async {
+        guard isAccountActive, !identityPublicKey.isEmpty else { return }
+        let accountID = identityPublicKey
         notificationTask?.cancel()
         notificationTask = nil
-        notificationStatus = await notificationCoordinator.reschedule(
+        let status = await notificationCoordinator.reschedule(
+            accountID: accountID,
             tasks: snapshot.tasks,
             events: taskifyEvents,
             requestPermission: false
         )
+        guard acceptsAccountActivity(accountID) else { return }
+        notificationStatus = status
     }
 
     private static func normalizedTaskifyEventReminders(

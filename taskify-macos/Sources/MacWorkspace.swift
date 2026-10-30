@@ -44,6 +44,7 @@ private struct MacSplitDestinationMenuItems: View {
 
 struct MacWorkspace: View {
     @Environment(AppModel.self) private var model
+    @EnvironmentObject private var runtime: MacRuntime
     let initialLink: URL?
     let isWalletRecoveryMode: Bool
     @SceneStorage("mac.destination") private var destination = "today"
@@ -102,10 +103,32 @@ struct MacWorkspace: View {
             workspaceDetail
         }
         .accessibilityIdentifier("taskify-workspace-\(destination)")
+        .disabled(runtime.isSwitchingAccount)
         .focusedSceneValue(\.taskifyActions, MacWindowActions(
-            newTask: { creatingTask = true }, newBoard: { creatingBoard = true }, sync: { model.retrySync() }
+            newTask: {
+                guard !runtime.isSwitchingAccount else { return }
+                creatingTask = true
+            },
+            newBoard: {
+                guard !runtime.isSwitchingAccount else { return }
+                creatingBoard = true
+            },
+            sync: {
+                guard !runtime.isSwitchingAccount else { return }
+                model.retrySync()
+            }
         ))
-        .overlay { if model.isLoading { ProgressView("Opening Taskify…").padding(30).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)) } }
+        .overlay {
+            if runtime.isSwitchingAccount {
+                ProgressView("Switching account…")
+                    .padding(30)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            } else if model.isLoading {
+                ProgressView("Opening Taskify…")
+                    .padding(30)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
         .sheet(isPresented: $creatingTask) { MacTaskEditor(task: nil, boardID: commandBoardID) }
         .sheet(item: $editingTask) { task in MacTaskEditor(task: task, boardID: task.boardID) }
         .sheet(isPresented: $creatingEvent) { MacEventEditor(event: nil, initialBoardID: commandBoardID) }
@@ -117,7 +140,8 @@ struct MacWorkspace: View {
                     title: board.name,
                     ownerID: "board:\(board.effectiveNostrBoardID)",
                     allItems: MacChecklistItems.forBoard(board, model: model),
-                    groups: MacChecklistItems.groups(forBoard: board, model: model)
+                    groups: MacChecklistItems.groups(forBoard: board, model: model),
+                    includeCompletedDefault: runtime.completedTabEnabled
                 )
             }
         }
@@ -175,10 +199,11 @@ struct MacWorkspace: View {
 
     private func handlePendingDestination(_ value: TaskifyNotificationContract.Destination?) {
         guard let value else { return }
+        guard !model.isLoading, !model.identityPublicKey.isEmpty else { return }
         if value.rawValue != MacDestination.wallet.rawValue || walletEnabled {
             destination = value.rawValue
         }
-        _ = notificationRouter.consumeDestination()
+        _ = notificationRouter.consumeDestination(for: model.identityPublicKey)
     }
 
     private func handleWalletEnabledChange(_ enabled: Bool) {
@@ -188,16 +213,23 @@ struct MacWorkspace: View {
     }
 
     private func handleAppear() {
+        if model.board(withID: destination) == nil,
+           MacDestination(rawValue: destination) == nil {
+            destination = "today"
+        }
         if destination == MacDestination.wallet.rawValue && !walletEnabled {
             destination = "today"
         }
+        handlePendingDestination(notificationRouter.pendingDestination)
         guard !didHandleInitialLink, let initialLink else { return }
         didHandleInitialLink = true
         openWhenReady(initialLink)
     }
 
     private func handleLoadingChange(_ isLoading: Bool) {
-        guard !isLoading, let pendingLink else { return }
+        guard !isLoading else { return }
+        handlePendingDestination(notificationRouter.pendingDestination)
+        guard let pendingLink else { return }
         openWhenReady(pendingLink)
     }
 
@@ -705,11 +737,10 @@ struct MacTaskInspector: View {
     let task: TaskItem
     var edit: () -> Void
     @Environment(AppModel.self) private var model
-    @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
-    private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
+    @EnvironmentObject private var runtime: MacRuntime
     private var visibleSubtasks: [TaskSubtask] {
         let subtasks = task.subtasks ?? []
-        return hideCompletedSubtasks ? subtasks.filter { !$0.completed } : subtasks
+        return runtime.hideCompletedSubtasks ? subtasks.filter { !$0.completed } : subtasks
     }
     var body: some View {
         ScrollView {

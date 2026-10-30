@@ -215,24 +215,26 @@ extension WalletViewModel {
         statusMessage = "Moved \(formattedSats(amount)) to Taskify eCash"
     }
 
-    func setSolifeNWCForward(handle: String, connection: String) async throws {
-        guard let identity = try? KeychainIdentityStore().load() else { throw SolifeError.authenticationFailed }
+    func setSolifeNWCForward(
+        handle: String,
+        connection: String,
+        identity: NostrIdentity
+    ) async throws {
         _ = try await SolifeClient.setNWCForward(identity: identity, handle: handle, connection: connection)
-        await refreshSolifeAccount()
+        await refreshSolifeAccount(identity: identity)
     }
 
     /// Explicit opt-in path: share the active Taskify NWC connection with solife.me so it can
     /// create invoices for this address. The server restricts itself to get_info/make_invoice.
-    func shareActiveNWCWithSolife(handle: String) async throws {
+    func shareActiveNWCWithSolife(handle: String, identity: NostrIdentity) async throws {
         guard let connection = await nwcService.activeConnectionURI else {
             throw NWCError.invalidConnection("Select an NWC wallet first.")
         }
-        try await setSolifeNWCForward(handle: handle, connection: connection)
+        try await setSolifeNWCForward(handle: handle, connection: connection, identity: identity)
     }
 
-    func clearSolifeNWCForward(handle: String) async throws {
-        guard let identity = try? KeychainIdentityStore().load() else { throw SolifeError.authenticationFailed }
+    func clearSolifeNWCForward(handle: String, identity: NostrIdentity) async throws {
         _ = try await SolifeClient.clearNWCForward(identity: identity, handle: handle)
-        await refreshSolifeAccount()
+        await refreshSolifeAccount(identity: identity)
     }
 }

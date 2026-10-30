@@ -589,6 +589,143 @@ final class MacPresentationTests: XCTestCase {
         )
     }
 
+    func testPrimaryStorageRelocationMovesAndRollsBackStoreAndOutbox() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskifyPrimaryRelocationTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent("TaskifyNative", isDirectory: true)
+        let primaryStore = support.appendingPathComponent("taskify.json", isDirectory: false)
+        let primaryOutbox = support.appendingPathComponent("nostr-outbox.json", isDirectory: false)
+        let split = support.appendingPathComponent(JSONTaskStore.splitDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: split, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try Data("store".utf8).write(to: split.appendingPathComponent("tasks.json"))
+        try Data("outbox".utf8).write(to: primaryOutbox)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let accountID = String(repeating: "ab", count: 32)
+        let accountDirectory = MacAccountStoragePaths.accountDirectory(
+            primaryURL: primaryStore,
+            accountID: accountID
+        )
+        var relocation = MacPrimaryStorageRelocation(
+            primaryStoreURL: primaryStore,
+            primaryOutboxURL: primaryOutbox,
+            accountID: accountID
+        )
+
+        try relocation.apply()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: split.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: primaryOutbox.path))
+        XCTAssertEqual(
+            try Data(contentsOf: accountDirectory
+                .appendingPathComponent(JSONTaskStore.splitDirectoryName)
+                .appendingPathComponent("tasks.json")),
+            Data("store".utf8)
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: accountDirectory.appendingPathComponent("nostr-outbox.json")),
+            Data("outbox".utf8)
+        )
+
+        try relocation.rollback()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: split.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: primaryOutbox.path))
+    }
+
+    func testAccountPreferencesUseDistinctSuitesAndMigrateLegacyDataOnce() throws {
+        let nonce = UUID().uuidString
+        let bundleID = "solife.me.Taskify.Mac.Tests.\(nonce)"
+        let firstID = String(repeating: "a", count: 64)
+        let secondID = String(repeating: "b", count: 64)
+        let legacySuite = "\(bundleID).legacy"
+        let firstSuite = MacAccountPreferences.suiteName(bundleIdentifier: bundleID, accountID: firstID)
+        let secondSuite = MacAccountPreferences.suiteName(bundleIdentifier: bundleID, accountID: secondID)
+        defer {
+            for suite in [legacySuite, firstSuite, secondSuite] {
+                UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+            }
+        }
+
+        let legacy = try XCTUnwrap(UserDefaults(suiteName: legacySuite))
+        legacy.set(["wss://legacy.example"], forKey: "taskify.sync.appRelays")
+        legacy.set("not-account-data", forKey: "unrelated.setting")
+
+        let first = MacAccountPreferences.makeDefaults(
+            bundleIdentifier: bundleID,
+            accountID: firstID,
+            migratingFrom: legacy
+        )
+        let second = MacAccountPreferences.makeDefaults(
+            bundleIdentifier: bundleID,
+            accountID: secondID
+        )
+
+        XCTAssertNotEqual(firstSuite, secondSuite)
+        XCTAssertEqual(first.stringArray(forKey: "taskify.sync.appRelays"), ["wss://legacy.example"])
+        XCTAssertNil(first.string(forKey: "unrelated.setting"))
+        XCTAssertNil(second.stringArray(forKey: "taskify.sync.appRelays"))
+
+        second.set(["wss://second.example"], forKey: "taskify.sync.appRelays")
+        legacy.set(["wss://newer.example"], forKey: "taskify.sync.appRelays")
+
+        XCTAssertEqual(first.stringArray(forKey: "taskify.sync.appRelays"), ["wss://legacy.example"])
+        XCTAssertEqual(second.stringArray(forKey: "taskify.sync.appRelays"), ["wss://second.example"])
+
+        first.set(false, forKey: MacAccountViewPreferences.completedTabKey)
+        first.set(true, forKey: MacAccountViewPreferences.hideCompletedSubtasksKey)
+        second.set(true, forKey: MacAccountViewPreferences.completedTabKey)
+        second.set(false, forKey: MacAccountViewPreferences.hideCompletedSubtasksKey)
+        XCTAssertFalse(MacAccountViewPreferences(defaults: first).completedTabEnabled)
+        XCTAssertTrue(MacAccountViewPreferences(defaults: first).hideCompletedSubtasks)
+        XCTAssertTrue(MacAccountViewPreferences(defaults: second).completedTabEnabled)
+        XCTAssertFalse(MacAccountViewPreferences(defaults: second).hideCompletedSubtasks)
+    }
+
+    func testStartupAccountNeverSubstitutesAnUnknownIdentityForThePrimaryStore() throws {
+        let primaryIdentity = try NostrIdentity.generate()
+        let secondaryIdentity = try NostrIdentity.generate()
+        let unknownIdentity = try NostrIdentity.generate()
+        let primary = MacSavedAccount(identity: primaryIdentity, label: "Primary")
+        let secondary = MacSavedAccount(identity: secondaryIdentity, label: "Secondary")
+        let accounts = [primary, secondary]
+
+        XCTAssertEqual(
+            MacAccountCollection.startupAccount(
+                storedIdentityID: unknownIdentity.publicKeyHex,
+                accounts: accounts,
+                primaryAccountID: primary.publicKeyHex
+            )?.publicKeyHex,
+            primary.publicKeyHex
+        )
+        XCTAssertEqual(
+            MacAccountCollection.startupAccount(
+                storedIdentityID: secondary.publicKeyHex,
+                accounts: accounts,
+                primaryAccountID: primary.publicKeyHex
+            )?.publicKeyHex,
+            secondary.publicKeyHex
+        )
+        XCTAssertNil(MacAccountCollection.startupAccount(
+            storedIdentityID: primary.publicKeyHex,
+            accounts: [],
+            primaryAccountID: nil
+        ))
+    }
+
+    func testSavedAccountRejectsMismatchedPublicKeyMetadata() throws {
+        let identity = try NostrIdentity.generate()
+        let valid = MacSavedAccount(identity: identity)
+        let mismatched = MacSavedAccount(
+            publicKeyHex: String(repeating: "ab", count: 32),
+            npub: identity.npub,
+            privateKeyHex: identity.privateKeyHex
+        )
+
+        XCTAssertTrue(valid.isValidVaultEntry)
+        XCTAssertFalse(mismatched.isValidVaultEntry)
+    }
+
     func testSavedAccountUpsertUpdatesLabelsWithoutDuplicatingKeys() {
         let first = MacSavedAccount(
             publicKeyHex: "abc123",

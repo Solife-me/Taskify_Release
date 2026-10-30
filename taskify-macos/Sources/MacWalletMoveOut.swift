@@ -4,6 +4,7 @@ import TaskifyWallet
 
 struct MacWalletMoveOutView: View {
     @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
     @State private var showingLightning = false
     @State private var showingEcash = false
     @State private var showingNWC = false
@@ -112,8 +113,12 @@ struct MacWalletMoveOutView: View {
         case .moveToNWC:
             showingNWC = true
         case .claimNpubCash:
+            guard let identity = try? model.accountIdentityForScopedWalletOperation() else {
+                errorMessage = "Your Taskify account is unavailable. Reopen your wallet and try again."
+                return
+            }
             Task {
-                let claimed = await wallet.claimNpubCash(auto: false)
+                let claimed = await wallet.claimNpubCash(auto: false, identity: identity)
                 claimMessage = claimed > 0
                     ? "Claimed \(claimed) payment\(claimed == 1 ? "" : "s")."
                     : "Nothing to claim."

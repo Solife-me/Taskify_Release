@@ -8,10 +8,6 @@ struct MacSettingsView: View {
     @Environment(AppModel.self) private var model
     @EnvironmentObject private var runtime: MacRuntime
     @EnvironmentObject private var wallet: WalletViewModel
-    @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
-    private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
-    @AppStorage(TaskPresentationSettings.completedTabKey)
-    private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var relay = ""
     @State private var identity = ""
     @State private var accountLabel = ""
@@ -32,8 +28,14 @@ struct MacSettingsView: View {
                         Text("Top").tag(NewTaskPosition.top); Text("Bottom").tag(NewTaskPosition.bottom)
                     }
                     Toggle("Show Full Week Recurrences", isOn: Binding(get: { model.showFullWeekRecurring }, set: { model.setShowFullWeekRecurring($0) }))
-                    Toggle("Show Completed Tasks Tab", isOn: $completedTabEnabled)
-                    Toggle("Hide Completed Subtasks", isOn: $hideCompletedSubtasks)
+                    Toggle("Show Completed Tasks Tab", isOn: Binding(
+                        get: { runtime.completedTabEnabled },
+                        set: { runtime.setCompletedTabEnabled($0) }
+                    ))
+                    Toggle("Hide Completed Subtasks", isOn: Binding(
+                        get: { runtime.hideCompletedSubtasks },
+                        set: { runtime.setHideCompletedSubtasks($0) }
+                    ))
                     Toggle("Track Streaks", isOn: Binding(get: { model.streaksEnabled }, set: { model.setStreaksEnabled($0) }))
                     Toggle("Bible Tracker", isOn: Binding(get: { model.visibleBoards.contains { $0.kind == .bible } }, set: { _ = model.setBibleTrackerEnabled($0) }))
                 }
@@ -140,7 +142,15 @@ struct MacSettingsView: View {
                 if let message { Text(message).font(.caption) }
                 if let message = model.profilePublishMessage { Text(message).font(.caption) }
             }.formStyle(.grouped).disabled(!profileLoaded || model.isPublishingProfile)
-                .task { await model.loadOwnProfile(); profile = NostrProfileDraft(profile: model.ownProfile); profileLoaded = true }
+                .task(id: model.identityPublicKey) {
+                    profileLoaded = false
+                    profile = NostrProfileDraft()
+                    let accountID = model.identityPublicKey
+                    await model.loadOwnProfile()
+                    guard !Task.isCancelled, model.identityPublicKey == accountID else { return }
+                    profile = NostrProfileDraft(profile: model.ownProfile)
+                    profileLoaded = true
+                }
                 .tabItem { Label("Profile", systemImage: "person.text.rectangle") }
             Form {
                 Section("Relay Connections") {
@@ -203,6 +213,16 @@ struct MacSettingsView: View {
                 Button("Cancel", role: .cancel) { accountToRemove = nil }
             } message: {
                 Text("This removes the saved key from this Mac. Its local account data remains on disk.")
+            }
+            .disabled(runtime.isSwitchingAccount)
+            .onChange(of: model.identityPublicKey) { _, _ in
+                identity = ""
+                accountLabel = ""
+                relay = ""
+                message = nil
+                restoreCandidate = nil
+                profileLoaded = false
+                profile = NostrProfileDraft()
             }
     }
 
@@ -271,6 +291,7 @@ func authenticate(_ reason: String) async throws {
 
 struct MacOnboarding: View {
     @Environment(AppModel.self) private var model
+    @EnvironmentObject private var runtime: MacRuntime
     @State private var key = ""
     @State private var importing = false
     var body: some View {
@@ -284,12 +305,22 @@ struct MacOnboarding: View {
                 SecureField("Paste your Taskify nsec", text: $key).textFieldStyle(.roundedBorder)
                 Text("Find your private key in the account settings on your other device.").font(.caption).foregroundStyle(.secondary)
             }
-            if let error = model.errorMessage { Text(error).foregroundStyle(.red).font(.caption) }
+            if let error = runtime.accountError ?? model.errorMessage {
+                Text(error).foregroundStyle(.red).font(.caption)
+            }
             HStack {
                 Spacer()
                 Button(importing ? "Import Account" : "Get Started") {
-                    if importing { guard model.importIdentity(key) else { return }; key = "" }
-                    model.completeFirstRunOnboarding()
+                    if importing {
+                        let privateKey = key
+                        key = ""
+                        Task {
+                            guard await runtime.addAndSwitchAccount(nsec: privateKey, label: nil) else { return }
+                            runtime.model.completeFirstRunOnboarding()
+                        }
+                    } else {
+                        model.completeFirstRunOnboarding()
+                    }
                 }.buttonStyle(.borderedProminent).controlSize(.large).disabled(importing && key.isEmpty)
             }
         }.padding(38).frame(width: 480).interactiveDismissDisabled()

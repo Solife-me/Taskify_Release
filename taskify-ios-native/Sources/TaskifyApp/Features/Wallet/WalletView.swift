@@ -208,6 +208,11 @@ final class WalletViewModel: ObservableObject {
     @Published var nwcReceiveAddressOverride: String? = NWCWalletSettings().receiveAddress
     let nwcService = NWCWalletService(journalURL: WalletViewModel.nwcJournalURL)
 
+    /// Mac multi-account mode supplies the account explicitly. Keeping this on the device-wide
+    /// wallet prevents a suspended wallet operation from rereading a newly switched Keychain key.
+    private var nostrAccountIdentity: NostrIdentity?
+    private var usesExplicitNostrAccount = false
+
     private(set) var service: CashuWalletService?
     private var hasStarted = false
     private var isAppActive = true
@@ -236,7 +241,7 @@ final class WalletViewModel: ObservableObject {
         var keys = p2pkKeyRing.keys.map(\.privateKey)
         // The PWA can lock a contact payment to the recipient's Nostr public key. Including the
         // local Nostr key lets this client redeem those interoperable contact-locked tokens too.
-        if let identity = try? KeychainIdentityStore().load() {
+        if let identity = currentNostrIdentity() {
             keys.append(identity.privateKeyHex)
         }
         return Array(Set(keys))
@@ -671,7 +676,7 @@ final class WalletViewModel: ObservableObject {
     /// foreground, or the user changes the selected provider, so the address is ready to show
     /// immediately.
     func refreshLightningAddresses() {
-        let identity = try? KeychainIdentityStore().load()
+        let identity = currentNostrIdentity()
         solifeAddress = identity.map { SolifeClient.address(npub: $0.npub) }
 
         guard LightningAddressSettings.provider == .npubCash else {
@@ -693,10 +698,10 @@ final class WalletViewModel: ObservableObject {
     /// payment-request receipts, so a claimed token gets identical mint verification, retry, and
     /// history handling as any other incoming ecash.
     @discardableResult
-    func claimNpubCash(auto: Bool) async -> Int {
+    func claimNpubCash(auto: Bool, identity providedIdentity: NostrIdentity? = nil) async -> Int {
         guard !auto || automaticallyRedeemsIncomingPayments else { return 0 }
         guard LightningAddressSettings.provider == .npubCash, !isClaimingNpubCash else { return 0 }
-        guard let identity = try? KeychainIdentityStore().load() else {
+        guard let identity = providedIdentity ?? currentNostrIdentity() else {
             if !auto {
                 npubCashClaimStatus = .error
                 npubCashClaimMessage = "Set up your Taskify Nostr identity to use npub.cash."
@@ -763,8 +768,8 @@ final class WalletViewModel: ObservableObject {
     /// addresses. Unlike npub.cash there's no "enable" step — any Nostr identity already
     /// authenticates, so this is only fetched when the user opens address management, not
     /// automatically on wallet start.
-    func refreshSolifeAccount() async {
-        guard let identity = try? KeychainIdentityStore().load() else {
+    func refreshSolifeAccount(identity providedIdentity: NostrIdentity? = nil) async {
+        guard let identity = providedIdentity ?? currentNostrIdentity() else {
             solifeAccountStatus = .error
             solifeAccountMessage = "Set up your Taskify Nostr identity to manage solife.me addresses."
             return
@@ -773,6 +778,7 @@ final class WalletViewModel: ObservableObject {
         solifeAccountMessage = nil
         do {
             let (config, account) = try await SolifeClient.fetchAccount(identity: identity)
+            guard !Task.isCancelled else { return }
             solifeConfig = config
             solifeAccount = account
             solifeAccountStatus = .idle
@@ -780,6 +786,45 @@ final class WalletViewModel: ObservableObject {
             solifeAccountStatus = .error
             solifeAccountMessage = Self.message(for: error)
         }
+    }
+
+    /// Wallet funds and saved NWC connections are device-wide, but solife.me and npub.cash state
+    /// is derived from the currently selected Nostr identity. Drop it when that identity changes
+    /// so one account's address/account details cannot remain visible under another.
+    func resetNostrAccountScopedState() {
+        paymentInboxTask?.cancel()
+        paymentInboxTask = nil
+        paymentInboxNeedsAnotherPass = false
+        nostrAccountIdentity = nil
+        solifeAddress = nil
+        solifeAccount = nil
+        solifeConfig = nil
+        solifeAccountStatus = .idle
+        solifeAccountMessage = nil
+        npubCashIdentity = nil
+        npubCashIdentityError = nil
+        npubCashClaimStatus = .idle
+        npubCashClaimMessage = nil
+    }
+
+    func setNostrAccountIdentity(_ identity: NostrIdentity?) {
+        let changed = identity?.publicKeyHex != nostrAccountIdentity?.publicKeyHex
+        usesExplicitNostrAccount = true
+        if changed {
+            paymentInboxTask?.cancel()
+            paymentInboxTask = nil
+            paymentInboxNeedsAnotherPass = false
+        }
+        nostrAccountIdentity = identity
+        refreshLightningAddresses()
+        if changed, hasStarted {
+            paymentDeliveryWasQueued()
+        }
+    }
+
+    private func currentNostrIdentity() -> NostrIdentity? {
+        if usesExplicitNostrAccount { return nostrAccountIdentity }
+        return try? KeychainIdentityStore().load()
     }
 
     func checkSolifeAddressAvailability(handle: String) async throws -> SolifeAddressAvailability {
@@ -790,7 +835,7 @@ final class WalletViewModel: ObservableObject {
     /// the caller must pay (via `prepareLightningPayment`/`confirmLightningPayment`) and then
     /// confirm with `verifySolifePurchase`.
     func purchaseSolifeCustomAddress(handle: String) async throws -> SolifeCustomAddressClaim {
-        guard let identity = try? KeychainIdentityStore().load() else {
+        guard let identity = currentNostrIdentity() else {
             throw SolifeError.authenticationFailed
         }
         let (_, claim) = try await SolifeClient.claimCustomAddress(
@@ -806,7 +851,7 @@ final class WalletViewModel: ObservableObject {
     }
 
     func verifySolifePurchase(purchaseID: String) async throws -> SolifeAddressPurchase {
-        guard let identity = try? KeychainIdentityStore().load() else {
+        guard let identity = currentNostrIdentity() else {
             throw SolifeError.authenticationFailed
         }
         let (_, purchase) = try await SolifeClient.verifyAddressPurchase(
@@ -820,7 +865,7 @@ final class WalletViewModel: ObservableObject {
     }
 
     func updateSolifeDefaultMint(_ mintURL: String?) async throws {
-        guard let identity = try? KeychainIdentityStore().load() else {
+        guard let identity = currentNostrIdentity() else {
             throw SolifeError.authenticationFailed
         }
         _ = try await SolifeClient.updateDefaultMint(identity: identity, mintURL: mintURL)
@@ -828,7 +873,7 @@ final class WalletViewModel: ObservableObject {
     }
 
     func updateSolifeCustomAddressMint(handle: String, mintURL: String?) async throws {
-        guard let identity = try? KeychainIdentityStore().load() else {
+        guard let identity = currentNostrIdentity() else {
             throw SolifeError.authenticationFailed
         }
         _ = try await SolifeClient.updateCustomAddressMint(identity: identity, handle: handle, mintURL: mintURL)

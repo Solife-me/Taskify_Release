@@ -658,6 +658,7 @@ private struct MacWalletSwapSettingsView: View {
 
 private struct MacWalletAddressSettingsView: View {
     @EnvironmentObject private var wallet: WalletViewModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var address = ""
     @State private var separateConnection = ""
@@ -689,16 +690,33 @@ private struct MacWalletAddressSettingsView: View {
                             if let forward = item.nwcForward {
                                 Text("Payments go to \(forward.walletAlias ?? "your NWC wallet").").font(.caption)
                                 if forward.canSpend { Text("This connection can spend. A receive-only connection is safer.").font(.caption).foregroundStyle(.orange) }
-                                Button("Stop Forwarding") { Task { await run { try await wallet.clearSolifeNWCForward(handle: item.handle) } } }
+                                Button("Stop Forwarding") {
+                                    runWithAccount { identity in
+                                        try await wallet.clearSolifeNWCForward(handle: item.handle, identity: identity)
+                                    }
+                                }
                             } else {
                                 if wallet.isNWCWalletActive {
-                                    Button("Use \(wallet.nwcWalletLabel)") { Task { await run { try await wallet.shareActiveNWCWithSolife(handle: item.handle) } } }
+                                    Button("Use \(wallet.nwcWalletLabel)") {
+                                        runWithAccount { identity in
+                                            try await wallet.shareActiveNWCWithSolife(handle: item.handle, identity: identity)
+                                        }
+                                    }
                                         .buttonStyle(.borderedProminent)
                                     Text("Opt in to share the active connection for invoice creation. Taskify does not let the server initiate payments.").font(.caption).foregroundStyle(.secondary)
                                 }
                                 DisclosureGroup("Use a separate receive-only connection") {
                                     SecureField("nostr+walletconnect://…", text: $separateConnection)
-                                    Button("Forward with This Connection") { Task { await run { try await wallet.setSolifeNWCForward(handle: item.handle, connection: separateConnection); separateConnection = "" } } }
+                                    Button("Forward with This Connection") {
+                                        runWithAccount { identity in
+                                            try await wallet.setSolifeNWCForward(
+                                                handle: item.handle,
+                                                connection: separateConnection,
+                                                identity: identity
+                                            )
+                                            separateConnection = ""
+                                        }
+                                    }
                                         .disabled(separateConnection.isEmpty)
                                 }.font(.caption)
                             }
@@ -710,7 +728,20 @@ private struct MacWalletAddressSettingsView: View {
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             Spacer()
         }.padding(26).frame(width: 620, height: 560)
-            .task { await wallet.refreshSolifeAccount(); address = wallet.nwcReceiveAddressOverride ?? "" }
+            .task(id: model.identityPublicKey) {
+                guard let identity = try? model.accountIdentityForScopedWalletOperation() else { return }
+                await wallet.refreshSolifeAccount(identity: identity)
+                guard !Task.isCancelled else { return }
+                address = wallet.nwcReceiveAddressOverride ?? ""
+            }
+    }
+
+    private func runWithAccount(_ action: @escaping (NostrIdentity) async throws -> Void) {
+        guard let identity = try? model.accountIdentityForScopedWalletOperation() else {
+            error = "Your Taskify account is unavailable. Close this window and try again."
+            return
+        }
+        Task { await run { try await action(identity) } }
     }
 
     private func run(_ action: () async throws -> Void) async {

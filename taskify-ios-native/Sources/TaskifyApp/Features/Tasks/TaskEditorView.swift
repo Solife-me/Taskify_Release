@@ -1078,7 +1078,13 @@ struct TaskEditorView: View {
                 let name = "task-photo-\(timestamp)-\(index + 1).\(type.preferredFilenameExtension ?? "jpg")"
                 attachmentStatus = "Encrypting and uploading photo \(index + 1) of \(items.count)…"
                 let document = try await TaskAttachmentUploadService.shared.uploadDocument(
-                    fileURL: file.url, name: name, mimeType: type.preferredMIMEType ?? "image/jpeg", boardID: boardID)
+                    fileURL: file.url,
+                    name: name,
+                    mimeType: type.preferredMIMEType ?? "image/jpeg",
+                    boardID: boardID,
+                    identity: model.cachedIdentity,
+                    settingsDefaults: model.accountDefaults
+                )
                 documents.append(document)
             }
         } catch {
@@ -1143,7 +1149,9 @@ struct TaskEditorView: View {
                 data: jpegData,
                 name: "task-photo-\(timestamp).jpg",
                 mimeType: "image/jpeg",
-                boardID: boardID
+                boardID: boardID,
+                identity: model.cachedIdentity,
+                settingsDefaults: model.accountDefaults
             )
             documents.append(document)
             return document
@@ -1176,7 +1184,9 @@ struct TaskEditorView: View {
                 data: pdfData,
                 name: "task-scan-\(timestamp).pdf",
                 mimeType: "application/pdf",
-                boardID: boardID
+                boardID: boardID,
+                identity: model.cachedIdentity,
+                settingsDefaults: model.accountDefaults
             )
             documents.append(document)
         } catch {
@@ -1212,7 +1222,9 @@ struct TaskEditorView: View {
                 attachmentStatus = "Encrypting and uploading \(url.lastPathComponent) (\(index + 1) of \(urls.count))…"
                 let document = try await TaskAttachmentUploadService.shared.uploadDocument(
                     fileURL: url,
-                    boardID: boardID
+                    boardID: boardID,
+                    identity: model.cachedIdentity,
+                    settingsDefaults: model.accountDefaults
                 )
                 documents.append(document)
             }

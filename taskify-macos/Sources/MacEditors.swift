@@ -239,7 +239,11 @@ struct MacTaskEditor: View {
             weeklyDays: weeklyDays, monthlyInterval: monthlyInterval, interval: interval, intervalUnit: intervalUnit,
             until: untilEnabled ? until : nil, existing: draft.recurrence)
         do {
-            let uploaded = try await attachments.uploadDocuments(boardID: model.board(withID: draft.boardID)?.effectiveNostrBoardID ?? draft.boardID)
+            let uploaded = try await attachments.uploadDocuments(
+                boardID: model.board(withID: draft.boardID)?.effectiveNostrBoardID ?? draft.boardID,
+                identity: model.cachedIdentity,
+                settingsDefaults: model.accountDefaults
+            )
             let existing = draft.documents ?? []
             draft.documents = existing + uploaded.filter { item in !existing.contains { $0.id == item.id } }
         } catch is CancellationError {

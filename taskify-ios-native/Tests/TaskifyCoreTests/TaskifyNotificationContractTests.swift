@@ -73,15 +73,17 @@ final class TaskifyNotificationContractTests: XCTestCase {
     }
 
     func testCompleteActionReadsTheStableTaskIdentifier() {
+        let accountID = String(repeating: "ab", count: 32)
         let action = TaskifyNotificationContract.action(
             for: TaskifyNotificationContract.completeTaskActionIdentifier,
             userInfo: [
+                TaskifyNotificationContract.accountIDKey: accountID,
                 TaskifyNotificationContract.taskIDKey: "task-123",
                 TaskifyNotificationContract.boardIDKey: "board-456",
             ]
         )
 
-        XCTAssertEqual(action, .completeTask(taskID: "task-123"))
+        XCTAssertEqual(action, .completeTask(accountID: accountID, taskID: "task-123"))
     }
 
     func testCompleteActionRejectsMissingOrBlankTaskIdentifiers() {
@@ -91,18 +93,27 @@ final class TaskifyNotificationContractTests: XCTestCase {
         ))
         XCTAssertNil(TaskifyNotificationContract.action(
             for: TaskifyNotificationContract.completeTaskActionIdentifier,
+            userInfo: [TaskifyNotificationContract.taskIDKey: "task-123"]
+        ))
+        XCTAssertNil(TaskifyNotificationContract.action(
+            for: TaskifyNotificationContract.completeTaskActionIdentifier,
             userInfo: [TaskifyNotificationContract.taskIDKey: "   "]
         ))
     }
 
     func testUnrelatedNotificationActionsAreIgnored() {
+        let accountID = String(repeating: "ab", count: 32)
         XCTAssertNil(TaskifyNotificationContract.action(
             for: "unrelated-action",
-            userInfo: [TaskifyNotificationContract.taskIDKey: "task-123"]
+            userInfo: [
+                TaskifyNotificationContract.accountIDKey: accountID,
+                TaskifyNotificationContract.taskIDKey: "task-123",
+            ]
         ))
     }
 
     func testReplyActionReadsTheConversationAndTypedText() {
+        let accountID = String(repeating: "21", count: 32)
         let conversationID = String(repeating: "ab", count: 32)
         let group = TaskifyNotificationContract.ReplyTarget(
             conversationID: conversationID.uppercased(),
@@ -112,33 +123,49 @@ final class TaskifyNotificationContractTests: XCTestCase {
             TaskifyNotificationContract.conversationIDKey: conversationID,
             TaskifyNotificationContract.conversationKindKey: "group",
         ])
+        let userInfo = group.userInfo.merging(
+            [TaskifyNotificationContract.accountIDKey: accountID],
+            uniquingKeysWith: { _, new in new }
+        )
         XCTAssertEqual(
             TaskifyNotificationContract.action(
                 for: TaskifyNotificationContract.replyDirectMessageActionIdentifier,
-                userInfo: group.userInfo,
+                userInfo: userInfo,
                 responseText: "  On my way  \n"
             ),
-            .reply(to: .init(conversationID: conversationID, isGroup: true), text: "On my way")
+            .reply(
+                accountID: accountID,
+                to: .init(conversationID: conversationID, isGroup: true),
+                text: "On my way"
+            )
         )
     }
 
     func testReplyActionRejectsBlankTextOrIncompleteConversation() {
+        let accountID = String(repeating: "21", count: 32)
         let conversationID = String(repeating: "ab", count: 32)
         let userInfo = TaskifyNotificationContract.ReplyTarget(
             conversationID: conversationID,
             isGroup: false
-        ).userInfo
+        ).userInfo.merging(
+            [TaskifyNotificationContract.accountIDKey: accountID],
+            uniquingKeysWith: { _, new in new }
+        )
         let reply = TaskifyNotificationContract.replyDirectMessageActionIdentifier
         XCTAssertNil(TaskifyNotificationContract.action(for: reply, userInfo: userInfo, responseText: " \n "))
         XCTAssertNil(TaskifyNotificationContract.action(for: reply, userInfo: userInfo))
         XCTAssertNil(TaskifyNotificationContract.action(
             for: reply,
-            userInfo: [TaskifyNotificationContract.conversationIDKey: conversationID],
+            userInfo: [
+                TaskifyNotificationContract.accountIDKey: accountID,
+                TaskifyNotificationContract.conversationIDKey: conversationID,
+            ],
             responseText: "Hello"
         ))
         XCTAssertNil(TaskifyNotificationContract.action(
             for: reply,
             userInfo: [
+                TaskifyNotificationContract.accountIDKey: accountID,
                 TaskifyNotificationContract.conversationIDKey: "npub-or-garbage",
                 TaskifyNotificationContract.conversationKindKey: "direct",
             ],
@@ -166,6 +193,34 @@ final class TaskifyNotificationContractTests: XCTestCase {
         XCTAssertNil(TaskifyNotificationContract.destination(userInfo: [
             TaskifyNotificationContract.destinationKey: "boards",
         ]))
+    }
+
+    func testPushPreviewSelectionIsScopedPerAccount() throws {
+        let suite = "TaskifyNotificationContractTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = String(repeating: "11", count: 32)
+        let second = String(repeating: "22", count: 32)
+
+        DMPushNotificationSharedSettings.saveSelection(
+            .messages,
+            accountID: first,
+            defaults: defaults
+        )
+        DMPushNotificationSharedSettings.saveSelection(
+            .payments,
+            accountID: second,
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            DMPushNotificationSharedSettings.selection(accountID: first, defaults: defaults),
+            .messages
+        )
+        XCTAssertEqual(
+            DMPushNotificationSharedSettings.selection(accountID: second, defaults: defaults),
+            .payments
+        )
     }
 
     func testUrgentAlarmRequiresAnIncompleteFutureTaskWithDueTime() {
@@ -241,6 +296,7 @@ final class TaskifyNotificationContractTests: XCTestCase {
         let pushed: [AnyHashable: Any] = [
             "aps": ["alert": "New Message"],
             "taskify": ["type": "dm-preview"],
+            TaskifyNotificationContract.accountIDKey: String(repeating: "ab", count: 32),
             TaskifyNotificationContract.taskIDKey: "task-1",
             TaskifyNotificationContract.boardIDKey: "board-1",
             TaskifyNotificationContract.destinationKey: "chat",

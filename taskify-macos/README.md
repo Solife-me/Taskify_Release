@@ -9,6 +9,16 @@ notification scheduling. It is an active port, not yet complete iOS parity.
 Open `TaskifyMac.xcodeproj`, choose `TaskifyMac` and My Mac. Configure your own
 signing team for a signed sandboxed build. No Catalyst runtime is used.
 
+## Multi-account isolation
+
+Saved accounts share a verified Keychain vault, but each account has its own task store,
+outbox, preference suite, relays, app-state ledger, notifications, and Spotlight scope. Account
+switches stop and fence the previous model before changing the active Keychain identity. Wallet
+funds/connections, APNs installation state, appearance, and primary-account widget/App Intent/
+Watch projections remain intentionally device-wide. See
+[`docs/audits/macos-multi-account-isolation-2026-10-30.md`](../docs/audits/macos-multi-account-isolation-2026-10-30.md)
+for the threat model, fixes, invariants, and residual boundaries.
+
 ```sh
 python3 taskify-macos/Scripts/generate-project.py --check
 xcodebuild -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
@@ -27,14 +37,16 @@ xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCommandQPersistsAnImmediateTaskEdit \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testPendingPublicationSurvivesOfflineRelaunch \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testSpotlightTaskOpensAndCompletionRemovesIt \
-  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testRawPNGCanBePastedIntoTaskAndChatComposers
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testRawPNGCanBePastedIntoTaskAndChatComposers \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testChatComposerShiftReturnStartsANewLineAndReturnSends \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testChatAttachmentsRenderInThreadWithRecordButton
 ```
 
 Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 27 presentation/runtime tests, the unsigned app build and the ten isolated app-host smoke tests on
+the 49 presentation/runtime tests, the unsigned app build and the twelve isolated app-host smoke tests on
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
 a session-scoped temporary store/outbox and Keychain service, and no relay or wallet startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing

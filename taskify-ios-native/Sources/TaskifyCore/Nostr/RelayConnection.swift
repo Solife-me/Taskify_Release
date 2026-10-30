@@ -396,9 +396,7 @@ public actor NostrRelayConnection {
         switch message {
         case .auth(let challenge):
             guard authReplay.challenge != challenge else { return true }
-            let identity: NostrIdentity?
-            if let authenticationIdentity { identity = authenticationIdentity }
-            else { identity = await NostrRelayAuthentication.shared.currentIdentity() }
+            let identity = await authenticationIdentityForChallenge()
             guard let identity else { return false }
             let event = try NostrEvent.signed(privateKey: identity.privateKey,
                 createdAt: Int(Date().timeIntervalSince1970), kind: NIP42AuthContract.eventKind,
@@ -427,6 +425,13 @@ public actor NostrRelayConnection {
         default: break
         }
         return false
+    }
+
+    func authenticationIdentityForChallenge() async -> NostrIdentity? {
+        // An implicit connection has no account owner and therefore must stay anonymous. Falling
+        // back to a process-wide key lets a connection opened for one account authenticate as a
+        // newly selected account if its AUTH challenge arrives after a switch.
+        authenticationIdentity
     }
 
     private func receiveLoop(

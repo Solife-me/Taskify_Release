@@ -73,27 +73,47 @@ final class MacAttachmentQueue: ObservableObject {
         files.forEach { try? FileManager.default.removeItem(at: $0.url) }
         files = []; progress = nil
     }
-    func uploadChat() async throws -> [NostrDirectMessageAttachment] {
+    func uploadChat(
+        identity: NostrIdentity?,
+        settingsDefaults: UserDefaults
+    ) async throws -> [NostrDirectMessageAttachment] {
         var result: [NostrDirectMessageAttachment] = []
         for index in files.indices {
             try Task.checkCancellation()
             let file = files[index]
             if let uploaded = file.uploadedChat { result.append(uploaded); continue }
             progress = "Encrypting and uploading \(index + 1) of \(files.count)…"
-            let attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(fileURL: file.url, name: file.name, mimeType: file.mimeType)
+            let attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(
+                fileURL: file.url,
+                name: file.name,
+                mimeType: file.mimeType,
+                identity: identity,
+                settingsDefaults: settingsDefaults
+            )
             files[index].uploadedChat = attachment
             result.append(attachment)
         }
         return result
     }
-    func uploadDocuments(boardID: String) async throws -> [TaskDocument] {
+    func uploadDocuments(
+        boardID: String,
+        identity: NostrIdentity?,
+        settingsDefaults: UserDefaults
+    ) async throws -> [TaskDocument] {
         var result: [TaskDocument] = []
         for index in files.indices {
             try Task.checkCancellation()
             let file = files[index]
             if let uploaded = file.uploadedDocument, uploaded.encryptionBoardID == boardID { result.append(uploaded); continue }
             progress = "Encrypting and uploading \(index + 1) of \(files.count)…"
-            let document = try await TaskAttachmentUploadService.shared.uploadDocument(fileURL: file.url, name: file.name, mimeType: file.mimeType, boardID: boardID)
+            let document = try await TaskAttachmentUploadService.shared.uploadDocument(
+                fileURL: file.url,
+                name: file.name,
+                mimeType: file.mimeType,
+                boardID: boardID,
+                identity: identity,
+                settingsDefaults: settingsDefaults
+            )
             files[index].uploadedDocument = document
             result.append(document)
         }

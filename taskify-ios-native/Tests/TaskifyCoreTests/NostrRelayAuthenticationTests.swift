@@ -2,6 +2,22 @@ import XCTest
 @testable import TaskifyCore
 
 final class NostrRelayAuthenticationTests: XCTestCase {
+    func testImplicitRelayConnectionDoesNotReuseProcessWideAccountIdentity() async throws {
+        let processIdentity = try NostrIdentity.generate()
+        await NostrRelayAuthentication.shared.setIdentity(processIdentity)
+        defer {
+            Task { await NostrRelayAuthentication.shared.setIdentity(nil) }
+        }
+        let connection = NostrRelayConnection(
+            relayURL: "wss://relay.example",
+            automaticallyAuthenticate: true
+        )
+
+        let identity = await connection.authenticationIdentityForChallenge()
+
+        XCTAssertNil(identity)
+    }
+
     func testBlockedRequestWaitsForAuthAcknowledgementAndReplaysOnce() {
         var state = NostrRelayAuthReplay()
         state.record(key: "REQ:one", frame: "request")

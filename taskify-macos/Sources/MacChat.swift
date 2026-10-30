@@ -609,7 +609,10 @@ private struct MacConversation: View {
                 if attachments.files.isEmpty {
                     try await model.sendDirectMessage(to: peer, content: text, replyToEventID: reply?.id)
                 } else {
-                    let uploaded = try await attachments.uploadChat()
+                    let uploaded = try await attachments.uploadChat(
+                        identity: model.cachedIdentity,
+                        settingsDefaults: model.accountDefaults
+                    )
                     attachments.progress = "Sending message…"
                     try await model.sendDirectMessageAttachments(to: peer, attachments: uploaded, replyToEventID: reply?.id, comment: text)
                     attachments.clear()
