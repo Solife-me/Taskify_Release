@@ -532,6 +532,24 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertEqual(lastColumnCenter - viewportWidth / 2, contentWidth - viewportWidth, accuracy: 0.001)
     }
 
+    func testWeekBoardCentersInsideTheViewportVisibleBesideTheSidebar() {
+        let clipWidth: CGFloat = 1_280
+        let visibleViewportWidth: CGFloat = 1_060
+        let contentWidth: CGFloat = 2_776
+        let fridayCenterX: CGFloat = 1_960
+
+        let origin = MacWeekBoardScroll.centeredContentOrigin(
+            targetCenterX: fridayCenterX,
+            contentWidth: contentWidth,
+            clipWidth: clipWidth,
+            visibleViewportWidth: visibleViewportWidth
+        )
+
+        let positionInClip = fridayCenterX - origin
+        let positionInVisibleViewport = positionInClip - (clipWidth - visibleViewportWidth)
+        XCTAssertEqual(positionInVisibleViewport, visibleViewportWidth / 2, accuracy: 0.001)
+    }
+
     func testWeekBoardCenteringFallsBackToTheFirstAvailableColumn() {
         XCTAssertEqual(
             MacWeekBoardScroll.currentDayColumnID(

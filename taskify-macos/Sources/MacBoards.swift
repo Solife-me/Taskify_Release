@@ -56,7 +56,10 @@ struct MacBoardView: View {
                                                 if let request = weekScrollRequest,
                                                    request.boardID == child.id,
                                                    request.columnID == column.id {
-                                                    MacWeekBoardScrollAnchor(request: request)
+                                                    MacWeekBoardScrollAnchor(
+                                                        request: request,
+                                                        viewportWidth: geometry.size.width
+                                                    )
                                                 }
                                             }
                                     }
@@ -187,45 +190,53 @@ struct MacBoardView: View {
 /// This zero-interaction anchor reaches the backing NSScrollView and centers its own column.
 private struct MacWeekBoardScrollAnchor: NSViewRepresentable {
     let request: MacWeekBoardScrollRequest
+    let viewportWidth: CGFloat
 
     final class Coordinator {
-        var lastRequestID: String?
+        var lastLayoutSignature: String?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        context.coordinator.lastRequestID = request.requestID
-        scheduleCentering(view)
+        context.coordinator.lastLayoutSignature = layoutSignature
+        scheduleCentering(view, viewportWidth: viewportWidth)
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        guard context.coordinator.lastRequestID != request.requestID else { return }
-        context.coordinator.lastRequestID = request.requestID
-        scheduleCentering(view)
+        guard context.coordinator.lastLayoutSignature != layoutSignature else { return }
+        context.coordinator.lastLayoutSignature = layoutSignature
+        scheduleCentering(view, viewportWidth: viewportWidth)
     }
 
-    private func scheduleCentering(_ view: NSView) {
-        for delay in [0.0, 0.05, 0.15] {
+    private var layoutSignature: String {
+        "\(request.requestID)|\(Int(viewportWidth.rounded()))"
+    }
+
+    private func scheduleCentering(_ view: NSView, viewportWidth: CGFloat) {
+        for delay in [0.0, 0.05, 0.15, 0.3] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak view] in
                 guard let view else { return }
-                Self.center(view)
+                Self.center(view, viewportWidth: viewportWidth)
             }
         }
     }
 
-    private static func center(_ view: NSView) {
+    private static func center(_ view: NSView, viewportWidth: CGFloat) {
         guard let scrollView = view.enclosingScrollView,
               let documentView = scrollView.documentView,
               documentView.bounds.width > 0 else { return }
         let target = view.convert(view.bounds, to: documentView)
         let clipView = scrollView.contentView
         let contentWidth = max(documentView.bounds.width, documentView.frame.width)
-        let maximumX = max(0, contentWidth - clipView.bounds.width)
-        let centeredX = target.midX - clipView.bounds.width / 2
-        let x = min(max(0, centeredX), maximumX)
+        let x = MacWeekBoardScroll.centeredContentOrigin(
+            targetCenterX: target.midX,
+            contentWidth: contentWidth,
+            clipWidth: clipView.bounds.width,
+            visibleViewportWidth: viewportWidth
+        )
         clipView.scroll(to: NSPoint(x: x, y: clipView.bounds.origin.y))
         scrollView.reflectScrolledClipView(clipView)
     }

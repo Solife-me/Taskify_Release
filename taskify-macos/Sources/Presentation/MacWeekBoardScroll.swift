@@ -43,6 +43,25 @@ public enum MacWeekBoardScroll {
         max(minimum, (viewportWidth - columnWidth) / 2)
     }
 
+    /// The macOS NavigationSplitView's AppKit scroll view spans beneath the sidebar, while the
+    /// SwiftUI viewport begins after it. Centre in the visible viewport rather than the full clip.
+    public static func centeredContentOrigin(
+        targetCenterX: CGFloat,
+        contentWidth: CGFloat,
+        clipWidth: CGFloat,
+        visibleViewportWidth: CGFloat
+    ) -> CGFloat {
+        guard clipWidth > 0, contentWidth > 0 else { return 0 }
+        let visibleWidth = min(
+            clipWidth,
+            visibleViewportWidth > 0 ? visibleViewportWidth : clipWidth
+        )
+        let leadingOcclusion = max(0, clipWidth - visibleWidth)
+        let maximumX = max(0, contentWidth - clipWidth)
+        let centeredX = targetCenterX - leadingOcclusion - visibleWidth / 2
+        return min(max(0, centeredX), maximumX)
+    }
+
     public static func request(
         boardID: String,
         orderedColumnIDs: [String],
