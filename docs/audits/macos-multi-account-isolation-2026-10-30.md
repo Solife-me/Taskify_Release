@@ -34,6 +34,7 @@ The remaining device-wide behavior is explicit and intentional: wallet funds and
 | Medium | Secondary accounts could overwrite primary-only widget/App Intent/Watch projections. | Device projections are written only by the primary account model. Secondary accounts never trigger widget reloads or replace the primary editor projection. |
 | Medium | Fresh relay connections could authenticate with a process-wide identity after a switch. | Unowned connections now fail closed. Only connections explicitly constructed with an account identity can answer NIP-42 AUTH. |
 | Medium | Task presentation choices (`completedTab`, `hideCompletedSubtasks`) remained device-global on Mac. | They are read and written through the active account's preference suite and refreshed with the rest of the workspace at account switches. |
+| Medium | The account manager could not remove the current account, and removing the primary had no safe store transition. | Current/secondary removal switches to a remaining account first. Primary removal promotes a replacement, swaps the generic and account-scoped stores/outboxes, verifies the Keychain writes, and rolls the entire transition back on failure. |
 
 ## Account-Switching Invariants
 
@@ -71,8 +72,8 @@ The remaining device-wide behavior is explicit and intentional: wallet funds and
 
 ## Verification
 
-- `swift test` for `taskify-ios-native`: 907 XCTest cases passed with 14 skipped, plus 50 Watch runtime XCTest cases and 44 Swift Testing cases; zero failures.
-- `swift test` for `taskify-macos`: 49 presentation/runtime tests passed; zero failures.
+- `swift test` for `taskify-ios-native`: 908 XCTest cases passed with 14 skipped, plus 50 Watch runtime XCTest cases and 44 Swift Testing cases; zero failures.
+- `swift test` for `taskify-macos`: 51 presentation/runtime tests passed; zero failures.
 - Unsigned `TaskifyMac` `Local` build: succeeded.
 - Unsigned `TaskifyNative` iOS Simulator `Local` build: succeeded.
 - Generated Xcode project check: `TaskifyMac.xcodeproj matches generate-project.py`.

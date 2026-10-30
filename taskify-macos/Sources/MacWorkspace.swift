@@ -634,6 +634,12 @@ private struct MacAccountSwitcher: View {
         runtime.savedAccounts.first(where: \.isCurrent)
     }
 
+    private var currentProfileName: String? {
+        model.ownProfile?.displayName
+            ?? model.ownProfile?.name
+            ?? model.ownProfile?.username
+    }
+
     var body: some View {
         Menu {
             ForEach(runtime.savedAccounts) { account in
@@ -651,10 +657,13 @@ private struct MacAccountSwitcher: View {
             Button("Manage Accounts…") { openSettings() }
         } label: {
             HStack(spacing: 9) {
-                Image(systemName: "person.crop.circle")
-                    .font(.title3)
+                MacAccountAvatar(
+                    pictureURL: model.ownProfile?.picture,
+                    fallbackText: currentProfileName ?? currentAccount?.label ?? model.identityNpub,
+                    size: 30
+                )
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(currentAccount?.label ?? String(model.identityNpub.prefix(16)))
+                    Text(currentProfileName ?? currentAccount?.label ?? String(model.identityNpub.prefix(16)))
                         .lineLimit(1)
                     Text(String((currentAccount?.npub ?? model.identityNpub).prefix(18)))
                         .font(.caption2.monospaced())
@@ -666,6 +675,10 @@ private struct MacAccountSwitcher: View {
             }
         }
         .accessibilityIdentifier("account-switcher")
+        .task(id: model.identityPublicKey) {
+            guard !model.identityPublicKey.isEmpty else { return }
+            await model.loadOwnProfile()
+        }
         .alert(
             "Account",
             isPresented: Binding(

@@ -46,7 +46,7 @@ Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 49 presentation/runtime tests, the unsigned app build and the twelve isolated app-host smoke tests on
+the 51 presentation/runtime tests, the unsigned app build and the twelve isolated app-host smoke tests on
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
 a session-scoped temporary store/outbox and Keychain service, and no relay or wallet startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing

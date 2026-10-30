@@ -70,6 +70,25 @@ public struct MacAccountSummary: Identifiable, Equatable, Sendable {
     }
 }
 
+public struct MacAccountRemovalPlan: Equatable, Sendable {
+    public let removedAccountID: String
+    public let activeAccountID: String
+    public let promotedPrimaryAccountID: String?
+    public let remainingAccountIDs: [String]
+
+    public init(
+        removedAccountID: String,
+        activeAccountID: String,
+        promotedPrimaryAccountID: String?,
+        remainingAccountIDs: [String]
+    ) {
+        self.removedAccountID = removedAccountID
+        self.activeAccountID = activeAccountID
+        self.promotedPrimaryAccountID = promotedPrimaryAccountID
+        self.remainingAccountIDs = remainingAccountIDs
+    }
+}
+
 public enum MacAccountCollection {
     public static func upsert(_ account: MacSavedAccount, into accounts: [MacSavedAccount]) -> [MacSavedAccount] {
         let account = account.normalizedVaultEntry ?? account
@@ -86,6 +105,44 @@ public enum MacAccountCollection {
 
     public static func remove(_ accountID: String, from accounts: [MacSavedAccount]) -> [MacSavedAccount] {
         accounts.filter { $0.publicKeyHex.caseInsensitiveCompare(accountID) != .orderedSame }
+    }
+
+    /// Computes the account and primary-account transition before any Keychain or store changes.
+    /// A removed current account falls back to the primary; a removed primary promotes the first
+    /// remaining account and keeps the current account selected when it is a different account.
+    public static func removalPlan(
+        accountID: String,
+        currentAccountID: String,
+        primaryAccountID: String?,
+        accounts: [MacSavedAccount]
+    ) -> MacAccountRemovalPlan? {
+        let accounts = validAccounts(accounts)
+        guard accounts.count > 1,
+              accounts.contains(where: {
+                  $0.publicKeyHex.caseInsensitiveCompare(accountID) == .orderedSame
+              }) else { return nil }
+        let remaining = remove(accountID, from: accounts)
+        guard let fallbackAccountID = remaining.first?.publicKeyHex else { return nil }
+        let removesPrimary = primaryAccountID?.caseInsensitiveCompare(accountID) == .orderedSame
+        let promotesPrimary = removesPrimary ? fallbackAccountID : nil
+        let activeAccountID: String
+        if currentAccountID.caseInsensitiveCompare(accountID) != .orderedSame {
+            activeAccountID = currentAccountID
+        } else if !removesPrimary,
+                  let primaryAccountID,
+                  remaining.contains(where: {
+                      $0.publicKeyHex.caseInsensitiveCompare(primaryAccountID) == .orderedSame
+                  }) {
+            activeAccountID = primaryAccountID
+        } else {
+            activeAccountID = fallbackAccountID
+        }
+        return MacAccountRemovalPlan(
+            removedAccountID: accountID,
+            activeAccountID: activeAccountID,
+            promotedPrimaryAccountID: promotesPrimary,
+            remainingAccountIDs: remaining.map(\.publicKeyHex)
+        )
     }
 
     /// Drop malformed and duplicate vault rows, canonicalizing accepted ids to lowercase.
@@ -203,6 +260,39 @@ public struct MacPrimaryStorageRelocation {
         self.moves = moves
     }
 
+    /// Builds the inverse move used when a secondary account becomes primary after the previous
+    /// primary account is removed.
+    public init(
+        promotingAccountID: String,
+        primaryStoreURL: URL,
+        primaryOutboxURL: URL,
+        fileManager: FileManager = .default
+    ) {
+        let sourceDirectory = MacAccountStoragePaths.accountDirectory(
+            primaryURL: primaryStoreURL,
+            accountID: promotingAccountID
+        )
+        let splitSource = sourceDirectory
+            .appendingPathComponent(JSONTaskStore.splitDirectoryName, isDirectory: true)
+        let splitDestination = primaryStoreURL.deletingLastPathComponent()
+            .appendingPathComponent(JSONTaskStore.splitDirectoryName, isDirectory: true)
+        let legacySource = sourceDirectory
+            .appendingPathComponent("taskify-store.json", isDirectory: false)
+        let outboxSource = sourceDirectory
+            .appendingPathComponent("nostr-outbox.json", isDirectory: false)
+
+        var moves: [Move] = []
+        if fileManager.fileExists(atPath: splitSource.path) {
+            moves.append(Move(source: splitSource, destination: splitDestination))
+        } else if fileManager.fileExists(atPath: legacySource.path) {
+            moves.append(Move(source: legacySource, destination: primaryStoreURL))
+        }
+        if fileManager.fileExists(atPath: outboxSource.path) {
+            moves.append(Move(source: outboxSource, destination: primaryOutboxURL))
+        }
+        self.moves = moves
+    }
+
     public mutating func apply(fileManager: FileManager = .default) throws {
         guard !moves.isEmpty else { return }
         guard appliedMoves.isEmpty else { return }
@@ -250,6 +340,7 @@ public struct MacPrimaryStorageRelocation {
 /// settings prevents one account's local state from being observed or republished by another.
 public enum MacAccountPreferences {
     private static let migrationMarkerKey = "taskify.accountPreferences.legacyImported.v1"
+    private static let deviceMigrationMarkerKey = "taskify.accountPreferences.legacyMigrationCompleted.v1"
 
     public static func suiteName(bundleIdentifier: String, accountID: String) -> String {
         "\(bundleIdentifier).account.\(accountID.lowercased()).preferences"
@@ -277,13 +368,17 @@ public enum MacAccountPreferences {
         from legacyDefaults: UserDefaults,
         to accountDefaults: UserDefaults
     ) {
-        guard !accountDefaults.bool(forKey: migrationMarkerKey) else { return }
+        guard !legacyDefaults.bool(forKey: deviceMigrationMarkerKey),
+              !accountDefaults.bool(forKey: migrationMarkerKey) else { return }
         for (key, value) in legacyDefaults.dictionaryRepresentation()
-        where key.hasPrefix("taskify.") && key != migrationMarkerKey {
+        where key.hasPrefix("taskify.")
+            && key != migrationMarkerKey
+            && key != deviceMigrationMarkerKey {
             if accountDefaults.object(forKey: key) == nil {
                 accountDefaults.set(value, forKey: key)
             }
         }
+        legacyDefaults.set(true, forKey: deviceMigrationMarkerKey)
         accountDefaults.set(true, forKey: migrationMarkerKey)
     }
 }

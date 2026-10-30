@@ -344,18 +344,36 @@ final class MacRuntime: ObservableObject {
         return true
     }
 
-    func removeAccount(_ accountID: String) -> Bool {
+    func removeAccount(_ accountID: String) async -> Bool {
         guard accountVaultStateLoaded else {
             accountError = "The saved-account list could not be loaded safely. Restart Taskify before removing an account."
             return false
         }
-        guard accountID != model.identityPublicKey,
-              accountID != accountVaultState.primaryAccountID,
-              let accountVault else { return false }
+        guard !isSwitchingAccount, let accountVault else { return false }
+        guard let plan = MacAccountCollection.removalPlan(
+            accountID: accountID,
+            currentAccountID: model.identityPublicKey,
+            primaryAccountID: accountVaultState.primaryAccountID,
+            accounts: accountVaultState.accounts
+        ) else {
+            accountError = "Taskify needs at least one saved account. Add another account before removing this one."
+            return false
+        }
+
+        if plan.promotedPrimaryAccountID == nil {
+            if plan.activeAccountID != model.identityPublicKey {
+                guard await switchAccount(to: plan.activeAccountID) else { return false }
+            }
+            return persistAccountRemoval(accountID, vault: accountVault)
+        }
+        return await removePrimaryAccount(plan: plan, vault: accountVault)
+    }
+
+    private func persistAccountRemoval(_ accountID: String, vault: MacAccountVault) -> Bool {
         let previousState = accountVaultState
         accountVaultState.accounts = MacAccountCollection.remove(accountID, from: accountVaultState.accounts)
         do {
-            try accountVault.save(accountVaultState)
+            try vault.save(accountVaultState)
             accountError = nil
             refreshAccountSummaries()
             return true
@@ -365,6 +383,89 @@ final class MacRuntime: ObservableObject {
             accountError = error.localizedDescription
             return false
         }
+    }
+
+    /// Removing the primary requires swapping the generic primary store with the promoted
+    /// account's account-scoped store. Both moves are rolled back together if either Keychain
+    /// write fails, so no account can inherit another account's task or outbox data.
+    private func removePrimaryAccount(
+        plan: MacAccountRemovalPlan,
+        vault: MacAccountVault
+    ) async -> Bool {
+        guard let removedPrimaryID = accountVaultState.primaryAccountID,
+              let promotedPrimaryID = plan.promotedPrimaryAccountID,
+              let targetAccount = accountVaultState.accounts.first(where: {
+                  $0.publicKeyHex == plan.activeAccountID
+              }),
+              let targetIdentity = targetAccount.identity else {
+            accountError = "The replacement account is unavailable."
+            return false
+        }
+
+        isSwitchingAccount = true
+        accountError = nil
+        defer { isSwitchingAccount = false }
+        let previousCurrentID = model.identityPublicKey
+        let previousIdentity = accountVaultState.accounts.first(where: {
+            $0.publicKeyHex == previousCurrentID
+        })?.identity
+
+        guard await model.persistBeforeTermination() else {
+            accountError = "The current account could not be saved before removing an account."
+            return false
+        }
+        TaskNotificationActionRouter.shared.unregister(model: model)
+        TaskifyDMPushCoordinator.shared.unregister(model: model)
+        await model.stopForAccountSwitch()
+        guard await model.persistBeforeTermination() else {
+            accountError = "The current account could not be saved after it was quiesced."
+            await restoreAccountModel(accountID: previousCurrentID)
+            return false
+        }
+
+        let oldState = accountVaultState
+        var newState = oldState
+        newState.accounts = MacAccountCollection.remove(
+            plan.removedAccountID,
+            from: oldState.accounts
+        )
+        newState.primaryAccountID = promotedPrimaryID
+        var demotion = MacPrimaryStorageRelocation(
+            primaryStoreURL: JSONTaskStore.defaultURL,
+            primaryOutboxURL: NostrOutboxStore.defaultURL,
+            accountID: removedPrimaryID
+        )
+        var promotion = MacPrimaryStorageRelocation(
+            promotingAccountID: promotedPrimaryID,
+            primaryStoreURL: JSONTaskStore.defaultURL,
+            primaryOutboxURL: NostrOutboxStore.defaultURL
+        )
+
+        do {
+            try demotion.apply()
+            try promotion.apply()
+            try vault.save(newState)
+            if targetIdentity.publicKeyHex != previousIdentity?.publicKeyHex {
+                try identityStore.save(targetIdentity)
+            }
+        } catch {
+            try? promotion.rollback()
+            try? demotion.rollback()
+            accountVaultState = oldState
+            accountVaultStateLoaded = (try? vault.save(oldState)) != nil
+            if let previousIdentity {
+                try? identityStore.save(previousIdentity)
+            }
+            accountError = error.localizedDescription
+            await restoreAccountModel(accountID: previousCurrentID)
+            return false
+        }
+
+        accountVaultState = newState
+        wallet.resetNostrAccountScopedState()
+        wallet.setNostrAccountIdentity(targetIdentity)
+        await restoreAccountModel(accountID: plan.activeAccountID)
+        return true
     }
 
     func clearAccountError() {

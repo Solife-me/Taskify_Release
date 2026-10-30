@@ -633,6 +633,95 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: primaryOutbox.path))
     }
 
+    func testPrimaryStoragePromotionMovesAccountStoreIntoPrimaryLocationAndRollsBack() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskifyPrimaryPromotionTests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent("TaskifyNative", isDirectory: true)
+        let primaryStore = support.appendingPathComponent("taskify.json", isDirectory: false)
+        let primaryOutbox = support.appendingPathComponent("nostr-outbox.json", isDirectory: false)
+        let accountID = String(repeating: "ab", count: 32)
+        let accountDirectory = MacAccountStoragePaths.accountDirectory(
+            primaryURL: primaryStore,
+            accountID: accountID
+        )
+        let accountSplit = accountDirectory.appendingPathComponent(JSONTaskStore.splitDirectoryName, isDirectory: true)
+        let accountOutbox = accountDirectory.appendingPathComponent("nostr-outbox.json")
+        try FileManager.default.createDirectory(at: accountSplit, withIntermediateDirectories: true)
+        try Data("account-store".utf8).write(to: accountSplit.appendingPathComponent("tasks.json"))
+        try Data("account-outbox".utf8).write(to: accountOutbox)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var promotion = MacPrimaryStorageRelocation(
+            promotingAccountID: accountID,
+            primaryStoreURL: primaryStore,
+            primaryOutboxURL: primaryOutbox
+        )
+        try promotion.apply()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: accountSplit.path))
+        XCTAssertEqual(
+            try Data(contentsOf: support
+                .appendingPathComponent(JSONTaskStore.splitDirectoryName)
+                .appendingPathComponent("tasks.json")),
+            Data("account-store".utf8)
+        )
+        XCTAssertEqual(try Data(contentsOf: primaryOutbox), Data("account-outbox".utf8))
+
+        try promotion.rollback()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: accountSplit.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: accountOutbox.path))
+    }
+
+    func testAccountRemovalPlanPromotesReplacementWhenPrimaryIsRemoved() throws {
+        let primary = try NostrIdentity.generate()
+        let secondary = try NostrIdentity.generate()
+        let other = try NostrIdentity.generate()
+        let accounts = [
+            MacSavedAccount(identity: primary, label: "Primary"),
+            MacSavedAccount(identity: secondary, label: "Secondary"),
+            MacSavedAccount(identity: other, label: "Other"),
+        ]
+
+        XCTAssertEqual(
+            MacAccountCollection.removalPlan(
+                accountID: primary.publicKeyHex,
+                currentAccountID: primary.publicKeyHex,
+                primaryAccountID: primary.publicKeyHex,
+                accounts: accounts
+            ),
+            MacAccountRemovalPlan(
+                removedAccountID: primary.publicKeyHex,
+                activeAccountID: secondary.publicKeyHex,
+                promotedPrimaryAccountID: secondary.publicKeyHex,
+                remainingAccountIDs: [secondary.publicKeyHex, other.publicKeyHex]
+            )
+        )
+        XCTAssertEqual(
+            MacAccountCollection.removalPlan(
+                accountID: secondary.publicKeyHex,
+                currentAccountID: secondary.publicKeyHex,
+                primaryAccountID: primary.publicKeyHex,
+                accounts: accounts
+            )?.activeAccountID,
+            primary.publicKeyHex
+        )
+        XCTAssertEqual(
+            MacAccountCollection.removalPlan(
+                accountID: primary.publicKeyHex,
+                currentAccountID: other.publicKeyHex,
+                primaryAccountID: primary.publicKeyHex,
+                accounts: accounts
+            )?.activeAccountID,
+            other.publicKeyHex
+        )
+        XCTAssertNil(MacAccountCollection.removalPlan(
+            accountID: primary.publicKeyHex,
+            currentAccountID: primary.publicKeyHex,
+            primaryAccountID: primary.publicKeyHex,
+            accounts: [accounts[0]]
+        ))
+    }
+
     func testAccountPreferencesUseDistinctSuitesAndMigrateLegacyDataOnce() throws {
         let nonce = UUID().uuidString
         let bundleID = "solife.me.Taskify.Mac.Tests.\(nonce)"
@@ -658,7 +747,8 @@ final class MacPresentationTests: XCTestCase {
         )
         let second = MacAccountPreferences.makeDefaults(
             bundleIdentifier: bundleID,
-            accountID: secondID
+            accountID: secondID,
+            migratingFrom: legacy
         )
 
         XCTAssertNotEqual(firstSuite, secondSuite)

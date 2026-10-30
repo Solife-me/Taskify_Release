@@ -124,6 +124,55 @@ struct MacContactAvatar: View {
     }
 }
 
+/// Circular account/profile image used by the sidebar account switcher and account manager.
+struct MacAccountAvatar: View {
+    let pictureURL: String?
+    let fallbackText: String
+    var size: CGFloat = 36
+
+    private var url: URL? {
+        guard let pictureURL = pictureURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let url = URL(string: pictureURL),
+              ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return url
+    }
+
+    var body: some View {
+        Group {
+            if let url {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(.separator.opacity(0.35), lineWidth: 0.5))
+        .accessibilityHidden(true)
+    }
+
+    private var fallback: some View {
+        ZStack {
+            Circle().fill(Color.accentColor.opacity(0.16))
+            if let initial = fallbackText.first {
+                Text(String(initial).uppercased())
+                    .font(.system(size: size * 0.4, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.system(size: size * 0.42))
+                    .foregroundStyle(Color.accentColor)
+            }
+        }
+    }
+}
+
 private struct MacContactDetail: View {
     let contact: NostrContact
     var edit: () -> Void
