@@ -1,7 +1,12 @@
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip44 } from "nostr-tools";
 import type { WalletSeedBackupPayload } from "./wallet/seed";
-import type { NostrAppBackupBoard, NostrPrintJobManifest } from "taskify-core";
+import {
+  mergeNostrBoardTombstones,
+  type NostrAppBackupBoard,
+  type NostrBoardTombstone,
+  type NostrPrintJobManifest,
+} from "taskify-core";
 
 export const NOSTR_APP_BACKUP_KIND = 30078;
 export const NOSTR_APP_BACKUP_D_TAG = "taskify-app-backup";
@@ -13,6 +18,7 @@ export type NostrAppBackupPayload = {
   version: 1;
   timestamp: number;
   boards: NostrAppBackupBoard[];
+  boardTombstones?: NostrBoardTombstone[];
   settings: Record<string, unknown>;
   walletSeed?: WalletSeedBackupPayload | null;
   defaultRelays?: string[];
@@ -56,6 +62,9 @@ export async function decryptNostrBackupPayload(
   const boards = Array.isArray(boardsRaw)
     ? boardsRaw.filter((b) => b && typeof b === "object")
     : [];
+  const boardTombstones = mergeNostrBoardTombstones(
+    Array.isArray((parsed as any).boardTombstones) ? (parsed as any).boardTombstones : [],
+  );
   const defaultRelaysRaw = (parsed as any).defaultRelays;
   const defaultRelays = Array.isArray(defaultRelaysRaw)
     ? defaultRelaysRaw.filter((r) => typeof r === "string" && r.trim())
@@ -67,6 +76,7 @@ export async function decryptNostrBackupPayload(
     version: 1,
     timestamp,
     boards,
+    ...(boardTombstones.length ? { boardTombstones } : {}),
     settings,
     walletSeed: (parsed as any).walletSeed as WalletSeedBackupPayload,
     defaultRelays,

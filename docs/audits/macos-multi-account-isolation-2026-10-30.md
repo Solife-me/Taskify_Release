@@ -53,6 +53,7 @@ The remaining device-wide behavior is explicit and intentional: wallet funds and
 
 - Tasks, boards, calendar/events, contacts, direct messages, unread/read state, chat archives, and encrypted attachment references.
 - Nostr outbox and account backup/app-state ledgers.
+- Encrypted account-backup board tombstones. They live in the account-scoped preference suite and are indexed again by public key before use, so replacing an identity in the same process cannot inherit another account's deletions.
 - App relays, excluded relays, NIP-17 state, DM push selection/relay configuration, and account backup baseline.
 - Bible Tracker, Scripture Memory, fasting reminders, streaks, chat retention, startup board, week layout, new-task ordering, media servers, and physical checklist jobs.
 - Mac task presentation preferences and all transient workspace/editor/split-view state.
@@ -72,7 +73,7 @@ The remaining device-wide behavior is explicit and intentional: wallet funds and
 
 ## Verification
 
-- `swift test` for `taskify-ios-native`: 908 XCTest cases passed with 14 skipped, plus 50 Watch runtime XCTest cases and 44 Swift Testing cases; zero failures.
+- `swift test` for `taskify-ios-native`: 911 XCTest cases passed with 14 skipped, plus 50 Watch runtime XCTest cases and 44 Swift Testing cases; zero failures.
 - `swift test` for `taskify-macos`: 51 presentation/runtime tests passed; zero failures.
 - Unsigned `TaskifyMac` `Local` build: succeeded.
 - Unsigned `TaskifyNative` iOS Simulator `Local` build: succeeded.

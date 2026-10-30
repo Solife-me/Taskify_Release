@@ -23,6 +23,7 @@ private enum AppModelAccountError: LocalizedError {
 @MainActor
 final class AppModel {
     private static let accountBackupOutboxScope = "__taskify-account-backup__"
+    private static let accountBackupBoardTombstonesDefaultsKey = "taskify.accountBackup.boardTombstones.v1"
     private static let sharedInboxOutboxScope = "__taskify-shared-inbox__"
     private static let contactsOutboxScope = "__taskify-contacts__"
     static let directMessagesOutboxScope = "__taskify-direct-messages__"
@@ -37,6 +38,16 @@ final class AppModel {
         let relayURLs: [String]
     }
     private static let profileOutboxScope = "__taskify-profile__"
+
+    private static func loadAccountBackupBoardTombstones(
+        defaults: UserDefaults
+    ) -> [String: [String: Int]] {
+        guard let data = defaults.data(forKey: accountBackupBoardTombstonesDefaultsKey),
+              let decoded = try? JSONDecoder().decode([String: [String: Int]].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
     /// The app's state, stored outside observation (C8-1). Views depend on it by area: reading
     /// `snapshot` depends on every area; the board, card and Upcoming accessors below read
     /// `tasksSnapshot`, so a chat or inbox change does not redraw them.
@@ -234,6 +245,9 @@ final class AppModel {
     @ObservationIgnored private var sharedInboxQueue = NIP17InboxProcessingQueue()
     @ObservationIgnored private var sharedInboxQueueIdentity: String?
     @ObservationIgnored private(set) var accountBackupBaseline: NostrAppBackupPayload?
+    /// Kept per account even inside account-scoped defaults, so replacing an identity in the
+    /// same model can never inherit another account's board deletions.
+    @ObservationIgnored private var accountBackupBoardTombstonesByAccount: [String: [String: Int]]
     /// Whether this launch has finished looking for the account's synced settings (found or not).
     /// Until then a setting that names a board may simply not have arrived yet.
     @ObservationIgnored private var accountSyncSettled = false
@@ -334,6 +348,9 @@ final class AppModel {
         self.dmPushStatus = dmPushEnabled ? "Enabled" : "Off"
         self.bibleTrackerStore = BibleTrackerStore(defaults: accountDefaults)
         self.appStateLedger = AppModel.loadAppStateLedger(defaults: accountDefaults)
+        self.accountBackupBoardTombstonesByAccount = AppModel.loadAccountBackupBoardTombstones(
+            defaults: accountDefaults
+        )
         if dmPushEnabled, let expectedAccountID {
             DMPushNotificationSharedSettings.saveSelection(
                 dmPushSelection,
@@ -4164,9 +4181,48 @@ final class AppModel {
         return true
     }
 
+    private var accountBackupTombstoneAccountID: String {
+        let activeID = cachedIdentity?.publicKeyHex ?? identityPublicKey
+        if !activeID.isEmpty { return activeID.lowercased() }
+        return expectedAccountID?.lowercased() ?? ""
+    }
+
+    private func localBoardTombstones() -> [NostrBoardTombstone] {
+        let accountID = accountBackupTombstoneAccountID
+        guard !accountID.isEmpty else { return [] }
+        return NostrBoardTombstone.merged(
+            (accountBackupBoardTombstonesByAccount[accountID] ?? [:]).map {
+                NostrBoardTombstone(nostrID: $0.key, deletedAt: $0.value)
+            }
+        )
+    }
+
+    private func mergeAndPersistBoardTombstones(_ incoming: [NostrBoardTombstone]) {
+        let accountID = accountBackupTombstoneAccountID
+        guard !accountID.isEmpty else { return }
+        let existing = (accountBackupBoardTombstonesByAccount[accountID] ?? [:]).map {
+            NostrBoardTombstone(nostrID: $0.key, deletedAt: $0.value)
+        }
+        let merged = NostrBoardTombstone.merged(existing, incoming)
+        accountBackupBoardTombstonesByAccount[accountID] = Dictionary(
+            uniqueKeysWithValues: merged.map { ($0.nostrID, $0.deletedAt) }
+        )
+        guard let data = try? JSONEncoder().encode(accountBackupBoardTombstonesByAccount) else { return }
+        accountDefaults.set(data, forKey: Self.accountBackupBoardTombstonesDefaultsKey)
+    }
+
     @discardableResult
     func deleteBoard(boardID: String) -> Bool {
+        let deletedBoard = snapshot.boards.first { $0.id == boardID }
         guard let result = snapshot.deleteBoard(boardID: boardID) else { return false }
+        if let deletedBoard, deletedBoard.kind != .bible {
+            mergeAndPersistBoardTombstones([
+                NostrBoardTombstone(
+                    nostrID: deletedBoard.effectiveNostrBoardID,
+                    deletedAt: Int(Date().timeIntervalSince1970)
+                ),
+            ])
+        }
         sanitizeStartupBoardPreferences()
         let updatedCompoundBoards = result.updatedCompoundBoardIDs.compactMap { boardID in
             snapshot.boards.first { $0.id == boardID }
@@ -4827,6 +4883,7 @@ final class AppModel {
     /// payload — board merging matches by Nostr board ID, so re-applying is a no-op.
     private func applyAccountSyncPayload(_ payload: NostrAppBackupPayload) {
         applyAppRelays(payload.resolvedAccountRelayURLs(fallback: appRelays), reconfigure: false)
+        mergeAndPersistBoardTombstones(payload.boardTombstones)
         accountBackupBaseline = payload
         managedAccountBackupBoardIDs = payload.nativeManagedNostrBoardIDs
         lastAccountBackupCreatedAt = max(lastAccountBackupCreatedAt, payload.timestamp)
@@ -4843,6 +4900,7 @@ final class AppModel {
         let projectedPayload = payload.updatingNativeBoards(
             snapshot.boards,
             managedNostrBoardIDs: managedAccountBackupBoardIDs,
+            boardTombstones: localBoardTombstones(),
             timestamp: payload.timestamp
         )
         if projectedPayload != payload {
@@ -7352,6 +7410,7 @@ final class AppModel {
         var updatedPayload = remotePayload.updatingNativeBoards(
             snapshot.boards,
             managedNostrBoardIDs: managedAccountBackupBoardIDs,
+            boardTombstones: localBoardTombstones(),
             timestamp: createdAt
         )
         let localPrintJobs = PhysicalChecklistJobStore.loadAll(defaults: accountDefaults)
@@ -7425,6 +7484,7 @@ final class AppModel {
             )
             guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             accountBackupBaseline = updatedPayload
+            mergeAndPersistBoardTombstones(updatedPayload.boardTombstones)
             lastAccountBackupCreatedAt = createdAt
             managedAccountBackupBoardIDs.formUnion(
                 snapshot.boards

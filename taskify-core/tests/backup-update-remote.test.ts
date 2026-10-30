@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { updateRemoteNostrBackup } from "../dist/index.js";
+import { mergeNostrBoardTombstones, updateRemoteNostrBackup } from "../dist/index.js";
 
 const seed = { type: "nut13-wallet-backup", version: 1, mnemonic: "abandon ability", counters: {} } as const;
 const board = (nostrId: string, name = nostrId) => ({ id: `local-${nostrId}`, nostrId, name, kind: "lists" as const });
@@ -26,11 +26,37 @@ test("another device's boards, settings and wallet seed survive this device's pu
 
 test("a board this device removed leaves the backup; one it never had stays", () => {
   const next = updateRemoteNostrBackup(
-    { boards: [board("removed-here"), board("theirs")], settings: {} },
+    { boards: [board("removed-here"), board("theirs")], settings: {}, boardTombstones: [] },
     { boards: [], settings: {}, defaultRelays: [] },
-    { managedNostrIds: ["removed-here"], includeMetadata: true },
+    { managedNostrIds: ["removed-here"], includeMetadata: true, nowSeconds: 100 },
   );
   assert.deepEqual(next.boards.map((b) => b.nostrId), ["theirs"]);
+  assert.deepEqual(next.boardTombstones, [{ nostrId: "removed-here", deletedAt: 100 }]);
+});
+
+test("a board tombstone blocks a stale client from republishing that board", () => {
+  const first = updateRemoteNostrBackup(
+    { boards: [board("duplicate-week"), board("kept")], settings: {}, boardTombstones: [] },
+    { boards: [], settings: {}, defaultRelays: [] },
+    { managedNostrIds: ["duplicate-week"], includeMetadata: true, nowSeconds: 100 },
+  );
+  const staleClient = updateRemoteNostrBackup(
+    first,
+    { boards: [board("duplicate-week"), board("kept")], settings: {}, defaultRelays: [] },
+    { managedNostrIds: [], includeMetadata: true, nowSeconds: 101 },
+  );
+  assert.deepEqual(staleClient.boards.map((b) => b.nostrId), ["kept"]);
+  assert.deepEqual(staleClient.boardTombstones, [{ nostrId: "duplicate-week", deletedAt: 100 }]);
+});
+
+test("board tombstones keep the newest deletion and a stable bounded order", () => {
+  assert.deepEqual(mergeNostrBoardTombstones(
+    [{ nostrId: "Week-B", deletedAt: 20 }, { nostrId: "week-a", deletedAt: 10 }],
+    [{ nostrId: "week-b", deletedAt: 30 }, { nostrId: "week-a", deletedAt: 5 }],
+  ), [
+    { nostrId: "week-a", deletedAt: 10 },
+    { nostrId: "week-b", deletedAt: 30 },
+  ]);
 });
 
 test("this device's own seed wins; without metadata only the seed changes", () => {

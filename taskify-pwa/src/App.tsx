@@ -508,6 +508,15 @@ export default function App() {
     appRouter.navigate({ page: "boards", boardId: currentBoardId }, { replace: true });
   }, [appRoute, appRouter, currentBoardId]);
 
+  useEffect(() => {
+    if (!currentBoardId || boards.some((board) => board.id === currentBoardId)) return;
+    const fallback = boards.find((board) => !board.archived && !board.hidden);
+    setCurrentBoardIdState(fallback?.id ?? "");
+    if (appRoute.page === "boards") {
+      appRouter.navigate(routeForPage("boards", fallback?.id ?? ""), { replace: true });
+    }
+  }, [appRoute.page, appRouter, boards, currentBoardId, setCurrentBoardIdState]);
+
   const [tasks, setTasks] = useTasks();
   const recordRecurringSeriesCutoff = useCallback((task: Task, cutoffISO: string) => {
     recurringCutoffsStore().set((current) => updateRecurringSeriesCutoff(current, task, cutoffISO));
@@ -1455,6 +1464,10 @@ export default function App() {
   }, [currentBoard?.kind, view]);
   const showSettings = activePage === "settings";
   const [addBoardOpen, setAddBoardOpen] = useState(false);
+  const handleRemoteBoardsRemoved = useCallback((boardIds: string[]) => {
+    const removed = new Set(boardIds);
+    setTasks((previous) => previous.filter((task) => !removed.has(task.boardId)));
+  }, [setTasks]);
 
   useNostrAppBackupSync({
     bibleTracker,
@@ -1476,6 +1489,7 @@ export default function App() {
     showSettings,
     showToast,
     tagValue,
+    onRemoteBoardsRemoved: handleRemoteBoardsRemoved,
   });
 
   const localInboxResponses = useMemo(
