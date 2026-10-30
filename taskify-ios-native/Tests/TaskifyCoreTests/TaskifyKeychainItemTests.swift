@@ -36,4 +36,16 @@ final class TaskifyKeychainItemTests: XCTestCase {
             throw XCTSkip("No usable keychain in this test environment (\(failure.status)).")
         }
     }
+
+    func testMacOSDataProtectionAndLegacyQueriesAreExplicitlySeparated() throws {
+#if os(macOS)
+        let protectionQuery = TaskifyKeychainItem.dataProtectionQuery(query)
+        let legacyQuery = TaskifyKeychainItem.legacyQuery(query)
+
+        XCTAssertEqual(protectionQuery[kSecUseDataProtectionKeychain as String] as? Bool, true)
+        XCTAssertEqual(legacyQuery[kSecUseDataProtectionKeychain as String] as? Bool, false)
+#else
+        throw XCTSkip("macOS-specific Keychain migration behavior")
+#endif
+    }
 }
