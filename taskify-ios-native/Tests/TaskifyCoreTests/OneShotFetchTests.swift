@@ -84,13 +84,20 @@ final class OneShotFetchTests: XCTestCase {
     }
 
     func testRelayFilterEncodesNIP01Fields() {
-        let filter = NostrRelayFilter(kinds: [30078], authors: ["abc"], dTags: ["a", "b"], limit: 8, since: 100)
+        let filter = NostrRelayFilter(kinds: [30078], authors: ["abc"], dTags: ["a", "b"], limit: 8,
+                                      since: 100, pTags: ["def"], until: 200)
         let object = filter.jsonObject()
         XCTAssertEqual(object["kinds"] as? [Int], [30078])
         XCTAssertEqual(object["authors"] as? [String], ["abc"])
         XCTAssertEqual(object["#d"] as? [String], ["a", "b"])
+        XCTAssertEqual(object["#p"] as? [String], ["def"])
         XCTAssertEqual(object["limit"] as? Int, 8)
         XCTAssertEqual(object["since"] as? Int, 100)
+        XCTAssertEqual(object["until"] as? Int, 200)
+
+        let recipientInbox = NostrRelayFilter(kinds: [NIP17GiftWrap.wrapKind], authors: [],
+                                              limit: 200, pTags: ["abc"])
+        XCTAssertNil(recipientInbox.jsonObject()["authors"])
     }
 }
 

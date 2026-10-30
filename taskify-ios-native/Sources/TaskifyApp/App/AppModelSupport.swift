@@ -127,8 +127,8 @@ enum NostrDirectMessageError: LocalizedError {
     }
 }
 
-/// The account-level relay set, stored per device. Falls back to the built-in defaults until
-/// the user edits it.
+/// The account-level relay set, cached per device and hydrated from the encrypted account backup.
+/// Falls back to the built-in defaults only when neither this device nor the account has a list.
 enum AppRelaySettings {
     private static let key = "taskify.sync.appRelays"
 

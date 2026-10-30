@@ -54,6 +54,16 @@ extension AppModel {
         }
     }
 
+    /// The first launch may have searched only the device defaults. Once the account backup
+    /// supplies the user's relays, discard that throttled pass and read the three replaceable
+    /// records from the resolved account relay set.
+    func restartAppStateSyncAfterRelayChange() {
+        appStateFetchTask?.cancel()
+        appStateFetchTask = nil
+        lastAppStateFetchAt = nil
+        refreshAppStateSyncIfNeeded()
+    }
+
     /// Publishes anything still waiting on its debounce, e.g. as the app leaves the foreground,
     /// so the next device picked up already sees it. Queued publishes survive in the outbox.
     func flushAppStateSync() {

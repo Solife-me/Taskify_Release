@@ -217,6 +217,7 @@ final class AppModel {
     @ObservationIgnored private var accountBackupSearchTask: Task<Void, Never>?
     @ObservationIgnored private var accountBackupPublishTask: Task<Void, Never>?
     @ObservationIgnored private var contactRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var relayDependentRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var sharedInboxProcessingTask: Task<Void, Never>?
     @ObservationIgnored private var deferredStartupTask: Task<Void, Never>?
     @ObservationIgnored private var didStartDeferredServices = false
@@ -302,6 +303,7 @@ final class AppModel {
         accountBackupSearchTask?.cancel()
         accountBackupPublishTask?.cancel()
         contactRefreshTask?.cancel()
+        relayDependentRefreshTask?.cancel()
         sharedInboxProcessingTask?.cancel()
         ownProfileLoadTask?.cancel()
         deferredStartupTask?.cancel()
@@ -400,14 +402,16 @@ final class AppModel {
         applyAppRelays(TaskifyRelayDefaults.urls)
     }
 
-    private func applyAppRelays(_ urls: [String]) {
+    private func applyAppRelays(_ urls: [String], reconfigure: Bool = true) {
         let normalized = TaskifyRelayURL.normalizedList(urls)
         guard !normalized.isEmpty, normalized != appRelays else { return }
         appRelays = normalized
         AppRelaySettings.setURLs(normalized)
         // Direct messages, shared-task delivery and account backup all resolve their relays
         // through this set, so the engine needs to pick up the new connections now.
-        reconfigureSync()
+        if reconfigure {
+            reconfigureSync()
+        }
     }
 
     enum SyncRelayExclusionResult: Equatable {
@@ -2772,6 +2776,16 @@ final class AppModel {
         }
     }
 
+    /// A lookup already in flight against the device defaults must not block the retry against
+    /// the account relays supplied by the encrypted backup.
+    private func restartContactsAfterRelayChange() {
+        contactRefreshTask?.cancel()
+        contactRefreshTask = nil
+        isRefreshingContacts = false
+        lastContactRefreshAt = nil
+        refreshContacts()
+    }
+
     func refreshContactsIfNeeded() {
 #if DEBUG
         guard ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] != "1" else { return }
@@ -4517,12 +4531,21 @@ final class AppModel {
                 ShareTransferStore.remove(job.id)
             }
             applyIdentity(imported)
+            accountBackupSearchTask?.cancel()
             accountBackupPublishTask?.cancel()
+            relayDependentRefreshTask?.cancel()
+            relayDependentRefreshTask = nil
+            contactRefreshTask?.cancel()
+            contactRefreshTask = nil
+            appStateFetchTask?.cancel()
+            appStateFetchTask = nil
             accountBackupBaseline = nil
             accountSyncSettled = false
             managedAccountBackupBoardIDs = []
             lastAccountBackupCreatedAt = 0
+            lastAccountBackupCheckAt = nil
             accountBackupPublishPending = false
+            nip17InboxRelayURLs = []
             snapshot.sharedInboxItems = nil
             snapshot.sharedContactInboxItems = nil
             snapshot.sharedCalendarInviteItems = nil
@@ -4541,7 +4564,9 @@ final class AppModel {
             snapshot.directMessageMutedGroups = nil
             snapshot.directMessageLeftGroups = nil
             contactSyncStatus = "Preparing private contact sync"
+            isRefreshingContacts = false
             lastContactRefreshAt = nil
+            lastAppStateFetchAt = nil
             scheduleSave()
             Task { [syncEngine] in
                 try? await syncEngine.discardQueuedPublishes(
@@ -4559,7 +4584,6 @@ final class AppModel {
             }
             reconfigureSync()
             refreshAccountSync(identity: imported)
-            refreshContacts()
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -4589,10 +4613,11 @@ final class AppModel {
     /// account-sync check is a relay round trip, so this avoids re-running it on every brief
     /// foreground return.
     func refreshAccountSyncIfNeeded() {
-        guard !isLoading,
-              !isCheckingAccountBackup,
-              let identity = cachedIdentity,
-              lastAccountBackupCheckAt.map({ Date().timeIntervalSince($0) > 300 }) ?? true else { return }
+        guard !isLoading, !isCheckingAccountBackup, let identity = cachedIdentity else { return }
+        guard lastAccountBackupCheckAt.map({ Date().timeIntervalSince($0) > 300 }) ?? true else {
+            refreshAccountDependentData(reloadRelayScopedState: false)
+            return
+        }
         refreshAccountSync(identity: identity)
     }
 
@@ -4627,18 +4652,10 @@ final class AppModel {
                 }
                 return nil
             }.value
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.identityPublicKey == identity.publicKeyHex else { return }
             isCheckingAccountBackup = false
             let wasSettled = accountSyncSettled
             accountSyncSettled = true
-            defer {
-                // Work deferred while settings were unknown (Scripture Memory's board, where
-                // fasting reminders live) can run now.
-                if !wasSettled {
-                    reconcileScriptureMemory()
-                    reconcileFastingReminders()
-                }
-            }
             if let decodedPayload {
                 applyAccountSyncPayload(decodedPayload)
             } else if candidates.isEmpty {
@@ -4646,6 +4663,42 @@ final class AppModel {
             } else {
                 accountBackupMessage = "A sync update was found, but it could not be decrypted with this identity."
             }
+            // Work deferred while settings were unknown (Scripture Memory's board, where
+            // fasting reminders live) can run now.
+            if !wasSettled {
+                reconcileScriptureMemory()
+                reconcileFastingReminders()
+            }
+            // The backup may have supplied the account's real app relays. Only now are the
+            // contact list, Bible/unread state and private inbox preferences safe to resolve.
+            refreshAccountDependentData(reloadRelayScopedState: true)
+        }
+    }
+
+    /// Contacts, app state and NIP-17 inbox discovery all live on the account's relay set. The
+    /// encrypted backup carries that set to a fresh device, so do not mark a lookup against the
+    /// device defaults as complete before the backup has had a chance to hydrate them.
+    private func refreshAccountDependentData(reloadRelayScopedState: Bool) {
+        guard !isLoading, let identity = cachedIdentity else { return }
+        relayDependentRefreshTask?.cancel()
+        relayDependentRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            if reloadRelayScopedState {
+                self.restartContactsAfterRelayChange()
+                self.restartAppStateSyncAfterRelayChange()
+            } else {
+                self.refreshContactsIfNeeded()
+                self.refreshAppStateSyncIfNeeded()
+            }
+            if self.ownProfile == nil {
+                self.loadOwnProfileIfNeeded()
+            }
+            if self.nip17InboxRelayURLs.isEmpty {
+                await self.ensureNIP17InboxRelayPreference()
+            }
+            guard !Task.isCancelled, self.identityPublicKey == identity.publicKeyHex else { return }
+            self.reconfigureSync()
+            self.relayDependentRefreshTask = nil
         }
     }
 
@@ -4653,6 +4706,7 @@ final class AppModel {
     /// device's own boards have since diverged from it. Safe to call repeatedly with the same
     /// payload — board merging matches by Nostr board ID, so re-applying is a no-op.
     private func applyAccountSyncPayload(_ payload: NostrAppBackupPayload) {
+        applyAppRelays(payload.resolvedAccountRelayURLs(fallback: appRelays), reconfigure: false)
         accountBackupBaseline = payload
         managedAccountBackupBoardIDs = payload.nativeManagedNostrBoardIDs
         lastAccountBackupCreatedAt = max(lastAccountBackupCreatedAt, payload.timestamp)
@@ -4774,15 +4828,11 @@ final class AppModel {
             }
             self.startSync()
             self.republishPendingTasks()
-            await self.ensureNIP17InboxRelayPreference()
-
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled else { return }
-            self.refreshContacts()
             if let identity = self.cachedIdentity {
                 self.refreshAccountSync(identity: identity)
+            } else {
+                self.refreshAccountDependentData(reloadRelayScopedState: true)
             }
-            self.refreshAppStateSyncIfNeeded()
         }
     }
 

@@ -156,6 +156,15 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
         })
     }
 
+    /// The account-level relay set follows the encrypted backup between clients. A fresh device
+    /// keeps its local/default relays only until it reads a non-empty list from the account.
+    public func resolvedAccountRelayURLs(fallback: [String]) -> [String] {
+        let synced = TaskifyRelayURL.normalizedList(defaultRelayURLs)
+        return synced.isEmpty
+            ? TaskifyRelayURL.normalizedList(fallback)
+            : synced
+    }
+
     public init(
         version: Int = 1,
         timestamp: Int,

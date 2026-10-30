@@ -24,6 +24,24 @@ final class AccountBackupTests: XCTestCase {
         XCTAssertEqual(payload.settings["nostrBackupEnabled"], .boolean(true))
     }
 
+    func testAccountBackupRelaysReplaceFreshDeviceDefaultsButPreserveEmptyFallback() {
+        let synced = NostrAppBackupPayload(
+            timestamp: 1,
+            boards: [],
+            defaultRelayURLs: ["wss://primary.example", "WSS://PRIMARY.EXAMPLE/"]
+        )
+        XCTAssertEqual(
+            synced.resolvedAccountRelayURLs(fallback: ["wss://fresh-device.example"]),
+            ["wss://primary.example"]
+        )
+
+        let noSyncedRelays = NostrAppBackupPayload(timestamp: 2, boards: [])
+        XCTAssertEqual(
+            noSyncedRelays.resolvedAccountRelayURLs(fallback: ["wss://fresh-device.example"]),
+            ["wss://fresh-device.example"]
+        )
+    }
+
     func testEncryptsExactlyLikePWANIP44V2Fixture() throws {
         let plaintext = Data(#"{"version":1,"timestamp":1700000000,"boards":[{"id":"pwa-week","nostrId":"shared-board-id","relays":["wss://relay.solife.me"],"name":"Family Week","kind":"week","order":0}],"settings":{"nostrBackupEnabled":true},"walletSeed":{"type":"nut13-wallet-backup","version":1,"mnemonic":"do not import","counters":{}},"defaultRelays":["wss://relay.solife.me"]}"#.utf8)
         let nonce = Data((0..<32).map(UInt8.init))

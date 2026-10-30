@@ -7,12 +7,12 @@ import TaskifyWatchShared
 struct MacChatView: View {
     let search: String
     @Binding var drafts: [String: String]
-    @Binding var scrollPositions: [String: String]
     @Binding var selection: String?
     @Environment(AppModel.self) private var model
     @State private var showNew = false
     @State private var showArchived = false
     @State private var showContacts = false
+    @State private var taskDropPeer: String?
     private var peers: [String] {
         let values = model.directMessageThreads.map(\.peerPublicKey) + model.nostrContacts.map(\.publicKey)
         return Array(Set(values)).filter { peer in
@@ -48,6 +48,11 @@ struct MacChatView: View {
                                 Text("\(count)").font(.caption2.bold()).padding(5).background(Color.accentColor, in: Circle()).foregroundStyle(.white)
                             }
                         }.padding(.vertical, 5).tag(peer)
+                            .contentShape(Rectangle())
+                            .background(
+                                taskDropPeer == peer ? Color.accentColor.opacity(0.14) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7)
+                            )
                             .contextMenu {
                                 Button(showArchived ? "Unarchive" : "Archive") {
                                     if showArchived { model.unarchiveDirectMessageThread(peerPublicKey: peer) }
@@ -57,13 +62,18 @@ struct MacChatView: View {
                                     model.setDirectMessagePeerBlocked(peer, blocked: !model.isDirectMessagePeerBlocked(peer))
                                 }
                             }
+                            .dropDestination(for: String.self) { values, _ in
+                                shareDroppedTasks(values, with: peer)
+                            } isTargeted: { targeted in
+                                if targeted { taskDropPeer = peer }
+                                else if taskDropPeer == peer { taskDropPeer = nil }
+                            }
                     }
                 }.listStyle(.sidebar)
             }.frame(minWidth: 230, idealWidth: 280, maxWidth: 340)
             if let selection {
                 MacConversation(peer: selection, title: name(selection),
-                    composer: Binding(get: { drafts[selection, default: ""] }, set: { drafts[selection] = $0 }),
-                    scrollAnchor: Binding(get: { scrollPositions[selection] }, set: { scrollPositions[selection] = $0 }))
+                    composer: Binding(get: { drafts[selection, default: ""] }, set: { drafts[selection] = $0 }))
                     .id(selection).frame(minWidth: 340)
             } else {
                 ContentUnavailableView("Your Conversations", systemImage: "bubble.left.and.bubble.right", description: Text("Choose a conversation or start a new one."))
@@ -75,13 +85,33 @@ struct MacChatView: View {
     private func name(_ peer: String) -> String {
         model.groupConversation(id: peer)?.displayName ?? model.nostrContact(publicKey: peer)?.displayName ?? String(peer.prefix(16))
     }
+    private func shareDroppedTasks(_ values: [String], with peer: String) -> Bool {
+        let taskIDs = Array(Set(values)).filter { model.task(withID: $0) != nil }
+        guard !taskIDs.isEmpty,
+              !model.isDirectMessagePeerBlocked(peer),
+              !model.hasLeftDirectMessageGroup(peer) else { return false }
+        taskDropPeer = nil
+        Task { @MainActor in
+            do {
+                for taskID in taskIDs {
+                    _ = try await model.sendSharedTask(
+                        taskID: taskID,
+                        recipientValue: peer,
+                        assignment: false
+                    )
+                }
+            } catch {
+                model.errorMessage = error.localizedDescription
+            }
+        }
+        return true
+    }
 }
 
 private struct MacConversation: View {
     let peer: String
     let title: String
     @Binding var composer: String
-    @Binding var scrollAnchor: String?
     @Environment(AppModel.self) private var model
     @Environment(\.controlActiveState) private var activeState
     @StateObject private var attachments = MacAttachmentQueue()
@@ -101,7 +131,15 @@ private struct MacConversation: View {
     @State private var error: String?
     @State private var search = ""
     @State private var isDropTargeted = false
+    @State private var taskDropTargeted = false
+    @State private var sharingDroppedTaskCount = 0
     @State private var sendTask: Task<Void, Never>?
+    @State private var timelineHistoryTask: Task<Void, Never>?
+    @State private var loadedTimelineItemCount = MacChatTimelineWindow.initialPageSize
+    @State private var isLoadingEarlierTimelineItems = false
+    @State private var canLoadEarlierAtTop = false
+    @State private var followsLatestMessage = true
+    @State private var lastSearchResultID: String?
     private var messages: [NostrDirectMessage] { model.directMessages(with: peer) }
     private var isGroup: Bool { model.groupConversation(id: peer) != nil }
     private var visibleBotCommands: [BotCommand]? {
@@ -153,9 +191,21 @@ private struct MacConversation: View {
             .sorted { $0.element.timestamp != $1.element.timestamp ? $0.element.timestamp < $1.element.timestamp : $0.offset < $1.offset }
             .map(\.element)
     }
+    private var isSearchingConversation: Bool {
+        !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     private var visibleTimeline: [MacChatTimelineItem] {
-        guard !search.isEmpty else { return timeline }
-        return timeline.filter { $0.matchesSearch(search) }
+        guard !isSearchingConversation else {
+            return timeline.filter { $0.matchesSearch(search) }
+        }
+        let range = MacChatTimelineWindow.visibleRange(
+            totalCount: timeline.count,
+            loadedCount: loadedTimelineItemCount
+        )
+        return Array(timeline[range])
+    }
+    private var hasEarlierTimelineItems: Bool {
+        !isSearchingConversation && visibleTimeline.count < timeline.count
     }
     /// A sender's back-to-back photos collapse into one stack, drawn by the newest photo.
     private var photoStacks: DirectMessagePhotoStacks.Grouping {
@@ -163,6 +213,13 @@ private struct MacConversation: View {
             if case .message(let message) = item { return message }
             return nil
         })
+    }
+    private var drawnVisibleTimeline: [MacChatTimelineItem] {
+        let grouped = photoStacks
+        return visibleTimeline.filter { item in
+            if case .message(let message) = item { return !grouped.stackedMessageIDs.contains(message.id) }
+            return true
+        }
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -184,39 +241,79 @@ private struct MacConversation: View {
                 } label: { Image(systemName: "ellipsis.circle") }
             }.padding(18)
             Divider()
-            ScrollView {
-                LazyVStack(spacing: 14) {
-                    let stacks = photoStacks
-                    ForEach(visibleTimeline.filter { item in
-                        if case .message(let message) = item { return !stacks.stackedMessageIDs.contains(message.id) }
-                        return true
-                    }) { item in
-                        MacChatTimelineRow(
-                            item: item,
-                            photoStack: {
-                                if case .message(let message) = item { return stacks.stacks[message.id] }
-                                return nil
-                            }(),
-                            parent: { id in messages.first { $0.id == id } },
-                            reactions: { message in model.directMessageReactions(for: message) },
-                            reply: { reply = $0 },
-                            react: { target, emoji in
-                                Task { do { try await model.sendDirectMessageReaction(to: target, emoji: emoji) } catch { self.error = error.localizedDescription } }
-                            },
-                            reportError: { error = $0 }
-                        ).id(item.id)
+            GeometryReader { viewport in
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 14) {
+                            if hasEarlierTimelineItems {
+                                earlierTimelineLoader(proxy: proxy)
+                            }
+                            let stacks = photoStacks
+                            ForEach(drawnVisibleTimeline) { item in
+                                MacChatTimelineRow(
+                                    item: item,
+                                    photoStack: {
+                                        if case .message(let message) = item { return stacks.stacks[message.id] }
+                                        return nil
+                                    }(),
+                                    parent: { id in messages.first { $0.id == id } },
+                                    reactions: { message in model.directMessageReactions(for: message) },
+                                    reply: { reply = $0 },
+                                    react: { target, emoji in
+                                        Task { do { try await model.sendDirectMessageReaction(to: target, emoji: emoji) } catch { self.error = error.localizedDescription } }
+                                    },
+                                    reportError: { error = $0 }
+                                ).id(item.id)
+                            }
+                        }
+                        .padding(22)
+                        .background {
+                            GeometryReader { geometry in
+                                let frame = geometry.frame(in: .named("mac-chat-scroll"))
+                                Color.clear.preference(
+                                    key: MacChatScrollMetricsKey.self,
+                                    value: MacChatScrollMetrics(
+                                        topOffset: frame.minY,
+                                        contentHeight: frame.height
+                                    )
+                                )
+                            }
+                        }
                     }
-                    }.padding(22)
-                }.background(Color(nsColor: .underPageBackgroundColor).opacity(0.5))
-                    .scrollPosition(id: $scrollAnchor)
+                    .coordinateSpace(name: "mac-chat-scroll")
+                    .onPreferenceChange(MacChatScrollMetricsKey.self) { metrics in
+                        guard metrics.topOffset.isFinite, metrics.contentHeight > 0 else { return }
+                        let distanceFromBottom = metrics.contentHeight + metrics.topOffset - viewport.size.height
+                        followsLatestMessage = distanceFromBottom <= 80
+                        guard canLoadEarlierAtTop,
+                              hasEarlierTimelineItems,
+                              !isLoadingEarlierTimelineItems,
+                              metrics.topOffset >= -24 else { return }
+                        canLoadEarlierAtTop = false
+                        loadEarlierTimelineItems(proxy: proxy)
+                    }
                     .onAppear {
-                        if scrollAnchor == nil || !timeline.contains(where: { $0.id == scrollAnchor }) { scrollAnchor = timeline.last?.id }
                         markRead()
+                        revealNewestMessage(proxy: proxy, animated: false)
                     }
-                    .onChange(of: timeline.last?.id) { _, id in
-                        scrollAnchor = id
+                    .onChange(of: timeline.count) { oldCount, newCount in
+                        guard newCount > oldCount else { return }
+                        loadedTimelineItemCount = min(
+                            newCount,
+                            loadedTimelineItemCount + (newCount - oldCount)
+                        )
+                    }
+                    .onChange(of: timeline.last?.id) { _, _ in
                         markRead()
+                        guard followsLatestMessage, !isSearchingConversation else { return }
+                        revealNewestMessage(proxy: proxy, animated: true)
                     }
+                    .onChange(of: search) { _, _ in
+                        handleSearchChange(proxy: proxy)
+                    }
+                }
+            }
+            .background(Color(nsColor: .underPageBackgroundColor).opacity(0.5))
             Divider()
             VStack(alignment: .leading, spacing: 10) {
                 if let reply {
@@ -290,6 +387,25 @@ private struct MacConversation: View {
                 }
             }.padding(16)
         }
+        .dropDestination(for: String.self) { values, _ in
+            shareDroppedTasks(values)
+        } isTargeted: { taskDropTargeted = $0 }
+        .overlay {
+            if taskDropTargeted || sharingDroppedTaskCount > 0 {
+                VStack(spacing: 8) {
+                    Image(systemName: sharingDroppedTaskCount > 0 ? "paperplane.fill" : "plus.bubble")
+                        .font(.title2)
+                        .foregroundStyle(Color.accentColor)
+                    Text(sharingDroppedTaskCount > 0 ? "Sharing task…" : "Drop to share with \(title)")
+                        .font(.headline)
+                }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                .allowsHitTesting(false)
+            }
+        }
         .sheet(isPresented: $groupDetails) { MacGroupDetails(groupID: peer) }
         .confirmationDialog("Delete this conversation from this account's local history?", isPresented: $deleting) {
             Button("Delete Conversation", role: .destructive) { model.deleteDirectMessageThread(peerPublicKey: peer) }
@@ -299,6 +415,7 @@ private struct MacConversation: View {
         .task(id: peer) { if !isGroup { await model.refreshBotCommands(publicKey: peer) } }
         .onChange(of: activeState) { _, _ in markRead() }
         .onDisappear {
+            timelineHistoryTask?.cancel()
             audioRecorder.cancel()
             discardRecordedAudio()
         }
@@ -365,8 +482,126 @@ private struct MacConversation: View {
         recordedAudio = nil
     }
     private func markRead() { if activeState == .key { model.markDirectMessageThreadRead(peerPublicKey: peer) } }
+    private func shareDroppedTasks(_ values: [String]) -> Bool {
+        let taskIDs = Array(Set(values)).filter { model.task(withID: $0) != nil }
+        guard !taskIDs.isEmpty,
+              !model.isDirectMessagePeerBlocked(peer),
+              !model.hasLeftDirectMessageGroup(peer) else { return false }
+        taskDropTargeted = false
+        sharingDroppedTaskCount = taskIDs.count
+        Task { @MainActor in
+            defer { sharingDroppedTaskCount = 0 }
+            do {
+                for taskID in taskIDs {
+                    _ = try await model.sendSharedTask(
+                        taskID: taskID,
+                        recipientValue: peer,
+                        assignment: false
+                    )
+                }
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+        return true
+    }
+    private func revealNewestMessage(proxy: ScrollViewProxy, animated: Bool) {
+        guard let newestID = drawnVisibleTimeline.last?.id else {
+            followsLatestMessage = true
+            return
+        }
+        followsLatestMessage = true
+        Task { @MainActor in
+            await Task.yield()
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(newestID, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(newestID, anchor: .bottom)
+            }
+            // Lazy rows can revise their heights after the first pass; settle on the newest row.
+            try? await Task.sleep(for: .milliseconds(50))
+            proxy.scrollTo(newestID, anchor: .bottom)
+            try? await Task.sleep(for: .milliseconds(150))
+            proxy.scrollTo(newestID, anchor: .bottom)
+            canLoadEarlierAtTop = true
+        }
+    }
+    private func earlierTimelineLoader(proxy: ScrollViewProxy) -> some View {
+        HStack(spacing: 8) {
+            if isLoadingEarlierTimelineItems { ProgressView().controlSize(.small) }
+            Text(isLoadingEarlierTimelineItems ? "Loading earlier messages…" : "Scroll up for earlier messages")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 24)
+        .accessibilityLabel("Earlier messages")
+        .onAppear {
+            guard canLoadEarlierAtTop, hasEarlierTimelineItems, !isLoadingEarlierTimelineItems else { return }
+            canLoadEarlierAtTop = false
+            loadEarlierTimelineItems(proxy: proxy)
+        }
+    }
+    private func loadEarlierTimelineItems(proxy: ScrollViewProxy) {
+        guard hasEarlierTimelineItems,
+              !isLoadingEarlierTimelineItems,
+              let previousOldestID = drawnVisibleTimeline.first?.id else { return }
+        isLoadingEarlierTimelineItems = true
+        timelineHistoryTask?.cancel()
+        let nextCount = MacChatTimelineWindow.nextLoadedCount(
+            current: loadedTimelineItemCount,
+            totalCount: timeline.count
+        )
+        timelineHistoryTask = Task { @MainActor in
+            await Task.yield()
+            loadedTimelineItemCount = nextCount
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo(previousOldestID, anchor: .top)
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo(previousOldestID, anchor: .top)
+            isLoadingEarlierTimelineItems = false
+            canLoadEarlierAtTop = true
+            timelineHistoryTask = nil
+        }
+    }
+    private func handleSearchChange(proxy: ScrollViewProxy) {
+        if isSearchingConversation {
+            Task { @MainActor in
+                await Task.yield()
+                guard let newestResultID = drawnVisibleTimeline.last?.id else {
+                    lastSearchResultID = nil
+                    return
+                }
+                lastSearchResultID = newestResultID
+                followsLatestMessage = false
+                proxy.scrollTo(newestResultID, anchor: .center)
+            }
+            return
+        }
+
+        if let lastSearchResultID,
+           let index = timeline.firstIndex(where: { $0.id == lastSearchResultID }) {
+            loadedTimelineItemCount = MacChatTimelineWindow.loadedCount(
+                including: index,
+                totalCount: timeline.count,
+                minimum: loadedTimelineItemCount
+            )
+            Task { @MainActor in
+                await Task.yield()
+                proxy.scrollTo(lastSearchResultID, anchor: .center)
+            }
+        } else {
+            revealNewestMessage(proxy: proxy, animated: false)
+        }
+        self.lastSearchResultID = nil
+    }
     private func send() {
         let text = composer
+        followsLatestMessage = true
         sending = true; error = nil
         sendTask = Task {
             defer { sending = false; sendTask = nil }
@@ -385,6 +620,19 @@ private struct MacConversation: View {
                 attachments.progress = nil
             } catch { self.error = error.localizedDescription }
         }
+    }
+}
+
+private struct MacChatScrollMetrics: Equatable {
+    let topOffset: CGFloat
+    let contentHeight: CGFloat
+}
+
+private struct MacChatScrollMetricsKey: PreferenceKey {
+    static var defaultValue = MacChatScrollMetrics(topOffset: 0, contentHeight: 0)
+
+    static func reduce(value: inout MacChatScrollMetrics, nextValue: () -> MacChatScrollMetrics) {
+        value = nextValue()
     }
 }
 
@@ -411,6 +659,7 @@ private struct MacChatComposerTextView: NSViewRepresentable {
         view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
         view.onSubmit = { [weak coordinator] in coordinator?.parent.onSubmit() }
+        view.setAccessibilityIdentifier("chat-composer")
 
         let scrollView = NSScrollView()
         scrollView.documentView = view
@@ -457,11 +706,18 @@ final class MacChatComposerField: NSTextView {
     var onSubmit: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 36, !event.modifierFlags.contains(.shift) {
+        switch MacChatComposerKeyCommand.command(
+            keyCode: event.keyCode,
+            shift: event.modifierFlags.contains(.shift)
+        ) {
+        case .send:
             onSubmit?()
-            return
+        case .newline:
+            insertNewline(nil)
+            scrollRangeToVisible(selectedRange())
+        case .passThrough:
+            super.keyDown(with: event)
         }
-        super.keyDown(with: event)
     }
 }
 

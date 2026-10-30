@@ -393,6 +393,244 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertEqual(result, .every(3, .hour, until: until))
     }
 
+    func testChatTimelineInitiallyShowsOnlyTheNewestPage() {
+        XCTAssertEqual(MacChatTimelineWindow.initialPageSize, 100)
+        XCTAssertEqual(
+            MacChatTimelineWindow.visibleRange(totalCount: 250, loadedCount: 100),
+            150..<250
+        )
+        XCTAssertEqual(
+            MacChatTimelineWindow.visibleRange(totalCount: 42, loadedCount: 100),
+            0..<42
+        )
+    }
+
+    func testChatTimelineLoadsAnotherHundredOlderItemsAtTop() {
+        XCTAssertEqual(
+            MacChatTimelineWindow.nextLoadedCount(current: 100, totalCount: 250),
+            200
+        )
+        XCTAssertEqual(
+            MacChatTimelineWindow.nextLoadedCount(current: 200, totalCount: 250),
+            250
+        )
+    }
+
+    func testChatTimelineExpandsToIncludeAnOlderSearchResult() {
+        XCTAssertEqual(
+            MacChatTimelineWindow.loadedCount(
+                including: 25,
+                totalCount: 250,
+                minimum: 100
+            ),
+            225
+        )
+    }
+
+    func testChatComposerShiftReturnInsertsANewlineAndReturnSends() {
+        XCTAssertEqual(MacChatComposerKeyCommand.command(keyCode: 36, shift: false), .send)
+        XCTAssertEqual(MacChatComposerKeyCommand.command(keyCode: 36, shift: true), .newline)
+        XCTAssertEqual(MacChatComposerKeyCommand.command(keyCode: 76, shift: true), .newline)
+        XCTAssertEqual(MacChatComposerKeyCommand.command(keyCode: 51, shift: true), .passThrough)
+    }
+
+    func testTaskSelectionShiftClickSelectsTheInclusiveDisplayedRange() {
+        let orderedIDs = ["a", "b", "c", "d", "e"]
+        var selection = MacTaskSelection()
+
+        selection.select("b", in: orderedIDs)
+        selection.select("d", in: orderedIDs, modifiers: .shift)
+
+        XCTAssertEqual(selection.taskIDs, ["b", "c", "d"])
+        XCTAssertEqual(selection.anchorTaskID, "b")
+        XCTAssertNil(selection.singleTaskID)
+    }
+
+    func testTaskSelectionCommandClickTogglesWithoutClearingOtherTasks() {
+        let orderedIDs = ["a", "b", "c", "d"]
+        var selection = MacTaskSelection()
+
+        selection.select("b", in: orderedIDs)
+        selection.select("d", in: orderedIDs, modifiers: .command)
+        XCTAssertEqual(selection.taskIDs, ["b", "d"])
+
+        selection.select("b", in: orderedIDs, modifiers: .command)
+        XCTAssertEqual(selection.taskIDs, ["d"])
+        XCTAssertEqual(selection.singleTaskID, "d")
+    }
+
+    func testTaskSelectionPrunesHiddenTasksWithoutLeavingAStaleAnchor() {
+        let orderedIDs = ["a", "b", "c", "d"]
+        var selection = MacTaskSelection()
+        selection.select("a", in: orderedIDs)
+        selection.select("c", in: orderedIDs, modifiers: .command)
+
+        selection.retain(["b", "c", "e"])
+
+        XCTAssertEqual(selection.taskIDs, ["c"])
+        XCTAssertEqual(selection.anchorTaskID, "c")
+    }
+
+    func testWeekBoardSelectsTheCurrentDayColumnForCentering() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Chicago"))
+        let date = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 12))
+        )
+
+        XCTAssertEqual(
+            MacWeekBoardScroll.currentDayColumnID(
+                orderedColumnIDs: WeekdayColumn.ordered(startingAt: .sunday).map(\.rawValue),
+                date: date,
+                calendar: calendar
+            ),
+            WeekdayColumn.wednesday.rawValue
+        )
+    }
+
+    func testWeekBoardCenteringFallsBackToTheFirstAvailableColumn() {
+        XCTAssertEqual(
+            MacWeekBoardScroll.currentDayColumnID(
+                orderedColumnIDs: ["custom-first", "custom-second"],
+                date: Date()
+            ),
+            "custom-first"
+        )
+    }
+
+    func testDroppingOnAWeekBoardUsesTheCurrentWeekdayColumn() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Chicago"))
+        let date = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 10, day: 30, hour: 12))
+        )
+
+        XCTAssertEqual(
+            MacBoardDropTarget.columnID(in: .week(), date: date, calendar: calendar),
+            WeekdayColumn.friday.rawValue
+        )
+    }
+
+    func testDroppingOnAListBoardUsesItsFirstOrderedColumn() {
+        let board = Board(
+            id: "list",
+            name: "List",
+            kind: .list,
+            columns: [
+                BoardColumn(id: "later", name: "Later", order: 2),
+                BoardColumn(id: "first", name: "First", order: 0),
+            ]
+        )
+
+        XCTAssertEqual(MacBoardDropTarget.columnID(in: board), "first")
+        XCTAssertNil(MacBoardDropTarget.columnID(in: Board(id: "compound", name: "Compound", kind: .compound)))
+    }
+
+    func testArchivedBoardDropRecognizesOnlyArchivedBoardIDs() {
+        let archived = Board(id: "archived-board", name: "Archived", archived: true)
+        let regular = Board(id: "regular-board", name: "Regular")
+
+        XCTAssertEqual(
+            MacBoardDropTarget.archivedBoardIDs(
+                in: ["task-id", archived.id, regular.id, archived.id],
+                boards: [regular, archived]
+            ),
+            [archived.id]
+        )
+    }
+
+    func testBoardReorderDroppingAfterAFormerLaterTarget() {
+        XCTAssertEqual(
+            MacBoardReorder.finalIndex(
+                orderedBoardIDs: ["a", "b", "c", "d"],
+                movingBoardID: "a",
+                targetBoardID: "c",
+                placeAfter: true
+            ),
+            2
+        )
+    }
+
+    func testBoardReorderDroppingBeforeAnEarlierTarget() {
+        XCTAssertEqual(
+            MacBoardReorder.finalIndex(
+                orderedBoardIDs: ["a", "b", "c", "d"],
+                movingBoardID: "d",
+                targetBoardID: "b",
+                placeAfter: false
+            ),
+            1
+        )
+    }
+
+    func testSecondaryAccountStorageDoesNotReusePrimaryStore() {
+        let primary = URL(fileURLWithPath: "/tmp/taskify/taskify-store.json")
+        let secondaryStore = MacAccountStoragePaths.storeURL(
+            primaryURL: primary,
+            accountID: "abc123",
+            usesPrimaryStore: false
+        )
+        let secondaryOutbox = MacAccountStoragePaths.outboxURL(
+            primaryURL: URL(fileURLWithPath: "/tmp/taskify/outbox.json"),
+            accountID: "abc123",
+            usesPrimaryStore: false
+        )
+
+        XCTAssertNotEqual(secondaryStore, primary)
+        XCTAssertTrue(secondaryStore.path.contains("taskify-accounts/abc123"))
+        XCTAssertTrue(secondaryOutbox.path.contains("taskify-accounts/abc123"))
+        XCTAssertEqual(
+            MacAccountStoragePaths.storeURL(
+                primaryURL: primary,
+                accountID: "primary",
+                usesPrimaryStore: true
+            ),
+            primary
+        )
+    }
+
+    func testSavedAccountUpsertUpdatesLabelsWithoutDuplicatingKeys() {
+        let first = MacSavedAccount(
+            publicKeyHex: "abc123",
+            npub: "npub1example",
+            privateKeyHex: String(repeating: "1", count: 64),
+            label: "Work"
+        )
+        let renamed = MacSavedAccount(
+            publicKeyHex: "abc123",
+            npub: "npub1example",
+            privateKeyHex: String(repeating: "1", count: 64),
+            label: "Consulting"
+        )
+
+        let accounts = MacAccountCollection.upsert(renamed, into: [first])
+        XCTAssertEqual(accounts.count, 1)
+        XCTAssertEqual(accounts[0].label, "Consulting")
+    }
+
+    func testAccountSummariesMarkCurrentAndPrimaryAccounts() {
+        let primary = MacSavedAccount(
+            publicKeyHex: "primary",
+            npub: "npub1primary",
+            privateKeyHex: String(repeating: "1", count: 64),
+            label: "Personal"
+        )
+        let work = MacSavedAccount(
+            publicKeyHex: "work",
+            npub: "npub1work",
+            privateKeyHex: String(repeating: "2", count: 64),
+            label: "Work"
+        )
+
+        let summaries = MacAccountCollection.summaries(
+            accounts: [primary, work],
+            currentAccountID: work.publicKeyHex,
+            primaryAccountID: primary.publicKeyHex
+        )
+        XCTAssertEqual(summaries.map(\.isCurrent), [false, true])
+        XCTAssertEqual(summaries.map(\.isPrimary), [true, false])
+    }
+
     private static let onePixelPNG = Data(base64Encoded:
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )!

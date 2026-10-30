@@ -25,6 +25,36 @@ final class NostrSyncAuditTests: XCTestCase {
         XCTAssertEqual(NostrEvent.nextTimestamp(after: Int.max, now: now), Int.max)
     }
 
+    func testColdInboxSyncStartsAtTheBeginningOfRetainedHistory() async throws {
+        let identity = try NostrIdentity(privateKey: key)
+        let (_, relay) = await setupEngine(inbox: identity.publicKeyHex)
+        let filterValue = await relay.lastInboxFilter()
+        let filter = try XCTUnwrap(filterValue)
+
+        XCTAssertEqual(filter.since, 0, "A new device must recover older relay history, not only the last 30 days")
+    }
+
+    func testColdInboxSyncPagesTheAccountRecipientInbox() async throws {
+        let identity = try NostrIdentity(privateKey: key)
+        let (engine, relay) = await setupEngine(inbox: identity.publicKeyHex)
+        let subscriptionValue = await relay.lastInboxFilter()
+        let subscription = try XCTUnwrap(subscriptionValue)
+
+        await engine.handle(.endOfStoredEvents(subscriptionID: subscription.id), from: relayURL)
+        for _ in 0..<20 {
+            if await relay.lastRequestFilter() != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let filterValue = await relay.lastRequestFilter()
+        let filter = try XCTUnwrap(filterValue)
+
+        XCTAssertEqual(filter.kinds, [NIP17GiftWrap.wrapKind])
+        XCTAssertEqual(filter.authors, [])
+        XCTAssertEqual(filter.pTags, [identity.publicKeyHex])
+        XCTAssertEqual(filter.since, 0)
+        XCTAssertNotNil(filter.until)
+    }
+
     func testCorruptEnvelopeCannotPoisonDeduplicationOrCursor() async throws {
         let identity = try NostrIdentity(privateKey: key)
         let (engine, relay) = await setupEngine(inbox: identity.publicKeyHex)
@@ -137,6 +167,7 @@ private actor AuditRelayTransport: TaskSyncRelayTransport {
     private let stream = AsyncStream<NostrRelayMessage>.makeStream()
     private var boardFilters: [(id: String, since: Int?)] = []
     private var inboxFilters: [(id: String, since: Int)] = []
+    private var requestFilters: [NostrRelayFilter] = []
     private(set) var authCount = 0
     nonisolated func messages() -> AsyncStream<NostrRelayMessage> { stream.stream }
     func connect() {}
@@ -146,7 +177,12 @@ private actor AuditRelayTransport: TaskSyncRelayTransport {
     func subscribeToSharedInbox(id: String, recipientPublicKey: String, since: Int, limit: Int) { inboxFilters.append((id, since)) }
     func lastBoardFilter() -> (id: String, since: Int?)? { boardFilters.last }
     func lastInboxFilter() -> (id: String, since: Int)? { inboxFilters.last }
+    func lastRequestFilter() -> NostrRelayFilter? { requestFilters.last }
     func closeSubscription(id: String) {}
     func publish(_ event: NostrEvent) {}
     func authenticate(_ event: NostrEvent) { authCount += 1 }
+    func request(id: String, filter: NostrRelayFilter) async throws {
+        requestFilters.append(filter)
+        stream.continuation.yield(.endOfStoredEvents(subscriptionID: id))
+    }
 }

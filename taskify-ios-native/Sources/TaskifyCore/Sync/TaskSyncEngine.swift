@@ -626,6 +626,8 @@ public actor TaskSyncEngine {
     private var pendingSubscriptions: [String: Set<String>] = [:]
     private var startupBatchFlushTask: Task<Void, Never>?
     private var incompleteHistoryNewest: [String: Int] = [:]
+    private var inboxHistoryRecoveryTasks: [String: Task<Void, Never>] = [:]
+    private var pendingInboxHistoryRecoveries: Set<String> = []
     private var relayBatches: [String: [String: TaskRelayStartupBatch]] = [:]
     var relayPhases: [String: TaskRelayPhase] = [:]
     private var relayMessages: [String: String] = [:]
@@ -743,6 +745,8 @@ public actor TaskSyncEngine {
         listenerTasks.values.forEach { $0.cancel() }
         reconnectTasks.values.forEach { $0.cancel() }
         rateLimitRetryTasks.values.forEach { $0.cancel() }
+        inboxHistoryRecoveryTasks.values.forEach { $0.cancel() }
+        pendingInboxHistoryRecoveries.removeAll()
         publishAcknowledgementTimeoutTasks.values
             .flatMap(\.values)
             .forEach { $0.cancel() }
@@ -826,6 +830,9 @@ public actor TaskSyncEngine {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         if normalizedInboxPublicKey != self.inboxPublicKey {
+            inboxHistoryRecoveryTasks.values.forEach { $0.cancel() }
+            inboxHistoryRecoveryTasks.removeAll()
+            pendingInboxHistoryRecoveries.removeAll()
             verifiedEventCreatedAt.removeAll()
             deliveredSharedInboxEventIDs.removeAll()
             deliveredSharedInboxEventIDOrder.removeAll()
@@ -858,6 +865,7 @@ public actor TaskSyncEngine {
 
         for relayURL in Set(connections.keys).subtracting(wantedRelays) {
             flushStartupBatches(relayURL: relayURL)
+            cancelInboxHistoryRecoveries(relayURL: relayURL)
             listenerTasks.removeValue(forKey: relayURL)?.cancel()
             reconnectTasks.removeValue(forKey: relayURL)?.cancel()
             rateLimitRetryTasks.removeValue(forKey: relayURL)?.cancel()
@@ -1003,6 +1011,9 @@ public actor TaskSyncEngine {
         reconnectTasks.removeAll()
         rateLimitRetryTasks.values.forEach { $0.cancel() }
         rateLimitRetryTasks.removeAll()
+        inboxHistoryRecoveryTasks.values.forEach { $0.cancel() }
+        inboxHistoryRecoveryTasks.removeAll()
+        pendingInboxHistoryRecoveries.removeAll()
         publishAcknowledgementTimeoutTasks.values
             .flatMap(\.values)
             .forEach { $0.cancel() }
@@ -1739,9 +1750,21 @@ public actor TaskSyncEngine {
             guard isConfiguredSubscription(subscriptionID, relayURL: relayURL)
                 || pendingSubscriptions[relayURL]?.contains(subscriptionID) == true else { return }
             let boardTags = boardGrouping(relayURL: relayURL).group(withID: subscriptionID)?.boardTags ?? []
+            let inboxKey = inboxPublicKey.flatMap { publicKey in
+                subscriptionID == inboxSubscriptionID(relayURL: relayURL, publicKey: publicKey)
+                    ? subscriptionRetryKey(relayURL: relayURL, subscriptionID: subscriptionID)
+                    : nil
+            }
             let cursorKeys = boardTags.isEmpty
                 ? [subscriptionRetryKey(relayURL: relayURL, subscriptionID: subscriptionID)]
                 : boardTags.map { boardCursorKey(relayURL: relayURL, boardTag: $0) }
+            let needsInboxHistoryRecovery = inboxKey.map {
+                newestEventCreatedAtBySubscription[$0] == nil
+                    || pendingInboxHistoryRecoveries.contains($0)
+            } ?? false
+            if let inboxKey, needsInboxHistoryRecovery {
+                pendingInboxHistoryRecoveries.insert(inboxKey)
+            }
             for cursorKey in cursorKeys {
                 if let newest = incompleteHistoryNewest.removeValue(forKey: cursorKey) {
                     newestEventCreatedAtBySubscription[cursorKey] = max(newestEventCreatedAtBySubscription[cursorKey] ?? 0, newest)
@@ -1763,6 +1786,9 @@ public actor TaskSyncEngine {
             }
             if !sharedInboxEvents.isEmpty {
                 updateContinuation.yield(.sharedInboxBatch(sharedInboxEvents))
+            }
+            if needsInboxHistoryRecovery, let inboxKey, let inboxPublicKey {
+                startInboxHistoryRecovery(relayURL: relayURL, publicKey: inboxPublicKey, cursorKey: inboxKey)
             }
             await markRelayOnline(relayURL)
         }
@@ -2175,6 +2201,9 @@ public actor TaskSyncEngine {
     /// Resume with the full NIP-17 timestamp overlap. A newer rumor can have an older
     /// envelope timestamp, so a one-minute cursor drops even live messages after a refresh.
     /// Event-ID deduplication skips repeated crypto/merges within this overlapping window.
+    /// A cold start reads from the retained beginning. The bounded live REQ receives its first
+    /// page while `startInboxHistoryRecovery` walks older pages; reconnects stay incremental and
+    /// the pending marker is cleared only after the complete pass.
     private func sharedInboxSubscriptionSince(
         relayURL: String,
         publicKey: String
@@ -2182,8 +2211,133 @@ public actor TaskSyncEngine {
         subscriptionSince(
             relayURL: relayURL,
             subscriptionID: inboxSubscriptionID(relayURL: relayURL, publicKey: publicKey),
-            fallback: Int(Date().timeIntervalSince1970) - (30 * 24 * 60 * 60)
+            fallback: 0
         )
+    }
+
+    private func inboxHistoryRecoveryKey(relayURL: String, publicKey: String) -> String {
+        "\(relayURL)#inbox-history#\(publicKey.lowercased())"
+    }
+
+    private func cancelInboxHistoryRecoveries(relayURL: String) {
+        let prefix = "\(relayURL)#inbox-history#"
+        let keys = inboxHistoryRecoveryTasks.keys.filter { $0.hasPrefix(prefix) }
+        for key in keys {
+            inboxHistoryRecoveryTasks.removeValue(forKey: key)?.cancel()
+        }
+        pendingInboxHistoryRecoveries = pendingInboxHistoryRecoveries.filter { !$0.hasPrefix("\(relayURL)#") }
+    }
+
+    /// The live REQ is bounded and EOSE is not proof that every older event was returned.
+    /// Recover each relay in newest-first pages, re-reading same-second boundaries so a relay
+    /// cap cannot strand history. The pending marker remains until the whole pass succeeds.
+    private func startInboxHistoryRecovery(
+        relayURL: String,
+        publicKey: String,
+        cursorKey: String
+    ) {
+        guard networkingEnabled,
+              connections[relayURL] != nil,
+              pendingInboxHistoryRecoveries.contains(cursorKey) else { return }
+        let key = inboxHistoryRecoveryKey(relayURL: relayURL, publicKey: publicKey)
+        guard inboxHistoryRecoveryTasks[key] == nil else { return }
+        inboxHistoryRecoveryTasks[key] = Task { [weak self] in
+            guard let self else { return }
+            await self.recoverInboxHistory(
+                relayURL: relayURL,
+                publicKey: publicKey,
+                cursorKey: cursorKey
+            )
+            await self.finishInboxHistoryRecovery(key: key)
+        }
+    }
+
+    private func finishInboxHistoryRecovery(key: String) {
+        inboxHistoryRecoveryTasks[key] = nil
+    }
+
+    private func recoverInboxHistory(
+        relayURL: String,
+        publicKey: String,
+        cursorKey: String
+    ) async {
+        let since = 0
+        let pageSize = 200
+        let maxPageSize = 5_000
+        var until = Int(Date().timeIntervalSince1970)
+        var limit = pageSize
+        var boundaryIDs: Set<String> = []
+        var newestObserved = incompleteHistoryNewest[cursorKey] ?? 0
+
+        while until >= since, !Task.isCancelled {
+            guard let connection = connections[relayURL],
+                  inboxPublicKey == publicKey,
+                  inboxRelayURLs.contains(relayURL) else { return }
+            let filter = NostrRelayFilter(
+                kinds: [NIP17GiftWrap.wrapKind],
+                authors: [],
+                limit: limit,
+                since: since,
+                pTags: [publicKey],
+                until: until
+            )
+            guard let result = await requestOnce(
+                relayURL: relayURL,
+                connection: connection,
+                filter: filter,
+                timeout: 25
+            ), result.completed else { return }
+            guard !Task.isCancelled,
+                  inboxPublicKey == publicKey,
+                  inboxRelayURLs.contains(relayURL),
+                  connections[relayURL] != nil else { return }
+
+            let rawEvents = result.events
+            let sorted = rawEvents
+                .filter {
+                    $0.kind == NIP17GiftWrap.wrapKind &&
+                        $0.firstTagValue(named: "p") == publicKey &&
+                        $0.verify()
+                }
+                .sorted {
+                    if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+                    return $0.id < $1.id
+                }
+            var delivered: [NostrEvent] = []
+            for event in sorted where !boundaryIDs.contains(event.id) {
+                newestObserved = max(newestObserved, event.createdAt)
+                if recordSharedInboxEventIfNew(event) {
+                    delivered.append(event)
+                }
+            }
+            if !delivered.isEmpty {
+                updateContinuation.yield(.sharedInboxBatch(delivered))
+            }
+
+            guard let oldest = rawEvents.map(\.createdAt).min() else { break }
+            let oldestIDs = Set(rawEvents.filter { $0.createdAt == oldest }.map(\.id))
+            if oldest < until {
+                until = oldest
+                boundaryIDs = oldestIDs
+                limit = pageSize
+                continue
+            }
+            if rawEvents.count >= limit {
+                guard limit < maxPageSize else { return }
+                boundaryIDs.formUnion(oldestIDs)
+                limit = min(maxPageSize, limit * 2)
+                continue
+            }
+            guard oldest > since else { break }
+            until = oldest - 1
+            boundaryIDs.removeAll()
+            limit = pageSize
+        }
+        guard !Task.isCancelled else { return }
+        let completedAt = Int(Date().timeIntervalSince1970)
+        newestEventCreatedAtBySubscription[cursorKey] = max(completedAt, newestObserved)
+        incompleteHistoryNewest.removeValue(forKey: cursorKey)
+        pendingInboxHistoryRecoveries.remove(cursorKey)
     }
 
     /// Board cursors are per board, not per REQ: a group re-issued because its membership
@@ -2927,7 +3081,10 @@ extension TaskSyncEngine: NostrOneShotFetching {
             finishOneShot(subscriptionID)
             return true
         case .disconnected:
-            for (subscriptionID, request) in oneShotRequests where request.relayURL == relayURL {
+            let subscriptionIDs = oneShotRequests.compactMap { subscriptionID, request in
+                request.relayURL == relayURL ? subscriptionID : nil
+            }
+            for subscriptionID in subscriptionIDs {
                 finishOneShot(subscriptionID)
             }
             return false

@@ -4,18 +4,27 @@ import TaskifyCore
 
 @MainActor
 final class MacRuntime: ObservableObject {
-    let model: AppModel
+    @Published private(set) var model: AppModel
+    @Published private(set) var savedAccounts: [MacAccountSummary] = []
+    @Published private(set) var isSwitchingAccount = false
+    @Published private(set) var accountError: String?
     var bible: BibleTrackerStore { model.bibleTrackerStore }
     let calendar = DeviceCalendarStore()
     let wallet = WalletViewModel()
     let configuration: MacRuntimeConfiguration
     let isWalletRecoveryMode: Bool
     private let requestsDMPushProvisioningSpike: Bool
-    private var started = false
+    private let identityStore: KeychainIdentityStore
+    private let accountVault: MacAccountVault?
+    private var accountVaultState: MacAccountVaultState
+    private var startedAccountID: String?
+    private var startingAccountID: String?
+    private var walletStarted = false
     private var dayChangeObservers: [NSObjectProtocol] = []
 
     init(configuration: MacRuntimeConfiguration = .production) {
         self.configuration = configuration
+        self.isWalletRecoveryMode = WalletPhaseOut.isRecoveryMode
 #if DEBUG
         requestsDMPushProvisioningSpike = MacDMPushProvisioningSpike.isRequested(
             configuration: configuration
@@ -23,9 +32,36 @@ final class MacRuntime: ObservableObject {
 #else
         requestsDMPushProvisioningSpike = false
 #endif
+
+        let initialModel: AppModel
+        let identityStore: KeychainIdentityStore
+        let accountVault: MacAccountVault?
+        let accountVaultState: MacAccountVaultState
+        var initialAccountError: String?
         switch configuration {
         case .production:
-            model = AppModel()
+            let store = KeychainIdentityStore()
+            let service = (Bundle.main.bundleIdentifier ?? "solife.me.Taskify.Mac") + ".accounts"
+            let vault = MacAccountVault(service: service, usesSharedAccessGroup: true)
+            var state = MacAccountVaultState()
+            do {
+                state = try vault.load()
+            } catch {
+                initialAccountError = error.localizedDescription
+            }
+            let currentIdentity = try? store.load()
+            let currentAccount = currentIdentity.flatMap { identity in
+                state.accounts.first { $0.publicKeyHex == identity.publicKeyHex }
+            }
+            if let currentAccount,
+               state.primaryAccountID != currentAccount.publicKeyHex {
+                initialModel = Self.makeScopedModel(account: currentAccount, identityStore: store)
+            } else {
+                initialModel = Self.makePrimaryModel(identityStore: store)
+            }
+            identityStore = store
+            accountVault = vault
+            accountVaultState = state
         case .uiTest(let test):
 #if TASKIFY_MAC_UI_TEST
             do {
@@ -34,27 +70,33 @@ final class MacRuntime: ObservableObject {
                 fatalError("Could not prepare isolated Mac UI-test data: \(error)")
             }
             OnboardingSettings.setCompleted(true)
-            model = AppModel(
+            let store = KeychainIdentityStore(
+                service: test.identityService,
+                usesSharedAccessGroup: false
+            )
+            initialModel = AppModel(
                 store: JSONTaskStore(fileURL: test.storeURL, migratesLegacyStore: true),
-                identityStore: KeychainIdentityStore(
-                    service: test.identityService,
-                    usesSharedAccessGroup: false
-                ),
+                identityStore: store,
                 syncEngine: TaskSyncEngine(
                     outbox: NostrOutboxStore(fileURL: test.outboxURL),
                     networkingEnabled: false
                 )
             )
+            identityStore = store
+            accountVault = nil
+            accountVaultState = MacAccountVaultState()
 #else
             preconditionFailure("The UI-test runtime is available only in the UI-test build configuration.")
 #endif
         }
-        self.isWalletRecoveryMode = WalletPhaseOut.isRecoveryMode
-        model.registerWalletPaymentReceiver(wallet)
-        TaskNotificationActionRouter.shared.register(model: model)
-        if configuration.registersForRemoteNotifications {
-            TaskifyDMPushCoordinator.shared.register(model: model)
-        }
+
+        self.identityStore = identityStore
+        self.accountVault = accountVault
+        self.accountVaultState = accountVaultState
+        self.model = initialModel
+        self.accountError = initialAccountError
+        registerCurrentModel()
+        refreshAccountSummaries()
 
         // Unlike a phone, a Mac routinely stays open and active straight through midnight
         // instead of backgrounding and resuming with a fresh Date() of its own accord, so the
@@ -62,8 +104,8 @@ final class MacRuntime: ObservableObject {
         // to re-render it. `resume()` below covers waking from sleep; these two notifications
         // cover staying awake and active the whole time.
         for name: Notification.Name in [.NSCalendarDayChanged, .NSSystemTimeZoneDidChange] {
-            dayChangeObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak model] _ in
-                Task { @MainActor in model?.refreshCalendarDayIfNeeded() }
+            dayChangeObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.model.refreshCalendarDayIfNeeded() }
             })
         }
     }
@@ -73,8 +115,12 @@ final class MacRuntime: ObservableObject {
     }
 
     func start() async {
-        guard !started, !model.isLoading else { return }
-        started = true
+        guard !model.isLoading, !model.identityPublicKey.isEmpty else { return }
+        let accountID = model.identityPublicKey
+        guard startedAccountID != accountID, startingAccountID != accountID else { return }
+        startingAccountID = accountID
+        defer { startingAccountID = nil }
+        synchronizeCurrentAccountIntoVault()
 #if DEBUG
         if requestsDMPushProvisioningSpike {
             await model.enableDMPushNotifications(
@@ -84,11 +130,16 @@ final class MacRuntime: ObservableObject {
             )
         }
 #endif
+        let shouldStartWallet = !walletStarted
+        if shouldStartWallet { walletStarted = true }
         await MacRuntimeStartExecutor.run(
             plan: configuration.startPlan(isWalletRecoveryMode: isWalletRecoveryMode),
             startDeferredServices: { model.initialContentDidAppear() },
-            startWallet: { await wallet.start() }
+            startWallet: {
+                if shouldStartWallet { await wallet.start() }
+            }
         )
+        startedAccountID = accountID
     }
 
     func resume() {
@@ -98,10 +149,164 @@ final class MacRuntime: ObservableObject {
         guard configuration.startsDeferredServices else { return }
         model.refreshSyncIfNeeded()
         model.refreshFullWeekRecurrencesIfNeeded()
-        model.refreshContactsIfNeeded()
         model.refreshAccountSyncIfNeeded()
-        model.refreshAppStateSyncIfNeeded()
         wallet.appDidBecomeActive()
+    }
+
+    func addAndSwitchAccount(nsec: String, label: String?) async -> Bool {
+        guard let accountVault else {
+            let imported = model.importIdentity(nsec)
+            accountError = imported ? nil : model.errorMessage
+            return imported
+        }
+        do {
+            let identity = try NostrIdentity(importedValue: nsec)
+            let trimmedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let account = MacSavedAccount(
+                identity: identity,
+                label: trimmedLabel?.isEmpty == false ? trimmedLabel : nil
+            )
+            accountVaultState.accounts = MacAccountCollection.upsert(account, into: accountVaultState.accounts)
+            if accountVaultState.primaryAccountID == nil {
+                accountVaultState.primaryAccountID = account.publicKeyHex
+            }
+            try accountVault.save(accountVaultState)
+            accountError = nil
+            refreshAccountSummaries()
+            return await switchAccount(to: account.publicKeyHex)
+        } catch {
+            accountError = error.localizedDescription
+            return false
+        }
+    }
+
+    func switchAccount(to accountID: String) async -> Bool {
+        guard !isSwitchingAccount else { return false }
+        guard accountID != model.identityPublicKey else { return true }
+        guard accountVault != nil else {
+            accountError = "Multiple accounts are unavailable in this runtime."
+            return false
+        }
+        guard let account = accountVaultState.accounts.first(where: { $0.publicKeyHex == accountID }),
+              let identity = account.identity else {
+            accountError = "That saved account is unavailable."
+            return false
+        }
+
+        isSwitchingAccount = true
+        accountError = nil
+        defer { isSwitchingAccount = false }
+        guard await model.persistBeforeTermination() else {
+            accountError = "The current account could not be saved before switching."
+            return false
+        }
+        do {
+            try identityStore.save(identity)
+        } catch {
+            accountError = error.localizedDescription
+            return false
+        }
+
+        model = accountVaultState.primaryAccountID == account.publicKeyHex
+            ? Self.makePrimaryModel(identityStore: identityStore)
+            : Self.makeScopedModel(account: account, identityStore: identityStore)
+        startedAccountID = nil
+        startingAccountID = nil
+        registerCurrentModel()
+        refreshAccountSummaries()
+        await waitForCurrentModelLoad()
+        await start()
+        return true
+    }
+
+    func removeAccount(_ accountID: String) -> Bool {
+        guard accountID != model.identityPublicKey,
+              accountID != accountVaultState.primaryAccountID,
+              let accountVault else { return false }
+        accountVaultState.accounts = MacAccountCollection.remove(accountID, from: accountVaultState.accounts)
+        do {
+            try accountVault.save(accountVaultState)
+            accountError = nil
+            refreshAccountSummaries()
+            return true
+        } catch {
+            accountError = error.localizedDescription
+            return false
+        }
+    }
+
+    func clearAccountError() {
+        accountError = nil
+    }
+
+    private func registerCurrentModel() {
+        model.registerWalletPaymentReceiver(wallet)
+        TaskNotificationActionRouter.shared.register(model: model)
+        if configuration.registersForRemoteNotifications {
+            TaskifyDMPushCoordinator.shared.register(model: model)
+        }
+    }
+
+    private func synchronizeCurrentAccountIntoVault() {
+        guard let accountVault,
+              let identity = try? identityStore.load(),
+              identity.publicKeyHex == model.identityPublicKey else { return }
+        let existing = accountVaultState.accounts.first {
+            $0.publicKeyHex == identity.publicKeyHex
+        }
+        let account = MacSavedAccount(identity: identity, label: existing?.label)
+        accountVaultState.accounts = MacAccountCollection.upsert(account, into: accountVaultState.accounts)
+        if accountVaultState.primaryAccountID == nil {
+            accountVaultState.primaryAccountID = account.publicKeyHex
+        }
+        do {
+            try accountVault.save(accountVaultState)
+            refreshAccountSummaries()
+        } catch {
+            accountError = error.localizedDescription
+        }
+    }
+
+    private func refreshAccountSummaries() {
+        savedAccounts = MacAccountCollection.summaries(
+            accounts: accountVaultState.accounts,
+            currentAccountID: model.identityPublicKey,
+            primaryAccountID: accountVaultState.primaryAccountID
+        )
+    }
+
+    private func waitForCurrentModelLoad() async {
+        for _ in 0..<200 where model.isLoading {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    private static func makePrimaryModel(identityStore: KeychainIdentityStore) -> AppModel {
+        AppModel(
+            store: JSONTaskStore(migratesLegacyStore: true),
+            identityStore: identityStore
+        )
+    }
+
+    private static func makeScopedModel(
+        account: MacSavedAccount,
+        identityStore: KeychainIdentityStore
+    ) -> AppModel {
+        let storeURL = MacAccountStoragePaths.storeURL(
+            primaryURL: JSONTaskStore.defaultURL,
+            accountID: account.publicKeyHex,
+            usesPrimaryStore: false
+        )
+        let outboxURL = MacAccountStoragePaths.outboxURL(
+            primaryURL: NostrOutboxStore.defaultURL,
+            accountID: account.publicKeyHex,
+            usesPrimaryStore: false
+        )
+        return AppModel(
+            store: JSONTaskStore(fileURL: storeURL),
+            identityStore: identityStore,
+            syncEngine: TaskSyncEngine(outbox: NostrOutboxStore(fileURL: outboxURL))
+        )
     }
 }
 
@@ -167,8 +372,9 @@ struct TaskifyMacApp: App {
                 .environmentObject(runtime.wallet)
                 .environmentObject(runtime.bible)
                 .environmentObject(runtime.calendar)
+                .environmentObject(runtime)
                 .frame(minWidth: 850, minHeight: 560)
-                .task(id: runtime.model.isLoading) {
+                .task(id: "\(runtime.model.identityPublicKey):\(runtime.model.isLoading)") {
                     delegate.runtime = runtime
                     await runtime.start()
                 }
@@ -185,6 +391,7 @@ struct TaskifyMacApp: App {
                 .environmentObject(runtime.wallet)
                 .environmentObject(runtime.bible)
                 .environmentObject(runtime.calendar)
+                .environmentObject(runtime)
                 .frame(width: 640, height: 580)
         }
     }

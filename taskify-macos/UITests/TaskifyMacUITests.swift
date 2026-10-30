@@ -399,6 +399,35 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Pasted Image.png"].waitForExistence(timeout: 5))
     }
 
+    func testChatComposerShiftReturnStartsANewLineAndReturnSends() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        let chat = app.staticTexts["Chat"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        chat.click()
+        let fixturePeer = app.staticTexts["Paste Test Contact"]
+        XCTAssertTrue(fixturePeer.waitForExistence(timeout: 5))
+        fixturePeer.click()
+
+        let composer = app.textViews["chat-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        let firstLine = "Shift Return \(UUID().uuidString.prefix(6))"
+        let secondLine = "Second row"
+        composer.typeText(firstLine)
+        composer.typeKey(.return, modifierFlags: .shift)
+        composer.typeText(secondLine)
+
+        XCTAssertEqual(composer.value as? String, "\(firstLine)\n\(secondLine)")
+        composer.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(
+            app.staticTexts["\(firstLine)\n\(secondLine)"].waitForExistence(timeout: 10),
+            "Plain Return should send the multi-line draft"
+        )
+    }
+
     func testChatAttachmentsRenderInThreadWithRecordButton() {
         let app = XCUIApplication()
         app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]

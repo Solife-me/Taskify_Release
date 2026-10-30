@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 struct MacSettingsView: View {
     @Environment(AppModel.self) private var model
+    @EnvironmentObject private var runtime: MacRuntime
     @EnvironmentObject private var wallet: WalletViewModel
     @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
     private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
@@ -13,6 +14,8 @@ struct MacSettingsView: View {
     private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var relay = ""
     @State private var identity = ""
+    @State private var accountLabel = ""
+    @State private var accountToRemove: MacAccountSummary?
     @State private var message: String?
     @State private var importConfirmation = false
     @State private var restoreCandidate: TaskifySnapshot?
@@ -83,15 +86,25 @@ struct MacSettingsView: View {
                 }
             }.formStyle(.grouped).tabItem { Label("General", systemImage: "gearshape") }
             Form {
-                Section("Nostr Account") {
-                    Text(model.identityNpub).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    Button("Copy Public Key") { macCopy(model.identityNpub) }
+                Section("Accounts") {
+                    ForEach(runtime.savedAccounts) { account in
+                        accountRow(account)
+                    }
+                    if runtime.savedAccounts.isEmpty {
+                        Text("Your current account will appear here after startup finishes.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Saved account keys are stored in this Mac's Keychain. Each account keeps its own local boards, chats, and pending sync queue.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Add Account for Easy Switching") {
+                    TextField("Account label (optional)", text: $accountLabel)
                     SecureField("Import nsec or secret key", text: $identity)
                         .accessibilityIdentifier("account-private-key-field")
-                    Button("Switch Account…") { importConfirmation = true }
-                        .disabled(identity.isEmpty)
+                    Button("Add and Switch Account…") { importConfirmation = true }
+                        .disabled(identity.isEmpty || runtime.isSwitchingAccount)
                         .accessibilityIdentifier("switch-account-button")
-                    Text("Switching accounts replaces this Mac's task and chat state. The wallet has its own recovery phrase.").font(.caption).foregroundStyle(.secondary)
+                    if let error = runtime.accountError { Text(error).font(.caption).foregroundStyle(.red) }
                 }
                 Section("Backup") {
                     Button("Export Task Backup…") { exportBackup() }
@@ -161,15 +174,69 @@ struct MacSettingsView: View {
                 Button("Cancel", role: .cancel) { restoreCandidate = nil }
             }
             .confirmationDialog("Switch the account on this Mac?", isPresented: $importConfirmation) {
-                Button("Switch Account", role: .destructive) {
-                    if model.importIdentity(identity) {
-                        identity = ""
-                        message = "Account imported."
+                Button("Add and Switch Account") {
+                    let privateKey = identity
+                    let label = accountLabel
+                    identity = ""
+                    accountLabel = ""
+                    Task {
+                        if await runtime.addAndSwitchAccount(nsec: privateKey, label: label) {
+                            message = "Switched account."
+                        }
                     }
                 }
                 .accessibilityIdentifier("confirm-switch-account-button")
                 Button("Cancel", role: .cancel) {}
             }
+            .confirmationDialog(
+                "Remove this saved account from the Mac?",
+                isPresented: Binding(
+                    get: { accountToRemove != nil },
+                    set: { if !$0 { accountToRemove = nil } }
+                )
+            ) {
+                Button("Remove Account", role: .destructive) {
+                    guard let accountToRemove else { return }
+                    _ = runtime.removeAccount(accountToRemove.id)
+                    self.accountToRemove = nil
+                }
+                Button("Cancel", role: .cancel) { accountToRemove = nil }
+            } message: {
+                Text("This removes the saved key from this Mac. Its local account data remains on disk.")
+            }
+    }
+
+    @ViewBuilder
+    private func accountRow(_ account: MacAccountSummary) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: account.isCurrent ? "checkmark.circle.fill" : "person.crop.circle")
+                .foregroundStyle(account.isCurrent ? Color.accentColor : Color.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(account.label).font(.headline)
+                    if account.isPrimary { Text("PRIMARY").font(.caption2.bold()).foregroundStyle(.secondary) }
+                }
+                Text(account.npub).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Button { macCopy(account.npub) } label: { Image(systemName: "doc.on.doc") }
+                .buttonStyle(.borderless)
+                .help("Copy Public Key")
+            if account.isCurrent {
+                Text("Current").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("Switch") {
+                    Task { _ = await runtime.switchAccount(to: account.id) }
+                }
+                .disabled(runtime.isSwitchingAccount)
+            }
+            if !account.isCurrent && !account.isPrimary {
+                Button { accountToRemove = account } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+                    .help("Remove Saved Account")
+            }
+        }
+        .padding(.vertical, 3)
     }
     private func profileBinding(_ key: WritableKeyPath<NostrProfileDraft, String?>) -> Binding<String> {
         Binding(get: { profile[keyPath: key] ?? "" }, set: { profile[keyPath: key] = $0 })
