@@ -959,8 +959,17 @@ struct PhysicalChecklistSheet: View {
 
     let onApply: ([String]) -> Void
 
-    init(job: PhysicalChecklistJob, onApply: @escaping ([String]) -> Void) {
+    init(
+        job: PhysicalChecklistJob,
+        startWithScanner: Bool = false,
+        onApply: @escaping ([String]) -> Void
+    ) {
         _job = State(initialValue: job)
+        let storedJob = PhysicalChecklistJobStore.load(ownerID: job.ownerID)
+        _showingScanner = State(
+            initialValue: startWithScanner && VNDocumentCameraViewController.isSupported
+        )
+        _scanJob = State(initialValue: startWithScanner ? (storedJob ?? job) : nil)
         self.onApply = onApply
     }
 

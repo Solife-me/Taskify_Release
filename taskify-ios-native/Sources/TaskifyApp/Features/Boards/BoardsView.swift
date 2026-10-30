@@ -27,6 +27,7 @@ struct BoardsView: View {
     @State private var showingVoiceDictation = false
     @State private var detailedTaskDraft: TaskItem?
     @State private var physicalChecklistJob: PhysicalChecklistJob?
+    @State private var physicalChecklistStartsScanning = false
     @State private var boardPrintRequest: BoardPrintRequest?
     @State private var pendingBoardPrintJob: PhysicalChecklistJob?
     @State private var requestBoardPrintAfterShare = false
@@ -138,8 +139,13 @@ struct BoardsView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(item: $physicalChecklistJob) { job in
-            PhysicalChecklistSheet(job: job) { scannedIDs in
+        .sheet(item: $physicalChecklistJob, onDismiss: {
+            physicalChecklistStartsScanning = false
+        }) { job in
+            PhysicalChecklistSheet(
+                job: job,
+                startWithScanner: physicalChecklistStartsScanning
+            ) { scannedIDs in
                 model.completeTasks(scannedIDs)
             }
         }
@@ -507,6 +513,23 @@ struct BoardsView: View {
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .buttonStyle(.plain)
                         .accessibilityLabel("Share \(model.selectedBoard?.name ?? "board")")
+
+                        Rectangle()
+                            .fill(TaskifyTheme.border)
+                            .frame(width: 1, height: 23)
+
+                        Button {
+                            openPrintedChecklistScanner()
+                        } label: {
+                            Image(systemName: "doc.viewfinder")
+                                .scaledFont(size: 15, weight: .semibold)
+                                .frame(width: 42, height: 42)
+                                .contentShape(Rectangle())
+                        }
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Scan printed checklist")
+                        .accessibilityIdentifier("scan-printed-checklist")
                     }
                 }
                 .taskifyGlassControl(in: Capsule())
@@ -604,6 +627,23 @@ struct BoardsView: View {
                 PhysicalChecklistItem(id: $0.task.id, title: $0.task.title, section: $0.section)
             }
         )
+    }
+
+    private func openPrintedChecklistScanner() {
+        guard let board = model.selectedBoard, board.kind != .bible else { return }
+        let ownerID = "board:\(board.effectiveNostrBoardID)"
+        let launchJob = PhysicalChecklistJobStore.load(ownerID: ownerID)
+            ?? makeBoardPrintJob(
+                for: board,
+                selectedListIDs: nil,
+                includeCompleted: completedTabEnabled
+            )
+        guard let launchJob else {
+            model.errorMessage = "There is no printed checklist to scan yet. Add a task, then print a checklist first."
+            return
+        }
+        physicalChecklistStartsScanning = true
+        physicalChecklistJob = launchJob
     }
 
     private func makeBoardPrintChoices(for board: Board) -> [BoardPrintListChoice] {

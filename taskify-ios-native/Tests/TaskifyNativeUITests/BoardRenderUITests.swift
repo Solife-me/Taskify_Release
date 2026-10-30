@@ -45,4 +45,21 @@ final class BoardRenderUITests: XCTestCase {
         try? app.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: "/tmp/taskify_screens/board-columns-\(Int(app.frame.width)).png"))
         XCTAssertLessThanOrEqual(card.frame.width, 330, "a card never grows past its 330 pt column")
     }
+
+    func testPrintedChecklistScannerIsAvailableFromBoardHeader() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] = "1"
+        app.launch()
+        app.buttons["Boards"].firstMatch.tap()
+
+        let scan = app.buttons["scan-printed-checklist"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 15))
+        scan.tap()
+
+        // Document scanning is unavailable in Simulator, so the containing verification sheet
+        // remains visible. A real iPhone presents the scanner immediately over this sheet.
+        XCTAssertTrue(app.staticTexts["Physical checklist"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Scan completed checklist"].exists)
+    }
 }

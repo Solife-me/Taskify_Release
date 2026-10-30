@@ -284,14 +284,15 @@ final class MultiPhotoCameraModel: NSObject, ObservableObject, @unchecked Sendab
             return error.localizedDescription
         }
         session.beginConfiguration()
-        defer { session.commitConfiguration() }
         if let currentInput { session.removeInput(currentInput) }
         session.sessionPreset = .photo
         guard session.canAddInput(input) else {
+            session.commitConfiguration()
             return "The camera could not start."
         }
         if !session.outputs.contains(where: { $0 === photoOutput }) {
             guard session.canAddOutput(photoOutput) else {
+                session.commitConfiguration()
                 return "The camera could not start."
             }
             session.addOutput(photoOutput)
@@ -300,6 +301,10 @@ final class MultiPhotoCameraModel: NSObject, ObservableObject, @unchecked Sendab
         photoOutput.maxPhotoQualityPrioritization = .balanced
         currentInput = input
         currentPosition = position
+        // AVCaptureSession raises an Objective-C exception when startRunning() is called
+        // between beginConfiguration() and commitConfiguration(). Finish the transaction first;
+        // this path is used as soon as the chat camera opens on a real device.
+        session.commitConfiguration()
         if !session.isRunning { session.startRunning() }
         return nil
     }
