@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TaskifyCore
 
@@ -38,7 +39,7 @@ struct MacBoardView: View {
             } else if tableView {
                 MacTaskTable(boards: boards, search: search, showCompleted: showCompleted, selectedTaskID: $selectedTaskID, edit: edit)
             } else {
-                ScrollViewReader { proxy in
+                GeometryReader { geometry in
                     ScrollView([.horizontal, .vertical]) {
                         VStack(alignment: .leading, spacing: 24) {
                             ForEach(boards) { child in
@@ -51,16 +52,22 @@ struct MacBoardView: View {
                                                        clearSelection: clearTaskSelection,
                                                        edit: edit)
                                             .id(MacWeekBoardScroll.scrollID(boardID: child.id, columnID: column.id))
+                                            .background {
+                                                if let request = weekScrollRequest,
+                                                   request.boardID == child.id,
+                                                   request.columnID == column.id {
+                                                    MacWeekBoardScrollAnchor(request: request)
+                                                }
+                                            }
                                     }
                                 }
                             }
-                        }.padding(24)
+                        }
+                        .padding(.vertical, 24)
+                        .padding(.horizontal, horizontalContentPadding(viewportWidth: geometry.size.width))
                     }
                     .background(Color(nsColor: .underPageBackgroundColor))
-                    .task(id: weekScrollRequest) {
-                        guard let request = weekScrollRequest else { return }
-                        await centerCurrentWeekDay(request, proxy: proxy)
-                    }
+                    .accessibilityIdentifier("week-board-scroll")
                 }
             }
         }
@@ -104,6 +111,13 @@ struct MacBoardView: View {
             orderedColumnIDs: columns(board).map(\.id),
             date: model.currentCalendarDay
         )
+    }
+
+    private func horizontalContentPadding(viewportWidth: CGFloat) -> CGFloat {
+        guard board.kind == .week else { return 24 }
+        // Leave enough room on both sides for the first and last weekday columns to reach the
+        // viewport center. Without these gutters, Friday and Saturday are clamped near the edge.
+        return MacWeekBoardScroll.horizontalContentPadding(viewportWidth: viewportWidth)
     }
 
     private func displayedTasks(board: Board, column: BoardColumn) -> [TaskItem] {
@@ -167,27 +181,53 @@ struct MacBoardView: View {
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
     }
+}
 
-    private func centerCurrentWeekDay(
-        _ request: MacWeekBoardScrollRequest,
-        proxy: ScrollViewProxy
-    ) async {
-        // SwiftUI can reuse the horizontal ScrollView across board switches. Retry after layout
-        // so the newly selected week board always opens on today rather than retaining the old
-        // board's offset or scrolling before the new columns have been registered.
-        for attempt in 0..<3 {
-            guard !Task.isCancelled else { return }
-            if attempt == 0 {
-                await Task.yield()
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    proxy.scrollTo(request.targetID, anchor: UnitPoint(x: 0.5, y: 0))
-                }
-            } else {
-                try? await Task.sleep(for: .milliseconds(80 * attempt))
-                guard !Task.isCancelled else { return }
-                proxy.scrollTo(request.targetID, anchor: UnitPoint(x: 0.5, y: 0))
+/// ScrollViewReader's scrollTo is not honored for this two-axis SwiftUI ScrollView on macOS.
+/// This zero-interaction anchor reaches the backing NSScrollView and centers its own column.
+private struct MacWeekBoardScrollAnchor: NSViewRepresentable {
+    let request: MacWeekBoardScrollRequest
+
+    final class Coordinator {
+        var lastRequestID: String?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.lastRequestID = request.requestID
+        scheduleCentering(view)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        guard context.coordinator.lastRequestID != request.requestID else { return }
+        context.coordinator.lastRequestID = request.requestID
+        scheduleCentering(view)
+    }
+
+    private func scheduleCentering(_ view: NSView) {
+        for delay in [0.0, 0.05, 0.15] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak view] in
+                guard let view else { return }
+                Self.center(view)
             }
         }
+    }
+
+    private static func center(_ view: NSView) {
+        guard let scrollView = view.enclosingScrollView,
+              let documentView = scrollView.documentView,
+              documentView.bounds.width > 0 else { return }
+        let target = view.convert(view.bounds, to: documentView)
+        let clipView = scrollView.contentView
+        let contentWidth = max(documentView.bounds.width, documentView.frame.width)
+        let maximumX = max(0, contentWidth - clipView.bounds.width)
+        let centeredX = target.midX - clipView.bounds.width / 2
+        let x = min(max(0, centeredX), maximumX)
+        clipView.scroll(to: NSPoint(x: x, y: clipView.bounds.origin.y))
+        scrollView.reflectScrolledClipView(clipView)
     }
 }
 

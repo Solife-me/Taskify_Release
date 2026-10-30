@@ -519,6 +519,19 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertNotEqual(first.targetID, second.targetID)
     }
 
+    func testWeekBoardGuttersAllowFirstAndLastDaysToCenter() {
+        let viewportWidth: CGFloat = 1_280
+        let columnWidth: CGFloat = 270
+        let spacing: CGFloat = 16
+        let padding = MacWeekBoardScroll.horizontalContentPadding(viewportWidth: viewportWidth)
+        let firstColumnCenter = padding + columnWidth / 2
+        let contentWidth = padding * 2 + columnWidth * 7 + spacing * 6
+        let lastColumnCenter = contentWidth - padding - columnWidth / 2
+
+        XCTAssertEqual(firstColumnCenter, viewportWidth / 2, accuracy: 0.001)
+        XCTAssertEqual(lastColumnCenter - viewportWidth / 2, contentWidth - viewportWidth, accuracy: 0.001)
+    }
+
     func testWeekBoardCenteringFallsBackToTheFirstAvailableColumn() {
         XCTAssertEqual(
             MacWeekBoardScroll.currentDayColumnID(

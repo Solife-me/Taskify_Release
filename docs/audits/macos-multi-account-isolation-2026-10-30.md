@@ -74,7 +74,7 @@ The remaining device-wide behavior is explicit and intentional: wallet funds and
 ## Verification
 
 - `swift test` for `taskify-ios-native`: 911 XCTest cases passed with 14 skipped, plus 50 Watch runtime XCTest cases and 44 Swift Testing cases; zero failures.
-- `swift test` for `taskify-macos`: 52 presentation/runtime tests passed; zero failures.
+- `swift test` for `taskify-macos`: 53 presentation/runtime tests passed; zero failures.
 - Unsigned `TaskifyMac` `Local` build: succeeded.
 - Unsigned `TaskifyNative` iOS Simulator `Local` build: succeeded.
 - Generated Xcode project check: `TaskifyMac.xcodeproj matches generate-project.py`.

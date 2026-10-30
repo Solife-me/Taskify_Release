@@ -12,6 +12,10 @@ public struct MacWeekBoardScrollRequest: Equatable, Sendable {
     public var targetID: String {
         MacWeekBoardScroll.scrollID(boardID: boardID, columnID: columnID)
     }
+
+    public var requestID: String {
+        "\(boardID)|\(columnID)|\(dayKey)|\(orderedColumnIDs.joined(separator: ","))"
+    }
 }
 
 /// Chooses the week column that should be centered when a Mac week board opens.
@@ -28,6 +32,15 @@ public enum MacWeekBoardScroll {
 
     public static func scrollID(boardID: String, columnID: String) -> String {
         "week-board-\(boardID)-\(columnID)"
+    }
+
+    /// Symmetric gutters let both the first and last weekday columns reach the viewport center.
+    public static func horizontalContentPadding(
+        viewportWidth: CGFloat,
+        columnWidth: CGFloat = 270,
+        minimum: CGFloat = 24
+    ) -> CGFloat {
+        max(minimum, (viewportWidth - columnWidth) / 2)
     }
 
     public static func request(
