@@ -12,10 +12,12 @@ export function ViewSection({
   settings,
   setSettings,
   boards,
+  embedded = false,
 }: {
   settings: Settings;
   setSettings: (s: Partial<Settings>) => void;
   boards: Board[];
+  embedded?: boolean;
 }) {
   const walletEnabled = useWalletEnabled();
   const { show: showToast } = useToast();
@@ -92,16 +94,18 @@ export function ViewSection({
 
   return (
     <section className="wallet-section space-y-3">
-      <button
-        className="flex w-full items-center gap-2 mb-3 text-left"
-        onClick={() => setViewExpanded((prev) => !prev)}
-        aria-expanded={viewExpanded}
-      >
-        <div className="text-sm font-medium flex-1">View</div>
-        <span className="text-xs text-tertiary">{viewExpanded ? "Hide" : "Show"}</span>
-        <span className="text-tertiary">{viewExpanded ? "−" : "+"}</span>
-      </button>
-      {viewExpanded && (
+      {!embedded && (
+        <button
+          className="flex w-full items-center gap-2 mb-3 text-left"
+          onClick={() => setViewExpanded((prev) => !prev)}
+          aria-expanded={viewExpanded}
+        >
+          <div className="text-sm font-medium flex-1">View</div>
+          <span className="text-xs text-tertiary">{viewExpanded ? "Hide" : "Show"}</span>
+          <span className="text-tertiary">{viewExpanded ? "−" : "+"}</span>
+        </button>
+      )}
+      {(embedded || viewExpanded) && (
         <div className="space-y-4">
           <div>
             <div className="text-sm font-medium mb-2">Add new tasks to</div>

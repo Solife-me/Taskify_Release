@@ -3,8 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { NostrOutboxMutation } from "taskify-runtime-nostr";
-import { collectCliRelayUrls, FileNostrOutboxStore } from "../src/shared/nodeRuntimeSession.ts";
+import { RelayPublishBudget, type NostrOutboxMutation } from "taskify-runtime-nostr";
+import {
+  collectCliRelayUrls,
+  FileNostrOutboxStore,
+  FileRelayPublishBudgetStateStore,
+} from "../src/shared/nodeRuntimeSession.ts";
 
 function mutation(id: string): NostrOutboxMutation {
   return {
@@ -43,6 +47,36 @@ test("FileNostrOutboxStore persists pending writes across instances", async () =
     assert.equal((await second.listPending()).length, 1);
     await second.delete("write-1");
     assert.equal(await first.get("write-1"), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI relay pacing and rate-limit backoff persist across process-like budget instances", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "taskify-relay-budget-"));
+  try {
+    const file = path.join(dir, "budget.json");
+    const options = () => ({
+      burst: 2,
+      refillIntervalMs: 10_000,
+      refillJitterMs: 0,
+      rateLimitBackoffMs: 20_000,
+      stateStore: new FileRelayPublishBudgetStateStore(file),
+    });
+    const now = 1_000_000;
+    const firstRun = new RelayPublishBudget(options());
+    assert.deepEqual(firstRun.take(["wss://relay.damus.io"], now).ready, ["wss://relay.damus.io"]);
+    assert.deepEqual(firstRun.take(["wss://relay.damus.io"], now).ready, ["wss://relay.damus.io"]);
+
+    const nextRun = new RelayPublishBudget(options());
+    const paced = nextRun.take(["wss://relay.damus.io"], now);
+    assert.deepEqual(paced.ready, []);
+    assert.equal(paced.deferredUntil, now + 10_000);
+
+    nextRun.recordRateLimited("wss://relay.damus.io", now);
+    const afterRejection = new RelayPublishBudget(options()).take(["wss://relay.damus.io"], now + 10_000);
+    assert.deepEqual(afterRejection.ready, []);
+    assert.equal(afterRejection.deferredUntil, now + 20_000);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -4,10 +4,12 @@ import TaskifyCore
 
 enum KeychainIdentityError: LocalizedError {
     case keychain(OSStatus)
+    case verificationFailed
 
     var errorDescription: String? {
         switch self {
         case .keychain(let status): "The native identity could not be stored securely (\(status))."
+        case .verificationFailed: "The active account identity could not be verified after saving."
         }
     }
 }
@@ -50,6 +52,13 @@ struct KeychainIdentityStore {
     }
 
     func save(_ identity: NostrIdentity) throws {
+        try savePrivateKey(identity)
+        guard try load()?.publicKeyHex == identity.publicKeyHex else {
+            throw KeychainIdentityError.verificationFailed
+        }
+    }
+
+    private func savePrivateKey(_ identity: NostrIdentity) throws {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -71,7 +80,7 @@ struct KeychainIdentityStore {
         guard let legacy = try loadPrivateKey(accessGroup: nil) else { return nil }
         if sharedAccessGroup != nil {
             let identity = try NostrIdentity(privateKey: legacy)
-            try save(identity)
+            try savePrivateKey(identity)
         }
         return legacy
     }

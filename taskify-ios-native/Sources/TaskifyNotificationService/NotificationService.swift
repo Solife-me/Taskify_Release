@@ -53,7 +53,10 @@ final class NotificationService: UNNotificationServiceExtension {
                 for: decrypted,
                 identityPublicKey: identity.publicKeyHex,
                 snapshot: snapshot,
-                selection: DMPushNotificationSharedSettings.selection
+                selection: DMPushNotificationSharedSettings.selection(
+                    accountID: identity.publicKeyHex,
+                    defaults: UserDefaults(suiteName: TaskifySharedContainer.appGroupID)
+                )
             ) else {
                 Self.logger.info("No preview for this event; delivering the generic alert")
                 finish(with: nil)
@@ -67,6 +70,7 @@ final class NotificationService: UNNotificationServiceExtension {
             content.body = presentation.body
             content.threadIdentifier = "taskify-direct-messages"
             var userInfo = content.userInfo
+            userInfo[TaskifyNotificationContract.accountIDKey] = identity.publicKeyHex
             userInfo[TaskifyNotificationContract.destinationKey] =
                 TaskifyNotificationContract.Destination.chat.rawValue
             if let replyTarget = DMPushNotificationPreviewPolicy.replyTarget(

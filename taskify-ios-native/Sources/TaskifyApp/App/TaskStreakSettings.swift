@@ -6,11 +6,13 @@ enum TaskStreakSettings {
     private static let enabledKey = "taskify.streaksEnabled"
 
     /// Defaults to on, matching the PWA.
-    static var enabled: Bool {
-        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
+    static var enabled: Bool { enabled(defaults: .standard) }
+
+    static func enabled(defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: enabledKey) as? Bool ?? true
     }
 
-    static func setEnabled(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: enabledKey)
+    static func setEnabled(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: enabledKey)
     }
 }

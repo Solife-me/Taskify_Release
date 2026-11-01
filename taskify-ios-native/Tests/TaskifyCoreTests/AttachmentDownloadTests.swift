@@ -3,6 +3,15 @@ import XCTest
 @testable import TaskifyCore
 
 final class AttachmentDownloadTests: XCTestCase {
+    func testDownloadingProgressReportsAPercentage() {
+        let progress = AttachmentTransferProgress.downloading(completed: 512, total: 1_024)
+        XCTAssertEqual(progress.fractionCompleted, 0.5)
+        XCTAssertEqual(progress.message, "Downloading 50%…")
+        XCTAssertNil(AttachmentTransferProgress.downloading(completed: 512, total: 0).fractionCompleted)
+        XCTAssertEqual(AttachmentTransferProgress.downloading(completed: 512, total: 0).message,
+                       "Downloading attachment…")
+    }
+
     private func url(_ path: String) throws -> URL {
         guard let base = ProcessInfo.processInfo.environment["TASKIFY_DOWNLOAD_TEST_BASE_URL"], let url = URL(string: base + path) else {
             throw XCTSkip("Start Scripts/attachment-test-server.py and set TASKIFY_DOWNLOAD_TEST_BASE_URL to its loopback address.")
@@ -10,9 +19,16 @@ final class AttachmentDownloadTests: XCTestCase {
         return url
     }
     func testDownloadWithoutContentLength() async throws {
-        let file = try await AttachmentDownload.file(from: url("/small"), limit: 16_384)
+        let updates = ProgressRecorder()
+        let file = try await AttachmentDownload.file(
+            from: url("/small"),
+            limit: 16_384,
+            progress: { updates.record($0) }
+        )
         defer { try? FileManager.default.removeItem(at: file) }
         XCTAssertEqual(try Data(contentsOf: file), Data(repeating: 98, count: 8_192))
+        XCTAssertFalse(updates.values.isEmpty)
+        XCTAssertTrue(updates.values.contains { if case .downloading = $0 { return true }; return false })
     }
     func testActualAndAdvertisedSizeLimits() async throws {
         for path in ["/streamed-oversize", "/advertised-oversize"] {
@@ -41,5 +57,18 @@ final class AttachmentDownloadTests: XCTestCase {
             XCTFail("Cancelled download completed")
         } catch let error as URLError { XCTAssertEqual(error.code, .cancelled) }
         catch is CancellationError { }
+    }
+}
+
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var history: [AttachmentTransferProgress] = []
+    var values: [AttachmentTransferProgress] {
+        lock.lock(); defer { lock.unlock() }
+        return history
+    }
+    func record(_ value: AttachmentTransferProgress) {
+        lock.lock(); defer { lock.unlock() }
+        history.append(value)
     }
 }

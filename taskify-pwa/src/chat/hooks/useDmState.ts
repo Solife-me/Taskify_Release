@@ -27,6 +27,7 @@ import { PersistedIdSet } from "../seenEvents";
 import { mergeGroupChats, normalizeGroupChatRecord, type GroupChat } from "../../lib/groupChatState";
 import type { SharedTaskPayload } from "../../lib/shareInbox";
 import { normalizeNostrPubkey } from "../../lib/nostr";
+import type { TaskifyBotUiAction } from "taskify-core";
 
 // ─── DM Types ───────────────────────────────────────────────────────────────
 
@@ -115,6 +116,8 @@ export type WalletDmMessage = {
   groupId?: string; // set for group messages
   senderPubkey?: string; // set for group messages — who sent this specific message
   replyToEventId?: string; // "e" tag from inner kind-14 rumor
+  /** Taskify-generated Hermes menu command; hidden from the visible thread. */
+  botUiAction?: TaskifyBotUiAction;
 };
 
 export type WalletDmThread = {
@@ -382,6 +385,21 @@ function isWalletDmMessage(value: unknown): value is WalletDmMessage {
   );
 }
 
+function normalizeBotUiAction(value: unknown): TaskifyBotUiAction | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const kind = row.kind;
+  const menuId = typeof row.menuId === "string" ? row.menuId : "";
+  const providerSlug = typeof row.providerSlug === "string" ? row.providerSlug : "";
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(menuId) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(providerSlug)) return null;
+  if (kind === "catalog-request") return { kind, menuId, providerSlug };
+  const modelId = typeof row.modelId === "string" ? row.modelId : "";
+  if (kind === "model-select" && /^[A-Za-z0-9][A-Za-z0-9._:/@+~-]{0,199}$/.test(modelId)) {
+    return { kind, menuId, providerSlug, modelId };
+  }
+  return null;
+}
+
 function isResolvedPendingDm(pending: PendingDmMessage, messages: WalletDmMessage[]): boolean {
   return messages.some(
     (message) =>
@@ -400,22 +418,26 @@ function readDmCache(): WalletDmMessage[] {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter(isWalletDmMessage)
-      .map((entry) => ({
-        attachment: (
-          isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" as const }
-        ) as WalletDmAttachment,
-        id: entry.id || entry.eventId,
-        eventId: entry.eventId,
-        peerPubkey: entry.peerPubkey.toLowerCase(),
-        isIncoming: entry.isIncoming,
-        createdAt: entry.createdAt,
-        content: entry.content,
-        preview: entry.preview,
-        ...(typeof entry.rumorEventId === "string" && entry.rumorEventId ? { rumorEventId: entry.rumorEventId } : {}),
-        ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
-        ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
-        ...(typeof entry.replyToEventId === "string" && entry.replyToEventId ? { replyToEventId: entry.replyToEventId } : {}),
-      }))
+      .map((entry) => {
+        const botUiAction = normalizeBotUiAction(entry.botUiAction);
+        return {
+          attachment: (
+            isWalletDmAttachment(entry.attachment) ? entry.attachment : { type: "text" as const }
+          ) as WalletDmAttachment,
+          id: entry.id || entry.eventId,
+          eventId: entry.eventId,
+          peerPubkey: entry.peerPubkey.toLowerCase(),
+          isIncoming: entry.isIncoming,
+          createdAt: entry.createdAt,
+          content: entry.content,
+          preview: entry.preview,
+          ...(typeof entry.rumorEventId === "string" && entry.rumorEventId ? { rumorEventId: entry.rumorEventId } : {}),
+          ...(typeof entry.groupId === "string" ? { groupId: entry.groupId } : {}),
+          ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
+          ...(typeof entry.replyToEventId === "string" && entry.replyToEventId ? { replyToEventId: entry.replyToEventId } : {}),
+          ...(botUiAction ? { botUiAction } : {}),
+        };
+      })
       .sort((a, b) => a.createdAt - b.createdAt);
   } catch {
     return [];

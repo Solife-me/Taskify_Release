@@ -5,6 +5,11 @@ import { applyProofOfWork, countLeadingZeroBits, parseProofOfWorkRejection } fro
 import type { RuntimeProofOfWorkSettings } from "./RuntimeNostrSession.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 import { installNdkRelayTimerFix } from "./ndkLifecycle.js";
+import {
+  classifyRelayRejection,
+  takeWhenPublishSlotIsAvailable,
+  type RelayPublishBudget,
+} from "./RelayPublishBudget.js";
 
 let relayInfoCache = new RelayInfoCache();
 let proofOfWork: RuntimeProofOfWorkSettings = {};
@@ -73,12 +78,15 @@ function messageOf(error: unknown): string {
 async function publishCollectingProofOfWorkRefusals(
   event: NDKEvent,
   relaySet: NDKRelaySet | undefined,
-): Promise<{ published?: Set<NDKRelay>; failure: unknown; refusals: Map<string, number> }> {
+): Promise<{ published?: Set<NDKRelay>; failure: unknown; refusals: Map<string, number>; rejections: Map<string, string> }> {
   const refusals = new Map<string, number>();
+  const rejections = new Map<string, string>();
   const note = (relay: { url?: string } | undefined, error: unknown) => {
     const url = relay?.url;
     if (!url) return;
-    const required = recordRelayProofOfWorkRejection(url, messageOf(error));
+    const message = messageOf(error);
+    rejections.set(url, message);
+    const required = recordRelayProofOfWorkRejection(url, message);
     if (required != null) refusals.set(url, required);
   };
   const emitter = event as unknown as {
@@ -87,13 +95,31 @@ async function publishCollectingProofOfWorkRefusals(
   };
   emitter.on?.("relay:publish:failed", note);
   try {
-    return { published: await event.publish(relaySet), failure: null, refusals };
+    return { published: await event.publish(relaySet), failure: null, refusals, rejections };
   } catch (error) {
     const errors = (error as { errors?: unknown })?.errors;
     if (errors instanceof Map) for (const [relay, relayError] of errors) note(relay as { url?: string }, relayError);
-    return { failure: error, refusals };
+    return { failure: error, refusals, rejections };
   } finally {
     emitter.off?.("relay:publish:failed", note);
+  }
+}
+
+function recordPublishBudgetResult(
+  budget: RelayPublishBudget | undefined,
+  result: { published?: Set<NDKRelay>; rejections: Map<string, string> },
+  now: number,
+  attemptedRelays: string[],
+): void {
+  if (!budget) return;
+  for (const relay of attemptedRelays) budget.release(relay, now);
+  const accepted = new Set(Array.from(result.published ?? []).map((relay) => relay.url));
+  for (const relay of accepted) budget.recordAccepted(relay, now);
+  for (const [relay, message] of result.rejections) {
+    if (accepted.has(relay)) continue;
+    const kind = classifyRelayRejection(message);
+    if (kind === "rate-limited") budget.recordRateLimited(relay, now);
+    else if (kind === "banned") budget.recordBanned(relay, now);
   }
 }
 
@@ -102,11 +128,33 @@ async function publishCollectingProofOfWorkRefusals(
  * NDK instance. A relay that refuses it for too little work and names a target gets one
  * re-mined copy, as `RuntimeNostrSession.publishSigned` does.
  */
-export async function publishStandaloneEvent(event: NDKEvent, relays: string[]): Promise<Set<NDKRelay>> {
+export async function publishStandaloneEvent(
+  event: NDKEvent,
+  relays: string[],
+  publishBudget?: RelayPublishBudget,
+): Promise<Set<NDKRelay>> {
   const ndk = event.ndk;
   if (!ndk) throw new Error("The event is not attached to a relay pool.");
-  await prepareStandaloneEvent(event, relays);
-  const first = await publishCollectingProofOfWorkRefusals(event, undefined);
+  const normalized = normalizeRelayUrls(relays);
+  const selection = publishBudget?.take(normalized, Date.now());
+  const firstTargets = selection ? selection.ready : normalized;
+  if (!firstTargets.length) {
+    const wait = selection?.deferredUntil == null ? "later" : new Date(selection.deferredUntil).toISOString();
+    throw new Error(`All target relays are being paced; the next publish slot is ${wait}.`);
+  }
+  let first: Awaited<ReturnType<typeof publishCollectingProofOfWorkRefusals>>;
+  try {
+    await prepareStandaloneEvent(event, firstTargets);
+    const firstSet = firstTargets.length === normalized.length
+      ? undefined
+      : NDKRelaySet.fromRelayUrls(firstTargets, ndk);
+    first = await publishCollectingProofOfWorkRefusals(event, firstSet);
+  } catch (error) {
+    const releasedAt = Date.now();
+    for (const relay of firstTargets) publishBudget?.release(relay, releasedAt);
+    throw error;
+  }
+  recordPublishBudgetResult(publishBudget, first, Date.now(), firstTargets);
   const achieved = /^[0-9a-f]{64}$/i.test(event.id || "") ? countLeadingZeroBits(event.id) : 0;
   const shortfall = Array.from(first.refusals).filter(([, required]) => required > achieved).map(([url]) => url);
   if (!shortfall.length) {
@@ -115,13 +163,26 @@ export async function publishStandaloneEvent(event: NDKEvent, relays: string[]):
   }
 
   const replaceable = event.isReplaceable();
-  const targets = replaceable ? normalizeRelayUrls(relays) : normalizeRelayUrls(shortfall);
+  let targets = replaceable ? normalized : normalizeRelayUrls(shortfall);
+  if (publishBudget) targets = (await takeWhenPublishSlotIsAvailable(publishBudget, targets)).ready;
+  if (!targets.length) {
+    if (first.published?.size) return first.published;
+    throw first.failure ?? new Error("The proof-of-work retry is being paced by its target relay.");
+  }
   event.tags = event.tags.filter(tag => tag[0] !== "nonce");
   event.sig = undefined;
   event.id = "";
   if (replaceable) event.created_at = Math.max(Math.floor(Date.now() / 1000), (event.created_at ?? 0) + 1);
-  await prepareStandaloneEvent(event, targets);
-  const retry = await publishCollectingProofOfWorkRefusals(event, NDKRelaySet.fromRelayUrls(targets, ndk));
+  let retry: Awaited<ReturnType<typeof publishCollectingProofOfWorkRefusals>>;
+  try {
+    await prepareStandaloneEvent(event, targets);
+    retry = await publishCollectingProofOfWorkRefusals(event, NDKRelaySet.fromRelayUrls(targets, ndk));
+  } catch (error) {
+    const releasedAt = Date.now();
+    for (const relay of targets) publishBudget?.release(relay, releasedAt);
+    throw error;
+  }
+  recordPublishBudgetResult(publishBudget, retry, Date.now(), targets);
   if (retry.failure && !first.published?.size) throw retry.failure;
   return new Set([...(first.published ?? []), ...(retry.published ?? [])]);
 }

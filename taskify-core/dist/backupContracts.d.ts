@@ -16,6 +16,11 @@ export type NostrAppBackupBoard = {
     indexCardEnabled?: boolean;
     hideChildBoardNames?: boolean;
 };
+/** A durable account-level board deletion shared by every client. */
+export type NostrBoardTombstone = {
+    nostrId: string;
+    deletedAt: number;
+};
 export type WalletSeedBackupPayload = {
     type: "nut13-wallet-backup";
     version: 1;
@@ -44,6 +49,8 @@ export type BackupBoardLike = {
     }[];
     children?: string[];
 };
+/** Newest timestamp wins per board ID, matching the native client's merge rule. */
+export declare function mergeNostrBoardTombstones(...groups: Array<ReadonlyArray<NostrBoardTombstone> | null | undefined>): NostrBoardTombstone[];
 export type NostrBackupSnapshot<TSettings> = {
     boards: NostrAppBackupBoard[];
     settings: Partial<TSettings>;
@@ -69,14 +76,36 @@ export declare function mergeBackupBoards<TBoard extends BackupBoardLike>(option
     baseRelays: string[];
     normalizeRelayList: RelayNormalizer;
     createId: () => string;
+    excludedNostrIds?: Iterable<string>;
 }): TBoard[];
 /** A backup as it is published and read. */
 export type NostrBackupContent = {
     boards: NostrAppBackupBoard[];
+    boardTombstones?: NostrBoardTombstone[];
     settings: Record<string, unknown>;
     walletSeed?: WalletSeedBackupPayload | null;
     defaultRelays?: string[];
+    printJobs?: NostrPrintJobManifest[];
 };
+/** A portable, encrypted print manifest shared by the PWA and native clients. */
+export type NostrPrintJobManifest = {
+    version: 1;
+    layoutVersion: string;
+    id: string;
+    ownerId: string;
+    title: string;
+    createdAt: number;
+    paper: "letter" | "a4" | "a6";
+    format: "taskList" | "bibleChapters";
+    items: Array<{
+        id: string;
+        title: string;
+        section?: string;
+        filled?: boolean;
+    }>;
+};
+/** Newest manifest wins per stable board/tracker owner; cap history to keep the event bounded. */
+export declare function mergeNostrPrintJobs(remote: NostrPrintJobManifest[] | null | undefined, local: NostrPrintJobManifest[] | null | undefined): NostrPrintJobManifest[];
 /**
  * The backup to publish: the latest one on the relays, updated with this device's snapshot. The
  * same rule as iOS (`updatingNativeBoards`), and the only safe one for a backup several devices
@@ -85,7 +114,8 @@ export type NostrBackupContent = {
  * - never build a backup without having read the remote one (`remote` null only when the relays
  *   confirmed there is none);
  * - boards another device put there stay; the boards this device manages (has published) are
- *   replaced by its current ones, or dropped when it no longer has them;
+ *   replaced by its current ones, or tombstoned when it no longer has them;
+ * - a tombstone blocks every client, including a stale one, from adding that board back;
  * - settings keys only other clients write are kept;
  * - the wallet seed stays when this device has none.
  *
@@ -93,12 +123,15 @@ export type NostrBackupContent = {
  */
 export declare function updateRemoteNostrBackup(remote: NostrBackupContent | null, local: {
     boards: NostrAppBackupBoard[];
+    boardTombstones?: NostrBoardTombstone[];
     settings: Record<string, unknown>;
     walletSeed?: WalletSeedBackupPayload | null;
     defaultRelays: string[];
+    printJobs?: NostrPrintJobManifest[];
 }, options: {
     managedNostrIds: Iterable<string>;
     includeMetadata: boolean;
+    nowSeconds?: number;
 }): NostrBackupContent & {
     managedNostrIds: string[];
 };

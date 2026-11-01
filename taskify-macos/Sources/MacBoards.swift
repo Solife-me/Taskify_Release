@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TaskifyCore
 
@@ -9,7 +10,16 @@ struct MacBoardView: View {
     @Environment(AppModel.self) private var model
     @State private var showCompleted = false
     @State private var tableView = false
+    @State private var taskSelection = MacTaskSelection()
+    @State private var deletingSelectedTasks = false
     private var boards: [Board] { board.kind == .compound ? model.compoundChildBoards(for: board.id) : [board] }
+    private var orderedTaskIDs: [String] {
+        boards.flatMap { child in
+            columns(child).flatMap { column in
+                displayedTasks(board: child, column: column).map(\.id)
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,26 +39,206 @@ struct MacBoardView: View {
             } else if tableView {
                 MacTaskTable(boards: boards, search: search, showCompleted: showCompleted, selectedTaskID: $selectedTaskID, edit: edit)
             } else {
-                ScrollView([.horizontal, .vertical]) {
-                    VStack(alignment: .leading, spacing: 24) {
-                        ForEach(boards) { child in
-                            if board.kind == .compound && !board.hideChildBoardNames { Text(child.name).font(.title2.bold()) }
-                            HStack(alignment: .top, spacing: 16) {
-                                ForEach(columns(child)) { column in
-                                    MacBoardColumn(board: child, column: column, search: search, showCompleted: showCompleted,
-                                                   selectedTaskID: $selectedTaskID, edit: edit)
+                GeometryReader { geometry in
+                    ScrollView([.horizontal, .vertical]) {
+                        VStack(alignment: .leading, spacing: 24) {
+                            ForEach(boards) { child in
+                                if board.kind == .compound && !board.hideChildBoardNames { Text(child.name).font(.title2.bold()) }
+                                HStack(alignment: .top, spacing: 16) {
+                                    ForEach(columns(child)) { column in
+                                        MacBoardColumn(board: child, column: column, search: search, showCompleted: showCompleted,
+                                                       selectedTaskIDs: taskSelection.taskIDs,
+                                                       select: selectTask,
+                                                       clearSelection: clearTaskSelection,
+                                                       edit: edit)
+                                            .id(MacWeekBoardScroll.scrollID(boardID: child.id, columnID: column.id))
+                                            .background {
+                                                if let request = weekScrollRequest,
+                                                   request.boardID == child.id,
+                                                   request.columnID == column.id {
+                                                    MacWeekBoardScrollAnchor(
+                                                        request: request,
+                                                        viewportWidth: geometry.size.width
+                                                    )
+                                                }
+                                            }
+                                    }
                                 }
                             }
                         }
-                    }.padding(24)
-                }.background(Color(nsColor: .underPageBackgroundColor))
+                        .padding(.vertical, 24)
+                        .padding(.horizontal, horizontalContentPadding(viewportWidth: geometry.size.width))
+                    }
+                    .background(Color(nsColor: .underPageBackgroundColor))
+                    .accessibilityIdentifier("week-board-scroll")
+                }
             }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if taskSelection.taskIDs.count > 1 {
+                taskSelectionActions
+            }
+        }
+        .confirmationDialog(
+            "Delete \(taskSelection.taskIDs.count) selected tasks?",
+            isPresented: $deletingSelectedTasks
+        ) {
+            Button("Delete Tasks", role: .destructive) {
+                model.deleteTasks(taskSelection.taskIDs)
+                clearTaskSelection()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .onAppear { restoreSelectionFromPrimaryTask() }
+        .onChange(of: orderedTaskIDs) { _, ids in
+            taskSelection.retain(ids)
+            syncPrimaryTaskSelection()
+        }
+        .onChange(of: selectedTaskID) { _, id in
+            guard let id, orderedTaskIDs.contains(id),
+                  taskSelection.taskIDs.count != 1 || !taskSelection.contains(id)
+            else { return }
+            taskSelection.selectOnly(id)
         }
     }
 
     private func columns(_ board: Board) -> [BoardColumn] {
         guard board.kind == .week else { return board.columns.sorted { $0.order < $1.order } }
         return WeekdayColumn.ordered(startingAt: model.weekStart).compactMap { day in board.columns.first { $0.id == day.rawValue } }
+    }
+
+    private var weekScrollRequest: MacWeekBoardScrollRequest? {
+        guard board.kind == .week else { return nil }
+        return MacWeekBoardScroll.request(
+            boardID: board.id,
+            orderedColumnIDs: columns(board).map(\.id),
+            date: model.currentCalendarDay
+        )
+    }
+
+    private func horizontalContentPadding(viewportWidth: CGFloat) -> CGFloat {
+        guard board.kind == .week else { return 24 }
+        // Leave enough room on both sides for the first and last weekday columns to reach the
+        // viewport center. Without these gutters, Friday and Saturday are clamped near the edge.
+        return MacWeekBoardScroll.horizontalContentPadding(viewportWidth: viewportWidth)
+    }
+
+    private func displayedTasks(board: Board, column: BoardColumn) -> [TaskItem] {
+        model.tasks(boardID: board.id, columnID: column.id, includeCompleted: showCompleted)
+            .filter {
+                search.isEmpty ||
+                    $0.title.localizedCaseInsensitiveContains(search) ||
+                    $0.note.localizedCaseInsensitiveContains(search)
+            }
+    }
+
+    private func selectTask(_ taskID: String, modifiers: MacTaskSelectionModifiers) {
+        taskSelection.select(taskID, in: orderedTaskIDs, modifiers: modifiers)
+        syncPrimaryTaskSelection()
+    }
+
+    private func syncPrimaryTaskSelection() {
+        selectedTaskID = taskSelection.singleTaskID
+    }
+
+    private func restoreSelectionFromPrimaryTask() {
+        guard let selectedTaskID, orderedTaskIDs.contains(selectedTaskID) else { return }
+        if taskSelection.taskIDs.count != 1 || !taskSelection.contains(selectedTaskID) {
+            taskSelection.selectOnly(selectedTaskID)
+        }
+    }
+
+    private func clearTaskSelection() {
+        taskSelection.clear()
+        selectedTaskID = nil
+    }
+
+    private var taskSelectionActions: some View {
+        HStack(spacing: 12) {
+            Text("\(taskSelection.taskIDs.count) selected").font(.headline)
+            Spacer()
+            Menu("Move…") {
+                ForEach(model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }) { target in
+                    Menu(target.name) {
+                        ForEach(target.columns) { destination in
+                            Button(destination.name) {
+                                model.moveTasks(taskSelection.taskIDs, toBoardID: target.id, columnID: destination.id)
+                                clearTaskSelection()
+                            }
+                        }
+                    }
+                }
+            }
+            Button("Complete") {
+                model.completeTasks(taskSelection.taskIDs)
+                clearTaskSelection()
+            }
+            Button("Delete…", role: .destructive) { deletingSelectedTasks = true }
+            Button { clearTaskSelection() } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .help("Clear Selection")
+                .accessibilityLabel("Clear task selection")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+}
+
+/// ScrollViewReader's scrollTo is not honored for this two-axis SwiftUI ScrollView on macOS.
+/// This zero-interaction anchor reaches the backing NSScrollView and centers its own column.
+private struct MacWeekBoardScrollAnchor: NSViewRepresentable {
+    let request: MacWeekBoardScrollRequest
+    let viewportWidth: CGFloat
+
+    final class Coordinator {
+        var lastLayoutSignature: String?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.lastLayoutSignature = layoutSignature
+        scheduleCentering(view, viewportWidth: viewportWidth)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        guard context.coordinator.lastLayoutSignature != layoutSignature else { return }
+        context.coordinator.lastLayoutSignature = layoutSignature
+        scheduleCentering(view, viewportWidth: viewportWidth)
+    }
+
+    private var layoutSignature: String {
+        "\(request.requestID)|\(Int(viewportWidth.rounded()))"
+    }
+
+    private func scheduleCentering(_ view: NSView, viewportWidth: CGFloat) {
+        for delay in [0.0, 0.05, 0.15, 0.3] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak view] in
+                guard let view else { return }
+                Self.center(view, viewportWidth: viewportWidth)
+            }
+        }
+    }
+
+    private static func center(_ view: NSView, viewportWidth: CGFloat) {
+        guard let scrollView = view.enclosingScrollView,
+              let documentView = scrollView.documentView,
+              documentView.bounds.width > 0 else { return }
+        let target = view.convert(view.bounds, to: documentView)
+        let clipView = scrollView.contentView
+        let contentWidth = max(documentView.bounds.width, documentView.frame.width)
+        let x = MacWeekBoardScroll.centeredContentOrigin(
+            targetCenterX: target.midX,
+            contentWidth: contentWidth,
+            clipWidth: clipView.bounds.width,
+            visibleViewportWidth: viewportWidth
+        )
+        clipView.scroll(to: NSPoint(x: x, y: clipView.bounds.origin.y))
+        scrollView.reflectScrolledClipView(clipView)
     }
 }
 
@@ -57,7 +247,9 @@ private struct MacBoardColumn: View {
     let column: BoardColumn
     let search: String
     let showCompleted: Bool
-    @Binding var selectedTaskID: String?
+    let selectedTaskIDs: Set<String>
+    let select: (String, MacTaskSelectionModifiers) -> Void
+    let clearSelection: () -> Void
     var edit: (TaskItem) -> Void
     @Environment(AppModel.self) private var model
     @State private var title = ""
@@ -85,29 +277,56 @@ private struct MacBoardColumn: View {
             }
             LazyVStack(spacing: 10) {
                 ForEach(tasks) { task in
-                    MacTaskCard(task: task, selected: selectedTaskID == task.id)
-                        .onTapGesture { selectedTaskID = task.id }
+                    MacTaskCard(task: task, selected: selectedTaskIDs.contains(task.id))
+                        .gesture(
+                            TapGesture().modifiers(.command).onEnded {
+                                select(task.id, .command)
+                            }
+                        )
+                        .gesture(
+                            TapGesture().modifiers(.shift).onEnded {
+                                select(task.id, .shift)
+                            }
+                        )
+                        .onTapGesture { select(task.id, []) }
                         .onTapGesture(count: 2) { edit(task) }
                         .draggable(task.id)
                         .contextMenu {
-                            Button("Edit…") { edit(task) }
-                            Button(task.completed ? "Mark Incomplete" : "Complete") { model.toggleCompletion(task.id) }
-                            if let missed = model.missedOccurrenceCount(for: task.id) {
+                            let actionIDs = selectedTaskIDs.contains(task.id) ? selectedTaskIDs : [task.id]
+                            let isMultiple = actionIDs.count > 1
+                            if !isMultiple { Button("Edit…") { edit(task) } }
+                            if isMultiple {
+                                Button("Complete Selected") {
+                                    model.completeTasks(actionIDs)
+                                    clearSelection()
+                                }
+                            } else {
+                                Button(task.completed ? "Mark Incomplete" : "Complete") {
+                                    model.toggleCompletion(task.id)
+                                }
+                            }
+                            if !isMultiple, let missed = model.missedOccurrenceCount(for: task.id) {
                                 Button(missed > 1 ? "Catch Up to Today (\(missed) Missed)" : "Catch Up to Today") {
                                     model.catchUpRecurringTask(task.id)
                                 }
                             }
-                            Button("Postpone One Day") { _ = model.postponeTask(task.id, byDays: 1) }
-                            Menu("Move to Board") {
+                            if !isMultiple { Button("Postpone One Day") { _ = model.postponeTask(task.id, byDays: 1) } }
+                            Menu(isMultiple ? "Move Selected to Board" : "Move to Board") {
                                 ForEach(model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }) { target in
                                     Menu(target.name) {
                                         ForEach(target.columns) { destination in
-                                            Button(destination.name) { model.moveTasks([task.id], toBoardID: target.id, columnID: destination.id) }
+                                            Button(destination.name) {
+                                                model.moveTasks(actionIDs, toBoardID: target.id, columnID: destination.id)
+                                                if isMultiple { clearSelection() }
+                                            }
                                         }
                                     }
                                 }
                             }
-                            Button("Delete Task", role: .destructive) { model.deleteTask(task.id) }
+                            Button(isMultiple ? "Delete Selected Tasks" : "Delete Task", role: .destructive) {
+                                model.deleteTasks(actionIDs)
+                                if isMultiple { clearSelection() }
+                            }
                         }
                 }
             }
@@ -191,6 +410,7 @@ struct MacAgendaView: View {
     @State private var calendarDate = Date()
     @State private var editingEvent: TaskifyEvent?
     @State private var filterDate = false
+    @State private var taskSelection = Set<String>()
     @EnvironmentObject private var deviceCalendar: DeviceCalendarStore
     private var tasks: [TaskItem] {
         let filtered = UpcomingTaskOrganizer.filter(model.snapshot.tasks, searchText: search,
@@ -213,15 +433,34 @@ struct MacAgendaView: View {
                 if tasks.isEmpty {
                     ContentUnavailableView("You're All Caught Up", systemImage: "checkmark.seal", description: Text("Scheduled tasks will appear here."))
                 } else {
-                    List(selection: $selectedTaskID) {
+                    List(selection: $taskSelection) {
                         ForEach(tasks) { task in
                             HStack(spacing: 18) {
                                 Text(task.dueDate?.formatted(.dateTime.month(.abbreviated).day()) ?? "")
                                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 62, alignment: .leading)
-                                MacTaskCard(task: task).onTapGesture(count: 2) { edit(task) }
+                                MacTaskCard(task: task, selected: taskSelection.contains(task.id))
+                                    .onTapGesture(count: 2) { edit(task) }
                             }.tag(task.id).listRowSeparator(.hidden)
                         }
-                    }.listStyle(.inset)
+                    }
+                    .listStyle(.inset)
+                    .onChange(of: taskSelection) { _, ids in
+                        selectedTaskID = ids.count == 1 ? ids.first : nil
+                    }
+                    .onChange(of: tasks.map(\.id)) { _, ids in
+                        taskSelection.formIntersection(Set(ids))
+                        selectedTaskID = taskSelection.count == 1 ? taskSelection.first : nil
+                    }
+                    .onChange(of: selectedTaskID) { _, id in
+                        guard let id, tasks.contains(where: { $0.id == id }),
+                              taskSelection != [id]
+                        else { return }
+                        taskSelection = [id]
+                    }
+                    .onAppear {
+                        guard let selectedTaskID, tasks.contains(where: { $0.id == selectedTaskID }) else { return }
+                        taskSelection = [selectedTaskID]
+                    }
                 }
             }
             if !todayOnly {

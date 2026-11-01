@@ -11,11 +11,13 @@ export function BibleSection({
   setSettings,
   boards,
   currentBoard,
+  embedded = false,
 }: {
   settings: Settings;
   setSettings: (s: Partial<Settings>) => void;
   boards: Board[];
   currentBoard: Board | null;
+  embedded?: boolean;
 }) {
   const [bibleExpanded, setBibleExpanded] = useState(false);
   const [fastingPerMonthDraft, setFastingPerMonthDraft] = useState(() => String(settings.fastingRemindersPerMonth));
@@ -35,16 +37,18 @@ export function BibleSection({
 
   return (
     <section className="wallet-section space-y-3">
-      <button
-        className="flex w-full items-center gap-2 mb-3 text-left"
-        onClick={() => setBibleExpanded((prev) => !prev)}
-        aria-expanded={bibleExpanded}
-      >
-        <div className="text-sm font-medium flex-1">Bible</div>
-        <span className="text-xs text-tertiary">{bibleExpanded ? "Hide" : "Show"}</span>
-        <span className="text-tertiary">{bibleExpanded ? "−" : "+"}</span>
-      </button>
-      {bibleExpanded && (
+      {!embedded && (
+        <button
+          className="flex w-full items-center gap-2 mb-3 text-left"
+          onClick={() => setBibleExpanded((prev) => !prev)}
+          aria-expanded={bibleExpanded}
+        >
+          <div className="text-sm font-medium flex-1">Bible</div>
+          <span className="text-xs text-tertiary">{bibleExpanded ? "Hide" : "Show"}</span>
+          <span className="text-tertiary">{bibleExpanded ? "−" : "+"}</span>
+        </button>
+      )}
+      {(embedded || bibleExpanded) && (
         <div className="space-y-4">
           <div>
             <div className="text-sm font-medium mb-2">Bible tracker</div>

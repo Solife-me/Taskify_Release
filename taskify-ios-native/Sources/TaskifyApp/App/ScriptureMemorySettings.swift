@@ -15,36 +15,36 @@ enum ScriptureMemorySettings {
     static let boardIDPWAKey = "scriptureMemoryBoardId"
     static let frequencyPWAKey = "scriptureMemoryFrequency"
 
-    static var enabled: Bool {
-        UserDefaults.standard.bool(forKey: enabledKey)
-    }
+    static var enabled: Bool { enabled(defaults: .standard) }
+    static func enabled(defaults: UserDefaults) -> Bool { defaults.bool(forKey: enabledKey) }
 
-    static var boardID: String? {
-        UserDefaults.standard.string(forKey: boardIDKey)
-    }
+    static var boardID: String? { boardID(defaults: .standard) }
+    static func boardID(defaults: UserDefaults) -> String? { defaults.string(forKey: boardIDKey) }
 
-    static var frequency: ScriptureMemoryFrequency {
-        UserDefaults.standard.string(forKey: frequencyKey).flatMap(ScriptureMemoryFrequency.init(rawValue:)) ?? .daily
+    static var frequency: ScriptureMemoryFrequency { frequency(defaults: .standard) }
+    static func frequency(defaults: UserDefaults) -> ScriptureMemoryFrequency {
+        defaults.string(forKey: frequencyKey).flatMap(ScriptureMemoryFrequency.init(rawValue:)) ?? .daily
     }
 
     /// Defaults to needs-review, matching the PWA.
-    static var sort: ScriptureMemorySort {
-        UserDefaults.standard.string(forKey: sortKey).flatMap(ScriptureMemorySort.init(rawValue:)) ?? .needsReview
+    static var sort: ScriptureMemorySort { sort(defaults: .standard) }
+    static func sort(defaults: UserDefaults) -> ScriptureMemorySort {
+        defaults.string(forKey: sortKey).flatMap(ScriptureMemorySort.init(rawValue:)) ?? .needsReview
     }
 
-    static func setEnabled(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: enabledKey)
+    static func setEnabled(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: enabledKey)
     }
 
-    static func setBoardID(_ boardID: String?) {
-        UserDefaults.standard.set(boardID, forKey: boardIDKey)
+    static func setBoardID(_ boardID: String?, defaults: UserDefaults = .standard) {
+        defaults.set(boardID, forKey: boardIDKey)
     }
 
-    static func setFrequency(_ frequency: ScriptureMemoryFrequency) {
-        UserDefaults.standard.set(frequency.rawValue, forKey: frequencyKey)
+    static func setFrequency(_ frequency: ScriptureMemoryFrequency, defaults: UserDefaults = .standard) {
+        defaults.set(frequency.rawValue, forKey: frequencyKey)
     }
 
-    static func setSort(_ sort: ScriptureMemorySort) {
-        UserDefaults.standard.set(sort.rawValue, forKey: sortKey)
+    static func setSort(_ sort: ScriptureMemorySort, defaults: UserDefaults = .standard) {
+        defaults.set(sort.rawValue, forKey: sortKey)
     }
 }

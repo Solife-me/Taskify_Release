@@ -9,6 +9,7 @@ import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } fro
 import { DocumentThumbnail } from "./DocumentThumbnail";
 import { notePreviewText } from "../../domains/tasks/noteMarkdown";
 import { decryptAttachment } from "../../lib/attachmentCrypto";
+import type { DownloadProgress } from "../../lib/binary";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: boolean }) {
@@ -83,6 +84,7 @@ function useDecryptedSrc(src: string, boardId: string | undefined) {
     return decryptedImageCache.get(`${boardId}::${src}`) || null;
   });
   const [decrypting, setDecrypting] = useState<boolean>(!src.startsWith("data:") && !!boardId && !decryptedSrc);
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -102,13 +104,20 @@ function useDecryptedSrc(src: string, boardId: string | undefined) {
       return;
     }
     setDecrypting(true);
+    setProgress(null);
     setError(null);
-    decryptAttachment({ boardId, url: src, mimeType: inferMimeFromUrl(src) })
+    decryptAttachment({
+      boardId,
+      url: src,
+      mimeType: inferMimeFromUrl(src),
+      onProgress: (next) => { if (!cancelled) setProgress(next); },
+    })
       .then((next) => {
         if (cancelled) return;
         decryptedImageCache.set(cacheKey, next);
         setDecryptedSrc(next);
         setDecrypting(false);
+        setProgress(null);
       })
       .catch((err: any) => {
         if (cancelled) return;
@@ -120,13 +129,22 @@ function useDecryptedSrc(src: string, boardId: string | undefined) {
     };
   }, [src, boardId]);
 
-  return { decryptedSrc, decrypting, error };
+  return { decryptedSrc, decrypting, progress, error };
 }
 
 function DecryptableImage({ src, boardId, onOpen }: { src: string; boardId?: string; onOpen: (src: string, e: MouseEvent) => void }) {
-  const { decryptedSrc, decrypting, error } = useDecryptedSrc(src, boardId);
+  const { decryptedSrc, decrypting, progress, error } = useDecryptedSrc(src, boardId);
   if (decrypting) {
-    return <div className="max-h-40 w-full rounded-2xl bg-surface opacity-50" style={{ height: "10rem" }} />;
+    const percent = progress?.fraction == null ? null : Math.round(progress.fraction * 100);
+    return (
+      <div
+        className="max-h-40 w-full rounded-2xl bg-surface text-xs text-secondary flex items-center justify-center"
+        style={{ height: "10rem" }}
+        role="status"
+      >
+        {percent == null ? "Downloading image…" : percent >= 100 ? "Decrypting image…" : `Downloading ${percent}%`}
+      </div>
+    );
   }
   if (error || !decryptedSrc) {
     return <div className="max-h-40 w-full rounded-2xl bg-surface text-xs text-secondary flex items-center justify-center" style={{ height: "10rem" }}>⚠ failed</div>;

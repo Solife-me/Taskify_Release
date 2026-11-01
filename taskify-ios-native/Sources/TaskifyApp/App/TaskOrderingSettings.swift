@@ -8,12 +8,14 @@ enum TaskOrderingSettings {
     private static let positionKey = "taskify.newTaskPosition"
 
     /// Defaults to top, matching the PWA.
-    static var position: NewTaskPosition {
-        UserDefaults.standard.string(forKey: positionKey).flatMap(NewTaskPosition.init(rawValue:)) ?? .top
+    static var position: NewTaskPosition { position(defaults: .standard) }
+
+    static func position(defaults: UserDefaults) -> NewTaskPosition {
+        defaults.string(forKey: positionKey).flatMap(NewTaskPosition.init(rawValue:)) ?? .top
     }
 
-    static func setPosition(_ position: NewTaskPosition) {
-        UserDefaults.standard.set(position.rawValue, forKey: positionKey)
+    static func setPosition(_ position: NewTaskPosition, defaults: UserDefaults = .standard) {
+        defaults.set(position.rawValue, forKey: positionKey)
     }
 }
 
@@ -22,8 +24,10 @@ enum TaskOrderingSettings {
 enum WeekLayoutSettings {
     private static let startKey = "taskify.weekStart"
 
-    static var start: WeekdayColumn {
-        guard let stored = UserDefaults.standard.string(forKey: startKey),
+    static var start: WeekdayColumn { start(defaults: .standard) }
+
+    static func start(defaults: UserDefaults) -> WeekdayColumn {
+        guard let stored = defaults.string(forKey: startKey),
               let weekday = WeekdayColumn(rawValue: stored),
               WeekdayColumn.supportedWeekStarts.contains(weekday) else {
             return .sunday
@@ -31,9 +35,9 @@ enum WeekLayoutSettings {
         return weekday
     }
 
-    static func setStart(_ weekday: WeekdayColumn) {
+    static func setStart(_ weekday: WeekdayColumn, defaults: UserDefaults = .standard) {
         guard WeekdayColumn.supportedWeekStarts.contains(weekday) else { return }
-        UserDefaults.standard.set(weekday.rawValue, forKey: startKey)
+        defaults.set(weekday.rawValue, forKey: startKey)
     }
 }
 
@@ -56,13 +60,15 @@ enum ChatHistorySettings {
     static let pwaSettingsKey = "chatMessageRetention"
     private static let retentionKey = "taskify.chat.messageRetention"
 
-    static var retention: ChatMessageRetention {
-        UserDefaults.standard.string(forKey: retentionKey)
+    static var retention: ChatMessageRetention { retention(defaults: .standard) }
+
+    static func retention(defaults: UserDefaults) -> ChatMessageRetention {
+        defaults.string(forKey: retentionKey)
             .flatMap(ChatMessageRetention.init(rawValue:)) ?? .forever
     }
 
-    static func setRetention(_ retention: ChatMessageRetention) {
-        UserDefaults.standard.set(retention.rawValue, forKey: retentionKey)
+    static func setRetention(_ retention: ChatMessageRetention, defaults: UserDefaults = .standard) {
+        defaults.set(retention.rawValue, forKey: retentionKey)
     }
 }
 

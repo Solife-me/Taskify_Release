@@ -8,6 +8,7 @@ import { parseShareEnvelope } from "../../lib/shareInbox";
 import type { IncomingShare } from "../../domains/inbox/shareInboxReceiver";
 import { truncatePreview } from "../chatUi";
 import type { Contact, ContactProfile } from "../../lib/contacts";
+import { parseTaskifyBotUiAction } from "taskify-core";
 import {
   parseProfileContent,
   loadContactProfileCache,
@@ -506,6 +507,7 @@ export function useDmSubscription({
       const innerTags = Array.isArray(decrypted.tags) ? decrypted.tags : [];
       const replyETag = innerTags.find((t) => Array.isArray(t) && t[0] === "e");
       const replyToEventId = typeof replyETag?.[1] === "string" ? replyETag[1] : undefined;
+      const botUiAction = !isGroupMessage ? parseTaskifyBotUiAction(innerTags) : null;
 
       const message: WalletDmMessage = {
         id: crypto.randomUUID(),
@@ -521,6 +523,7 @@ export function useDmSubscription({
         attachment: attachment ?? { type: "text" },
         ...(isGroupMessage && groupId ? { groupId, senderPubkey: rumorSender } : {}),
         ...(replyToEventId ? { replyToEventId } : {}),
+        ...(botUiAction ? { botUiAction } : {}),
       };
 
       // Shares also go to the inbox, before the message counts as handled.

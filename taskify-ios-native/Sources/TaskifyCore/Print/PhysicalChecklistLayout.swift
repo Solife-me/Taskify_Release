@@ -69,6 +69,121 @@ public struct PhysicalChecklistJob: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Wire representation stored in the encrypted account backup so any Taskify client can scan
+/// the latest sheet printed for a board. Dates use epoch seconds for TypeScript compatibility.
+public struct NostrPrintJobManifest: Codable, Equatable, Sendable {
+    public var version = 1
+    public var layoutVersion: String
+    public var id: String
+    public var ownerID: String
+    public var title: String
+    public var createdAt: Int
+    public var paper: PhysicalChecklistPaper
+    public var format: PhysicalChecklistJob.Format
+    public var items: [PhysicalChecklistItem]
+
+    public init(job: PhysicalChecklistJob) {
+        layoutVersion = BoardPrintContract.version
+        id = job.id
+        ownerID = job.ownerID
+        title = job.title
+        createdAt = Int(job.createdAt.timeIntervalSince1970)
+        paper = job.paper
+        format = job.format
+        items = job.items
+    }
+
+    public var job: PhysicalChecklistJob? {
+        guard version == 1, BoardPrintContract.isSupportedVersion(layoutVersion),
+              !id.isEmpty, !ownerID.isEmpty else { return nil }
+        return PhysicalChecklistJob(
+            id: id,
+            ownerID: ownerID,
+            title: title,
+            createdAt: Date(timeIntervalSince1970: TimeInterval(createdAt)),
+            paper: paper,
+            format: format,
+            items: items
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, layoutVersion, id, ownerID = "ownerId", title, createdAt, paper, format, items
+    }
+
+    public static func merged(
+        remote: [NostrPrintJobManifest],
+        local: [NostrPrintJobManifest],
+        limit: Int = 20
+    ) -> [NostrPrintJobManifest] {
+        var newest: [String: NostrPrintJobManifest] = [:]
+        for manifest in remote + local where manifest.version == 1 && !manifest.ownerID.isEmpty {
+            guard let current = newest[manifest.ownerID] else {
+                newest[manifest.ownerID] = manifest
+                continue
+            }
+            if manifest.createdAt > current.createdAt
+                || (manifest.createdAt == current.createdAt && manifest.id > current.id) {
+                newest[manifest.ownerID] = manifest
+            }
+        }
+        return Array(newest.values)
+            .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.ownerID < $1.ownerID }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
+
+/// Device-local cache for the most recent printable manifest per logical owner.
+///
+/// The cache lives in TaskifyCore because both the iOS and macOS app targets use the
+/// shared `AppModel` account-backup integration, while their presentation sources differ.
+public enum PhysicalChecklistJobStore {
+    private static let key = "taskify.physical-checklist.latest-jobs.v1"
+
+    public static func save(_ job: PhysicalChecklistJob, defaults: UserDefaults = .standard) {
+        var jobs = loadAll(defaults: defaults)
+        jobs[job.ownerID] = job
+        persist(jobs, defaults: defaults)
+    }
+
+    public static func load(
+        ownerID: String,
+        defaults: UserDefaults = .standard
+    ) -> PhysicalChecklistJob? {
+        loadAll(defaults: defaults)[ownerID]
+    }
+
+    public static func loadAll(defaults: UserDefaults = .standard) -> [String: PhysicalChecklistJob] {
+        guard let data = defaults.data(forKey: key),
+              let jobs = try? JSONDecoder().decode([String: PhysicalChecklistJob].self, from: data) else {
+            return [:]
+        }
+        return jobs
+    }
+
+    public static func merge(
+        _ manifests: [NostrPrintJobManifest],
+        defaults: UserDefaults = .standard
+    ) {
+        var jobs = loadAll(defaults: defaults)
+        for manifest in manifests {
+            guard let job = manifest.job else { continue }
+            if let current = jobs[job.ownerID], current.createdAt > job.createdAt { continue }
+            jobs[job.ownerID] = job
+        }
+        persist(jobs, defaults: defaults)
+    }
+
+    private static func persist(
+        _ jobs: [String: PhysicalChecklistJob],
+        defaults: UserDefaults
+    ) {
+        guard let data = try? JSONEncoder().encode(jobs) else { return }
+        defaults.set(data, forKey: key)
+    }
+}
+
 public struct PhysicalChecklistRow: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case section(String)
@@ -94,14 +209,14 @@ public struct PhysicalChecklistPage: Equatable, Sendable {
 }
 
 public struct PhysicalChecklistLayout: Equatable, Sendable {
-    public static let version = "v2-native"
-    public static let marginMM = 10.0
-    public static let markerSizeMM = 6.0
-    public static let circleSizeMM = 4.2
-    public static let rowHeightMM = 7.0
-    public static let pageIDBitCount = 6
-    public static let pageIDSizeMM = 2.4
-    public static let pageIDGapMM = 1.2
+    public static let version = BoardPrintContract.version
+    public static let marginMM = BoardPrintContract.baseMarginMM
+    public static let markerSizeMM = BoardPrintContract.markerSizeMM
+    public static let circleSizeMM = BoardPrintContract.circleSizeMM
+    public static let rowHeightMM = BoardPrintContract.rowHeightMM
+    public static let pageIDBitCount = BoardPrintContract.pageIDBits
+    public static let pageIDSizeMM = BoardPrintContract.pageIDMarkerSizeMM
+    public static let pageIDGapMM = BoardPrintContract.pageIDMarkerGapMM
 
     public var paper: PhysicalChecklistPaper
     public var pages: [PhysicalChecklistPage]
@@ -112,8 +227,8 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
     public static func build(job: PhysicalChecklistJob) -> Self {
         let size = job.paper.sizeMM
         let leftMargin = marginMM + (job.paper == .a6 ? 4 : 0)
-        let headerTop = marginMM + markerSizeMM + 2
-        let contentTop = headerTop + 14.5
+        let headerTop = marginMM + markerSizeMM + BoardPrintContract.markerGapMM
+        let contentTop = headerTop + BoardPrintContract.headerHeightMM + BoardPrintContract.headerGapMM
         let contentHeight = size.height - marginMM - contentTop
         let compact = job.format == .bibleChapters
         let rowHeight = compact ? 5.5 : rowHeightMM
@@ -181,6 +296,21 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
             (
                 originX + Double(bit) * (Self.pageIDSizeMM + Self.pageIDGapMM) + Self.pageIDSizeMM / 2,
                 headerTopMM + 0.4 + Self.pageIDSizeMM / 2
+            )
+        }
+    }
+
+    public func jobCodeBitCentersMM(jobID: String) -> [(x: Double, y: Double)] {
+        let size = paper.sizeMM
+        let totalWidth = Double(BoardPrintContract.jobCodeBits) * BoardPrintContract.jobCodeMarkerSizeMM +
+            Double(BoardPrintContract.jobCodeBits - 1) * BoardPrintContract.jobCodeMarkerGapMM
+        let originX = size.width - Self.marginMM - totalWidth
+        let originY = headerTopMM + 0.4 + Self.pageIDSizeMM + 0.6
+        return (0..<BoardPrintContract.jobCodeBits).map { bit in
+            (
+                originX + Double(bit) * (BoardPrintContract.jobCodeMarkerSizeMM + BoardPrintContract.jobCodeMarkerGapMM) +
+                    BoardPrintContract.jobCodeMarkerSizeMM / 2,
+                originY + BoardPrintContract.jobCodeMarkerSizeMM / 2
             )
         }
     }

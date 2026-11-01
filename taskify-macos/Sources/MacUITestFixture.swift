@@ -4,6 +4,7 @@ import TaskifyCore
 #if TASKIFY_MAC_UI_TEST
 enum MacUITestFixture {
     static let boardID = "ui-test-board"
+    static let weekBoardID = "ui-test-week-board"
     static let taskID = "ui-test-deep-link-task"
     static let taskTitle = "Open this task from a deep link"
     static let chatPeerPublicKey = String(repeating: "2", count: 64)
@@ -39,6 +40,14 @@ enum MacUITestFixture {
             name: "UI Test Board",
             kind: .list,
             columns: [column]
+        )
+        let weekBoard = Board(
+            id: weekBoardID,
+            name: "UI Test Week",
+            kind: .week,
+            columns: WeekdayColumn.ordered(startingAt: .sunday).map {
+                BoardColumn(id: $0.rawValue, name: $0.fullName, order: $0.calendarWeekday)
+            }
         )
         let task = TaskItem(
             id: taskID,
@@ -80,7 +89,7 @@ enum MacUITestFixture {
             Task { await ChatAttachmentUITestFixture.seedDiskCache(attachmentEntries) }
         }
         let snapshot = TaskifySnapshot(
-            boards: [board],
+            boards: [board, weekBoard],
             tasks: [task],
             selectedBoardID: board.id,
             contacts: [contact],

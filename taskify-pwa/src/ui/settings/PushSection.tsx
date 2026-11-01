@@ -14,6 +14,7 @@ export function PushSection({
   onDisableChatPush,
   workerBaseUrl,
   vapidPublicKey,
+  embedded = false,
 }: {
   pushPrefs: PushPreferences;
   pushWorkState: "idle" | "enabling" | "disabling";
@@ -25,6 +26,7 @@ export function PushSection({
   onDisableChatPush: () => Promise<void>;
   workerBaseUrl: string;
   vapidPublicKey: string;
+  embedded?: boolean;
 }) {
   const [showPushAdvanced, setShowPushAdvanced] = useState(false);
   const secureContext = typeof window !== 'undefined' ? window.isSecureContext : false;
@@ -55,8 +57,8 @@ export function PushSection({
 
   return (
     <section className="wallet-section space-y-3">
-      <div className="flex items-center gap-2 mb-3">
-        <div className="text-sm font-medium">Push notifications</div>
+      <div className={`flex items-center gap-2 ${embedded ? "" : "mb-3"}`}>
+        {!embedded && <div className="text-sm font-medium">Push notifications</div>}
         <div className="ml-auto flex items-center gap-2">
           <span className={`text-xs ${pushPrefs.enabled ? 'text-emerald-400' : 'text-secondary'}`}>
             {pushPrefs.enabled ? 'Enabled' : 'Disabled'}

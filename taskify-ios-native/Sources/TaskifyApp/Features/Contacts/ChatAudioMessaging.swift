@@ -16,6 +16,7 @@ final class DirectMessageAudioPlayback: NSObject {
     private(set) var currentTime: TimeInterval = 0
     private(set) var duration: TimeInterval = 0
     private(set) var errorMessage: String?
+    private(set) var downloadMessage: String?
 
     private var player: AVPlayer?
     private var timeObserver: Any?
@@ -99,14 +100,21 @@ final class DirectMessageAudioPlayback: NSObject {
         isPlaying = false
         isLoading = true
         errorMessage = nil
+        downloadMessage = nil
         updateNowPlayingInfo()
 
         let expectedKey = attachment.cacheKey
         loadTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let file = try await DirectMessageAttachmentDataLoader.shared.file(for: attachment)
+                let file = try await DirectMessageAttachmentDataLoader.shared.file(
+                    for: attachment,
+                    progress: { [weak self] update in
+                        Task { @MainActor in self?.downloadMessage = update.message }
+                    }
+                )
                 try Task.checkCancellation()
+                self.downloadMessage = nil
                 guard self.attachmentKey == expectedKey else { return }
                 try self.activatePlaybackSession()
 
@@ -131,6 +139,7 @@ final class DirectMessageAudioPlayback: NSObject {
             } catch {
                 guard self.attachmentKey == expectedKey else { return }
                 self.isLoading = false
+                self.downloadMessage = nil
                 self.isPlaying = false
                 self.errorMessage = error.localizedDescription
                 self.updateNowPlayingInfo()
@@ -404,7 +413,13 @@ struct DirectMessageAudioAttachmentView: View {
             .font(.caption2.monospacedDigit())
             .foregroundStyle(TaskifyTheme.secondaryText)
 
-            if isCurrent, let errorMessage = playback.errorMessage {
+            if isCurrent, let downloadMessage = playback.downloadMessage, isLoading {
+                Text(downloadMessage)
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if isCurrent, let errorMessage = playback.errorMessage {
                 Text(errorMessage)
                     .font(.caption2)
                     .foregroundStyle(.red)

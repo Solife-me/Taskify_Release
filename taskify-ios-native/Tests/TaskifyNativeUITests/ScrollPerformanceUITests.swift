@@ -1206,3 +1206,66 @@ final class ScrollPerformanceUITests: XCTestCase {
         try? data.write(to: URL(fileURLWithPath: path))
     }
 }
+
+extension ScrollPerformanceUITests {
+    func testTaskNotePastesClipboardPhotoAsOneAttachmentWithoutBreakingText() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_PASTE_PHOTO"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+        let addDetailsButton = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
+        ).firstMatch
+        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
+        addDetailsButton.tap()
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+
+        app.buttons["task-editor-notes"].tap()
+        let noteText = app.textViews["task-note-editor-text"]
+        XCTAssertTrue(noteText.waitForExistence(timeout: 5))
+        if !app.keyboards.element.waitForExistence(timeout: 2) { noteText.tap() }
+
+        // A screenshot copied by some apps offers image and text representations together. Taskify
+        // must choose one image and not also insert the metadata text or import the image twice.
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96)).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 96, height: 96))
+        }
+        let png = try XCTUnwrap(image.pngData())
+        UIPasteboard.general.items = [[
+            "public.png": png,
+            "public.utf8-plain-text": "clipboard metadata that must not be pasted",
+        ]]
+        noteText.press(forDuration: 1.5)
+        let paste = app.menuItems["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 3), "Paste must be offered for an image clipboard")
+        paste.tap()
+
+        let status = app.descendants(matching: .any)["task-note-pasted-photo-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Photo attached to task"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["1 photo attached"].exists)
+        XCTAssertEqual((noteText.value as? String) ?? "", "", "Image paste must not also paste text")
+        XCTAssertTrue(app.buttons["task-note-remove-pasted-photo"].exists)
+        attach(app, name: "task-note-pasted-photo")
+
+        app.buttons["task-note-remove-pasted-photo"].tap()
+        XCTAssertTrue(status.waitForNonExistence(timeout: 3))
+
+        // Plain text still follows the rich-text paste path and never creates an attachment.
+        UIPasteboard.general.string = "plain pasted note"
+        noteText.press(forDuration: 1.5)
+        let textPaste = app.menuItems["Paste"]
+        XCTAssertTrue(textPaste.waitForExistence(timeout: 3))
+        textPaste.tap()
+        let containsText = NSPredicate(format: "value CONTAINS %@", "plain pasted note")
+        expectation(for: containsText, evaluatedWith: noteText)
+        waitForExpectations(timeout: 5)
+        XCTAssertFalse(status.exists)
+
+        UIPasteboard.general.items = []
+    }
+}

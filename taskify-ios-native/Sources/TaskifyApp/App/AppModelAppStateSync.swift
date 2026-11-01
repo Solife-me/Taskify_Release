@@ -14,8 +14,8 @@ extension AppModel {
     private static let chatStatePublishDelay: Duration = .seconds(15)
     private static let appStatePublishDelay: Duration = .seconds(2)
 
-    static func loadAppStateLedger() -> AppStateSyncLedger {
-        guard let data = UserDefaults.standard.data(forKey: appStateLedgerKey),
+    static func loadAppStateLedger(defaults: UserDefaults) -> AppStateSyncLedger {
+        guard let data = defaults.data(forKey: appStateLedgerKey),
               let ledger = try? JSONDecoder().decode(AppStateSyncLedger.self, from: data) else {
             return AppStateSyncLedger()
         }
@@ -24,7 +24,7 @@ extension AppModel {
 
     private func saveAppStateLedger() {
         guard let data = try? JSONEncoder().encode(appStateLedger) else { return }
-        UserDefaults.standard.set(data, forKey: Self.appStateLedgerKey)
+        accountDefaults.set(data, forKey: Self.appStateLedgerKey)
     }
 
     /// A ledger belongs to one account; switching identities starts it over.
@@ -54,6 +54,16 @@ extension AppModel {
         }
     }
 
+    /// The first launch may have searched only the device defaults. Once the account backup
+    /// supplies the user's relays, discard that throttled pass and read the three replaceable
+    /// records from the resolved account relay set.
+    func restartAppStateSyncAfterRelayChange() {
+        appStateFetchTask?.cancel()
+        appStateFetchTask = nil
+        lastAppStateFetchAt = nil
+        refreshAppStateSyncIfNeeded()
+    }
+
     /// Publishes anything still waiting on its debounce, e.g. as the app leaves the foreground,
     /// so the next device picked up already sees it. Queued publishes survive in the outbox.
     func flushAppStateSync() {
@@ -69,7 +79,7 @@ extension AppModel {
     }
 
     func scheduleAppStatePublish(_ dTag: String) {
-        guard !isLoading, cachedIdentity != nil else { return }
+        guard isAccountActive, !isLoading, cachedIdentity != nil else { return }
         if dTag == AppStateSyncContract.chatStateDTag {
             // Cheap check first: most snapshot writes (new messages, pending shares) leave
             // nothing new to publish. A pending timer is not restarted, bounding the delay.
@@ -99,7 +109,8 @@ extension AppModel {
             relayURLs: lookupRelays,
             fetcher: syncEngine
         )
-        guard !Task.isCancelled, appStateLedger.publicKey == identity.publicKeyHex else { return }
+        guard !Task.isCancelled, isAccountActive,
+              appStateLedger.publicKey == identity.publicKeyHex else { return }
         lastAppStateFetchAt = Date()
         let decoded: [(dTag: String, event: NostrEvent, plaintext: Data)] = await Task.detached(priority: .utility) {
             latest.values.compactMap { event in
@@ -229,7 +240,7 @@ extension AppModel {
     }
 
     private func publishAppState(_ dTag: String) async {
-        guard let identity = appStateLedgerIdentity() else { return }
+        guard isAccountActive, let identity = appStateLedgerIdentity() else { return }
         let relays = appStateRelayURLs
         guard !relays.isEmpty else { return }
         // Bible tracker and scripture memory pick up the newest remote copy first when it has not
@@ -237,7 +248,7 @@ extension AppModel {
         if dTag != AppStateSyncContract.chatStateDTag,
            lastAppStateFetchAt.map({ Date().timeIntervalSince($0) > Self.appStateFetchInterval }) ?? true {
             await fetchAppState()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, isAccountActive else { return }
         }
         let createdAt: Int
         let eventBuilder: @Sendable () throws -> NostrEvent
@@ -277,6 +288,7 @@ extension AppModel {
         }
         do {
             let event = try await TaskifyRelayProofOfWork.prepare(relays: relays, operation: eventBuilder)
+            guard isAccountActive, identityPublicKey == identity.publicKeyHex else { return }
             await syncEngine.configure(
                 boards: snapshot.boardsForSync,
                 auxiliaryRelayURLs: TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + relays),
@@ -289,6 +301,7 @@ extension AppModel {
                 outboxScope: Self.appStateOutboxScope,
                 recordID: dTag
             )
+            guard isAccountActive, identityPublicKey == identity.publicKeyHex else { return }
             commit(event)
             saveAppStateLedger()
         } catch {

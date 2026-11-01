@@ -141,7 +141,9 @@ struct RootTabView: View {
     }
 
     private func routePendingNotificationDestination() {
-        guard let destination = notificationNavigationRouter.consumeDestination() else { return }
+        guard let destination = notificationNavigationRouter.consumeDestination(
+            for: model.identityPublicKey
+        ) else { return }
         switch destination {
         case .chat:
             selectedTab = .chat

@@ -9,6 +9,16 @@ notification scheduling. It is an active port, not yet complete iOS parity.
 Open `TaskifyMac.xcodeproj`, choose `TaskifyMac` and My Mac. Configure your own
 signing team for a signed sandboxed build. No Catalyst runtime is used.
 
+## Multi-account isolation
+
+Saved accounts share a verified Keychain vault, but each account has its own task store,
+outbox, preference suite, relays, app-state ledger, notifications, and Spotlight scope. Account
+switches stop and fence the previous model before changing the active Keychain identity. Wallet
+funds/connections, APNs installation state, appearance, and primary-account widget/App Intent/
+Watch projections remain intentionally device-wide. See
+[`docs/audits/macos-multi-account-isolation-2026-10-30.md`](../docs/audits/macos-multi-account-isolation-2026-10-30.md)
+for the threat model, fixes, invariants, and residual boundaries.
+
 ```sh
 python3 taskify-macos/Scripts/generate-project.py --check
 xcodebuild -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
@@ -27,14 +37,16 @@ xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCommandQPersistsAnImmediateTaskEdit \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testPendingPublicationSurvivesOfflineRelaunch \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testSpotlightTaskOpensAndCompletionRemovesIt \
-  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testRawPNGCanBePastedIntoTaskAndChatComposers
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testRawPNGCanBePastedIntoTaskAndChatComposers \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testChatComposerShiftReturnStartsANewLineAndReturnSends \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testChatAttachmentsRenderInThreadWithRecordButton
 ```
 
 Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 27 presentation/runtime tests, the unsigned app build and the ten isolated app-host smoke tests on
+the 51 presentation/runtime tests, the unsigned app build and the twelve isolated app-host smoke tests on
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
 a session-scoped temporary store/outbox and Keychain service, and no relay or wallet startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing
@@ -68,10 +80,21 @@ manifest in the same change; CI rejects a project that was not regenerated.
   away from.
 - Week/list/compound boards, board settings (including column rename/delete,
   with a required destination or explicit deletion for that column's tasks),
-  archives, sharing/joining, task cards and sortable native table with
-  multiple selection and batch actions. A compound board groups each linked
-  child board's columns under a heading with that child's name; "Hide Board
+  archives, sharing/joining, task cards and a sortable native table. Task cards
+  support Command-click toggling and Shift-click range selection, with batch
+  actions for the selected cards. Week boards open horizontally centered
+  on the current weekday while keeping the column headers at the top. A
+  compound board groups each linked child board's columns under a heading with
+  that child's name; "Hide Board
   Names in Column Headers" in its board settings can turn that off.
+  Archived boards are hidden inside a collapsed Archived folder, and can be
+  dragged back onto the Boards header or a regular board row to restore them.
+  Active boards can be dragged above or below another board to reorder them.
+- Split View opens any workspace destination or board beside the current pane,
+  so a board and Chat can remain visible together. Task cards can be dragged
+  onto a sidebar board (today's column on a week board, first column on a list
+  board), directly onto a column in the split board, or onto a chat/contact to
+  send it as a shared task.
 - Quick entry, task editor, Markdown notes (rendered in the inspector with tickable
   checklist items; edited in the shared iOS note editor, `TaskNoteViews.swift`), subtasks,
   priorities, scheduling, recurrence
@@ -90,10 +113,13 @@ manifest in the same change; CI rejects a project that was not regenerated.
   `NSSystemTimeZoneDidChange` and on wake).
 - DM/group conversation layouts, replies, reactions, history search, unread
   state, archive/block controls and encrypted attachments. The selected
-  conversation, its per-conversation drafts and its scroll position all
-  persist in `MacWorkspace`, so they survive leaving the Chat destination
-  entirely (Wallet, Boards, …) and coming back, not just switching between
-  conversations within Chat. Drag-and-drop and
+  conversation and its per-conversation drafts persist in `MacWorkspace`, so
+  they survive leaving the Chat destination entirely (Wallet, Boards, …) and
+  coming back. A thread opens at its newest message with only the latest 100
+  timeline items loaded; reaching the top loads another 100 while preserving
+  the reader's position. Conversation search still covers the complete retained
+  history, and closing search keeps the matched older message in the loaded
+  window. Drag-and-drop and
   clipboard paste (a `PasteButton`, since Cmd-V while the composer is focused
   goes to the text field first) for file attachments, also available in the
   task editor's Attachments section; a bot "/" slash-command menu. Inline
@@ -152,7 +178,9 @@ manifest in the same change; CI rejects a project that was not regenerated.
   scan-back-in flow. Goes through the standard macOS print panel, so "Save as
   PDF" works without separate export code. The scan-back-in side (reading a
   filled-in page's checkmarks) stays iOS-only — it needs a camera.
-- Account import/export, profile publishing, task backup/restore, relay controls,
+- Multiple saved accounts in a Keychain vault, with a sidebar account switcher
+  and isolated per-account task/chat stores and sync outboxes. Account
+  import/export, profile publishing, task backup/restore, relay controls,
   file-server selection and notification permission. Chat message retention
   (Forever down to 30 days, local-device-only — it prunes this device's
   history, not other clients' or relays') and a Bitcoin-denomination display
@@ -162,7 +190,7 @@ manifest in the same change; CI rejects a project that was not regenerated.
   wallet views don't have that tap gesture yet.
 
 Shortcuts: New Window `⌘N`, New Task `⇧⌘N`, New Board `⇧⌘B`, Sync `⇧⌘R`,
-Send Message `⌘Return`, Settings `⌘,`.
+Send Message `Return` or `⌘Return`, New Line `⇧Return`, Settings `⌘,`.
 
 ## Data and platform boundaries
 
@@ -617,3 +645,118 @@ Settings — no gap there, the audit just hadn't confirmed it yet.
 Verified: clean `xcodebuild`, all 13 `swift test` cases still pass. Not
 verified by running it — this needs an actual compound board with the
 setting toggled to see the columns regroup.
+
+## Chat opens at newest with bounded history (October 29, 2026)
+
+Mac chat previously bound the whole conversation to one SwiftUI scroll anchor.
+Long threads could settle at the oldest row when opened. The Mac conversation
+now follows the same bounded-window model as iOS: the initial timeline is the
+newest 100 messages/cards, explicit bottom settlement handles lazy row-height
+changes, and reaching the top adds another 100 while anchoring the previous
+oldest visible row. New arrivals grow the loaded window instead of displacing
+older rows, and they only auto-scroll when the reader is already following the
+bottom.
+
+Search remains over the complete retained timeline, not just the loaded page.
+Selecting an older result while search is active and then closing search expands
+the window far enough to keep that result loaded. The per-conversation scroll
+anchor dictionary was removed because every thread now intentionally opens at
+its newest message; drafts and the selected conversation still survive leaving
+and returning to Chat.
+
+Verified: 31 `MacPresentationTests` pass, including newest-page selection,
+100-item growth, and older-search-result window expansion; the generated Xcode
+project check passes; and the unsigned Local Mac app builds successfully.
+
+## Week boards center today (October 29, 2026)
+
+Mac week boards previously opened at the far-left column regardless of the day.
+They now use the same current-day focus as iOS and the PWA: the column matching
+`AppModel.currentCalendarDay` is scrolled to the horizontal center with a
+two-axis `ScrollViewReader` anchor that keeps the board at its vertical top.
+The anchor settles again after lazy column layout, follows midnight/day-rollover
+changes, and re-centers when the board or configured week-start day changes.
+
+Verified: current-day selection and fallback coverage passes in
+`MacPresentationTests`; the generated project check passes; the unsigned Local
+Mac app builds successfully.
+
+## Task drag targets and split workspace (October 29, 2026)
+
+The Mac workspace now has a second pane that can host any built-in destination
+or board. The sidebar's rectangle-split menu opens it, and either pane's header
+menu can switch destinations or close the split. This supports the main desktop
+flow of a board beside Chat without creating another model, relay connection or
+account runtime.
+
+Task cards already carried their task ID as a drag payload for column moves.
+That payload is now accepted by sidebar board rows: dropping there moves to the
+current weekday column on a week board or the first ordered column on a list
+board. A second board in Split View still accepts drops on its specific columns,
+so the exact destination column remains selectable. Chat contact rows and open
+conversation timelines accept the same task payload and send the task through
+the existing encrypted shared-task flow; the conversation area shows a drop
+overlay while the task is being shared.
+
+Verified: all 35 `MacPresentationTests` pass, including week/list sidebar drop
+destinations; the generated project check passes; and the unsigned Local Mac
+app builds successfully.
+
+## Archived boards folder (October 29, 2026)
+
+Archived boards no longer appear as a flat list beneath active boards. They now
+live in a collapsed DisclosureGroup with an archived count. Expanding it reveals
+the archived boards without putting them back in the regular board list.
+
+Archived rows are draggable. Dropping one on the Boards section header or on any
+regular board row restores it through the same local/synced archive state used by
+the existing Restore command. Archiving the currently selected board moves the
+window to Today and expands the folder so the board remains visibly accounted
+for rather than disappearing without feedback.
+
+Verified: archived-board drop filtering is covered in `MacPresentationTests`;
+the generated project check passes; and the unsigned Local Mac app builds
+successfully.
+
+## Drag-reorder active boards (October 29, 2026)
+
+Active board rows are now draggable. Dropping one above or below another board
+uses the pointer position within the target row to insert it before or after
+that row. The existing Move Up/Move Down context-menu commands remain available,
+and the resulting order still uses the local board-array ordering shared by the
+rest of the app.
+
+Board drags are classified before task drags: archived board IDs restore, active
+board IDs reorder, and task IDs retain the existing move-to-board behavior.
+
+Verified: before/after insertion-index cases are covered in
+`MacPresentationTests`; the generated project check passes; and the unsigned
+Local Mac app builds successfully.
+
+## Multiple saved accounts (October 29, 2026)
+
+The Mac app now supports a saved account list instead of replacing the one
+Keychain identity in place. Account private keys are stored together in a
+Keychain vault. The sidebar account menu switches directly between saved
+accounts, and Settings → Account can add or remove saved accounts.
+
+Switching replaces the active `AppModel` with one configured for that account.
+The original account keeps the existing default store and outbox, while each
+additional account gets a separate local store, attachment directory and Nostr
+outbox under `taskify-accounts/<public-key>/`. This prevents boards, chats,
+attachments or queued publishes from crossing between accounts and preserves
+each account's offline state between switches.
+
+The Cashu wallet remains device-level with its own recovery phrase rather than
+being duplicated for every Nostr account. System widgets and App Intents remain
+backed by the primary/default store; multi-account switching is implemented for
+the main Mac app.
+
+The first account automatically becomes the primary store. Adding an existing
+account again updates its label without creating a duplicate. A non-current,
+non-primary account can be forgotten from Settings; this removes its saved key
+but intentionally leaves its local data on disk.
+
+Verified: account path isolation, metadata upserts and current/primary markers
+are covered in `MacPresentationTests`; the unsigned Local Mac build and the
+isolated UI-test build both succeed.

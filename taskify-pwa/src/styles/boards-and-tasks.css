@@ -1,6 +1,8 @@
 /* ================= Board columns ================= */
 .board-column {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   background: transparent;
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow:
@@ -42,10 +44,37 @@ html.light .board-column[data-drop-over="true"] {
   background: rgba(255, 255, 255, 0.6);
 }
 
+.board-scroller {
+  min-width: 0;
+  max-width: 100%;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+}
+
+.board-column [data-column-scroll] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.board-column [data-column-scroll] > * {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
 /* ================= Task cards ================= */
 .task-card {
   position: relative;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.03));
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--radius-pill);
@@ -78,6 +107,8 @@ html.light .task-card:hover {
   display: flex;
   align-items: center;
   gap: 0.2rem;
+  min-width: 0;
+  max-width: 100%;
   margin-left: -1.1rem;
   font-size: 0.75rem;
 }
@@ -89,7 +120,10 @@ html.light .task-card:hover {
 }
 
 .subtask-row__text {
+  min-width: 0;
   flex: 1;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .icon-button {
@@ -205,8 +239,17 @@ html.light .task-card[data-state="completed"] {
   border-radius: var(--radius-tight);
 }
 
+.task-card > .flex,
+.task-card > .task-card__details,
+.task-card__details {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .task-card__details {
   margin-left: calc(var(--icon-size, 2.2rem) + 0.75rem);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .task-card__trailing {
@@ -229,6 +272,8 @@ html.light .task-card[data-state="completed"] {
 .task-card__schedule-row > span:first-child,
 .task-card__meta--inline > span:first-child {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .task-card__reminder-indicator {
@@ -303,6 +348,10 @@ html.light .board-list-item {
 }
 
 .task-card__title {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-weight: 600;
   font-size: 0.95rem;
   line-height: 1.24;
@@ -2918,6 +2967,8 @@ html.light .wallet-modal__unit {
 
 .doc-thumb {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   text-align: left;
@@ -2936,6 +2987,8 @@ html.light .wallet-modal__unit {
 
 .doc-thumb__preview {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   min-height: 9rem;
   display: flex;
   align-items: center;
@@ -3862,14 +3915,16 @@ html.light .wallet-modal__unit {
   border-radius: 1px;
 }
 
-.board-print-page-id__bit {
+.board-print-page-id__bit,
+.board-print-job-code__bit {
   position: absolute;
   border-radius: 0.4mm;
   border: 0.2mm solid rgba(16, 24, 40, 0.2);
   background: #ffffff;
 }
 
-.board-print-page-id__bit[data-filled="true"] {
+.board-print-page-id__bit[data-filled="true"],
+.board-print-job-code__bit[data-filled="true"] {
   background: #101828;
   border-color: #101828;
 }
@@ -5001,4 +5056,191 @@ html.platform-windows .drawer-panel {
 @keyframes doc-edit-row-progress-indeterminate {
   0% { transform: translateX(-110%); }
   100% { transform: translateX(320%); }
+}
+
+/* ==================== Settings accordion ==================== */
+.settings-accordion {
+  overflow: hidden;
+  border: 1px solid var(--surface-border-strong);
+  border-radius: var(--radius-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04));
+  box-shadow:
+    var(--shadow-soft),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: var(--blur-backdrop);
+  -webkit-backdrop-filter: var(--blur-backdrop);
+}
+
+html.light .settings-accordion {
+  background: linear-gradient(180deg, rgba(12, 24, 63, 0.12), rgba(12, 24, 63, 0.04));
+  border-color: rgba(12, 24, 63, 0.2);
+  box-shadow:
+    var(--shadow-soft),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.settings-accordion--nested {
+  border-color: var(--surface-border, var(--surface-border-strong));
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+html.light .settings-accordion--nested {
+  background: rgba(12, 24, 63, 0.035);
+}
+
+.settings-accordion__header {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.72rem 0.9rem;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.settings-accordion__header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.settings-accordion__title-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+
+.settings-accordion__title {
+  font-size: 0.9rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.settings-accordion__summary {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.settings-accordion__chevron {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 1.15rem;
+  line-height: 1;
+  transform: rotate(-90deg);
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+html.light .settings-accordion__chevron {
+  border-color: rgba(12, 24, 63, 0.14);
+}
+
+.settings-accordion.is-expanded .settings-accordion__chevron {
+  transform: rotate(0deg);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.settings-accordion__body {
+  padding: 0 0.9rem 0.9rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+html.light .settings-accordion__body {
+  border-top-color: rgba(12, 24, 63, 0.1);
+}
+
+.settings-accordion__body > * {
+  margin-top: 0.8rem;
+}
+
+.settings-accordion__body > .wallet-section {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+@media (max-width: 520px) {
+  .settings-accordion__header {
+    padding: 0.7rem 0.78rem;
+  }
+
+  .settings-accordion__body {
+    padding: 0 0.78rem 0.78rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-accordion__chevron {
+    transition: none;
+  }
+}
+
+/* ==================== Board print scope chooser ==================== */
+.board-print-chooser__option,
+.board-print-chooser__list {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  min-height: 44px;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid var(--surface-border);
+  border-radius: 0.8rem;
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.board-print-chooser__option > span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.board-print-chooser__option small {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.board-print-chooser__option.is-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.board-print-chooser__option input,
+.board-print-chooser__list input {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  margin-top: 0.15rem;
+}
+
+.board-print-chooser__lists {
+  padding: 0.7rem;
+  border: 1px solid var(--surface-border);
+  border-radius: 0.8rem;
+}
+
+.board-print-chooser__list {
+  align-items: center;
+  padding-block: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.board-print-chooser__note {
+  padding: 0.65rem 0.7rem;
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.045);
 }

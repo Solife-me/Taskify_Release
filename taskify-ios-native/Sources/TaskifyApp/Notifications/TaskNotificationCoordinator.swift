@@ -57,6 +57,10 @@ actor TaskNotificationCoordinator {
     private let center: UNUserNotificationCenter
     private let defaults: UserDefaults
     private let presentationDelegate = NotificationPresentationDelegate()
+    /// Set once when this AppModel is retired during an account switch. Actor reentrancy means a
+    /// reschedule can already be suspended in a system call, so every post-await path must check
+    /// this before touching the shared notification center again.
+    private var isClosed = false
 
     init(
         center: UNUserNotificationCenter = .current(),
@@ -68,25 +72,52 @@ actor TaskNotificationCoordinator {
         Task { await TaskifyNotificationCategories.registerIfNeeded(center: center) }
     }
 
+    /// Account switches must not leave old reminders or alarms actionable against the new model.
+    func cancelAllScheduledNotifications() async {
+        isClosed = true
+        let pending = await center.pendingNotificationRequests()
+        let identifiers = pending.map(\.identifier).filter {
+            $0.hasPrefix(Self.taskIdentifierPrefix) || $0.hasPrefix(Self.eventIdentifierPrefix)
+        }
+        if !identifiers.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        }
+#if canImport(AlarmKit)
+        if #available(iOS 26.0, *) {
+            let manager = AlarmManager.shared
+            let tracked = (defaults.stringArray(forKey: Self.managedAlarmIDsDefaultsKey) ?? [])
+                .compactMap(UUID.init(uuidString:))
+            for id in tracked { try? manager.cancel(id: id) }
+        }
+#endif
+        defaults.removeObject(forKey: Self.managedAlarmIDsDefaultsKey)
+    }
+
     func reschedule(
+        accountID: String,
         tasks: [TaskItem],
         events: [TaskifyEvent] = [],
         requestPermission: Bool,
         now: Date = Date()
     ) async -> String {
+        guard !isClosed else { return "Unavailable" }
         var settings = await center.notificationSettings()
+        guard !isClosed else { return "Unavailable" }
         if requestPermission, settings.authorizationStatus == .notDetermined {
             _ = try? await center.requestAuthorization(options: [.alert, .badge, .sound])
             settings = await center.notificationSettings()
         }
 
         let alarmedTaskIDs = await rescheduleUrgentAlarms(
+            accountID: accountID,
             tasks: tasks,
             requestPermission: requestPermission,
             now: now
         )
+        guard !isClosed else { return "Unavailable" }
 
         let pending = await center.pendingNotificationRequests()
+        guard !isClosed else { return "Unavailable" }
         let existingIDs = pending
             .map(\.identifier)
             .filter {
@@ -116,6 +147,7 @@ actor TaskNotificationCoordinator {
                         title: task.title,
                         body: reminder.label,
                         userInfo: [
+                            TaskifyNotificationContract.accountIDKey: accountID,
                             TaskifyNotificationContract.taskIDKey: task.id,
                             TaskifyNotificationContract.boardIDKey: task.boardID,
                         ],
@@ -136,6 +168,7 @@ actor TaskNotificationCoordinator {
                 title: task.title,
                 body: "Urgent task due now",
                 userInfo: [
+                    TaskifyNotificationContract.accountIDKey: accountID,
                     TaskifyNotificationContract.taskIDKey: task.id,
                     TaskifyNotificationContract.boardIDKey: task.boardID,
                 ],
@@ -148,7 +181,10 @@ actor TaskNotificationCoordinator {
             .flatMap { event in
                 event.reminderFireDates().compactMap { reminder, fireDate -> ScheduledReminder? in
                     guard fireDate > now.addingTimeInterval(1) else { return nil }
-                    var userInfo = ["eventID": event.id]
+                    var userInfo = [
+                        TaskifyNotificationContract.accountIDKey: accountID,
+                        "eventID": event.id,
+                    ]
                     if let boardID = event.boardID { userInfo["boardID"] = boardID }
                     return ScheduledReminder(
                         identifier: Self.eventIdentifierPrefix + event.id + "." + reminder.rawValue,
@@ -165,7 +201,7 @@ actor TaskNotificationCoordinator {
             .prefix(60)
 
         for scheduled in upcoming {
-            guard !Task.isCancelled else { break }
+            guard !Task.isCancelled, !isClosed else { break }
             let content = UNMutableNotificationContent()
             content.title = scheduled.title
             content.body = scheduled.body
@@ -187,6 +223,10 @@ actor TaskNotificationCoordinator {
                 trigger: trigger
             )
             try? await center.add(request)
+            if isClosed {
+                center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
+                return "Unavailable"
+            }
         }
         return Self.label(for: settings.authorizationStatus)
     }
@@ -208,12 +248,14 @@ actor TaskNotificationCoordinator {
     }
 
     private func rescheduleUrgentAlarms(
+        accountID: String,
         tasks: [TaskItem],
         requestPermission: Bool,
         now: Date
     ) async -> Set<String> {
 #if canImport(AlarmKit)
         guard #available(iOS 26.0, *) else { return [] }
+        guard !isClosed else { return [] }
 
         let manager = AlarmManager.shared
         let trackedIDs = (defaults.stringArray(forKey: Self.managedAlarmIDsDefaultsKey) ?? [])
@@ -236,20 +278,24 @@ actor TaskNotificationCoordinator {
         if requestPermission, authorization == .notDetermined {
             authorization = (try? await manager.requestAuthorization()) ?? .notDetermined
         }
-        guard authorization == .authorized else { return [] }
+        guard authorization == .authorized, !isClosed else { return [] }
 
         var scheduledAlarmIDs: [UUID] = []
         var scheduledTaskIDs = Set<String>()
         for task in urgentTasks {
-            guard !Task.isCancelled, let dueDate = task.dueDate else { break }
-            let id = Self.urgentAlarmID(for: task.id)
+            guard !Task.isCancelled, !isClosed, let dueDate = task.dueDate else { break }
+            let id = Self.urgentAlarmID(accountID: accountID, taskID: task.id)
             do {
                 let presentation = AlarmPresentation(
                     alert: Self.urgentAlarmAlert(title: task.title)
                 )
                 let attributes = AlarmAttributes(
                     presentation: presentation,
-                    metadata: TaskifyUrgentAlarmMetadata(taskID: task.id, boardID: task.boardID),
+                    metadata: TaskifyUrgentAlarmMetadata(
+                        accountID: accountID,
+                        taskID: task.id,
+                        boardID: task.boardID
+                    ),
                     tintColor: Color(red: 0.12, green: 0.57, blue: 1)
                 )
                 let configuration = AlarmManager.AlarmConfiguration.alarm(
@@ -257,6 +303,10 @@ actor TaskNotificationCoordinator {
                     attributes: attributes
                 )
                 _ = try await manager.schedule(id: id, configuration: configuration)
+                if isClosed {
+                    try? manager.cancel(id: id)
+                    return []
+                }
                 scheduledAlarmIDs.append(id)
                 scheduledTaskIDs.insert(task.id)
             } catch {
@@ -264,6 +314,7 @@ actor TaskNotificationCoordinator {
                 continue
             }
         }
+        guard !isClosed else { return [] }
         defaults.set(
             scheduledAlarmIDs.map(\.uuidString),
             forKey: Self.managedAlarmIDsDefaultsKey
@@ -291,8 +342,8 @@ actor TaskNotificationCoordinator {
         )
     }
 
-    private static func urgentAlarmID(for taskID: String) -> UUID {
-        let digest = SHA256.hash(data: Data(("taskify.urgent." + taskID).utf8))
+    private static func urgentAlarmID(accountID: String, taskID: String) -> UUID {
+        let digest = SHA256.hash(data: Data(("taskify.urgent.\(accountID)." + taskID).utf8))
         var bytes = Array(digest.prefix(16))
         bytes[6] = (bytes[6] & 0x0F) | 0x50
         bytes[8] = (bytes[8] & 0x3F) | 0x80
@@ -328,6 +379,7 @@ actor TaskNotificationCoordinator {
 #if canImport(AlarmKit)
 @available(iOS 26.0, *)
 private struct TaskifyUrgentAlarmMetadata: AlarmMetadata {
+    var accountID: String
     var taskID: String
     var boardID: String
 }
@@ -577,7 +629,11 @@ private final class NotificationPresentationDelegate: NSObject, UNUserNotificati
            let destination = TaskifyNotificationContract.destination(userInfo: userInfo)
             ?? remotePreviewDestination {
             Task { @MainActor in
-                TaskNotificationNavigationRouter.shared.route(to: destination)
+                TaskNotificationNavigationRouter.shared.route(
+                    to: destination,
+                    accountID: userInfo[TaskifyNotificationContract.accountIDKey]?
+                        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                )
                 completionHandler()
             }
             return
@@ -612,15 +668,37 @@ final class TaskNotificationNavigationRouter {
     static let shared = TaskNotificationNavigationRouter()
 
     private(set) var pendingDestination: TaskifyNotificationContract.Destination?
+    private var pendingAccountID: String?
 
     private init() {}
 
-    func route(to destination: TaskifyNotificationContract.Destination) {
+    func route(to destination: TaskifyNotificationContract.Destination, accountID: String?) {
+        // Wallet notifications are intentionally device-wide because the cashu/NWC wallet is not
+        // partitioned by Nostr account. Every account-owned destination must carry its account.
+        if destination == .wallet,
+           accountID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            pendingDestination = destination
+            pendingAccountID = nil
+            return
+        }
+        guard let accountID = accountID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(), !accountID.isEmpty else {
+            pendingDestination = nil
+            pendingAccountID = nil
+            return
+        }
         pendingDestination = destination
+        pendingAccountID = accountID
     }
 
-    func consumeDestination() -> TaskifyNotificationContract.Destination? {
-        defer { pendingDestination = nil }
+    func consumeDestination(for accountID: String) -> TaskifyNotificationContract.Destination? {
+        defer {
+            pendingDestination = nil
+            pendingAccountID = nil
+        }
+        if pendingDestination == .wallet, pendingAccountID == nil { return pendingDestination }
+        guard TaskifyAccountScope.isSame(pendingAccountID, accountID) else { return nil }
         return pendingDestination
     }
 }
@@ -638,14 +716,22 @@ final class TaskNotificationActionRouter {
 
     func register(model: AppModel) {
         self.model = model
-        guard !pendingActions.isEmpty else { return }
         let actions = pendingActions
         pendingActions.removeAll()
         Task {
             for action in actions {
+                let deadline = Date().addingTimeInterval(15)
+                while model.identityPublicKey.isEmpty, model.isLoading, Date() < deadline,
+                      !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
                 await handle(action)
             }
         }
+    }
+
+    func unregister(model: AppModel) {
+        if self.model === model { self.model = nil }
     }
 
     func handle(_ action: TaskifyNotificationContract.Action) async {
@@ -655,11 +741,12 @@ final class TaskNotificationActionRouter {
             }
             return
         }
+        guard model.identityPublicKey == action.accountID else { return }
 
         switch action {
-        case .completeTask(let taskID):
+        case .completeTask(_, let taskID):
             await model.completeTaskFromNotification(taskID)
-        case .reply(let target, let text):
+        case .reply(_, let target, let text):
             await model.replyToDirectMessageFromNotification(to: target, text: text)
         }
     }

@@ -13,6 +13,7 @@ import {
 import { sanitizeRemote } from "./displaySafe.js";
 import {
   countLeadingZeroBits,
+  classifyRelayRejection,
   inboxReadRelays,
   newNip17WrapKey,
   nip17Crypto,
@@ -20,8 +21,11 @@ import {
   mineEventTemplate,
   recordRelayProofOfWorkRejection,
   relayProofOfWorkDifficulty,
+  takeWhenPublishSlotIsAvailable,
+  type RelayPublishBudget,
 } from "taskify-runtime-nostr";
 import { cliProofOfWorkSettings } from "./relaySettings.js";
+import { createCliRelayPublishBudget } from "./nodeRuntimeSession.js";
 
 export type InboxShareItem = {
   wrapId: string;
@@ -70,28 +74,52 @@ async function publishWrap(
   wrapKey: Uint8Array,
   difficulty: number,
   onauth: ReturnType<typeof authSigner>,
+  publishBudget: RelayPublishBudget,
 ): Promise<void> {
   const send = async (targets: string[], target: number) => {
     const settings = cliProofOfWorkSettings();
     if (target > 0) settings.onMine?.(target, targets);
     const event = finalizeEvent(await mineEventTemplate(template, wrapKey, target, miningOptions()), wrapKey);
-    const results = await Promise.allSettled(pool.publish(targets, event, { onauth, maxWait: 10_000 }));
-    return { event, results };
+    try {
+      const results = await Promise.allSettled(pool.publish(targets, event, { onauth, maxWait: 10_000 }));
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          publishBudget.recordAccepted(targets[index], Date.now());
+          return;
+        }
+        const kind = classifyRelayRejection(reasonText(result.reason));
+        if (kind === "rate-limited") publishBudget.recordRateLimited(targets[index], Date.now());
+        else if (kind === "banned") publishBudget.recordBanned(targets[index], Date.now());
+      });
+      return { event, results };
+    } finally {
+      const releasedAt = Date.now();
+      for (const relay of targets) publishBudget.release(relay, releasedAt);
+    }
   };
-  const first = await send(relays, difficulty);
+  const firstSelection = publishBudget.take(relays, Date.now());
+  if (!firstSelection.ready.length) {
+    const wait = firstSelection.deferredUntil == null ? "later" : new Date(firstSelection.deferredUntil).toISOString();
+    throw new Error(`All target relays are being paced; the next publish slot is ${wait}.`);
+  }
+  const firstTargets = firstSelection.ready;
+  const first = await send(firstTargets, difficulty);
   const failures = first.results.flatMap((result, index) =>
-    result.status === "rejected" ? [`${relays[index]}: ${reasonText(result.reason)}`] : []);
+    result.status === "rejected" ? [`${firstTargets[index]}: ${reasonText(result.reason)}`] : []);
   const achieved = countLeadingZeroBits(first.event.id);
   const retry = new Map<string, number>();
   first.results.forEach((result, index) => {
     if (result.status !== "rejected") return;
-    const required = recordRelayProofOfWorkRejection(relays[index], reasonText(result.reason));
-    if (required != null && required > achieved) retry.set(relays[index], required);
+    const required = recordRelayProofOfWorkRejection(firstTargets[index], reasonText(result.reason));
+    if (required != null && required > achieved) retry.set(firstTargets[index], required);
   });
   let accepted = first.results.some((result) => result.status === "fulfilled");
   if (retry.size) {
-    const second = await send(Array.from(retry.keys()), Math.max(...retry.values()));
-    if (second.results.some((result) => result.status === "fulfilled")) accepted = true;
+    const retryTargets = (await takeWhenPublishSlotIsAvailable(publishBudget, Array.from(retry.keys()))).ready;
+    if (retryTargets.length) {
+      const second = await send(retryTargets, Math.max(...retryTargets.map((relay) => retry.get(relay) ?? 0)));
+      if (second.results.some((result) => result.status === "fulfilled")) accepted = true;
+    }
   }
   if (!accepted) throw new Error(`No relay accepted the message. ${failures.join("; ")}`);
 }
@@ -138,9 +166,10 @@ export async function sendShareEnvelopeNip17(input: {
   }
 
   const pool = new SimplePool();
+  const publishBudget = createCliRelayPublishBudget();
   try {
     for (const { template, wrapKey } of wrapped) {
-      await publishWrap(pool, relays, template, wrapKey, difficulty, authSigner(senderSecret));
+      await publishWrap(pool, relays, template, wrapKey, difficulty, authSigner(senderSecret), publishBudget);
     }
   } finally {
     pool.close(relays);

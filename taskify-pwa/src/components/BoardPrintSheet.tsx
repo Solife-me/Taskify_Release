@@ -23,15 +23,18 @@ export function BoardPrintPreview({
   onPaperSizeChange: (paperSize: PrintPaperSize) => void;
 }) {
   const layout = useMemo(
-    () => buildBoardPrintLayout(job.tasks, { layoutVersion: job.layoutVersion, paperSize }),
-    [job.layoutVersion, job.tasks, paperSize],
+    () => buildBoardPrintLayout(job.tasks, { layoutVersion: job.layoutVersion, paperSize, jobId: job.id }),
+    [job.id, job.layoutVersion, job.tasks, paperSize],
   );
   const hasGroupHeaders = layout.pages.some((page) => page.rows.some((row) => row.kind === "header"));
   const printedDate = formatPrintDate(job.printedAtISO);
   const paperDefinition = getPaperDefinition(paperSize);
   const pageIdRowWidthMm =
     layout.pageId.count * layout.pageId.sizeMm + (layout.pageId.count - 1) * layout.pageId.gapMm;
-  const headerRightStyle = { paddingRight: `${pageIdRowWidthMm + 1.5}mm` } as React.CSSProperties;
+  const jobCodeRowWidthMm = layout.jobCode
+    ? layout.jobCode.count * layout.jobCode.sizeMm + (layout.jobCode.count - 1) * layout.jobCode.gapMm
+    : 0;
+  const headerRightStyle = { paddingRight: `${Math.max(pageIdRowWidthMm, jobCodeRowWidthMm) + 1.5}mm` } as React.CSSProperties;
 
   return (
     <div className="board-print-root">
@@ -114,11 +117,27 @@ export function BoardPrintPreview({
                   />
                 );
               })}
+              {layout.jobCode?.positionsMm.map((pos, bitIndex) => {
+                const bit = layout.jobCode?.pattern[bitIndex] ?? 0;
+                return (
+                  <div
+                    key={`job-code-${bitIndex}`}
+                    className="board-print-job-code__bit"
+                    data-filled={bit ? "true" : undefined}
+                    style={{
+                      width: `${layout.jobCode?.sizeMm ?? 0}mm`,
+                      height: `${layout.jobCode?.sizeMm ?? 0}mm`,
+                      left: `${pos.x}mm`,
+                      top: `${pos.y}mm`,
+                    }}
+                  />
+                );
+              })}
               <div className="board-print-header" style={headerStyle}>
                 <div className="board-print-header__left">
                   <div className="board-print-header__title">{job.boardName || "Board"} print</div>
                   <div className="board-print-header__meta">
-                    {job.tasks.length} task{job.tasks.length === 1 ? "" : "s"} | Printed {printedDate} | Layout {layout.version}
+                    {job.tasks.length} task{job.tasks.length === 1 ? "" : "s"} | Printed {printedDate} | Layout {layout.version} | Print {job.id.slice(0, 8).toUpperCase()}
                   </div>
                 </div>
                 <div className="board-print-header__right" style={headerRightStyle}>

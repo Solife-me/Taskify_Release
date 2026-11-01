@@ -1,4 +1,11 @@
 {
+  "opaqueUploads": [
+    {
+      "name": "opaque ciphertext name normalizes the digest and hides the original extension",
+      "sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "filename": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin"
+    }
+  ],
   "routes": [
     {
       "name": "Originless current multipart endpoint",

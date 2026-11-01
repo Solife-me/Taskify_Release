@@ -169,11 +169,21 @@ public final class AttachmentDownload: NSObject, URLSessionDownloadDelegate, @un
     private let lock = NSLock()
     private var cancelled = false
     private var task: URLSessionDownloadTask?
+    private let progress: AttachmentProgressHandler?
+    private var lastProgressUpdate: TimeInterval = 0
 
-    private init(limit: Int) { self.limit = limit }
+    private init(limit: Int, progress: AttachmentProgressHandler?) {
+        self.limit = limit
+        self.progress = progress
+    }
 
-    public static func file(from url: URL, limit: Int = AttachmentFiles.maximumBytes + 32) async throws -> URL {
-        let downloader = AttachmentDownload(limit: limit)
+    public static func file(
+        from url: URL,
+        limit: Int = AttachmentFiles.maximumBytes + 32,
+        progress: AttachmentProgressHandler? = nil
+    ) async throws -> URL {
+        let downloader = AttachmentDownload(limit: limit, progress: progress)
+        progress?(.downloading(completed: 0, total: 0))
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 downloader.lock.lock()
@@ -202,7 +212,16 @@ public final class AttachmentDownload: NSObject, URLSessionDownloadDelegate, @un
         if totalBytesWritten > limit || totalBytesExpectedToWrite > limit {
             exceededLimit = true
             downloadTask.cancel()
+            return
         }
+        let expected = max(0, totalBytesExpectedToWrite)
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        let shouldUpdate = now - lastProgressUpdate >= 0.1 || (expected > 0 && totalBytesWritten >= expected)
+        if shouldUpdate { lastProgressUpdate = now }
+        lock.unlock()
+        guard shouldUpdate else { return }
+        progress?(.downloading(completed: totalBytesWritten, total: expected))
     }
 
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {

@@ -2,8 +2,8 @@
  * Desktop layout.
  *
  * The mobile shell in app-shell.css and boards-and-tasks.css stays the default; this layer
- * only rearranges it for a desktop: hover, a fine pointer, and a viewport wide enough for a
- * rail. Same components, colors and glass; only the arrangement changes.
+ * only rearranges it for a wide viewport. The same layout serves mouse desktops and touch
+ * tablets; pointer-specific rules below enlarge controls and remove hover-only affordances.
  *
  *   rail | header
  *   rail | banner
@@ -13,7 +13,7 @@
  * The rail holds the pages and the user's boards, so it is useful space rather than a strip of
  * four links. The shell is not capped at the phone-first 80rem: boards use the width.
  */
-@media (min-width: 1024px) and (hover: hover) and (pointer: fine) {
+@media (min-width: 900px) {
   :root {
     --desktop-shell-max: 110rem;
     --desktop-shell-pad-left: 0.9rem;
@@ -607,5 +607,51 @@
     color: var(--text-primary);
     font-size: 1rem;
     font-weight: 600;
+  }
+}
+
+
+/* Wide touch devices (for example iPad landscape) use the same Mac-like shell, with larger
+   rail targets and no dependence on hover. There is deliberately no separate touch PWA. */
+@media (min-width: 900px) and (hover: none), (min-width: 900px) and (pointer: coarse) {
+  :root {
+    --desktop-rail-width: 11.5rem;
+    --desktop-rail-gap: 1rem;
+  }
+
+  .app-shell {
+    padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
+    padding-right: max(0.9rem, env(safe-area-inset-right, 0px));
+  }
+
+  .app-tab-switcher__btn,
+  .rail-boards__item,
+  .rail-boards__add,
+  .app-header__icon-btn {
+    min-height: 48px;
+  }
+
+  .app-tab-switcher__btn {
+    padding-block: 0.45rem;
+  }
+
+  .rail-boards__item {
+    padding-block: 0.7rem;
+  }
+
+  /* Touch browsers can leave :hover latched after a tap. Keep touch feedback on :active. */
+  .app-tab-switcher__btn:hover,
+  .rail-boards__item:hover,
+  .app-header__icon-btn:hover,
+  .board-layout .task-card:hover {
+    transform: none;
+  }
+
+  .board-scroll-edge {
+    display: none;
+  }
+
+  .board-layout .task-card {
+    transition: none;
   }
 }

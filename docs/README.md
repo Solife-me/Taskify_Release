@@ -9,6 +9,7 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 - [Taskify Agent Mode](reference/agent-mode.md)
 - [Cross-Device App State Sync](reference/app-state-sync.md)
 - [Taskify Shared Architecture Boundaries](reference/architecture-boundaries.md)
+- [Encrypted Attachment Filename Privacy](reference/attachment-file-privacy.md)
 - [Taskify Architecture Overview](reference/architecture-overview.md)
 - [Bot Command Lists (NIP-51)](reference/bot-command-lists.md)
 - [Cashu Wallet Layer](reference/cashu-wallet-layer.md)
@@ -20,6 +21,7 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 
 ## Plans and roadmaps
 
+- [Taskify checklist execution plan](plans/2026-10-29-taskify-checklist-execution-plan.md)
 - [Native macOS Taskify](plans/native-macos.md)
 
 - [Taskify iOS to Web-Wrapped PWA Plan](plans/2026-04-21-ios-webwrap.md)

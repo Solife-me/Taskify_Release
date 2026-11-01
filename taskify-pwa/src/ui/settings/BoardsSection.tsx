@@ -19,6 +19,7 @@ export function BoardsSection({
   onManageBoard,
   onClose,
   defaultRelays,
+  embedded = false,
 }: {
   boards: Board[];
   currentBoardId: string;
@@ -31,6 +32,7 @@ export function BoardsSection({
   onManageBoard: (id: string) => void;
   onClose: () => void;
   defaultRelays: string[];
+  embedded?: boolean;
 }) {
   const { show: showToast } = useToast();
   const [newBoardName, setNewBoardName] = useState("");
@@ -381,9 +383,11 @@ export function BoardsSection({
   return (
     <>
       <section className="wallet-section space-y-3">
-        <div className="flex items-center gap-2 mb-3">
-          <div className="text-sm font-medium">Boards & Lists</div>
-        </div>
+        {!embedded && (
+          <div className="flex items-center gap-2 mb-3">
+            <div className="text-sm font-medium">Boards & Lists</div>
+          </div>
+        )}
         <ul
           ref={boardListRef}
           className="space-y-2 mb-3 overflow-y-auto pr-1"

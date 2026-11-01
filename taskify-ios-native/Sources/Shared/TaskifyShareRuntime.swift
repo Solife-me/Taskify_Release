@@ -203,8 +203,11 @@ final class TaskifyShareUploadSession: NSObject, URLSessionDataDelegate, @unchec
                 $0.id == job.recipient.id && $0.members == job.recipient.members
             }) else { ShareTransferStore.remove(job.id); return }
             if job.remoteURL == nil, let name = job.ciphertextName {
-                job.remoteURL = try await EncryptedFileUpload.upload(file: ShareTransferStore.file(name, job: job.id),
-                    filename: "\(job.sha256 ?? UUID().uuidString).bin", server: job.server, privateKey: identity.privateKey)
+                let ciphertext = try ShareTransferStore.file(name, job: job.id)
+                let uploadFilename = try job.sha256.map(EncryptedFileUpload.opaqueFilename(ciphertextSHA256:))
+                    ?? EncryptedFileUpload.opaqueFilename(for: ciphertext)
+                job.remoteURL = try await EncryptedFileUpload.upload(file: ciphertext,
+                    filename: uploadFilename, server: job.server, privateKey: identity.privateKey)
                 try ShareTransferStore.save(job)
             }
             job = try await ShareMessageDelivery.prepare(job, identity: identity, account: account)

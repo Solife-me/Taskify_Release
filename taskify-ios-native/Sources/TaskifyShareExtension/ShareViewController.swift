@@ -210,7 +210,8 @@ private final class ShareComposer: ObservableObject {
                     job.filename = input.name; job.mimeType = input.mimeType; job.size = encrypted.plaintextSize
                     job.keyHex = encrypted.keyHex; job.nonceHex = encrypted.nonceHex; job.sha256 = encrypted.sha256
                     job.ciphertextName = encrypted.url.lastPathComponent
-                    let prepared = try await EncryptedFileUpload.prepare(file: encrypted.url, filename: "\(encrypted.sha256).bin",
+                    let prepared = try await EncryptedFileUpload.prepare(file: encrypted.url,
+                        filename: try EncryptedFileUpload.opaqueFilename(ciphertextSHA256: encrypted.sha256),
                         server: current.server, privateKey: identity.privateKey, directory: directory)
                     ready.append((job, prepared, input.id))
                 }

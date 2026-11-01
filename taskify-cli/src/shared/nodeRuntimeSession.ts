@@ -1,5 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -10,7 +22,13 @@ import {
   RelayAuthManager,
   RelayHealthTracker,
   RelayInfoCache,
+  RelayPublishBudget,
   RuntimeNostrSession,
+  withStandaloneSession as withRuntimeStandaloneSession,
+  type RelayPublishBudgetSnapshot,
+  type RelayPublishBudgetStateStore,
+  type StandaloneNostrSession,
+  type StandaloneSessionOptions,
   type RuntimeProofOfWorkSettings,
   type NostrOutboxMutation,
   type NostrOutboxStore,
@@ -18,6 +36,7 @@ import {
 import type { TaskifyConfig } from "../config.js";
 
 export const NOSTR_OUTBOX_PATH = join(homedir(), ".taskify-cli", "nostr-outbox.json");
+export const RELAY_PUBLISH_BUDGET_PATH = join(homedir(), ".taskify-cli", "relay-publish-budget.json");
 
 type StoredOutbox = {
   version: 1;
@@ -119,6 +138,99 @@ export class FileNostrOutboxStore implements NostrOutboxStore {
   }
 }
 
+function sleepSync(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function acquireSyncLock(lockPath: string): () => void {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 2_000) {
+    try {
+      const descriptor = openSync(lockPath, "wx", 0o600);
+      return () => {
+        try { closeSync(descriptor); } finally { try { unlinkSync(lockPath); } catch {} }
+      };
+    } catch (error) {
+      if (!(error instanceof Error)
+        || !("code" in error)
+        || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // A killed CLI must not permanently strand every later publish.
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > 5_000) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      sleepSync(15);
+    }
+  }
+  throw new Error("Timed out waiting for the relay publish budget lock.");
+}
+
+function readBudgetSnapshot(filePath: string): RelayPublishBudgetSnapshot | null {
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as RelayPublishBudgetSnapshot;
+    return parsed?.version === 1 && parsed.relays && typeof parsed.relays === "object" ? parsed : null;
+  } catch (error) {
+    if (missing(error) || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+/** Cross-process state for the CLI's Damus-safe token bucket and rejection backoff. */
+export class FileRelayPublishBudgetStateStore implements RelayPublishBudgetStateStore {
+  private readonly filePath: string;
+
+  constructor(filePath = RELAY_PUBLISH_BUDGET_PATH) {
+    this.filePath = filePath;
+  }
+
+  update(operation: (snapshot: RelayPublishBudgetSnapshot | null) => RelayPublishBudgetSnapshot): RelayPublishBudgetSnapshot {
+    const directory = dirname(this.filePath);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
+    const release = acquireSyncLock(`${this.filePath}.lock`);
+    try {
+      const snapshot = operation(readBudgetSnapshot(this.filePath));
+      const temporary = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
+      const descriptor = openSync(temporary, "wx", 0o600);
+      try {
+        writeFileSync(descriptor, JSON.stringify(snapshot, null, 2), "utf-8");
+        fsyncSync(descriptor);
+        closeSync(descriptor);
+        renameSync(temporary, this.filePath);
+        chmodSync(this.filePath, 0o600);
+      } catch (error) {
+        try { closeSync(descriptor); } catch {}
+        try { unlinkSync(temporary); } catch {}
+        throw error;
+      }
+      return snapshot;
+    } finally {
+      release();
+    }
+  }
+}
+
+export function createCliRelayPublishBudget(filePath?: string): RelayPublishBudget {
+  return new RelayPublishBudget({
+    stateStore: new FileRelayPublishBudgetStateStore(filePath),
+  });
+}
+
+/** One-off CLI publishers share the same cross-process budget as normal task writes. */
+export function withCliStandaloneSession<T>(
+  options: StandaloneSessionOptions,
+  work: (session: StandaloneNostrSession) => Promise<T>,
+): Promise<T> {
+  return withRuntimeStandaloneSession(
+    { ...options, publishBudget: options.publishBudget ?? createCliRelayPublishBudget() },
+    work,
+  );
+}
+
 export function secretKeyHexFromNsec(nsec: string | undefined): string {
   const value = nsec?.trim();
   if (!value) throw new Error("No nsec configured for the active profile.");
@@ -138,6 +250,7 @@ export function createCliNostrSession(
   config: TaskifyConfig,
   options: {
     outboxPath?: string;
+    publishBudgetPath?: string;
     verbose?: boolean;
     /** Persistent NIP-11 / learned-PoW cache (see `cliRelayInfoCache`). */
     relayInfoCache?: RelayInfoCache;
@@ -161,6 +274,7 @@ export function createCliNostrSession(
     }),
     createWalletClient: () => undefined,
     outboxStore: new FileNostrOutboxStore(options.outboxPath),
+    publishBudget: createCliRelayPublishBudget(options.publishBudgetPath),
     isDev: options.verbose,
     proofOfWork: options.proofOfWork,
     // The CLI always names its relays; don't also dial NDK's discovery relays.

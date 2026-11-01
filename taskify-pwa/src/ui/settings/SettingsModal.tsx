@@ -32,6 +32,8 @@ import { NostrSection } from "./NostrSection";
 import { BackupSection } from "./BackupSection";
 import { ChatSection } from "./ChatSection";
 import { SupportSection } from "./SupportSection";
+import { StorageSection } from "./StorageSection";
+import { SettingsAccordion } from "./SettingsAccordion";
 import { ManageBoardModal } from "./ManageBoardModal";
 
 
@@ -118,31 +120,6 @@ export function SettingsModal({
   const [shareBoardStatus, setShareBoardStatus] = useState<string | null>(null);
   const [shareBoardBusy, setShareBoardBusy] = useState(false);
 
-  // AI import
-  const taskifyAiInstructionBlock = useMemo(() => [
-    "When I ask \"create a Taskify task/event\", return JSON Taskify can import.",
-    "",
-    "Rules:",
-    "- Use conversation context.",
-    "- If date/time/timezone is missing, make a reasonable assumption.",
-    "- Output JSON only (no explanation text).",
-    "- Use plain ASCII double quotes only (\") and valid JSON.",
-    "- Escape quotes inside string values (or write 1.5 in instead of 1.5\").",
-    "- Do not include app-generated fields: id, boardId, column, columnId, createdAt, createdBy, completed.",
-    "- Root format must be one of: {\"items\":[...]}, [...], or a single object.",
-    "",
-    "Task template:",
-    "{\"type\":\"task\",\"title\":\"...\",\"note\":\"...\",\"priority\":1,\"dueISO\":\"2026-03-01T15:00:00.000Z\",\"dueDateEnabled\":true,\"dueTimeEnabled\":true,\"dueTimeZone\":\"America/New_York\",\"reminders\":[\"15m\"],\"reminderTime\":\"09:00\",\"subtasks\":[{\"title\":\"...\",\"completed\":false}],\"recurrence\":{\"type\":\"daily\"}}",
-    "",
-    "Timed event template:",
-    "{\"type\":\"event\",\"kind\":\"time\",\"title\":\"...\",\"description\":\"...\",\"startISO\":\"2026-03-01T16:00:00.000Z\",\"endISO\":\"2026-03-01T16:30:00.000Z\",\"startTzid\":\"America/New_York\",\"endTzid\":\"America/New_York\",\"reminders\":[\"15m\"],\"recurrence\":{\"type\":\"weekly\",\"days\":[1,3,5]}}",
-    "",
-    "All-day event template:",
-    "{\"type\":\"event\",\"kind\":\"date\",\"title\":\"...\",\"startDate\":\"2026-03-01\",\"endDate\":\"2026-03-03\",\"reminderTime\":\"09:00\"}",
-    "",
-    "Reminder IDs: \"0h\",\"5m\",\"15m\",\"30m\",\"1h\",\"1d\",\"1w\",\"0d\", or \"custom-<signed_minutes>\" (for example: \"custom--30\" or \"custom-90\").",
-    "Recurrence: {\"type\":\"none\"}, {\"type\":\"daily\"}, or {\"type\":\"weekly\",\"days\":[0-6]} with optional \"untilISO\".",
-  ].join("\n"), []);
 
   // ─── Derived ────────────────────────────────────────────────────────────────
   const currentBoard = useMemo(
@@ -245,18 +222,6 @@ export function SettingsModal({
     [defaultRelays, readNostrSecret, shareBoardTarget, showToast],
   );
 
-  const handleCopyTaskifyAiInstructions = useCallback(async () => {
-    try {
-      await navigator.clipboard?.writeText(taskifyAiInstructionBlock);
-      showToast("Taskify AI instructions copied", 2000);
-    } catch {
-      showToast("Unable to copy instructions", 2000);
-    }
-  }, [showToast, taskifyAiInstructionBlock]);
-
-
-
-
   const handleClose = useCallback(() => {
     onClose();
     if (reloadNeeded) {
@@ -273,9 +238,12 @@ export function SettingsModal({
   // ─── Render ─────────────────────────────────────────────────────────────────
   const settingsBody = (
     <div className="space-y-2">
-
-        {/* Boards & Columns */}
+      <SettingsAccordion
+        title="Boards & Lists"
+        summary="Create, join, reorder, archive, and share boards"
+      >
         <BoardsSection
+          embedded
           boards={boards}
           currentBoardId={currentBoardId}
           setBoards={setBoards}
@@ -288,30 +256,41 @@ export function SettingsModal({
           onClose={handleClose}
           defaultRelays={defaultRelays}
         />
+      </SettingsAccordion>
 
-        {/* View */}
-        <ViewSection
-          settings={settings}
-          setSettings={setSettings}
-          boards={boards}
-        />
+      <SettingsAccordion
+        title="View"
+        summary="Task placement, theme, accent, startup view, and display options"
+      >
+        <ViewSection embedded settings={settings} setSettings={setSettings} boards={boards} />
+      </SettingsAccordion>
 
-        {/* Chat */}
-        <ChatSection
-          settings={settings}
-          setSettings={setSettings}
-        />
+      <SettingsAccordion
+        title="Chat"
+        summary="Message retention, local storage usage, and chat history"
+      >
+        <ChatSection embedded settings={settings} setSettings={setSettings} />
+      </SettingsAccordion>
 
-        {/* Bible */}
+      <SettingsAccordion
+        title="Bible"
+        summary="Bible tracker, scripture memory, and fasting reminders"
+      >
         <BibleSection
+          embedded
           settings={settings}
           setSettings={setSettings}
           boards={boards}
           currentBoard={currentBoard}
         />
+      </SettingsAccordion>
 
-        {/* Push notifications */}
+      <SettingsAccordion
+        title="Push notifications"
+        summary="Device alerts and private chat notification preferences"
+      >
         <PushSection
+          embedded
           pushPrefs={settings.pushNotifications}
           pushWorkState={pushWorkState}
           pushError={pushError}
@@ -323,9 +302,14 @@ export function SettingsModal({
           workerBaseUrl={workerBaseUrl}
           vapidPublicKey={vapidPublicKey}
         />
+      </SettingsAccordion>
 
-        {/* Nostr */}
+      <SettingsAccordion
+        title="Nostr & Sync"
+        summary="Identity, relays, encrypted sync, and board history recovery"
+      >
         <NostrSection
+          embedded
           settings={settings}
           setSettings={setSettings}
           defaultRelays={defaultRelays}
@@ -338,66 +322,53 @@ export function SettingsModal({
           onResyncBoardHistory={onResyncBoardHistory}
           sharedBoardCount={boards.filter((board) => !!board.nostr?.boardId).length}
         />
+      </SettingsAccordion>
 
-        {/* Backup & Restore */}
-        <BackupSection
-          onReloadNeeded={onReloadNeeded}
-        />
+      <SettingsAccordion
+        title="Storage & file servers"
+        summary="Choose public and encrypted attachment hosts"
+      >
+        <StorageSection settings={settings} setSettings={setSettings} />
+      </SettingsAccordion>
 
-        {/* AI prompts */}
-        <section className="wallet-section space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">AI prompts</div>
-          </div>
+      <SettingsAccordion
+        title="Backup & Restore"
+        summary="Download or restore a complete offline backup"
+      >
+        <BackupSection embedded onReloadNeeded={onReloadNeeded} />
+      </SettingsAccordion>
 
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">Task/event import prompt</div>
-              <button
-                className="ghost-button button-sm pressable ml-auto"
-                onClick={handleCopyTaskifyAiInstructions}
-              >
-                Copy instructions
-              </button>
-            </div>
-            <div className="text-xs text-secondary">
-              Paste this prompt into your AI app, ask it to make Taskify tasks/events, then paste the JSON response into any
-              board&apos;s add box.
-            </div>
-            <textarea
-              readOnly
-              value={taskifyAiInstructionBlock}
-              className="pill-textarea w-full min-h-[16rem] font-mono text-[11px] leading-relaxed"
-              spellCheck={false}
-            />
-          </div>
+      <SettingsAccordion
+        title="Support development"
+        summary="Send a Lightning tip or copy the support address"
+      >
+        <SupportSection embedded />
+      </SettingsAccordion>
 
+      <SettingsAccordion
+        title="Feedback & feature requests"
+        summary="Contact the developer or share the support board ID"
+      >
+        <div className="text-xs text-secondary">
+          Please submit feedback or feature requests to{' '}
+          <button
+            className="link-accent"
+            onClick={async () => { try { await navigator.clipboard?.writeText('dev@solife.me'); showToast('Copied dev@solife.me'); } catch {} }}
+          >dev@solife.me</button>{' '}
+          or share Board ID{' '}
+          <button
+            className="link-accent"
+            onClick={async () => { try { await navigator.clipboard?.writeText('c3db0d84-ee89-43df-a31e-edb4c75be32b'); showToast('Copied Board ID'); } catch {} }}
+          >c3db0d84-ee89-43df-a31e-edb4c75be32b</button>
+        </div>
+      </SettingsAccordion>
 
-        </section>
-
-        <SupportSection />
-
-        {/* Feedback / Feature requests */}
-        <section className="wallet-section space-y-2 text-xs text-secondary">
-          <div>
-            Please submit feedback or feature requests to{' '}
-            <button
-              className="link-accent"
-              onClick={async ()=>{ try { await navigator.clipboard?.writeText('dev@solife.me'); showToast('Copied dev@solife.me'); } catch {} }}
-            >dev@solife.me</button>{' '}or share Board ID{' '}
-            <button
-              className="link-accent"
-              onClick={async ()=>{ try { await navigator.clipboard?.writeText('c3db0d84-ee89-43df-a31e-edb4c75be32b'); showToast('Copied Board ID'); } catch {} }}
-            >c3db0d84-ee89-43df-a31e-edb4c75be32b</button>
-          </div>
-        </section>
-
-        {!embedded && (
-          <div className="flex justify-end">
-            <button className="ghost-button button-sm pressable" onClick={handleClose}>Close</button>
-          </div>
-        )}
-      </div>
+      {!embedded && (
+        <div className="flex justify-end">
+          <button className="ghost-button button-sm pressable" onClick={handleClose}>Close</button>
+        </div>
+      )}
+    </div>
   );
 
   return (

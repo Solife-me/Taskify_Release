@@ -1,0 +1,76 @@
+{
+  "modelListings": [
+    {
+      "name": "provider previews, counts, and current markers",
+      "text": "Current: `deepseek-v4.1-flash:cloud` on custom:local\n\n**local** `--provider custom:local` (current):\n  `lfm3-audio:latest`, `lfm3-omni:latest`, `phonon:40m-multilingual`, `phonon:latest`, `bonsai-2:27b` (+8 more)\n\n**Nous Portal** `--provider nous`:\n  `anthropic/claude-fable-5.1`, `anthropic/claude-fable-5`, `anthropic/claude-opus-5.5`, `anthropic/claude-opus-5`, `anthropic/claude-opus-4.8` (+64 more)\n\n**Ollama Cloud** `--provider ollama-cloud`:\n  `beam`, `kimi-k3`, `gpt-oss:20b`, `muse-spark-open`, `nemotron-3-nano:30b` (+19 more)\n\n`/model <name>` — switch model\n`/model <name> --provider <slug>` — switch provider",
+      "expected": {
+        "currentModel": "deepseek-v4.1-flash:cloud",
+        "currentProviderSlug": "custom:local",
+        "providers": [
+          {
+            "name": "local",
+            "slug": "custom:local",
+            "previewModels": ["lfm3-audio:latest", "lfm3-omni:latest", "phonon:40m-multilingual", "phonon:latest", "bonsai-2:27b"],
+            "totalModels": 13,
+            "isCurrent": true
+          },
+          {
+            "name": "Nous Portal",
+            "slug": "nous",
+            "previewModels": ["anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5.5", "anthropic/claude-opus-5", "anthropic/claude-opus-4.8"],
+            "totalModels": 69,
+            "isCurrent": false
+          },
+          {
+            "name": "Ollama Cloud",
+            "slug": "ollama-cloud",
+            "previewModels": ["beam", "kimi-k3", "gpt-oss:20b", "muse-spark-open", "nemotron-3-nano:30b"],
+            "totalModels": 24,
+            "isCurrent": false
+          }
+        ]
+      }
+    }
+  ],
+  "providerCatalogs": [
+    {
+      "name": "single provider fenced JSON",
+      "text": "```json\n{\"provider\":\"custom:local\",\"models\":[\"lfm3-audio:latest\",\"lfm3-omni:latest\",\"phonon:40m-multilingual\",\"phonon:latest\",\"bonsai-2:27b\",\"beam:cloud\",\"minimax-m3.1-flash:cloud\",\"deepseek-v4.1-flash:cloud\",\"glm-5.3-flash:cloud\",\"ornith-1.5:35b\",\"kimi-k3:cloud\",\"gemma4:26b-mlx\",\"nomic-embed-text-v2-moe:latest\"]}\n```",
+      "expectedProviderSlug": "custom:local",
+      "expected": {
+        "providerName": null,
+        "providerSlug": "custom:local",
+        "models": ["lfm3-audio:latest", "lfm3-omni:latest", "phonon:40m-multilingual", "phonon:latest", "bonsai-2:27b", "beam:cloud", "minimax-m3.1-flash:cloud", "deepseek-v4.1-flash:cloud", "glm-5.3-flash:cloud", "ornith-1.5:35b", "kimi-k3:cloud", "gemma4:26b-mlx", "nomic-embed-text-v2-moe:latest"]
+      }
+    },
+    {
+      "name": "provider selected from a multi-provider catalog",
+      "text": "{\"providers\":[{\"name\":\"Nous Portal\",\"slug\":\"nous\",\"models\":[\"anthropic/claude-fable-5.1\",\"openai/gpt-6-astra\"]},{\"name\":\"Ollama Cloud\",\"slug\":\"ollama-cloud\",\"models\":[\"beam\",\"kimi-k3\"]}]}",
+      "expectedProviderSlug": "ollama-cloud",
+      "expected": {
+        "providerName": "Ollama Cloud",
+        "providerSlug": "ollama-cloud",
+        "models": ["beam", "kimi-k3"]
+      }
+    }
+  ],
+  "confirmations": [
+    {
+      "name": "session-scoped model switch",
+      "text": "Model switched to deepseek-v4.1-flash:cloud\nProvider: local\nContext: 1,048,576 tokens\n_(session only — add --global to persist)_",
+      "expected": {
+        "modelId": "deepseek-v4.1-flash:cloud",
+        "providerName": "local"
+      }
+    }
+  ],
+  "invalidModelListings": [
+    "No provider list here.",
+    "**Broken** --provider local:\n  `model`"
+  ],
+  "invalidProviderCatalogs": [
+    "{\"provider\":\"custom:local\",\"models\":\"not-an-array\"}",
+    "{\"provider\":\"wrong-provider\",\"models\":[\"beam\"]}",
+    "{\"providers\":[{\"slug\":\"nous\",\"models\":[\"openai/gpt-6-astra\"]}]}"
+  ]
+}

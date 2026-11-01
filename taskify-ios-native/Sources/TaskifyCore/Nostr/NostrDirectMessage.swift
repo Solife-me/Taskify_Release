@@ -340,6 +340,9 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
     public var attachment: NostrDirectMessageAttachment?
     public var groupID: String?
     public var groupMemberPublicKeys: [String]?
+    /// Encrypted Taskify metadata for a generated Hermes menu command. Internal commands are
+    /// hidden from the visible timeline, but retained so every device can reconstruct the menu.
+    public var botUiAction: TaskifyBotUiAction?
     /// Local delivery state for messages authored by this account. Older snapshots omit this
     /// field and incoming messages leave it nil.
     public var deliveryState: NostrDirectMessageDeliveryState?
@@ -357,6 +360,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         attachment: NostrDirectMessageAttachment? = nil,
         groupID: String? = nil,
         groupMemberPublicKeys: [String]? = nil,
+        botUiAction: TaskifyBotUiAction? = nil,
         deliveryState: NostrDirectMessageDeliveryState? = nil
     ) {
         self.rumorEventID = rumorEventID.lowercased()
@@ -371,6 +375,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         self.attachment = attachment
         self.groupID = groupID?.lowercased()
         self.groupMemberPublicKeys = groupMemberPublicKeys?.map { $0.lowercased() }.sorted().nilIfEmpty
+        self.botUiAction = botUiAction
         self.deliveryState = isIncoming ? nil : deliveryState
     }
 
@@ -430,6 +435,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
             attachment: attachment,
             groupID: group?.groupID,
             groupMemberPublicKeys: group?.memberPublicKeys,
+            botUiAction: group == nil ? TaskifyBotUiContract.action(from: rumor.tags) : nil,
             deliveryState: incoming ? nil : .sent
         )
     }
@@ -585,7 +591,13 @@ public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
         self.actionRequiredCount = actionRequiredCount
     }
 
-    public var latestMessage: NostrDirectMessage? { messages.last }
+    /// Internal Hermes catalog traffic is absent, while the listing response remains available
+    /// for the native picker to render.
+    public var visibleMessages: [NostrDirectMessage] {
+        let hidden = HermesModelPickerProjection.project(messages: messages, enabled: true).hiddenMessageIDs
+        return messages.filter { !hidden.contains($0.rumorEventID) }
+    }
+    public var latestMessage: NostrDirectMessage? { visibleMessages.last }
     public var latestSharedTask: SharedInboxItem? { sharedTasks.last }
     public var latestSharedContact: SharedContactInboxItem? { sharedContacts.last }
     public var latestCalendarInvite: SharedCalendarInviteInboxItem? { calendarInvites.last }
@@ -774,6 +786,9 @@ public extension TaskifySnapshot {
             }
             let readAt = directMessageReadAt?[peer] ?? 0
             let mutedAt = directMessageMutedGroups?[peer]
+            let hiddenHermesIDs = HermesModelPickerProjection
+                .project(messages: sorted, enabled: true)
+                .hiddenMessageIDs
             return NostrDirectMessageThread(
                 peerPublicKey: peer,
                 messages: sorted,
@@ -783,6 +798,7 @@ public extension TaskifySnapshot {
                 sharedBoards: sharedBoards,
                 unreadCount: sorted.filter {
                     $0.isIncoming &&
+                        !hiddenHermesIDs.contains($0.rumorEventID) &&
                         $0.createdAt > readAt &&
                         $0.createdAt < (mutedAt ?? .max)
                 }.count,

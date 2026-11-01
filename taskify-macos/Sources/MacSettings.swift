@@ -4,20 +4,64 @@ import SwiftUI
 import TaskifyCore
 import UniformTypeIdentifiers
 
+private enum MacSettingsSection: String, CaseIterable, Identifiable {
+    case general, account, profile, sync
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .account: "Account"
+        case .profile: "Profile"
+        case .sync: "Sync"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .account: "person.crop.circle"
+        case .profile: "person.text.rectangle"
+        case .sync: "network"
+        }
+    }
+
+    var accessibilityIdentifier: String {
+        switch self {
+        case .general: "general-settings-tab"
+        case .account: "account-settings-tab"
+        case .profile: "profile-settings-tab"
+        case .sync: "sync-settings-tab"
+        }
+    }
+}
+
 struct MacSettingsView: View {
     @Environment(AppModel.self) private var model
+    @EnvironmentObject private var runtime: MacRuntime
     @EnvironmentObject private var wallet: WalletViewModel
-    @AppStorage(TaskPresentationSettings.hideCompletedSubtasksKey)
-    private var hideCompletedSubtasks = TaskPresentationSettings.hideCompletedSubtasksDefault
     @State private var relay = ""
     @State private var identity = ""
+    @State private var accountLabel = ""
+    @State private var accountToRemove: MacAccountSummary?
     @State private var message: String?
     @State private var importConfirmation = false
     @State private var restoreCandidate: TaskifySnapshot?
     @State private var profile = NostrProfileDraft()
     @State private var profileLoaded = false
+    @SceneStorage("mac.settings.section") private var selectedSectionRaw = MacSettingsSection.general.rawValue
+
+    private var selectedSection: MacSettingsSection {
+        get { MacSettingsSection(rawValue: selectedSectionRaw) ?? .general }
+        nonmutating set { selectedSectionRaw = newValue.rawValue }
+    }
     var body: some View {
-        TabView {
+        VStack(spacing: 0) {
+            settingsSectionPicker
+            Divider()
+            Group {
+            if selectedSection == .general {
             Form {
                 Section("Tasks") {
                     Picker("Start Week On", selection: Binding(get: { model.weekStart }, set: { model.setWeekStart($0) })) {
@@ -27,7 +71,14 @@ struct MacSettingsView: View {
                         Text("Top").tag(NewTaskPosition.top); Text("Bottom").tag(NewTaskPosition.bottom)
                     }
                     Toggle("Show Full Week Recurrences", isOn: Binding(get: { model.showFullWeekRecurring }, set: { model.setShowFullWeekRecurring($0) }))
-                    Toggle("Hide Completed Subtasks", isOn: $hideCompletedSubtasks)
+                    Toggle("Show Completed Tasks Tab", isOn: Binding(
+                        get: { runtime.completedTabEnabled },
+                        set: { runtime.setCompletedTabEnabled($0) }
+                    ))
+                    Toggle("Hide Completed Subtasks", isOn: Binding(
+                        get: { runtime.hideCompletedSubtasks },
+                        set: { runtime.setHideCompletedSubtasks($0) }
+                    ))
                     Toggle("Track Streaks", isOn: Binding(get: { model.streaksEnabled }, set: { model.setStreaksEnabled($0) }))
                     Toggle("Bible Tracker", isOn: Binding(get: { model.visibleBoards.contains { $0.kind == .bible } }, set: { _ = model.setBibleTrackerEnabled($0) }))
                 }
@@ -78,17 +129,33 @@ struct MacSettingsView: View {
                     Button("Enable Task Notifications") { model.requestNotificationPermission() }
                     Text("Messages sync while Taskify is running. Closed-app message notifications need a separately provisioned Mac push service.").font(.caption).foregroundStyle(.secondary)
                 }
-            }.formStyle(.grouped).tabItem { Label("General", systemImage: "gearshape") }
+            }
+            .formStyle(.grouped)
+            }
+            if selectedSection == .account {
             Form {
-                Section("Nostr Account") {
-                    Text(model.identityNpub).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    Button("Copy Public Key") { macCopy(model.identityNpub) }
+                Section("Accounts") {
+                    if runtime.isSwitchingAccount {
+                        ProgressView("Updating saved accounts…").controlSize(.small)
+                    }
+                    ForEach(runtime.savedAccounts) { account in
+                        accountRow(account)
+                    }
+                    if runtime.savedAccounts.isEmpty {
+                        Text("Your current account will appear here after startup finishes.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Saved account keys are stored in this Mac's Keychain. Each account keeps its own local boards, chats, and pending sync queue.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Add Account for Easy Switching") {
+                    TextField("Account label (optional)", text: $accountLabel)
                     SecureField("Import nsec or secret key", text: $identity)
                         .accessibilityIdentifier("account-private-key-field")
-                    Button("Switch Account…") { importConfirmation = true }
-                        .disabled(identity.isEmpty)
+                    Button("Add and Switch Account…") { importConfirmation = true }
+                        .disabled(identity.isEmpty || runtime.isSwitchingAccount)
                         .accessibilityIdentifier("switch-account-button")
-                    Text("Switching accounts replaces this Mac's task and chat state. The wallet has its own recovery phrase.").font(.caption).foregroundStyle(.secondary)
+                    if let error = runtime.accountError { Text(error).font(.caption).foregroundStyle(.red) }
                 }
                 Section("Backup") {
                     Button("Export Task Backup…") { exportBackup() }
@@ -106,12 +173,22 @@ struct MacSettingsView: View {
                     Text(message).font(.caption).textSelection(.enabled)
                         .accessibilityIdentifier("account-import-message")
                 }
-            }.formStyle(.grouped).tabItem {
-                Label("Account", systemImage: "person.crop.circle")
-                    .accessibilityIdentifier("account-settings-tab")
             }
+            .formStyle(.grouped)
+            }
+            if selectedSection == .profile {
             Form {
                 Section("Public Profile") {
+                    HStack {
+                        Spacer()
+                        MacAccountAvatar(
+                            pictureURL: profile.picture,
+                            fallbackText: profile.displayName ?? profile.username ?? model.identityNpub,
+                            size: 84
+                        )
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
                     TextField("Display Name", text: profileBinding(\.displayName))
                     TextField("Username", text: profileBinding(\.username))
                     TextField("About", text: profileBinding(\.about), axis: .vertical).lineLimit(2...6)
@@ -124,8 +201,17 @@ struct MacSettingsView: View {
                 if let message { Text(message).font(.caption) }
                 if let message = model.profilePublishMessage { Text(message).font(.caption) }
             }.formStyle(.grouped).disabled(!profileLoaded || model.isPublishingProfile)
-                .task { await model.loadOwnProfile(); profile = NostrProfileDraft(profile: model.ownProfile); profileLoaded = true }
-                .tabItem { Label("Profile", systemImage: "person.text.rectangle") }
+                .task(id: model.identityPublicKey) {
+                    profileLoaded = false
+                    profile = NostrProfileDraft()
+                    let accountID = model.identityPublicKey
+                    await model.loadOwnProfile()
+                    guard !Task.isCancelled, model.identityPublicKey == accountID else { return }
+                    profile = NostrProfileDraft(profile: model.ownProfile)
+                    profileLoaded = true
+                }
+            }
+            if selectedSection == .sync {
             Form {
                 Section("Relay Connections") {
                     ForEach(model.appRelays, id: \.self) { url in
@@ -147,8 +233,13 @@ struct MacSettingsView: View {
                         ForEach(model.encryptedFileServers, id: \.url) { Text($0.url).tag($0.url) }
                     }
                 }
-            }.formStyle(.grouped).tabItem { Label("Sync", systemImage: "network") }
-        }.padding(12)
+            }
+            .formStyle(.grouped)
+            }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
+        }
             .confirmationDialog("Replace this Mac's task and chat data with the selected backup?", isPresented: Binding(get: { restoreCandidate != nil }, set: { if !$0 { restoreCandidate = nil } })) {
                 Button("Restore Backup", role: .destructive) {
                     guard let candidate = restoreCandidate else { return }
@@ -158,15 +249,136 @@ struct MacSettingsView: View {
                 Button("Cancel", role: .cancel) { restoreCandidate = nil }
             }
             .confirmationDialog("Switch the account on this Mac?", isPresented: $importConfirmation) {
-                Button("Switch Account", role: .destructive) {
-                    if model.importIdentity(identity) {
-                        identity = ""
-                        message = "Account imported."
+                Button("Add and Switch Account") {
+                    let privateKey = identity
+                    let label = accountLabel
+                    identity = ""
+                    accountLabel = ""
+                    Task {
+                        if await runtime.addAndSwitchAccount(nsec: privateKey, label: label) {
+                            message = "Switched account."
+                        }
                     }
                 }
                 .accessibilityIdentifier("confirm-switch-account-button")
                 Button("Cancel", role: .cancel) {}
             }
+            .confirmationDialog(
+                "Remove this saved account from the Mac?",
+                isPresented: Binding(
+                    get: { accountToRemove != nil },
+                    set: { if !$0 { accountToRemove = nil } }
+                )
+            ) {
+                Button("Remove Account", role: .destructive) {
+                    guard let accountToRemove else { return }
+                    Task {
+                        if await runtime.removeAccount(accountToRemove.id) {
+                            message = "Account removed."
+                        }
+                    }
+                    self.accountToRemove = nil
+                }
+                Button("Cancel", role: .cancel) { accountToRemove = nil }
+            } message: {
+                if accountToRemove?.isPrimary == true {
+                    Text("This removes the saved key from this Mac and promotes another saved account to primary. The removed account's local data remains on disk.")
+                } else {
+                    Text("This removes the saved key from this Mac. Its local account data remains on disk.")
+                }
+            }
+            .disabled(runtime.isSwitchingAccount)
+            .task(id: model.identityPublicKey) {
+                guard !model.identityPublicKey.isEmpty else { return }
+                await model.loadOwnProfile()
+            }
+            .onChange(of: model.identityPublicKey) { _, _ in
+                identity = ""
+                accountLabel = ""
+                relay = ""
+                message = nil
+                restoreCandidate = nil
+                profileLoaded = false
+                profile = NostrProfileDraft()
+            }
+    }
+
+    private var settingsSectionPicker: some View {
+        HStack(spacing: 8) {
+            ForEach(MacSettingsSection.allCases) { section in
+                Button {
+                    selectedSection = section
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: section.symbol).font(.title3)
+                        Text(section.title).font(.caption)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .contentShape(Rectangle())
+                    .background(
+                        selectedSection == section
+                            ? Color.accentColor.opacity(0.13)
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 9)
+                    )
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selectedSection == section ? Color.accentColor : Color.secondary)
+                .accessibilityIdentifier(section.accessibilityIdentifier)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    @ViewBuilder
+    private func accountRow(_ account: MacAccountSummary) -> some View {
+        HStack(spacing: 12) {
+            MacAccountAvatar(
+                pictureURL: account.isCurrent ? model.ownProfile?.picture : nil,
+                fallbackText: account.label,
+                size: 36
+            )
+            .overlay(alignment: .bottomTrailing) {
+                if account.isCurrent {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                        .background(Circle().fill(.background))
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(account.label).font(.headline)
+                    if account.isPrimary { Text("PRIMARY").font(.caption2.bold()).foregroundStyle(.secondary) }
+                }
+                Text(account.npub).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Button { macCopy(account.npub) } label: { Image(systemName: "doc.on.doc") }
+                .buttonStyle(.borderless)
+                .help("Copy Public Key")
+            if account.isCurrent {
+                Text("Current").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("Switch") {
+                    Task { _ = await runtime.switchAccount(to: account.id) }
+                }
+                .disabled(runtime.isSwitchingAccount)
+            }
+            if runtime.savedAccounts.count > 1 {
+                Button { accountToRemove = account } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+                    .help("Remove Saved Account")
+            } else {
+                Image(systemName: "trash")
+                    .foregroundStyle(.tertiary)
+                    .help("Add another account before removing this one")
+            }
+        }
+        .padding(.vertical, 3)
     }
     private func profileBinding(_ key: WritableKeyPath<NostrProfileDraft, String?>) -> Binding<String> {
         Binding(get: { profile[keyPath: key] ?? "" }, set: { profile[keyPath: key] = $0 })
@@ -201,6 +413,7 @@ func authenticate(_ reason: String) async throws {
 
 struct MacOnboarding: View {
     @Environment(AppModel.self) private var model
+    @EnvironmentObject private var runtime: MacRuntime
     @State private var key = ""
     @State private var importing = false
     var body: some View {
@@ -214,12 +427,22 @@ struct MacOnboarding: View {
                 SecureField("Paste your Taskify nsec", text: $key).textFieldStyle(.roundedBorder)
                 Text("Find your private key in the account settings on your other device.").font(.caption).foregroundStyle(.secondary)
             }
-            if let error = model.errorMessage { Text(error).foregroundStyle(.red).font(.caption) }
+            if let error = runtime.accountError ?? model.errorMessage {
+                Text(error).foregroundStyle(.red).font(.caption)
+            }
             HStack {
                 Spacer()
                 Button(importing ? "Import Account" : "Get Started") {
-                    if importing { guard model.importIdentity(key) else { return }; key = "" }
-                    model.completeFirstRunOnboarding()
+                    if importing {
+                        let privateKey = key
+                        key = ""
+                        Task {
+                            guard await runtime.addAndSwitchAccount(nsec: privateKey, label: nil) else { return }
+                            runtime.model.completeFirstRunOnboarding()
+                        }
+                    } else {
+                        model.completeFirstRunOnboarding()
+                    }
                 }.buttonStyle(.borderedProminent).controlSize(.large).disabled(importing && key.isEmpty)
             }
         }.padding(38).frame(width: 480).interactiveDismissDisabled()

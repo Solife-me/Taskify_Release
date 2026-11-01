@@ -16,10 +16,14 @@ public enum TaskifyKeychainItem {
 
     public static func load(_ query: [String: Any]) throws -> Data? {
 #if os(macOS)
-        if let data = try? read(dataProtection(query)) { return data }
-        guard let legacy = try read(query) else { return nil }
-        if (try? write(dataProtection(query), value: legacy, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)) != nil {
-            SecItemDelete(query as CFDictionary)
+        if let data = try? read(dataProtectionQuery(query)) { return data }
+        guard let legacy = try read(legacyQuery(query)) else { return nil }
+        if (try? write(
+            dataProtectionQuery(query),
+            value: legacy,
+            accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        )) != nil {
+            SecItemDelete(legacyQuery(query) as CFDictionary)
         }
         return legacy
 #else
@@ -33,27 +37,40 @@ public enum TaskifyKeychainItem {
         accessible: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
     ) throws {
 #if os(macOS)
-        if (try? write(dataProtection(query), value: value, accessible: accessible)) != nil {
-            // Without the data protection flag this addresses only the legacy keychain.
-            SecItemDelete(query as CFDictionary)
+        if (try? write(dataProtectionQuery(query), value: value, accessible: accessible)) != nil {
+            // Explicitly target the legacy query. Leaving the flag unset can resolve to the data
+            // protection keychain for a signed app on current macOS, deleting the item just saved.
+            SecItemDelete(legacyQuery(query) as CFDictionary)
             return
         }
 #endif
-        try write(query, value: value, accessible: accessible)
+        try write(legacyQuery(query), value: value, accessible: accessible)
     }
 
     public static func delete(_ query: [String: Any]) {
 #if os(macOS)
-        SecItemDelete(dataProtection(query) as CFDictionary)
-#endif
+        SecItemDelete(dataProtectionQuery(query) as CFDictionary)
+        SecItemDelete(legacyQuery(query) as CFDictionary)
+#else
         SecItemDelete(query as CFDictionary)
+#endif
     }
 
 #if os(macOS)
-    private static func dataProtection(_ query: [String: Any]) -> [String: Any] {
+    static func dataProtectionQuery(_ query: [String: Any]) -> [String: Any] {
         var query = query
         query[kSecUseDataProtectionKeychain as String] = true
         return query
+    }
+
+    static func legacyQuery(_ query: [String: Any]) -> [String: Any] {
+        var query = query
+        query[kSecUseDataProtectionKeychain as String] = false
+        return query
+    }
+#else
+    static func legacyQuery(_ query: [String: Any]) -> [String: Any] {
+        query
     }
 #endif
 

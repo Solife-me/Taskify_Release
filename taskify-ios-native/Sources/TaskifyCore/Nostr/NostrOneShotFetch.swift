@@ -7,19 +7,29 @@ public struct NostrRelayFilter: Equatable, Sendable {
     public var dTags: [String]?
     public var limit: Int
     public var since: Int?
+    public var pTags: [String]?
+    public var until: Int?
 
-    public init(kinds: [Int], authors: [String], dTags: [String]? = nil, limit: Int, since: Int? = nil) {
+    public init(kinds: [Int], authors: [String], dTags: [String]? = nil, limit: Int,
+                since: Int? = nil, pTags: [String]? = nil, until: Int? = nil) {
         self.kinds = kinds
         self.authors = authors
         self.dTags = dTags
         self.limit = limit
         self.since = since
+        self.pTags = pTags
+        self.until = until
     }
 
     public func jsonObject() -> [String: Any] {
-        var object: [String: Any] = ["kinds": kinds, "authors": authors, "limit": limit]
+        var object: [String: Any] = ["kinds": kinds, "limit": limit]
+        // Recipient inbox filters have no author constraint. Omit the field instead of sending
+        // an empty array, which some relays interpret as matching no authors at all.
+        if !authors.isEmpty { object["authors"] = authors }
         if let dTags { object["#d"] = dTags }
         if let since { object["since"] = since }
+        if let pTags { object["#p"] = pTags }
+        if let until { object["until"] = until }
         return object
     }
 }

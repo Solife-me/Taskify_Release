@@ -3010,3 +3010,393 @@ html.light .chat-new-message__action-icon {
   font-size: 0.72rem;
   color: var(--text-secondary);
 }
+
+/* ==================== Hermes model picker ==================== */
+.hermes-model-picker {
+  box-sizing: border-box;
+  min-width: min(20rem, 72vw);
+  max-width: 100%;
+  padding: 0.75rem;
+  border-radius: 0.9rem;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.hermes-model-picker__title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.hermes-model-picker__gear {
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: rgba(148, 126, 210, 0.2);
+  color: #c8b8ff;
+  font-size: 1rem;
+}
+
+html.light .hermes-model-picker__gear {
+  background: rgba(100, 75, 180, 0.12);
+  color: #6450ab;
+}
+
+.hermes-model-picker__title-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.16rem;
+}
+
+.hermes-model-picker__title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.hermes-model-picker__current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.42rem;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.hermes-model-picker__current > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.hermes-model-picker__current-provider {
+  color: #bfaef7;
+  white-space: nowrap;
+}
+
+html.light .hermes-model-picker__current-provider {
+  color: #6d55b4;
+}
+
+.hermes-model-picker__section-head,
+.hermes-model-picker__models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.hermes-model-picker__section-head > span:last-child {
+  white-space: nowrap;
+}
+
+.hermes-model-picker__provider-grid,
+.hermes-model-picker__model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.hermes-model-picker__provider,
+.hermes-model-picker__model,
+.hermes-model-picker__control,
+.hermes-model-picker__back {
+  min-height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 0.58rem;
+  background: rgba(255, 255, 255, 0.075);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+html.light .hermes-model-picker__provider,
+html.light .hermes-model-picker__model,
+html.light .hermes-model-picker__control,
+html.light .hermes-model-picker__back {
+  border-color: rgba(17, 24, 39, 0.1);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.hermes-model-picker__provider:hover:not(:disabled),
+.hermes-model-picker__model:hover:not(:disabled),
+.hermes-model-picker__control:hover:not(:disabled),
+.hermes-model-picker__back:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.125);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+html.light .hermes-model-picker__provider:hover:not(:disabled),
+html.light .hermes-model-picker__model:hover:not(:disabled),
+html.light .hermes-model-picker__control:hover:not(:disabled),
+html.light .hermes-model-picker__back:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(17, 24, 39, 0.18);
+}
+
+.hermes-model-picker button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.hermes-model-picker button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.hermes-model-picker__provider {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.5rem 0.58rem;
+  font-size: 0.75rem;
+  text-align: left;
+}
+
+.hermes-model-picker__provider.is-current {
+  border-color: rgba(190, 170, 255, 0.5);
+  background: rgba(139, 112, 222, 0.17);
+}
+
+.hermes-model-picker__provider-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.hermes-model-picker__check {
+  color: #c6b5ff;
+}
+
+html.light .hermes-model-picker__check {
+  color: #6a50b8;
+}
+
+.hermes-model-picker__provider-count {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 0.67rem;
+}
+
+.hermes-model-picker__footer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.hermes-model-picker__control {
+  padding: 0.42rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.hermes-model-picker__control--wide {
+  grid-column: 1 / -1;
+}
+
+.hermes-model-picker__model {
+  min-width: 0;
+  padding: 0.48rem 0.55rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.32rem;
+  font-size: 0.72rem;
+  text-align: left;
+}
+
+.hermes-model-picker__model > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hermes-model-picker__models-head {
+  justify-content: flex-start;
+}
+
+.hermes-model-picker__back {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.7rem;
+}
+
+.hermes-model-picker__selected-provider {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.hermes-model-picker__selected-provider > span:first-child {
+  color: var(--text-primary);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hermes-model-picker__selected-provider > span:last-child {
+  font-size: 0.65rem;
+}
+
+.hermes-model-picker__empty,
+.hermes-model-picker__status,
+.hermes-model-picker__error {
+  padding: 0.55rem 0.6rem;
+  border-radius: 0.55rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.hermes-model-picker__status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.hermes-model-picker__error {
+  color: #ffc2c2;
+  background: rgba(191, 61, 61, 0.18);
+}
+
+html.light .hermes-model-picker__error {
+  color: #9d2323;
+  background: rgba(191, 61, 61, 0.09);
+}
+
+.hermes-model-picker__inline-retry {
+  margin-left: 0.4rem;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.hermes-model-picker__confirmation {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.55rem;
+  border-radius: 0.65rem;
+  background: rgba(110, 203, 145, 0.11);
+  border: 1px solid rgba(110, 203, 145, 0.2);
+}
+
+.hermes-model-picker__confirmation-icon {
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: rgba(110, 203, 145, 0.2);
+  color: #9ee6b8;
+}
+
+html.light .hermes-model-picker__confirmation-icon {
+  color: #227a44;
+}
+
+.hermes-model-picker__confirmation-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  line-height: 1.25;
+}
+
+.hermes-model-picker__confirmation-label {
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+}
+
+.hermes-model-picker__confirmation-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.hermes-model-picker__confirmation-provider {
+  color: var(--text-secondary);
+  font-size: 0.67rem;
+}
+
+.hermes-model-picker__change {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding-inline: 0.5rem;
+}
+
+.hermes-model-picker__spinner {
+  width: 0.8rem;
+  height: 0.8rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-top-color: currentColor;
+  animation: hermes-model-picker-spin 0.72s linear infinite;
+}
+
+@keyframes hermes-model-picker-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 420px) {
+  .hermes-model-picker {
+    min-width: min(20rem, 76vw);
+  }
+
+  .hermes-model-picker__provider-grid,
+  .hermes-model-picker__model-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hermes-model-picker *,
+  .hermes-model-picker *::before,
+  .hermes-model-picker *::after {
+    transition: none !important;
+  }
+
+  .hermes-model-picker__spinner {
+    animation-duration: 1.8s;
+  }
+}

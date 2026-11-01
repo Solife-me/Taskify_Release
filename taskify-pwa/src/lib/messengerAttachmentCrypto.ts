@@ -17,9 +17,10 @@
 //   0xchat-app-business ox_chat/lib/utils/send_message/chat_send_message_helper.dart:105-111
 //   0xchat-app-base ox_common/lib/utils/aes_encrypt_utils.dart:15-43
 
+import { opaqueUploadFilename } from "taskify-core";
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
-import { toBlobPart, toBufferSource } from "./binary";
+import { readResponseBytesWithProgress, toBlobPart, toBufferSource, type DownloadProgressHandler } from "./binary";
 
 export const MESSENGER_ATTACHMENT_ALGO = "aes-gcm" as const;
 export const MESSENGER_ATTACHMENT_KEY_BYTES = 32;
@@ -108,7 +109,7 @@ export async function encryptAndUploadMessengerAttachment(opts: {
   // filename still rides along in the NIP-17 rumor's `filename` tag, so the
   // recipient sees the original name. This also avoids leaking the user's
   // filename to the file host.
-  const uploadFilename = `${ciphertextSha256}.bin`;
+  const uploadFilename = opaqueUploadFilename(ciphertextSha256);
   const blob = new Blob([ciphertext], { type: "application/octet-stream" });
   const upload = await uploadFile({
     debugMeta: {
@@ -156,6 +157,7 @@ export type MessengerAttachmentDescriptor = {
 
 export async function decryptMessengerAttachment(
   descriptor: MessengerAttachmentDescriptor,
+  options: { signal?: AbortSignal; onProgress?: DownloadProgressHandler } = {},
 ): Promise<{ objectUrl: string; blob: Blob }> {
   const cacheKey = `${descriptor.url}::${descriptor.keyHex}::${descriptor.nonceHex}`;
   const cached = decryptObjectUrlCache.get(cacheKey);
@@ -166,9 +168,9 @@ export async function decryptMessengerAttachment(
     if (algo && algo !== "aes-gcm" && algo !== "aes-256-gcm") {
       throw new Error(`Unsupported attachment cipher: ${descriptor.algorithm}`);
     }
-    const res = await fetch(descriptor.url);
+    const res = await fetch(descriptor.url, { signal: options.signal });
     if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
-    const ciphertext = new Uint8Array(await res.arrayBuffer());
+    const ciphertext = await readResponseBytesWithProgress(res, options.onProgress);
     const keyBytes = hexToBytes(descriptor.keyHex);
     const nonceBytes = hexToBytes(descriptor.nonceHex);
     const cryptoKey = await importAesKey(keyBytes);

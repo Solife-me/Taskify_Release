@@ -7,6 +7,7 @@ import Foundation
 public enum TaskifyNotificationContract {
     public static let taskCategoryIdentifier = "me.solife.taskify.notification.task"
     public static let completeTaskActionIdentifier = "me.solife.taskify.notification.complete-task"
+    public static let accountIDKey = "taskifyAccountID"
     public static let taskIDKey = "taskID"
     public static let boardIDKey = "boardID"
     public static let destinationKey = "taskifyDestination"
@@ -42,8 +43,15 @@ public enum TaskifyNotificationContract {
     }
 
     public enum Action: Equatable, Sendable {
-        case completeTask(taskID: String)
-        case reply(to: ReplyTarget, text: String)
+        case completeTask(accountID: String, taskID: String)
+        case reply(accountID: String, to: ReplyTarget, text: String)
+
+        public var accountID: String {
+            switch self {
+            case .completeTask(let accountID, _), .reply(let accountID, _, _):
+                accountID
+            }
+        }
     }
 
     /// `responseText` is the text the user typed into a text-input action, when there is one.
@@ -52,11 +60,16 @@ public enum TaskifyNotificationContract {
         userInfo: [String: String],
         responseText: String? = nil
     ) -> Action? {
+        guard let accountID = userInfo[accountIDKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              (try? Data(hex: accountID))?.count == 32 else {
+            return nil
+        }
         switch identifier {
         case completeTaskActionIdentifier:
             guard let taskID = userInfo[taskIDKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !taskID.isEmpty else { return nil }
-            return .completeTask(taskID: taskID)
+            return .completeTask(accountID: accountID, taskID: taskID)
         case replyDirectMessageActionIdentifier:
             guard let conversationID = userInfo[conversationIDKey]?
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
@@ -65,6 +78,7 @@ public enum TaskifyNotificationContract {
                   let text = responseText?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !text.isEmpty else { return nil }
             return .reply(
+                accountID: accountID,
                 to: ReplyTarget(conversationID: conversationID, isGroup: kind == "group"),
                 text: text
             )
@@ -77,7 +91,7 @@ public enum TaskifyNotificationContract {
     /// or a tab to open. A push delivered without a decrypted preview must not carry them; only
     /// this app's own processing may set them.
     public static let actionKeys: [String] = [
-        taskIDKey, boardIDKey, destinationKey, conversationIDKey, conversationKindKey,
+        accountIDKey, taskIDKey, boardIDKey, destinationKey, conversationIDKey, conversationKindKey,
     ]
 
     public static func removingActionKeys(from userInfo: [AnyHashable: Any]) -> [AnyHashable: Any] {

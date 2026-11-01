@@ -88,6 +88,25 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Receive"].exists)
     }
 
+    func testWeekBoardCentersTodayEveryTimeItOpens() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        let weekBoard = app.staticTexts["UI Test Week"].firstMatch
+        XCTAssertTrue(weekBoard.waitForExistence(timeout: 10))
+        weekBoard.click()
+
+        assertTodayIsCentered(in: app)
+
+        let listBoard = app.staticTexts["UI Test Board"].firstMatch
+        XCTAssertTrue(listBoard.waitForExistence(timeout: 5))
+        listBoard.click()
+        weekBoard.click()
+
+        assertTodayIsCentered(in: app)
+    }
+
     func testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive() {
         let app = XCUIApplication()
         app.launchArguments = [
@@ -104,6 +123,20 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Pay an invoice or Lightning address"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Make an ecash token"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Receive"].exists)
+    }
+
+    private func assertTodayIsCentered(in app: XCUIApplication) {
+        let scrollView = app.scrollViews["week-board-scroll"]
+        XCTAssertTrue(scrollView.waitForExistence(timeout: 5))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "EEEE"
+        let weekday = formatter.string(from: Date())
+        let today = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", weekday)
+        ).firstMatch
+        XCTAssertTrue(today.waitForExistence(timeout: 5))
+        XCTAssertEqual(today.frame.midX, scrollView.frame.midX, accuracy: 24)
     }
 
     func testCreateEditCompleteAndReopenTaskThroughDeepLink() {
@@ -397,6 +430,35 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(chatPaste.waitForExistence(timeout: 5))
         chatPaste.click()
         XCTAssertTrue(app.staticTexts["Pasted Image.png"].waitForExistence(timeout: 5))
+    }
+
+    func testChatComposerShiftReturnStartsANewLineAndReturnSends() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        let chat = app.staticTexts["Chat"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        chat.click()
+        let fixturePeer = app.staticTexts["Paste Test Contact"]
+        XCTAssertTrue(fixturePeer.waitForExistence(timeout: 5))
+        fixturePeer.click()
+
+        let composer = app.textViews["chat-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        let firstLine = "Shift Return \(UUID().uuidString.prefix(6))"
+        let secondLine = "Second row"
+        composer.typeText(firstLine)
+        composer.typeKey(.return, modifierFlags: .shift)
+        composer.typeText(secondLine)
+
+        XCTAssertEqual(composer.value as? String, "\(firstLine)\n\(secondLine)")
+        composer.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(
+            app.staticTexts["\(firstLine)\n\(secondLine)"].waitForExistence(timeout: 10),
+            "Plain Return should send the multi-line draft"
+        )
     }
 
     func testChatAttachmentsRenderInThreadWithRecordButton() {

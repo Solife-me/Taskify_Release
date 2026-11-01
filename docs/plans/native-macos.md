@@ -11,22 +11,31 @@ Implementation status and build instructions: [Mac README](../../taskify-macos/R
 
 Persistent navigation sidebar with boards and destinations; resizable workspace;
 selection-driven task inspector; keyboard commands and native menus; independent
-windows with a shared account store; Settings scene; system light/dark appearance.
-Chat uses a conversation list beside message history. Upcoming presents an agenda
-and calendar. File import/export uses native panels and security-scoped access.
+windows with a shared account store; a two-pane Split View; Settings scene; system
+light/dark appearance. Chat uses a conversation list beside message history.
+Upcoming presents an agenda and calendar. File import/export uses native panels
+and security-scoped access.
 
 ## Port and acceptance inventory
 
 - Boards: week/list/compound, columns, archive, reorder, shared boards/templates.
+  Week boards open horizontally centered on the current weekday; task cards can
+  be dragged onto another board in the sidebar or a split board column. Archived
+  boards live in a collapsed folder and can be dragged back to restore them;
+  active boards can be dragged to reorder them in the sidebar.
 - Tasks: rich editor, subtasks, recurrence/deletion scope, scheduling, reminders,
   attachments, sharing, drag/drop and batch selection.
 - Upcoming: task agenda, calendar events, EventKit calendars/reminders, invitations.
 - Chat: identity/contact directory, DMs/groups, replies/reactions, attachments,
-  search, unread state, retention, block/archive/delete, structured shares.
+  full-history search, unread state, retention, block/archive/delete, structured
+  shares, newest-first opening with 100-item lazy history windows, and task drag
+  sharing into a contact or open conversation.
 - Wallet: mint management, ecash and Lightning, payment requests, pending recovery,
   transaction history, backup/restore, P2PK keys, addresses and contact payments.
-- Account: Keychain identity, encrypted backup continuity, relay settings/status,
-  durable offline outbox, onboarding, notifications, appearance and startup choices.
+- Account: multi-account Keychain vault and sidebar switcher, isolated per-account
+  stores/outboxes, encrypted backup continuity, relay settings/status, onboarding,
+  notifications, appearance and startup choices.
+  The encrypted backup restores the account relay set before contacts, app state and chat history discovery.
 - Additional features: Bible tracker, scripture memory, fasting reminders, voice,
   printing, App Intents, widgets and native sharing integration.
 

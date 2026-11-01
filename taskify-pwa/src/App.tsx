@@ -1,6 +1,6 @@
 import { SharedTaskDestinationSheet, type SharedTaskDestination } from "./components/SharedTaskDestinationSheet";
 import { useReminderSync } from "./domains/push/useReminderSync";
-import { loadBoardPrintJob, persistBoardPrintJob } from "./storage/boardPrintJobs";
+import { loadBoardPrintJobs, saveBoardPrintJobs } from "./storage/boardPrintJobs";
 import { useAppRouter } from "./routing/appRouter";
 import { routeForPage, type ActivePage, type AppOverlayRoute, type AppSheetRoute } from "./routing/appRoute";
 import { useOverlayHistory, useRouteOverlayOpener } from "./routing/useOverlayHistory";
@@ -55,7 +55,7 @@ import {
   MAX_VERSE_COUNT,
 } from "./domains/scripture/bibleTrackerModel";
 import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
-import { type BoardPrintJob, type BoardPrintTask } from "./components/BoardPrintLayout";
+import { isTaskPrintable, tasksForBoardPrintScope, type BoardPrintJob, type BoardPrintListChoice, type BoardPrintScope, type BoardPrintTask } from "./components/BoardPrintLayout";
 import { type PrintPaperSize } from "./components/printPaper";
 import { type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
@@ -508,6 +508,15 @@ export default function App() {
     appRouter.navigate({ page: "boards", boardId: currentBoardId }, { replace: true });
   }, [appRoute, appRouter, currentBoardId]);
 
+  useEffect(() => {
+    if (!currentBoardId || boards.some((board) => board.id === currentBoardId)) return;
+    const fallback = boards.find((board) => !board.archived && !board.hidden);
+    setCurrentBoardIdState(fallback?.id ?? "");
+    if (appRoute.page === "boards") {
+      appRouter.navigate(routeForPage("boards", fallback?.id ?? ""), { replace: true });
+    }
+  }, [appRoute.page, appRouter, boards, currentBoardId, setCurrentBoardIdState]);
+
   const [tasks, setTasks] = useTasks();
   const recordRecurringSeriesCutoff = useCallback((task: Task, cutoffISO: string) => {
     recurringCutoffsStore().set((current) => updateRecurringSeriesCutoff(current, task, cutoffISO));
@@ -643,8 +652,10 @@ export default function App() {
   const [bibleScanOpen, setBibleScanOpen] = useState(false);
   const biblePrintPortal = usePrintPortal("bible-print-portal");
   const [boardPrintOpen, setBoardPrintOpen] = useState(false);
+  const [boardPrintChooserOpen, setBoardPrintChooserOpen] = useState(false);
   const [boardScanOpen, setBoardScanOpen] = useState(false);
   const [boardPrintJob, setBoardPrintJob] = useState<BoardPrintJob | null>(null);
+  const [boardPrintJobs, setBoardPrintJobs] = useState<Record<string, BoardPrintJob>>(() => loadBoardPrintJobs());
   const boardPrintPortal = usePrintPortal("board-print-portal");
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
   scriptureEntriesRef.current = scriptureMemory.entries;
@@ -1453,6 +1464,10 @@ export default function App() {
   }, [currentBoard?.kind, view]);
   const showSettings = activePage === "settings";
   const [addBoardOpen, setAddBoardOpen] = useState(false);
+  const handleRemoteBoardsRemoved = useCallback((boardIds: string[]) => {
+    const removed = new Set(boardIds);
+    setTasks((previous) => previous.filter((task) => !removed.has(task.boardId)));
+  }, [setTasks]);
 
   useNostrAppBackupSync({
     bibleTracker,
@@ -1462,16 +1477,19 @@ export default function App() {
     nostrPublishRef,
     nostrSK,
     pool,
+    printJobs: boardPrintJobs,
     scriptureMemory,
     setBibleTracker,
     setBoards,
     setDefaultRelays,
+    setPrintJobs: setBoardPrintJobs,
     setScriptureMemory,
     setSettings,
     settings,
     showSettings,
     showToast,
     tagValue,
+    onRemoteBoardsRemoved: handleRemoteBoardsRemoved,
   });
 
   const localInboxResponses = useMemo(
@@ -2529,7 +2547,24 @@ export default function App() {
     return m;
   }, [calendarEventsForBoard, currentBoard, listColumns, listColumnSources, settings.weekStart]);
 
-  const buildBoardPrintTasks = useCallback((options?: { onlyTaskIds?: ReadonlySet<string> }): BoardPrintTask[] => {
+  const boardPrintListChoices = useMemo<BoardPrintListChoice[]>(() => {
+    if (!currentBoard) return [];
+    if (currentBoard.kind === "week") {
+      return Array.from({ length: 7 }, (_, offset) => {
+        const day = ((settings.weekStart + offset) % 7) as Weekday;
+        return { id: `week-day-${day}`, label: WD_SHORT[day] };
+      });
+    }
+    if (isListLikeBoard(currentBoard)) {
+      return listColumns.map((column) => ({ id: column.id, label: column.name }));
+    }
+    return [];
+  }, [currentBoard, listColumns, settings.weekStart]);
+
+  const buildBoardPrintTasks = useCallback((options?: {
+    onlyTaskIds?: ReadonlySet<string>;
+    includeCompleted?: boolean;
+  }): BoardPrintTask[] => {
     if (!currentBoard) return [];
     const titleForTask = (task: Task) => {
       const labelSource = task.title || (task.images?.length ? "Image" : task.documents?.[0]?.name || "");
@@ -2537,9 +2572,10 @@ export default function App() {
     };
     const titleForEvent = (ev: CalendarEvent) => (ev.title || "").trim() || "Event";
     const onlyIds = options?.onlyTaskIds;
+    const includeCompleted = options?.includeCompleted === true;
     const includeId = (id: string) => !onlyIds || onlyIds.has(id);
     const visibleTasks = tasksForBoard.filter((task) => {
-      if (task.completed) return false;
+      if (!isTaskPrintable(task, includeCompleted)) return false;
       if (!isVisibleNow(task)) return false;
       return includeId(task.id);
     });
@@ -2556,16 +2592,17 @@ export default function App() {
 
       const output: BoardPrintTask[] = [];
       dayOrder.forEach((day) => {
+        const listId = `week-day-${day}`;
         const label = WD_SHORT[day];
         const dayTasks = (taskByDay.get(day) ?? [])
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         dayTasks.forEach((task) => {
-          output.push({ id: task.id, title: titleForTask(task), label });
+          output.push({ id: task.id, title: titleForTask(task), label, listId, completed: task.completed });
         });
         const dayEvents = (calendarByDay.get(day) ?? []).filter((ev) => includeId(ev.id));
         dayEvents.forEach((ev) => {
-          output.push({ id: ev.id, title: titleForEvent(ev), label });
+          output.push({ id: ev.id, title: titleForEvent(ev), label, listId });
         });
       });
       return output;
@@ -2594,17 +2631,17 @@ export default function App() {
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         taskBucket.forEach((task) => {
-          output.push({ id: task.id, title: titleForTask(task), label: col.name });
+          output.push({ id: task.id, title: titleForTask(task), label: col.name, listId: col.id, completed: task.completed });
         });
         const eventBucket = (calendarItemsByColumn.get(col.id) ?? []).filter((ev) => includeId(ev.id));
         eventBucket.forEach((ev) => {
-          output.push({ id: ev.id, title: titleForEvent(ev), label: col.name });
+          output.push({ id: ev.id, title: titleForEvent(ev), label: col.name, listId: col.id });
         });
       });
       return output;
     }
 
-    const tasksOutput = visibleTasks.map((task) => ({ id: task.id, title: titleForTask(task) }));
+    const tasksOutput = visibleTasks.map((task) => ({ id: task.id, title: titleForTask(task), completed: task.completed }));
     const eventsOutput = calendarEventsForBoard
       .filter((ev) => includeId(ev.id))
       .map((ev) => ({ id: ev.id, title: titleForEvent(ev) }));
@@ -2613,25 +2650,47 @@ export default function App() {
 
   const handleOpenBoardPrint = useCallback(() => {
     if (!currentBoard) return;
-    const tasks = buildBoardPrintTasks();
-    if (!tasks.length) {
-      showToast("No tasks to print yet.", 2500);
+    closeShareBoard();
+    setBoardPrintChooserOpen(true);
+  }, [closeShareBoard, currentBoard]);
+
+  const rememberBoardPrintJob = useCallback((job: BoardPrintJob) => {
+    setBoardPrintJobs((previous) => {
+      const next = { ...previous, [job.boardId]: job };
+      saveBoardPrintJobs(next);
+      return next;
+    });
+  }, []);
+
+  const handleContinueBoardPrint = useCallback((scope: BoardPrintScope) => {
+    if (!currentBoard) return;
+    const tasks = scope.kind === "selection"
+      ? buildBoardPrintTasks({
+          onlyTaskIds: new Set(selectedItemIds),
+          includeCompleted: settings.completedTab,
+        })
+      : buildBoardPrintTasks({ includeCompleted: settings.completedTab });
+    const scopedTasks = tasksForBoardPrintScope(tasks, scope);
+    if (!scopedTasks.length) {
+      showToast("No tasks to print for that selection.", 2500);
       return;
     }
-    closeShareBoard();
     const job: BoardPrintJob = {
       id: crypto.randomUUID(),
       boardId: currentBoard.id,
-      boardName: currentBoard.name || "Board",
+      ownerId: `board:${currentBoard.nostr?.boardId || currentBoard.id}`,
+      boardName: scope.kind === "lists" ? `${currentBoard.name || "Board"} – Lists` : currentBoard.name || "Board",
       printedAtISO: new Date().toISOString(),
       layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
       paperSize: boardPrintJob?.paperSize ?? "letter",
+      scope,
       tasks,
     };
+    setBoardPrintChooserOpen(false);
     setBoardPrintJob(job);
-    persistBoardPrintJob(job);
+    rememberBoardPrintJob(job);
     setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, showToast]);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, currentBoard, rememberBoardPrintJob, selectedItemIds, settings.completedTab, showToast]);
 
   const listColumnGroupIds = useCallback((columnId: string): string[] => {
     const taskIds = (itemsByColumn.get(columnId) ?? []).filter((t) => !t.completed).map((t) => t.id);
@@ -2671,7 +2730,7 @@ export default function App() {
     if (!currentBoard) return;
     if (!selectedItemIds.length) return;
     const filter = new Set(selectedItemIds);
-    const tasks = buildBoardPrintTasks({ onlyTaskIds: filter });
+    const tasks = buildBoardPrintTasks({ onlyTaskIds: filter, includeCompleted: settings.completedTab });
     if (!tasks.length) {
       showToast("No printable tasks selected.", 2500);
       return;
@@ -2680,35 +2739,38 @@ export default function App() {
     const job: BoardPrintJob = {
       id: crypto.randomUUID(),
       boardId: currentBoard.id,
+      ownerId: `board:${currentBoard.nostr?.boardId || currentBoard.id}`,
       boardName: `${currentBoard.name || "Board"} – Selected`,
       printedAtISO: new Date().toISOString(),
       layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
       paperSize: boardPrintJob?.paperSize ?? "letter",
+      scope: { kind: "selection" },
       tasks,
     };
     setBoardPrintJob(job);
+    rememberBoardPrintJob(job);
     setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, selectedItemIds, showToast]);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, rememberBoardPrintJob, selectedItemIds, settings.completedTab, showToast]);
 
   const handleBoardPaperSizeChange = useCallback((paperSize: PrintPaperSize) => {
     setBoardPrintJob((prev) => {
       if (!prev || prev.paperSize === paperSize) return prev;
       const next = { ...prev, paperSize };
-      persistBoardPrintJob(next);
+      rememberBoardPrintJob(next);
       return next;
     });
-  }, []);
+  }, [rememberBoardPrintJob]);
 
   const handleOpenBoardScan = useCallback(() => {
     if (!currentBoard) return;
-    const job = loadBoardPrintJob(currentBoard.id);
+    const job = boardPrintJobs[currentBoard.id];
     if (!job || job.tasks.length === 0) {
       showToast("Print this board before scanning.", 2500);
       return;
     }
     setBoardPrintJob(job);
     setBoardScanOpen(true);
-  }, [currentBoard, showToast]);
+  }, [boardPrintJobs, currentBoard, showToast]);
 
   function handleApplyBoardScan(taskIds: string[]) {
     if (!taskIds.length) {
@@ -4573,7 +4635,9 @@ export default function App() {
         : plan.tasks,
     );
     reminderNotificationOffer.noteReminderSave(!!previous && taskHasReminders(previous), taskHasReminders(plan.saved));
-    await maybePublishTask(plan.saved);
+    // Relay work is retried from the durable queue. Only local intent storage can keep the editor
+    // open; a slow or rate-limited relay must not hold the UI.
+    durablePublisher.queueTask(plan.saved);
     void maybeSendTaskAssignments(plan.saved, { previousAssignees: plan.previousAssignees }).catch((err) => {
       console.warn("Failed to send task assignments", err);
     });
@@ -5480,6 +5544,7 @@ export default function App() {
   useOverlayHistory(appRouter, appRoute, sheetOverlay(boardSortSheetOpen, "board-sort"), () => setBoardSortSheetOpen(false));
   useOverlayHistory(appRouter, appRoute, sheetOverlay(biblePrintOpen, "bible-print"), () => setBiblePrintOpen(false));
   useOverlayHistory(appRouter, appRoute, sheetOverlay(boardPrintOpen, "board-print"), () => setBoardPrintOpen(false));
+  useOverlayHistory(appRouter, appRoute, sheetOverlay(boardPrintChooserOpen, "board-print-choose"), () => setBoardPrintChooserOpen(false));
   useOverlayHistory(appRouter, appRoute, sheetOverlay(bibleScanOpen, "bible-scan"), () => setBibleScanOpen(false));
   useOverlayHistory(appRouter, appRoute, sheetOverlay(boardScanOpen, "board-scan"), () => setBoardScanOpen(false));
   useOverlayHistory(appRouter, appRoute, sheetOverlay(!!previewDocument, "document-preview"), () => {
@@ -5588,6 +5653,7 @@ export default function App() {
     biblePrintOpen ||
     bibleScanOpen ||
     boardPrintOpen ||
+    boardPrintChooserOpen ||
     boardScanOpen ||
     showFirstRunOnboarding ||
     !!previewDocument ||
@@ -6285,6 +6351,11 @@ export default function App() {
             bibleTracker={bibleTracker}
             boardPrintJob={boardPrintJob}
             boardPrintOpen={boardPrintOpen}
+            boardPrintChooserOpen={boardPrintChooserOpen}
+            boardPrintListChoices={boardPrintListChoices}
+            boardPrintBoardName={currentBoard?.name || "Board"}
+            boardPrintSelectedCount={selectedCount}
+            boardPrintIncludeCompleted={settings.completedTab}
             boardPrintPortal={boardPrintPortal}
             boardScanOpen={boardScanOpen}
             closeAddBoard={closeAddBoard}
@@ -6293,6 +6364,7 @@ export default function App() {
             deleteTask={deleteTask}
             handleApplyBibleScan={bibleActions.applyScan}
             handleApplyBoardScan={handleApplyBoardScan}
+            handleContinueBoardPrint={handleContinueBoardPrint}
             handleBiblePaperSizeChange={handleBiblePaperSizeChange}
             handleBoardPaperSizeChange={handleBoardPaperSizeChange}
             handleDownloadDocument={(doc) => handleDownloadDocument(doc, previewDocumentBoardId)}
@@ -6307,6 +6379,7 @@ export default function App() {
             setBiblePrintOpen={setBiblePrintOpen}
             setBibleScanOpen={setBibleScanOpen}
             setBoardPrintOpen={setBoardPrintOpen}
+            setBoardPrintChooserOpen={setBoardPrintChooserOpen}
             setBoardScanOpen={setBoardScanOpen}
             setPreviewDocument={setPreviewDocument}
             setPreviewDocumentBoardId={setPreviewDocumentBoardId}
@@ -6338,7 +6411,7 @@ export default function App() {
             }}
             onSave={(updated, opened) => {
               if (editing.originalType === "event") deleteCalendarEvent(editing.originalId);
-              saveEdit(updated, opened);
+              return saveEdit(updated, opened);
             }}
             onSwitchToEvent={(draftTask) => {
               const nextEvent = convertTaskToCalendarEvent(draftTask);

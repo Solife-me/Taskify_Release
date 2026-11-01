@@ -9,14 +9,21 @@ public actor DirectMessageAttachmentDataLoader {
     private var files: [String: URL] = [:]
     private var order: [String] = []
 
-    public func file(for attachment: NostrDirectMessageAttachment) async throws -> URL {
+    public func file(
+        for attachment: NostrDirectMessageAttachment,
+        progress: AttachmentProgressHandler? = nil
+    ) async throws -> URL {
         if let file = files[attachment.cacheKey], FileManager.default.fileExists(atPath: file.path) { return file }
         if let cached = await DirectMessageAttachmentDiskCache.shared.file(forKey: attachment.cacheKey) {
             remember(cached, forKey: attachment.cacheKey)
             return cached
         }
         guard let url = URL(string: attachment.url) else { throw URLError(.badURL) }
-        let ciphertext = try await AttachmentDownload.file(from: url, limit: AttachmentFiles.maximumBytes + 16)
+        let ciphertext = try await AttachmentDownload.file(
+            from: url,
+            limit: AttachmentFiles.maximumBytes + 16,
+            progress: progress
+        )
         defer { try? FileManager.default.removeItem(at: ciphertext) }
         let plaintext = try await AttachmentFiles.work {
             try AttachmentFileCrypto.decryptChat(ciphertext, attachment: attachment)

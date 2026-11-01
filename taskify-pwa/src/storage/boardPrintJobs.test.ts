@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { kvStorage } from "./kvStorage";
-import { loadBoardPrintJob, persistBoardPrintJob } from "./boardPrintJobs";
+import { boardPrintJobManifest, loadBoardPrintJob, mergeSyncedBoardPrintJobs, persistBoardPrintJob } from "./boardPrintJobs";
 
 const key = "taskify_board_print_jobs_v1";
 afterEach(() => vi.restoreAllMocks());
@@ -8,11 +8,15 @@ afterEach(() => vi.restoreAllMocks());
 test("recovers legacy print jobs with defaults and filters malformed tasks", () => {
   vi.spyOn(kvStorage, "getItem").mockReturnValue(JSON.stringify({ board: {
     id: "print", boardId: "board", paperSize: "invalid",
-    tasks: [null, { id: "empty" }, { id: "task", title: "Print me", label: "Monday" }],
+    scope: { kind: "lists", listIds: ["monday", 4] },
+    tasks: [null, { id: "empty" }, { id: "task", title: "Print me", label: "Monday", listId: "monday" }],
   } }));
   const job = loadBoardPrintJob("board");
-  expect(job).toMatchObject({ id: "print", boardName: "Board", layoutVersion: "v1", paperSize: "letter",
-    tasks: [{ id: "task", title: "Print me", label: "Monday" }] });
+  expect(job).toMatchObject({
+    id: "print", boardName: "Board", layoutVersion: "v1", paperSize: "letter",
+    scope: { kind: "lists", listIds: ["monday"] },
+    tasks: [{ id: "task", title: "Print me", label: "Monday", listId: "monday" }],
+  });
   expect(Number.isFinite(Date.parse(job!.printedAtISO))).toBe(true);
 });
 
@@ -42,4 +46,18 @@ test("storage write failures remain non-fatal", () => {
   vi.spyOn(kvStorage, "getItem").mockReturnValue(null);
   vi.spyOn(kvStorage, "setItem").mockImplementation(() => { throw new Error("Quota exceeded"); });
   expect(() => persistBoardPrintJob({ id: "print", boardId: "board", boardName: "Work", printedAtISO: "2026-09-13T12:00:00Z", layoutVersion: "v2", paperSize: "letter", tasks: [] })).not.toThrow();
+});
+
+test("a newer manifest from another client maps its stable owner to the local board", () => {
+  const local = {
+    board: { id: "old", boardId: "board", ownerId: "board:nostr-board", boardName: "Work", printedAtISO: "2026-09-13T12:00:00Z", layoutVersion: "v3", paperSize: "letter" as const, tasks: [{ id: "old-task", title: "Old" }] },
+  };
+  const remote = {
+    ...boardPrintJobManifest(local.board),
+    id: "mac-print",
+    createdAt: 1_800_000_000,
+    items: [{ id: "task-2", title: "From Mac", section: "Today" }],
+  };
+  const merged = mergeSyncedBoardPrintJobs(local, [remote], [{ id: "board", name: "Work", nostr: { boardId: "nostr-board" } }]);
+  expect(merged.board).toMatchObject({ id: "mac-print", boardId: "board", tasks: [{ id: "task-2", title: "From Mac", label: "Today" }] });
 });

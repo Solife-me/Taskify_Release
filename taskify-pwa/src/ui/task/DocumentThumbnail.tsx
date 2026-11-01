@@ -6,6 +6,7 @@ import React, { useEffect, useState } from "react";
 import type { TaskDocument, TaskDocumentPreview } from "../../lib/documents";
 import { loadDocumentPreview } from "../../lib/documents";
 import { resolveDocumentAsset } from "./documentAsset";
+import type { DownloadProgress } from "../../lib/binary";
 
 function SanitizedHtmlPreview({ html }: { html: string }) {
   const [safeHtml, setSafeHtml] = useState<string | null>(null);
@@ -33,14 +34,19 @@ export function DocumentThumbnail({
   onClick: () => void;
 }) {
   const [derivedPreview, setDerivedPreview] = useState<TaskDocumentPreview | null>(doc.preview ?? null);
+  const [loading, setLoading] = useState(Boolean(doc.remoteUrl));
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setDerivedPreview(doc.preview ?? null);
-    resolveDocumentAsset(doc, boardId)
+    setLoading(Boolean(doc.remoteUrl));
+    setProgress(null);
+    resolveDocumentAsset(doc, boardId, (next) => { if (!cancelled) setProgress(next); })
       .then((resolved) => loadDocumentPreview(resolved))
       .then((next) => { if (!cancelled) setDerivedPreview(next); })
-      .catch(() => { if (!cancelled) setDerivedPreview(doc.preview ?? null); });
+      .catch(() => { if (!cancelled) setDerivedPreview(doc.preview ?? null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [doc, boardId]);
 
@@ -54,6 +60,13 @@ export function DocumentThumbnail({
     previewNode = <SanitizedHtmlPreview html={preview.data} />;
   } else if (preview?.type === "text") {
     previewNode = <pre className="doc-thumb__text">{preview.data.split(/\n+/).slice(0, 6).join("\n")}</pre>;
+  } else if (loading) {
+    const percent = progress?.fraction == null ? null : Math.round(progress.fraction * 100);
+    previewNode = (
+      <div className="doc-thumb__placeholder">
+        {percent == null ? "Downloading…" : percent >= 100 ? "Decrypting…" : `Downloading ${percent}%`}
+      </div>
+    );
   } else {
     previewNode = <div className="doc-thumb__placeholder">{doc.kind.toUpperCase()}</div>;
   }

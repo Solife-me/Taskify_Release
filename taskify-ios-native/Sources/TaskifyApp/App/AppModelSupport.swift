@@ -127,24 +127,26 @@ enum NostrDirectMessageError: LocalizedError {
     }
 }
 
-/// The account-level relay set, stored per device. Falls back to the built-in defaults until
-/// the user edits it.
+/// The account-level relay set, cached per device and hydrated from the encrypted account backup.
+/// Falls back to the built-in defaults only when neither this device nor the account has a list.
 enum AppRelaySettings {
     private static let key = "taskify.sync.appRelays"
 
-    static var urls: [String] {
-        let stored = UserDefaults.standard.stringArray(forKey: key) ?? []
+    static var urls: [String] { urls(defaults: .standard) }
+
+    static func urls(defaults: UserDefaults) -> [String] {
+        let stored = defaults.stringArray(forKey: key) ?? []
         let normalized = TaskifyRelayURL.normalizedList(stored)
         return normalized.isEmpty ? TaskifyRelayDefaults.urls : normalized
     }
 
-    static func setURLs(_ urls: [String]) {
-        UserDefaults.standard.set(TaskifyRelayURL.normalizedList(urls), forKey: key)
+    static func setURLs(_ urls: [String], defaults: UserDefaults = .standard) {
+        defaults.set(TaskifyRelayURL.normalizedList(urls), forKey: key)
     }
 
     /// Back to the built-in defaults (UI tests).
-    static func reset() {
-        UserDefaults.standard.removeObject(forKey: key)
+    static func reset(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key)
     }
 }
 
@@ -154,13 +156,15 @@ enum AppRelaySettings {
 enum SyncExcludedRelaySettings {
     private static let key = "taskify.sync.excludedRelays"
 
-    static var urls: Set<String> {
-        let stored = UserDefaults.standard.stringArray(forKey: key) ?? []
+    static var urls: Set<String> { urls(defaults: .standard) }
+
+    static func urls(defaults: UserDefaults) -> Set<String> {
+        let stored = defaults.stringArray(forKey: key) ?? []
         return Set(TaskifyRelayURL.normalizedList(stored))
     }
 
-    static func setURLs(_ urls: Set<String>) {
-        UserDefaults.standard.set(urls.sorted(), forKey: key)
+    static func setURLs(_ urls: Set<String>, defaults: UserDefaults = .standard) {
+        defaults.set(urls.sorted(), forKey: key)
     }
 }
 

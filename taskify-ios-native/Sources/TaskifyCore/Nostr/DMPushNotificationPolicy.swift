@@ -29,20 +29,31 @@ public enum DMPushNotificationSelection: String, Codable, CaseIterable, Sendable
 public enum DMPushNotificationSharedSettings {
     public static let selectionKey = "taskify.dmPush.selection"
 
-    public static var selection: DMPushNotificationSelection {
-        selection(defaults: UserDefaults(suiteName: TaskifySharedContainer.appGroupID))
-    }
-
-    public static func selection(defaults: UserDefaults?) -> DMPushNotificationSelection {
-        guard let rawValue = defaults?.string(forKey: selectionKey) else { return .both }
-        return DMPushNotificationSelection(rawValue: rawValue) ?? .both
+    public static func selection(
+        accountID: String,
+        defaults: UserDefaults?
+    ) -> DMPushNotificationSelection {
+        let scopedKey = scopedSelectionKey(accountID: accountID)
+        if let rawValue = defaults?.string(forKey: scopedKey) {
+            return DMPushNotificationSelection(rawValue: rawValue) ?? .both
+        }
+        // Preserve the old single-account value for the first scoped read.
+        if let rawValue = defaults?.string(forKey: selectionKey) {
+            return DMPushNotificationSelection(rawValue: rawValue) ?? .both
+        }
+        return .both
     }
 
     public static func saveSelection(
         _ selection: DMPushNotificationSelection,
+        accountID: String,
         defaults: UserDefaults? = UserDefaults(suiteName: TaskifySharedContainer.appGroupID)
     ) {
-        defaults?.set(selection.rawValue, forKey: selectionKey)
+        defaults?.set(selection.rawValue, forKey: scopedSelectionKey(accountID: accountID))
+    }
+
+    private static func scopedSelectionKey(accountID: String) -> String {
+        "\(selectionKey).\(accountID.lowercased())"
     }
 }
 

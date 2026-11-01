@@ -1,6 +1,7 @@
 import NDK, { type NDKEvent, type NDKRelay } from "@nostr-dev-kit/ndk";
 import { RelayInfoCache } from "./RelayInfoCache.js";
 import type { RuntimeProofOfWorkSettings } from "./RuntimeNostrSession.js";
+import { type RelayPublishBudget } from "./RelayPublishBudget.js";
 /**
  * Settings for clients that talk to relays outside a `RuntimeNostrSession` (profile and contact
  * updates, one-off lookups). A CLI passes its persistent relay-info cache here so NIP-11 limits
@@ -22,4 +23,4 @@ export declare function prepareStandaloneEvent(event: NDKEvent, relays: string[]
  * NDK instance. A relay that refuses it for too little work and names a target gets one
  * re-mined copy, as `RuntimeNostrSession.publishSigned` does.
  */
-export declare function publishStandaloneEvent(event: NDKEvent, relays: string[]): Promise<Set<NDKRelay>>;
+export declare function publishStandaloneEvent(event: NDKEvent, relays: string[], publishBudget?: RelayPublishBudget): Promise<Set<NDKRelay>>;

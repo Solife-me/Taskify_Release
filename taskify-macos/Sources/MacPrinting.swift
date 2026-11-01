@@ -4,16 +4,31 @@ import TaskifyCore
 
 /// Builds the item list for a print job; kept separate from the sheet so board- and
 /// Bible-tracker-specific assembly stay out of the generic printing/paper-size UI below.
+struct MacChecklistGroup: Identifiable {
+    let id: String
+    let name: String
+    let items: [PhysicalChecklistItem]
+}
+
 @MainActor
 enum MacChecklistItems {
-    static func forBoard(_ board: Board, model: AppModel) -> [PhysicalChecklistItem] {
-        let columns: [BoardColumn] = board.kind == .week
-            ? WeekdayColumn.ordered(startingAt: model.weekStart).compactMap { day in board.columns.first { $0.id == day.rawValue } }
-            : board.columns.sorted { $0.order < $1.order }
-        return columns.flatMap { column in
-            model.tasks(boardID: board.id, columnID: column.id, includeCompleted: true)
-                .map { PhysicalChecklistItem(id: $0.id, title: $0.title, section: column.name, filled: $0.completed) }
+    static func groups(forBoard board: Board, model: AppModel) -> [MacChecklistGroup] {
+        let boards = board.kind == .compound ? model.compoundChildBoards(for: board.id) : [board]
+        return boards.flatMap { scopedBoard in
+            let columns: [BoardColumn] = scopedBoard.kind == .week
+                ? WeekdayColumn.ordered(startingAt: model.weekStart).compactMap { day in scopedBoard.columns.first { $0.id == day.rawValue } }
+                : scopedBoard.columns.sorted { $0.order < $1.order }
+            return columns.map { column in
+                let section = board.kind == .compound ? "\(scopedBoard.name) — \(column.name)" : column.name
+                let items = model.tasks(boardID: scopedBoard.id, columnID: column.id, includeCompleted: true)
+                    .map { PhysicalChecklistItem(id: $0.id, title: $0.title, section: section, filled: $0.completed) }
+                return MacChecklistGroup(id: "\(scopedBoard.id):\(column.id)", name: section, items: items)
+            }
         }
+    }
+
+    static func forBoard(_ board: Board, model: AppModel) -> [PhysicalChecklistItem] {
+        groups(forBoard: board, model: model).flatMap(\.items)
     }
 
     static func forBibleTracker(_ store: BibleTrackerStore) -> [PhysicalChecklistItem] {
@@ -27,18 +42,75 @@ enum MacChecklistItems {
 }
 
 struct MacPrintChecklistSheet: View {
+    private enum Scope: String, CaseIterable, Identifiable {
+        case board = "Entire board"
+        case lists = "Selected lists"
+
+        var id: String { rawValue }
+    }
+
     let title: String
+    let ownerID: String
     let allItems: [PhysicalChecklistItem]
-    var format = PhysicalChecklistJob.Format.taskList
-    var showsIncludeCompletedToggle = true
+    let groups: [MacChecklistGroup]
+    let format: PhysicalChecklistJob.Format
+    let showsIncludeCompletedToggle: Bool
+    let includeCompletedDefault: Bool
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var paper = PhysicalChecklistPaper.letter
-    @State private var includeCompleted = false
+    @State private var scope = Scope.board
+    @State private var selectedListIDs: Set<String>
     @State private var error: String?
 
+    init(
+        title: String,
+        ownerID: String,
+        allItems: [PhysicalChecklistItem],
+        groups: [MacChecklistGroup] = [],
+        format: PhysicalChecklistJob.Format = .taskList,
+        showsIncludeCompletedToggle: Bool = true,
+        includeCompletedDefault: Bool = true
+    ) {
+        self.title = title
+        self.ownerID = ownerID
+        self.allItems = allItems
+        self.groups = groups
+        self.format = format
+        self.showsIncludeCompletedToggle = showsIncludeCompletedToggle
+        self.includeCompletedDefault = includeCompletedDefault
+        _selectedListIDs = State(initialValue: Set(
+            groups.filter { group in
+                group.items.contains { includeCompletedDefault || !$0.filled }
+            }.map(\.id)
+        ))
+    }
+
+    private var includeCompleted: Bool {
+        !showsIncludeCompletedToggle
+            || MacAccountViewPreferences(defaults: model.accountDefaults).completedTabEnabled
+    }
+
+    private var scopedItems: [PhysicalChecklistItem] {
+        guard !groups.isEmpty, scope == .lists else { return allItems }
+        return groups.filter { selectedListIDs.contains($0.id) }.flatMap(\.items)
+    }
+
     private var items: [PhysicalChecklistItem] {
-        showsIncludeCompletedToggle && !includeCompleted ? allItems.filter { !$0.filled } : allItems
+        includeCompleted ? scopedItems : scopedItems.filter { !$0.filled }
+    }
+
+    private func printableCount(for group: MacChecklistGroup) -> Int {
+        group.items.filter { includeCompleted || !$0.filled }.count
+    }
+
+    private func listSelection(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedListIDs.contains(id) },
+            set: { selected in
+                if selected { selectedListIDs.insert(id) } else { selectedListIDs.remove(id) }
+            }
+        )
     }
 
     var body: some View {
@@ -48,8 +120,40 @@ struct MacPrintChecklistSheet: View {
             Picker("Paper", selection: $paper) {
                 ForEach(PhysicalChecklistPaper.allCases, id: \.self) { Text($0.displayName).tag($0) }
             }
+
+            if !groups.isEmpty {
+                Picker("Print range", selection: $scope) {
+                    ForEach(Scope.allCases) { option in Text(option.rawValue).tag(option) }
+                }
+                .pickerStyle(.segmented)
+
+                if scope == .lists {
+                    ScrollView {
+                        VStack(spacing: 8) {
+                            ForEach(groups) { group in
+                                Toggle(isOn: listSelection(group.id)) {
+                                    HStack {
+                                        Text(group.name)
+                                        Spacer()
+                                        Text("\(printableCount(for: group))")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .disabled(printableCount(for: group) == 0)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                }
+            }
+
             if showsIncludeCompletedToggle {
-                Toggle("Include Completed Tasks", isOn: $includeCompleted)
+                Label(
+                    includeCompleted ? "Completed tasks will be included." : "Only incomplete tasks will be printed.",
+                    systemImage: includeCompleted ? "checkmark.circle.fill" : "circle.dashed"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             if items.isEmpty {
                 Text("Nothing to print yet.").font(.caption).foregroundStyle(.secondary)
@@ -64,11 +168,11 @@ struct MacPrintChecklistSheet: View {
                 Button("Print…") { printChecklist() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                     .disabled(items.isEmpty)
             }
-        }.padding(26).frame(width: 380, height: 280)
+        }.padding(26).frame(width: 420, height: groups.isEmpty ? 300 : 500)
     }
 
     private func printChecklist() {
-        let job = PhysicalChecklistJob(ownerID: model.identityPublicKey, title: title, paper: paper, format: format, items: items)
+        let job = PhysicalChecklistJob(ownerID: ownerID, title: title, paper: paper, format: format, items: items)
         let view = MacPhysicalChecklistPrintView(job: job)
         let pointsPerMM = 72.0 / 25.4
         let sizeMM = paper.sizeMM
@@ -89,6 +193,7 @@ struct MacPrintChecklistSheet: View {
             error = "Printing could not start. Choose a printer or PDF destination and try again."
             return
         }
+        model.recordPhysicalChecklistJob(job)
         dismiss()
     }
 }
@@ -168,7 +273,7 @@ final class MacPhysicalChecklistPrintView: NSView {
             .font: NSFont.systemFont(ofSize: job.format == .bibleChapters ? 13 : 15, weight: .bold),
             .foregroundColor: NSColor.black,
         ])
-        let subtitle = "Fill circles with a dark pen \u{2022} Page \(page.index + 1) of \(layout.pages.count)"
+        let subtitle = "Fill circles with a dark pen \u{2022} Page \(page.index + 1) of \(layout.pages.count) \u{2022} Print \(PhysicalChecklistLayout.version)"
         (subtitle as NSString).draw(
             in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5, yOffset: yOffset),
             withAttributes: [.font: NSFont.systemFont(ofSize: 7), .foregroundColor: NSColor.darkGray]
@@ -185,6 +290,21 @@ final class MacPhysicalChecklistPrintView: NSView {
             } else {
                 NSColor.black.setStroke()
                 path.lineWidth = 0.7
+                path.stroke()
+            }
+        }
+
+        let jobCode = BoardPrintContract.jobCodePattern(jobID: job.id)
+        for (bit, center) in layout.jobCodeBitCentersMM(jobID: job.id).enumerated() {
+            let side = BoardPrintContract.jobCodeMarkerSizeMM
+            let rect = rectMM(center.x - side / 2, center.y - side / 2, side, side, yOffset: yOffset)
+            let path = NSBezierPath(rect: rect)
+            if jobCode[bit] != 0 {
+                NSColor.black.setFill()
+                path.fill()
+            } else {
+                NSColor.black.setStroke()
+                path.lineWidth = 0.6
                 path.stroke()
             }
         }

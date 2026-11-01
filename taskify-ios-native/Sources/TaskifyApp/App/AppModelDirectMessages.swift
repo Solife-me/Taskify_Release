@@ -14,7 +14,8 @@ extension AppModel {
     func sendDirectMessage(
         to recipientValue: String,
         content: String,
-        replyToEventID: String? = nil
+        replyToEventID: String? = nil,
+        additionalTags: [[String]] = []
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NostrDirectMessageError.emptyMessage }
@@ -27,7 +28,8 @@ extension AppModel {
                 rumorEventID: eventID, wrapEventID: eventID,
                 peerPublicKey: recipientValue, senderPublicKey: identityPublicKey,
                 content: text, createdAt: currentDirectMessageTimestamp(), isIncoming: false,
-                replyToEventID: replyToEventID
+                replyToEventID: replyToEventID,
+                botUiAction: TaskifyBotUiContract.action(from: additionalTags)
             )) {
                 scheduleSave()
             }
@@ -40,11 +42,84 @@ extension AppModel {
             drafts: [DirectMessageRumorDraft(
                 kind: NIP17GiftWrap.rumorKind,
                 content: text,
-                additionalTags: []
+                additionalTags: additionalTags
             )],
             replyToEventID: replyToEventID,
             attachmentComment: nil
         )
+    }
+
+    /// Sends a Taskify-generated Hermes menu command. The encrypted tag identifies it to every
+    /// Taskify client so the command can stay hidden while its picker state remains reproducible.
+    func sendBotUiCommand(
+        to recipientValue: String,
+        content: String,
+        action: TaskifyBotUiAction
+    ) async throws {
+        guard snapshot.groupConversation(id: recipientValue) == nil else {
+            throw NostrDirectMessageError.invalidGroup
+        }
+        let tag = try TaskifyBotUiContract.tag(for: action)
+        try await sendDirectMessage(
+            to: recipientValue,
+            content: content,
+            additionalTags: [tag]
+        )
+#if DEBUG
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_HERMES_MENU"] == "1",
+           ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] == "1" {
+            let responseText: String
+            switch action.kind {
+            case .catalogRequest:
+                let models: [String]
+                switch action.providerSlug {
+                case "nous":
+                    models = [
+                        "anthropic/claude-fable-5.1", "anthropic/claude-fable-5",
+                        "anthropic/claude-opus-5.5", "anthropic/claude-opus-5",
+                        "anthropic/claude-opus-4.8", "anthropic/claude-sonnet-5.5",
+                        "openai/gpt-6-astra", "google/gemini-4-argon",
+                        "x-ai/grok-4.7", "deepseek/deepseek-v4-pro",
+                        "qwen/qwen3.8-max-0902", "moonshotai/kimi-k3",
+                        "z-ai/glm-5.3",
+                    ]
+                default:
+                    models = [
+                        "lfm3-audio:latest", "lfm3-omni:latest",
+                        "phonon:40m-multilingual", "phonon:latest", "bonsai-2:27b",
+                        "beam:cloud", "minimax-m3.1-flash:cloud",
+                        "deepseek-v4.1-flash:cloud", "glm-5.3-flash:cloud",
+                        "ornith-1.5:35b", "kimi-k3:cloud", "gemma4:26b-mlx",
+                        "nomic-embed-text-v2-moe:latest",
+                    ]
+                }
+                let payload = try JSONSerialization.data(withJSONObject: [
+                    "provider": action.providerSlug,
+                    "models": models,
+                ])
+                responseText = String(decoding: payload, as: UTF8.self)
+            case .modelSelect:
+                responseText = """
+                Model switched to `\(action.modelId ?? "")`
+                Provider: \(action.providerSlug)
+                Context: 1,048,576 tokens
+                _(session only — add --global to persist)_
+                """
+            }
+            let responseID = UUID().uuidString
+            if snapshot.ingestDirectMessage(NostrDirectMessage(
+                rumorEventID: responseID,
+                wrapEventID: responseID,
+                peerPublicKey: recipientValue,
+                senderPublicKey: recipientValue,
+                content: responseText,
+                createdAt: currentDirectMessageTimestamp() + 1,
+                isIncoming: true
+            )) {
+                scheduleSave()
+            }
+        }
+#endif
     }
 
     /// One file per kind 15 rumor (NIP-17 has no multi-file event), sent as a

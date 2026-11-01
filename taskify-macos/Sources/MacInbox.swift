@@ -114,7 +114,7 @@ struct MacBibleView: View {
             }
         }
         .sheet(isPresented: $printingChecklist) {
-            MacPrintChecklistSheet(title: "Bible Reading Tracker", allItems: MacChecklistItems.forBibleTracker(store),
+            MacPrintChecklistSheet(title: "Bible Reading Tracker", ownerID: "bible-tracker", allItems: MacChecklistItems.forBibleTracker(store),
                 format: .bibleChapters, showsIncludeCompletedToggle: false)
         }
     }

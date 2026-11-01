@@ -24,6 +24,24 @@ final class AccountBackupTests: XCTestCase {
         XCTAssertEqual(payload.settings["nostrBackupEnabled"], .boolean(true))
     }
 
+    func testAccountBackupRelaysReplaceFreshDeviceDefaultsButPreserveEmptyFallback() {
+        let synced = NostrAppBackupPayload(
+            timestamp: 1,
+            boards: [],
+            defaultRelayURLs: ["wss://primary.example", "WSS://PRIMARY.EXAMPLE/"]
+        )
+        XCTAssertEqual(
+            synced.resolvedAccountRelayURLs(fallback: ["wss://fresh-device.example"]),
+            ["wss://primary.example"]
+        )
+
+        let noSyncedRelays = NostrAppBackupPayload(timestamp: 2, boards: [])
+        XCTAssertEqual(
+            noSyncedRelays.resolvedAccountRelayURLs(fallback: ["wss://fresh-device.example"]),
+            ["wss://fresh-device.example"]
+        )
+    }
+
     func testEncryptsExactlyLikePWANIP44V2Fixture() throws {
         let plaintext = Data(#"{"version":1,"timestamp":1700000000,"boards":[{"id":"pwa-week","nostrId":"shared-board-id","relays":["wss://relay.solife.me"],"name":"Family Week","kind":"week","order":0}],"settings":{"nostrBackupEnabled":true},"walletSeed":{"type":"nut13-wallet-backup","version":1,"mnemonic":"do not import","counters":{}},"defaultRelays":["wss://relay.solife.me"]}"#.utf8)
         let nonce = Data((0..<32).map(UInt8.init))
@@ -154,6 +172,103 @@ final class AccountBackupTests: XCTestCase {
         XCTAssertFalse(future.isSupportedByNative)
         XCTAssertEqual(future.preservedFields["kind"], .string("kanban"))
         XCTAssertEqual(future.preservedFields["lanes"], .array([.string("one")]))
+    }
+
+    func testBoardTombstonesRemoveStaleBoardsAndTasksDuringAccountMerge() {
+        var stale = Board.week(id: "legacy-week-local", name: "Week")
+        stale.nostrBoardID = "legacy-week-standard"
+        stale.relayURLs = ["wss://relay.example"]
+        var kept = Board.week(id: "current-week-local", name: "My Week")
+        kept.nostrBoardID = "current-week-unique"
+        kept.relayURLs = ["wss://relay.example"]
+        var snapshot = TaskifySnapshot(
+            boards: [stale, kept],
+            tasks: [
+                TaskItem(id: "stale-task", boardID: stale.id, title: "Remove me"),
+                TaskItem(id: "kept-task", boardID: kept.id, title: "Keep me"),
+            ],
+            selectedBoardID: stale.id
+        )
+        let payload = NostrAppBackupPayload(
+            timestamp: 1_700_000_200,
+            boards: [],
+            boardTombstones: [
+                NostrBoardTombstone(nostrID: "legacy-week-standard", deletedAt: 1_700_000_100),
+            ]
+        )
+
+        snapshot.mergePWAAccountBackup(payload)
+
+        XCTAssertFalse(snapshot.boards.contains { $0.effectiveNostrBoardID == "legacy-week-standard" })
+        XCTAssertFalse(snapshot.tasks.contains { $0.id == "stale-task" })
+        XCTAssertTrue(snapshot.boards.contains { $0.effectiveNostrBoardID == "current-week-unique" })
+        XCTAssertTrue(snapshot.tasks.contains { $0.id == "kept-task" })
+        XCTAssertEqual(snapshot.selectedBoardID, kept.id)
+    }
+
+    func testBoardTombstonesSurviveNativeBackupPublishAndBlockReimport() {
+        let baseline = NostrAppBackupPayload(
+            timestamp: 1,
+            boards: [
+                NostrAppBackupBoard(
+                    id: "remote-legacy-week",
+                    nostrID: "legacy-week-standard",
+                    name: "Week",
+                    kind: .week
+                ),
+                NostrAppBackupBoard(
+                    id: "remote-kept-week",
+                    nostrID: "kept-week",
+                    name: "Kept Week",
+                    kind: .week
+                ),
+            ]
+        )
+        let updated = baseline.updatingNativeBoards(
+            [],
+            managedNostrBoardIDs: ["legacy-week-standard"],
+            boardTombstones: [
+                NostrBoardTombstone(nostrID: "legacy-week-standard", deletedAt: 1_700_000_100),
+            ],
+            timestamp: 1_700_000_200
+        )
+
+        XCTAssertEqual(updated.boardTombstones.map(\.nostrID), ["legacy-week-standard"])
+        XCTAssertFalse(updated.boards.contains { $0.nostrID == "legacy-week-standard" })
+        XCTAssertTrue(updated.boards.contains { $0.nostrID == "kept-week" })
+
+        var staleSnapshot = TaskifySnapshot(
+            boards: [
+                Board(id: "legacy-local", name: "Week", nostrBoardID: "legacy-week-standard"),
+                Board(id: "kept-local", name: "Kept Week", nostrBoardID: "kept-week"),
+            ],
+            tasks: [],
+            selectedBoardID: "legacy-local"
+        )
+        staleSnapshot.mergePWAAccountBackup(updated)
+        XCTAssertEqual(staleSnapshot.boards.map { $0.effectiveNostrBoardID }, ["kept-week"])
+    }
+
+    func testBoardTombstoneDecodingNormalizesAndIgnoresMalformedEntries() throws {
+        let data = Data("""
+        {
+          "version": 1,
+          "timestamp": 10,
+          "boards": [],
+          "boardTombstones": [
+            {"nostrId": " Legacy-Week-Standard ", "deletedAt": 100},
+            {"nostrId": 42, "deletedAt": 101},
+            {"nostrId": "missing-time"}
+          ],
+          "settings": {}
+        }
+        """.utf8)
+
+        let payload = try JSONDecoder().decode(NostrAppBackupPayload.self, from: data)
+
+        XCTAssertEqual(payload.boardTombstones, [
+            NostrBoardTombstone(nostrID: "legacy-week-standard", deletedAt: 100),
+        ])
     }
 
     func testReviewAndMergePreserveLocalDataWhileAddingCompatibleBoards() {

@@ -74,6 +74,7 @@ private struct TaskAttachmentImageView: View {
     @State private var failed = false
     @State private var showingPreview = false
     @State private var retryID = UUID()
+    @State private var downloadMessage: String?
 
     private var previewHeight: CGFloat { compact ? 150 : 210 }
 
@@ -116,7 +117,7 @@ private struct TaskAttachmentImageView: View {
                 VStack(spacing: 9) {
                     ProgressView()
                         .tint(TaskifyTheme.accent)
-                    Text("Decrypting image")
+                    Text(downloadMessage ?? "Downloading image…")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(TaskifyTheme.tertiaryText)
                 }
@@ -133,12 +134,17 @@ private struct TaskAttachmentImageView: View {
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .task(id: retryID) {
             do {
+                downloadMessage = nil
                 let data = try await TaskAttachmentDataLoader.load(
                     source: source,
                     encrypted: !source.hasPrefix("data:"),
-                    boardID: boardID
+                    boardID: boardID,
+                    progress: { update in
+                        Task { @MainActor in downloadMessage = update.message }
+                    }
                 )
                 guard !Task.isCancelled else { return }
+                downloadMessage = nil
                 thumbnail = await TaskAttachmentThumbnailLoader.shared.image(
                     data: data,
                     cacheKey: "image::\(boardID)::\(source)",
@@ -147,6 +153,7 @@ private struct TaskAttachmentImageView: View {
                 failed = thumbnail == nil
             } catch {
                 guard !Task.isCancelled else { return }
+                downloadMessage = nil
                 failed = true
             }
         }
@@ -166,6 +173,7 @@ private struct TaskAttachmentFullScreenImage: View {
     @Binding var isPresented: Bool
     @State private var image: UIImage?
     @State private var failed = false
+    @State private var downloadMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -183,7 +191,7 @@ private struct TaskAttachmentFullScreenImage: View {
                         systemImage: "photo.badge.exclamationmark"
                     )
                 } else {
-                    ProgressView("Loading image…")
+                    ProgressView(downloadMessage ?? "Downloading image…")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -199,12 +207,17 @@ private struct TaskAttachmentFullScreenImage: View {
         .preferredColorScheme(.dark)
         .task(id: source) {
             do {
+                downloadMessage = nil
                 let data = try await TaskAttachmentDataLoader.load(
                     source: source,
                     encrypted: !source.hasPrefix("data:"),
-                    boardID: boardID
+                    boardID: boardID,
+                    progress: { update in
+                        Task { @MainActor in downloadMessage = update.message }
+                    }
                 )
                 guard !Task.isCancelled else { return }
+                downloadMessage = nil
                 image = await TaskAttachmentThumbnailLoader.shared.fullImage(
                     data: data,
                     cacheKey: "full::\(boardID)::\(source)"
@@ -212,6 +225,7 @@ private struct TaskAttachmentFullScreenImage: View {
                 failed = image == nil
             } catch {
                 guard !Task.isCancelled else { return }
+                downloadMessage = nil
                 failed = true
             }
         }
@@ -228,6 +242,7 @@ private struct TaskDocumentTile: View {
     @State private var derivedPreviewText: String?
     @State private var previewURL: URL?
     @State private var alert: TaskAttachmentAlert?
+    @State private var downloadMessage: String?
 
     private var previewHeight: CGFloat { compact ? 160 : 190 }
 
@@ -295,9 +310,10 @@ private struct TaskDocumentTile: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(TaskifyTheme.primaryText)
                                 .lineLimit(1)
-                            Text(documentDetail)
+                            Text(isLoading ? (downloadMessage ?? "Preparing attachment…") : documentDetail)
                                 .font(.caption2)
                                 .foregroundStyle(TaskifyTheme.tertiaryText)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 5)
                         if isLoading {
@@ -371,13 +387,17 @@ private struct TaskDocumentTile: View {
     private func openDocument() {
         guard let source else { return }
         isLoading = true
+        downloadMessage = nil
         Task {
             do {
                 let boardID = document.encryptionBoardID ?? fallbackBoardID
                 let file = try await TaskAttachmentDataLoader.loadFile(
                     source: source,
                     encrypted: document.encrypted == true,
-                    boardID: boardID
+                    boardID: boardID,
+                    progress: { update in
+                        Task { @MainActor in downloadMessage = update.message }
+                    }
                 )
                 let url = try TaskAttachmentDataLoader.previewFile(
                     file: file,
@@ -390,6 +410,7 @@ private struct TaskDocumentTile: View {
                 alert = TaskAttachmentAlert(message: error.localizedDescription)
             }
             isLoading = false
+            downloadMessage = nil
         }
     }
 
@@ -430,8 +451,12 @@ private struct TaskDocumentTile: View {
             let data = try await TaskAttachmentDataLoader.load(
                 source: source,
                 encrypted: document.encrypted == true,
-                boardID: boardID
+                boardID: boardID,
+                progress: { update in
+                    Task { @MainActor in downloadMessage = update.message }
+                }
             )
+            downloadMessage = nil
             guard !Task.isCancelled else { return }
 
             let kind = document.kind.lowercased()
@@ -709,20 +734,33 @@ private actor TaskAttachmentThumbnailLoader {
 }
 
 private enum TaskAttachmentDataLoader {
-    static func load(source: String, encrypted: Bool, boardID: String) async throws -> Data {
-        let file = try await loadFile(source: source, encrypted: encrypted, boardID: boardID)
+    static func load(
+        source: String,
+        encrypted: Bool,
+        boardID: String,
+        progress: AttachmentProgressHandler? = nil
+    ) async throws -> Data {
+        let file = try await loadFile(source: source, encrypted: encrypted, boardID: boardID, progress: progress)
         defer { try? FileManager.default.removeItem(at: file) }
         // Thumbnail consumers can use a mapping; no full-file plaintext allocation.
         return try Data(contentsOf: file, options: .alwaysMapped)
     }
 
-    static func loadFile(source: String, encrypted: Bool, boardID: String) async throws -> URL {
+    static func loadFile(
+        source: String,
+        encrypted: Bool,
+        boardID: String,
+        progress: AttachmentProgressHandler? = nil
+    ) async throws -> URL {
         if source.hasPrefix("data:") { return try AttachmentFiles.write(TaskAttachmentCrypto.data(from: source)) }
         guard let url = URL(string: source), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else {
             throw URLError(.badURL)
         }
-        let downloaded = try await AttachmentDownload.file(from: url,
-            limit: AttachmentFiles.maximumBytes + (encrypted ? 32 : 0))
+        let downloaded = try await AttachmentDownload.file(
+            from: url,
+            limit: AttachmentFiles.maximumBytes + (encrypted ? 32 : 0),
+            progress: progress
+        )
         guard encrypted else { return downloaded }
         defer { try? FileManager.default.removeItem(at: downloaded) }
         return try await AttachmentFiles.work {

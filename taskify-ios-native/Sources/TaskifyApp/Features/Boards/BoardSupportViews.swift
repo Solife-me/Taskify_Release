@@ -1314,6 +1314,129 @@ struct SelectionMoveSheet: View {
     }
 }
 
+struct BoardPrintListChoice: Identifiable {
+    let id: String
+    let name: String
+    let items: [PhysicalChecklistItem]
+}
+
+struct BoardPrintChooserSheet: View {
+    private enum Scope: String, CaseIterable, Identifiable {
+        case board = "Entire board"
+        case lists = "Selected lists"
+
+        var id: String { rawValue }
+    }
+
+    let title: String
+    let choices: [BoardPrintListChoice]
+    let includeCompleted: Bool
+    let onContinue: (Set<String>?) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var scope = Scope.board
+    @State private var selectedListIDs: Set<String>
+
+    init(
+        title: String,
+        choices: [BoardPrintListChoice],
+        includeCompleted: Bool,
+        onContinue: @escaping (Set<String>?) -> Void
+    ) {
+        self.title = title
+        self.choices = choices
+        self.includeCompleted = includeCompleted
+        self.onContinue = onContinue
+        _selectedListIDs = State(initialValue: Set(
+            choices.filter { choice in
+                choice.items.contains { includeCompleted || !$0.filled }
+            }.map(\.id)
+        ))
+    }
+
+    private var printableCount: Int {
+        let selected = scope == .board ? choices : choices.filter { selectedListIDs.contains($0.id) }
+        return selected.reduce(0) { count, choice in
+            count + choice.items.filter { includeCompleted || !$0.filled }.count
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Print range") {
+                    Picker("Print range", selection: $scope) {
+                        ForEach(Scope.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                if scope == .lists {
+                    Section("Lists") {
+                        ForEach(choices) { choice in
+                            let count = choice.items.filter { includeCompleted || !$0.filled }.count
+                            Button {
+                                if selectedListIDs.contains(choice.id) {
+                                    selectedListIDs.remove(choice.id)
+                                } else {
+                                    selectedListIDs.insert(choice.id)
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: selectedListIDs.contains(choice.id) ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(selectedListIDs.contains(choice.id) ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(choice.name)
+                                            .foregroundStyle(TaskifyTheme.primaryText)
+                                        Text("\(count) task\(count == 1 ? "" : "s")")
+                                            .font(.caption)
+                                            .foregroundStyle(TaskifyTheme.secondaryText)
+                                    }
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(count == 0)
+                        }
+                    }
+                }
+
+                Section {
+                    Label(
+                        includeCompleted ? "Completed tasks will be included." : "Only incomplete tasks will be printed.",
+                        systemImage: includeCompleted ? "checkmark.circle.fill" : "circle.dashed"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+                    Text("\(printableCount) task\(printableCount == 1 ? "" : "s") selected")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(TaskifyTheme.background.ignoresSafeArea())
+            .navigationTitle("Print \(title)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Continue") {
+                        onContinue(scope == .board ? nil : selectedListIDs)
+                        dismiss()
+                    }
+                    .disabled(printableCount == 0)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
 struct BoardShareSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model

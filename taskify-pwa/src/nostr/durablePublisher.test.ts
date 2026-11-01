@@ -9,7 +9,13 @@ function memoryStorage(initial: string | null = null) {
   return { load: () => value, save: (next: string) => { value = next; }, peek: () => value };
 }
 
-function setup(options: { failures?: number; storage?: ReturnType<typeof memoryStorage>; tasks?: Task[]; online?: boolean } = {}) {
+function setup(options: {
+  failures?: number;
+  storage?: ReturnType<typeof memoryStorage>;
+  tasks?: Task[];
+  online?: boolean;
+  gate?: Promise<void>;
+} = {}) {
   let failuresLeft = options.failures ?? 0;
   const calls: Array<{ method: string; id: string; title?: string; boardId?: string }> = [];
   const attempt = (method: string) => async (item: Task | CalendarEvent, board?: Board) => {
@@ -18,6 +24,7 @@ function setup(options: { failures?: number; storage?: ReturnType<typeof memoryS
       failuresLeft -= 1;
       throw new Error("Failed to fetch");
     }
+    if (options.gate) await options.gate;
   };
   const target: PublishTarget = {
     publishTask: attempt("task"),
@@ -69,6 +76,44 @@ function setup(options: { failures?: number; storage?: ReturnType<typeof memoryS
 const task = (fields: Partial<Task> = {}) => ({ id: "t1", boardId: "b1", title: "Ship", ...fields }) as Task;
 
 describe("DurablePublisher", () => {
+  test("queueTask saves and returns without waiting for a relay attempt", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const run = setup({ tasks: [task({ title: "Edited now" })], gate });
+
+    run.durable.queueTask(task({ title: "Edited now" }));
+
+    expect(run.calls).toHaveLength(1);
+    expect(run.durable.intentCount()).toBe(1);
+    expect(run.pending.has("task:t1")).toBe(true);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(run.durable.intentCount()).toBe(0);
+    expect(run.pending.has("task:t1")).toBe(false);
+  });
+
+  test("queueTask keeps a relay failure queued without blocking the caller", async () => {
+    const run = setup({ failures: 1, tasks: [task()] });
+    run.durable.queueTask(task());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(run.durable.intentCount()).toBe(1);
+    expect(run.pending.has("task:t1")).toBe(true);
+    await run.durable.retryNow();
+    expect(run.durable.intentCount()).toBe(0);
+  });
+
+  test("queueTask rejects if the local intent cannot be stored and leaves no phantom queue entry", () => {
+    const storage = {
+      load: () => null,
+      save: () => { throw new Error("disk full"); },
+      peek: () => null,
+    };
+    const run = setup({ storage, tasks: [task()] });
+    expect(() => run.durable.queueTask(task())).toThrow("disk full");
+    expect(run.durable.intentCount()).toBe(0);
+    expect(run.pending.has("task:t1")).toBe(false);
+  });
+
   test("an edit whose publish fails before it is sent is retried until it goes out", async () => {
     const run = setup({ failures: 1, tasks: [task({ title: "Edited offline" })] });
     await run.durable.publishTask(task({ title: "Edited offline" }));

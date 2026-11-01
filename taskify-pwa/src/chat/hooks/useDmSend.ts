@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { createNip17Rumor } from "taskify-core";
+import { buildTaskifyBotUiActionTag, createNip17Rumor, type TaskifyBotUiAction } from "taskify-core";
 import { nip17Crypto } from "taskify-runtime-nostr";
 import { LocalKeySigner } from "../../identity/signer";
 import { giftWrapNip17Rumor, nip17TimestampSource, recipientInboxRelays } from "../../lib/nip17Messages";
@@ -104,6 +104,41 @@ export function useDmSend({
     },
     [resolveNip17Timestamp],
   );
+  const sendBotUiCommand = useCallback(
+    async (peerPubkey: string, content: string, action: TaskifyBotUiAction): Promise<void> => {
+      const command = content.trim();
+      if (!command) throw new Error("The bot command is empty.");
+      const { identity, reason } = readNostrIdentity();
+      if (!identity) throw new Error(reason || "Add your Taskify Nostr key in Settings → Nostr.");
+      const senderHex = identity.pubkey.toLowerCase();
+      const recipientHex = peerPubkey.toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(recipientHex)) throw new Error("Recipient pubkey is invalid.");
+      const relays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
+      if (!relays.length) throw new Error("No relays available for the bot conversation.");
+      const pool = ensureNostrPool();
+      const publish = (event: NostrEvent) => safePublish(pool, relays, event);
+      const { selfWrapEvent } = await publishNip17Giftwraps({
+        relays,
+        content: command,
+        senderHex,
+        recipientHex,
+        senderSecret: identity.secret,
+        publish,
+        extraTags: [buildTaskifyBotUiActionTag(action)],
+      });
+      if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
+    },
+    [
+      defaultNostrRelays,
+      ensureNostrPool,
+      handleDmEvent,
+      publishNip17Giftwraps,
+      readNostrIdentity,
+      resolveNip17Relays,
+      safePublish,
+    ],
+  );
+
   const handleSendReaction = useCallback(
     async (msg: WalletDmMessage, emoji: string) => {
       try {
@@ -451,6 +486,7 @@ export function useDmSend({
     resolveNip17Timestamp,
     resolveNip17Relays,
     publishNip17Giftwraps,
+    sendBotUiCommand,
     handleSendReaction,
     handleForwardMessage,
     publishGroupSubjectUpdate,

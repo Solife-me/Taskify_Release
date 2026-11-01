@@ -73,3 +73,22 @@ test("mergeBackupBoards applies incoming board order", () => {
   assert.deepEqual(out.map((board: any) => board.id), ["a", "b"]);
   assert.deepEqual(out.map((board: any) => board.order), [0, 1]);
 });
+
+test("mergeBackupBoards removes existing and incoming tombstoned boards", () => {
+  const duplicate = { id: "legacy-local", name: "Week", kind: "week", nostr: { boardId: "Legacy-Week", relays: ["wss://r"] } };
+  const kept = { id: "kept-local", name: "Kept", kind: "week", nostr: { boardId: "kept", relays: ["wss://r"] } };
+  const parent = { id: "parent-local", name: "Parent", kind: "compound", children: ["legacy-local", "kept-local"], nostr: { boardId: "parent", relays: ["wss://r"] } };
+  const out = mergeBackupBoards({
+    currentBoards: [duplicate, kept, parent] as any,
+    incomingBoards: [
+      { id: "legacy-remote", nostrId: "legacy-week", relays: ["wss://r"], kind: "week", name: "Week" },
+      { id: "kept-remote", nostrId: "kept", relays: ["wss://r"], kind: "week", name: "Kept" },
+    ] as any,
+    baseRelays: ["wss://r"],
+    normalizeRelayList: (relays) => (relays || []).filter(Boolean),
+    createId: () => "generated",
+    excludedNostrIds: ["LEGACY-WEEK"],
+  });
+  assert.deepEqual(out.map((board: any) => board.id), ["kept-local", "parent-local"]);
+  assert.deepEqual((out[1] as any).children, ["kept-local"]);
+});

@@ -1,6 +1,7 @@
+import { opaqueUploadFilename } from "taskify-core";
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
-import { toBufferSource } from "./binary";
+import { readResponseBytesWithProgress, toBufferSource, type DownloadProgressHandler } from "./binary";
 
 const ATTACHMENT_KEY_LABEL = new TextEncoder().encode("taskify-board-attachment-v2");
 const ATTACHMENT_V2_MAGIC = new Uint8Array([0x54, 0x46, 0x41, 0x32]); // TFA2
@@ -104,6 +105,9 @@ export async function encryptAndUploadAttachment(opts: {
   combined.set(iv, ATTACHMENT_V2_MAGIC.length);
   combined.set(new Uint8Array(ctBuf), ATTACHMENT_V2_MAGIC.length + iv.length);
   const ciphertextSha256 = await sha256Hex(combined);
+  // The file host sees only a content-addressed ciphertext name. This prevents the original
+  // filename or extension from becoming public through multipart metadata or the returned URL.
+  const uploadFilename = opaqueUploadFilename(ciphertextSha256);
   attachmentDebug("encrypt:complete", {
     filename: opts.filename,
     plaintextBytes: opts.data.byteLength,
@@ -111,7 +115,7 @@ export async function encryptAndUploadAttachment(opts: {
     ciphertextSha256,
     ciphertextSampleHex: sampleHex(combined),
     uploadContentType: "application/octet-stream",
-    uploadFilename: opts.filename,
+    uploadFilename,
     plaintextUploaded: false,
   });
   const blob = new Blob([combined], { type: "application/octet-stream" });
@@ -124,11 +128,12 @@ export async function encryptAndUploadAttachment(opts: {
       plaintextBytes: opts.data.byteLength,
       ciphertextBytes: combined.byteLength,
       ciphertextSha256,
+      uploadFilename,
       plaintextUploaded: false,
     },
     serverEntry: opts.serverEntry,
     file: blob,
-    filename: opts.filename,
+    filename: uploadFilename,
     contentType: "application/octet-stream",
     signer: opts.nostrSkHex,
     signal: opts.signal,
@@ -150,13 +155,15 @@ export async function decryptAttachment(opts: {
   boardId: string;
   url: string;
   mimeType: string;
+  signal?: AbortSignal;
+  onProgress?: DownloadProgressHandler;
 }): Promise<string> {
   const cacheKey = `${opts.boardId}::${opts.url}::${opts.mimeType}`;
   const cached = decryptDataUrlCache.get(cacheKey);
   if (cached) return cached;
   const promise = (async () => {
     attachmentDebug("decrypt:start", { boardId: opts.boardId, url: opts.url, mimeType: opts.mimeType });
-    const res = await fetch(opts.url);
+    const res = await fetch(opts.url, { signal: opts.signal });
     attachmentDebug("decrypt:fetch", {
       url: opts.url,
       finalUrl: res.url,
@@ -166,7 +173,7 @@ export async function decryptAttachment(opts: {
       contentLength: res.headers.get("content-length"),
     });
     if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
-    const bytes = new Uint8Array(await res.arrayBuffer());
+    const bytes = await readResponseBytesWithProgress(res, opts.onProgress);
     attachmentDebug("decrypt:fetched-bytes", {
       url: opts.url,
       encryptedBytes: bytes.byteLength,

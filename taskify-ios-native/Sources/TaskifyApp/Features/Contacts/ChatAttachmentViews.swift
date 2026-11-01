@@ -121,6 +121,7 @@ struct DirectMessageAttachmentThumbnail: View {
     @State private var image: UIImage?
     @State private var failed = false
     @State private var retryID = UUID()
+    @State private var downloadMessage: String?
 
     var body: some View {
         ZStack {
@@ -142,7 +143,16 @@ struct DirectMessageAttachmentThumbnail: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                ProgressView()
+                VStack(spacing: 7) {
+                    ProgressView()
+                    if let downloadMessage {
+                        Text(downloadMessage)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 8)
+                    }
+                }
             }
         }
         .task(id: retryID) { await load() }
@@ -153,8 +163,14 @@ struct DirectMessageAttachmentThumbnail: View {
     private func load() async {
         failed = false
         do {
-            let file = try await DirectMessageAttachmentDataLoader.shared.file(for: attachment)
+            let file = try await DirectMessageAttachmentDataLoader.shared.file(
+                for: attachment,
+                progress: { update in
+                    Task { @MainActor in downloadMessage = update.message }
+                }
+            )
             guard !Task.isCancelled else { return }
+            downloadMessage = nil
             guard let decoded = await DirectMessageAttachmentImageLoader.shared.image(
                 fileURL: file,
                 cacheKey: attachment.cacheKey,
@@ -163,6 +179,7 @@ struct DirectMessageAttachmentThumbnail: View {
             image = decoded
         } catch {
             guard !Task.isCancelled else { return }
+            downloadMessage = nil
             failed = true
         }
     }

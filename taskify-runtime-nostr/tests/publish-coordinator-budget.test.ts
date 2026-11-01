@@ -43,7 +43,7 @@ async function waitFor(fn: () => boolean, timeoutMs = 2000) {
 test("events beyond a relay's burst are queued, not sent, and go out as the budget refills", async () => {
   const store = new MemoryOutboxStore();
   // Long enough that signing three events under a loaded test run can't outlast it.
-  const publisher = coordinator(store, new RelayPublishBudget({ burst: 2, refillIntervalMs: 1_000 }));
+  const publisher = coordinator(store, new RelayPublishBudget({ burst: 2, refillIntervalMs: 1_000, refillJitterMs: 0 }));
   const original = NDKEvent.prototype.publish;
   const sent: string[] = [];
   NDKEvent.prototype.publish = async function (set?: { relayUrls?: string[] }) {
@@ -69,7 +69,7 @@ test("events beyond a relay's burst are queued, not sent, and go out as the budg
 
 test("a rate-limited relay is backed off while other relays keep receiving", async () => {
   const store = new MemoryOutboxStore();
-  const budget = new RelayPublishBudget({ burst: 10, refillIntervalMs: 10, rateLimitBackoffMs: 60_000 });
+  const budget = new RelayPublishBudget({ burst: 10, refillIntervalMs: 10, refillJitterMs: 0, rateLimitBackoffMs: 60_000 });
   const publisher = coordinator(store, budget);
   const original = NDKEvent.prototype.publish;
   const targets: string[][] = [];
@@ -164,7 +164,7 @@ test("a publish no relay accepts, with no rate limiting involved, still reports 
 
 test("a transient failure on the relays tried now doesn't fail a write still paced for others", async () => {
   const store = new MemoryOutboxStore();
-  const budget = new RelayPublishBudget({ burst: 1, refillIntervalMs: 60_000 });
+  const budget = new RelayPublishBudget({ burst: 1, refillIntervalMs: 60_000, refillJitterMs: 0 });
   budget.take(["wss://paced"], Date.now());
   const publisher = coordinator(store, budget);
   const original = NDKEvent.prototype.publish;

@@ -19,48 +19,57 @@ enum FastingRemindersSettings {
     static let weekdayPWAKey = "fastingRemindersWeekday"
     static let seedPWAKey = "fastingRemindersRandomSeed"
 
-    static func setSeed(_ seed: String) {
+    static func setSeed(_ seed: String, defaults: UserDefaults = .standard) {
         let trimmed = seed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        UserDefaults.standard.set(trimmed, forKey: seedKey)
+        defaults.set(trimmed, forKey: seedKey)
     }
 
-    static var enabled: Bool {
-        UserDefaults.standard.bool(forKey: enabledKey)
+    static var enabled: Bool { enabled(defaults: .standard) }
+    static func enabled(defaults: UserDefaults) -> Bool { defaults.bool(forKey: enabledKey) }
+
+    static var mode: FastingRemindersMode { mode(defaults: .standard) }
+    static func mode(defaults: UserDefaults) -> FastingRemindersMode {
+        defaults.string(forKey: modeKey) == "random" ? .random : .weekday
     }
 
-    static var mode: FastingRemindersMode {
-        UserDefaults.standard.string(forKey: modeKey) == "random" ? .random : .weekday
-    }
-
-    static var perMonth: Int {
-        let stored = UserDefaults.standard.integer(forKey: perMonthKey)
+    static var perMonth: Int { perMonth(defaults: .standard) }
+    static func perMonth(defaults: UserDefaults) -> Int {
+        let stored = defaults.integer(forKey: perMonthKey)
         return stored > 0 ? stored : 4
     }
 
     /// 0 = Sunday ... 6 = Saturday, matching JS `Date.getDay()`.
-    static var weekday: Int {
-        guard let stored = UserDefaults.standard.object(forKey: weekdayKey) as? Int,
+    static var weekday: Int { weekday(defaults: .standard) }
+    static func weekday(defaults: UserDefaults) -> Int {
+        guard let stored = defaults.object(forKey: weekdayKey) as? Int,
               stored >= 0, stored <= 6 else {
             return 1
         }
         return stored
     }
 
-    static var seed: String {
-        if let existing = UserDefaults.standard.string(forKey: seedKey), !existing.isEmpty {
+    static var seed: String { seed(defaults: .standard) }
+    static func seed(defaults: UserDefaults) -> String {
+        if let existing = defaults.string(forKey: seedKey), !existing.isEmpty {
             return existing
         }
         let generated = UUID().uuidString
-        UserDefaults.standard.set(generated, forKey: seedKey)
+        defaults.set(generated, forKey: seedKey)
         return generated
     }
 
-    static func save(enabled: Bool, mode: FastingRemindersMode, perMonth: Int, weekday: Int) {
+    static func save(
+        enabled: Bool,
+        mode: FastingRemindersMode,
+        perMonth: Int,
+        weekday: Int,
+        defaults: UserDefaults = .standard
+    ) {
         let maxPerMonth = mode == .random ? 31 : 5
-        UserDefaults.standard.set(enabled, forKey: enabledKey)
-        UserDefaults.standard.set(mode == .random ? "random" : "weekday", forKey: modeKey)
-        UserDefaults.standard.set(min(maxPerMonth, max(1, perMonth)), forKey: perMonthKey)
-        UserDefaults.standard.set(min(6, max(0, weekday)), forKey: weekdayKey)
+        defaults.set(enabled, forKey: enabledKey)
+        defaults.set(mode == .random ? "random" : "weekday", forKey: modeKey)
+        defaults.set(min(maxPerMonth, max(1, perMonth)), forKey: perMonthKey)
+        defaults.set(min(6, max(0, weekday)), forKey: weekdayKey)
     }
 }

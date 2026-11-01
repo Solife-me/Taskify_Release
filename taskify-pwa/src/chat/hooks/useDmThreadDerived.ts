@@ -5,6 +5,7 @@ import {
   type WalletDmMessage,
   type DmThreadListEntry,
 } from "./useDmState";
+import { projectHermesBotUi } from "../hermesModelPickerState";
 
 export type MessageSearchResult = { thread: WalletDmThread; message: WalletDmMessage };
 
@@ -43,6 +44,22 @@ export function useDmThreadDerived({
   compressedToRawHex,
   normalizeNostrPubkey,
 }: UseDmThreadDerivedOptions) {
+  const hiddenMessageIds = useMemo(() => {
+    const byThread = new Map<string, WalletDmMessage[]>();
+    for (const message of displayDmMessages) {
+      const key = message.groupId || message.peerPubkey.toLowerCase();
+      const messages = byThread.get(key) ?? [];
+      messages.push(message);
+      byThread.set(key, messages);
+    }
+    const hidden = new Set<string>();
+    for (const messages of byThread.values()) {
+      const projection = projectHermesBotUi(messages, true);
+      projection.hiddenEventIds.forEach((eventId) => hidden.add(eventId));
+    }
+    return hidden;
+  }, [displayDmMessages]);
+
   const dmThreads = useMemo(() => {
     if (!displayDmMessages.length) return [] as WalletDmThread[];
     const threads = new Map<string, WalletDmThread>();
@@ -50,7 +67,8 @@ export function useDmThreadDerived({
     // Use reactive identity pubkey (falls back to ref) so self-chat is never a stranger
     const ownHex = (nostrIdentityInfo.identity?.pubkey || nostrIdentityRef.current?.pubkey || "").toLowerCase();
     displayDmMessages.forEach((msg) => {
-      const preview = dmPreviewForMessage(msg);
+      const isHiddenBotUi = hiddenMessageIds.has(msg.eventId);
+      const preview = isHiddenBotUi ? "" : dmPreviewForMessage(msg);
       const threadKey = msg.groupId || msg.peerPubkey.toLowerCase();
       const existing = threads.get(threadKey);
       const base: WalletDmThread =
@@ -66,7 +84,7 @@ export function useDmThreadDerived({
       base.messages.push(msg);
       if (msg.createdAt > base.lastCreatedAt) {
         base.lastCreatedAt = msg.createdAt;
-        base.lastPreview = preview;
+        if (!isHiddenBotUi) base.lastPreview = preview;
       }
       threads.set(threadKey, base);
     });
@@ -76,7 +94,7 @@ export function useDmThreadDerived({
     }));
     ordered.sort((a, b) => b.lastCreatedAt - a.lastCreatedAt);
     return ordered;
-  }, [contactIndex, displayDmMessages, dmPreviewForMessage, nostrIdentityInfo, nostrIdentityRef]);
+  }, [contactIndex, displayDmMessages, dmPreviewForMessage, hiddenMessageIds, nostrIdentityInfo, nostrIdentityRef]);
 
   const activeThread = useMemo(
     () => (activeThreadPeer ? dmThreads.find((t) => t.peerPubkey === activeThreadPeer) ?? null : null),
@@ -147,14 +165,14 @@ export function useDmThreadDerived({
     const results: MessageSearchResult[] = [];
     for (const thread of visibleDmThreads) {
       for (const msg of thread.messages) {
-        if (!msg.eventId.startsWith("draft-") && msg.content.toLowerCase().includes(q)) {
+        if (!hiddenMessageIds.has(msg.eventId) && !msg.eventId.startsWith("draft-") && msg.content.toLowerCase().includes(q)) {
           results.push({ thread, message: msg });
         }
       }
     }
     results.sort((a, b) => b.message.createdAt - a.message.createdAt);
     return results;
-  }, [dmSearch, visibleDmThreads]);
+  }, [dmSearch, hiddenMessageIds, visibleDmThreads]);
 
   const activeThreadPendingMessages = useMemo(
     () =>

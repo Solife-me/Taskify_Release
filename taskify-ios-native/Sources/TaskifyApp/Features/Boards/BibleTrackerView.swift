@@ -948,23 +948,43 @@ private struct ScripturePickerSheet: View {
 /// Native counterpart to the PWA's fiducial-marker print/scan flow. The latest print job is kept
 /// locally so a scan can resolve marks to stable task/chapter IDs even after the live data changes.
 struct PhysicalChecklistSheet: View {
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var job: PhysicalChecklistJob
     @State private var showingScanner = false
     @State private var sharePayload: PhysicalChecklistSharePayload?
-    @State private var detectedIDs: [String] = []
+    @State private var scanReview = PhysicalChecklistScanReview()
     @State private var scanMessage: String?
     @State private var scanJob: PhysicalChecklistJob?
 
     let onApply: ([String]) -> Void
 
-    init(job: PhysicalChecklistJob, onApply: @escaping ([String]) -> Void) {
+    init(
+        job: PhysicalChecklistJob,
+        startWithScanner: Bool = false,
+        onApply: @escaping ([String]) -> Void
+    ) {
         _job = State(initialValue: job)
+        let storedJob = PhysicalChecklistJobStore.load(ownerID: job.ownerID)
+        _showingScanner = State(
+            initialValue: startWithScanner && VNDocumentCameraViewController.isSupported
+        )
+        _scanJob = State(initialValue: startWithScanner ? (storedJob ?? job) : nil)
         self.onApply = onApply
     }
 
     private var lastPrintedJob: PhysicalChecklistJob? {
         PhysicalChecklistJobStore.load(ownerID: job.ownerID)
+    }
+
+    private var reviewedItems: [PhysicalChecklistItem] {
+        guard let scanJob else { return [] }
+        return scanReview.reviewedItems(from: scanJob.items)
+    }
+
+    private var selectedApplyableIDs: [String] {
+        guard let scanJob else { return [] }
+        return scanReview.applyableIDs(from: scanJob.items)
     }
 
     var body: some View {
@@ -1007,7 +1027,12 @@ struct PhysicalChecklistSheet: View {
                         .buttonStyle(.bordered)
 
                         Button {
-                            scanJob = lastPrintedJob ?? job
+                            let nextJob = lastPrintedJob ?? job
+                            if scanJob?.id != nextJob.id {
+                                scanReview = PhysicalChecklistScanReview()
+                                scanMessage = nil
+                            }
+                            scanJob = nextJob
                             showingScanner = true
                         } label: {
                             Label("Scan completed checklist", systemImage: "doc.viewfinder")
@@ -1018,41 +1043,77 @@ struct PhysicalChecklistSheet: View {
                     }
 
                     if let scanMessage {
-                        Label(scanMessage, systemImage: detectedIDs.isEmpty ? "info.circle" : "checkmark.circle.fill")
+                        Label(scanMessage, systemImage: scanReview.itemIDs.isEmpty ? "info.circle" : "checkmark.circle.fill")
                             .font(.subheadline)
-                            .foregroundStyle(detectedIDs.isEmpty ? TaskifyTheme.secondaryText : TaskifyTheme.accent)
+                            .foregroundStyle(scanReview.itemIDs.isEmpty ? TaskifyTheme.secondaryText : TaskifyTheme.accent)
                     }
 
-                    if !detectedIDs.isEmpty, let scanJob {
+                    if !reviewedItems.isEmpty, let scanJob {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Detected marks")
-                                .font(.headline)
-                            ForEach(scanJob.items.filter { detectedIDs.contains($0.id) }) { item in
-                                HStack(spacing: 10) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(TaskifyTheme.accent)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(item.title)
-                                            .font(.subheadline.weight(.semibold))
-                                        if let section = item.section {
-                                            Text(section)
-                                                .font(.caption)
-                                                .foregroundStyle(TaskifyTheme.secondaryText)
-                                        }
-                                    }
-                                    Spacer()
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Verify detected tasks")
+                                        .font(.headline)
+                                    Text("Select the completed marks to apply. Already-completed tasks are kept for context.")
+                                        .font(.caption)
+                                        .foregroundStyle(TaskifyTheme.secondaryText)
                                 }
+                                Spacer()
+                            }
+
+                            HStack {
+                                Button("Select all") {
+                                    scanReview.selectAll(items: scanJob.items)
+                                }
+                                .font(.caption.weight(.semibold))
+                                .disabled(scanReview.itemIDs.isEmpty)
+
+                                Button("Clear") {
+                                    scanReview.clearSelection()
+                                }
+                                .font(.caption.weight(.semibold))
+                                .disabled(scanReview.selectedIDs.isEmpty)
+                            }
+
+                            ForEach(reviewedItems) { item in
+                                Button {
+                                    scanReview.toggle(itemID: item.id, items: scanJob.items)
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: reviewSelectionIcon(for: item))
+                                            .foregroundStyle(item.filled ? TaskifyTheme.secondaryText : TaskifyTheme.accent)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(item.title)
+                                                .font(.subheadline.weight(.semibold))
+                                            if let section = item.section {
+                                                Text(section)
+                                                    .font(.caption)
+                                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                            }
+                                            if item.filled {
+                                                Text("Already completed")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(TaskifyTheme.secondaryText)
+                                            }
+                                        }
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(item.filled)
                             }
 
                             Button {
-                                onApply(detectedIDs)
+                                onApply(selectedApplyableIDs)
                                 dismiss()
                             } label: {
-                                Text("Apply \(detectedIDs.count) completed mark\(detectedIDs.count == 1 ? "" : "s")")
+                                Text("Apply \(selectedApplyableIDs.count) completed mark\(selectedApplyableIDs.count == 1 ? "" : "s")")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(TaskifyTheme.accent)
+                            .disabled(selectedApplyableIDs.isEmpty)
                         }
                         .padding(16)
                         .taskifyGlass(cornerRadius: 20)
@@ -1077,13 +1138,19 @@ struct PhysicalChecklistSheet: View {
                 showingScanner = false
                 guard let scanJob else { return }
                 let result = PhysicalChecklistScanAnalyzer.scan(images: images, job: scanJob)
-                detectedIDs = result.detectedIDs
-                if result.recognizedPages == 0 {
+                if result.mismatchedJobs > 0 {
+                    scanMessage = "This sheet belongs to a different print or board. Reprint the current checklist before scanning."
+                } else if result.unreadablePageIDs > 0 {
+                    scanMessage = "The page number could not be read. Keep the complete header visible and scan that page again."
+                } else if result.recognizedPages == 0 {
                     scanMessage = "No Taskify checklist page was recognized. Keep the whole page visible and try again in even light."
-                } else if result.detectedIDs.isEmpty {
-                    scanMessage = "The page was recognized, but no newly filled circles were found."
                 } else {
-                    scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
+                    scanReview.merge(detectedIDs: result.detectedIDs, items: scanJob.items)
+                    if result.detectedIDs.isEmpty {
+                        scanMessage = "The page was recognized, but no newly filled circles were found."
+                    } else {
+                        scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
+                    }
                 }
             }
             .ignoresSafeArea()
@@ -1096,8 +1163,15 @@ struct PhysicalChecklistSheet: View {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(safeTitle)-checklist-\(job.id.prefix(8)).pdf")
         try data.write(to: url, options: .atomic)
-        PhysicalChecklistJobStore.save(job)
+        model.recordPhysicalChecklistJob(job)
         return url
+    }
+
+    private func reviewSelectionIcon(for item: PhysicalChecklistItem) -> String {
+        if item.filled {
+            return "checkmark.circle.fill"
+        }
+        return scanReview.selectedIDs.contains(item.id) ? "checkmark.square.fill" : "square"
     }
 
     private func printChecklist() {
@@ -1128,30 +1202,6 @@ struct PhysicalChecklistSheet: View {
 private struct PhysicalChecklistSharePayload: Identifiable {
     let id = UUID()
     let url: URL
-}
-
-private enum PhysicalChecklistJobStore {
-    private static let key = "taskify.physical-checklist.latest-jobs.v1"
-
-    static func save(_ job: PhysicalChecklistJob) {
-        var jobs = loadAll()
-        jobs[job.ownerID] = job
-        if let data = try? JSONEncoder().encode(jobs) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
-    }
-
-    static func load(ownerID: String) -> PhysicalChecklistJob? {
-        loadAll()[ownerID]
-    }
-
-    private static func loadAll() -> [String: PhysicalChecklistJob] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let jobs = try? JSONDecoder().decode([String: PhysicalChecklistJob].self, from: data) else {
-            return [:]
-        }
-        return jobs
-    }
 }
 
 private enum PhysicalChecklistPDFRenderer {
@@ -1210,23 +1260,37 @@ private enum PhysicalChecklistPDFRenderer {
                 .foregroundColor: UIColor.black,
             ]
         )
-        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count)"
+        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count) • Print \(PhysicalChecklistLayout.version)"
         (subtitle as NSString).draw(
             in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5),
             withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.darkGray]
         )
 
-        let bits = page.index + 1
         for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
             let side = PhysicalChecklistLayout.pageIDSizeMM
             let rect = rectMM(center.x - side / 2, center.y - side / 2, side, side)
             let path = UIBezierPath(rect: rect)
-            if bits & (1 << bit) != 0 {
+            if BoardPrintContract.pagePattern(pageIndex: page.index)[bit] != 0 {
                 UIColor.black.setFill()
                 path.fill()
             } else {
                 UIColor.black.setStroke()
                 path.lineWidth = 0.7
+                path.stroke()
+            }
+        }
+
+        let jobCode = BoardPrintContract.jobCodePattern(jobID: job.id)
+        for (bit, center) in layout.jobCodeBitCentersMM(jobID: job.id).enumerated() {
+            let side = BoardPrintContract.jobCodeMarkerSizeMM
+            let rect = rectMM(center.x - side / 2, center.y - side / 2, side, side)
+            let path = UIBezierPath(rect: rect)
+            if jobCode[bit] != 0 {
+                UIColor.black.setFill()
+                path.fill()
+            } else {
+                UIColor.black.setStroke()
+                path.lineWidth = 0.6
                 path.stroke()
             }
         }
@@ -1331,6 +1395,8 @@ private enum PhysicalChecklistScanAnalyzer {
     struct Result {
         var detectedIDs: [String]
         var recognizedPages: Int
+        var mismatchedJobs: Int
+        var unreadablePageIDs: Int
     }
 
     private struct GrayImage {
@@ -1362,8 +1428,10 @@ private enum PhysicalChecklistScanAnalyzer {
         let paperSize = job.paper.sizeMM
         var detected = Set<String>()
         var recognized = Set<Int>()
+        var mismatchedJobs = 0
+        var unreadablePageIDs = 0
 
-        for (inputIndex, image) in images.enumerated() {
+        for image in images {
             autoreleasepool {
                 guard let gray = makeGrayImage(image) else { return }
                 let markerCenters = layout.markerRectsMM().map {
@@ -1373,6 +1441,21 @@ private enum PhysicalChecklistScanAnalyzer {
                     gray.mean(x: $0.0, y: $0.1, radius: 0.004) < 185
                 }.count
                 guard darkMarkerCount >= 3 else { return }
+
+                let expectedJobCode = BoardPrintContract.jobCode(jobID: job.id)
+                var observedJobCode = 0
+                for (bit, center) in layout.jobCodeBitCentersMM(jobID: job.id).enumerated() {
+                    let value = gray.mean(
+                        x: center.x / paperSize.width,
+                        y: center.y / paperSize.height,
+                        radius: 0.002
+                    )
+                    if value < 170 { observedJobCode |= 1 << bit }
+                }
+                guard observedJobCode == expectedJobCode else {
+                    mismatchedJobs += 1
+                    return
+                }
 
                 var encodedPage = 0
                 for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
@@ -1384,9 +1467,15 @@ private enum PhysicalChecklistScanAnalyzer {
                     if value < 170 { encodedPage |= 1 << bit }
                 }
                 let decodedIndex = encodedPage - 1
-                let pageIndex = layout.pages.indices.contains(decodedIndex)
-                    ? decodedIndex
-                    : min(inputIndex, layout.pages.count - 1)
+                let pageIndex: Int
+                if layout.pages.count == 1 {
+                    pageIndex = 0
+                } else if layout.pages.indices.contains(decodedIndex) {
+                    pageIndex = decodedIndex
+                } else {
+                    unreadablePageIDs += 1
+                    return
+                }
                 recognized.insert(pageIndex)
 
                 for row in layout.pages[pageIndex].rows {
@@ -1403,7 +1492,12 @@ private enum PhysicalChecklistScanAnalyzer {
             }
         }
 
-        return Result(detectedIDs: detected.sorted(), recognizedPages: recognized.count)
+        return Result(
+            detectedIDs: detected.sorted(),
+            recognizedPages: recognized.count,
+            mismatchedJobs: mismatchedJobs,
+            unreadablePageIDs: unreadablePageIDs
+        )
     }
 
     private static func makeGrayImage(_ source: UIImage) -> GrayImage? {

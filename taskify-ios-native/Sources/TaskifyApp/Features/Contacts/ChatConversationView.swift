@@ -72,7 +72,8 @@ struct ChatConversationPresentation {
     /// The earlier photos of each run; their rows stay in the timeline (so scrolling and search
     /// targets keep working) but draw nothing.
     let stackedMessageIDs: Set<String>
-
+    /// Verified-bot Hermes menus keyed by the visible `/model` listing message.
+    let hermesMenusByListingMessageID: [String: HermesModelMenuProjection]
 }
 
 /// A conversation owns only its current snapshot projection and a bounded amount of parsed
@@ -580,8 +581,15 @@ struct DirectMessageConversationView: View {
         let calendarInvites = calendarInvites
         let sharedBoards = sharedBoards
         let structuredRumorIDs = Set(sharedTasks.map(\.rumorEventID) + calendarInvites.map(\.rumorEventID))
+        let hermesProjection = HermesModelPickerProjection.project(
+            messages: messages,
+            enabled: group == nil && model.isBot(publicKey: peerPublicKey)
+        )
         let items =
-            messages.filter { !structuredRumorIDs.contains($0.rumorEventID) }.map(ChatTimelineItem.message)
+            messages.filter {
+                !structuredRumorIDs.contains($0.rumorEventID) &&
+                    !hermesProjection.hiddenMessageIDs.contains($0.rumorEventID)
+            }.map(ChatTimelineItem.message)
                 + sharedTasks.map(ChatTimelineItem.sharedTask)
                 + sharedContacts.map(ChatTimelineItem.sharedContact)
                 + calendarInvites.map(ChatTimelineItem.calendarInvite)
@@ -647,7 +655,8 @@ struct DirectMessageConversationView: View {
             senderNames: senderNames,
             structuredSenderName: values.max { $0.0 < $1.0 }?.1,
             photoStacks: photoStacks.stacks,
-            stackedMessageIDs: photoStacks.stackedMessageIDs
+            stackedMessageIDs: photoStacks.stackedMessageIDs,
+            hermesMenusByListingMessageID: hermesProjection.menusByListingMessageID
         )
     }
     private var isStranger: Bool {
@@ -1257,38 +1266,49 @@ struct DirectMessageConversationView: View {
                 // Drawn by the photo stack its run's newest photo hosts.
                 Color.clear.frame(height: 0)
             case let .message(message):
-                let photoStack = presentation.photoStacks[message.id]
-                // A stack's grouping follows the message before its first photo.
-                let runStart = index - (photoStack?.count ?? 1) + 1
-                let groupedWithPrevious = isMessageGrouped(at: runStart, with: runStart - 1, in: currentTimeline)
-                let groupedWithNext = isMessageGrouped(at: index + 1, with: index, in: currentTimeline)
-                let reactions = (photoStack ?? [message]).flatMap { member in
-                    (presentation.reactionLookup[member.rumorEventID] ?? [])
-                        + (member.wrapEventID == member.rumorEventID
-                            ? []
-                            : presentation.reactionLookup[member.wrapEventID] ?? [])
-                }
-                DirectMessageBubble(
-                    renderCache: renderCache,
-                    message: message,
-                    repliedMessage: message.replyToEventID.flatMap {
-                        presentation.messageLookup[$0]
-                    },
-                    reactions: reactions,
-                    senderName: group != nil && message.isIncoming && !groupedWithPrevious
-                        ? presentation.senderNames[message.senderPublicKey] : nil,
-                    senderContact: group != nil && message.isIncoming
-                        ? presentation.senderContacts[message.senderPublicKey] : nil,
-                    showsSenderAvatar: group != nil && message.isIncoming,
-                    isGroupedWithPrevious: groupedWithPrevious,
-                    isGroupedWithNext: groupedWithNext,
-                    showsSentStatus: item.id == presentation.lastSentItemID,
-                    isSearchMatch: currentSearchMatches.contains(item.id),
-                    isSelectedSearchResult: selectedSearchResultID == item.id,
-                    photoStack: photoStack
-                )
-                .equatable()
-                .contextMenu {
+                if let hermesMenu = presentation.hermesMenusByListingMessageID[message.id] {
+                    HStack(alignment: .top, spacing: 0) {
+                        HermesModelPickerChatView(
+                            peerPublicKey: peerPublicKey,
+                            projection: hermesMenu
+                        )
+                        .frame(maxWidth: 540, alignment: .leading)
+                        Spacer(minLength: 30)
+                    }
+                    .padding(.vertical, 4)
+                } else {
+                    let photoStack = presentation.photoStacks[message.id]
+                    // A stack's grouping follows the message before its first photo.
+                    let runStart = index - (photoStack?.count ?? 1) + 1
+                    let groupedWithPrevious = isMessageGrouped(at: runStart, with: runStart - 1, in: currentTimeline)
+                    let groupedWithNext = isMessageGrouped(at: index + 1, with: index, in: currentTimeline)
+                    let reactions = (photoStack ?? [message]).flatMap { member in
+                        (presentation.reactionLookup[member.rumorEventID] ?? [])
+                            + (member.wrapEventID == member.rumorEventID
+                                ? []
+                                : presentation.reactionLookup[member.wrapEventID] ?? [])
+                    }
+                    DirectMessageBubble(
+                        renderCache: renderCache,
+                        message: message,
+                        repliedMessage: message.replyToEventID.flatMap {
+                            presentation.messageLookup[$0]
+                        },
+                        reactions: reactions,
+                        senderName: group != nil && message.isIncoming && !groupedWithPrevious
+                            ? presentation.senderNames[message.senderPublicKey] : nil,
+                        senderContact: group != nil && message.isIncoming
+                            ? presentation.senderContacts[message.senderPublicKey] : nil,
+                        showsSenderAvatar: group != nil && message.isIncoming,
+                        isGroupedWithPrevious: groupedWithPrevious,
+                        isGroupedWithNext: groupedWithNext,
+                        showsSentStatus: item.id == presentation.lastSentItemID,
+                        isSearchMatch: currentSearchMatches.contains(item.id),
+                        isSelectedSearchResult: selectedSearchResultID == item.id,
+                        photoStack: photoStack
+                    )
+                    .equatable()
+                    .contextMenu {
                     Label(
                         "Sent \(Date(timeIntervalSince1970: TimeInterval(message.createdAt)).formatted(date: .abbreviated, time: .shortened))",
                         systemImage: "clock"
@@ -1320,6 +1340,7 @@ struct DirectMessageConversationView: View {
                             )
                         }
                     }
+                }
                 }
             case let .sharedTask(sharedTask):
                 SharedTaskChatCard(
@@ -1687,15 +1708,18 @@ struct DirectMessageConversationView: View {
         .padding(.top, 6)
         .padding(.bottom, 6)
         .fullScreenCover(isPresented: $showingCamera) {
-            TaskAttachmentCameraPicker(
-                onCapture: { image in
+            MultiPhotoCameraPicker(
+                maximumCount: max(
+                    0,
+                    NostrDirectMessageAttachment.maximumBatchCount - attachmentDrafts.count
+                ),
+                onDone: { images in
                     showingCamera = false
                     attachmentPreparationTask?.cancel()
-                    attachmentPreparationTask = Task { await stageCapturedPhoto(image) }
+                    attachmentPreparationTask = Task { await stageCapturedPhotos(images) }
                 },
                 onCancel: { showingCamera = false }
             )
-            .ignoresSafeArea()
         }
         .fullScreenCover(isPresented: $showingDocumentScanner) {
             TaskAttachmentDocumentScanner(
@@ -1719,6 +1743,18 @@ struct DirectMessageConversationView: View {
     private var messageComposerRow: some View {
             HStack(alignment: .bottom, spacing: 9) {
                 Menu {
+#if DEBUG
+                    // The simulator has no camera. This deterministic camera surface exists only
+                    // for UI tests so capture, thumbnail removal, and cancellation stay covered.
+                    if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_MULTI_PHOTO_CAMERA"] == "1" {
+                        Button {
+                            showingCamera = true
+                        } label: {
+                            Label("Camera", systemImage: "camera")
+                        }
+                        .disabled(attachmentDrafts.count >= NostrDirectMessageAttachment.maximumBatchCount)
+                    }
+#endif
                     // Compile-time simulator exclusion, not a runtime availability check:
                     // device users always get the entries, and the Simulator (no camera)
                     // never does.
@@ -1728,6 +1764,7 @@ struct DirectMessageConversationView: View {
                     } label: {
                         Label("Camera", systemImage: "camera")
                     }
+                    .disabled(attachmentDrafts.count >= NostrDirectMessageAttachment.maximumBatchCount)
                     Button {
                         showingDocumentScanner = true
                     } label: {
@@ -2134,7 +2171,10 @@ struct DirectMessageConversationView: View {
                         } else {
                             attachment = try await TaskAttachmentUploadService.shared.uploadChatAttachment(
                                 fileURL: draftAttachment.fileURL, name: draftAttachment.name,
-                                mimeType: draftAttachment.mimeType, progress: { progress in
+                                mimeType: draftAttachment.mimeType,
+                                identity: model.cachedIdentity,
+                                settingsDefaults: model.accountDefaults,
+                                progress: { progress in
                                     Task { @MainActor in
                                         guard isSending, attachmentProgress != .sendingMessage else { return }
                                         attachmentProgress = progress
@@ -2276,28 +2316,36 @@ struct DirectMessageConversationView: View {
     }
 
     @MainActor
-    private func stageCapturedPhoto(_ image: UIImage) async {
-        guard !isSending, !isSendingAttachment else { return }
+    private func stageCapturedPhotos(_ images: [UIImage]) async {
+        guard !isSending, !isSendingAttachment, !images.isEmpty else { return }
         isSendingAttachment = true
         defer { isSendingAttachment = false }
+        let available = max(
+            0,
+            NostrDirectMessageAttachment.maximumBatchCount - attachmentDrafts.count
+        )
+        let accepted = Array(images.prefix(available))
         var staged: URL?
         do {
-            guard let jpegData = image.jpegData(compressionQuality: 0.88) else {
-                throw AttachmentFileError.invalidFile
-            }
-            let url = try await AttachmentFiles.work { try AttachmentFiles.write(jpegData) }
-            staged = url
-            try Task.checkCancellation()
-            let size = try AttachmentFiles.size(url)
             let timestamp = Int(Date().timeIntervalSince1970 * 1_000)
-            let draftAttachment = ChatAttachmentDraft(
-                fileURL: url,
-                name: "photo-\(timestamp).jpg",
-                mimeType: "image/jpeg",
-                size: size
-            )
-            staged = nil
-            guard appendDraft(draftAttachment) else { return }
+            for (index, image) in accepted.enumerated() {
+                try Task.checkCancellation()
+                guard let jpegData = image.jpegData(compressionQuality: 0.88) else {
+                    throw AttachmentFileError.invalidFile
+                }
+                let url = try await AttachmentFiles.work { try AttachmentFiles.write(jpegData) }
+                staged = url
+                try Task.checkCancellation()
+                let size = try AttachmentFiles.size(url)
+                let draftAttachment = ChatAttachmentDraft(
+                    fileURL: url,
+                    name: "photo-\(timestamp)-\(index + 1).jpg",
+                    mimeType: "image/jpeg",
+                    size: size
+                )
+                staged = nil
+                guard appendDraft(draftAttachment) else { return }
+            }
             attachmentSendError = nil
             composerFocused = true
             UIImpactFeedbackGenerator(style: .light).impactOccurred()

@@ -2,7 +2,6 @@
 import React, { useState, useMemo } from "react";
 import { nip19 } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
-import { FileServersSection } from "./FileServersSection";
 import { copyNsecToClipboard, useKeyBackupState } from "../../onboarding/keyBackup";
 import type { Settings } from "../../domains/tasks/settingsTypes";
 import { pillButtonClass } from "./settingsConstants";
@@ -19,6 +18,7 @@ export function NostrSection({
   setShowAdvanced,
   onResyncBoardHistory,
   sharedBoardCount = 0,
+  embedded = false,
 }: {
   settings: Settings;
   setSettings: (s: Partial<Settings>) => void;
@@ -31,6 +31,7 @@ export function NostrSection({
   setShowAdvanced: (fn: (prev: boolean) => boolean) => void;
   onResyncBoardHistory: () => void;
   sharedBoardCount?: number;
+  embedded?: boolean;
 }) {
   const [customSk, setCustomSk] = useState("");
   const keyBackup = useKeyBackupState();
@@ -57,8 +58,8 @@ export function NostrSection({
 
   return (
     <section className="wallet-section space-y-3">
-      <div className="flex items-center gap-2 mb-3">
-        <div className="text-sm font-medium">Nostr</div>
+      <div className={`flex items-center gap-2 ${embedded ? "" : "mb-3"}`}>
+        {!embedded && <div className="text-sm font-medium">Nostr</div>}
         <div className="ml-auto" />
         <button
           className="ghost-button button-sm pressable"
@@ -131,28 +132,6 @@ export function NostrSection({
                 className="ghost-button button-sm pressable"
                 onClick={() => { void copyNsec(); }}
               >Copy private key (nsec)</button>
-            </div>
-          </div>
-
-          <div className="mb-3 space-y-4">
-            <div>
-              <div className="text-xs text-secondary mb-1">Public file servers</div>
-              <FileServersSection
-                fileStorageServer={settings.fileStorageServer}
-                fileServers={settings.fileServers || ""}
-                onSelectServer={(url) => setSettings({ fileStorageServer: url })}
-                onUpdateServers={(serialized) => setSettings({ fileServers: serialized })}
-              />
-            </div>
-            <div>
-              <div className="text-xs text-secondary mb-1">Encrypted file servers</div>
-              <FileServersSection
-                fileStorageServer={settings.encryptedFileStorageServer}
-                fileServers={settings.encryptedFileServers || ""}
-                onSelectServer={(url) => setSettings({ encryptedFileStorageServer: url })}
-                onUpdateServers={(serialized) => setSettings({ encryptedFileServers: serialized })}
-                addWarning={(type) => type && type !== "originless" ? "Warning: NIP-96 and Blossom servers may fail for encrypted uploads. Originless is recommended." : null}
-              />
             </div>
           </div>
 

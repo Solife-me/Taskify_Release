@@ -25,30 +25,77 @@ export function classifyRelayRejection(message) {
  */
 export const FIRST_PARTY_RELAYS = ["wss://relay.solife.me", "wss://push.solife.me"];
 export class RelayPublishBudget {
-    // Public-relay defaults fit relay.damus.io's noteguard: 8 posts a minute per IP, but its bucket
-    // holds 7 after a quiet spell, and it credits elapsed time in whole seconds, so a post earns its
-    // token back only after 8 s (at 7.5 s every post drained it until it refused one). So: a burst
-    // of 7, then one event every 10 s, and 20 s after a rate limit, which noteguard needs to accept
-    // again from empty. It bans an IP for an hour after 10 refusals in a row. First-party relays
-    // get a burst of 100, then 10 events/s.
+    // A public relay gets one event immediately, then one every 10-12 s. A one-slot lease keeps a
+    // slow acknowledgement from overlapping the next publish; it expires after 45 s so a crashed
+    // CLI cannot wedge the shared budget. Per-relay jitter keeps clients behind one NAT from
+    // publishing in lockstep. This is deliberately below relay.damus.io's example limit of 8 posts/
+    // minute per IP, whose remaining shared-IP budget a client cannot observe. First-party relays
+    // still get 100, then 10 events/s.
     burst;
     refillIntervalMs;
+    refillJitterMs;
+    publishLeaseMs;
     rateLimitBackoffMs;
     maxBackoffMs;
     banBackoffMs;
     firstPartyBurst;
     firstPartyRefillIntervalMs;
     firstPartyRelays;
+    stateStore;
     relays = new Map();
     constructor(options = {}) {
-        this.burst = Math.max(1, options.burst ?? 7);
+        this.burst = Math.max(1, options.burst ?? 1);
         this.refillIntervalMs = Math.max(1, options.refillIntervalMs ?? 10_000);
+        this.refillJitterMs = Math.max(0, options.refillJitterMs ?? 2_000);
+        this.publishLeaseMs = Math.max(1, options.publishLeaseMs ?? 45_000);
         this.rateLimitBackoffMs = Math.max(1, options.rateLimitBackoffMs ?? 20_000);
         this.maxBackoffMs = Math.max(this.rateLimitBackoffMs, options.maxBackoffMs ?? 10 * 60_000);
         this.banBackoffMs = Math.max(1, options.banBackoffMs ?? 30 * 60_000);
         this.firstPartyBurst = Math.max(1, options.firstPartyBurst ?? 100);
         this.firstPartyRefillIntervalMs = Math.max(1, options.firstPartyRefillIntervalMs ?? 100);
+        this.stateStore = options.stateStore;
         this.firstPartyRelays = new Set((options.firstPartyRelays ?? FIRST_PARTY_RELAYS).map((relay) => relay.trim().toLowerCase().replace(/\/+$/, "")));
+    }
+    snapshot() {
+        return {
+            version: 1,
+            relays: Object.fromEntries(Array.from(this.relays, ([relay, state]) => [relay, { ...state }])),
+        };
+    }
+    restore(snapshot) {
+        this.relays.clear();
+        if (!snapshot || snapshot.version !== 1 || !snapshot.relays || typeof snapshot.relays !== "object")
+            return;
+        for (const [relay, value] of Object.entries(snapshot.relays)) {
+            const state = value;
+            if (![state.tokens, state.updatedAt, state.blockedUntil, state.consecutiveRateLimits]
+                .every((number) => typeof number === "number" && Number.isFinite(number)))
+                continue;
+            this.relays.set(relay, {
+                tokens: Math.max(0, state.tokens),
+                updatedAt: state.updatedAt,
+                blockedUntil: Math.max(0, state.blockedUntil),
+                consecutiveRateLimits: Math.max(0, Math.floor(state.consecutiveRateLimits)),
+                refillIntervalMs: typeof state.refillIntervalMs === "number" && Number.isFinite(state.refillIntervalMs)
+                    ? Math.max(1, state.refillIntervalMs)
+                    : undefined,
+                inFlightUntil: typeof state.inFlightUntil === "number" && Number.isFinite(state.inFlightUntil)
+                    ? Math.max(0, state.inFlightUntil)
+                    : undefined,
+            });
+        }
+    }
+    withPersistentState(operation) {
+        if (!this.stateStore)
+            return operation();
+        let result;
+        const snapshot = this.stateStore.update((current) => {
+            this.restore(current);
+            result = operation();
+            return this.snapshot();
+        });
+        this.restore(snapshot);
+        return result;
     }
     isFirstParty(relay) {
         return this.firstPartyRelays.has(relay.trim().toLowerCase().replace(/\/+$/, ""));
@@ -56,18 +103,32 @@ export class RelayPublishBudget {
     burstFor(relay) {
         return this.isFirstParty(relay) ? this.firstPartyBurst : this.burst;
     }
-    refillFor(relay) {
-        return this.isFirstParty(relay) ? this.firstPartyRefillIntervalMs : this.refillIntervalMs;
+    newRefillInterval(relay) {
+        if (this.isFirstParty(relay))
+            return this.firstPartyRefillIntervalMs;
+        return this.refillIntervalMs + Math.floor(Math.random() * (this.refillJitterMs + 1));
+    }
+    refillFor(relay, state) {
+        state.refillIntervalMs ??= this.newRefillInterval(relay);
+        return state.refillIntervalMs;
     }
     state(relay, now) {
         const burst = this.burstFor(relay);
-        const refillInterval = this.refillFor(relay);
         let state = this.relays.get(relay);
         if (!state) {
-            state = { tokens: burst, updatedAt: now, blockedUntil: 0, consecutiveRateLimits: 0 };
+            state = {
+                tokens: burst,
+                updatedAt: now,
+                blockedUntil: 0,
+                consecutiveRateLimits: 0,
+                refillIntervalMs: this.newRefillInterval(relay),
+            };
             this.relays.set(relay, state);
             return state;
         }
+        // A persisted older policy may have more public tokens than the current one-token capacity.
+        state.tokens = Math.min(burst, state.tokens);
+        const refillInterval = this.refillFor(relay, state);
         const refilled = Math.floor((now - state.updatedAt) / refillInterval);
         if (refilled > 0) {
             state.tokens = Math.min(burst, state.tokens + refilled);
@@ -75,58 +136,101 @@ export class RelayPublishBudget {
         }
         return state;
     }
-    availableAt(relay, state) {
-        const refillAt = state.tokens > 0 ? state.updatedAt : state.updatedAt + this.refillFor(relay);
-        return Math.max(state.blockedUntil, refillAt);
+    availableAt(relay, state, now) {
+        const refillAt = state.tokens > 0 ? state.updatedAt : state.updatedAt + this.refillFor(relay, state);
+        const inFlightAt = (state.inFlightUntil ?? 0) > now ? state.inFlightUntil : 0;
+        return Math.max(state.blockedUntil, refillAt, inFlightAt);
     }
     /**
      * Takes one publish slot on each relay that has one. Returns the relays to send to now, and
      * the earliest time a deferred relay will have a slot (null when none were deferred).
      */
     take(relays, now) {
-        const ready = [];
-        let deferredUntil = null;
-        for (const relay of relays) {
-            const state = this.state(relay, now);
-            if (state.blockedUntil <= now && state.tokens > 0) {
-                state.tokens -= 1;
-                ready.push(relay);
-                continue;
+        return this.withPersistentState(() => {
+            const ready = [];
+            let deferredUntil = null;
+            for (const relay of relays) {
+                const state = this.state(relay, now);
+                const inFlight = (state.inFlightUntil ?? 0) > now;
+                if (state.blockedUntil <= now && state.tokens > 0 && !inFlight) {
+                    state.tokens -= 1;
+                    if (this.burstFor(relay) === 1)
+                        state.inFlightUntil = now + this.publishLeaseMs;
+                    ready.push(relay);
+                    continue;
+                }
+                const at = this.availableAt(relay, state, now);
+                deferredUntil = deferredUntil == null ? at : Math.min(deferredUntil, at);
             }
-            const at = this.availableAt(relay, state);
-            deferredUntil = deferredUntil == null ? at : Math.min(deferredUntil, at);
-        }
-        return { ready, deferredUntil };
+            return { ready, deferredUntil };
+        });
     }
     /** When a relay could next receive an event, without taking a slot. */
     nextAvailableAt(relays, now) {
-        let earliest = null;
-        for (const relay of relays) {
-            const at = Math.max(now, this.availableAt(relay, this.state(relay, now)));
-            earliest = earliest == null ? at : Math.min(earliest, at);
-        }
-        return earliest;
+        return this.withPersistentState(() => {
+            let earliest = null;
+            for (const relay of relays) {
+                const at = Math.max(now, this.availableAt(relay, this.state(relay, now), now));
+                earliest = earliest == null ? at : Math.min(earliest, at);
+            }
+            return earliest;
+        });
+    }
+    /** Marks an attempted relay complete. Idempotent; callers use it for every outcome. */
+    release(relay, now) {
+        this.withPersistentState(() => {
+            const state = this.state(relay, now);
+            state.inFlightUntil = undefined;
+        });
     }
     recordRateLimited(relay, now) {
-        const state = this.state(relay, now);
-        state.consecutiveRateLimits += 1;
-        const backoff = Math.min(this.maxBackoffMs, this.rateLimitBackoffMs * 2 ** (state.consecutiveRateLimits - 1));
-        state.blockedUntil = Math.max(state.blockedUntil, now + backoff);
-        // After the backoff, allow one event and then the steady rate, not a fresh burst.
-        state.tokens = 1;
-        state.updatedAt = state.blockedUntil;
+        this.withPersistentState(() => {
+            const state = this.state(relay, now);
+            state.consecutiveRateLimits += 1;
+            const backoff = Math.min(this.maxBackoffMs, this.rateLimitBackoffMs * 2 ** (state.consecutiveRateLimits - 1));
+            state.blockedUntil = Math.max(state.blockedUntil, now + backoff);
+            state.inFlightUntil = undefined;
+            // After the backoff, allow one event and then the steady rate, not a fresh burst.
+            state.tokens = 1;
+            state.updatedAt = state.blockedUntil;
+        });
     }
     /** Nothing gets through a `banned:` relay until the ban lifts; then it resumes slowly. */
     recordBanned(relay, now) {
-        const state = this.state(relay, now);
-        state.consecutiveRateLimits += 1;
-        state.blockedUntil = Math.max(state.blockedUntil, now + this.banBackoffMs);
-        state.tokens = 1;
-        state.updatedAt = state.blockedUntil;
+        this.withPersistentState(() => {
+            const state = this.state(relay, now);
+            state.consecutiveRateLimits += 1;
+            state.blockedUntil = Math.max(state.blockedUntil, now + this.banBackoffMs);
+            state.inFlightUntil = undefined;
+            state.tokens = 1;
+            state.updatedAt = state.blockedUntil;
+        });
     }
     recordAccepted(relay, now) {
-        const state = this.state(relay, now);
-        if (state.consecutiveRateLimits > 0)
-            state.consecutiveRateLimits -= 1;
+        this.withPersistentState(() => {
+            const state = this.state(relay, now);
+            state.inFlightUntil = undefined;
+            if (state.consecutiveRateLimits > 0)
+                state.consecutiveRateLimits -= 1;
+        });
+    }
+}
+/**
+ * Takes a publish slot when one becomes available. Used for retries that must complete in the
+ * same short-lived operation, such as re-mining after a `pow:` refusal. Normal queued writes use
+ * `take` directly and leave deferral to the durable outbox.
+ */
+export async function takeWhenPublishSlotIsAvailable(budget, relays, options = {}) {
+    const now = options.now ?? Date.now;
+    const sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    const deadline = now() + Math.max(0, options.maxWaitMs ?? 60_000);
+    let deferredUntil = null;
+    while (true) {
+        const current = now();
+        const selection = budget.take(relays, current);
+        deferredUntil = selection.deferredUntil;
+        if (selection.ready.length || deferredUntil == null || deferredUntil > deadline)
+            return selection;
+        await sleep(Math.max(1, deferredUntil - current));
     }
 }

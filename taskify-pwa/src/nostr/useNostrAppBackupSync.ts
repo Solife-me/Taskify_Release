@@ -4,11 +4,14 @@ import {
   bibleTrackerSyncContent,
   bibleTrackerSyncKey,
   mergeBibleTrackerStates,
+  mergeNostrBoardTombstones,
   mergeScriptureMemoryStates,
   normalizeRelayListSorted,
   scriptureMemorySyncKey,
   type Board,
   type NostrBackupContent,
+  type NostrBoardTombstone,
+  type NostrPrintJobManifest,
   updateRemoteNostrBackup,
 } from "taskify-core";
 import {
@@ -32,6 +35,8 @@ import {
   NOSTR_SCRIPTURE_MEMORY_D_TAG,
 } from "../nostrAppState";
 import { kvStorage } from "../storage/kvStorage";
+import { boardPrintJobManifest, mergeSyncedBoardPrintJobs, saveBoardPrintJobs } from "../storage/boardPrintJobs";
+import type { BoardPrintJob } from "../components/BoardPrintLayout";
 import {
   LS_NOSTR_BACKUP_STATE,
   LS_NOSTR_BIBLE_TRACKER_SYNC_BASE,
@@ -63,12 +68,27 @@ import { useMergedDocumentSync } from "./useMergedDocumentSync";
 const NOSTR_BACKUP_PUBLISH_DEBOUNCE_MS = 1500;
 const NOSTR_BACKUP_RETRY_MS = 60_000;
 const LS_NOSTR_BACKUP_MANAGED_BOARDS = "taskify_nostr_backup_managed_boards_v1";
+const LS_NOSTR_BACKUP_BOARD_TOMBSTONES = "taskify_nostr_backup_board_tombstones_v1";
+const EMPTY_PRINT_JOBS: Record<string, BoardPrintJob> = {};
+const ignorePrintJobUpdate: Dispatch<SetStateAction<Record<string, BoardPrintJob>>> = () => {};
+
+function normalizeBoardNostrId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  return normalized || undefined;
+}
 
 /** The boards this device has put in the account backup (so it removes them when they go). */
 function loadManagedBackupBoardIds(pubkey: string): string[] {
   try {
     const parsed = JSON.parse(kvStorage.getItem(LS_NOSTR_BACKUP_MANAGED_BOARDS) || "null");
-    return parsed && parsed.pubkey === pubkey && Array.isArray(parsed.ids) ? parsed.ids.filter((id: unknown) => typeof id === "string") : [];
+    const accountValue = parsed?.accounts && typeof parsed.accounts === "object"
+      ? parsed.accounts[pubkey]
+      : parsed?.pubkey === pubkey
+        ? parsed.ids
+        : undefined;
+    if (!Array.isArray(accountValue)) return [];
+    return [...new Set(accountValue.map(normalizeBoardNostrId).filter((id: string | undefined): id is string => !!id))].sort();
   } catch {
     return [];
   }
@@ -76,9 +96,43 @@ function loadManagedBackupBoardIds(pubkey: string): string[] {
 
 function saveManagedBackupBoardIds(pubkey: string, ids: string[]): void {
   try {
-    kvStorage.setItem(LS_NOSTR_BACKUP_MANAGED_BOARDS, JSON.stringify({ pubkey, ids }));
+    const parsed = JSON.parse(kvStorage.getItem(LS_NOSTR_BACKUP_MANAGED_BOARDS) || "null");
+    const accounts = parsed?.accounts && typeof parsed.accounts === "object" ? { ...parsed.accounts } : {};
+    if (parsed?.pubkey && Array.isArray(parsed.ids)) accounts[parsed.pubkey] = parsed.ids;
+    accounts[pubkey] = ids;
+    kvStorage.setItem(LS_NOSTR_BACKUP_MANAGED_BOARDS, JSON.stringify({ version: 1, accounts }));
   } catch {
     // storage full: the next publish keeps these boards, which only errs on the safe side
+  }
+}
+
+/** Deletions must survive reloads so a board imported from another device cannot come back. */
+function loadBoardTombstones(pubkey: string): NostrBoardTombstone[] {
+  try {
+    const parsed = JSON.parse(kvStorage.getItem(LS_NOSTR_BACKUP_BOARD_TOMBSTONES) || "null");
+    const accountValue = parsed?.accounts && typeof parsed.accounts === "object"
+      ? parsed.accounts[pubkey]
+      : parsed?.pubkey === pubkey
+        ? parsed.boardTombstones
+        : undefined;
+    return mergeNostrBoardTombstones(accountValue);
+  } catch {
+    return [];
+  }
+}
+
+function saveBoardTombstones(pubkey: string, boardTombstones: NostrBoardTombstone[]): void {
+  if (!pubkey) return;
+  try {
+    const normalized = mergeNostrBoardTombstones(boardTombstones);
+    if (!normalized.length) return;
+    const parsed = JSON.parse(kvStorage.getItem(LS_NOSTR_BACKUP_BOARD_TOMBSTONES) || "null");
+    const accounts = parsed?.accounts && typeof parsed.accounts === "object" ? { ...parsed.accounts } : {};
+    if (parsed?.pubkey && Array.isArray(parsed.boardTombstones)) accounts[parsed.pubkey] = parsed.boardTombstones;
+    accounts[pubkey] = normalized;
+    kvStorage.setItem(LS_NOSTR_BACKUP_BOARD_TOMBSTONES, JSON.stringify({ version: 1, accounts }));
+  } catch {
+    // The encrypted backup remains authoritative when local storage is unavailable.
   }
 }
 
@@ -110,6 +164,7 @@ type NostrBackupSnapshot = {
   settings: Partial<Settings>;
   defaultRelays: string[];
   walletSeed?: ReturnType<typeof walletSeedForBackup>;
+  printJobs: NostrPrintJobManifest[];
 };
 
 type UseNostrAppBackupSyncParams = {
@@ -120,16 +175,19 @@ type UseNostrAppBackupSyncParams = {
   nostrPublishRef: MutableRefObject<NostrPublishFn>;
   nostrSK: Uint8Array;
   pool: any;
+  printJobs?: Record<string, BoardPrintJob>;
   scriptureMemory: ScriptureMemoryState;
   setBibleTracker: Dispatch<SetStateAction<BibleTrackerState>>;
   setBoards: Dispatch<SetStateAction<Board[]>>;
   setDefaultRelays: Dispatch<SetStateAction<string[]>>;
+  setPrintJobs?: Dispatch<SetStateAction<Record<string, BoardPrintJob>>>;
   setScriptureMemory: Dispatch<SetStateAction<ScriptureMemoryState>>;
   setSettings: SetSettingsFn;
   settings: Settings;
   showSettings: boolean;
   showToast: (message?: string, durationMs?: number) => void;
   tagValue: (event: NostrEvent, name: string) => string | undefined;
+  onRemoteBoardsRemoved?: (boardIds: string[]) => void;
 };
 
 export function normalizeNostrRelayList(relays: string[] | null | undefined): string[] {
@@ -144,16 +202,19 @@ export function useNostrAppBackupSync({
   nostrPublishRef,
   nostrSK,
   pool,
+  printJobs = EMPTY_PRINT_JOBS,
   scriptureMemory,
   setBibleTracker,
   setBoards,
   setDefaultRelays,
+  setPrintJobs = ignorePrintJobUpdate,
   setScriptureMemory,
   setSettings,
   settings,
   showSettings,
   showToast,
   tagValue,
+  onRemoteBoardsRemoved,
 }: UseNostrAppBackupSyncParams) {
   const [nostrBackupState, setNostrBackupState] = useState<NostrBackupState>(() => loadNostrBackupState());
   const nostrBackupStateRef = useRef<NostrBackupState>(nostrBackupState);
@@ -172,6 +233,8 @@ export function useNostrAppBackupSync({
   // (taskify-core's updateRemoteNostrBackup), never its own snapshot over it.
   const remoteBackupRef = useRef<{ content: NostrBackupContent | null; timestamp: number } | null>(null);
   const nostrBackupRetryTimerRef = useRef<number | null>(null);
+  const pendingImportedBoardIdsRef = useRef<Set<string>>(new Set());
+  const notifiedRemovedBoardIdsRef = useRef<Set<string>>(new Set());
   const [nostrBackupHold, setNostrBackupHold] = useState(false);
   const nostrBackupHoldRef = useRef(nostrBackupHold);
   useEffect(() => { nostrBackupHoldRef.current = nostrBackupHold; }, [nostrBackupHold]);
@@ -182,6 +245,8 @@ export function useNostrAppBackupSync({
       nostrBackupInitialPublishRef.current = false;
       nostrBackupPullFinishedRef.current = false;
       remoteBackupRef.current = null;
+      pendingImportedBoardIdsRef.current.clear();
+      notifiedRemovedBoardIdsRef.current.clear();
       return { lastEventId: null, lastTimestamp: 0, pubkey: nostrPK || null };
     });
   }, [nostrPK]);
@@ -201,8 +266,8 @@ export function useNostrAppBackupSync({
   );
 
   const buildNostrBackupSnapshot = useCallback(
-    (): NostrBackupSnapshot =>
-      buildNostrBackupSnapshotDomain({
+    (): NostrBackupSnapshot => ({
+      ...buildNostrBackupSnapshotDomain({
         boards,
         settings,
         includeMetadata: settings.nostrBackupEnabled,
@@ -212,13 +277,26 @@ export function useNostrAppBackupSync({
         sanitizeSettingsForBackup,
         walletSeed: walletSeedForBackup(),
       }),
-    [boards, defaultRelays, sanitizeSettingsForBackup, settings],
+      printJobs: Object.values(printJobs).map(boardPrintJobManifest),
+    }),
+    [boards, defaultRelays, printJobs, sanitizeSettingsForBackup, settings],
   );
 
-  const serializeNostrBackupSnapshot = useCallback(
-    () => JSON.stringify(buildNostrBackupSnapshot()),
-    [buildNostrBackupSnapshot],
-  );
+  const serializeNostrBackupSnapshot = useCallback(() => {
+    const snapshot = buildNostrBackupSnapshot();
+    const localNostrIds = new Set(
+      snapshot.boards.map((board) => normalizeBoardNostrId(board.nostrId))
+        .filter((id): id is string => !!id),
+    );
+    const deletionIds = new Set(loadBoardTombstones(nostrPK).map((tombstone) => tombstone.nostrId));
+    for (const nostrId of loadManagedBackupBoardIds(nostrPK)) {
+      if (!localNostrIds.has(nostrId)) deletionIds.add(nostrId);
+    }
+    return JSON.stringify({
+      ...snapshot,
+      boardDeletionIds: [...deletionIds].sort(),
+    });
+  }, [buildNostrBackupSnapshot, nostrPK]);
   const serializeNostrBackupSnapshotRef = useRef(serializeNostrBackupSnapshot);
   serializeNostrBackupSnapshotRef.current = serializeNostrBackupSnapshot;
 
@@ -256,24 +334,88 @@ export function useNostrAppBackupSync({
           console.warn("Failed to restore wallet seed from Nostr backup", error);
         }
       }
-      if (includeMetadata && Array.isArray(payload.boards)) {
-        setBoards((prev) =>
-          mergeBackupBoards({
-            currentBoards: prev,
+      const boardTombstones = mergeNostrBoardTombstones(
+        loadBoardTombstones(nostrPK),
+        payload.boardTombstones,
+      );
+      const tombstonedIds = new Set(boardTombstones.map((tombstone) => tombstone.nostrId));
+      if (boardTombstones.length) saveBoardTombstones(nostrPK, boardTombstones);
+      const removedBoardIds = boards
+        .filter((board) => tombstonedIds.has(normalizeBoardNostrId(board.nostr?.boardId ?? board.id) ?? ""))
+        .map((board) => board.id);
+      const mergedBoards = includeMetadata && Array.isArray(payload.boards)
+        ? mergeBackupBoards({
+            currentBoards: boards,
             incomingBoards: payload.boards,
             baseRelays,
             normalizeRelayList: normalizeNostrRelayList,
             createId: () => crypto.randomUUID(),
-          }),
+            excludedNostrIds: tombstonedIds,
+          })
+        : boards;
+      if (mergedBoards !== boards) setBoards(mergedBoards);
+      if (includeMetadata && source === "remote") {
+        const currentNostrIds = new Set(
+          boards.map((board) => normalizeBoardNostrId(board.nostr?.boardId ?? board.id))
+            .filter((id): id is string => !!id),
         );
+        const managed = new Set(loadManagedBackupBoardIds(nostrPK));
+        let managedChanged = false;
+        for (const board of payload.boards) {
+          const nostrId = normalizeBoardNostrId(board?.nostrId);
+          if (!nostrId || tombstonedIds.has(nostrId)) continue;
+          if (currentNostrIds.has(nostrId)) {
+            if (!managed.has(nostrId)) {
+              managed.add(nostrId);
+              managedChanged = true;
+            }
+          } else {
+            pendingImportedBoardIdsRef.current.add(nostrId);
+          }
+        }
+        if (managedChanged) saveManagedBackupBoardIds(nostrPK, [...managed].sort());
+      }
+      if (source === "remote" && removedBoardIds.length) {
+        const newlyRemoved = removedBoardIds.filter((id) => !notifiedRemovedBoardIdsRef.current.has(id));
+        if (newlyRemoved.length) {
+          newlyRemoved.forEach((id) => notifiedRemovedBoardIdsRef.current.add(id));
+          onRemoteBoardsRemoved?.(newlyRemoved);
+        }
+      }
+      if (includeMetadata && Array.isArray(payload.printJobs)) {
+        setPrintJobs((previous) => {
+          // Resolve stable owner IDs against boards imported by this same payload, too.
+          const next = mergeSyncedBoardPrintJobs(previous, payload.printJobs, mergedBoards);
+          saveBoardPrintJobs(next);
+          return next;
+        });
       }
       if (source === "remote") {
         const message = includeMetadata ? "Synced boards and settings from Nostr" : "Synced wallet backup from Nostr";
         showToast(message, 2600);
       }
     },
-    [defaultRelays, sanitizeSettingsForBackup, setBoards, setDefaultRelays, setSettings, settings.nostrBackupEnabled, showToast],
+    [boards, defaultRelays, nostrPK, onRemoteBoardsRemoved, sanitizeSettingsForBackup, setBoards, setDefaultRelays, setPrintJobs, setSettings, settings.nostrBackupEnabled, showToast],
   );
+
+  useEffect(() => {
+    if (!settings.nostrBackupEnabled || !nostrPK || pendingImportedBoardIdsRef.current.size === 0) return;
+    const present = new Set(
+      boards.map((board) => normalizeBoardNostrId(board.nostr?.boardId ?? board.id))
+        .filter((id): id is string => !!id),
+    );
+    const managed = new Set(loadManagedBackupBoardIds(nostrPK));
+    let changed = false;
+    for (const nostrId of [...pendingImportedBoardIdsRef.current]) {
+      if (!present.has(nostrId)) continue;
+      pendingImportedBoardIdsRef.current.delete(nostrId);
+      if (!managed.has(nostrId)) {
+        managed.add(nostrId);
+        changed = true;
+      }
+    }
+    if (changed) saveManagedBackupBoardIds(nostrPK, [...managed].sort());
+  }, [boards, nostrPK, settings.nostrBackupEnabled]);
 
   const handleIncomingNostrBackupEvent = useCallback(
     async (ev: NostrEvent) => {
@@ -367,17 +509,24 @@ export function useNostrAppBackupSync({
     }
     const snapshot = buildNostrBackupSnapshot();
     const snapshotString = serializeNostrBackupSnapshotRef.current();
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const localTombstones = loadBoardTombstones(nostrPK);
     const updated = updateRemoteNostrBackup(
       remote.content,
       {
         boards: snapshot.boards,
+        boardTombstones: localTombstones,
         settings: snapshot.settings as Record<string, unknown>,
         walletSeed: snapshot.walletSeed,
         defaultRelays: snapshot.defaultRelays,
+        printJobs: snapshot.printJobs,
       },
-      { managedNostrIds: loadManagedBackupBoardIds(nostrPK), includeMetadata: settings.nostrBackupEnabled },
+      {
+        managedNostrIds: loadManagedBackupBoardIds(nostrPK),
+        includeMetadata: settings.nostrBackupEnabled,
+        nowSeconds,
+      },
     );
-    const nowSeconds = Math.floor(Date.now() / 1000);
     const timestamp = Math.max(
       nowSeconds,
       (nostrBackupStateRef.current.lastTimestamp || 0) + 1,
@@ -387,9 +536,11 @@ export function useNostrAppBackupSync({
       version: 1,
       timestamp,
       boards: updated.boards,
+      boardTombstones: updated.boardTombstones,
       settings: updated.settings,
       walletSeed: updated.walletSeed,
       defaultRelays: updated.defaultRelays,
+      printJobs: updated.printJobs,
     };
     const skHex = bytesToHex(nostrSK);
     const content = await encryptNostrBackupPayload(payload, skHex, nostrPK);
@@ -422,6 +573,7 @@ export function useNostrAppBackupSync({
     nostrBackupPublishedSnapshotRef.current = snapshotString;
     remoteBackupRef.current = { content: payload, timestamp: publishedTs };
     saveManagedBackupBoardIds(nostrPK, updated.managedNostrIds);
+    saveBoardTombstones(nostrPK, updated.boardTombstones ?? localTombstones);
   }, [buildNostrBackupSnapshot, defaultRelays, nostrPK, nostrPublishRef, nostrSK, settings.nostrBackupEnabled]);
 
   const enqueueNostrBackupPublish = useCallback(() => {

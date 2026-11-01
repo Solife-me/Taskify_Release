@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { RelayPublishBudget, classifyRelayRejection } from "../dist/index.js";
+import { RelayPublishBudget, classifyRelayRejection, takeWhenPublishSlotIsAvailable } from "../dist/index.js";
 
 test("a relay gets a burst, then events at the refill rate", () => {
-  const budget = new RelayPublishBudget({ burst: 3, refillIntervalMs: 1000 });
+  const budget = new RelayPublishBudget({ burst: 3, refillIntervalMs: 1000, refillJitterMs: 0 });
   const now = 1_000_000;
   for (let i = 0; i < 3; i += 1) {
     assert.deepEqual(budget.take(["wss://a"], now).ready, ["wss://a"]);
@@ -16,16 +16,60 @@ test("a relay gets a burst, then events at the refill rate", () => {
 });
 
 test("relays are budgeted independently", () => {
-  const budget = new RelayPublishBudget({ burst: 1, refillIntervalMs: 1000 });
+  const budget = new RelayPublishBudget({ burst: 1, refillIntervalMs: 1000, refillJitterMs: 0 });
   const now = 5_000;
   assert.deepEqual(budget.take(["wss://a"], now).ready, ["wss://a"]);
+  budget.release("wss://a", now);
   const mixed = budget.take(["wss://a", "wss://b"], now);
   assert.deepEqual(mixed.ready, ["wss://b"]);
   assert.equal(mixed.deferredUntil, now + 1000);
 });
 
+test("a public relay never overlaps writes when an acknowledgement outlasts its refill", () => {
+  const budget = new RelayPublishBudget({
+    burst: 1,
+    refillIntervalMs: 10_000,
+    refillJitterMs: 0,
+    publishLeaseMs: 45_000,
+  });
+  const now = 1_000_000;
+  assert.deepEqual(budget.take(["wss://relay.damus.io"], now).ready, ["wss://relay.damus.io"]);
+
+  const stillInFlight = budget.take(["wss://relay.damus.io"], now + 20_000);
+  assert.deepEqual(stillInFlight.ready, []);
+  assert.equal(stillInFlight.deferredUntil, now + 45_000);
+
+  budget.release("wss://relay.damus.io", now + 20_000);
+  assert.deepEqual(budget.take(["wss://relay.damus.io"], now + 20_000).ready, ["wss://relay.damus.io"]);
+});
+
+test("a proof-of-work retry waits for the trickle rather than failing at once", async () => {
+  const now = 1_000_000;
+  let clock = now;
+  const sleeps: number[] = [];
+  const budget = new RelayPublishBudget({ burst: 1, refillIntervalMs: 10_000, refillJitterMs: 0 });
+  assert.deepEqual(budget.take(["wss://relay.damus.io"], clock).ready, ["wss://relay.damus.io"]);
+  budget.release("wss://relay.damus.io", clock);
+
+  const selected = await takeWhenPublishSlotIsAvailable(budget, ["wss://relay.damus.io"], {
+    now: () => clock,
+    sleep: async (milliseconds) => {
+      sleeps.push(milliseconds);
+      clock += milliseconds;
+    },
+  });
+  assert.deepEqual(selected.ready, ["wss://relay.damus.io"]);
+  assert.deepEqual(sleeps, [10_000]);
+});
+
 test("a rate-limit rejection backs the relay off exponentially and clears after accepted events", () => {
-  const budget = new RelayPublishBudget({ burst: 10, refillIntervalMs: 1000, rateLimitBackoffMs: 2000, maxBackoffMs: 30_000 });
+  const budget = new RelayPublishBudget({
+    burst: 10,
+    refillIntervalMs: 1000,
+    refillJitterMs: 0,
+    rateLimitBackoffMs: 2000,
+    maxBackoffMs: 30_000,
+  });
   const now = 10_000;
   budget.recordRateLimited("wss://a", now);
   assert.equal(budget.take(["wss://a"], now).deferredUntil, now + 2000);
@@ -55,7 +99,7 @@ test("rejections are classified by their NIP-01 prefix", () => {
   assert.equal(classifyRelayRejection("Publish timeout after 2500ms"), "retry");
 });
 
-test("first-party relays get a generous budget; public relays stay conservative", async () => {
+test("first-party relays get a generous budget; public relays send only one opening event", async () => {
   const { FIRST_PARTY_RELAYS } = await import("../dist/index.js");
   assert.ok(FIRST_PARTY_RELAYS.includes("wss://relay.solife.me"));
   const budget = new RelayPublishBudget();
@@ -69,7 +113,42 @@ test("first-party relays get a generous budget; public relays stay conservative"
     if (ready.includes("wss://relay.damus.io")) publicRelay += 1;
   }
   assert.equal(firstParty, 61);
-  assert.equal(publicRelay, 7);
+  assert.equal(publicRelay, 1);
+
+  budget.release("wss://relay.damus.io", now);
+  const next = budget.take(["wss://relay.damus.io"], now);
+  assert.ok(next.deferredUntil != null);
+  assert.ok(next.deferredUntil >= now + 10_000);
+  assert.ok(next.deferredUntil <= now + 12_000);
+});
+
+test("an older persisted seven-token public budget is capped to the new one-token policy", () => {
+  let snapshot: any = {
+    version: 1,
+    relays: {
+      "wss://relay.damus.io": {
+        tokens: 7,
+        updatedAt: 1_000_000,
+        blockedUntil: 0,
+        consecutiveRateLimits: 0,
+      },
+    },
+  };
+  const budget = new RelayPublishBudget({
+    refillJitterMs: 0,
+    stateStore: {
+      update(operation) {
+        snapshot = operation(snapshot);
+        return snapshot;
+      },
+    },
+  });
+
+  assert.deepEqual(budget.take(["wss://relay.damus.io"], 1_000_000).ready, ["wss://relay.damus.io"]);
+  budget.release("wss://relay.damus.io", 1_000_000);
+  const second = budget.take(["wss://relay.damus.io"], 1_000_000);
+  assert.deepEqual(second.ready, []);
+  assert.equal(second.deferredUntil, 1_010_000);
 });
 
 test("first-party relays can be configured", () => {
@@ -108,7 +187,7 @@ function noteguard() {
   };
 }
 
-test("the public budget never trips noteguard's rate limit; the old 7.5 s pace did", () => {
+test("the public trickle never trips noteguard's rate limit; the old 7.5 s pace did", () => {
   const relay = noteguard();
   const budget = new RelayPublishBudget();
   let now = 1_000_000;
@@ -116,8 +195,12 @@ test("the public budget never trips noteguard's rate limit; the old 7.5 s pace d
   while (sent < 61) {
     const { ready, deferredUntil } = budget.take(["wss://relay.damus.io"], now);
     if (!ready.length) { now = deferredUntil ?? now + 1; continue; }
-    if (relay.post(now)) sent += 1;
-    else budget.recordRateLimited("wss://relay.damus.io", now);
+    if (relay.post(now)) {
+      sent += 1;
+      budget.recordAccepted("wss://relay.damus.io", now);
+    } else {
+      budget.recordRateLimited("wss://relay.damus.io", now);
+    }
   }
   assert.equal(relay.refused, 0);
 
