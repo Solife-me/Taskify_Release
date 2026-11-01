@@ -870,10 +870,14 @@ export function MessengerFileBubble({
   }, [descriptor.url, descriptor.mimeType, descriptor.keyHex, descriptor.nonceHex, descriptor.algorithm]);
 
   useEffect(() => {
-    if (isImage || isVideo || isAudio) {
+    // Images and videos earn their eager load (they are the bubble). Audio does not: in a
+    // voice-message-heavy thread every visible card used to fetch + AES-GCM-decrypt on mount,
+    // which is exactly what made the thread crawl until the burst drained. Audio now loads
+    // on first play (or via the Retry/download path) like any other file.
+    if (isImage || isVideo) {
       void loadDescriptor();
     }
-  }, [isImage, isVideo, isAudio, loadDescriptor]);
+  }, [isImage, isVideo, loadDescriptor]);
 
   const handleDownload = useCallback(async () => {
     let url: string | null = null;
@@ -969,9 +973,29 @@ export function MessengerFileBubble({
             </button>
           </div>
         ) : (
-          <div style={{ position: "relative", minHeight: "4rem" }}>
-            <AttachmentLoadProgress progress={progress} />
-          </div>
+          <button
+            type="button"
+            className="chat-file__doc pressable"
+            onClick={loadDescriptor}
+            disabled={state.kind === "loading"}
+          >
+            <span className="chat-file__doc-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polygon points="6 3 20 12 6 21 6 3" fill="currentColor" stroke="none" />
+              </svg>
+            </span>
+            <span className="chat-file__doc-body">
+              <span className="chat-file__name" title={filename}>{filename}</span>
+              <span className="chat-file__size">
+                {state.kind === "loading" ? attachmentLoadLabel(progress) : `Tap to play · ${sizeLabel || "Audio"}`}
+              </span>
+              {state.kind === "loading" && progress?.fraction != null ? (
+                <span className="chat-file__progress-track chat-file__progress-track--doc">
+                  <span className="chat-file__progress-bar" style={{ width: `${Math.round(progress.fraction * 100)}%` }} />
+                </span>
+              ) : null}
+            </span>
+          </button>
         )}
         <div className="chat-file__meta">
           <div className="chat-file__name" title={filename}>{filename}</div>

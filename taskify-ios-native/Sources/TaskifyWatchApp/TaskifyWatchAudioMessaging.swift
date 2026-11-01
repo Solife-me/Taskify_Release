@@ -155,10 +155,17 @@ final class TaskifyWatchAudioPlayback {
         ) { [weak self, weak player] time in
             Task { @MainActor in
                 guard let self, let player, self.player === player, !self.isSeeking else { return }
-                self.currentTime = Self.seconds(time)
+                let playing = player.timeControlStatus == .playing
+                // Only a playing scrubber needs 4 Hz ticks. While parked (paused or ended)
+                // every tick is a no-op, so return before any @Observable write: an idle
+                // observer that kept mutating state after a message ended is what made an
+                // audio-heavy thread feel slow until the app idled down.
+                guard playing || self.isPlaying else { return }
+                let timeSeconds = Self.seconds(time)
+                if timeSeconds != self.currentTime { self.currentTime = timeSeconds }
                 let itemDuration = Self.seconds(player.currentItem?.duration ?? .invalid)
-                if itemDuration > 0 { self.duration = itemDuration }
-                self.isPlaying = player.timeControlStatus == .playing
+                if itemDuration > 0, itemDuration != self.duration { self.duration = itemDuration }
+                if self.isPlaying != playing { self.isPlaying = playing }
             }
         }
         endObserver = NotificationCenter.default.addObserver(

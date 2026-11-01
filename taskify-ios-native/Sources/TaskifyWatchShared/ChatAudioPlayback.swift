@@ -230,8 +230,19 @@ public final class ChatAudioRecorder {
                     try? await Task.sleep(for: .milliseconds(100))
                     guard let self, !Task.isCancelled, let recorder = self.recorder else { return }
                     recorder.updateMeters()
-                    self.elapsed = base + recorder.currentTime
-                    self.levels.append(ChatAudioPlayback.normalizedLevel(power: recorder.averagePower(forChannel: 0)))
+                    let elapsed = base + recorder.currentTime
+                    let level = ChatAudioPlayback.normalizedLevel(power: recorder.averagePower(forChannel: 0))
+                    // 10 Hz re-renders of the live waveform are the point while recording, but
+                    // each tick is an @Observable write on the shared recorder; only publish
+                    // when a value actually changed so a quiet stretch costs nothing.
+                    if elapsed != self.elapsed { self.elapsed = elapsed }
+                    if self.levels.last != level {
+                        self.levels.append(level)
+                        // The waveform draws a fixed number of bars (about the card width / 6 px),
+                        // so a clip longer than a couple of minutes would otherwise grow an array
+                        // that resamples away every sample past that width on each render.
+                        if self.levels.count > 3_600 { self.levels.removeFirst(self.levels.count - 3_600) }
+                    }
                 }
             }
         } catch {
@@ -416,8 +427,13 @@ public final class ChatAudioDraftPlayer: NSObject, AVAudioPlayerDelegate {
             ticker = Task { @MainActor [weak self] in
                 while !Task.isCancelled {
                     guard let self, let player = self.player else { return }
-                    self.currentTime = player.currentTime
-                    self.progress = player.duration > 0 ? player.currentTime / player.duration : 0
+                    // 20 Hz ticks are fine for a draft preview, but publish only real movement:
+                    // a parked player must not re-render the composer on every tick.
+                    let time = player.currentTime
+                    if time != self.currentTime {
+                        self.currentTime = time
+                        self.progress = player.duration > 0 ? time / player.duration : 0
+                    }
                     try? await Task.sleep(for: .milliseconds(50))
                 }
             }

@@ -206,11 +206,22 @@ final class DirectMessageAudioPlayback: NSObject {
         ) { [weak self, weak player] time in
             Task { @MainActor in
                 guard let self, let player, self.player === player, !self.isSeeking else { return }
-                self.currentTime = Self.seconds(time)
+                let playing = player.timeControlStatus == .playing
+                // Only a playing scrubber needs 4 Hz ticks. While parked (paused or ended)
+                // every tick is a no-op, so return before any @Observable write: an idle
+                // observer that kept mutating state after a message ended is what made an
+                // audio-heavy thread feel slow until the app idled down.
+                guard playing || self.isPlaying else { return }
+                let timeSeconds = Self.seconds(time)
+                if timeSeconds != self.currentTime { self.currentTime = timeSeconds }
                 let itemDuration = Self.seconds(player.currentItem?.duration ?? .invalid)
-                if itemDuration > 0 { self.duration = itemDuration }
-                self.isPlaying = player.timeControlStatus == .playing
-                self.updateNowPlayingInfo()
+                if itemDuration > 0, itemDuration != self.duration { self.duration = itemDuration }
+                if !playing {
+                    self.isPlaying = false
+                    return
+                }
+                self.isPlaying = true
+                self.updateNowPlayingInfoThrottled()
             }
         }
         endObserver = NotificationCenter.default.addObserver(
@@ -287,7 +298,20 @@ final class DirectMessageAudioPlayback: NSObject {
         }
     }
 
+    /// The periodic observer used to write Now Playing on every 250 ms tick. While playing
+    /// that rate is itself heavy (Control Center re-renders per write), so elapsed time is
+    /// written at most once per second; rate/title/duration changes still go out immediately.
+    private var lastNowPlayingElapsedAt: Date?
+
+    private func updateNowPlayingInfoThrottled() {
+        let now = Date()
+        if let last = lastNowPlayingElapsedAt, now.timeIntervalSince(last) < 1 { return }
+        lastNowPlayingElapsedAt = now
+        updateNowPlayingInfo()
+    }
+
     private func updateNowPlayingInfo() {
+        lastNowPlayingElapsedAt = Date()
         guard attachmentKey != nil else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
