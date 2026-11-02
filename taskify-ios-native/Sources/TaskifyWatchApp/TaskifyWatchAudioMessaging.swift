@@ -442,7 +442,9 @@ enum TaskifyWatchAudioTransfer {
         guard (200..<300).contains(http.statusCode), http.statusCode != 202 else {
             throw TaskifyWatchAudioError.uploadFailed
         }
-        return try remoteURL(data: data, base: base)
+        let raw = try remoteURL(data: data, base: base)
+        guard let url = URL(string: raw) else { return raw }
+        return TaskifyIPFSGateway.secureUploadedURL(url, serverURL: serverURL).absoluteString
     }
 
     private static func nip96Endpoint(_ base: URL) async throws -> URL {

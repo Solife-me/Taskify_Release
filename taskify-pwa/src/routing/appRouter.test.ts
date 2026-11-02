@@ -148,6 +148,17 @@ test("an overlay opened from a link closes to its page without leaving the app",
   unsubscribeLinked();
 });
 
+test("the board print chooser is a sheet the router accepts and restores", async () => {
+  window.history.replaceState(null, "", "/boards/b1");
+  const router = new AppHistoryRouter(window);
+  const unsubscribe = router.subscribe(() => {});
+
+  router.openOverlay({ kind: "sheet", sheet: "board-print-choose" });
+  await vi.waitFor(() => expect(window.location.search).toBe("?sheet=board-print-choose"));
+  expect(new AppHistoryRouter(window).getSnapshot().overlay).toEqual({ kind: "sheet", sheet: "board-print-choose" });
+  unsubscribe();
+});
+
 test("an overlay opened while others close in the same tick takes the lowest closed entry", async () => {
   window.history.replaceState(null, "", "/boards/b1");
   const router = new AppHistoryRouter(window);

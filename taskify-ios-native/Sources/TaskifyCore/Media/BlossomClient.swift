@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import TaskifyWatchShared
 
 public enum BlossomError: LocalizedError, Equatable {
     case invalidServer
@@ -97,7 +98,7 @@ public enum BlossomClient {
               scheme == "https" || scheme == "http" else {
             throw BlossomError.invalidResponse
         }
-        return url.absoluteString
+        return TaskifyIPFSGateway.secureUploadedURL(url, serverURL: server.absoluteString).absoluteString
     }
 }
 

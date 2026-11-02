@@ -314,7 +314,23 @@ private struct TaskifyWatchGroupAvatar: View {
     }
 }
 
-private struct TaskifyWatchNewChatView: View {
+/// A conversation reached by ID from a complication or shortcut rather than from a list row.
+struct TaskifyWatchRoutedConversationView: View {
+    @Environment(TaskifyWatchAppModel.self) private var model
+    let conversationID: String
+
+    var body: some View {
+        let thread = model.chatThreads.first { $0.id == conversationID }
+        TaskifyWatchConversationView(
+            conversationID: conversationID,
+            title: thread?.displayName ?? "Conversation",
+            memberPublicKeys: thread?.memberPublicKeys ?? [conversationID],
+            groupID: thread?.isGroup == true ? conversationID : nil
+        )
+    }
+}
+
+struct TaskifyWatchNewChatView: View {
     @Environment(TaskifyWatchAppModel.self) private var model
 
     var body: some View {

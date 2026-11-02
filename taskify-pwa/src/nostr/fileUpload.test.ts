@@ -230,6 +230,18 @@ describe("uploadAvatar dispatcher", () => {
     expect(MockXhr.lastCall?.url).toBe("https://blossom.band/upload");
   });
 
+  test("publishes an https server's cleartext Blossom descriptor as https", async () => {
+    installXhrMock();
+    MockXhr.respondText = JSON.stringify({ url: "http://blossom.example/abc123.bin", sha256: "abc", size: 4 });
+
+    const { uploadAvatar } = await import("./Nip96Client");
+    const entry: FileServerEntry = { url: "https://blossom.example", type: "blossom" };
+    const file = new Blob(["test"], { type: "application/octet-stream" });
+
+    const result = await uploadAvatar({ serverEntry: entry, file, signer: VALID_SIGNER });
+    expect(result.url).toBe("https://blossom.example/abc123.bin");
+  });
+
   test("routes originless type to POST /up with no auth", async () => {
     const { uploadAvatar } = await import("./Nip96Client");
     const entry: FileServerEntry = { url: "https://originless.solife.me", type: "originless" };

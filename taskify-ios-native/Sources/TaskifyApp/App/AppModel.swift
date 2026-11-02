@@ -456,6 +456,9 @@ final class AppModel {
     var directMessageThreads: [NostrDirectMessageThread] {
         snapshotLookupCache.directMessageThreads(snapshot: chatAndInboxSnapshot)
     }
+    var directMessageUnreadCount: Int {
+        chatSnapshot.directMessageUnreadCount(in: directMessageThreads)
+    }
     var storedDirectMessageCount: Int { chatSnapshot.directMessages?.count ?? 0 }
     var groupConversations: [NostrGroupConversation] { chatSnapshot.groupConversations }
     var syncIsOnline: Bool {

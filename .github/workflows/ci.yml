@@ -28,17 +28,21 @@ jobs:
         run: python3 taskify-macos/Scripts/generate-project.py --check
       - name: Test Mac presentation logic
         run: swift test --package-path taskify-macos --scratch-path "$RUNNER_TEMP/taskify-macos-tests"
+      # swift-secp256k1 ships a build plug-in. Xcode refuses an untrusted plug-in (exit 65) and a
+      # runner has no one to approve it, so the version pinned in Package.resolved is what is trusted.
       - name: Build the unsigned Mac app
         run: |
           xcodebuild -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
             -configuration Local -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath "$RUNNER_TEMP/taskify-macos-derived" \
+            -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO build
       - name: Test the isolated Mac app host
         run: |
           xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath "$RUNNER_TEMP/taskify-macos-ui-derived" \
+            -skipPackagePluginValidation \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWalletRemovalPreviewShowsRecoveryWithoutReceive \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive \

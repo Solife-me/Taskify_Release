@@ -18,6 +18,19 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLName</key>
+			<string>solife.me.Taskify.Native.watchkitapp.chat</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>taskify-watch</string>
+			</array>
+		</dict>
+	</array>
 <key>NSMicrophoneUsageDescription</key>
 <string>Record and send audio messages from your Apple Watch.</string>
 	<key>WKApplication</key>

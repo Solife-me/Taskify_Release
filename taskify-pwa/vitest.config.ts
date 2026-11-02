@@ -1,4 +1,5 @@
-import { defineConfig, mergeConfig } from "vite";
+import { mergeConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 import viteConfig from "./vite.config.ts";
 
@@ -23,6 +24,10 @@ export default mergeConfig(
       alias: {
         "taskify-runtime-nostr": runtimeNostrSrc,
       },
+    },
+    // Vitest empties CSS by default; tests that assert on a stylesheet import its text with ?raw.
+    test: {
+      css: { include: [/\.css\?raw$/] },
     },
   }),
 );

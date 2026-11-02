@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import type { Command } from "commander";
 import { writeFile } from "fs/promises";
+import { fetchWithIPFSGatewayFallback } from "taskify-core";
 import { decryptAttachmentToDataUrl } from "../attachmentCrypto.js";
 import { loadConfig } from "../config.js";
 import { renderJson } from "../render.js";
@@ -91,7 +92,7 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
           if (hit.doc.encrypted === true) {
             dataUrl = await decryptAttachmentToDataUrl(typeof hit.doc.encryptionBoardId === "string" ? hit.doc.encryptionBoardId : boardId, remoteUrl, mime);
           } else {
-            const res = await fetch(remoteUrl);
+            const res = await fetchWithIPFSGatewayFallback(remoteUrl);
             if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
             const bytes = Buffer.from(await res.arrayBuffer());
             dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
@@ -171,7 +172,7 @@ export function registerAttachmentsCommands(program: Command, context: Pick<Comm
           if (hit.doc.encrypted === true) {
             dataUrl = await decryptAttachmentToDataUrl(typeof hit.doc.encryptionBoardId === "string" ? hit.doc.encryptionBoardId : event.boardId, remoteUrl, mime);
           } else {
-            const res = await fetch(remoteUrl);
+            const res = await fetchWithIPFSGatewayFallback(remoteUrl);
             if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
             const bytes = Buffer.from(await res.arrayBuffer());
             dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;

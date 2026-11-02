@@ -8,6 +8,7 @@ import {
   ipfsRetrievalCandidates,
   opaqueUploadFilename,
   resolveOriginlessUploadURL,
+  secureUploadedFileURL,
   type FixedFileUploadServerType,
 } from "../dist/index.js";
 
@@ -26,6 +27,13 @@ type ResponseVector = {
   remoteURL: string;
 };
 
+type UploadedURLVector = {
+  name: string;
+  serverURL: string;
+  url: string;
+  remoteURL: string;
+};
+
 type OpaqueUploadVector = {
   name: string;
   sha256: string;
@@ -34,7 +42,7 @@ type OpaqueUploadVector = {
 
 const fixture = JSON.parse(
   readFileSync(new URL("../fixtures/file-server-upload-vectors.json", import.meta.url), "utf8"),
-) as { opaqueUploads: OpaqueUploadVector[]; routes: RouteVector[]; responses: ResponseVector[] };
+) as { opaqueUploads: OpaqueUploadVector[]; routes: RouteVector[]; uploadedURLs: UploadedURLVector[]; responses: ResponseVector[] };
 
 for (const vector of fixture.opaqueUploads) {
   test(`opaque upload filename: ${vector.name}`, () => {
@@ -61,6 +69,12 @@ for (const vector of fixture.responses) {
   });
 }
 
+for (const vector of fixture.uploadedURLs) {
+  test(`uploaded file URL: ${vector.name}`, () => {
+    assert.equal(secureUploadedFileURL(vector.serverURL, vector.url), vector.remoteURL);
+  });
+}
+
 const CID = "QmS5cF4AsRFFvHZW8pRRVk7XxN516jqcTeXMYwFJwRgWc1";
 const LIVE_GATEWAYS = [`https://ipfs.filebase.io/ipfs/${CID}`, `https://gateway.pinata.cloud/ipfs/${CID}`];
 
@@ -84,6 +98,25 @@ test("a live IPFS gateway is tried first, without duplicates", () => {
   assert.deepEqual(ipfsRetrievalCandidates(LIVE_GATEWAYS[1]), [LIVE_GATEWAYS[1], LIVE_GATEWAYS[0]]);
   const custom = `https://my.gateway.example/ipfs/${CID}`;
   assert.deepEqual(ipfsRetrievalCandidates(custom), [custom, ...LIVE_GATEWAYS]);
+});
+
+test("cleartext attachment URLs try https first and keep cleartext as the last resort", () => {
+  assert.deepEqual(ipfsRetrievalCandidates("http://blossom.example/abc.bin"), [
+    "https://blossom.example/abc.bin",
+    "http://blossom.example/abc.bin",
+  ]);
+  assert.deepEqual(ipfsRetrievalCandidates(`http://my.gateway.example/ipfs/${CID}`), [
+    `https://my.gateway.example/ipfs/${CID}`,
+    ...LIVE_GATEWAYS,
+    `http://my.gateway.example/ipfs/${CID}`,
+  ]);
+  assert.deepEqual(ipfsRetrievalCandidates(`http://dweb.link/ipfs/${CID}`), LIVE_GATEWAYS);
+});
+
+test("local cleartext hosts have no https to upgrade to", () => {
+  for (const url of ["http://localhost:3000/a", "http://192.168.1.20:3000/a", "http://box.local/a", "http://[::1]:3000/a"]) {
+    assert.deepEqual(ipfsRetrievalCandidates(url), [url]);
+  }
 });
 
 test("non-IPFS URLs are left alone", () => {

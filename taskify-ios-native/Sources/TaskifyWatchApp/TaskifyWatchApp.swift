@@ -1,4 +1,6 @@
+import AppIntents
 import SwiftUI
+import TaskifyWatchShared
 import UserNotifications
 import WatchKit
 import OSLog
@@ -7,7 +9,7 @@ private let taskifyWatchChatRefreshIdentifier = "taskify.watch.chat.refresh"
 
 @MainActor
 final class TaskifyWatchApplicationDelegate: NSObject, WKApplicationDelegate {
-    let model = TaskifyWatchAppModel()
+    let model = TaskifyWatchAppModel.shared
     private var isRequestingNotificationAccess = false
     private var scheduledChatRefreshDate: Date? {
         get { UserDefaults.standard.object(forKey: "taskify.watch.chat.background-refresh-date") as? Date }
@@ -17,6 +19,7 @@ final class TaskifyWatchApplicationDelegate: NSObject, WKApplicationDelegate {
 
     func applicationDidFinishLaunching() {
         activateChatPushIfNeeded()
+        TaskifyWatchChatShortcuts.updateAppShortcutParameters()
     }
 
     func applicationDidBecomeActive() {
@@ -30,6 +33,8 @@ final class TaskifyWatchApplicationDelegate: NSObject, WKApplicationDelegate {
         model.flushPendingSnapshotPersist()
         scheduleChatRefreshIfNeeded()
         Task {
+            // Reading a thread and lowering the wrist should clear its badge right away.
+            await model.publishChatWidgetSnapshot()
             await TaskifyWatchPhotoLoader.shared.clearMemory()
             await TaskifyWatchAvatarLoader.shared.clearMemory()
             TaskifyWatchMarkdownCache.shared.clear()
@@ -100,6 +105,7 @@ final class TaskifyWatchApplicationDelegate: NSObject, WKApplicationDelegate {
         defer { scheduleChatRefreshIfNeeded() }
         // Fallback refreshes only update the cache; they never replay historical alerts.
         _ = await model.handleChatPushWake()
+        await model.publishChatWidgetSnapshot()
     }
 
     func didReceiveRemoteNotification(
@@ -118,6 +124,8 @@ final class TaskifyWatchApplicationDelegate: NSObject, WKApplicationDelegate {
                 return
             }
             let result = await self.model.handleChatPushWake()
+            // Before completing: watchOS may suspend the app as soon as the handler returns.
+            await self.model.publishChatWidgetSnapshot()
             self.scheduleChatRefreshIfNeeded()
             // Report the cache result promptly, before any optional legacy local alert work.
             completionHandler(result.receivedData ? .newData : result.failed ? .failed : .noData)
@@ -151,6 +159,10 @@ struct TaskifyWatchApp: App {
             TaskifyWatchRootView()
                 .environment(applicationDelegate.model)
                 .preferredColorScheme(.dark)
+                .onOpenURL { url in
+                    guard let link = TaskifyWatchChatLink(url: url) else { return }
+                    TaskifyWatchChatRouter.shared.open(link)
+                }
                 .task(id: "\(applicationDelegate.model.chatIdentityPublicKey ?? "unconfigured")|\(applicationDelegate.model.isChatConfigured)") {
                     applicationDelegate.activateChatPushIfNeeded()
                 }

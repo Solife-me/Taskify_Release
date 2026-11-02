@@ -28,6 +28,7 @@ vi.mock("../wallet/walletSeedBackup", () => ({
 
 import { decryptNostrBackupPayload, encryptNostrBackupPayload, NOSTR_APP_BACKUP_D_TAG, NOSTR_APP_BACKUP_KIND } from "../nostrBackup";
 import { useNostrAppBackupSync } from "./useNostrAppBackupSync";
+import type { NostrPublishFn } from "./useNostrIdentity";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -36,6 +37,15 @@ const pubkey = getPublicKey(secret);
 const seed = { type: "nut13-wallet-backup", version: 1, mnemonic: "abandon ability able", counters: {} } as const;
 const board = (nostrId: string) =>
   ({ id: `b-${nostrId}`, name: nostrId, kind: "lists", columns: [], nostr: { boardId: nostrId, relays: ["wss://relay.test"] } }) as any;
+
+// Implements only the returnEvent overload, which is the one the backup sync calls.
+const recordingPublishRef = (published: any[]) => ({
+  current: vi.fn(async (_relays: string[], template: any, options: any) => {
+    const event = finalizeEvent({ ...template }, options.sk);
+    if (template.kind === NOSTR_APP_BACKUP_KIND && template.tags.some((t: string[]) => t[0] === "d" && t[1] === NOSTR_APP_BACKUP_D_TAG)) published.push(event);
+    return { event, createdAt: event.created_at };
+  }) as unknown as NostrPublishFn,
+});
 
 beforeEach(() => {
   localStorage.clear();
@@ -48,13 +58,7 @@ afterEach(() => vi.useRealTimers());
 test("a device that has not read the remote backup publishes nothing; once it has, other devices' boards and the seed survive", async () => {
   expect(NOSTR_APP_BACKUP_D_TAG).toBe("taskify-app-backup");
   const published: any[] = [];
-  const nostrPublishRef = {
-    current: vi.fn(async (_relays: string[], template: any, options: any) => {
-      const event = finalizeEvent({ ...template }, options.sk);
-      if (template.kind === NOSTR_APP_BACKUP_KIND && template.tags.some((t: string[]) => t[0] === "d" && t[1] === NOSTR_APP_BACKUP_D_TAG)) published.push(event);
-      return { event, createdAt: event.created_at };
-    }),
-  };
+  const nostrPublishRef = recordingPublishRef(published);
   let props: any = {
     bibleTracker: {} as any,
     boards: [board("mine")],
@@ -112,13 +116,7 @@ test("a device that has not read the remote backup publishes nothing; once it ha
 
 test("a remote tombstone removes a stale local duplicate board and records the removal", async () => {
   const published: any[] = [];
-  const nostrPublishRef = {
-    current: vi.fn(async (_relays: string[], template: any, options: any) => {
-      const event = finalizeEvent({ ...template }, options.sk);
-      if (template.kind === NOSTR_APP_BACKUP_KIND && template.tags.some((t: string[]) => t[0] === "d" && t[1] === NOSTR_APP_BACKUP_D_TAG)) published.push(event);
-      return { event, createdAt: event.created_at };
-    }),
-  };
+  const nostrPublishRef = recordingPublishRef(published);
   const removed: string[][] = [];
   let renderedBoards: any[] = [];
   const duplicate = board("legacy-week-standard");
@@ -189,13 +187,7 @@ test("a remote tombstone removes a stale local duplicate board and records the r
 
 test("deleting a board imported from another device publishes its tombstone", async () => {
   const published: any[] = [];
-  const nostrPublishRef = {
-    current: vi.fn(async (_relays: string[], template: any, options: any) => {
-      const event = finalizeEvent({ ...template }, options.sk);
-      if (template.kind === NOSTR_APP_BACKUP_KIND && template.tags.some((t: string[]) => t[0] === "d" && t[1] === NOSTR_APP_BACKUP_D_TAG)) published.push(event);
-      return { event, createdAt: event.created_at };
-    }),
-  };
+  const nostrPublishRef = recordingPublishRef(published);
   const content = await encryptNostrBackupPayload(
     {
       version: 1,

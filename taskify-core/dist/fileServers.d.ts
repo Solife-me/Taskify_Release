@@ -23,7 +23,12 @@ export declare const OPAQUE_UPLOAD_FILENAME_SUFFIX = ".bin";
 export declare function opaqueUploadFilename(ciphertextSha256: string): string;
 /** Resolves the URL shapes returned by Originless, including its CID-only response. */
 export declare function resolveOriginlessUploadURL(serverURL: string, payload: unknown): string;
-/** Where to fetch `url` from, in order. A URL that isn't an IPFS gateway URL only has itself. */
+/** The URL to publish for a finished upload: an https server's blobs are published as https. */
+export declare function secureUploadedFileURL(serverURL: string, url: string): string;
+/**
+ * Where to fetch `url` from, in order. A cleartext URL is tried over https first and kept as the
+ * last resort, and an IPFS gateway URL falls back to the live gateways. Anything else only has itself.
+ */
 export declare function ipfsRetrievalCandidates(url: string): string[];
 /**
  * Fetches `url`, falling back across IPFS gateways when it names content-addressed bytes. Resolves

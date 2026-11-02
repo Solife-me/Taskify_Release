@@ -22,6 +22,32 @@
       "uploadURL": "https://blossom.example/base/upload"
     }
   ],
+  "uploadedURLs": [
+    {
+      "name": "Blossom descriptor behind a TLS proxy is published as https",
+      "serverURL": "https://blossom.example",
+      "url": "http://blossom.example/abc123.bin",
+      "remoteURL": "https://blossom.example/abc123.bin"
+    },
+    {
+      "name": "https descriptor is retained",
+      "serverURL": "https://blossom.example",
+      "url": "https://cdn.example/abc123.bin",
+      "remoteURL": "https://cdn.example/abc123.bin"
+    },
+    {
+      "name": "cleartext server keeps its own scheme",
+      "serverURL": "http://blossom.example",
+      "url": "http://blossom.example/abc123.bin",
+      "remoteURL": "http://blossom.example/abc123.bin"
+    },
+    {
+      "name": "local host has no certificate to upgrade to",
+      "serverURL": "https://blossom.example",
+      "url": "http://192.168.1.20:3000/abc123.bin",
+      "remoteURL": "http://192.168.1.20:3000/abc123.bin"
+    }
+  ],
   "responses": [
     {
       "name": "Originless CID uses the shared public gateway",

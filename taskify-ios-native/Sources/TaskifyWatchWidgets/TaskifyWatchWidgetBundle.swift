@@ -7,6 +7,9 @@ struct TaskifyWatchWidgetBundle: WidgetBundle {
     var body: some Widget {
         TaskifyWatchTodayWidget()
         TaskifyWatchUpcomingWidget()
+        TaskifyWatchMessagesWidget()
+        TaskifyWatchConversationWidget()
+        TaskifyWatchNewMessageWidget()
     }
 }
 

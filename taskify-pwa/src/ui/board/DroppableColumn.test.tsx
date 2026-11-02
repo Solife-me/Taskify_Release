@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 import React, { act, createRef } from "react";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
+import css from "../../styles/boards-and-tasks.css?raw";
 import { DroppableColumn } from "./DroppableColumn";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -96,7 +95,6 @@ test("contains long task content inside the list instead of creating an inner ho
   expect(stack.className).toContain("min-w-0");
   expect(stack.className).toContain("max-w-full");
 
-  const css = readFileSync(resolve(process.cwd(), "src/styles/boards-and-tasks.css"), "utf8");
   const boardScroller = css.match(/\.board-scroller\s*\{([\s\S]*?)\}/)?.[1] ?? "";
   const taskCard = css.match(/\.task-card\s*\{([\s\S]*?)\}/)?.[1] ?? "";
   const columnScroll = css.match(/\.board-column \[data-column-scroll\]\s*\{([\s\S]*?)\}/)?.[1] ?? "";

@@ -1,7 +1,8 @@
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
-import { fetchWithIPFSGatewayFallback, fixedFileUploadURL, resolveOriginlessUploadURL } from "taskify-core";
+import { fetchWithIPFSGatewayFallback, fixedFileUploadURL, resolveOriginlessUploadURL, secureUploadedFileURL } from "taskify-core";
+import { uploadBlobToBlossom } from "./blossomUpload.js";
 import { uploadImageToNip96 } from "./nip96Upload.js";
 import { attachmentUploadFilename } from "./attachmentUploadNaming.js";
 import type { TaskifyConfig } from "./config.js";
@@ -155,8 +156,10 @@ export async function buildAttachmentDocuments(opts: {
     const uploadFilename = attachmentUploadFilename(encrypted);
     const serverType = inferServerType(serverUrl);
     let remoteUrl = "";
-    if (serverType === "originless" || serverType === "blossom") {
+    if (serverType === "originless") {
       remoteUrl = await uploadBlobToOriginless(serverUrl, encrypted, uploadFilename, "application/octet-stream");
+    } else if (serverType === "blossom") {
+      remoteUrl = await uploadBlobToBlossom({ serverUrl, bytes: encrypted, nsec });
     } else {
       // A private directory and owner-only file, not a guessable name in the shared /tmp.
       const fs = await import("node:fs/promises");
@@ -171,7 +174,7 @@ export async function buildAttachmentDocuments(opts: {
         await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       }
     }
-    out.push({ ...base, remoteUrl, encrypted: true, encryptionBoardId: opts.boardId });
+    out.push({ ...base, remoteUrl: secureUploadedFileURL(serverUrl, remoteUrl), encrypted: true, encryptionBoardId: opts.boardId });
   }
   return out;
 }

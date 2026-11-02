@@ -83,7 +83,39 @@ function ipfsCIDInURL(url: URL): string | null {
   return null;
 }
 
-/** Where to fetch `url` from, in order. A URL that isn't an IPFS gateway URL only has itself. */
+/** IP addresses, unqualified names and mDNS hosts have no public certificate to upgrade to. */
+function isLocalHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return !host.includes(".") || host.includes(":") || /^\d+(\.\d+){3}$/.test(host)
+    || host.endsWith(".local") || host.endsWith(".localhost");
+}
+
+/**
+ * A file server behind a TLS-terminating proxy can describe its blobs as `http://` when the proxy
+ * doesn't forward the original scheme, as blossom-server does without `X-Forwarded-Proto`. Those
+ * URLs fail in the native apps (App Transport Security) and on an https page (mixed content), yet
+ * the same blob is served over https.
+ */
+function httpsUpgradedURL(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" || isLocalHostname(parsed.hostname)) return url;
+    parsed.protocol = "https:";
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+/** The URL to publish for a finished upload: an https server's blobs are published as https. */
+export function secureUploadedFileURL(serverURL: string, url: string): string {
+  return /^https:/i.test(serverURL.trim()) ? httpsUpgradedURL(url) : url;
+}
+
+/**
+ * Where to fetch `url` from, in order. A cleartext URL is tried over https first and kept as the
+ * last resort, and an IPFS gateway URL falls back to the live gateways. Anything else only has itself.
+ */
 export function ipfsRetrievalCandidates(url: string): string[] {
   let parsed: URL;
   try {
@@ -91,12 +123,13 @@ export function ipfsRetrievalCandidates(url: string): string[] {
   } catch {
     return [url];
   }
+  const upgraded = httpsUpgradedURL(url);
   const cid = ipfsCIDInURL(parsed);
-  if (!cid) return [url];
+  if (!cid) return [...new Set([upgraded, url])];
   const host = parsed.hostname.toLowerCase();
   const retired = RETIRED_IPFS_GATEWAY_HOSTS.some((item) => host === item || host.endsWith(`.${item}`));
   const live = TASKIFY_IPFS_GATEWAY_BASES.map((base) => `${base}/ipfs/${cid}`);
-  return [...new Set(retired ? live : [url, ...live])];
+  return [...new Set(retired ? live : [upgraded, ...live, url])];
 }
 
 /**

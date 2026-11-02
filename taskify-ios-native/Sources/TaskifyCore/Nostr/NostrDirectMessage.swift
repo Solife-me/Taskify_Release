@@ -839,6 +839,15 @@ public extension TaskifySnapshot {
         }
     }
 
+    /// The app-wide unread total. Blocked peers are left out for the same reason they never
+    /// notify: their messages should not ask for attention.
+    func directMessageUnreadCount(in threads: [NostrDirectMessageThread]) -> Int {
+        let blocked = Set(directMessageBlockedPeers ?? [])
+        return threads.reduce(0) { total, thread in
+            blocked.contains(thread.peerPublicKey) ? total : total + thread.unreadCount
+        }
+    }
+
     func isDirectMessageThreadArchived(_ peerPublicKey: String) -> Bool {
         guard let peer = Self.normalizedConversationID(peerPublicKey),
               let archivedAt = directMessageArchivedAt?[peer] else { return false }

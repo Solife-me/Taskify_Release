@@ -124,9 +124,26 @@ struct TaskifyWatchIdentityStore {
     }
 }
 
+enum TaskifyWatchShortcutSendError: LocalizedError {
+    case watchLocked
+    case conversationUnavailable
+    case failed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .watchLocked: "Unlock your Apple Watch to send this message."
+        case .conversationUnavailable: "This conversation isn't available on this Apple Watch."
+        case .failed(let message): message
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class TaskifyWatchAppModel: NSObject {
+    /// One model per process: the app delegate and App Intents, which can run with no UI, share it.
+    static let shared = TaskifyWatchAppModel()
+
     private(set) var snapshot = TaskifyWatchSnapshot() {
         didSet {
             if snapshot.tasks != oldValue.tasks || snapshot.boards != oldValue.boards { cachedTaskIndex = nil }
@@ -139,7 +156,11 @@ final class TaskifyWatchAppModel: NSObject {
     }
     private(set) var activeQuickAddBoardID: String?
     private(set) var chatSnapshot = TaskifyWatchChatSnapshot() {
-        didSet { if chatSnapshot != oldValue { cachedChatIndex = nil } }
+        didSet {
+            guard chatSnapshot != oldValue else { return }
+            cachedChatIndex = nil
+            scheduleChatWidgetPublish()
+        }
     }
     private(set) var avatarRefreshRevision = 0
     private(set) var viewClock = Date()
@@ -159,6 +180,7 @@ final class TaskifyWatchAppModel: NSObject {
     @ObservationIgnored private var immediateCommandIDs: Set<String> = []
     @ObservationIgnored private var directSyncCommandIDs: Set<String> = []
     @ObservationIgnored private var chatOutboxRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var chatWidgetPublishTask: Task<Void, Never>?
     @ObservationIgnored private var chatRefreshWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var chatAccountRevision = 0
     @ObservationIgnored private var preparedChatAccountRevision: Int?
@@ -1071,6 +1093,8 @@ final class TaskifyWatchAppModel: NSObject {
         await chatRefresh
         if forceComplicationReload {
             reloadComplicationTimelines()
+            await publishChatWidgetSnapshot()
+            reloadChatComplicationTimelines()
         }
     }
 
@@ -2099,6 +2123,100 @@ final class TaskifyWatchAppModel: NSObject {
         for kind in TaskifyWatchWidgetCache.widgetKinds {
             WidgetCenter.shared.reloadTimelines(ofKind: kind)
         }
+    }
+
+    /// Coalesces a burst of chat changes (an inbox page, an audio burst) into one encode and one
+    /// WidgetKit reload. Paths that may suspend right after await `publishChatWidgetSnapshot()`.
+    private func scheduleChatWidgetPublish() {
+        chatWidgetPublishTask?.cancel()
+        chatWidgetPublishTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            await self?.publishChatWidgetSnapshot()
+        }
+    }
+
+    func publishChatWidgetSnapshot() async {
+        chatWidgetPublishTask?.cancel()
+        chatWidgetPublishTask = nil
+        // Locked or unreadable is not empty: a push can cold-launch the process before protected
+        // storage is available, and that placeholder must not blank the watch face.
+        guard await chatCoordinator.isCacheReadable() else { return }
+        let stored = await chatCoordinator.snapshot()
+        // Without the identity, this Watch's own sends would be counted as unread.
+        guard chatIdentityPublicKey != nil || stored.messages.isEmpty else { return }
+        let index = stored == chatSnapshot
+            ? currentChatIndex
+            : TaskifyWatchChatIndex(snapshot: stored, identity: chatIdentityPublicKey ?? "")
+        let widgetSnapshot = TaskifyWatchChatWidgetSnapshot(
+            unreadCount: index.unreadCount,
+            conversations: index.threads.filter { !$0.isRequest }.map {
+                TaskifyWatchChatWidgetConversation(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    unreadCount: $0.unreadCount,
+                    isGroup: $0.isGroup
+                )
+            }
+        )
+        let previous = TaskifyWatchChatWidgetCache.load()
+        guard TaskifyWatchChatWidgetCache.saveIfChanged(widgetSnapshot) else { return }
+        reloadChatComplicationTimelines()
+        if !widgetSnapshot.hasSameDirectory(as: previous) {
+            WidgetCenter.shared.invalidateConfigurationRecommendations()
+            TaskifyWatchChatShortcuts.updateAppShortcutParameters()
+        }
+    }
+
+    private func reloadChatComplicationTimelines() {
+        for kind in TaskifyWatchChatWidgetCache.widgetKinds {
+            WidgetCenter.shared.reloadTimelines(ofKind: kind)
+        }
+    }
+
+    /// Sends for a shortcut, returning whether a relay accepted every recipient copy in time.
+    /// `sendChat` only queues durably, and delivery runs in the outbox retry task, which watchOS
+    /// may suspend once the shortcut finishes. So this waits, bounded, to report the true outcome.
+    func sendChatFromShortcut(_ text: String, conversationID: String) async throws -> Bool {
+        guard await chatCoordinator.isCacheReadable() else {
+            throw TaskifyWatchShortcutSendError.watchLocked
+        }
+        await loadChatSnapshotForRouting()
+        guard let thread = currentChatIndex.shortcutSendThread(conversationID: conversationID) else {
+            throw TaskifyWatchShortcutSendError.conversationUnavailable
+        }
+        let previousOutboxIDs = Set(chatSnapshot.outbox.map(\.rumorID))
+        let sent = await sendChat(
+            text,
+            memberPublicKeys: thread.memberPublicKeys,
+            subject: chatSnapshot.groups.first { $0.groupID == thread.id }?.name
+        )
+        guard sent else { throw TaskifyWatchShortcutSendError.failed(chatStatusMessage) }
+        guard let rumorID = chatSnapshot.outbox.first(where: {
+            !previousOutboxIDs.contains($0.rumorID)
+        })?.rumorID else { return false }
+
+        var delivered = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(12))
+        while ContinuousClock.now < deadline {
+            if let entry = chatSnapshot.outbox.first(where: { $0.rumorID == rumorID }) {
+                delivered = entry.areRecipientCopiesDelivered
+            } else {
+                // An entry leaves the outbox once finished, or with its deleted conversation.
+                delivered = chatSnapshot.messages.contains { $0.rumorID == rumorID }
+                break
+            }
+            if delivered { break }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        await publishChatWidgetSnapshot()
+        return delivered
+    }
+
+    /// Picks up anything the store restored after launch, so a route taken on a cold launch can
+    /// tell a conversation that has not loaded yet from one that is gone.
+    func loadChatSnapshotForRouting() async {
+        chatSnapshot = await chatCoordinator.snapshot()
     }
 
     private func sessionSetupTransfers() -> [WCSessionUserInfoTransfer] {

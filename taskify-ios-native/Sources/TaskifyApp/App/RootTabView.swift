@@ -44,6 +44,8 @@ struct RootTabView: View {
     @State private var pendingQuickAdd = false
     @State private var pendingQuickAddColumnID: String?
     @State private var pendingWatchSetupRequestID: UUID?
+    /// Pushed in by `ChatUnreadCountReader`, so this view re-renders only when the number changes.
+    @State private var chatUnreadCount = 0
     /// A task opened from Spotlight, shown in its editor over its board.
     @State private var searchedTask: SearchedTask?
     /// Reading the revision here — rather than the raw appearance flag in each card — is what makes
@@ -195,7 +197,8 @@ struct RootTabView: View {
                         .safeAreaInset(edge: .bottom, spacing: 8) {
                             MaterialGlassTabBar(
                                 selectedTab: $selectedTab,
-                                tabs: AppTab.visible(walletEnabled: walletEnabled)
+                                tabs: AppTab.visible(walletEnabled: walletEnabled),
+                                chatUnreadCount: chatUnreadCount
                             )
                                 .padding(.horizontal, 14)
                         }
@@ -249,6 +252,9 @@ struct RootTabView: View {
             WalletStatusToast()
         }
         .background {
+            ChatUnreadCountReader(count: $chatUnreadCount)
+        }
+        .background {
             WalletPhaseOutNoticePresenter(
                 suppressed: model.isLoading || model.showsFirstRunOnboarding,
                 openWallet: { selectedTab = .wallet }
@@ -286,7 +292,9 @@ struct RootTabView: View {
                 get: { selectedTab },
                 set: { if let tab = $0 { selectedTab = tab } }
             )) { tab in
-                Label(tab.title, systemImage: tab.icon).tag(tab)
+                Label(tab.title, systemImage: tab.icon)
+                    .badge(tab == .chat ? chatUnreadCount : 0)
+                    .tag(tab)
             }
             .navigationTitle("Taskify")
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 280)
@@ -342,10 +350,17 @@ struct RootTabView: View {
                         .taskifyTabBackdrop(isActive: selectedTab == .wallet)
                 }
             }
-            Tab(AppTab.chat.title, systemImage: AppTab.chat.icon, value: .chat) {
+            Tab(value: AppTab.chat) {
                 ContactsView()
                     .taskifyTabBackdrop(isActive: selectedTab == .chat)
+            } label: {
+                Label {
+                    Text(AppTab.chat.title)
+                } icon: {
+                    ChatTabIcon.image(unreadCount: chatUnreadCount)
+                }
             }
+            .accessibilityValue(ChatTabIcon.accessibilityValue(unreadCount: chatUnreadCount))
             Tab(AppTab.settings.title, systemImage: AppTab.settings.icon, value: .settings) {
                 SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID)
                     .taskifyTabBackdrop(isActive: selectedTab == .settings)
@@ -374,6 +389,76 @@ private extension View {
                 TaskifyAppBackground()
             }
         }
+    }
+}
+
+/// Observes the chat threads on `RootTabView`'s behalf. Reading them there would rebuild the whole
+/// tab tree on every chat or inbox write, even when the unread total stayed the same.
+private struct ChatUnreadCountReader: View {
+    @Environment(AppModel.self) private var model
+    @Binding var count: Int
+
+    var body: some View {
+        Color.clear
+            .onChange(of: model.directMessageUnreadCount, initial: true) { _, unreadCount in
+                count = unreadCount
+            }
+    }
+}
+
+/// The Chat tab's bubble, with the unread total cut out of it the way the Apple Watch's Messages
+/// complication shows it. The tab bar only draws an image from a tab's label, never an arbitrary
+/// view, and a template image keeps the bar's own tinting for each selection state.
+@MainActor
+private enum ChatTabIcon {
+    private static var cache: [String: UIImage] = [:]
+
+    @ViewBuilder
+    static func image(unreadCount: Int) -> some View {
+        if unreadCount > 0, let image = uiImage(label: label(for: unreadCount)) {
+            Image(uiImage: image)
+        } else {
+            Image(systemName: AppTab.chat.icon)
+        }
+    }
+
+    static func accessibilityValue(unreadCount: Int) -> String {
+        switch unreadCount {
+        case ...0: ""
+        case 1: "1 unread message"
+        default: "\(unreadCount) unread messages"
+        }
+    }
+
+    private static func label(for unreadCount: Int) -> String {
+        unreadCount > 99 ? "99+" : String(unreadCount)
+    }
+
+    private static func uiImage(label: String) -> UIImage? {
+        if let cached = cache[label] { return cached }
+        let configuration = UIImage.SymbolConfiguration(pointSize: 25, weight: .medium)
+        guard let bubble = UIImage(systemName: "message.fill", withConfiguration: configuration)?
+            .withTintColor(.black, renderingMode: .alwaysOriginal) else { return nil }
+
+        let fontSize: CGFloat = label.count > 2 ? 10 : 13
+        let text = NSAttributedString(string: label, attributes: [
+            .font: UIFont.systemFont(ofSize: fontSize, weight: .heavy),
+            .foregroundColor: UIColor.black,
+        ])
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.opaque = false
+        let image = UIGraphicsImageRenderer(size: bubble.size, format: format).image { context in
+            bubble.draw(at: .zero)
+            context.cgContext.setBlendMode(.destinationOut)
+            let textSize = text.size()
+            // The tail sits below the bubble, so its visual centre is above the image's.
+            text.draw(at: CGPoint(
+                x: (bubble.size.width - textSize.width) / 2,
+                y: (bubble.size.height - textSize.height) / 2 - 1
+            ))
+        }.withRenderingMode(.alwaysTemplate)
+        cache[label] = image
+        return image
     }
 }
 
@@ -406,6 +491,7 @@ private struct WalletStatusToast: View {
 private struct MaterialGlassTabBar: View {
     @Binding var selectedTab: AppTab
     let tabs: [AppTab]
+    let chatUnreadCount: Int
 
     @Namespace private var selectionNamespace
 
@@ -419,7 +505,8 @@ private struct MaterialGlassTabBar: View {
                 } label: {
                     BottomTabItem(
                         tab: tab,
-                        isSelected: selectedTab == tab
+                        isSelected: selectedTab == tab,
+                        unreadCount: tab == .chat ? chatUnreadCount : 0
                     )
                     .frame(maxWidth: .infinity)
                     .frame(height: 56)
@@ -460,6 +547,7 @@ private struct MaterialGlassTabBar: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.title)
+                .accessibilityValue(tab == .chat ? ChatTabIcon.accessibilityValue(unreadCount: chatUnreadCount) : "")
                 .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
             }
         }
@@ -485,12 +573,19 @@ private struct MaterialGlassTabBar: View {
 private struct BottomTabItem: View {
     let tab: AppTab
     let isSelected: Bool
+    let unreadCount: Int
 
     var body: some View {
         VStack(spacing: 3) {
-            Image(systemName: tab.icon)
-                .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
-                .frame(width: 42, height: 30)
+            Group {
+                if tab == .chat {
+                    ChatTabIcon.image(unreadCount: unreadCount)
+                } else {
+                    Image(systemName: tab.icon)
+                }
+            }
+            .font(.system(size: 19, weight: isSelected ? .semibold : .medium))
+            .frame(width: 42, height: 30)
 
             Text(tab.title)
                 .font(.system(size: 9, weight: isSelected ? .bold : .medium))
