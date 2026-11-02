@@ -10,6 +10,7 @@ import { idbKeyValue } from "../storage/idbKeyValue";
 import { TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
 import { chatStateSyncBus } from "./chatStateSyncBus";
 import { useNostrChatStateSync } from "./useNostrChatStateSync";
+import { SYNC_RESUME_MIN_HIDDEN_MS } from "./useSyncResume";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -19,10 +20,12 @@ const skHex = bytesToHex(secret);
 
 function setup(initial: { localInboxResponses?: Record<string, any>; pendingInboxEventIds?: string[] } = {}) {
   const published: any[] = [];
+  const subscriptions: unknown[][] = [];
   let deliver: ((event: any) => void) | null = null;
   const pool = {
     setRelays: () => {},
-    subscribe: (_relays: string[], _filters: unknown[], onEvent: (event: any) => void) => {
+    subscribe: (_relays: string[], filters: unknown[], onEvent: (event: any) => void) => {
+      subscriptions.push(filters);
       deliver = onEvent;
       return () => { deliver = null; };
     },
@@ -54,6 +57,7 @@ function setup(initial: { localInboxResponses?: Record<string, any>; pendingInbo
   const root = createRoot(document.createElement("div"));
   return {
     published,
+    subscriptions,
     applyRemoteInboxResponses,
     render: async (overrides: Partial<typeof props> = {}) => {
       props = { ...props, ...overrides };
@@ -172,6 +176,57 @@ test("a read marker too old to publish never triggers a publish", async () => {
     chatStateSyncBus.reportLocalReadThrough({ ancient: 1_735_000_001 });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(device.published).toHaveLength(0);
+  } finally {
+    await device.unmount();
+  }
+});
+
+test("markers in a copy older than this device's last publish are applied and republished", async () => {
+  const device = setup();
+  await device.render();
+  const received: Record<string, number>[] = [];
+  const stop = chatStateSyncBus.onRemoteReadThrough((readThrough) => received.push(readThrough));
+  try {
+    chatStateSyncBus.reportLocalReadThrough({ peer1: 1_790_000_100 });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(device.published).toHaveLength(1);
+    const publishedAt = device.published[0].created_at;
+
+    // The phone's copy lost the race to this device's publish, so relays may not hold it.
+    await device.deliver(await remoteEvent({ readThrough: { peer2: 1_790_000_200 } }, publishedAt - 5));
+    expect(received).toEqual([{ peer2: 1_790_000_200 }]);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(device.published).toHaveLength(2);
+    const payload: any = await decryptNostrSyncPayload(device.published[1].content, skHex, pubkey);
+    expect(payload.readThrough).toEqual({ peer1: 1_790_000_100, peer2: 1_790_000_200 });
+  } finally {
+    stop();
+    await device.unmount();
+  }
+});
+
+test("the subscription asks for the relay's copy whatever was last seen, and reopens on resume", async () => {
+  const device = setup();
+  await device.render();
+  try {
+    chatStateSyncBus.reportLocalReadThrough({ peer1: 1_790_000_100 });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(device.published).toHaveLength(1);
+    expect(device.subscriptions).toHaveLength(1);
+
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.advanceTimersByTimeAsync(SYNC_RESUME_MIN_HIDDEN_MS);
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    expect(device.subscriptions).toHaveLength(2);
+    expect(device.subscriptions[1][0]).not.toHaveProperty("since");
   } finally {
     await device.unmount();
   }

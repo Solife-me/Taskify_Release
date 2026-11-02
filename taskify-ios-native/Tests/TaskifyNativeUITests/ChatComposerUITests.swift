@@ -554,4 +554,43 @@ extension ChatComposerUITests {
         let remaining = expectation(for: NSPredicate(format: "count == 1"), evaluatedWith: removeDrafts)
         wait(for: [remaining], timeout: 5)
     }
+
+    /// Sends through the real file server, like `testASharedPhotoIsUploadedAndAttachedToTheTask`;
+    /// only publishing to relays is local. A sent photo comes from the sender's own cache, so it
+    /// must never show the failed state, whatever the gateways are doing.
+    func testCameraPhotoRendersAfterSending() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_MULTI_PHOTO_CAMERA"] = "1"
+        app.launch()
+
+        app.buttons["Chat"].firstMatch.tap()
+        let contact = app.staticTexts["UI Test Contact"].firstMatch
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+
+        let attachmentMenu = app.buttons["Add attachment"]
+        XCTAssertTrue(attachmentMenu.waitForExistence(timeout: 5))
+        attachmentMenu.tap()
+        app.buttons["Camera"].tap()
+        let capture = app.buttons["multi-photo-camera-capture"]
+        XCTAssertTrue(capture.waitForExistence(timeout: 5))
+        capture.tap()
+        XCTAssertTrue(app.buttons["multi-photo-camera-remove-0"].waitForExistence(timeout: 3))
+        app.buttons["multi-photo-camera-done"].tap()
+
+        let removeDraft = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Remove photo-")).firstMatch
+        XCTAssertTrue(removeDraft.waitForExistence(timeout: 10))
+        let send = app.buttons["Send attachments"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        send.tap()
+
+        let photo = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open photo-")).firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 60), "the upload finishes and the photo joins the thread")
+        let failed = app.staticTexts["Photo unavailable · Retry"]
+        XCTAssertFalse(failed.waitForExistence(timeout: 5), "the sender's own photo must not fail to load")
+        attach(app, name: "chat-camera-photo-sent")
+    }
 }

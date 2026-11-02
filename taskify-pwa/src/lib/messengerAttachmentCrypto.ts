@@ -17,7 +17,7 @@
 //   0xchat-app-business ox_chat/lib/utils/send_message/chat_send_message_helper.dart:105-111
 //   0xchat-app-base ox_common/lib/utils/aes_encrypt_utils.dart:15-43
 
-import { opaqueUploadFilename } from "taskify-core";
+import { fetchWithIPFSGatewayFallback, opaqueUploadFilename } from "taskify-core";
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
 import { readResponseBytesWithProgress, toBlobPart, toBufferSource, type DownloadProgressHandler } from "./binary";
@@ -189,7 +189,7 @@ export async function decryptMessengerAttachment(
     if (algo && algo !== "aes-gcm" && algo !== "aes-256-gcm") {
       throw new Error(`Unsupported attachment cipher: ${descriptor.algorithm}`);
     }
-    const res = await fetch(descriptor.url, { signal: options.signal });
+    const res = await fetchWithIPFSGatewayFallback(descriptor.url, { signal: options.signal });
     if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
     const ciphertext = await readResponseBytesWithProgress(res, options.onProgress);
     const keyBytes = hexToBytes(descriptor.keyHex);

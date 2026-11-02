@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import TaskifyWatchShared
 
 public enum AttachmentFileError: LocalizedError {
     case tooLarge, empty, invalidFile, corrupt, server(Int)
@@ -177,10 +178,23 @@ public final class AttachmentDownload: NSObject, URLSessionDownloadDelegate, @un
         self.progress = progress
     }
 
+    /// Downloads `url`, falling back across IPFS gateways when it names content-addressed bytes.
     public static func file(
         from url: URL,
         limit: Int = AttachmentFiles.maximumBytes + 32,
         progress: AttachmentProgressHandler? = nil
+    ) async throws -> URL {
+        try await TaskifyIPFSGateway.withRetrievalCandidates(for: url) { candidate, isLast in
+            // A gateway that hangs shouldn't hold up the next one for the full inactivity timeout.
+            try await file(from: candidate, limit: limit, requestTimeout: isLast ? 120 : 45, progress: progress)
+        }
+    }
+
+    private static func file(
+        from url: URL,
+        limit: Int,
+        requestTimeout: TimeInterval,
+        progress: AttachmentProgressHandler?
     ) async throws -> URL {
         let downloader = AttachmentDownload(limit: limit, progress: progress)
         progress?(.downloading(completed: 0, total: 0))
@@ -191,7 +205,7 @@ public final class AttachmentDownload: NSObject, URLSessionDownloadDelegate, @un
                 if downloader.cancelled { continuation.resume(throwing: CancellationError()); return }
                 downloader.continuation = continuation
                 let config = URLSessionConfiguration.ephemeral
-                config.timeoutIntervalForRequest = 120
+                config.timeoutIntervalForRequest = requestTimeout
                 config.timeoutIntervalForResource = 3_600
                 let session = URLSession(configuration: config, delegate: downloader, delegateQueue: nil)
                 downloader.session = session

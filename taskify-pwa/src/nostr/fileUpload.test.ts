@@ -354,7 +354,7 @@ describe("uploadAvatarToOriginless", () => {
   test("builds a public gateway URL when the response only has a cid", async () => {
     // Originless only ever returns a cid -- it does not serve the blob itself, so the client must
     // build a public gateway URL rather than one relative to the upload server. Verified against a
-    // real upload: {server}/ipfs/{cid} 404s, dweb.link serves the bytes.
+    // real upload: {server}/ipfs/{cid} 404s, ipfs.filebase.io serves the bytes.
     const { uploadAvatarToOriginless } = await import("./Nip96Client");
     const file = new Blob(["data"], { type: "image/png" });
     const cid = "QmS5cF4AsRFFvHZW8pRRVk7XxN516jqcTeXMYwFJwRgWc1";
@@ -367,7 +367,7 @@ describe("uploadAvatarToOriginless", () => {
       serverUrl: "https://originless.solife.me",
       file,
     });
-    expect(result.url).toBe(`https://dweb.link/ipfs/${cid}`);
+    expect(result.url).toBe(`https://ipfs.filebase.io/ipfs/${cid}`);
     expect(result.nip94).toBeNull();
   });
 

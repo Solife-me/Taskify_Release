@@ -55,6 +55,12 @@ export type MergedDocumentConfig<T> = {
   toPublish?: (known: T | null, local: T, nowSeconds: number) => T | null;
   /** Tags added after the `d` tag (a client tag). */
   extraTags?: string[][];
+  /**
+   * The document only moves forward, so a copy older than the newest one known can still hold
+   * entries this device lacks: relays can disagree, and a newer publish can have replaced them.
+   * Such a copy is merged into the local state, which then publishes whatever the relays lost.
+   */
+  mergeOlderCopies?: boolean;
 };
 
 export type MergedDocumentDeps<T> = {
@@ -157,7 +163,13 @@ export class MergedDocumentSync<T> {
     const payloadTs = Math.max(Number(parsed.timestamp) || 0, event.created_at || 0);
     // Our own echo, or older than what this device already has.
     if (event.id && event.id === this.syncState.lastEventId) return;
-    if (payloadTs < (this.syncState.lastTimestamp || 0)) return;
+    if (payloadTs < (this.syncState.lastTimestamp || 0)) {
+      if (this.config.mergeOlderCopies) {
+        const older = this.config.sanitize(this.decode(parsed));
+        this.deps.updateLocal((prev) => this.config.merge(null, prev, older));
+      }
+      return;
+    }
     const incoming = this.config.sanitize(this.decode(parsed));
     const base = parsed.baseTimestamp === 0 ? null : this.base;
     this.deps.updateLocal((prev) => this.config.merge(base, prev, incoming));

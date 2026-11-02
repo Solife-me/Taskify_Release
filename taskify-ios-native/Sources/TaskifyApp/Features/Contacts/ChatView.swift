@@ -350,6 +350,14 @@ struct ContactsView: View {
             }
 #endif
         }
+        .task {
+            // Nothing pushes read markers to this device, so keep the visible badges current
+            // with what other devices read. The call throttles itself.
+            while !Task.isCancelled {
+                model.refreshAppStateSyncIfNeeded()
+                try? await Task.sleep(for: .seconds(31))
+            }
+        }
         .confirmationDialog(
             "Delete this conversation?",
             isPresented: Binding(

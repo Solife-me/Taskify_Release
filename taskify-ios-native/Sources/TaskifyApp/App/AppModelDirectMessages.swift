@@ -134,6 +134,26 @@ extension AppModel {
               attachments.count <= NostrDirectMessageAttachment.maximumBatchCount else {
             throw NostrDirectMessageError.invalidAttachment
         }
+#if DEBUG
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] == "1",
+           ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] == "1" {
+            // Exercise rendering a sent attachment without publishing test data.
+            for attachment in attachments {
+                let eventID = UUID().uuidString
+                if snapshot.ingestDirectMessage(NostrDirectMessage(
+                    rumorEventID: eventID, wrapEventID: eventID,
+                    peerPublicKey: recipientValue, senderPublicKey: identityPublicKey,
+                    content: attachment.url, createdAt: currentDirectMessageTimestamp(), isIncoming: false,
+                    replyToEventID: replyToEventID,
+                    attachment: attachment
+                )) {
+                    scheduleSave()
+                }
+            }
+            await Task.yield()
+            return
+        }
+#endif
         let drafts = try attachments.map { attachment in
             guard let validated = NostrDirectMessageAttachment(
                 url: attachment.url,

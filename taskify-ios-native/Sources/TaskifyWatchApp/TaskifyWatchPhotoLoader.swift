@@ -93,21 +93,24 @@ actor TaskifyWatchPhotoLoader {
     }
 
     private func download(_ attachment: TaskifyWatchChatAttachment) async throws -> CGImage {
-        var request = URLRequest(url: attachment.url, timeoutInterval: 30)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        let (ciphertext, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode) else {
-            throw TaskifyWatchPhotoError.invalidResponse
-        }
-        if response.expectedContentLength > Int64(maximumCiphertextBytes)
-            || ciphertext.count > maximumCiphertextBytes {
-            throw TaskifyWatchPhotoError.tooLarge
-        }
-        if let expectedHash = attachment.ciphertextSHA256,
-           Data(SHA256.hash(data: ciphertext)).watchPhotoHex != expectedHash.lowercased() {
-            throw TaskifyWatchPhotoError.authenticationFailed
+        let ciphertext = try await TaskifyIPFSGateway.withRetrievalCandidates(for: attachment.url) { candidate, _ in
+            var request = URLRequest(url: candidate, timeoutInterval: 30)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (ciphertext, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw TaskifyWatchPhotoError.invalidResponse
+            }
+            if response.expectedContentLength > Int64(maximumCiphertextBytes)
+                || ciphertext.count > maximumCiphertextBytes {
+                throw TaskifyWatchPhotoError.tooLarge
+            }
+            if let expectedHash = attachment.ciphertextSHA256,
+               Data(SHA256.hash(data: ciphertext)).watchPhotoHex != expectedHash.lowercased() {
+                throw TaskifyWatchPhotoError.authenticationFailed
+            }
+            return ciphertext
         }
         guard ciphertext.count >= 16,
               let keyData = Data(watchPhotoHex: attachment.keyHex),

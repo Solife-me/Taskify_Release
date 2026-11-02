@@ -329,16 +329,19 @@ enum TaskifyWatchAudioTransfer {
     }
 
     static func decrypt(_ attachment: TaskifyWatchChatAttachment) async throws -> URL {
-        var request = URLRequest(url: attachment.url, timeoutInterval: 60)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        let (ciphertext, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse,
-              (200..<300).contains(response.statusCode),
-              ciphertext.count <= maximumPlaintextBytes + 16,
-              ciphertext.count >= 16 else { throw TaskifyWatchAudioError.invalidAttachment }
-        if let expected = attachment.ciphertextSHA256,
-           Data(SHA256.hash(data: ciphertext)).watchAudioHex != expected.lowercased() {
-            throw TaskifyWatchAudioError.invalidAttachment
+        let ciphertext = try await TaskifyIPFSGateway.withRetrievalCandidates(for: attachment.url) { candidate, _ in
+            var request = URLRequest(url: candidate, timeoutInterval: 60)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (ciphertext, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  ciphertext.count <= maximumPlaintextBytes + 16,
+                  ciphertext.count >= 16 else { throw TaskifyWatchAudioError.invalidAttachment }
+            if let expected = attachment.ciphertextSHA256,
+               Data(SHA256.hash(data: ciphertext)).watchAudioHex != expected.lowercased() {
+                throw TaskifyWatchAudioError.invalidAttachment
+            }
+            return ciphertext
         }
         guard let key = Data(watchAudioHex: attachment.keyHex),
               let nonce = Data(watchAudioHex: attachment.nonceHex),
@@ -503,9 +506,8 @@ enum TaskifyWatchAudioTransfer {
             if let raw = payload[key] as? String, let url = validRemote(raw) { return url.absoluteString }
         }
         if let cid = (payload["cid"] ?? payload["ipfs"]) as? String,
-           (cid.count >= 46 || cid.hasPrefix("b")),
-           cid.allSatisfy({ $0.isLetter || $0.isNumber }) {
-            return "https://dweb.link/ipfs/\(cid)"
+           let url = TaskifyIPFSGateway.url(forCID: cid) {
+            return url
         }
         if let path = payload["path"] as? String,
            let url = validRemote(URL(string: path, relativeTo: base)?.absoluteString ?? "") {
