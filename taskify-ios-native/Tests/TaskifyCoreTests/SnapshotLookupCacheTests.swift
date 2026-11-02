@@ -307,6 +307,13 @@ final class SnapshotLookupCacheTests: XCTestCase {
             )
         ]
         XCTAssertEqual(cache.directMessageThreads(snapshot: snapshot).first?.unreadCount, 1)
+        XCTAssertEqual(
+            snapshot.directMessageUnreadCount(in: cache.directMessageThreads(snapshot: snapshot)),
+            1
+        )
+        var blocked = snapshot
+        blocked.directMessageBlockedPeers = [peer]
+        XCTAssertEqual(blocked.directMessageUnreadCount(in: blocked.directMessageThreads()), 0)
         XCTAssertEqual(cache.directMessages(with: peer, snapshot: snapshot).first?.content, "Before")
         var updated = snapshot
         updated.directMessageReadAt = [peer: 100]

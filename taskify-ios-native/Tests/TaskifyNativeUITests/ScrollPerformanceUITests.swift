@@ -858,6 +858,30 @@ final class ScrollPerformanceUITests: XCTestCase {
         )
     }
 
+    /// The Chat tab carries the app-wide unread total, and reading the thread clears it.
+    func testChatTabShowsUnreadCountUntilThreadIsRead() throws {
+        let app = chatFixtureApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_COUNT"] = "100"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_ARRIVALS"] = "1"
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        let chatTab = app.buttons["Chat"].firstMatch
+        let badged = NSPredicate(format: "value ENDSWITH %@", "unread messages")
+        expectation(for: badged, evaluatedWith: chatTab)
+        waitForExpectations(timeout: 30)
+        attach(app, name: "chat-tab-unread-count")
+
+        contact.tap()
+        XCTAssertTrue(app.buttons["Back to chats"].waitForExistence(timeout: 5))
+        app.buttons["Back to chats"].tap()
+        XCTAssertTrue(contact.waitForExistence(timeout: 5))
+        let cleared = NSPredicate(format: "NOT (value CONTAINS %@)", "unread")
+        expectation(for: cleared, evaluatedWith: chatTab)
+        waitForExpectations(timeout: 5)
+    }
+
     func testChatRemainsResponsiveAcrossBackgroundHandoffs() throws {
         let app = chatFixtureApplication()
         app.launch()
