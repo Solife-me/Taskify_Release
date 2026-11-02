@@ -262,14 +262,18 @@ struct TaskEditorView: View {
             Button("Delete This Task", role: .destructive) {
                 deleteTask(scope: .single)
             }
-            Button("Delete This and Future Tasks", role: .destructive) {
-                deleteTask(scope: .thisAndFuture)
+            if task?.canEndRecurringSeries == true {
+                Button("Delete This and Future Tasks", role: .destructive) {
+                    deleteTask(scope: .thisAndFuture)
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(taskID.flatMap { model.missedOccurrenceCount(for: $0) } == nil
                 ? "Choose whether to delete only this occurrence or end the recurring series here."
-                : "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series.")
+                : task?.canEndRecurringSeries == true
+                    ? "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series."
+                    : "Catching up keeps the series and leaves one task for today.")
         }
         .fileImporter(
             isPresented: $showingFileImporter,
@@ -553,7 +557,9 @@ struct TaskEditorView: View {
                 }
                 Section {
                     Button("Delete Task", role: .destructive) {
-                        if task?.recurrence?.isActive == true {
+                        if task?.canEndRecurringSeries == true
+                            || (task?.recurrence?.isActive == true
+                                && taskID.flatMap { model.missedOccurrenceCount(for: $0) } != nil) {
                             confirmingRecurringDeletion = true
                         } else {
                             deleteTask(scope: .single)

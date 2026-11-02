@@ -81,3 +81,12 @@ including the first one a device creates when none is active, has id
 reads and writes the PWA's `scriptureMemoryEnabled`, `scriptureMemoryBoardId` and
 `scriptureMemoryFrequency` through the encrypted account backup. Both clients then place and
 schedule review tasks the same way instead of repeatedly moving each other's tasks.
+
+Series cutoffs ("delete this and future") never apply to this series: Scripture Memory's
+settings start and stop it, and deleting a review deletes only that review (`seriesIgnoresCutoffs`
+in taskify-core, `ScriptureMemoryAlgorithm.seriesIgnoresCutoffs` natively). Cutoffs are kept
+per device, so one recorded for this series made that device delete every later review on
+arrival while other devices still showed it. Clients drop such cutoffs when loading, and ignore
+any end date a review's recurrence still carries from them. A native device with no open review
+restores the newest review a cutoff deleted, if it is due today or later, and republishes it so
+every device converges on it.

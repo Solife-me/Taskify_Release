@@ -3602,6 +3602,24 @@ final class AppModel {
         }
 
         let calendar = weekCalendar
+        // An older build ended the review series here with a series cutoff, deleting every review
+        // that arrived from other devices while the relays kept them open. With no open review,
+        // the current one comes back and is republished so every device converges on it.
+        if canGenerateSharedTasks,
+           !snapshot.tasks.contains(where: { isScriptureMemoryTask($0) && !$0.completed && !$0.isDeleted }),
+           let restore = ScriptureMemoryAlgorithm.reviewDeletedByCutoffToRestore(
+               snapshot.tasks,
+               today: now,
+               calendar: calendar
+           ),
+           let index = snapshot.tasks.firstIndex(where: { $0.id == restore.id }) {
+            var task = snapshot.tasks[index]
+            task.deleted = false
+            task.recurrence = recurrence
+            snapshot.tasks[index] = task
+            updatedTaskIDs.insert(task.id)
+        }
+
         // Only open review tasks follow the configured board; history stays where it was. Not
         // before this device's open tasks are checked against the relays: moving a copy another
         // device already completed or deleted republishes it, open, on the new board.

@@ -51,6 +51,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - Immediate task completion with native success haptics and concurrent PWA-style checkmarks flying to the completed control
 - Local task completion and PWA-style recurring deletion choices, with synced durable series
   cutoffs that prevent deleted future task/event occurrences from reappearing after relay replay
+  (never for Scripture Memory reviews, whose series its settings run; see `docs/reference/app-state-sync.md`)
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks, with PWA-familiar interactive inline checklists on task cards
 - Moving tasks between boards from the task editor's Board picker or the selection bar's Move, including list → week board (the task lands on the chosen day, or its date, in the current week); Copy Task (card menu or editor) puts the task on the clipboard in the PWA's JSON, and pasting that into any board's New Task field on either client recreates it (`TaskClipboard` in TaskifyCore)
 - Markdown task notes (`TaskNoteMarkdown` in TaskifyCore, mirrored by the PWA's `noteMarkdown.ts`): tapping a card's note opens a viewer with tickable checklist items; Edit, or tapping the notes in the task editor, opens a Markdown editor with a formatting bar, Write/Preview, list continuation on Return, and conversion of the checklist into subtasks

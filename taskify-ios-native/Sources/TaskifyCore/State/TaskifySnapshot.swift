@@ -1494,9 +1494,20 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return tasks.first { $0.id == next.id && !$0.isDeleted }
     }
 
+    /// The rule a completed task's series continues by. Scripture Memory reviews drop any end
+    /// date: their series runs while Scripture Memory is on (see
+    /// `ScriptureMemoryAlgorithm.seriesIgnoresCutoffs`), and relay copies still carry one from
+    /// when series cutoffs applied to it.
+    private static func continuingRecurrence(of task: TaskItem) -> TaskRecurrence? {
+        guard let recurrence = task.recurrence else { return nil }
+        return ScriptureMemoryAlgorithm.seriesIgnoresCutoffs(task.seriesID) && recurrence.untilDate != nil
+            ? recurrence.withUntilDate(nil)
+            : recurrence
+    }
+
     /// When and under which id a completed task's series continues.
     private func nextRecurrenceSlot(for completedTask: TaskItem, now: Date) -> (dueDate: Date, id: String)? {
-        guard let recurrence = completedTask.recurrence,
+        guard let recurrence = Self.continuingRecurrence(of: completedTask),
               let dueDate = completedTask.dueDate else { return nil }
         // A Scripture Memory review is spaced from when it was done: completing one left overdue
         // since July scheduled the next for the day after it, still in July, so catching up took
@@ -1524,7 +1535,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         now: Date
     ) {
         let completedTask = tasks[index]
-        guard let recurrence = completedTask.recurrence,
+        guard let recurrence = Self.continuingRecurrence(of: completedTask),
               let (nextDueDate, nextID) = nextRecurrenceSlot(for: completedTask, now: now) else { return }
 
         let seriesID = completedTask.seriesID ?? completedTask.id
@@ -1828,7 +1839,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         }
 
         guard scope == .thisAndFuture,
-              tasks[selectedIndex].recurrence?.isActive == true,
+              tasks[selectedIndex].canEndRecurringSeries,
               let selectedDueDate = tasks[selectedIndex].dueDate else {
             tasks[selectedIndex].deleted = true
             tasks[selectedIndex].lastEditedBy = editorPublicKey ?? tasks[selectedIndex].lastEditedBy
@@ -2033,7 +2044,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         seriesID: String,
         proposedCutoff: Date
     ) -> Date {
-        guard !boardID.isEmpty, !seriesID.isEmpty else { return proposedCutoff }
+        guard !boardID.isEmpty, !seriesID.isEmpty,
+              !ScriptureMemoryAlgorithm.seriesIgnoresCutoffs(seriesID) else { return proposedCutoff }
         let existing = recurringTaskSeriesCutoffs?[boardID]?[seriesID]
         let cutoff = existing.map { min($0, proposedCutoff) } ?? proposedCutoff
         if existing != cutoff {
@@ -2069,7 +2081,8 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
 
     private func taskApplyingRecurringSeriesCutoff(_ task: TaskItem) -> TaskItem {
         let seriesID = Self.stableRecurringSeriesID(for: task)
-        guard let cutoff = recurringTaskSeriesCutoffs?[task.boardID]?[seriesID],
+        guard !ScriptureMemoryAlgorithm.seriesIgnoresCutoffs(seriesID),
+              let cutoff = recurringTaskSeriesCutoffs?[task.boardID]?[seriesID],
               task.recurrence?.isActive == true else { return task }
         var updated = Self.task(task, applyingSeriesID: seriesID, cutoff: cutoff)
         if let dueDate = updated.dueDate,
@@ -2077,6 +2090,21 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             updated.deleted = true
         }
         return updated
+    }
+
+    /// Drops series cutoffs older builds recorded for series that ignore them. One "delete this
+    /// and future" on a review recorded one for the Scripture Memory series, and from then on
+    /// every review arriving from another device was deleted on arrival, on this device only.
+    private mutating func purgeIgnoredSeriesCutoffs() {
+        guard let cutoffs = recurringTaskSeriesCutoffs,
+              cutoffs.values.contains(where: { $0.keys.contains { ScriptureMemoryAlgorithm.seriesIgnoresCutoffs($0) } })
+        else { return }
+        var kept: [String: [String: Date]] = [:]
+        for (boardID, series) in cutoffs {
+            let remaining = series.filter { !ScriptureMemoryAlgorithm.seriesIgnoresCutoffs($0.key) }
+            if !remaining.isEmpty { kept[boardID] = remaining }
+        }
+        recurringTaskSeriesCutoffs = kept.isEmpty ? nil : kept
     }
 
     @discardableResult
@@ -2236,6 +2264,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             _ = recordRecurringTaskifyEventSeriesCutoff(from: event)
         }
         _ = applyRecurringTaskifyEventSeriesCutoffs()
+        purgeIgnoredSeriesCutoffs()
         for task in tasks where task.isDeleted {
             guard let recurrence = task.recurrence,
                   recurrence.isActive,

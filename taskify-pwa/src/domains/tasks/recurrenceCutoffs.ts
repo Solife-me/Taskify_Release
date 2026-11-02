@@ -1,4 +1,4 @@
-import { recurringSeriesId } from "taskify-core";
+import { recurringSeriesId, seriesIgnoresCutoffs } from "taskify-core";
 import { isoDatePart, isoFromDateTime } from "../dateTime/dateUtils";
 import type { Task } from "./taskTypes";
 
@@ -30,7 +30,8 @@ function sanitizeRecurringSeriesCutoffs(value: unknown): RecurringSeriesCutoffs 
     for (const [rawSeriesId, rawCutoff] of Object.entries(rawSeries as Record<string, unknown>)) {
       const seriesId = safeKey(rawSeriesId);
       const cutoff = normalizeISO(rawCutoff);
-      if (seriesId && cutoff) seriesOut[seriesId] = cutoff;
+      // Older builds recorded cutoffs for series that ignore them; reading drops those.
+      if (seriesId && cutoff && !seriesIgnoresCutoffs(seriesId)) seriesOut[seriesId] = cutoff;
     }
     if (Object.keys(seriesOut).length) out[boardId] = seriesOut;
   }
@@ -62,7 +63,7 @@ export function serializeRecurringSeriesCutoffs(value: RecurringSeriesCutoffs): 
 function cutoffForTask(task: Task, cutoffs: RecurringSeriesCutoffs): string | null {
   const boardId = safeKey(task.boardId);
   const seriesId = safeKey(recurringSeriesId(task));
-  if (!boardId || !seriesId) return null;
+  if (!boardId || !seriesId || seriesIgnoresCutoffs(seriesId)) return null;
   return normalizeISO(cutoffs[boardId]?.[seriesId]);
 }
 
@@ -95,7 +96,7 @@ export function updateRecurringSeriesCutoff(
   const boardId = safeKey(task.boardId);
   const seriesId = safeKey(recurringSeriesId(task));
   const cutoff = normalizeISO(cutoffISO);
-  if (!boardId || !seriesId || !cutoff) return current;
+  if (!boardId || !seriesId || !cutoff || seriesIgnoresCutoffs(seriesId)) return current;
 
   const existing = normalizeISO(current[boardId]?.[seriesId]);
   const existingKey = existing ? dateKey(existing, task.dueTimeZone) : null;

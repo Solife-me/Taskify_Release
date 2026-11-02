@@ -454,7 +454,7 @@ struct BoardCompletedTaskEntry: View {
                 .buttonStyle(.plain)
 
                 Button(role: .destructive) {
-                    if task.recurrence?.isActive == true {
+                    if task.canEndRecurringSeries {
                         confirmingRecurringDeletion = true
                     } else {
                         model.deleteTask(task.id, scope: .single)
@@ -479,8 +479,10 @@ struct BoardCompletedTaskEntry: View {
             Button("Delete This Task", role: .destructive) {
                 model.deleteTask(task.id, scope: .single)
             }
-            Button("Delete This and Future Tasks", role: .destructive) {
-                model.deleteTask(task.id, scope: .thisAndFuture)
+            if task.canEndRecurringSeries {
+                Button("Delete This and Future Tasks", role: .destructive) {
+                    model.deleteTask(task.id, scope: .thisAndFuture)
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
