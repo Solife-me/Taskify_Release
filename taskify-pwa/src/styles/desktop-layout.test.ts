@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { expect, test } from "vitest";
-
-const css = readFileSync(resolve(process.cwd(), "src/styles/desktop-layout.css"), "utf8");
+import css from "./desktop-layout.css?raw";
 
 test("the same wide shell is available to mouse and touch devices", () => {
   expect(css).toContain("@media (min-width: 900px) {");

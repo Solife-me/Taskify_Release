@@ -250,30 +250,9 @@ function renderBiblePrintPageImage(options: {
     }
   });
 
-  layout.jobCode?.positionsMm.forEach((pos, bitIndex) => {
-    const bit = layout.jobCode?.pattern[bitIndex] ?? 0;
-    const x = mmToPx(pos.x);
-    const y = mmToPx(pos.y);
-    const size = mmToPx(layout.jobCode?.sizeMm ?? 0);
-    const border = mmToPx(0.15);
-    if (bit) {
-      ctx.fillStyle = "#101828";
-      ctx.fillRect(x, y, size, size);
-    } else {
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(x, y, size, size);
-      ctx.strokeStyle = "rgba(16, 24, 40, 0.2)";
-      ctx.lineWidth = border;
-      ctx.strokeRect(x + border / 2, y + border / 2, size - border, size - border);
-    }
-  });
-
   const pageIdRowWidthMm =
     layout.pageId.count * layout.pageId.sizeMm + (layout.pageId.count - 1) * layout.pageId.gapMm;
-  const jobCodeRowWidthMm = layout.jobCode
-    ? layout.jobCode.count * layout.jobCode.sizeMm + (layout.jobCode.count - 1) * layout.jobCode.gapMm
-    : 0;
-  const headerRightPadMm = Math.max(pageIdRowWidthMm, jobCodeRowWidthMm) + 1.5;
+  const headerRightPadMm = pageIdRowWidthMm + 1.5;
   const headerLeftPx = mmToPx(layout.header.leftMm);
   const headerTopPx = mmToPx(layout.header.topMm);
   const headerWidthPx = mmToPx(layout.header.widthMm);
@@ -408,9 +387,30 @@ function renderBoardPrintPageImage(options: {
     }
   });
 
+  layout.jobCode?.positionsMm.forEach((pos, bitIndex) => {
+    const bit = layout.jobCode?.pattern[bitIndex] ?? 0;
+    const x = mmToPx(pos.x);
+    const y = mmToPx(pos.y);
+    const size = mmToPx(layout.jobCode?.sizeMm ?? 0);
+    const border = mmToPx(0.15);
+    if (bit) {
+      ctx.fillStyle = "#101828";
+      ctx.fillRect(x, y, size, size);
+    } else {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(x, y, size, size);
+      ctx.strokeStyle = "rgba(16, 24, 40, 0.2)";
+      ctx.lineWidth = border;
+      ctx.strokeRect(x + border / 2, y + border / 2, size - border, size - border);
+    }
+  });
+
   const pageIdRowWidthMm =
     layout.pageId.count * layout.pageId.sizeMm + (layout.pageId.count - 1) * layout.pageId.gapMm;
-  const headerRightPadMm = pageIdRowWidthMm + 1.5;
+  const jobCodeRowWidthMm = layout.jobCode
+    ? layout.jobCode.count * layout.jobCode.sizeMm + (layout.jobCode.count - 1) * layout.jobCode.gapMm
+    : 0;
+  const headerRightPadMm = Math.max(pageIdRowWidthMm, jobCodeRowWidthMm) + 1.5;
   const headerLeftPx = mmToPx(layout.header.leftMm);
   const headerTopPx = mmToPx(layout.header.topMm);
   const headerWidthPx = mmToPx(layout.header.widthMm);

@@ -23,6 +23,7 @@ export type AppSheetRoute =
   | "upcoming-filter"
   | "bible-print"
   | "board-print"
+  | "board-print-choose"
   | "bible-scan"
   | "board-scan"
   | "document-preview"
@@ -70,6 +71,7 @@ const SHEET_ROUTES = new Set<AppSheetRoute>([
   "upcoming-filter",
   "bible-print",
   "board-print",
+  "board-print-choose",
   "bible-scan",
   "board-scan",
   "document-preview",
