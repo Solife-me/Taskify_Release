@@ -1,7 +1,10 @@
 import Foundation
 import Observation
 import TaskifyCore
+#if os(iOS)
+// The Mac app has no wallet: TaskifyWallet is linked only by the iPhone app.
 import TaskifyWallet
+#endif
 import UserNotifications
 #if canImport(AlarmKit)
 import AlarmKit
@@ -436,6 +439,7 @@ private struct ScheduledReminder: Sendable {
     }
 }
 
+#if os(iOS)
 struct DMPushRedeemedPaymentReceipt: Sendable {
     let eventID: String
     let amount: UInt64
@@ -640,6 +644,7 @@ actor WalletPaymentNotificationCoordinator {
         defaults.stringArray(forKey: Self.deliveredIdentifiersKey) ?? []
     }
 }
+#endif
 
 private final class NotificationPresentationDelegate: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(

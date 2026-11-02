@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 import TaskifyCore
-import TaskifyWallet
 import TaskifyWatchShared
 
 struct MacChatView: View {
@@ -918,7 +917,7 @@ private struct MacMessageRow: View {
     private var envelope: TaskifyShareEnvelope? { TaskifyShareEnvelope.decode(content: message.content) }
     private var paymentToken: String? {
         guard message.isIncoming, message.attachment == nil else { return nil }
-        return CashuPaymentRequestContract.firstTokenSubstring(in: message.content)
+        return CashuTokenText.firstTokenSubstring(in: message.content)
     }
     private var attachments: [NostrDirectMessageAttachment] { (photoStack ?? [message]).compactMap(\.attachment) }
     /// A stack reports its least-delivered photo.
@@ -1020,12 +1019,11 @@ private struct MacMessageRow: View {
     }
 }
 
-/// A Cashu token sent as plain chat text. The Taskify wallet is being phased out, so it is never
-/// redeemed here: the card copies the token for the user to redeem in another Cashu wallet.
+/// A Cashu token sent as plain chat text. The Mac app has no wallet, so it is never redeemed
+/// here: the card copies the token for the user to redeem in another Cashu wallet.
 private struct MacPaymentTokenCard: View {
     let token: String
     @State private var copied = false
-    private var summary: CashuOfflineTokenSummary? { CashuWalletService.offlineTokenSummary(token) }
     var body: some View {
         Button {
             macCopySecret(token)
@@ -1035,7 +1033,7 @@ private struct MacPaymentTokenCard: View {
                 Image(systemName: "bitcoinsign.circle.fill").font(.subheadline.bold()).foregroundStyle(Color.accentColor)
                     .frame(width: 32, height: 32).background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(summary.map { "\($0.amount) sats" } ?? "Cashu token received").font(.caption.weight(.semibold))
+                    Text("Cashu token received").font(.caption.weight(.semibold))
                     Text(copied ? "Copied — paste it into another Cashu wallet" : "Not redeemed").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)

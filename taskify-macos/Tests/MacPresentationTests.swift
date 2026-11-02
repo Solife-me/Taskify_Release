@@ -1,7 +1,6 @@
 import CoreTransferable
 import XCTest
 import TaskifyCore
-import TaskifyWallet
 @testable import MacPresentation
 
 final class MacPresentationTests: XCTestCase {
@@ -183,13 +182,11 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertEqual(test.identityService, "solife.me.Taskify.Mac.UITests.identity.deep-link-42")
         XCTAssertFalse(configuration.startsDeferredServices)
         XCTAssertFalse(configuration.registersForRemoteNotifications)
-        XCTAssertFalse(configuration.startPlan(isWalletRecoveryMode: false).startsWallet)
         XCTAssertEqual(
             test.initialLink,
             URL(string: "taskify://task?id=ui-test-deep-link-task&board=ui-test-board")
         )
         XCTAssertTrue(test.resetsStore)
-        XCTAssertFalse(test.walletRecoveryPreview)
     }
 
     func testUITestRuntimeCanPreserveItsTemporaryStoreAcrossRelaunch() throws {
@@ -206,53 +203,22 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(configuration.uiTest).resetsStore)
     }
 
-    @MainActor
-    func testRecoveryModeProductionRuntimeNeverCallsWalletStart() async {
-        let plan = MacRuntimeConfiguration.production.startPlan(isWalletRecoveryMode: true)
-        var deferredServiceStarts = 0
-        var walletStarts = 0
-
-        await MacRuntimeStartExecutor.run(
-            plan: plan,
-            startDeferredServices: { deferredServiceStarts += 1 },
-            startWallet: { walletStarts += 1 }
-        )
-
-        XCTAssertTrue(plan.startsDeferredServices)
+    func testProductionRuntimeStartsItsServicesAndPush() {
+        XCTAssertTrue(MacRuntimeConfiguration.production.startsDeferredServices)
         XCTAssertTrue(MacRuntimeConfiguration.production.registersForRemoteNotifications)
-        XCTAssertFalse(plan.startsWallet)
-        XCTAssertEqual(deferredServiceStarts, 1)
-        XCTAssertEqual(walletStarts, 0)
     }
 
-    func testWalletRemovalPreviewIsExplicitlyPassedToTheIsolatedHost() throws {
-        let configuration = MacRuntimeConfiguration.resolve(
-            isUITestHost: true,
-            arguments: [
-                "Taskify", "--taskify-ui-test-session", "wallet-recovery",
-                "--taskify-ui-test-wallet-recovery",
-            ],
-            temporaryDirectory: URL(fileURLWithPath: "/tmp/tests"),
-            bundleIdentifier: "solife.me.Taskify.Mac.UITests"
+    /// The Mac app has no wallet. It must not link the wallet module, which brings the Cashu
+    /// framework into the bundle, or compile any of the iPhone wallet's sources.
+    func testMacAppDoesNotLinkOrCompileTheWallet() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let project = try String(
+            contentsOf: root.appendingPathComponent("TaskifyMac.xcodeproj/project.pbxproj"),
+            encoding: .utf8
         )
-
-        XCTAssertTrue(try XCTUnwrap(configuration.uiTest).walletRecoveryPreview)
-    }
-
-    func testUITestRuntimeCanShowTheLiveWalletWithoutRecoveryPreview() throws {
-        let configuration = MacRuntimeConfiguration.resolve(
-            isUITestHost: true,
-            arguments: [
-                "Taskify", "--taskify-ui-test-session", "live-wallet",
-                "--taskify-ui-test-wallet-enabled",
-            ],
-            temporaryDirectory: URL(fileURLWithPath: "/tmp/tests"),
-            bundleIdentifier: "solife.me.Taskify.Mac.UITests"
-        )
-        let test = try XCTUnwrap(configuration.uiTest)
-
-        XCTAssertTrue(test.walletEnabled)
-        XCTAssertFalse(test.walletRecoveryPreview)
+        XCTAssertFalse(project.contains("TaskifyWallet"))
+        XCTAssertFalse(project.contains("Features/Wallet/"))
+        XCTAssertFalse(project.contains("NpubCashSettings.swift"))
     }
 
     func testMacAppDeclaresDataProtectionKeychainAccessGroup() throws {
@@ -313,49 +279,6 @@ final class MacPresentationTests: XCTestCase {
         XCTAssertEqual(draft.subtasks, task.subtasks)
         XCTAssertEqual(draft.note, task.note)
         XCTAssertEqual(draft.priority, .high)
-    }
-
-    func testPendingLightningIsNotPresentedAsPaid() {
-        let payment = CashuLightningPaymentResult(quoteID: "quote", mintURL: "https://mint.example", amount: 100,
-                                                  feePaid: nil, preimage: nil, state: .pending)
-        let outcome = MacWalletOutcome(payment: payment)
-        XCTAssertEqual(outcome, .paymentPending)
-        XCTAssertTrue(outcome.isPending)
-        XCTAssertNotEqual(outcome, .paid)
-    }
-
-    func testQueuedAndPreviouslyReceivedTokensAreNotPresentedAsNewReceipts() {
-        let queued = CashuPendingReceive(id: "receive", token: "fixture", mintURL: "https://mint.example",
-                                         amount: 100, memo: nil, createdAt: Date())
-        XCTAssertEqual(MacWalletOutcome(receive: .queued(queued)), .receiveQueued)
-        XCTAssertTrue(MacWalletOutcome(receive: .queued(queued)).isPending)
-        XCTAssertEqual(MacWalletOutcome(receive: .alreadyReceived(100)), .alreadyReceived)
-        XCTAssertNotEqual(MacWalletOutcome(receive: .alreadyReceived(100)), .received(100))
-        XCTAssertEqual(MacWalletOutcome(receive: .received(100)), .received(100))
-    }
-    @MainActor
-    func testRecoveryUsesModeConfirmedBeforeAuthentication() async throws {
-        var replace = false
-        var executedReplacement: Bool?
-        try await macAuthenticatedRecovery(replace: replace, authenticate: {
-            replace = true
-        }, recover: { executedReplacement = $0 })
-        XCTAssertEqual(executedReplacement, false)
-    }
-
-    func testPaymentRequestMintSelectionPrefersOverlapWithWallet() {
-        let result = MacPaymentRequestMintSelection.candidates(requestedMintURLs: ["a", "b"], walletMintURLs: ["b", "c"])
-        XCTAssertEqual(result, ["b"])
-    }
-
-    func testPaymentRequestMintSelectionFallsBackToWalletMintsWhenNoOverlap() {
-        let result = MacPaymentRequestMintSelection.candidates(requestedMintURLs: ["a"], walletMintURLs: ["b", "c"])
-        XCTAssertEqual(result, ["b", "c"])
-    }
-
-    func testPaymentRequestMintSelectionFallsBackToWalletMintsWhenRequestNamesNone() {
-        let result = MacPaymentRequestMintSelection.candidates(requestedMintURLs: [], walletMintURLs: ["b", "c"])
-        XCTAssertEqual(result, ["b", "c"])
     }
 
     func testRecurrenceBuilderKeepReturnsExistingUnchanged() {

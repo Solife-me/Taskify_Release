@@ -78,20 +78,15 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertNil(removedItem)
     }
 
-    func testWalletRemovalPreviewShowsRecoveryWithoutReceive() {
+    /// The Mac app has no wallet: the workspace lists no Wallet destination.
+    func testWorkspaceHasNoWallet() {
         let app = XCUIApplication()
-        app.launchArguments = [
-            "--taskify-ui-test-session", UUID().uuidString,
-            "--taskify-ui-test-wallet-recovery",
-        ]
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
         app.launch()
 
-        let wallet = app.staticTexts["Wallet"]
-        XCTAssertTrue(wallet.waitForExistence(timeout: 10))
-        wallet.click()
-
-        XCTAssertTrue(app.staticTexts["Recover your wallet"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["Receive"].exists)
+        XCTAssertTrue(app.staticTexts["UI Test Board"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Chat"].exists)
+        XCTAssertFalse(app.staticTexts["Wallet"].exists)
     }
 
     func testWeekBoardCentersTodayEveryTimeItOpens() {
@@ -111,24 +106,6 @@ final class TaskifyMacUITests: XCTestCase {
         weekBoard.click()
 
         assertTodayIsCentered(in: app)
-    }
-
-    func testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive() {
-        let app = XCUIApplication()
-        app.launchArguments = [
-            "--taskify-ui-test-session", UUID().uuidString,
-            "--taskify-ui-test-wallet-enabled",
-        ]
-        app.launch()
-
-        let wallet = app.staticTexts["Wallet"]
-        XCTAssertTrue(wallet.waitForExistence(timeout: 10))
-        wallet.click()
-
-        XCTAssertTrue(app.staticTexts["Move funds out"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Pay an invoice or Lightning address"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Make an ecash token"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["Receive"].exists)
     }
 
     private func assertTodayIsCentered(in app: XCUIApplication) {

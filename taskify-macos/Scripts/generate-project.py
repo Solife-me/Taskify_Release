@@ -36,13 +36,8 @@ SHARED_SOURCES = (
     "App/TaskifySpotlightIndexer.swift",
     "App/StartupViewSettings.swift",
     "App/OnboardingSettings.swift",
-    "App/NpubCashSettings.swift",
     "DesignSystem/ScaledFont.swift",
     "Security/KeychainIdentityStore.swift",
-    "Features/Wallet/WalletKeychainStores.swift",
-    "Features/Wallet/WalletView.swift",
-    "Features/Wallet/WalletRecoveryView.swift",
-    "Features/Wallet/WalletViewModel+NWC.swift",
     "Features/Boards/BibleTrackerStore.swift",
     "Features/Upcoming/DeviceCalendarStore.swift",
     "Features/Tasks/TaskAttachmentUploadService.swift",
@@ -51,7 +46,8 @@ SHARED_SOURCES = (
     "Notifications/TaskNotificationCoordinator.swift",
     "Notifications/DMPushNotificationCoordinator.swift",
 )
-PACKAGE_PRODUCTS = ("TaskifyCore", "TaskifyWallet", "TaskifyWatchShared")
+# No TaskifyWallet: the Mac app has no wallet (the Cashu wallet is iPhone-only and being phased out).
+PACKAGE_PRODUCTS = ("TaskifyCore", "TaskifyWatchShared")
 RESOURCES = (
     ("Taskify.icns", "image.icns"),
     ("PrivacyInfo.xcprivacy", "text.xml"),
