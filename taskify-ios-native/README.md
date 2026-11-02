@@ -182,6 +182,17 @@ storage/transport failures, and scheduling/registration failures. Logs contain n
 content, sender IDs, keys, tokens, URLs, or raw server errors. A missing wake-start entry
 does not by itself prove why watchOS withheld execution.
 
+Chat complications (Messages, Conversation, New Message) read a small snapshot in App Group
+defaults, because a locked Watch cannot read the complete-protection chat store. It holds
+conversation names and unread counts only: never message text, and never the name of a message
+request. Tapping a complication opens a `taskify-watch://chat` link, which only navigates. The
+Watch's App Shortcuts (Open Messages, New Message, Open Conversation) use the same routes and
+offer the conversations in that snapshot. Send Message runs without opening the app, always asks
+for confirmation, and refuses message requests; it waits up to 12 seconds for relay acknowledgement
+and only then says the message was sent, otherwise it stays in the durable outbox. watchOS has no
+configuration screen for complications, so the Conversation choices in the face editor are the
+provider's `recommendations()`.
+
 Physical-device acceptance checks (not established by simulator/unit tests):
 
 1. Provision and open chat once, then background the app on an unlocked, worn Watch.

@@ -45,6 +45,13 @@ struct TaskifyWatchChatIndex {
         unreadCount = threads.reduce(0) { $0 + $1.unreadCount }
     }
 
+    /// The thread a shortcut may send to. Unknown conversations and left groups have no thread,
+    /// and a voice command must not be able to answer a stranger's message request.
+    func shortcutSendThread(conversationID: String) -> TaskifyWatchChatThread? {
+        let normalized = conversationID.lowercased()
+        return threads.first { $0.id == normalized && !$0.isRequest }
+    }
+
     func groupAvatarMembers(
         memberPublicKeys: [String],
         recentSenderPublicKeys: [String],

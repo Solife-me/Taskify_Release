@@ -68,6 +68,8 @@ private enum TaskifyWatchRootRoute: Hashable {
     case today
     case upcoming
     case chat
+    case newChat
+    case conversation(String)
     case board(String)
 }
 
@@ -152,6 +154,10 @@ struct TaskifyWatchRootView: View {
                         TaskifyWatchTaskList(title: "Upcoming", source: .upcoming)
                     case .chat:
                         TaskifyWatchChatListView()
+                    case .newChat:
+                        TaskifyWatchNewChatView()
+                    case .conversation(let conversationID):
+                        TaskifyWatchRoutedConversationView(conversationID: conversationID)
                     case .board(let boardID):
                         TaskifyWatchTaskList(
                             title: model.snapshot.boards.first { $0.id == boardID }?.name ?? "Board",
@@ -211,6 +217,24 @@ struct TaskifyWatchRootView: View {
                 }
             }
             .tint(model.taskifyAccentColor)
+            .task(id: TaskifyWatchChatRouter.shared.request?.id) {
+                guard let request = TaskifyWatchChatRouter.shared.request else { return }
+                await model.loadChatSnapshotForRouting()
+                showingQuickAdd = false
+                switch request.link {
+                case .messages:
+                    navigationPath = [.chat]
+                case .newMessage:
+                    navigationPath = [.chat, .newChat]
+                case .conversation(let id):
+                    // A complication can outlive its conversation. Starting a new thread with a
+                    // stale key would be a surprise, so fall back to the list.
+                    navigationPath = model.chatThreads.contains { $0.id == id }
+                        ? [.chat, .conversation(id)]
+                        : [.chat]
+                }
+                TaskifyWatchChatRouter.shared.finish(request)
+            }
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
                 while !Task.isCancelled {

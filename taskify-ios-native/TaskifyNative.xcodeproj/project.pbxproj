@@ -101,6 +101,10 @@
 		B00000000000000000000126 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */; };
 		A20000000000000000000201 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000101 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift */; };
 		A20000000000000000000202 /* TaskifyWatchShared in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000301 /* TaskifyWatchShared */; };
+		A10000000000000000000216 /* TaskifyWatchChatShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000114 /* TaskifyWatchChatShortcuts.swift */; };
+		A10000000000000000000217 /* TaskifyWatchConversationEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000115 /* Sources/Shared/TaskifyWatchConversationEntity.swift */; };
+		C10000000000000000000205 /* TaskifyWatchChatWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000105 /* TaskifyWatchChatWidgets.swift */; };
+		C10000000000000000000204 /* TaskifyWatchConversationEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000115 /* Sources/Shared/TaskifyWatchConversationEntity.swift */; };
 		A10000000000000000000201 /* TaskifyWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000101 /* TaskifyWatchApp.swift */; };
 		A10000000000000000000202 /* TaskifyWatchAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000102 /* TaskifyWatchAppModel.swift */; };
 		A10000000000000000000203 /* TaskifyWatchRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000103 /* TaskifyWatchRootView.swift */; };
@@ -302,6 +306,9 @@
 		FF90D06B99BC2A3790D9DC41 /* Sources/TaskifyApp/App/OnboardingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/OnboardingSettings.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000101 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000001 /* TaskifyWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TaskifyWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000114 /* TaskifyWatchChatShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchChatShortcuts.swift; sourceTree = "<group>"; };
+		A10000000000000000000115 /* Sources/Shared/TaskifyWatchConversationEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Shared/TaskifyWatchConversationEntity.swift; sourceTree = SOURCE_ROOT; };
+		C10000000000000000000105 /* TaskifyWatchChatWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchChatWidgets.swift; sourceTree = "<group>"; };
 		A10000000000000000000101 /* TaskifyWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchApp.swift; sourceTree = "<group>"; };
 		A10000000000000000000102 /* TaskifyWatchAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchAppModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000103 /* TaskifyWatchRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchRootView.swift; sourceTree = "<group>"; };
@@ -615,6 +622,8 @@
 				A10000000000000000000110 /* TaskifyWatchAvatarLoader.swift */,
 				A10000000000000000000112 /* TaskifyWatchMarkdownCache.swift */,
 				A10000000000000000000113 /* TaskifyWatchAudioMessaging.swift */,
+				A10000000000000000000114 /* TaskifyWatchChatShortcuts.swift */,
+				A10000000000000000000115 /* Sources/Shared/TaskifyWatchConversationEntity.swift */,
 				A10000000000000000000111 /* TaskifyWatchViewCache.swift */,
 				A10000000000000000000104 /* Info.plist */,
 				C10000000000000000000104 /* TaskifyWatch.entitlements */,
@@ -627,6 +636,7 @@
 			isa = PBXGroup;
 			children = (
 				C10000000000000000000101 /* TaskifyWatchWidgetBundle.swift */,
+				C10000000000000000000105 /* TaskifyWatchChatWidgets.swift */,
 				C10000000000000000000102 /* Info.plist */,
 				C10000000000000000000103 /* TaskifyWatchWidgets.entitlements */,
 			);
@@ -1048,6 +1058,8 @@
 				A10000000000000000000214 /* TaskifyWatchMarkdownCache.swift in Sources */,
 				A10000000000000000000215 /* TaskifyWatchAudioMessaging.swift in Sources */,
 				A10000000000000000000213 /* TaskifyWatchViewCache.swift in Sources */,
+				A10000000000000000000216 /* TaskifyWatchChatShortcuts.swift in Sources */,
+				A10000000000000000000217 /* TaskifyWatchConversationEntity.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1056,6 +1068,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				C10000000000000000000201 /* TaskifyWatchWidgetBundle.swift in Sources */,
+				C10000000000000000000205 /* TaskifyWatchChatWidgets.swift in Sources */,
+				C10000000000000000000204 /* TaskifyWatchConversationEntity.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

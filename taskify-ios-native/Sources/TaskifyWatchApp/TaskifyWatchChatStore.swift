@@ -46,6 +46,12 @@ actor TaskifyWatchChatStore {
         return value
     }
 
+    /// False while `snapshot()` would return a launch-time placeholder rather than the real cache.
+    func isCacheReadable() -> Bool {
+        try? reloadProtectedCacheIfNeeded()
+        return !needsProtectedCacheReload
+    }
+
     func noteIdentity(_ publicKeyHex: String) {
         identityPublicKey = publicKeyHex.lowercased()
     }
@@ -700,6 +706,8 @@ actor TaskifyWatchChatCoordinator {
     }
 
     func snapshot() async -> TaskifyWatchChatSnapshot { await store.snapshot() }
+
+    func isCacheReadable() async -> Bool { await store.isCacheReadable() }
 
     func applyProjection(
         _ projection: TaskifyWatchChatProjection

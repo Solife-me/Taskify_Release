@@ -4,6 +4,56 @@ import TaskifyWatchShared
 @testable import TaskifyWatchChatRuntime
 
 final class TaskifyWatchViewCacheTests: XCTestCase {
+    func testShortcutSendOnlyReachesKnownNonRequestThreads() throws {
+        let me = String(repeating: "e", count: 64)
+        let friend = String(repeating: "a", count: 64)
+        let stranger = String(repeating: "b", count: 64)
+        let leftGroupMembers = [friend, me]
+        func summary(_ id: String, isRequest: Bool) throws -> TaskifyWatchChatThreadSummary {
+            try XCTUnwrap(TaskifyWatchChatThreadSummary(
+                conversationID: id,
+                memberPublicKeys: [id, me],
+                displayName: id == friend ? "Friend" : "Stranger",
+                latestPreview: "",
+                latestActivityAt: 1,
+                unreadCount: 0,
+                isRequest: isRequest
+            ))
+        }
+        let leftGroup = try XCTUnwrap(TaskifyWatchGroupConversation(
+            name: "Left",
+            memberPublicKeys: leftGroupMembers,
+            createdAt: 1,
+            isLeft: true
+        ))
+        let leftSummary = try XCTUnwrap(TaskifyWatchChatThreadSummary(
+            conversationID: leftGroup.groupID,
+            memberPublicKeys: leftGroupMembers,
+            displayName: "Left",
+            latestPreview: "",
+            latestActivityAt: 1,
+            unreadCount: 0,
+            isRequest: false,
+            group: leftGroup
+        ))
+        let index = TaskifyWatchChatIndex(
+            snapshot: TaskifyWatchChatSnapshot(
+                threadSummaries: [
+                    try summary(friend, isRequest: false),
+                    try summary(stranger, isRequest: true),
+                    leftSummary,
+                ],
+                groups: [leftGroup]
+            ),
+            identity: me
+        )
+
+        XCTAssertEqual(index.shortcutSendThread(conversationID: friend.uppercased())?.id, friend)
+        XCTAssertNil(index.shortcutSendThread(conversationID: stranger))
+        XCTAssertNil(index.shortcutSendThread(conversationID: leftGroup.groupID))
+        XCTAssertNil(index.shortcutSendThread(conversationID: String(repeating: "c", count: 64)))
+    }
+
     func testMarkdownReusesExactTextButDoesNotRetainViewStyling() {
         var documents = 0
         var inlines = 0
