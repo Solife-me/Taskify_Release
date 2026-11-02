@@ -545,6 +545,10 @@ public struct TaskifyWatchChatAttachment: Codable, Equatable, Sendable {
         ciphertextSHA256: String? = nil,
         size: Int? = nil
     ) {
+        // A file server behind a TLS proxy can publish its blobs as http:// even though they are
+        // served over https. Retrieval upgrades them, so accept the upgraded URL rather than
+        // turning the message into an "open on iPhone" placeholder.
+        let url = TaskifyIPFSGateway.httpsUpgraded(url)
         guard url.scheme?.lowercased() == "https",
               keyHex.count == 64,
               nonceHex.count == 32,
@@ -561,6 +565,15 @@ public struct TaskifyWatchChatAttachment: Codable, Equatable, Sendable {
 
     public var isPhoto: Bool { mimeType.hasPrefix("image/") }
     public var isAudio: Bool { mimeType.hasPrefix("audio/") }
+
+    /// How the Watch shows an attachment message. nil is an attachment it couldn't parse.
+    public static func presentation(
+        of attachment: TaskifyWatchChatAttachment?
+    ) -> (kind: TaskifyWatchChatMessageKind, content: String) {
+        if attachment?.isPhoto == true { return (.photo, "Photo") }
+        if attachment?.isAudio == true { return (.audio, "Audio") }
+        return (.unsupportedAttachment, "Open attachment on iPhone")
+    }
 }
 
 public enum TaskifyWatchChatDeliveryState: String, Codable, Equatable, Sendable {
@@ -614,6 +627,34 @@ public struct TaskifyWatchChatMessage: Identifiable, Codable, Equatable, Sendabl
         self.attachment = attachment
         self.deliveryState = deliveryState
         self.lastSubmissionError = lastSubmissionError
+    }
+
+    /// A row kept in place of a message this Watch couldn't show when it arrived.
+    public var isPlaceholder: Bool {
+        kind == .unsupportedAttachment || kind == .unsupportedMessage
+    }
+
+    /// This placeholder as today's parser shows the attachment it stored, or nil when that
+    /// changes nothing.
+    public func reclassifyingStoredAttachment() -> TaskifyWatchChatMessage? {
+        guard kind == .unsupportedAttachment, let attachment else { return nil }
+        let presentation = TaskifyWatchChatAttachment.presentation(of: attachment)
+        guard presentation.kind != kind else { return nil }
+        return TaskifyWatchChatMessage(
+            rumorID: rumorID,
+            wrapID: wrapID,
+            conversationID: conversationID,
+            senderPublicKey: senderPublicKey,
+            memberPublicKeys: memberPublicKeys,
+            content: presentation.content,
+            createdAt: createdAt,
+            kind: presentation.kind,
+            replyToRumorID: replyToRumorID,
+            reactionTargetRumorID: reactionTargetRumorID,
+            attachment: attachment,
+            deliveryState: deliveryState,
+            lastSubmissionError: lastSubmissionError
+        )
     }
 }
 
@@ -754,7 +795,7 @@ public struct TaskifyWatchChatOutboxEntry: Identifiable, Codable, Equatable, Sen
 }
 
 public struct TaskifyWatchChatSnapshot: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
     public var schemaVersion: Int
     public var contacts: [TaskifyWatchContact]
     public var threadSummaries: [TaskifyWatchChatThreadSummary]?
@@ -797,6 +838,24 @@ public struct TaskifyWatchChatSnapshot: Codable, Equatable, Sendable {
         self.processedWrapIDs = processedWrapIDs
         self.processedRumorIDs = processedRumorIDs
         self.generatedAt = generatedAt
+    }
+
+    /// Brings a cache written by an older Watch build up to date.
+    ///
+    /// Version 3: earlier builds stored audio, and any attachment published with an http:// URL,
+    /// as "open on iPhone" placeholders. Rows that kept their attachment are reclassified here.
+    /// Rows that couldn't keep one are re-read by clearing the cursor: the next refresh re-pages
+    /// the retained inbox, and ingest replaces each placeholder it can now parse. Every stored
+    /// message is inside that 30-day window, since older rows are pruned.
+    public func migrated() -> TaskifyWatchChatSnapshot {
+        guard schemaVersion < 3 else { return self }
+        var result = self
+        result.schemaVersion = Self.currentSchemaVersion
+        result.messages = messages.map { $0.reclassifyingStoredAttachment() ?? $0 }
+        if result.messages.contains(where: { $0.kind == .unsupportedAttachment }) {
+            result.cursor = nil
+        }
+        return result
     }
 
     private enum CodingKeys: String, CodingKey {

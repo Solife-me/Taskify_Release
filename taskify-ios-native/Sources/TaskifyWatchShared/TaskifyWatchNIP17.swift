@@ -316,36 +316,20 @@ public enum TaskifyWatchNIP17 {
             : nil
         let attachment = rumor.kind == attachmentKind ? attachment(from: rumor) : nil
         let messageKind: TaskifyWatchChatMessageKind
+        let content: String
         if rumor.kind == reactionKind {
             messageKind = .reaction
+            content = rumor.content
         } else if rumor.kind == attachmentKind {
-            if attachment?.isPhoto == true {
-                messageKind = .photo
-            } else if attachment?.isAudio == true {
-                messageKind = .audio
-            } else {
-                messageKind = .unsupportedAttachment
-            }
+            (messageKind, content) = TaskifyWatchChatAttachment.presentation(of: attachment)
         } else if rumor.kind == textKind {
             messageKind = .text
+            content = rumor.content
         } else {
             // A valid NIP-17 rumor can carry a newer or intentionally unsupported payload. Keep a
             // durable placeholder instead of dropping it and advancing the relay cursor forever.
             messageKind = .unsupportedMessage
-        }
-        let content: String
-        if rumor.kind == attachmentKind {
-            if attachment?.isPhoto == true {
-                content = "Photo"
-            } else if attachment?.isAudio == true {
-                content = "Audio"
-            } else {
-                content = "Open attachment on iPhone"
-            }
-        } else if messageKind == .unsupportedMessage {
             content = "Open this message on iPhone"
-        } else {
-            content = rumor.content
         }
         return TaskifyWatchChatMessage(
             rumorID: rumor.id,
@@ -376,7 +360,7 @@ public enum TaskifyWatchNIP17 {
         for tag in rumor.tags where tag.count >= 2 && values[tag[0]] == nil {
             values[tag[0]] = tag[1]
         }
-        guard let url = URL(string: rumor.content),
+        guard let url = URL(string: rumor.content.trimmingCharacters(in: .whitespacesAndNewlines)),
               ["aes-gcm", "aes-256-gcm"].contains(
                 (values["encryption-algorithm"] ?? "").lowercased()
               ) else { return nil }
