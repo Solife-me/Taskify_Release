@@ -86,6 +86,21 @@ final class TaskifyIPFSGatewayTests: XCTestCase {
                        ["https://my.gateway.example/ipfs/\(cid)"] + liveGateways)
     }
 
+    /// A Blossom server behind a TLS proxy can publish these, and ATS refuses them outright.
+    func testCleartextURLsAreUpgradedBecauseATSRefusesThem() {
+        XCTAssertEqual(candidates("http://blossom.example/abc.bin"), ["https://blossom.example/abc.bin"])
+        XCTAssertEqual(candidates("http://blossom.example:8443/abc.bin"), ["https://blossom.example:8443/abc.bin"])
+        XCTAssertEqual(candidates("http://my.gateway.example/ipfs/\(cid)"),
+                       ["https://my.gateway.example/ipfs/\(cid)"] + liveGateways)
+        XCTAssertEqual(candidates("http://dweb.link/ipfs/\(cid)"), liveGateways)
+    }
+
+    func testLocalCleartextHostsHaveNoHTTPSToUpgradeTo() {
+        for raw in ["http://localhost:3000/a", "http://192.168.1.20:3000/a", "http://box.local/a", "http://[::1]:3000/a"] {
+            XCTAssertEqual(candidates(raw), [raw])
+        }
+    }
+
     func testOtherHostsAreLeftAlone() {
         for raw in ["https://blossom.band/\(cid)", "https://nostr.build/i/photo.jpg",
                     "https://files.example/ipfs/short"] {

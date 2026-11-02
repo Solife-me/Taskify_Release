@@ -36,8 +36,30 @@ public enum TaskifyIPFSGateway {
         return components.url?.absoluteString
     }
 
-    /// Where to fetch `url` from, in order. A URL that isn't an IPFS gateway URL only has itself.
-    public static func retrievalCandidates(for url: URL) -> [URL] {
+    /// A file server behind a TLS-terminating proxy can describe its blobs as `http://` when the
+    /// proxy doesn't forward the original scheme, as blossom-server does without
+    /// `X-Forwarded-Proto`. App Transport Security refuses those URLs, yet the same blob is served
+    /// over https. IP addresses, unqualified names and mDNS hosts have no public certificate to
+    /// upgrade to, so they are left alone.
+    public static func httpsUpgraded(_ url: URL) -> URL {
+        guard url.scheme?.lowercased() == "http", let host = url.host?.lowercased(),
+              host.contains("."), !host.contains(":"), !host.hasSuffix(".local"), !host.hasSuffix(".localhost"),
+              !host.allSatisfy({ $0.isNumber || $0 == "." }),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        components.scheme = "https"
+        return components.url ?? url
+    }
+
+    /// The URL to publish for a finished upload: an https server's blobs are published as https.
+    public static func secureUploadedURL(_ url: URL, serverURL: String) -> URL {
+        serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("https:")
+            ? httpsUpgraded(url) : url
+    }
+
+    /// Where to fetch `url` from, in order. Cleartext is upgraded first, since ATS would refuse it,
+    /// and an IPFS gateway URL falls back to the live gateways. Anything else only has itself.
+    public static func retrievalCandidates(for original: URL) -> [URL] {
+        let url = httpsUpgraded(original)
         guard let cid = cid(in: url) else { return [url] }
         var candidates = isRetired(url) ? [] : [url]
         for base in bases {

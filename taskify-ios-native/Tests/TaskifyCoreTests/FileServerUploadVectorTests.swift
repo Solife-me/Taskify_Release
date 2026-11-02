@@ -8,6 +8,7 @@ final class FileServerUploadVectorTests: XCTestCase {
     private struct VectorFile: Decodable {
         let opaqueUploads: [OpaqueUpload]
         let routes: [Route]
+        let uploadedURLs: [UploadedURL]
         let responses: [Response]
     }
 
@@ -23,6 +24,13 @@ final class FileServerUploadVectorTests: XCTestCase {
         let serverURL: String
         let method: String
         let uploadURL: String
+    }
+
+    private struct UploadedURL: Decodable {
+        let name: String
+        let serverURL: String
+        let url: String
+        let remoteURL: String
     }
 
     private struct Response: Decodable {
@@ -72,6 +80,14 @@ final class FileServerUploadVectorTests: XCTestCase {
         for vector in try fixture().responses {
             let server = TaskifyFileServerEntry(url: vector.serverURL, type: .originless)
             let data = try JSONEncoder().encode(vector.payload)
+            XCTAssertEqual(try EncryptedFileUpload.remoteURL(data: data, server: server), vector.remoteURL, vector.name)
+        }
+    }
+
+    func testUploadedURLsMatchSharedVectors() throws {
+        for vector in try fixture().uploadedURLs {
+            let server = TaskifyFileServerEntry(url: vector.serverURL, type: .blossom)
+            let data = try JSONEncoder().encode(["url": vector.url])
             XCTAssertEqual(try EncryptedFileUpload.remoteURL(data: data, server: server), vector.remoteURL, vector.name)
         }
     }

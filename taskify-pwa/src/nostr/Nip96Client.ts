@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { finalizeEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
-import { fixedFileUploadURL, resolveOriginlessUploadURL } from "taskify-core";
+import { fixedFileUploadURL, resolveOriginlessUploadURL, secureUploadedFileURL } from "taskify-core";
 import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, type FileServerEntry } from "../lib/fileStorage";
 
 export type Nip96ServerInfo = {
@@ -163,7 +163,6 @@ async function pollProcessingUrl(url: string, headers: HeadersInit, timeoutMs: n
   while (Date.now() - started < timeoutMs) {
     const res = await fetch(absoluteUrl, { headers });
     const data = await parseJsonSafe(res);
-  console.info("[attachment-debug] upload:blossom:response", { status: res.status, ok: res.ok, data: flattenDebugError(data) });
     lastData = data;
     if (res.status !== 202) {
       return { status: res.status, data };
@@ -314,13 +313,6 @@ export async function uploadFileToBlossom(options: {
   const bytes = new Uint8Array(await options.file.arrayBuffer());
   const fileHash = bytesToHex(sha256(bytes));
   const uploadUrl = `${normalizeFileServerUrl(options.serverUrl) || options.serverUrl}/upload`;
-  console.info("[attachment-debug] upload:originless:start", {
-    server: options.serverUrl,
-    uploadUrl,
-    filename: options.filename,
-    blobBytes: options.file.size,
-    contentType: options.file.type || "application/octet-stream",
-  });
   console.info("[attachment-debug] upload:blossom:start", {
     server: options.serverUrl,
     uploadUrl,
@@ -349,7 +341,6 @@ export async function uploadFileToBlossom(options: {
   const url = typeof data?.url === "string" ? data.url.trim() : "";
   if (!url) throw new Error("Blossom upload response did not include a url.");
   console.info("[attachment-debug] upload:blossom:complete", { url, response: flattenDebugError(data) });
-  console.info("[attachment-debug] upload:originless:complete", { url, response: flattenDebugError(data) });
   return { url, nip94: null };
 }
 
@@ -462,16 +453,16 @@ export async function uploadFile(options: UploadFileOptions): Promise<{ url: str
   if (serverEntry.type === "blossom") {
     if (!signer) throw new Error("signer is required for Blossom uploads");
     const result = await uploadFileToBlossom({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal, onProgress, onPhaseChange });
-    return result;
+    return { ...result, url: secureUploadedFileURL(serverEntry.url, result.url) };
   }
   if (serverEntry.type === "originless") {
     const result = await uploadFileToOriginless({ serverUrl: serverEntry.url, file, filename, signal });
-    return result;
+    return { ...result, url: secureUploadedFileURL(serverEntry.url, result.url) };
   }
   // Default: NIP-96
   if (!signer) throw new Error("signer is required for NIP-96 uploads");
   const result = await uploadFileToNip96({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal, onProgress, onPhaseChange });
-  return { url: result.url, nip94: result.nip94 ?? null };
+  return { url: secureUploadedFileURL(serverEntry.url, result.url), nip94: result.nip94 ?? null };
 }
 
 export const uploadAvatarToNip96 = uploadFileToNip96;

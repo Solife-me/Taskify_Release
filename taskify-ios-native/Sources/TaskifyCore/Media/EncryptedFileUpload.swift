@@ -110,6 +110,12 @@ public enum EncryptedFileUpload {
     }
 
     public static func remoteURL(data: Data, server: TaskifyFileServerEntry) throws -> String {
+        let raw = try describedRemoteURL(data: data, server: server)
+        guard let url = URL(string: raw) else { return raw }
+        return TaskifyIPFSGateway.secureUploadedURL(url, serverURL: server.url).absoluteString
+    }
+
+    private static func describedRemoteURL(data: Data, server: TaskifyFileServerEntry) throws -> String {
         if server.type == .nip96, let url = try Nip96Client.remoteURL(from: data) { return url.absoluteString }
         guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw Nip96Error.invalidUploadResponse
