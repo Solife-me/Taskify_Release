@@ -224,9 +224,9 @@ function isCacheEntry(value: unknown): value is HermesCatalogCacheEntry {
   );
 }
 
+/** Any listing's cached catalog, shown until refreshed; `isHermesCatalogCacheFresh` checks the listing. */
 export function loadHermesCatalogCache(
   peerPubkey: string,
-  listingId: string,
   providerSlug: string,
 ): HermesCatalogCacheEntry | null {
   const key = catalogCacheKey(peerPubkey, providerSlug);

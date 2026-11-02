@@ -152,7 +152,7 @@ export function HermesModelPicker({ peerPubkey, projection, sendBotUiCommand }: 
     setModelPage(0);
     setActionError(null);
     const liveCatalog = projection.catalogs.get(providerSlug);
-    const cacheEntry = loadHermesCatalogCache(peerPubkey, listingEventId, providerSlug);
+    const cacheEntry = loadHermesCatalogCache(peerPubkey, providerSlug);
     rememberCache(providerSlug, cacheEntry);
     const hasAnyCatalog = !!liveCatalog || !!cacheEntry;
     const isFresh = !!liveCatalog || (!!cacheEntry && isHermesCatalogCacheFresh(cacheEntry, Date.now(), listingEventId));

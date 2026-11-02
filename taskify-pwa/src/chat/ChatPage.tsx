@@ -11,7 +11,6 @@
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
-import React from "react";
 
 
 

@@ -113,19 +113,6 @@ import type { TaskBountyExtension } from "./taskBountyExtension";
 
 const R_NONE: Recurrence = { type: "none" };
 
-// ---- Local utility functions ----
-
-async function fileToDataURL(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-
-
 // ---- Sub-components are imported from App.tsx until extracted ----
 // These are forward declarations for components still in App.tsx.
 // They will be properly extracted in subsequent refactor steps.
@@ -163,7 +150,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [uploadingCount, setUploadingCount] = useState(0);
-  const [uploadingLabel, setUploadingLabel] = useState<string | null>(null);
   const [uploadingDocumentRows, setUploadingDocumentRows] = useState<UploadingDocumentRow[]>([]);
   const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || []);
   const [newSubtask, setNewSubtask] = useState("");
@@ -586,18 +572,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
 
 
 
-  async function uploadSharedImage(file: File): Promise<string> {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    return encryptAndUploadAttachment({
-      boardId: selectedBoard!.nostr!.boardId,
-      data: bytes,
-      mimeType: file.type || "application/octet-stream",
-      filename: file.name || "image",
-      serverEntry: selectedServerEntry,
-      nostrSkHex,
-    });
-  }
-
   async function uploadSharedDocument(file: File, doc: TaskDocument, handlers?: { onProgress?: (progress: number) => void; onPhaseChange?: (phase: "uploading" | "processing") => void }): Promise<TaskDocument> {
     console.info("[attachment-debug] shared-document:start", {
       filename: file.name,
@@ -626,7 +600,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
 
   async function attachSingleDocument(file: File, fallbackLabel: string): Promise<TaskDocument> {
     const label = file.name || fallbackLabel;
-    setUploadingLabel(`Preparing ${label}…`);
     const docs = await readDocumentsFromFiles([file] as File[]);
     const doc = docs[0];
     if (!doc) {
@@ -634,7 +607,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
     }
     if (!isSharedBoard) return doc;
 
-    setUploadingLabel(`Uploading ${label}…`);
     const row = createUploadingDocumentRow(doc, label);
     const rowId = row.id;
     setUploadingDocumentRows((prev) => [...prev, row]);
@@ -696,7 +668,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       setSaveError(err?.message || "Failed to upload pasted image attachment.");
     } finally {
       setUploadingCount(0);
-      setUploadingLabel(null);
     }
   }
 
@@ -713,7 +684,6 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       setSaveError(err?.message || "Failed to attach document. Please use PDF, DOC/DOCX, or XLS/XLSX files.");
     } finally {
       setUploadingCount(0);
-      setUploadingLabel(null);
       e.target.value = "";
     }
   }

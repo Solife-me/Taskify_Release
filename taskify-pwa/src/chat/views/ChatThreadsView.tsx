@@ -1,4 +1,3 @@
-import React from "react";
 import { GroupAvatar, SwipeableDmThreadRow, formatShortDate } from "../chatUi";
 import { useChatRuntime } from "../ChatRuntime";
 

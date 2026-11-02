@@ -623,11 +623,6 @@ function EventEditModal({
     setParticipants((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
   };
 
-  const handleAddParticipant = () => {
-    if (isReadOnly) return;
-    setParticipants((prev) => [...prev, { pubkey: "", relay: "", role: "attendee" }]);
-  };
-
   const handleRemoveParticipant = (idx: number) => {
     if (isReadOnly) return;
     setParticipants((prev) => prev.filter((_, i) => i !== idx));

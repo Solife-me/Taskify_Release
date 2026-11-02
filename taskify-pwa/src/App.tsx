@@ -225,7 +225,6 @@ import {
   compareEventVersions,
   mergeTaskEdit,
   isoForWeekdayLocal,
-  tasksInSameSeries,
 } from "taskify-core";
 import {
   TASKIFY_CALENDAR_EVENT_KIND,
@@ -383,20 +382,6 @@ const SettingsModal = lazy(() =>
 const ADD_BOARD_OPTION_ID = "__add-board__";
 const BOARD_PRINT_LAYOUT_VERSION = "v2";
 const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-] as const;
 
 
 const LS_INBOX_PROCESSED = "taskify_inbox_processed_v1";
@@ -634,7 +619,6 @@ export default function App() {
   const {
     chatUnreadCount,
     inboxPendingItems,
-    messagesUnreadCount,
     setDmUnreadCount,
     inboxEntries,
   } = useInboxEntries({ messagesBoardId, tasks, unreadCalendarInviteCount });
@@ -1752,7 +1736,7 @@ export default function App() {
       startTransition(() => setActivePage(startupView));
     }
   }, [appRouter, prefetchWalletModal, setActivePage, settings.startupView, walletEnabled, walletRecoveryShown]);
-  const { receiveToken, totalBalance: walletTotalBalance } = useCashu();
+  const { totalBalance: walletTotalBalance } = useCashu();
 
   useEffect(() => {
     if (!settings.completedTab) setView("board");
@@ -3017,7 +3001,6 @@ export default function App() {
   });
 
   // --------- Nostr helpers
-  const isShared = (board: Board) => !!board.nostr?.boardId;
   const getBoardRelays = useCallback((board: Board): string[] => {
     const fallback = (defaultRelays.length ? defaultRelays : Array.from(DEFAULT_NOSTR_RELAYS))
       .map((relay) => relay.trim())
@@ -3150,9 +3133,6 @@ export default function App() {
     await publisher.publishBoardMetadataAs(board, boardId, relays);
   }
   publishBoardMetadataSnapshotRef.current = publishBoardMetadataSnapshot;
-  async function publishBoardMetadataForItem(board: Board) {
-    await publisher.publishBoardMetadataForItem(board);
-  }
   async function publishTaskDeleted(t: Task) {
     await durablePublisher.publishTaskDeleted(t);
   }
@@ -3590,10 +3570,6 @@ export default function App() {
       return next === prev ? prev : dedupeRecurringInstances(next);
     });
   }, [recordRecurringSeriesCutoff, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
-
-  function sameSeries(a: Task, b: Task): boolean {
-    return tasksInSameSeries(a, b);
-  }
 
   /**
    * Full-week mode: adds this week's occurrences of frequent series to `arr` and publishes them.

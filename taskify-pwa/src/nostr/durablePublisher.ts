@@ -103,7 +103,10 @@ export class DurablePublisher {
   private readonly intents = new Map<string, Intent>();
   private timer: unknown = null;
 
-  constructor(private readonly deps: DurablePublisherDeps) {
+  private readonly deps: DurablePublisherDeps;
+
+  constructor(deps: DurablePublisherDeps) {
+    this.deps = deps;
     for (const intent of parseIntents(deps.storage.load())) this.intents.set(keyOf(intent.kind, intent.id), intent);
   }
 
