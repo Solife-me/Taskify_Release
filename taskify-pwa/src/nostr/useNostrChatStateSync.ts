@@ -23,6 +23,7 @@ import { chatStateSyncBus } from "./chatStateSyncBus";
 import { MergedDocumentSync, type MergedDocumentConfig, type SyncEvent, type SyncState } from "./mergedDocumentSync";
 import { normalizeNostrRelayList } from "./useNostrAppBackupSync";
 import { useNostrSubscriptions } from "./useNostrSubscriptions";
+import { useSyncResume } from "./useSyncResume";
 import type { NostrPublishFn } from "./useNostrIdentity";
 
 const stateKey = (state: ChatSyncState) =>
@@ -54,6 +55,7 @@ export const CHAT_STATE_SYNC: MergedDocumentConfig<ChatSyncState> = {
   debounceMs: 15_000,
   debounceMode: "window",
   extraTags: [["client", APP_STATE_SYNC_CLIENT_TAG]],
+  mergeOlderCopies: true,
 };
 
 type UseNostrChatStateSyncParams = {
@@ -241,18 +243,11 @@ export function useNostrChatStateSync(params: UseNostrChatStateSyncParams) {
     noteLocalChange();
   }, [engine, noteLocalChange, tagValue]);
 
-  const stateRef = useMemo(
-    () =>
-      ({
-        get current() {
-          return { lastTimestamp: engine.state.lastTimestamp };
-        },
-        set current(_value) {
-          // read-only view of the engine's state
-        },
-      }) as MutableRefObject<{ lastTimestamp?: number }>,
-    [engine],
-  );
+  // No `since`: a relay holds one copy of this replaceable event, and one older than this
+  // device's last publish can still carry another device's markers.
+  const stateRef = useRef<{ lastTimestamp?: number }>({});
+  // There is no separate pull, so reopen after a suspension may have dropped the connections.
+  const resumeEpoch = useSyncResume();
 
   useNostrSubscriptions({
     chatState: {
@@ -264,6 +259,7 @@ export function useNostrChatStateSync(params: UseNostrChatStateSyncParams) {
       normalizeRelayList: normalizeNostrRelayList,
       onEvent: handleEvent,
       pool,
+      resumeEpoch,
       stateRef,
     },
   });

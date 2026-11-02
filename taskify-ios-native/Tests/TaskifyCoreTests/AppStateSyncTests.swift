@@ -172,4 +172,15 @@ final class AppStateSyncTests: XCTestCase {
         fresh.readThrough["fresh"] = now
         XCTAssertEqual(known.toPublish(merging: fresh, nowSeconds: now)?.readThrough, ["recent": now - 10, "fresh": now])
     }
+
+    func testMarkersAnotherDevicesPublishReplacedAreRepublished() {
+        let now = 1_790_000_000
+        let local = ChatSyncState(readThrough: ["phone": now - 20])
+        // The other device published without having seen this device's copy.
+        let relayCopy = ChatSyncState(readThrough: ["browser": now - 10])
+        XCTAssertEqual(
+            relayCopy.toPublish(merging: local, nowSeconds: now)?.readThrough,
+            ["phone": now - 20, "browser": now - 10]
+        )
+    }
 }

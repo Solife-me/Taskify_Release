@@ -186,16 +186,21 @@ extension AppModel {
                 scheduleAppStatePublish(dTag)
             }
         case AppStateSyncContract.chatStateDTag:
-            guard !appStateLedger.chat.isStale(eventID: event.id, createdAt: event.createdAt),
+            guard event.id != appStateLedger.chat.lastEventID,
                   let payload = try? decoder.decode(ChatStateSyncPayload.self, from: plaintext),
                   payload.version == 1 else { return }
             let incoming = payload.state
-            appStateLedger.chat.record(
-                eventID: event.id,
-                timestamp: max(payload.timestamp, event.createdAt),
-                synced: (appStateLedger.chat.synced ?? ChatSyncState()).merged(with: incoming)
-            )
-            saveAppStateLedger()
+            // `synced` is exactly what the relays hold, not a union: another device's newer
+            // publish can have replaced markers from here, which must then be published again.
+            // An older copy changes nothing there but can still carry markers to apply below.
+            if !appStateLedger.chat.isStale(eventID: event.id, createdAt: event.createdAt) {
+                appStateLedger.chat.record(
+                    eventID: event.id,
+                    timestamp: max(payload.timestamp, event.createdAt),
+                    synced: incoming
+                )
+                saveAppStateLedger()
+            }
             var updated = snapshot
             let previousInvites = updated.sharedCalendarInviteItems ?? []
             let readChanged = updated.applySyncedReadThrough(incoming.readThrough)

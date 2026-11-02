@@ -17,7 +17,7 @@
 //   0xchat-app-business ox_chat/lib/utils/send_message/chat_send_message_helper.dart:105-111
 //   0xchat-app-base ox_common/lib/utils/aes_encrypt_utils.dart:15-43
 
-import { opaqueUploadFilename } from "taskify-core";
+import { fetchWithIPFSGatewayFallback, opaqueUploadFilename } from "taskify-core";
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
 import { readResponseBytesWithProgress, toBlobPart, toBufferSource, type DownloadProgressHandler } from "./binary";
@@ -26,7 +26,28 @@ export const MESSENGER_ATTACHMENT_ALGO = "aes-gcm" as const;
 export const MESSENGER_ATTACHMENT_KEY_BYTES = 32;
 export const MESSENGER_ATTACHMENT_NONCE_BYTES = 16;
 
+// Decrypted files are held as object URLs so bubbles can point <img>/<video>/<audio> at them.
+// The cache is bounded: an unbounded map keeps every decrypted blob (and its object URL) alive
+// for the whole session, which is real memory pressure in a media-heavy thread.
+const DECRYPT_CACHE_LIMIT = 24;
 const decryptObjectUrlCache = new Map<string, Promise<{ objectUrl: string; blob: Blob }>>();
+
+function rememberDecryptCacheEntry(
+  key: string,
+  entry: Promise<{ objectUrl: string; blob: Blob }>,
+): void {
+  decryptObjectUrlCache.delete(key);
+  decryptObjectUrlCache.set(key, entry);
+  while (decryptObjectUrlCache.size > DECRYPT_CACHE_LIMIT) {
+    const oldest = decryptObjectUrlCache.keys().next();
+    if (oldest.done) break;
+    // Evicting the promise drops the last reference to the blob; revoke its URL once it settles.
+    const victimKey = oldest.value as string;
+    const victim = decryptObjectUrlCache.get(victimKey);
+    decryptObjectUrlCache.delete(victimKey);
+    void victim?.then((r) => URL.revokeObjectURL(r.objectUrl)).catch(() => {});
+  }
+}
 
 function bytesToHex(bytes: Uint8Array): string {
   let out = "";
@@ -168,7 +189,7 @@ export async function decryptMessengerAttachment(
     if (algo && algo !== "aes-gcm" && algo !== "aes-256-gcm") {
       throw new Error(`Unsupported attachment cipher: ${descriptor.algorithm}`);
     }
-    const res = await fetch(descriptor.url, { signal: options.signal });
+    const res = await fetchWithIPFSGatewayFallback(descriptor.url, { signal: options.signal });
     if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
     const ciphertext = await readResponseBytesWithProgress(res, options.onProgress);
     const keyBytes = hexToBytes(descriptor.keyHex);
@@ -185,7 +206,7 @@ export async function decryptMessengerAttachment(
     return { objectUrl, blob };
   })();
 
-  decryptObjectUrlCache.set(cacheKey, promise);
+  rememberDecryptCacheEntry(cacheKey, promise);
   try {
     return await promise;
   } catch (err) {

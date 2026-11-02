@@ -1,7 +1,7 @@
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
-import { fixedFileUploadURL, resolveOriginlessUploadURL } from "taskify-core";
+import { fetchWithIPFSGatewayFallback, fixedFileUploadURL, resolveOriginlessUploadURL } from "taskify-core";
 import { uploadImageToNip96 } from "./nip96Upload.js";
 import { attachmentUploadFilename } from "./attachmentUploadNaming.js";
 import type { TaskifyConfig } from "./config.js";
@@ -106,7 +106,7 @@ function encryptAttachmentBytes(boardId: string, plaintext: Uint8Array): Uint8Ar
   return new Uint8Array(Buffer.concat([ATTACHMENT_V2_MAGIC, iv, ciphertext, tag]));
 }
 export async function decryptAttachmentToDataUrl(boardId: string, url: string, mimeType: string): Promise<string> {
-  const res = await fetch(url);
+  const res = await fetchWithIPFSGatewayFallback(url);
   if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
   const bytes = new Uint8Array(await res.arrayBuffer());
   const versioned = Buffer.from(bytes.subarray(0, ATTACHMENT_V2_MAGIC.length)).equals(ATTACHMENT_V2_MAGIC);

@@ -280,7 +280,18 @@ actor TaskAttachmentUploadService {
             keyHex: encrypted.keyHex, nonceHex: encrypted.nonceHex, sha256: encrypted.sha256) else {
             throw TaskAttachmentUploadError.invalidResponse
         }
+        await seedSenderCache(from: fileURL, plaintextSize: encrypted.plaintextSize, forKey: attachment.cacheKey)
         return attachment
+    }
+
+    /// The sender already holds the plaintext, so its own message shouldn't wait on (or depend on)
+    /// a gateway to show it. Files too large to sit in the cache alongside others just download.
+    private func seedSenderCache(from fileURL: URL, plaintextSize: Int, forKey key: String) async {
+        guard plaintextSize <= 64 * 1_024 * 1_024,
+              let copy = try? await AttachmentFiles.work({ try AttachmentFiles.importFile(fileURL) }) else { return }
+        if await DirectMessageAttachmentDiskCache.shared.store(copy, forKey: key) == nil {
+            try? FileManager.default.removeItem(at: copy)
+        }
     }
 
     private func upload(

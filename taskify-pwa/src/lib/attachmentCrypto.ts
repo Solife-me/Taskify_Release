@@ -1,4 +1,4 @@
-import { opaqueUploadFilename } from "taskify-core";
+import { fetchWithIPFSGatewayFallback, opaqueUploadFilename } from "taskify-core";
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
 import { readResponseBytesWithProgress, toBufferSource, type DownloadProgressHandler } from "./binary";
@@ -163,7 +163,7 @@ export async function decryptAttachment(opts: {
   if (cached) return cached;
   const promise = (async () => {
     attachmentDebug("decrypt:start", { boardId: opts.boardId, url: opts.url, mimeType: opts.mimeType });
-    const res = await fetch(opts.url, { signal: opts.signal });
+    const res = await fetchWithIPFSGatewayFallback(opts.url, { signal: opts.signal });
     attachmentDebug("decrypt:fetch", {
       url: opts.url,
       finalUrl: res.url,

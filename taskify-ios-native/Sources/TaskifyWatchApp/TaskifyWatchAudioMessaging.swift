@@ -155,10 +155,17 @@ final class TaskifyWatchAudioPlayback {
         ) { [weak self, weak player] time in
             Task { @MainActor in
                 guard let self, let player, self.player === player, !self.isSeeking else { return }
-                self.currentTime = Self.seconds(time)
+                let playing = player.timeControlStatus == .playing
+                // Only a playing scrubber needs 4 Hz ticks. While parked (paused or ended)
+                // every tick is a no-op, so return before any @Observable write: an idle
+                // observer that kept mutating state after a message ended is what made an
+                // audio-heavy thread feel slow until the app idled down.
+                guard playing || self.isPlaying else { return }
+                let timeSeconds = Self.seconds(time)
+                if timeSeconds != self.currentTime { self.currentTime = timeSeconds }
                 let itemDuration = Self.seconds(player.currentItem?.duration ?? .invalid)
-                if itemDuration > 0 { self.duration = itemDuration }
-                self.isPlaying = player.timeControlStatus == .playing
+                if itemDuration > 0, itemDuration != self.duration { self.duration = itemDuration }
+                if self.isPlaying != playing { self.isPlaying = playing }
             }
         }
         endObserver = NotificationCenter.default.addObserver(
@@ -322,16 +329,19 @@ enum TaskifyWatchAudioTransfer {
     }
 
     static func decrypt(_ attachment: TaskifyWatchChatAttachment) async throws -> URL {
-        var request = URLRequest(url: attachment.url, timeoutInterval: 60)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        let (ciphertext, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse,
-              (200..<300).contains(response.statusCode),
-              ciphertext.count <= maximumPlaintextBytes + 16,
-              ciphertext.count >= 16 else { throw TaskifyWatchAudioError.invalidAttachment }
-        if let expected = attachment.ciphertextSHA256,
-           Data(SHA256.hash(data: ciphertext)).watchAudioHex != expected.lowercased() {
-            throw TaskifyWatchAudioError.invalidAttachment
+        let ciphertext = try await TaskifyIPFSGateway.withRetrievalCandidates(for: attachment.url) { candidate, _ in
+            var request = URLRequest(url: candidate, timeoutInterval: 60)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (ciphertext, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  ciphertext.count <= maximumPlaintextBytes + 16,
+                  ciphertext.count >= 16 else { throw TaskifyWatchAudioError.invalidAttachment }
+            if let expected = attachment.ciphertextSHA256,
+               Data(SHA256.hash(data: ciphertext)).watchAudioHex != expected.lowercased() {
+                throw TaskifyWatchAudioError.invalidAttachment
+            }
+            return ciphertext
         }
         guard let key = Data(watchAudioHex: attachment.keyHex),
               let nonce = Data(watchAudioHex: attachment.nonceHex),
@@ -496,9 +506,8 @@ enum TaskifyWatchAudioTransfer {
             if let raw = payload[key] as? String, let url = validRemote(raw) { return url.absoluteString }
         }
         if let cid = (payload["cid"] ?? payload["ipfs"]) as? String,
-           (cid.count >= 46 || cid.hasPrefix("b")),
-           cid.allSatisfy({ $0.isLetter || $0.isNumber }) {
-            return "https://dweb.link/ipfs/\(cid)"
+           let url = TaskifyIPFSGateway.url(forCID: cid) {
+            return url
         }
         if let path = payload["path"] as? String,
            let url = validRemote(URL(string: path, relativeTo: base)?.absoluteString ?? "") {

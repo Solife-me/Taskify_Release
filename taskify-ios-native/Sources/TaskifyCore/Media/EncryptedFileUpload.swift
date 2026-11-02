@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyWatchShared
 
 public struct EncryptedFileUploadRequest: Sendable {
     public let request: URLRequest

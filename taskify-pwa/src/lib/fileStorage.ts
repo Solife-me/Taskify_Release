@@ -18,11 +18,6 @@ export const DEFAULT_FILE_SERVERS: FileServerEntry[] = [
   { url: "https://originless.solife.me", type: "originless", label: "originless.solife.me" },
 ];
 
-/// Originless returns a CID and does not serve blobs itself -- `{server}/ipfs/{cid}` is not a route
-/// on it, so retrieval goes through a public gateway as its README recommends. Attachments are
-/// encrypted to the board key before upload, so a gateway only ever handles ciphertext.
-export const IPFS_GATEWAY_BASE = "https://dweb.link";
-
 function trimTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.replace(/\/+$/, "") : url;
 }

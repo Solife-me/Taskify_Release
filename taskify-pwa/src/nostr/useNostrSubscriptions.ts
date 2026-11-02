@@ -59,6 +59,8 @@ type ReplaceableSubscriptionConfig = {
   onEvent: (event: NostrEvent) => void | Promise<void>;
   pool: ReplaceableSubscriptionPool;
   stateRef: MutableRefObject<{ lastTimestamp?: number }>;
+  /** Changing this reopens the subscription (see `useSyncResume`). */
+  resumeEpoch?: number;
 };
 
 type UseNostrSubscriptionsParams = {
@@ -195,6 +197,7 @@ function useReplaceableSubscription(config?: ReplaceableSubscriptionConfig) {
   const normalizeRelayList = config?.normalizeRelayList;
   const onEvent = config?.onEvent;
   const pool = config?.pool;
+  const resumeEpoch = config?.resumeEpoch;
   const stateRef = config?.stateRef;
 
   useEffect(() => {
@@ -241,6 +244,7 @@ function useReplaceableSubscription(config?: ReplaceableSubscriptionConfig) {
     normalizeRelayList,
     onEvent,
     pool,
+    resumeEpoch,
     stateRef,
   ]);
 }
