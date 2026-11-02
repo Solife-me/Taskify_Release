@@ -35,6 +35,11 @@ final class TaskifyMacUITests: XCTestCase {
         try await definitions.intents["TaskifyAddTaskIntent"]
             .makeIntent(taskTitle: taskTitle)
             .run()
+        // Remind Me reads the time out of the sentence; the title is what is left.
+        let reminderTitle = "Reminder task \(UUID().uuidString.filter(\.isLetter).prefix(6))"
+        try await definitions.intents["TaskifyRemindMeIntent"]
+            .makeIntent(reminder: "remind me to \(reminderTitle) in 30 minutes")
+            .run()
 
         let relaunched = XCUIApplication()
         relaunched.launchArguments = [
@@ -45,6 +50,7 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertTrue(relaunched.staticTexts["UI Test Board"].waitForExistence(timeout: 10))
         relaunched.staticTexts["UI Test Board"].click()
         XCTAssertTrue(relaunched.staticTexts[taskTitle].waitForExistence(timeout: 10))
+        XCTAssertTrue(relaunched.staticTexts[reminderTitle].waitForExistence(timeout: 10))
     }
 
     @MainActor

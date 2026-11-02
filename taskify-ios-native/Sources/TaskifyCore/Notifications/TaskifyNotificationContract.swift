@@ -107,6 +107,49 @@ public enum TaskifyNotificationContract {
     }
 }
 
+/// One local notification for one of a task's reminders.
+///
+/// The app's scheduler and the processes that add a task while the app isn't running (Siri,
+/// Shortcuts) build them here, the same way. The identifiers match, so when the app next
+/// reschedules everything it replaces what such a process scheduled instead of doubling it.
+public struct TaskifyTaskReminderNotification: Equatable, Sendable {
+    public static let identifierPrefix = "taskify.task."
+
+    public let identifier: String
+    public let title: String
+    public let body: String
+    public let userInfo: [String: String]
+    public let fireDate: Date
+    public let reminder: TaskReminder
+
+    /// The task's reminders still to come, soonest first. None for a completed or deleted task.
+    public static func notifications(
+        for task: TaskItem,
+        accountID: String,
+        after now: Date,
+        calendar: Calendar = .current
+    ) -> [TaskifyTaskReminderNotification] {
+        guard !task.isDeleted, !task.completed else { return [] }
+        return task.reminderFireDates(calendar: calendar)
+            .filter { $0.1 > now.addingTimeInterval(1) }
+            .map { reminder, fireDate in
+                TaskifyTaskReminderNotification(
+                    identifier: identifierPrefix + task.id + "." + reminder.rawValue,
+                    title: task.title,
+                    body: reminder.label,
+                    userInfo: [
+                        TaskifyNotificationContract.accountIDKey: accountID,
+                        TaskifyNotificationContract.taskIDKey: task.id,
+                        TaskifyNotificationContract.boardIDKey: task.boardID,
+                    ],
+                    fireDate: fireDate,
+                    reminder: reminder
+                )
+            }
+            .sorted { $0.fireDate < $1.fireDate }
+    }
+}
+
 /// Pure, platform-neutral rules for Taskify's device-local urgent alarms.
 ///
 /// Alarm authorization and scheduling live in the iOS app target. Keeping identity and eligibility

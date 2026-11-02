@@ -3,12 +3,18 @@ import Foundation
 import GeoToolbox
 import TaskifyCore
 
-// App Shortcut phrases remain the compatibility path for iOS 17–26. Starting in iOS 27, Siri's
-// conversational task routing uses the reminders App Schema to determine which installed apps
-// can actually create a task. These schema-backed shadow entities describe Taskify's boards and
-// tasks without coupling the intent process to AppModel or opening relay connections.
+// App Shortcut phrases remain the compatibility path for iOS 17–26 and macOS 14–26. Starting in
+// iOS 27 and macOS 27, Siri's conversational task routing uses the reminders App Schema to
+// determine which installed apps can actually create a task. These schema-backed shadow entities
+// describe Taskify's boards and tasks without coupling the intent process to AppModel or opening
+// relay connections. A reminder created here keeps its time and reminds at it, like one created
+// with `TaskifyRemindMeIntent`.
+//
+// Not in the Mac UITest build: these queries read the account's real store, which that build
+// keeps isolated.
+#if os(iOS) || (TASKIFY_MAC_SHORTCUTS && !TASKIFY_MAC_UI_TEST)
 
-@available(iOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, *)
 @AppEnum(schema: .reminders.listType)
 enum TaskifySiriListType: String {
     case standard
@@ -18,7 +24,7 @@ enum TaskifySiriListType: String {
     ]
 }
 
-@available(iOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, *)
 @AppEnum(schema: .reminders.locationTriggerEvent)
 enum TaskifySiriLocationTriggerEvent: String {
     case arrive
@@ -30,7 +36,7 @@ enum TaskifySiriLocationTriggerEvent: String {
     ]
 }
 
-@available(iOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, *)
 @AppEntity(schema: .reminders.list)
 struct TaskifySiriBoardEntity {
     static let defaultQuery = BoardQuery()
@@ -83,7 +89,7 @@ struct TaskifySiriBoardEntity {
     }
 }
 
-@available(iOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, *)
 @AppEntity(schema: .reminders.section)
 struct TaskifySiriSectionEntity {
     static let defaultQuery = SectionQuery()
@@ -148,7 +154,7 @@ struct TaskifySiriSectionEntity {
     }
 }
 
-@available(iOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, *)
 @AppEntity(schema: .reminders.locationTrigger)
 struct TaskifySiriLocationTriggerEntity {
     static let defaultQuery = LocationQuery()
@@ -178,7 +184,7 @@ struct TaskifySiriLocationTriggerEntity {
     }
 }
 
-@available(iOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, *)
 @AppEntity(schema: .reminders.reminder)
 struct TaskifySiriTaskEntity {
     static let defaultQuery = TaskQuery()
@@ -313,7 +319,7 @@ struct TaskifySiriTaskEntity {
     }
 }
 
-@available(iOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, *)
 @AppIntent(schema: .reminders.createReminder)
 struct TaskifyCreateReminderIntent {
     var title: String
@@ -329,25 +335,52 @@ struct TaskifyCreateReminderIntent {
     var section: TaskifySiriSectionEntity?
 
     func perform() async throws -> some ReturnsValue<TaskifySiriTaskEntity> & ProvidesDialog {
+        // A reminder's due date is when it goes off, as in Apple's Reminders: a time reminds at
+        // that time, a day alone reminds on the day at the task's reminder time.
+        let due = dueDate.flatMap(TaskifySiriDueDate.init)
         let created = try await TaskifyIntentTaskWriter.addTask(
             title: title,
             requestedBoardName: list?.name ?? section?.list.name,
             note: note.map { String($0.characters) } ?? "",
-            dueDate: dueDate.flatMap { Calendar.current.date(from: $0) },
+            dueDate: due?.date,
+            dueTimeEnabled: due?.hasTime ?? false,
+            reminders: due.map { [$0.reminder] } ?? [],
             priority: isFlagged == true ? .high : nil
         )
+        let canNotify = await TaskifyIntentTaskWriter.scheduleReminders(for: created.task)
         return .result(
             value: TaskifySiriTaskEntity(
                 task: created.task,
                 board: created.board,
                 displayBoard: created.displayBoard
             ),
-            dialog: "Added \"\(created.task.title)\" to \(created.displayBoard.name)."
+            dialog: TaskifyIntentReminderWriter.dialog(for: created, canNotify: canNotify, now: Date())
         )
     }
 }
 
-@available(iOS 27.0, *)
+/// A due date as the reminders schema gives it: date components, with or without a time.
+@available(iOS 27.0, macOS 27.0, *)
+struct TaskifySiriDueDate {
+    let date: Date
+    let hasTime: Bool
+
+    init?(_ components: DateComponents) {
+        var calendar = components.calendar ?? Calendar.current
+        if let timeZone = components.timeZone {
+            calendar.timeZone = timeZone
+        }
+        guard let date = calendar.date(from: components) else { return nil }
+        self.date = date
+        hasTime = components.hour != nil || components.minute != nil || components.second != nil
+    }
+
+    var reminder: TaskReminder {
+        TaskReminder(minutesBefore: 0, dateOnly: !hasTime)
+    }
+}
+
+@available(iOS 27.0, macOS 27.0, *)
 @AppIntent(schema: .reminders.updateReminder)
 struct TaskifyUpdateReminderIntent {
     var target: TaskifySiriTaskEntity
@@ -393,8 +426,12 @@ struct TaskifyUpdateReminderIntent {
             }
         }
 
-        let requestedDate = dueDate.flatMap(Self.date)
-        let requestedDueTime = dueDate.map(Self.includesTime)
+        let requestedDue = dueDate.flatMap(TaskifySiriDueDate.init)
+        let requestedDate = requestedDue?.date
+        let requestedDueTime = requestedDue?.hasTime
+        // Giving a task with no reminders a due date asks to be reminded then, as in Reminders.
+        let existingReminders = task.reminders ?? []
+        let reminders = existingReminders.isEmpty ? (requestedDue.map { [$0.reminder] } ?? []) : existingReminders
         let updated = snapshot.updateTask(
             taskID: task.id,
             title: title ?? task.title,
@@ -409,7 +446,7 @@ struct TaskifyUpdateReminderIntent {
             columnID: task.columnID,
             subtasks: task.subtasks ?? [],
             recurrence: task.recurrence,
-            reminders: task.reminders ?? [],
+            reminders: reminders,
             reminderTime: task.reminderTime
         )
         guard updated else { throw TaskifyAddTaskIntentError.taskNotCreated }
@@ -436,6 +473,7 @@ struct TaskifyUpdateReminderIntent {
         // The task, and a next occurrence its completion created, go to the relays now (C10-4).
         let createdIDs = snapshot.tasks.filter { !$0.isDeleted && !existingIDs.contains($0.id) }.map(\.id)
         try await TaskifyExternalActions.commit(snapshot, changedTaskIDs: [task.id] + createdIDs, store: store)
+        await TaskifyIntentTaskWriter.scheduleReminders(for: savedTask)
 
         return .result(
             value: TaskifySiriTaskEntity(
@@ -447,15 +485,5 @@ struct TaskifyUpdateReminderIntent {
         )
     }
 
-    private static func date(from components: DateComponents) -> Date? {
-        var calendar = components.calendar ?? Calendar.current
-        if let timeZone = components.timeZone {
-            calendar.timeZone = timeZone
-        }
-        return calendar.date(from: components)
-    }
-
-    private static func includesTime(_ components: DateComponents) -> Bool {
-        components.hour != nil || components.minute != nil || components.second != nil
-    }
 }
+#endif

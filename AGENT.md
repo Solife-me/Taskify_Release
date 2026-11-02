@@ -226,10 +226,10 @@ is public and contains both architectures before changing the StartOS image pin.
   Spotlight-index/open/remove lifecycle and raw-image paste in both attachment composers. The
   first smoke also terminates the app, invokes Add Task out of process through
   `AppIntentsTesting`, relaunches, and verifies the saved task.
-- Production Mac builds still publish no App Shortcuts. C11-6A compiles the shared intent/provider
-  only in the `UITest` configuration behind `TASKIFY_MAC_SHORTCUTS`; do not add that flag to Local,
-  Debug, or Release until the signed terminated-app test passes on a host with Apple development
-  signing. The production Mac target now has the APNs entitlement and app-delegate lifecycle for
+- Mac builds publish the shared Add Task and Remind Me App Shortcuts in every configuration
+  (`TASKIFY_MAC_SHORTCUTS`, set by `generate-project.py`), and on macOS 27 the reminders App Schema
+  intents too (not in `UITest`, whose store is isolated). The terminated-app smoke invokes both Add
+  Task and Remind Me; it needs Xcode UI automation allowed on the host. The production Mac target now has the APNs entitlement and app-delegate lifecycle for
   the C11-7A provisioning gate, but registers only after the existing push opt-in succeeds. A
   `DEBUG` build can exercise that opt-in with `--taskify-dm-push-provisioning-spike`; Release has no
   product toggle yet. Mac DM push must use an explicit `macos` registration and its own APNs topic;
@@ -325,6 +325,7 @@ is public and contains both architectures before changing the StartOS image pin.
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 | `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
+| `taskify-ios-native/Tests/TaskifyCoreTests/TaskifyReminderPhraseTests.swift`, `ReminderFromSiriAndWatchTests.swift`, `Tests/TaskifyNativeUITests/SiriReminderUITests.swift` | Siri reminders and Watch reminder editing | Spoken requests split into title and time (calendar words, “in 20 minutes”, bare “at 5” as next occurrence, a day alone at 9:00 AM, invocation words removed); the shared reminder vocabulary round-trips; Siri-added tasks keep their time, land on their weekday column and carry the reminder; intent notifications use the app scheduler's identifiers; Watch edits read, toggle, normalize and write reminders, and older edits without them leave the iPhone's alone; the UI test runs Remind Me out of process on a terminated app and finds the timed task with its reminder |
 | `taskify-ios-native/Tests/TaskifyCoreTests/TaskifySharedContainerTests.swift` | Native storage | Signed Mac App Group authorization, private fallback, migration preservation and repeated saves/reloads |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SnapshotLookupCacheTests.swift` | Native board cache invalidation/reuse, compound scope, calendar boundaries, sorting, and flat timeline identities |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SharedInboxTests.swift` | NIP-17 private messages | Gift-wrap verification, independent sender/recipient copies, encrypted group task/event shares with persisted conversation routing, strict kind-10050 routing, and signed inbox preferences |

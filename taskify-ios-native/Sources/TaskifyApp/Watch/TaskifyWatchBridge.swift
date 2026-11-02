@@ -280,8 +280,11 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                     dueTimeEnabled: edit.dueTimeEnabled, dueTimeZone: edit.dueTimeZone,
                     priority: edit.priority.flatMap(TaskPriority.init(rawValue:)),
                     columnID: task.columnID, subtasks: task.subtasks ?? [],
-                    recurrence: task.recurrence, reminders: task.reminders ?? [],
-                    reminderTime: task.reminderTime, images: task.images ?? [],
+                    // An edit from a Watch build that can't set reminders carries none: keep ours.
+                    recurrence: task.recurrence,
+                    reminders: edit.reminders.map { $0.map(TaskReminder.init(rawValue:)) } ?? task.reminders ?? [],
+                    reminderTime: edit.reminders == nil ? task.reminderTime : edit.reminderTime,
+                    images: task.images ?? [],
                     documents: task.documents ?? []
                 ) else { throw TaskifyWatchBridgeError.invalidCommand }
             }

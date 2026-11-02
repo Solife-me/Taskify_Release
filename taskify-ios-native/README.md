@@ -194,6 +194,24 @@ and only then says the message was sent, otherwise it stays in the durable outbo
 configuration screen for complications, so the Conversation choices in the face editor are the
 provider's `recommendations()`.
 
+#### Siri reminders (iPhone, Mac, Watch)
+
+“Siri, in Taskify remind me to take out the trash tomorrow at 1pm” adds a task due tomorrow at
+1:00 PM with a reminder at its due time, without opening the app. The phrases are the same on all
+three clients (`TaskifyShortcuts`, and `TaskifyWatchShortcuts` on the Watch); “Remind me in
+Taskify” asks what and when instead. `TaskifyReminderPhraseParser` (TaskifyWatchShared) splits the
+sentence: `NSDataDetector` for calendar words, plus relative offsets (“in 20 minutes”) and a bare
+hour (“at 5” is the next 5 o'clock). A day without a time reminds at the task's reminder time, 9:00
+AM. Siri asks again for a missing subject or time and refuses a time already past. On the iPhone
+and Mac the intent saves through `TaskifyExternalActions.addTask` and schedules the notification
+itself (`TaskNotificationCoordinator.scheduleReminders`, same identifiers as the app's full
+reschedule), so it fires even if the app isn't opened first. The Watch sends it as a one-task
+dictation: through the iPhone, which schedules it, or straight to the relays when the iPhone is out
+of reach (the reminder then fires once the iPhone syncs). On iOS 27 and macOS 27, Siri's
+conversational route uses the reminders App Schema (`TaskifyCreateReminderIntent`), which keeps
+the time and sets the same reminder. The Watch task editor sets reminders too, with the iPhone's
+presets; an edit from an older Watch build carries none and leaves the iPhone's alone.
+
 Physical-device acceptance checks (not established by simulator/unit tests):
 
 1. Provision and open chat once, then background the app on an unlocked, worn Watch.

@@ -29,7 +29,10 @@ SHARED_SOURCES = (
     "App/TaskStreakSettings.swift",
     "App/TaskOrderingSettings.swift",
     "App/TaskifyAddTaskIntent.swift",
+    "App/TaskifyRemindMeIntent.swift",
     "App/TaskifyShortcuts.swift",
+    "App/TaskifySiriReminderSchema.swift",
+    "../Shared/TaskifyShortcutTaskNameEntity.swift",
     "App/TaskifySpotlightIndexer.swift",
     "App/StartupViewSettings.swift",
     "App/OnboardingSettings.swift",
@@ -235,10 +238,12 @@ def render_project() -> str:
             settings.update(
                 {
                     "SWIFT_OPTIMIZATION_LEVEL": "-Onone" if name != "Release" else "-O",
+                    # Siri and Shortcuts (Add Task, Remind Me) ship in every configuration;
+                    # TASKIFY_MAC_SHORTCUTS remains the one switch that removes them.
                     "SWIFT_ACTIVE_COMPILATION_CONDITIONS": (
                         "DEBUG TASKIFY_MAC_UI_TEST TASKIFY_MAC_SHORTCUTS" if name == "UITest"
-                        else "DEBUG" if name != "Release"
-                        else ""
+                        else "DEBUG TASKIFY_MAC_SHORTCUTS" if name != "Release"
+                        else "TASKIFY_MAC_SHORTCUTS"
                     ),
                 }
             )

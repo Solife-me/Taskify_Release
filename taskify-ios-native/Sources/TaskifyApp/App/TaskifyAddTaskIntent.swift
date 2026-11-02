@@ -69,48 +69,6 @@ struct TaskifyAddTaskIntent: AppIntent {
     }
 }
 
-/// A free-form task name represented as an App Entity. App Shortcut invocation phrases cannot
-/// interpolate a plain String parameter, but they can interpolate an App Entity. The query turns
-/// whatever Siri heard into a single task-name entity, allowing natural one-sentence requests
-/// such as “Add buy milk in Taskify” without an extra question.
-struct TaskifyShortcutTaskNameEntity: AppEntity {
-    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Task Name")
-    static var defaultQuery = TaskNameQuery()
-
-    let id: String
-    let name: String
-
-    var displayRepresentation: DisplayRepresentation {
-        DisplayRepresentation(title: "\(name)")
-    }
-
-    init(name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.id = trimmed
-        self.name = trimmed
-    }
-
-    struct TaskNameQuery: EntityStringQuery {
-        init() {}
-
-        func entities(for identifiers: [String]) async throws -> [TaskifyShortcutTaskNameEntity] {
-            identifiers.compactMap { identifier in
-                let entity = TaskifyShortcutTaskNameEntity(name: identifier)
-                return entity.name.isEmpty ? nil : entity
-            }
-        }
-
-        func entities(matching string: String) async throws -> [TaskifyShortcutTaskNameEntity] {
-            let entity = TaskifyShortcutTaskNameEntity(name: string)
-            return entity.name.isEmpty ? [] : [entity]
-        }
-
-        func suggestedEntities() async throws -> [TaskifyShortcutTaskNameEntity] {
-            []
-        }
-    }
-}
-
 /// Direct one-sentence Siri route. The entity captures the complete free-form request after the
 /// literal “add” portion of the phrase; the same natural-language parser used by the prompt flow
 /// then separates an optional board name from the task title.
@@ -163,6 +121,8 @@ enum TaskifyIntentTaskWriter {
         requestedBoardName: String?,
         note: String = "",
         dueDate: Date? = nil,
+        dueTimeEnabled: Bool = false,
+        reminders: [TaskReminder] = [],
         priority: TaskPriority? = nil,
         interpretNaturalLanguageTitle: Bool = false
     ) async throws -> TaskifyIntentCreatedTask {
@@ -173,6 +133,8 @@ enum TaskifyIntentTaskWriter {
             requestedBoardName: requestedBoardName,
             note: note,
             dueDate: dueDate,
+            dueTimeEnabled: dueTimeEnabled,
+            reminders: reminders,
             priority: priority,
             interpretNaturalLanguageTitle: interpretNaturalLanguageTitle,
             store: JSONTaskStore(fileURL: test.storeURL),
@@ -184,9 +146,26 @@ enum TaskifyIntentTaskWriter {
             requestedBoardName: requestedBoardName,
             note: note,
             dueDate: dueDate,
+            dueTimeEnabled: dueTimeEnabled,
+            reminders: reminders,
             priority: priority,
             interpretNaturalLanguageTitle: interpretNaturalLanguageTitle
         )
+#endif
+    }
+
+    /// Schedules a task's reminders now: the app only reschedules when it next runs, which could
+    /// be after the reminder was due. Returns false when Taskify may not post notifications.
+    @discardableResult
+    static func scheduleReminders(for task: TaskItem) async -> Bool {
+#if os(macOS) && TASKIFY_MAC_UI_TEST
+        return true
+#else
+        guard !(task.reminders ?? []).isEmpty else { return true }
+        guard let accountID = TaskifyDeviceTaskSettings.load().editorPublicKey else {
+            return await TaskNotificationCoordinator.canNotify()
+        }
+        return await TaskNotificationCoordinator.scheduleReminders(for: task, accountID: accountID)
 #endif
     }
 }

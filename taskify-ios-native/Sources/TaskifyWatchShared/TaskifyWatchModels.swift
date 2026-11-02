@@ -59,14 +59,45 @@ public struct TaskifyWatchTaskEdit: Codable, Equatable, Sendable {
     public var dueTimeEnabled: Bool
     public var dueTimeZone: String?
     public var priority: Int?
+    /// The task's reminders as stored ("0h", "15m", "1d", see `TaskifyReminderOffset`). Nil in an
+    /// edit from a Watch build that could not set reminders: the iPhone then keeps its own.
+    public var reminders: [String]?
+    /// "HH:mm" a task with no due time is reminded at; nil for the default, 09:00.
+    public var reminderTime: String?
 
     public init(task: TaskifyWatchTask) {
+        let payload = task.payloadObject
         title = task.title
         note = task.note
         dueDate = task.dueDate
         dueTimeEnabled = task.dueTimeEnabled
-        dueTimeZone = task.payloadObject["dueTimeZone"] as? String
+        dueTimeZone = payload["dueTimeZone"] as? String
         priority = task.priority
+        // A task cached before the iPhone sent full payloads has no reminders to show; leaving
+        // them unknown keeps a save from clearing the ones it has.
+        reminders = task.syncPayload == nil ? nil : task.reminderRawValues
+        reminderTime = payload["reminderTime"] as? String
+    }
+
+    /// Whether a reminder is set, for the editor's toggles.
+    public func hasReminder(_ rawValue: String) -> Bool {
+        let minutes = TaskifyReminderOffset.minutesBefore(rawValue: rawValue)
+        return (reminders ?? []).contains { TaskifyReminderOffset.minutesBefore(rawValue: $0) == minutes }
+    }
+
+    public mutating func setReminder(_ rawValue: String, enabled: Bool) {
+        let minutes = TaskifyReminderOffset.minutesBefore(rawValue: rawValue)
+        var values = (reminders ?? []).filter { TaskifyReminderOffset.minutesBefore(rawValue: $0) != minutes }
+        if enabled { values.append(rawValue) }
+        reminders = TaskifyReminderOffset.normalized(values, dateOnly: !dueTimeEnabled)
+    }
+
+    /// Reminders that suit the due date as it is now: none without a date, and "0h"/"0d"
+    /// following whether there is a time. Run before saving and whenever the date changes.
+    public mutating func normalizeReminders() {
+        guard reminders != nil else { return }
+        reminders = dueDate == nil ? [] : TaskifyReminderOffset.normalized(reminders ?? [], dateOnly: !dueTimeEnabled)
+        if dueDate == nil || dueTimeEnabled { reminderTime = nil }
     }
 }
 
@@ -84,6 +115,11 @@ public extension TaskifyWatchTask {
     }
 
     var note: String { payloadObject["note"] as? String ?? "" }
+
+    /// The task's reminders as stored in its payload.
+    var reminderRawValues: [String] {
+        TaskifyReminderOffset.rawValues(fromPayloadValue: payloadObject["reminders"])
+    }
 
     var subtasks: [TaskifyWatchSubtask] {
         guard let rows = payloadObject["subtasks"],
@@ -117,6 +153,13 @@ public extension TaskifyWatchTask {
         object["dueDateEnabled"] = edit.dueDate != nil
         object["dueTimeEnabled"] = edit.dueDate != nil && edit.dueTimeEnabled
         object["dueTimeZone"] = edit.dueTimeEnabled ? edit.dueTimeZone : nil
+        if let reminders = edit.reminders {
+            let kept = edit.dueDate == nil
+                ? []
+                : TaskifyReminderOffset.normalized(reminders, dateOnly: !edit.dueTimeEnabled)
+            object["reminders"] = kept.isEmpty ? nil : kept
+            object["reminderTime"] = kept.isEmpty || edit.dueTimeEnabled ? nil : edit.reminderTime
+        }
         return TaskifyWatchTask(
             id: id, title: edit.title, boardID: boardID, boardName: boardName,
             columnName: columnName, dueDate: edit.dueDate,

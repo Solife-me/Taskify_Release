@@ -19,7 +19,7 @@ final class TaskifyWatchApplicationDelegate: NSObject, WKApplicationDelegate {
 
     func applicationDidFinishLaunching() {
         activateChatPushIfNeeded()
-        TaskifyWatchChatShortcuts.updateAppShortcutParameters()
+        TaskifyWatchShortcuts.updateAppShortcutParameters()
     }
 
     func applicationDidBecomeActive() {

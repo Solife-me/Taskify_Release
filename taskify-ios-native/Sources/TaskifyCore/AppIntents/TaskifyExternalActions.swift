@@ -84,11 +84,16 @@ public struct TaskifyExternalCreatedTask: Sendable {
 /// the store later and publishes them.
 public enum TaskifyExternalActions {
     /// Adds a task without constructing the app runtime, then durably marks and publishes it.
+    ///
+    /// `dueTimeEnabled` keeps the time of `dueDate` (otherwise only its day counts), and
+    /// `reminders` are stored as the task's own, so the app notifies for them like any other.
     public static func addTask(
         title: String,
         requestedBoardName: String?,
         note: String = "",
         dueDate: Date? = nil,
+        dueTimeEnabled: Bool = false,
+        reminders: [TaskReminder] = [],
         priority: TaskPriority? = nil,
         interpretNaturalLanguageTitle: Bool = false,
         store: JSONTaskStore = JSONTaskStore(),
@@ -116,10 +121,17 @@ public enum TaskifyExternalActions {
         ) else {
             throw TaskifyExternalAddTaskError.noAddableBoard
         }
-        guard let task = snapshot.addTask(
+        // A week board files a dated task under its day, as the app's own editor does; the
+        // destination's column is only today's.
+        var columnID = destination.columnID
+        if let dueDate,
+           snapshot.boards.first(where: { $0.id == destination.boardID })?.kind == .week {
+            columnID = WeekdayColumn.containing(dueDate).rawValue
+        }
+        guard var task = snapshot.addTask(
             title: trimmedTitle,
             boardID: destination.boardID,
-            columnID: destination.columnID,
+            columnID: columnID,
             dueDate: dueDate ?? destination.dueDate,
             note: note,
             priority: priority,
@@ -127,7 +139,33 @@ public enum TaskifyExternalActions {
             newTaskPosition: settings.newTaskPosition,
             now: now,
             weekStartsOn: settings.weekStart
-        ), let board = snapshot.boards.first(where: { $0.id == task.boardID }) else {
+        ) else {
+            throw TaskifyExternalAddTaskError.taskNotCreated
+        }
+        let timed = dueTimeEnabled && task.dueDate != nil
+        if timed || (!reminders.isEmpty && task.dueDate != nil) {
+            // The same two steps as a dictated task: add, then set the time and reminders.
+            guard snapshot.updateTask(
+                taskID: task.id,
+                title: task.title,
+                note: task.note,
+                dueDate: task.dueDate,
+                dueDateEnabled: true,
+                dueTimeEnabled: timed,
+                dueTimeZone: timed ? TimeZone.current.identifier : nil,
+                priority: task.priority,
+                columnID: task.columnID,
+                subtasks: [],
+                reminders: reminders,
+                editorPublicKey: settings.editorPublicKey,
+                weekStartsOn: settings.weekStart,
+                now: now
+            ), let updated = snapshot.tasks.first(where: { $0.id == task.id }) else {
+                throw TaskifyExternalAddTaskError.taskNotCreated
+            }
+            task = updated
+        }
+        guard let board = snapshot.boards.first(where: { $0.id == task.boardID }) else {
             throw TaskifyExternalAddTaskError.taskNotCreated
         }
         let displayBoard = TaskifyAddTaskDestination.displayBoard(

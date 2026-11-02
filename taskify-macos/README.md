@@ -50,10 +50,9 @@ the 51 presentation/runtime tests, the unsigned app build and the twelve isolate
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
 a session-scoped temporary store/outbox and Keychain service, and no relay or wallet startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing
-process-global environment. The first smoke also terminates Taskify, invokes Add Task out of process
-through `AppIntentsTesting`, relaunches, and verifies the task in the same isolated store. App Intent
-metadata is deliberately limited to this configuration until that test passes with Apple development
-signing; Local, Debug, and Release publish no Mac shortcuts yet. The attachment smoke puts raw PNG data without a file URL on the real
+process-global environment. The first smoke also terminates Taskify, invokes Add Task and Remind Me out of
+process through `AppIntentsTesting`, relaunches, and verifies both tasks in the same isolated store. Every configuration publishes the Siri and Shortcuts intents (Add Task, Remind
+Me, and on macOS 27 the reminders App Schema); see the iOS README's Siri section. The attachment smoke puts raw PNG data without a file URL on the real
 pasteboard and stages it in both task and chat composers. A developer Mac must allow Xcode UI automation before the test runner
 can execute. `Local` retains
 app debugging while Swift package dependencies use their release configuration;
@@ -222,7 +221,7 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   `npub@solife.me` forwarding address is exposed; npub.cash is not), animated
   multi-frame QR for transfers too large for one code, and camera-based QR
   scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
-- Voice entry, widgets, App Intents and share extension integration.
+- Voice entry, widgets and share extension integration.
 - Contact detail has no photos/files/links tabs (browsing media shared across
   a contact's whole message history) — only the info tab (QR, NIP-05, copyable
   fields) was ported; that media browser lives with Chat's own conversation
