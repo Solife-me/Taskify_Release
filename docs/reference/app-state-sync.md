@@ -61,13 +61,15 @@ honored rather than undone:
 ## Cadence
 
 - **PWA**: live subscription per d-tag. Bible tracker and scripture memory publish 1.5 s after
-  the last change. Chat state publishes 15 s after the first unpublished change, and early when
-  the tab is hidden.
-- **Native**: one REQ per relay fetches all three records on launch and on foreground, at most
-  every 30 s. Publishes go through the durable outbox (scope `__taskify-app-state__`), which
-  replaces a pending publish for the same record. Bible tracker and scripture memory publish
-  2 s after the last change. Chat state publishes 15 s after the first unpublished change, and
-  immediately on backgrounding.
+  the last change. Chat state publishes 15 s after the first unpublished read marker, and early
+  when the tab is hidden. A new inbox answer publishes at once.
+- **Native**: `TaskSyncEngine` holds a live subscription to all three records (one REQ per
+  account relay, set with `setAppStateSubscription`), so another device's change is delivered
+  as `TaskSyncUpdate.appState` while the app runs. One REQ per relay also fetches them on launch
+  and on foreground, at most every 30 s. Publishes go through the durable outbox (scope
+  `__taskify-app-state__`), which replaces a pending publish for the same record. Bible tracker
+  and scripture memory publish 2 s after the last change. Chat state publishes 15 s after the
+  first unpublished read marker, 2 s after a new inbox answer, and immediately on backgrounding.
 - Neither client publishes when the relays already hold everything it has. For chat state this
   check is cheap enough to run on every read marker.
 

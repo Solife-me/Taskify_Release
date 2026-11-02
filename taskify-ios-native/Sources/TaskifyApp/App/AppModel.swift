@@ -274,6 +274,8 @@ final class AppModel {
     @ObservationIgnored var appStateLedger: AppStateSyncLedger
     @ObservationIgnored var appStateFetchTask: Task<Void, Never>?
     @ObservationIgnored var appStatePublishTasks: [String: Task<Void, Never>] = [:]
+    /// The pending chat-state publish carries an inbox answer, so it runs on the short delay.
+    @ObservationIgnored var chatStatePublishCarriesAnswers = false
     @ObservationIgnored var lastAppStateFetchAt: Date?
     @ObservationIgnored var isApplyingSyncedScriptureMemory = false
     /// Whether this session's relays have delivered their stored history. Generated tasks
@@ -5580,6 +5582,9 @@ final class AppModel {
         let inboxPublicKey = identityPublicKey.nilIfEmpty
         let inboxRelays = effectiveNIP17InboxRelayURLs
         let excludedRelayURLs = excludedSyncRelayURLs
+        // Other devices' read markers, inbox answers and Bible/scripture state stream in live.
+        let appStateAuthor = isAccountActive && cachedIdentity != nil ? inboxPublicKey : nil
+        let appStateRelays = appStateRelayURLs
         Task { [syncEngine] in
             await syncEngine.configure(
                 boards: boards,
@@ -5588,6 +5593,7 @@ final class AppModel {
                 inboxRelayURLs: inboxRelays,
                 excludedRelayURLs: excludedRelayURLs
             )
+            await syncEngine.setAppStateSubscription(authorPublicKey: appStateAuthor, relayURLs: appStateRelays)
         }
     }
 
@@ -5648,6 +5654,8 @@ final class AppModel {
             enqueueSharedInboxEvents([event], isHistory: false)
         case .sharedInboxBatch(let events):
             enqueueSharedInboxEvents(events, isHistory: true)
+        case .appState(let event):
+            await receiveAppStateEvent(event)
         case .publishState(let recordID, let state):
             applyDirectMessagePublishState(recordID: recordID, state: state)
         case .status(let report):

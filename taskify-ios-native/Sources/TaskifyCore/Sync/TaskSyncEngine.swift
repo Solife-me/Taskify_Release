@@ -152,6 +152,9 @@ public enum TaskSyncUpdate: Sendable {
     /// Stored NIP-17 events are forwarded as they arrive, before EOSE. The consumer coalesces
     /// these into bounded crypto batches and gives live arrivals priority over recovery.
     case sharedInboxBatch([NostrEvent])
+    /// One of the account's own app-state records (`AppStateSyncContract`), signature-verified and
+    /// still encrypted, as another device published it.
+    case appState(NostrEvent)
     case publishState(recordID: String, state: TaskPublishDeliveryState)
     case status(TaskSyncReport)
 }
@@ -454,6 +457,8 @@ struct TaskSyncRelaySubscriptionPlan: Equatable, Sendable {
     let relayURL: String
     let boardTags: [String]
     let inboxPublicKey: String?
+    /// The account whose own app-state records (`AppStateSyncContract`) this relay streams live.
+    var appStateAuthor: String? = nil
 }
 
 /// The parts of a sync configuration that change relay subscriptions. Board names, columns,
@@ -467,20 +472,30 @@ struct TaskSyncConfigurationFingerprint: Equatable, Sendable {
         auxiliaryRelayURLs: [String],
         inboxPublicKey: String?,
         inboxRelayURLs: [String]? = nil,
-        excludedRelayURLs: Set<String> = []
+        excludedRelayURLs: Set<String> = [],
+        appStateAuthor: String? = nil,
+        appStateRelayURLs: [String] = []
     ) {
         let normalizedAuxiliaryRelays = TaskifyRelayURL.normalizedList(auxiliaryRelayURLs)
         let normalizedInboxRelays = inboxRelayURLs.map(TaskifyRelayURL.normalizedList)
         let normalizedInboxPublicKey = inboxPublicKey?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        let normalizedAppStateAuthor = appStateAuthor?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let appStateRelays = normalizedAppStateAuthor?.count == 64
+            ? TaskifyRelayURL.normalizedList(appStateRelayURLs)
+            : []
         let excludedRelays = Set(TaskifyRelayURL.normalizedList(Array(excludedRelayURLs)))
-        let wantedRelays = Set(
+        let syncRelays = Set(
             boards.flatMap(\.syncRelayURLs)
                 + normalizedAuxiliaryRelays
                 + (normalizedInboxRelays ?? [])
         ).subtracting(excludedRelays)
-        let inboxRelays = Set(normalizedInboxRelays ?? Array(wantedRelays))
+        let wantedRelays = syncRelays.union(appStateRelays).subtracting(excludedRelays)
+        let inboxRelays = Set(normalizedInboxRelays ?? Array(syncRelays))
+        let appStateRelaySet = Set(appStateRelays)
         relayPlans = wantedRelays.map { relayURL in
             let boardTags = Set<String>(
                 boards.compactMap { board -> String? in
@@ -493,6 +508,9 @@ struct TaskSyncConfigurationFingerprint: Equatable, Sendable {
                 boardTags: boardTags,
                 inboxPublicKey: inboxRelays.contains(relayURL)
                     ? normalizedInboxPublicKey
+                    : nil,
+                appStateAuthor: appStateRelaySet.contains(relayURL)
+                    ? normalizedAppStateAuthor
                     : nil
             )
         }.sorted { $0.relayURL < $1.relayURL }
@@ -619,6 +637,11 @@ public actor TaskSyncEngine {
     private var auxiliaryRelayURLs: [String] = []
     private var inboxPublicKey: String?
     private var inboxRelayURLs: Set<String> = []
+    /// Set by `setAppStateSubscription`, independent of `configure` so no configure caller has to
+    /// carry it. Other devices' read markers and inbox answers arrive live through it.
+    private var appStateAuthor: String?
+    private var appStateRequestedRelayURLs: [String] = []
+    private var appStateRelayURLs: Set<String> = []
     var connections: [String: any TaskSyncRelayTransport] = [:]
     private var listenerTasks: [String: Task<Void, Never>] = [:]
     private var reconnectTasks: [String: Task<Void, Never>] = [:]
@@ -779,6 +802,20 @@ public actor TaskSyncEngine {
         }
     }
 
+    /// Streams the account's own app-state records (Bible tracker, scripture memory, chat state)
+    /// from `relayURLs` for as long as the engine runs, so a change another device publishes is
+    /// delivered as `.appState` within moments instead of on the next launch or foreground. Pass
+    /// nil to stop. Takes effect on the current configuration immediately.
+    public func setAppStateSubscription(authorPublicKey: String?, relayURLs: [String]) async {
+        let author = authorPublicKey?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedAuthor = author?.count == 64 ? author : nil
+        let relays = normalizedAuthor == nil ? [] : TaskifyRelayURL.normalizedList(relayURLs)
+        guard normalizedAuthor != appStateAuthor || relays != appStateRequestedRelayURLs else { return }
+        appStateAuthor = normalizedAuthor
+        appStateRequestedRelayURLs = relays
+        await reapplyConfigurationAfterLinger()
+    }
+
     private func reapplyConfigurationAfterLinger() async {
         guard let request = lastConfigureRequest else { return }
         await configure(
@@ -818,7 +855,9 @@ public actor TaskSyncEngine {
             auxiliaryRelayURLs: auxiliaryRelayURLs,
             inboxPublicKey: inboxPublicKey,
             inboxRelayURLs: inboxRelayURLs,
-            excludedRelayURLs: normalizedExcludedRelayURLs
+            excludedRelayURLs: normalizedExcludedRelayURLs,
+            appStateAuthor: appStateAuthor,
+            appStateRelayURLs: appStateRequestedRelayURLs
         )
         let previousFingerprint = configurationFingerprint
         let subscriptionsAreUnchanged = fingerprint == previousFingerprint
@@ -854,12 +893,14 @@ public actor TaskSyncEngine {
         let nextPlans = Dictionary(
             uniqueKeysWithValues: fingerprint.relayPlans.map { ($0.relayURL, $0) }
         )
-        let wantedRelays = Set(
+        let syncRelays = Set(
             self.boards.flatMap(\.syncRelayURLs)
                 + self.auxiliaryRelayURLs
                 + (normalizedInboxRelayURLs ?? [])
         ).subtracting(self.excludedRelayURLs)
-        self.inboxRelayURLs = Set(normalizedInboxRelayURLs ?? Array(wantedRelays))
+        self.appStateRelayURLs = Set(appStateRequestedRelayURLs).subtracting(self.excludedRelayURLs)
+        let wantedRelays = syncRelays.union(self.appStateRelayURLs)
+        self.inboxRelayURLs = Set(normalizedInboxRelayURLs ?? Array(syncRelays))
         self.wantedRelayURLs = wantedRelays
         await completeUnreachableRelayTargets()
 
@@ -972,6 +1013,17 @@ public actor TaskSyncEngine {
         }
         for group in nextGroups where !previousGroupIDs.contains(group.id) {
             try await issueBoardSubscription(group, on: connection, relayURL: relayURL)
+        }
+
+        if previousPlan?.appStateAuthor != nextPlan.appStateAuthor {
+            if let previousAuthor = previousPlan?.appStateAuthor {
+                let id = appStateSubscriptionID(publicKey: previousAuthor)
+                try? await connection.closeSubscription(id: id)
+                clearSubscriptionRetry(subscriptionID: id, relayURL: relayURL)
+            }
+            if let nextAuthor = nextPlan.appStateAuthor {
+                try await issueAppStateSubscription(author: nextAuthor, on: connection, relayURL: relayURL)
+            }
         }
 
         guard previousPlan?.inboxPublicKey != nextPlan.inboxPublicKey else { return }
@@ -1330,6 +1382,9 @@ public actor TaskSyncEngine {
         for group in boardGrouping(relayURL: relayURL).groups {
             try await issueBoardSubscription(group, on: connection, relayURL: relayURL)
         }
+        if let appStateAuthor, appStateRelayURLs.contains(relayURL) {
+            try await issueAppStateSubscription(author: appStateAuthor, on: connection, relayURL: relayURL)
+        }
         if let inboxPublicKey,
            inboxPublicKey.count == 64,
            inboxRelayURLs.contains(relayURL) {
@@ -1567,6 +1622,27 @@ public actor TaskSyncEngine {
                     } else {
                         updateContinuation.yield(.sharedInbox(event))
                     }
+                }
+                return
+            }
+            if isAppStateSubscription(subscriptionID, relayURL: relayURL) {
+                guard event.kind == AppStateSyncContract.eventKind,
+                      event.publicKey.lowercased() == appStateAuthor,
+                      let dTag = event.firstTagValue(named: "d"),
+                      AppStateSyncContract.dTags.contains(dTag) else { return }
+                // Every relay holds the same copy; verify and hand it over once.
+                if verifiedEventCreatedAt[event.id] != nil {
+                    if event.verifyID() {
+                        clearSubscriptionRetry(subscriptionID: subscriptionID, relayURL: relayURL)
+                        await markRelayOnline(relayURL)
+                    }
+                    return
+                }
+                guard event.verify() else { return }
+                clearSubscriptionRetry(subscriptionID: subscriptionID, relayURL: relayURL)
+                await markRelayOnline(relayURL)
+                if recordEventIfNew(event) {
+                    updateContinuation.yield(.appState(event))
                 }
                 return
             }
@@ -2435,6 +2511,9 @@ public actor TaskSyncEngine {
            id == inboxSubscriptionID(relayURL: relayURL, publicKey: inboxPublicKey) {
             return true
         }
+        if isAppStateSubscription(id, relayURL: relayURL) {
+            return true
+        }
         return boardGrouping(relayURL: relayURL).group(withID: id) != nil
     }
 
@@ -2460,6 +2539,10 @@ public actor TaskSyncEngine {
         guard let connection = connections[relayURL] else { throw URLError(.notConnectedToInternet) }
         if let group = boardGrouping(relayURL: relayURL).group(withID: subscriptionID) {
             try await issueBoardSubscription(group, on: connection, relayURL: relayURL)
+            return
+        }
+        if let appStateAuthor, isAppStateSubscription(subscriptionID, relayURL: relayURL) {
+            try await issueAppStateSubscription(author: appStateAuthor, on: connection, relayURL: relayURL)
             return
         }
         if let inboxPublicKey,
@@ -2653,6 +2736,35 @@ public actor TaskSyncEngine {
     private func inboxSubscriptionID(relayURL: String, publicKey: String) -> String {
         let relayToken = UInt(bitPattern: relayURL.hashValue)
         return "taskify-inbox-\(relayToken)-\(publicKey.prefix(12))"
+    }
+
+    private func appStateSubscriptionID(publicKey: String) -> String {
+        "taskify-app-state-\(publicKey.prefix(12))"
+    }
+
+    private func isAppStateSubscription(_ id: String, relayURL: String) -> Bool {
+        guard let appStateAuthor, appStateRelayURLs.contains(relayURL) else { return false }
+        return id == appStateSubscriptionID(publicKey: appStateAuthor)
+    }
+
+    /// No `since`: each record is replaceable, so a relay holds at most one copy per d-tag and a
+    /// reissue costs three events. An older copy can still carry markers worth merging.
+    private func issueAppStateSubscription(
+        author: String,
+        on connection: any TaskSyncRelayTransport,
+        relayURL: String
+    ) async throws {
+        let id = appStateSubscriptionID(publicKey: author)
+        try await connection.request(
+            id: id,
+            filter: NostrRelayFilter(
+                kinds: [AppStateSyncContract.eventKind],
+                authors: [author],
+                dTags: AppStateSyncContract.dTags,
+                limit: AppStateSyncContract.dTags.count * 2
+            )
+        )
+        noteSubscriptionIssued(relayURL: relayURL, subscriptionID: id)
     }
 }
 
