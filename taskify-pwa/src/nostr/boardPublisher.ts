@@ -92,7 +92,11 @@ export type BoardPublisherDeps = {
 export type PublishTaskOptions = { skipBoardMetadata?: boolean; republish?: boolean };
 
 export class BoardPublisher {
-  constructor(private readonly deps: BoardPublisherDeps) {}
+  private readonly deps: BoardPublisherDeps;
+
+  constructor(deps: BoardPublisherDeps) {
+    this.deps = deps;
+  }
 
   private nowSeconds(): number {
     return Math.floor((this.deps.now?.() ?? Date.now()) / 1000);

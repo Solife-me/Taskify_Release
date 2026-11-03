@@ -210,7 +210,7 @@ struct MacTaskEditor: View {
                     }
                 }
                 Button("Delete This Task", role: .destructive) { model.deleteTask(draft.id); dismiss() }
-                if draft.recurrence?.isActive == true {
+                if draft.canEndRecurringSeries {
                     Button("Delete This and Future Occurrences", role: .destructive) { model.deleteTask(draft.id, scope: .thisAndFuture); dismiss() }
                 }
                 Button("Cancel", role: .cancel) {}

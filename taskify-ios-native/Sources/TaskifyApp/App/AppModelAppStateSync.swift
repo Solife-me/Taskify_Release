@@ -10,7 +10,8 @@ extension AppModel {
     /// Foreground returns re-check at most this often: one REQ per relay covers all three records.
     private static let appStateFetchInterval: TimeInterval = 30
     /// Read markers move whenever a conversation is viewed, so they are coalesced into one
-    /// replaceable event per quiet period instead of one per message.
+    /// replaceable event per quiet period instead of one per message. Inbox answers use
+    /// `appStatePublishDelay`.
     private static let chatStatePublishDelay: Duration = .seconds(15)
     private static let appStatePublishDelay: Duration = .seconds(2)
 
@@ -37,7 +38,7 @@ extension AppModel {
         return identity
     }
 
-    private var appStateRelayURLs: [String] {
+    var appStateRelayURLs: [String] {
         TaskifyRelayURL.normalizedList(appRelays + (accountBackupBaseline?.defaultRelayURLs ?? []))
     }
 
@@ -73,31 +74,47 @@ extension AppModel {
             appStatePublishTasks[dTag] = Task { [weak self] in
                 await self?.publishAppState(dTag)
                 // A cancelled task was replaced; leave the replacement's slot alone.
-                if !Task.isCancelled { self?.appStatePublishTasks[dTag] = nil }
+                if !Task.isCancelled {
+                    self?.appStatePublishTasks[dTag] = nil
+                    if dTag == AppStateSyncContract.chatStateDTag { self?.chatStatePublishCarriesAnswers = false }
+                }
             }
         }
     }
 
     func scheduleAppStatePublish(_ dTag: String) {
         guard isAccountActive, !isLoading, cachedIdentity != nil else { return }
+        let delay: Duration
         if dTag == AppStateSyncContract.chatStateDTag {
             // Cheap check first: most snapshot writes (new messages, pending shares) leave
             // nothing new to publish. A pending timer is not restarted, bounding the delay.
             let known = appStateLedger.chat.synced ?? ChatSyncState()
-            guard appStatePublishTasks[dTag] == nil,
-                  known.toPublish(merging: snapshot.chatSyncState, nowSeconds: Int(Date().timeIntervalSince1970)) != nil else {
+            let local = snapshot.chatSyncState
+            guard known.toPublish(merging: local, nowSeconds: Int(Date().timeIntervalSince1970)) != nil else {
                 return
             }
+            // Accepting or declining is a deliberate, rare action the user expects to see on
+            // their other devices right away; only read markers are worth coalescing.
+            let carriesAnswers = !known.covers(ChatSyncState(inboxResponses: local.inboxResponses))
+            if appStatePublishTasks[dTag] != nil {
+                guard carriesAnswers, !chatStatePublishCarriesAnswers else { return }
+                appStatePublishTasks[dTag]?.cancel()
+            }
+            chatStatePublishCarriesAnswers = carriesAnswers
+            delay = carriesAnswers ? Self.appStatePublishDelay : Self.chatStatePublishDelay
         } else {
             appStatePublishTasks[dTag]?.cancel()
+            delay = Self.appStatePublishDelay
         }
-        let delay = dTag == AppStateSyncContract.chatStateDTag ? Self.chatStatePublishDelay : Self.appStatePublishDelay
         appStatePublishTasks[dTag] = Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
             guard let self, !Task.isCancelled else { return }
             await self.publishAppState(dTag)
             // A cancelled task was replaced; leave the replacement's slot alone.
-            if !Task.isCancelled { self.appStatePublishTasks[dTag] = nil }
+            if !Task.isCancelled {
+                self.appStatePublishTasks[dTag] = nil
+                if dTag == AppStateSyncContract.chatStateDTag { self.chatStatePublishCarriesAnswers = false }
+            }
         }
     }
 
@@ -132,6 +149,18 @@ extension AppModel {
             scheduleAppStatePublish(AppStateSyncContract.scriptureMemoryDTag)
         }
         scheduleAppStatePublish(AppStateSyncContract.chatStateDTag)
+    }
+
+    /// A record another device published, delivered live by the sync engine's subscription.
+    func receiveAppStateEvent(_ event: NostrEvent) async {
+        guard let identity = appStateLedgerIdentity(),
+              event.publicKey.lowercased() == identity.publicKeyHex.lowercased() else { return }
+        let decrypted = await Task.detached(priority: .utility) {
+            try? AppStateSyncContract.decrypt(event: event, identity: identity)
+        }.value
+        guard let decrypted, isAccountActive,
+              appStateLedger.publicKey == identity.publicKeyHex else { return }
+        applyAppStateEvent(dTag: decrypted.dTag, event: event, plaintext: decrypted.plaintext)
     }
 
     private func applyAppStateEvent(dTag: String, event: NostrEvent, plaintext: Data) {

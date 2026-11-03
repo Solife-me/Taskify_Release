@@ -10,6 +10,7 @@ import {
   buildNextRecurringTask,
   buildRunningStreakLookup,
   recurringSeriesId,
+  seriesIgnoresCutoffs,
   isAssignedSharedTask,
   isFrequentRecurrence,
   tasksInSameSeries,
@@ -179,8 +180,11 @@ function planNextOccurrence(
   scriptureReview: ScriptureMemoryUpdate | null,
 ): { task: Task; scheduled?: { entryId: string; scheduledAtISO: string } } | null {
   const isScriptureReview = working.seriesId === SCRIPTURE_MEMORY_SERIES_ID || !!working.scriptureMemoryId;
+  // A review's series never ends by an end date it carries: relay copies still hold one from when
+  // series cutoffs applied to it (`seriesIgnoresCutoffs`).
+  const reviewRecurrence = working.recurrence ?? scriptureFrequencyToRecurrence(ctx.scripture.baseDays);
   const recurrence = isScriptureReview
-    ? working.recurrence ?? scriptureFrequencyToRecurrence(ctx.scripture.baseDays)
+    ? (reviewRecurrence.untilISO ? { ...reviewRecurrence, untilISO: undefined } : reviewRecurrence)
     : working.recurrence;
   if (!recurrence) return null;
   // A Scripture Memory review is spaced from when it was done, not from a due date it was left
@@ -283,10 +287,12 @@ export function planDeleteTask(
 ): DeleteTaskPlan {
   const t = tasks.find((task) => task.id === id);
   if (!t) return { kind: "none" };
-  if (!ctx.skipPrompt && t.recurrence) return { kind: "ask-scope", task: t };
+  // Scripture Memory's settings run the review series, so deleting a review deletes that one.
+  const endsSeries = !!t.recurrence && !seriesIgnoresCutoffs(recurringSeriesId(t));
+  if (!ctx.skipPrompt && endsSeries) return { kind: "ask-scope", task: t };
   const deletedAtISO = ctx.now.toISOString();
 
-  if (ctx.scope === "future") {
+  if (ctx.scope === "future" && endsSeries) {
     if (Number.isNaN(Date.parse(t.dueISO))) return { kind: "none" };
     const nextUntil = recurringSeriesCutoffBefore(t);
     if (!nextUntil) return { kind: "none" };

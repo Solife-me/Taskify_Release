@@ -4,7 +4,7 @@ import Foundation
 ///
 /// UI tests get a different bundle identifier at build time. This value adds the remaining
 /// runtime isolation without mutating process-global environment variables: a session-scoped
-/// temporary store/outbox, a separate Keychain service, no relay startup and no wallet startup.
+/// temporary store/outbox, a separate Keychain service, and no relay startup.
 enum MacRuntimeConfiguration: Equatable {
     case production
     case uiTest(MacUITestRuntimeConfiguration)
@@ -20,15 +20,6 @@ enum MacRuntimeConfiguration: Equatable {
     /// no network entitlement and no push entitlement, so a UI launch can never register a token
     /// or contact the production relay as a side effect.
     var registersForRemoteNotifications: Bool { self == .production }
-
-    /// Resolve every startup side effect before executing one. Recovery mode deliberately keeps
-    /// the ordinary task/sync services but never opens the wallet database or starts its monitors.
-    func startPlan(isWalletRecoveryMode: Bool) -> MacRuntimeStartPlan {
-        MacRuntimeStartPlan(
-            startsDeferredServices: startsDeferredServices,
-            startsWallet: self == .production && !isWalletRecoveryMode
-        )
-    }
 
     static func resolve(
         isUITestHost: Bool,
@@ -53,9 +44,7 @@ enum MacRuntimeConfiguration: Equatable {
             outboxURL: root.appendingPathComponent("taskify-ui-test-outbox.json", isDirectory: false),
             identityService: "\(bundleIdentifier).identity.\(sessionID)",
             initialLink: initialLink,
-            resetsStore: !arguments.contains("--taskify-ui-test-preserve-store"),
-            walletEnabled: arguments.contains("--taskify-ui-test-wallet-enabled"),
-            walletRecoveryPreview: arguments.contains("--taskify-ui-test-wallet-recovery")
+            resetsStore: !arguments.contains("--taskify-ui-test-preserve-store")
         ))
     }
 
@@ -85,8 +74,6 @@ struct MacUITestRuntimeConfiguration: Equatable {
     let identityService: String
     let initialLink: URL?
     let resetsStore: Bool
-    let walletEnabled: Bool
-    let walletRecoveryPreview: Bool
 }
 
 /// A developer-only entry point for the signed APNs provisioning proof. It exercises the same
@@ -126,24 +113,5 @@ struct MacUITestExternalActionConfiguration: Equatable {
             storeURL: test.storeURL,
             publishesToRelays: false
         )
-    }
-}
-
-struct MacRuntimeStartPlan: Equatable {
-    let startsDeferredServices: Bool
-    let startsWallet: Bool
-}
-
-/// Executes the resolved startup plan. Keeping the decision outside `MacRuntime` makes the
-/// “recovery never starts the wallet” guarantee testable without constructing the app graph.
-@MainActor
-enum MacRuntimeStartExecutor {
-    static func run(
-        plan: MacRuntimeStartPlan,
-        startDeferredServices: () -> Void,
-        startWallet: () async -> Void
-    ) async {
-        if plan.startsDeferredServices { startDeferredServices() }
-        if plan.startsWallet { await startWallet() }
     }
 }

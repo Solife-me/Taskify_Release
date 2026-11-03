@@ -36,8 +36,8 @@ const stateKey = (state: ChatSyncState) =>
  * Chat state (read markers and shared-item responses), synced through the document engine. Read
  * markers move every time a conversation is viewed, so publishes are coalesced: one replaceable
  * event per 15-second window rather than one per message, flushed early when the tab is hidden
- * so the next device picked up already sees it. The payload keeps its top-level layout, which
- * iOS reads.
+ * so the next device picked up already sees it. A new inbox answer publishes at once. The payload
+ * keeps its top-level layout, which iOS reads.
  */
 export const CHAT_STATE_SYNC: MergedDocumentConfig<ChatSyncState> = {
   dTag: CHAT_STATE_SYNC_D_TAG,
@@ -203,9 +203,22 @@ export function useNostrChatStateSync(params: UseNostrChatStateSyncParams) {
     noteLocalChange();
   }), [noteLocalChange]);
 
+  // Accepting or declining is a deliberate action the user expects to see on their other devices
+  // right away, so a new answer publishes now; only read markers wait out the 15-second window.
+  // The map is rebuilt on every task change, so compare contents rather than identity.
+  const inboxResponsesKey = useMemo(
+    () => JSON.stringify(Object.entries(localInboxResponses).sort(([a], [b]) => a.localeCompare(b))),
+    [localInboxResponses],
+  );
+  const publishedInboxResponsesKeyRef = useRef(inboxResponsesKey);
   useEffect(() => {
     noteLocalChange();
-  }, [localInboxResponses, noteLocalChange]);
+    if (publishedInboxResponsesKeyRef.current === inboxResponsesKey) return;
+    publishedInboxResponsesKeyRef.current = inboxResponsesKey;
+    // No-op unless the change left something to publish (an answer applied from another device
+    // leaves nothing).
+    if (latest.current.enabled && latest.current.nostrPK) engine.flushPending();
+  }, [engine, inboxResponsesKey, noteLocalChange]);
 
   useEffect(() => {
     const onHide = () => {

@@ -81,7 +81,7 @@ Taskify is a **privacy-first, local-first task manager** with Nostr-based sync a
 | **PWA** | React 19, Vite, Tailwind | UI, local state, Nostr sync, Cashu wallet |
 | **Cloudflare Worker** | Wrangler, TypeScript | Push notifications, reminder scheduling, backup storage, cron triggers |
 | **Native iOS app** | SwiftUI, TaskifyCore | Native task/chat/wallet client, NIP-17 inbox, local notification classification |
-| **Native macOS app** | SwiftUI/AppKit, shared native services | Desktop boards, agenda, chat, wallet and settings; see taskify-macos/README.md for parity gaps |
+| **Native macOS app** | SwiftUI/AppKit, shared native services | Desktop boards, agenda, chat and settings (no wallet; it does not link `TaskifyWallet`); see taskify-macos/README.md for parity gaps |
 | **Taskify Push Relay** | Node.js, Nostr, APNs, Web Push, StartOS | Encrypted kind-1059 retention, opaque-token APNs rich-preview delivery, and generic Web Push chat alerts for the PWA |
 | **Nostr relay network** | NDK, nostr-tools | Decentralized event transport and persistence |
 
@@ -221,15 +221,15 @@ is public and contains both architectures before changing the StartOS image pin.
   scratch path outside the repository, the unsigned `Local` app build, and the isolated Mac UI
   smoke test after changing Mac sources or any shared iOS-app source in the generator manifest.
   The UI-test configuration has a different bundle id, session-scoped temporary store/outbox and
-  Keychain service, and starts neither relays nor the wallet. CI runs all four gates on the Xcode
-  27 runner; the UI gate currently contains ten isolated smoke tests, including the local
+  Keychain service, and starts no relays. CI runs all four gates on the Xcode
+  27 runner; the UI gate currently contains eleven isolated smoke tests, including the local
   Spotlight-index/open/remove lifecycle and raw-image paste in both attachment composers. The
-  first smoke also terminates the app, invokes Add Task out of process through
-  `AppIntentsTesting`, relaunches, and verifies the saved task.
-- Production Mac builds still publish no App Shortcuts. C11-6A compiles the shared intent/provider
-  only in the `UITest` configuration behind `TASKIFY_MAC_SHORTCUTS`; do not add that flag to Local,
-  Debug, or Release until the signed terminated-app test passes on a host with Apple development
-  signing. The production Mac target now has the APNs entitlement and app-delegate lifecycle for
+  first smoke also terminates the app, invokes Add Task and Remind Me out of process through
+  `AppIntentsTesting`, relaunches, and verifies the saved tasks.
+- Mac builds publish the shared Add Task and Remind Me App Shortcuts in every configuration
+  (`TASKIFY_MAC_SHORTCUTS`, set by `generate-project.py`), and on macOS 27 the reminders App Schema
+  intents too (not in `UITest`, whose store is isolated). The terminated-app smoke invokes both Add
+  Task and Remind Me; it needs Xcode UI automation allowed on the host. The production Mac target now has the APNs entitlement and app-delegate lifecycle for
   the C11-7A provisioning gate, but registers only after the existing push opt-in succeeds. A
   `DEBUG` build can exercise that opt-in with `--taskify-dm-push-provisioning-spike`; Release has no
   product toggle yet. Mac DM push must use an explicit `macos` registration and its own APNs topic;
@@ -325,6 +325,7 @@ is public and contains both architectures before changing the StartOS image pin.
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 | `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
+| `taskify-ios-native/Tests/TaskifyCoreTests/TaskifyReminderPhraseTests.swift`, `ReminderFromSiriAndWatchTests.swift`, `Tests/TaskifyNativeUITests/SiriReminderUITests.swift` | Siri reminders and Watch reminder editing | Spoken requests split into title and time (calendar words, “in 20 minutes”, bare “at 5” as next occurrence, a day alone at 9:00 AM, invocation words removed); the shared reminder vocabulary round-trips; Siri-added tasks keep their time, land on their weekday column and carry the reminder; intent notifications use the app scheduler's identifiers; Watch edits read, toggle, normalize and write reminders, and older edits without them leave the iPhone's alone; the UI test runs Remind Me out of process on a terminated app and finds the timed task with its reminder |
 | `taskify-ios-native/Tests/TaskifyCoreTests/TaskifySharedContainerTests.swift` | Native storage | Signed Mac App Group authorization, private fallback, migration preservation and repeated saves/reloads |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SnapshotLookupCacheTests.swift` | Native board cache invalidation/reuse, compound scope, calendar boundaries, sorting, and flat timeline identities |
 | `taskify-ios-native/Tests/TaskifyCoreTests/SharedInboxTests.swift` | NIP-17 private messages | Gift-wrap verification, independent sender/recipient copies, encrypted group task/event shares with persisted conversation routing, strict kind-10050 routing, and signed inbox preferences |
@@ -334,7 +335,7 @@ is public and contains both architectures before changing the StartOS image pin.
 | `taskify-ios-native/Tests/TaskifyWatchChatRuntimeTests/TaskifyWatchIndependentClientTests.swift` | Independent Watch task transport privacy | A failed self-hosted gateway never sends signed task reads or writes to Taskify's Worker; Taskify's own gateway retains the temporary compatibility fallback |
 | `taskify-core/fixtures/dm-push-registration-vectors.json`, `taskify-ios-native/Tests/TaskifyCoreTests/DMPushRegistrationClientTests.swift`, `push-relay/test/{server,apns,store}.test.js` | Apple push registration across native clients and relay | Shared legacy/iOS/Watch/Mac platform and token-normalization vectors; NIP-98 request binding; distinct metadata-free Mac topic routing with no preview capability |
 | `taskify-ios-native/Tests/TaskifyCoreTests/ShareTaskDraftTests.swift`, `taskify-ios-native/Tests/TaskifyNativeUITests/ShareToTaskUITests.swift` | Native share sheet to tasks | Draft title/note rules and isolated file persistence; Safari page-title capture; real image upload and attachment when the app imports the draft |
-| `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift`, `taskify-macos/UITests/TaskifyMacUITests.swift` | Mac build, presentation and isolated app host | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 51 package tests cover account-vault/storage isolation, first-run primary replacement, safe account removal and primary promotion, DST-aware placement, list drafts, pending wallet outcomes, recovery consent, payment-request mint selection, recurrence, deep-link selection, runtime isolation, live withdraw-only routes, recovery-mode wallet startup, production-only APNs lifecycle/entitlements, the explicit signed-push proof gate, file/raw-image import, Transferable type negotiation, both encrypted attachment inputs, and the isolated no-relay external-action store; twelve isolated host smokes cover deep-link navigation plus terminated-app App Intent capture, wallet close-out surfaces, task editing and completion, two-window conflicts/account switching, quit/outbox persistence, local Spotlight index/open/remove, raw PNG paste in both composers, and chat composer/attachment UI without production relays, APNs registration or wallet startup |
+| `taskify-macos/Scripts/generate-project.py`, `taskify-macos/Tests/MacPresentationTests.swift`, `taskify-macos/UITests/TaskifyMacUITests.swift` | Mac build, presentation and isolated app host | Generated shared-source/product manifest matches the committed Xcode project; the full unsigned app compiles in CI; 47 package tests cover account-vault/storage isolation, first-run primary replacement, safe account removal and primary promotion, DST-aware placement, list drafts, recurrence, deep-link selection, runtime isolation, production-only APNs lifecycle/entitlements, the explicit signed-push proof gate, file/raw-image import, Transferable type negotiation, both encrypted attachment inputs, the isolated no-relay external-action store, and that the Mac project neither links `TaskifyWallet` nor compiles the iPhone wallet sources; eleven isolated host smokes cover deep-link navigation plus terminated-app App Intent capture (Add Task and Remind Me), a workspace with no Wallet, task editing and completion, two-window conflicts/account switching, quit/outbox persistence, local Spotlight index/open/remove, raw PNG paste in both composers, and chat composer/attachment UI without production relays or APNs registration |
 | `push-relay/test/*.test.js`, `taskify-push-relay/test/*.test.js` | Push relay and StartOS package | NIP-42/NIP-98 authorization, recipient-only reads, sender-copy suppression, persistence, expiry, APNs payload privacy and per-platform topic configuration/migration, one kept-open APNs connection (reconnected after a close) with per-app collapse IDs and a day's expiry, retries, authenticated WebSocket delivery, and Web Push (RFC 8291 payload a browser decrypts, VAPID signature, push-service-only endpoints); refusals that need no signature (kind, recipient, author, size) come before the signature check; a reader that falls too far behind is cut off; the SQLite store's durability across reopening, all-or-nothing writes, task-cache columns on disk, and the one-time import of a former `state.json` (sequences kept, run once); package tests cover StartOS configuration actions |
 
 Additional PWA regression tests include `src/nostr/startupStability.test.ts`, which is

@@ -681,14 +681,19 @@ private struct TaskifyWatchConversationView: View {
                     Button(role: .destructive) { audioRecorder.cancel() } label: {
                         Image(systemName: "xmark")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(TaskifyWatchComposerCircleButtonStyle(symbolColor: .primary))
+                    .accessibilityLabel("Cancel recording")
                     Circle().fill(.red).frame(width: 7, height: 7)
                     Text(audioTime(audioRecorder.elapsed)).font(.caption.monospacedDigit())
                     Spacer(minLength: 0)
                     Button { finishAndSendAudio() } label: {
                         Image(systemName: "paperplane.fill")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(TaskifyWatchComposerCircleButtonStyle(
+                        symbolColor: model.taskifyAccentForegroundColor,
+                        fill: model.taskifyAccentColor
+                    ))
+                    .accessibilityLabel("Send audio message")
                 }
                 .padding(.horizontal, 7)
             } else {
@@ -713,10 +718,10 @@ private struct TaskifyWatchConversationView: View {
 
                     Button { startAudioRecording() } label: {
                         Image(systemName: "mic.fill")
-                            .frame(width: 34, height: 34)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.circle)
+                    .buttonStyle(TaskifyWatchComposerCircleButtonStyle(
+                        symbolColor: model.taskifyAccentColor
+                    ))
                     .disabled(isSending || audioRecorder.isRequestingPermission || !model.isChatConfigured)
                     .accessibilityLabel("Record audio message")
                 }
@@ -1456,6 +1461,37 @@ private struct TaskifyWatchComposerGlass: ViewModifier {
                 .background(.ultraThinMaterial, in: Capsule())
                 .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 0.8))
         }
+    }
+}
+
+/// A circle sized to the composer field's height. The system bordered styles pad their label on
+/// watchOS, which made the mic button dwarf the field and squeeze its prompt. Without a fill it is
+/// the same neutral glass as the field; with one it marks the action that sends.
+private struct TaskifyWatchComposerCircleButtonStyle: ButtonStyle {
+    static let diameter: CGFloat = 38
+
+    let symbolColor: Color
+    var fill: Color?
+    @Environment(\.isEnabled) private var isEnabled
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        let symbol = configuration.label
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(symbolColor)
+        Group {
+            if let fill {
+                symbol
+                    .frame(width: Self.diameter, height: Self.diameter)
+                    .background(fill, in: Circle())
+                    .contentShape(Circle())
+            } else {
+                symbol.taskifyWatchCircularGlassControl(size: Self.diameter)
+            }
+        }
+        .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
+        .scaleEffect(configuration.isPressed ? 0.94 : 1)
+        .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

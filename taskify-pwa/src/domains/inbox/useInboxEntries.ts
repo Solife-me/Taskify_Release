@@ -91,7 +91,6 @@ export function useInboxEntries({
     chatUnreadCount,
     dmUnreadCount,
     inboxPendingItems,
-    messagesUnreadCount,
     setDmUnreadCount,
     inboxEntries,
   };

@@ -12,9 +12,7 @@ final class MacRuntime: ObservableObject {
     @Published private(set) var hideCompletedSubtasks: Bool
     var bible: BibleTrackerStore { model.bibleTrackerStore }
     let calendar = DeviceCalendarStore()
-    let wallet = WalletViewModel()
     let configuration: MacRuntimeConfiguration
-    let isWalletRecoveryMode: Bool
     private let requestsDMPushProvisioningSpike: Bool
     private let identityStore: KeychainIdentityStore
     private let accountVault: MacAccountVault?
@@ -22,12 +20,10 @@ final class MacRuntime: ObservableObject {
     private var accountVaultState: MacAccountVaultState
     private var startedAccountID: String?
     private var startingAccountID: String?
-    private var walletStarted = false
     private var dayChangeObservers: [NSObjectProtocol] = []
 
     init(configuration: MacRuntimeConfiguration = .production) {
         self.configuration = configuration
-        self.isWalletRecoveryMode = WalletPhaseOut.isRecoveryMode
 #if DEBUG
         requestsDMPushProvisioningSpike = MacDMPushProvisioningSpike.isRequested(
             configuration: configuration
@@ -184,7 +180,6 @@ final class MacRuntime: ObservableObject {
               !model.identityPublicKey.isEmpty else { return }
         let startingModel = model
         let accountID = model.identityPublicKey
-        wallet.setNostrAccountIdentity(try? model.accountIdentityForScopedWalletOperation())
         guard startedAccountID != accountID, startingAccountID != accountID else { return }
         startingAccountID = accountID
         defer {
@@ -200,18 +195,11 @@ final class MacRuntime: ObservableObject {
             )
         }
 #endif
-        let shouldStartWallet = !walletStarted
-        if shouldStartWallet { walletStarted = true }
-        await MacRuntimeStartExecutor.run(
-            plan: configuration.startPlan(isWalletRecoveryMode: isWalletRecoveryMode),
-            startDeferredServices: {
-                guard startingModel === self.model, startingModel.isAccountActive else { return }
-                startingModel.initialContentDidAppear()
-            },
-            startWallet: {
-                if shouldStartWallet { await wallet.start() }
-            }
-        )
+        if configuration.startsDeferredServices,
+           startingModel === model,
+           startingModel.isAccountActive {
+            startingModel.initialContentDidAppear()
+        }
         guard startingModel === model, startingModel.isAccountActive else { return }
         startedAccountID = accountID
     }
@@ -225,7 +213,6 @@ final class MacRuntime: ObservableObject {
         model.refreshSyncIfNeeded()
         model.refreshFullWeekRecurrencesIfNeeded()
         model.refreshAccountSyncIfNeeded()
-        wallet.appDidBecomeActive()
     }
 
     func addAndSwitchAccount(nsec: String, label: String?) async -> Bool {
@@ -331,8 +318,6 @@ final class MacRuntime: ObservableObject {
             return false
         }
 
-        wallet.resetNostrAccountScopedState()
-        wallet.setNostrAccountIdentity(identity)
         model = makeAccountModel(accountID: accountID)
         refreshAccountViewPreferences()
         startedAccountID = nil
@@ -462,8 +447,6 @@ final class MacRuntime: ObservableObject {
         }
 
         accountVaultState = newState
-        wallet.resetNostrAccountScopedState()
-        wallet.setNostrAccountIdentity(targetIdentity)
         await restoreAccountModel(accountID: plan.activeAccountID)
         return true
     }
@@ -483,7 +466,6 @@ final class MacRuntime: ObservableObject {
     }
 
     private func registerCurrentModel() {
-        model.registerWalletPaymentReceiver(wallet)
         TaskNotificationActionRouter.shared.register(model: model)
         if configuration.registersForRemoteNotifications {
             TaskifyDMPushCoordinator.shared.register(model: model)
@@ -571,8 +553,6 @@ final class MacRuntime: ObservableObject {
 
         accountVaultState = newState
         await TaskifySpotlightIndexer.shared.activate(accountID: account.publicKeyHex)
-        wallet.resetNostrAccountScopedState()
-        wallet.setNostrAccountIdentity(identity)
         startedAccountID = nil
         startingAccountID = nil
         model = Self.makePrimaryModel(
@@ -716,7 +696,6 @@ final class MacApplicationDelegate: NSObject, NSApplicationDelegate {
         guard let runtime, !terminating else { return .terminateNow }
         terminating = true
         Task {
-            runtime.wallet.appDidEnterBackground()
             let saved = await runtime.model.persistBeforeTermination()
             if !saved { terminating = false }
             sender.reply(toApplicationShouldTerminate: saved)
@@ -747,15 +726,11 @@ struct TaskifyMacApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MacWorkspace(
-                initialLink: runtime.configuration.uiTest?.initialLink,
-                isWalletRecoveryMode: runtime.isWalletRecoveryMode
-            )
+            MacWorkspace(initialLink: runtime.configuration.uiTest?.initialLink)
                 // Rebuild every window's transient selection, editor, draft and split-view state
                 // at the account boundary instead of relying on each sheet to notice the swap.
                 .id(runtime.model.identityPublicKey)
                 .environment(runtime.model)
-                .environmentObject(runtime.wallet)
                 .environmentObject(runtime.bible)
                 .environmentObject(runtime.calendar)
                 .environmentObject(runtime)
@@ -775,7 +750,6 @@ struct TaskifyMacApp: App {
             MacSettingsView()
                 .id(runtime.model.identityPublicKey)
                 .environment(runtime.model)
-                .environmentObject(runtime.wallet)
                 .environmentObject(runtime.bible)
                 .environmentObject(runtime.calendar)
                 .environmentObject(runtime)
@@ -819,7 +793,7 @@ func macCopy(_ text: String) {
     NSPasteboard.general.setString(text, forType: .string)
 }
 
-/// For a private key or a Cashu token: kept to this Mac (no Universal Clipboard), marked concealed
+/// For a private key or a received Cashu token: kept to this Mac (no Universal Clipboard), marked concealed
 /// so clipboard managers that honour the nspasteboard.org convention skip it, and cleared after
 /// two minutes unless something else has been copied since.
 func macCopySecret(_ text: String) {

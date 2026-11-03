@@ -101,10 +101,12 @@ export class MergedDocumentSync<T> {
   private publishQueued = false;
   private debounceTimer: unknown = null;
 
-  constructor(
-    private readonly config: MergedDocumentConfig<T>,
-    private readonly deps: MergedDocumentDeps<T>,
-  ) {
+  private readonly config: MergedDocumentConfig<T>;
+  private readonly deps: MergedDocumentDeps<T>;
+
+  constructor(config: MergedDocumentConfig<T>, deps: MergedDocumentDeps<T>) {
+    this.config = config;
+    this.deps = deps;
     this.syncState = deps.storage.loadState() ?? EMPTY_STATE;
     const storedBase = deps.storage.loadBase();
     this.base = storedBase == null ? null : config.sanitize(storedBase);

@@ -122,8 +122,7 @@ describe("Hermes model picker helpers", () => {
       models: ["lfm3-audio:latest", "deepseek-v4.1-flash:cloud"],
     };
     const saved = saveHermesCatalogCache("bot", "listing-1", catalog, 1_000);
-    expect(loadHermesCatalogCache("bot", "listing-1", "custom:local")).toEqual(saved);
-    expect(loadHermesCatalogCache("bot", "listing-2", "custom:local")).toEqual(saved);
+    expect(loadHermesCatalogCache("bot", "custom:local")).toEqual(saved);
     expect(isHermesCatalogCacheFresh(saved, 1_001, "listing-2")).toBe(false);
     expect(isHermesCatalogCacheFresh(saved, 1_000 + HERMES_CATALOG_CACHE_TTL_MS - 1)).toBe(true);
     expect(isHermesCatalogCacheFresh(saved, 1_000 + HERMES_CATALOG_CACHE_TTL_MS)).toBe(false);

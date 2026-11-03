@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.json --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
     "test:lint": "npm run lint",

@@ -82,11 +82,12 @@ export class BoardSyncLedger {
   private readonly pendingEvents = new Set<string>();
   private readonly tombstones: Clock;
   private persistScheduled = false;
+  private readonly storage: TombstoneStorage;
+  private readonly tombstonesPerBoard: number;
 
-  constructor(
-    private readonly storage: TombstoneStorage,
-    private readonly tombstonesPerBoard = 500,
-  ) {
+  constructor(storage: TombstoneStorage, tombstonesPerBoard = 500) {
+    this.storage = storage;
+    this.tombstonesPerBoard = tombstonesPerBoard;
     this.tombstones = parseTombstones(storage.load());
     // A deleted task's clock starts at its deletion, so older versions are rejected after a reload.
     for (const [boardTag, entries] of this.tombstones) {

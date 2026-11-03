@@ -3,7 +3,10 @@ import os
 import Security
 import SwiftUI
 import TaskifyCore
+#if os(iOS)
+// The Mac app has no wallet: TaskifyWallet is linked only by the iPhone app.
 import TaskifyWallet
+#endif
 import TaskifyWatchShared
 import WidgetKit
 
@@ -183,9 +186,11 @@ final class AppModel {
     private(set) var weekStart: WeekdayColumn { didSet { mirrorDeviceTaskSettings() } }
     private(set) var showFullWeekRecurring: Bool
     private(set) var chatMessageRetention: ChatMessageRetention
+#if os(iOS)
     private(set) var walletConversionEnabled = WalletCurrencySettings.conversionEnabled
     private(set) var walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
     private(set) var walletDenominationDisplay = WalletCurrencySettings.denominationDisplay
+#endif
     private(set) var startupTab: StartupTab
     private(set) var startupBoardIDsByWeekday: [Int: String]
     private(set) var appRelays: [String]
@@ -274,6 +279,8 @@ final class AppModel {
     @ObservationIgnored var appStateLedger: AppStateSyncLedger
     @ObservationIgnored var appStateFetchTask: Task<Void, Never>?
     @ObservationIgnored var appStatePublishTasks: [String: Task<Void, Never>] = [:]
+    /// The pending chat-state publish carries an inbox answer, so it runs on the short delay.
+    @ObservationIgnored var chatStatePublishCarriesAnswers = false
     @ObservationIgnored var lastAppStateFetchAt: Date?
     @ObservationIgnored var isApplyingSyncedScriptureMemory = false
     /// Whether this session's relays have delivered their stored history. Generated tasks
@@ -589,6 +596,7 @@ final class AppModel {
         }
     }
 
+#if os(iOS)
     func registerWalletPaymentReceiver(_ wallet: WalletViewModel) {
         walletPaymentDeliveryHandler = { [weak wallet] in
             wallet?.paymentDeliveryWasQueued()
@@ -602,6 +610,7 @@ final class AppModel {
             ) ?? false
         }
     }
+#endif
 
     func task(withID taskID: String) -> TaskItem? {
         snapshotLookupCache.task(id: taskID, snapshot: tasksSnapshot)
@@ -884,6 +893,7 @@ final class AppModel {
         scheduleAccountBackupPublish()
     }
 
+#if os(iOS)
     func setWalletConversionEnabled(_ enabled: Bool) {
         guard enabled != walletConversionEnabled else { return }
         WalletCurrencySettings.setConversionEnabled(enabled)
@@ -905,6 +915,7 @@ final class AppModel {
         walletDenominationDisplay = display
         scheduleAccountBackupPublish()
     }
+#endif
 
     func clearDirectMessageHistory() {
         guard snapshot.clearDirectMessageHistory().changed else { return }
@@ -3600,6 +3611,24 @@ final class AppModel {
         }
 
         let calendar = weekCalendar
+        // An older build ended the review series here with a series cutoff, deleting every review
+        // that arrived from other devices while the relays kept them open. With no open review,
+        // the current one comes back and is republished so every device converges on it.
+        if canGenerateSharedTasks,
+           !snapshot.tasks.contains(where: { isScriptureMemoryTask($0) && !$0.completed && !$0.isDeleted }),
+           let restore = ScriptureMemoryAlgorithm.reviewDeletedByCutoffToRestore(
+               snapshot.tasks,
+               today: now,
+               calendar: calendar
+           ),
+           let index = snapshot.tasks.firstIndex(where: { $0.id == restore.id }) {
+            var task = snapshot.tasks[index]
+            task.deleted = false
+            task.recurrence = recurrence
+            snapshot.tasks[index] = task
+            updatedTaskIDs.insert(task.id)
+        }
+
         // Only open review tasks follow the configured board; history stays where it was. Not
         // before this device's open tasks are checked against the relays: moving a copy another
         // device already completed or deleted republishes it, open, on the new board.
@@ -5492,12 +5521,14 @@ final class AppModel {
         isAccountActive && identityPublicKey == accountID
     }
 
+#if os(iOS)
     /// Captures the active account before a wallet-adjacent operation that authenticates with a
     /// Nostr identity. Wallet funds remain device-wide, but solife.me/NWC-forwarding operations
     /// must keep the identity that initiated them instead of rereading a newly switched key.
     func accountIdentityForScopedWalletOperation() throws -> NostrIdentity {
         try activeIdentity()
     }
+#endif
 
     private func applyIdentity(_ identity: NostrIdentity) {
         guard isAccountActive,
@@ -5580,6 +5611,9 @@ final class AppModel {
         let inboxPublicKey = identityPublicKey.nilIfEmpty
         let inboxRelays = effectiveNIP17InboxRelayURLs
         let excludedRelayURLs = excludedSyncRelayURLs
+        // Other devices' read markers, inbox answers and Bible/scripture state stream in live.
+        let appStateAuthor = isAccountActive && cachedIdentity != nil ? inboxPublicKey : nil
+        let appStateRelays = appStateRelayURLs
         Task { [syncEngine] in
             await syncEngine.configure(
                 boards: boards,
@@ -5588,6 +5622,7 @@ final class AppModel {
                 inboxRelayURLs: inboxRelays,
                 excludedRelayURLs: excludedRelayURLs
             )
+            await syncEngine.setAppStateSubscription(authorPublicKey: appStateAuthor, relayURLs: appStateRelays)
         }
     }
 
@@ -5648,6 +5683,8 @@ final class AppModel {
             enqueueSharedInboxEvents([event], isHistory: false)
         case .sharedInboxBatch(let events):
             enqueueSharedInboxEvents(events, isHistory: true)
+        case .appState(let event):
+            await receiveAppStateEvent(event)
         case .publishState(let recordID, let state):
             applyDirectMessagePublishState(recordID: recordID, state: state)
         case .status(let report):
@@ -5865,6 +5902,7 @@ final class AppModel {
         // like solife.me, or anything else that isn't fulfilling a request of ours) needs to
         // keep flowing through to the generic detection below and to become a normal chat
         // message, the same way the PWA still shows every payment inline in the DM thread.
+#if os(iOS)
         if rumor.publicKey != identity.publicKeyHex,
            let payloadJSON = CashuPaymentRequestContract.paymentPayloadJSON(from: rumor.content) {
             do {
@@ -5882,6 +5920,7 @@ final class AppModel {
                 effects.walletDeliveryFailed = true
             }
         }
+#endif
         if let group = NostrGroupConversation(
             rumor: rumor,
             identityPublicKey: identity.publicKeyHex
@@ -6048,6 +6087,7 @@ final class AppModel {
         // card. This is a superset of the strict path above, so a message can safely match both —
         // whichever pipeline runs first claims it; the mint's double-spend protection makes the
         // second attempt a harmless no-op.
+#if os(iOS)
         if directMessage.isIncoming,
            let token = CashuPaymentRequestContract.structuredPaymentToken(from: directMessage.content) {
             do {
@@ -6065,6 +6105,7 @@ final class AppModel {
                 effects.walletDeliveryFailed = true
             }
         }
+#endif
 
         if updatedSnapshot.ingestDirectMessage(directMessage) {
             effects.snapshotChanged = true
@@ -7431,6 +7472,9 @@ final class AppModel {
         updatedPayload.settings[ChatHistorySettings.pwaSettingsKey] = .string(
             chatMessageRetention.rawValue
         )
+#if os(iOS)
+        // The Mac leaves these as the iPhone or PWA last wrote them: the payload starts from
+        // the remote copy.
         updatedPayload.settings[WalletCurrencySettings.conversionEnabledPWAKey] = .boolean(
             walletConversionEnabled
         )
@@ -7440,6 +7484,7 @@ final class AppModel {
         updatedPayload.settings[WalletCurrencySettings.denominationDisplayPWAKey] = .string(
             walletDenominationDisplay.rawValue
         )
+#endif
         updatedPayload.settings[FastingRemindersSettings.enabledPWAKey] = .boolean(fastingRemindersEnabled)
         updatedPayload.settings[FastingRemindersSettings.modePWAKey] = .string(
             fastingRemindersMode == .random ? "random" : "weekday"
@@ -7525,6 +7570,7 @@ final class AppModel {
                 scheduleSave()
             }
         }
+#if os(iOS)
         if case .boolean(let enabled)? = payload.settings[WalletCurrencySettings.conversionEnabledPWAKey] {
             WalletCurrencySettings.setConversionEnabled(enabled)
             walletConversionEnabled = enabled
@@ -7539,6 +7585,7 @@ final class AppModel {
             WalletCurrencySettings.setDenominationDisplay(display)
             walletDenominationDisplay = display
         }
+#endif
         applySyncedScriptureMemorySettings(from: payload)
         applySyncedFastingReminderSettings(from: payload)
     }

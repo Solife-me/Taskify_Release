@@ -1,7 +1,10 @@
 import Foundation
 import Observation
 import TaskifyCore
+#if os(iOS)
+// The Mac app has no wallet: TaskifyWallet is linked only by the iPhone app.
 import TaskifyWallet
+#endif
 import UserNotifications
 #if canImport(AlarmKit)
 import AlarmKit
@@ -51,7 +54,7 @@ enum TaskUrgentAlarmPreferences {
 }
 
 actor TaskNotificationCoordinator {
-    private static let taskIdentifierPrefix = "taskify.task."
+    private static let taskIdentifierPrefix = TaskifyTaskReminderNotification.identifierPrefix
     private static let eventIdentifierPrefix = "taskify.event."
     private static let managedAlarmIDsDefaultsKey = "taskify.notifications.managedAlarmIDs"
     private let center: UNUserNotificationCenter
@@ -133,28 +136,12 @@ actor TaskNotificationCoordinator {
         }
 
         let taskReminders = tasks
-            .filter { !$0.isDeleted && !$0.completed }
             .flatMap { task in
-                task.reminderFireDates().compactMap { reminder, fireDate -> ScheduledReminder? in
-                    guard fireDate > now.addingTimeInterval(1) else { return nil }
+                TaskifyTaskReminderNotification.notifications(for: task, accountID: accountID, after: now)
                     // A successfully scheduled urgent alarm replaces only the ordinary
                     // notification at the exact due time. Earlier reminder notifications remain.
-                    guard !(alarmedTaskIDs.contains(task.id) && reminder.minutesBefore == 0) else {
-                        return nil
-                    }
-                    return ScheduledReminder(
-                        identifier: Self.taskIdentifierPrefix + task.id + "." + reminder.rawValue,
-                        title: task.title,
-                        body: reminder.label,
-                        userInfo: [
-                            TaskifyNotificationContract.accountIDKey: accountID,
-                            TaskifyNotificationContract.taskIDKey: task.id,
-                            TaskifyNotificationContract.boardIDKey: task.boardID,
-                        ],
-                        categoryIdentifier: TaskifyNotificationContract.taskCategoryIdentifier,
-                        fireDate: fireDate
-                    )
-                }
+                    .filter { !(alarmedTaskIDs.contains(task.id) && $0.reminder.minutesBefore == 0) }
+                    .map(ScheduledReminder.init(task:))
             }
         let urgentEnabledKeys = TaskUrgentAlarmPreferences.enabledPreferenceKeys(defaults: defaults)
         let urgentFallbacks = tasks.compactMap { task -> ScheduledReminder? in
@@ -202,26 +189,7 @@ actor TaskNotificationCoordinator {
 
         for scheduled in upcoming {
             guard !Task.isCancelled, !isClosed else { break }
-            let content = UNMutableNotificationContent()
-            content.title = scheduled.title
-            content.body = scheduled.body
-            content.sound = .default
-            content.userInfo = scheduled.userInfo
-            if let categoryIdentifier = scheduled.categoryIdentifier {
-                content.categoryIdentifier = categoryIdentifier
-            }
-
-            var components = Calendar.current.dateComponents(
-                [.year, .month, .day, .hour, .minute, .second],
-                from: scheduled.fireDate
-            )
-            components.timeZone = Calendar.current.timeZone
-            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
-            let request = UNNotificationRequest(
-                identifier: scheduled.identifier,
-                content: content,
-                trigger: trigger
-            )
+            let request = scheduled.request
             try? await center.add(request)
             if isClosed {
                 center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
@@ -229,6 +197,35 @@ actor TaskNotificationCoordinator {
             }
         }
         return Self.label(for: settings.authorizationStatus)
+    }
+
+    /// Schedules one task's reminders now, for a process that added the task without the app
+    /// rescheduling (Siri and Shortcuts). Without this a reminder set by voice would wait for
+    /// the next time the app was opened. The app's next full reschedule replaces these, since
+    /// the identifiers are the same. Returns false when Taskify may not notify; it never asks.
+    @discardableResult
+    static func scheduleReminders(
+        for task: TaskItem,
+        accountID: String,
+        center: UNUserNotificationCenter = .current(),
+        now: Date = Date()
+    ) async -> Bool {
+        let settings = await center.notificationSettings()
+        guard canSchedule(settings.authorizationStatus) else { return false }
+        await TaskifyNotificationCategories.registerIfNeeded(center: center)
+        for notification in TaskifyTaskReminderNotification.notifications(
+            for: task,
+            accountID: accountID,
+            after: now
+        ) {
+            try? await center.add(ScheduledReminder(task: notification).request)
+        }
+        return true
+    }
+
+    /// Whether Taskify may post notifications, without asking.
+    static func canNotify(center: UNUserNotificationCenter = .current()) async -> Bool {
+        canSchedule(await center.notificationSettings().authorizationStatus)
     }
 
     func requestUrgentAlarmAuthorization() async -> Bool {
@@ -392,8 +389,57 @@ private struct ScheduledReminder: Sendable {
     var userInfo: [String: String]
     var categoryIdentifier: String?
     var fireDate: Date
+
+    init(
+        identifier: String,
+        title: String,
+        body: String,
+        userInfo: [String: String],
+        categoryIdentifier: String?,
+        fireDate: Date
+    ) {
+        self.identifier = identifier
+        self.title = title
+        self.body = body
+        self.userInfo = userInfo
+        self.categoryIdentifier = categoryIdentifier
+        self.fireDate = fireDate
+    }
+
+    init(task notification: TaskifyTaskReminderNotification) {
+        self.init(
+            identifier: notification.identifier,
+            title: notification.title,
+            body: notification.body,
+            userInfo: notification.userInfo,
+            categoryIdentifier: TaskifyNotificationContract.taskCategoryIdentifier,
+            fireDate: notification.fireDate
+        )
+    }
+
+    var request: UNNotificationRequest {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.userInfo = userInfo
+        if let categoryIdentifier {
+            content.categoryIdentifier = categoryIdentifier
+        }
+        var components = Calendar.current.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: fireDate
+        )
+        components.timeZone = Calendar.current.timeZone
+        return UNNotificationRequest(
+            identifier: identifier,
+            content: content,
+            trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+        )
+    }
 }
 
+#if os(iOS)
 struct DMPushRedeemedPaymentReceipt: Sendable {
     let eventID: String
     let amount: UInt64
@@ -598,6 +644,7 @@ actor WalletPaymentNotificationCoordinator {
         defaults.stringArray(forKey: Self.deliveredIdentifiersKey) ?? []
     }
 }
+#endif
 
 private final class NotificationPresentationDelegate: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(

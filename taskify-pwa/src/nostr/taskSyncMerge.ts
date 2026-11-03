@@ -141,6 +141,13 @@ export function applyIncomingTask(
   return copy;
 }
 
+type BatchTimers = { set: (run: () => void, ms: number) => unknown; clear: (timer: unknown) => void };
+
+const DEFAULT_BATCH_TIMERS: BatchTimers = {
+  set: (run, ms) => setTimeout(run, ms),
+  clear: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
+
 /**
  * Coalesces updates per group (a board) that arrive within `delayMs` of each other into one
  * `commit`, applied in arrival order.
@@ -148,14 +155,15 @@ export function applyIncomingTask(
 export class LiveUpdateBatcher<T> {
   private readonly batches = new Map<string, { updaters: Array<(prev: T) => T>; timer: unknown }>();
 
-  constructor(
-    private readonly commit: (apply: (prev: T) => T) => void,
-    private readonly delayMs: number,
-    private readonly timers: { set: (run: () => void, ms: number) => unknown; clear: (timer: unknown) => void } = {
-      set: (run, ms) => setTimeout(run, ms),
-      clear: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
-    },
-  ) {}
+  private readonly commit: (apply: (prev: T) => T) => void;
+  private readonly delayMs: number;
+  private readonly timers: BatchTimers;
+
+  constructor(commit: (apply: (prev: T) => T) => void, delayMs: number, timers: BatchTimers = DEFAULT_BATCH_TIMERS) {
+    this.commit = commit;
+    this.delayMs = delayMs;
+    this.timers = timers;
+  }
 
   enqueue(group: string, updater: (prev: T) => T): void {
     let batch = this.batches.get(group);

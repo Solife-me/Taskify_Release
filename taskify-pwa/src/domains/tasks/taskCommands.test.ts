@@ -134,6 +134,23 @@ describe("planCompleteTask", () => {
     expect(next.scriptureMemoryId).toBe(plan.scriptureReview?.nextScheduled?.entryId);
     expect(next.title).toMatch(/^Review /);
   });
+
+  it("schedules the next review even when the review carries an end date", () => {
+    // Relay copies still hold the end date a series cutoff wrote into them.
+    const entries = [
+      { id: "e1", bookId: "JHN", chapter: 3, startVerse: 16, endVerse: 16, addedAtISO: "2026-09-01T00:00:00.000Z", stage: 1, totalReviews: 1 },
+    ];
+    const review = task({
+      id: "recurrence:scripture-memory:2026-10-15",
+      seriesId: SCRIPTURE_MEMORY_SERIES_ID,
+      scriptureMemoryId: "e1",
+      recurrence: { type: "daily", untilISO: "2026-08-13T05:00:00.000Z" },
+    });
+    const plan = planCompleteTask([review], review.id, ctx({ scripture: { state: { entries }, baseDays: 1 } }));
+    expect(plan.tasks).toHaveLength(2);
+    expect(plan.tasks[1]).toMatchObject({ id: "recurrence:scripture-memory:2026-10-16", completed: false });
+    expect(plan.tasks[1].recurrence?.untilISO).toBeUndefined();
+  });
 });
 
 describe("planDeleteTask", () => {
@@ -176,6 +193,19 @@ describe("planDeleteTask", () => {
     expect(plan.publishDeleted.map((x) => x.id)).toEqual(["b", "c"]);
     expect(Object.keys(plan.cutoffs).length).toBeGreaterThan(0);
     expect(plan.tasks[0].recurrence?.untilISO).toBeDefined();
+  });
+
+  it("deletes only the review asked for, never ending the Scripture Memory series", () => {
+    const series = { recurrence: { type: "daily" as const }, seriesId: SCRIPTURE_MEMORY_SERIES_ID };
+    const current = task({ id: "recurrence:scripture-memory:2026-10-15", ...series });
+    const later = task({ id: "recurrence:scripture-memory:2026-10-16", dueISO: "2026-10-16T05:00:00.000Z", ...series });
+    const asked = planDeleteTask([current, later], {}, current.id, base);
+    expect(asked.kind).toBe("applied");
+    const plan = planDeleteTask([current, later], {}, current.id, { ...base, scope: "future", skipPrompt: true });
+    if (plan.kind !== "applied") throw new Error(plan.kind);
+    expect(plan.tasks.map((x) => x.id)).toEqual([later.id]);
+    expect(plan.publishDeleted.map((x) => x.id)).toEqual([current.id]);
+    expect(plan.cutoffs).toEqual({});
   });
 
   it("restarts the next occurrence's streak in full-week mode", () => {

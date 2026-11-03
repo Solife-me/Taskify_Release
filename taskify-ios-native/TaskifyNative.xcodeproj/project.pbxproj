@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D5EA1D000000000000000002 /* Sources/TaskifyApp/App/TaskifyRemindMeIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA1D000000000000000001 /* Sources/TaskifyApp/App/TaskifyRemindMeIntent.swift */; };
+		D5EA1D000000000000000004 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA1D000000000000000003 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift */; };
+		D5EA1D000000000000000005 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA1D000000000000000003 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift */; };
+		D5EA1D000000000000000007 /* TaskifyWatchRemindMeIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA1D000000000000000006 /* TaskifyWatchRemindMeIntent.swift */; };
 		BB07C0DE0000000000000001 /* ChatComposerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB07C0DE0000000000000002 /* ChatComposerUITests.swift */; };
 		R10000000000000000000001 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = R10000000000000000000006 /* NotificationService.swift */; };
 		R10000000000000000000002 /* KeychainIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000209 /* Sources/TaskifyApp/Security/KeychainIdentityStore.swift */; };
@@ -124,6 +128,7 @@
 		B00000000000000000009A03 /* NWCWalletUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000009A04 /* NWCWalletUITests.swift */; };
 		BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */; };
 		C1A7000000000000000000B2 /* SpotlightUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A7000000000000000000B1 /* SpotlightUITests.swift */; };
+		D5EA1D000000000000000009 /* SiriReminderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA1D000000000000000008 /* SiriReminderUITests.swift */; };
 		C1A6000000000000000000B2 /* ShareToTaskUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A6000000000000000000B1 /* ShareToTaskUITests.swift */; };
 		C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94100000000000000000F00 /* ChatRenderUITests.swift */; };
 		C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80500000000000000000F00 /* EventAttachmentUITests.swift */; };
@@ -195,6 +200,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D5EA1D000000000000000001 /* Sources/TaskifyApp/App/TaskifyRemindMeIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyRemindMeIntent.swift; sourceTree = SOURCE_ROOT; };
+		D5EA1D000000000000000003 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/Shared/TaskifyShortcutTaskNameEntity.swift; sourceTree = SOURCE_ROOT; };
+		D5EA1D000000000000000006 /* TaskifyWatchRemindMeIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskifyWatchRemindMeIntent.swift; sourceTree = "<group>"; };
 		BB07C0DE0000000000000002 /* ChatComposerUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatComposerUITests.swift; sourceTree = "<group>"; };
 		R10000000000000000000005 /* TaskifyNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TaskifyNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		R10000000000000000000006 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyNotificationService/NotificationService.swift; sourceTree = SOURCE_ROOT; };
@@ -293,6 +301,7 @@
 		B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift; sourceTree = SOURCE_ROOT; };
 		B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TaskSelectionUITests.swift; sourceTree = "<group>"; };
 		C1A7000000000000000000B1 /* SpotlightUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SpotlightUITests.swift; sourceTree = "<group>"; };
+		D5EA1D000000000000000008 /* SiriReminderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SiriReminderUITests.swift; sourceTree = "<group>"; };
 		C1A6000000000000000000B1 /* ShareToTaskUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ShareToTaskUITests.swift; sourceTree = "<group>"; };
 		C94100000000000000000F00 /* ChatRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatRenderUITests.swift; sourceTree = "<group>"; };
 		C80500000000000000000F00 /* EventAttachmentUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EventAttachmentUITests.swift; sourceTree = "<group>"; };
@@ -467,10 +476,12 @@
 				B00000000000000000000201 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift */,
 				B00000000000000000000202 /* Sources/TaskifyApp/App/AppModel.swift */,
 				B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */,
+				D5EA1D000000000000000001 /* Sources/TaskifyApp/App/TaskifyRemindMeIntent.swift */,
 				C116A0000000000000000F00 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift */,
 				C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */,
 				B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */,
 				B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */,
+				D5EA1D000000000000000003 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift */,
 				B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */,
 				B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */,
 				A20000000000000000000101 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift */,
@@ -597,6 +608,7 @@
 				126856C2CE041F21E7DFDC1B /* IPadKeyboardUITests.swift */,
 				B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */,
 				C1A7000000000000000000B1 /* SpotlightUITests.swift */,
+				D5EA1D000000000000000008 /* SiriReminderUITests.swift */,
 				C1A6000000000000000000B1 /* ShareToTaskUITests.swift */,
 				C94100000000000000000F00 /* ChatRenderUITests.swift */,
 				C80500000000000000000F00 /* EventAttachmentUITests.swift */,
@@ -623,6 +635,7 @@
 				A10000000000000000000112 /* TaskifyWatchMarkdownCache.swift */,
 				A10000000000000000000113 /* TaskifyWatchAudioMessaging.swift */,
 				A10000000000000000000114 /* TaskifyWatchChatShortcuts.swift */,
+				D5EA1D000000000000000006 /* TaskifyWatchRemindMeIntent.swift */,
 				A10000000000000000000115 /* Sources/Shared/TaskifyWatchConversationEntity.swift */,
 				A10000000000000000000111 /* TaskifyWatchViewCache.swift */,
 				A10000000000000000000104 /* Info.plist */,
@@ -933,6 +946,7 @@
 				DE03707800A9FDC91E489014 /* IPadKeyboardUITests.swift in Sources */,
 				BBEF918D598C4A00A1D2A1A5 /* TaskSelectionUITests.swift in Sources */,
 				C1A7000000000000000000B2 /* SpotlightUITests.swift in Sources */,
+				D5EA1D000000000000000009 /* SiriReminderUITests.swift in Sources */,
 				C1A6000000000000000000B2 /* ShareToTaskUITests.swift in Sources */,
 				C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */,
 				C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */,
@@ -949,6 +963,8 @@
 				B00000000000000000000101 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift in Sources */,
 				B00000000000000000000102 /* Sources/TaskifyApp/App/AppModel.swift in Sources */,
 				B00000000000000000000124 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift in Sources */,
+				D5EA1D000000000000000002 /* Sources/TaskifyApp/App/TaskifyRemindMeIntent.swift in Sources */,
+				D5EA1D000000000000000004 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift in Sources */,
 				C116A0000000000000000F01 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift in Sources */,
 				C1A700000000000000000F01 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift in Sources */,
 				B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */,
@@ -1059,6 +1075,8 @@
 				A10000000000000000000215 /* TaskifyWatchAudioMessaging.swift in Sources */,
 				A10000000000000000000213 /* TaskifyWatchViewCache.swift in Sources */,
 				A10000000000000000000216 /* TaskifyWatchChatShortcuts.swift in Sources */,
+				D5EA1D000000000000000007 /* TaskifyWatchRemindMeIntent.swift in Sources */,
+				D5EA1D000000000000000005 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift in Sources */,
 				A10000000000000000000217 /* TaskifyWatchConversationEntity.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1113,7 +1131,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1141,7 +1159,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1168,7 +1186,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1197,7 +1215,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1229,7 +1247,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1292,7 +1310,7 @@
 				APS_ENVIRONMENT = development;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1320,7 +1338,7 @@
 				APS_ENVIRONMENT = production;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1380,7 +1398,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1410,7 +1428,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1438,7 +1456,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
@@ -1470,7 +1488,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
@@ -1496,8 +1514,8 @@
 			};
 			name = Release;
 		};
-		310F1F8FFEED769065395003 /* Share Debug */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 182; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Debug; };
-		6C89F5E3190431CFA3653B92 /* Share Release */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 182; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Release; };
+		310F1F8FFEED769065395003 /* Share Debug */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 184; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Debug; };
+		6C89F5E3190431CFA3653B92 /* Share Release */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 184; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Release; };
 		2FCBC48C20CEC7C5076104BB /* Local */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1520,7 +1538,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1550,7 +1568,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1575,7 +1593,7 @@
 			};
 			name = Local;
 		};
-		756E28F9D8058B71150C3350 /* Local */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 182; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Local; };
+		756E28F9D8058B71150C3350 /* Local */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 184; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Local; };
 		5A14D1304D553942E03601B3 /* Local */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1601,7 +1619,7 @@
 				APS_ENVIRONMENT = development;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1628,7 +1646,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 182;
+				CURRENT_PROJECT_VERSION = 184;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;

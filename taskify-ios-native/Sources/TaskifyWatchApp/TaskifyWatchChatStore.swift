@@ -32,7 +32,8 @@ actor TaskifyWatchChatStore {
         guard decoded.schemaVersion <= TaskifyWatchChatSnapshot.currentSchemaVersion else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        return decoded
+        // Not persisted here: the next mutation saves it, and migrating again is a no-op.
+        return decoded.migrated()
     }
 
     private func reloadProtectedCacheIfNeeded() throws {
@@ -346,9 +347,19 @@ actor TaskifyWatchChatStore {
         let previous = value
         var processedRumors = value.processedRumorIDs
         var processedWraps = value.processedWrapIDs
+        // A placeholder's wrap is let through the dedupe again, so a message this Watch couldn't
+        // show when it arrived is replaced once the parser can. Still unreadable, it stays put.
+        var placeholderIndices: [String: Int] = [:]
+        for (index, message) in value.messages.enumerated() where message.isPlaceholder {
+            placeholderIndices[message.rumorID] = index
+        }
+        let placeholderWraps = Set(placeholderIndices.values.map { value.messages[$0].wrapID })
         var existingRumors = Set(processedRumors + value.messages.map(\.rumorID))
+            .subtracting(placeholderIndices.keys)
         var existingWraps = Set(processedWraps + value.messages.map(\.wrapID))
+            .subtracting(placeholderWraps)
         var inserted = 0
+        var upgraded = 0
         for wrap in wraps {
             guard existingWraps.insert(wrap.id).inserted else { continue }
             processedWraps.append(wrap.id)
@@ -358,10 +369,18 @@ actor TaskifyWatchChatStore {
                   ),
                   existingRumors.insert(decrypted.rumor.id).inserted,
                   !value.blockedPublicKeys.contains(decrypted.rumor.publicKey.lowercased()),
-                  let message = try? TaskifyWatchNIP17.chatMessage(
+                  var message = try? TaskifyWatchNIP17.chatMessage(
                     from: decrypted,
                     identityPublicKey: identity
                   ) else { continue }
+            if let index = placeholderIndices.removeValue(forKey: message.rumorID) {
+                guard !message.isPlaceholder else { continue }
+                message.deliveryState = value.messages[index].deliveryState
+                message.lastSubmissionError = value.messages[index].lastSubmissionError
+                value.messages[index] = message
+                upgraded += 1
+                continue
+            }
             processedRumors.append(decrypted.rumor.id)
             value.messages.append(message)
             inserted += 1
@@ -376,7 +395,7 @@ actor TaskifyWatchChatStore {
         // content: persist it, but leave generatedAt alone so a refresh that found nothing
         // still looks unchanged to the conversation view's onChange.
         guard value != previous else { return inserted }
-        if inserted > 0 {
+        if inserted > 0 || upgraded > 0 {
             value.generatedAt = Date()
         }
         do {

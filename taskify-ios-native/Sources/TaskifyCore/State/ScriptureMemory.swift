@@ -245,6 +245,41 @@ public enum ScriptureMemoryAlgorithm {
         value == seriesID || value == legacySeriesID
     }
 
+    /// Series cutoffs ("delete this and future") never end the review series: Scripture Memory's
+    /// settings start and stop it. Its id is the same on every device and every day, so a cutoff
+    /// recorded once deleted every later review, and only on the devices that had seen it.
+    /// Matches taskify-core's `seriesIgnoresCutoffs`.
+    public static func seriesIgnoresCutoffs(_ seriesID: String?) -> Bool {
+        isSeriesID(seriesID)
+    }
+
+    /// The review a device with no open review restores, if a series cutoff deleted it here.
+    ///
+    /// Reviews arriving after an older build recorded a cutoff for the series were deleted on
+    /// arrival, with the cutoff written into their recurrence as an end date before their due
+    /// date; the relays still hold them open. The latest such review that is due today or later
+    /// comes back, and the caller republishes it so every device converges on it. Older ones
+    /// stay deleted, since one review is current at a time.
+    public static func reviewDeletedByCutoffToRestore(
+        _ tasks: [TaskItem],
+        today: Date,
+        calendar: Calendar
+    ) -> TaskItem? {
+        let startOfToday = calendar.startOfDay(for: today)
+        return tasks
+            .filter { task in
+                guard isSeriesID(task.seriesID), task.isDeleted, !task.completed,
+                      let dueDate = task.dueDate, dueDate >= startOfToday,
+                      let until = task.recurrence?.untilDate else { return false }
+                return calendar.startOfDay(for: until) < calendar.startOfDay(for: dueDate)
+            }
+            .min { lhs, rhs in
+                let lhsDue = lhs.dueDate ?? .distantPast
+                let rhsDue = rhs.dueDate ?? .distantPast
+                return lhsDue != rhsDue ? lhsDue > rhsDue : lhs.id < rhs.id
+            }
+    }
+
     public static func intervalDays(stage: Int, baseDays: Double, totalEntries: Int) -> Double {
         let entryCountFactor = max(1.0, log2(Double(totalEntries) + 1))
         let normalizedBase = max(0.5, baseDays / entryCountFactor)

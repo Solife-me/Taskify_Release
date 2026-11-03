@@ -204,4 +204,10 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
 
 
     public var isDeleted: Bool { deleted == true }
+
+    /// Whether "delete this and future" can end this task's series. A Scripture Memory review's
+    /// series is run by Scripture Memory's settings, so deleting a review deletes only that one.
+    public var canEndRecurringSeries: Bool {
+        recurrence?.isActive == true && !ScriptureMemoryAlgorithm.seriesIgnoresCutoffs(seriesID)
+    }
 }

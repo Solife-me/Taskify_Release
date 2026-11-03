@@ -1,6 +1,9 @@
 import Foundation
 import TaskifyCore
+#if os(iOS)
+// The Mac app has no wallet: TaskifyWallet is linked only by the iPhone app.
 import TaskifyWallet
+#endif
 
 /// Local device setting for where a quick-added task lands within its column, matching the
 /// PWA's `newTaskPosition` setting.
@@ -72,6 +75,7 @@ enum ChatHistorySettings {
     }
 }
 
+#if os(iOS)
 /// Device-local wallet currency-display preferences, using the PWA's own field names/defaults
 /// (`walletConversionEnabled` default true, `walletPrimaryCurrency` default "sat",
 /// `walletDenominationDisplay` default "bitcoin-symbol") and mirroring the invariant the PWA
@@ -120,3 +124,4 @@ enum WalletCurrencySettings {
         UserDefaults.standard.set(display.rawValue, forKey: denominationDisplayKey)
     }
 }
+#endif

@@ -672,6 +672,19 @@ private struct TaskifyWatchTaskDetail: View {
                         .font(.title3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 12)
+                    if task.dueDate != nil, !task.reminderRawValues.isEmpty {
+                        Label(
+                            task.reminderRawValues.map(TaskifyReminderOffset.label(rawValue:)).joined(separator: ", "),
+                            systemImage: "bell.fill"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("Reminders")
+                        .accessibilityValue(
+                            task.reminderRawValues.map(TaskifyReminderOffset.label(rawValue:)).joined(separator: ", ")
+                        )
+                    }
                     ForEach(task.subtasks) { subtask in
                         Button {
                             model.setSubtaskCompletion(
@@ -739,6 +752,7 @@ private struct TaskifyWatchTaskEditor: View {
                         set: { enabled in
                             draft.dueDate = enabled ? Calendar.current.startOfDay(for: Date()) : nil
                             if !enabled { draft.dueTimeEnabled = false }
+                            draft.normalizeReminders()
                         }
                     ))
                     if draft.dueDate != nil {
@@ -746,7 +760,10 @@ private struct TaskifyWatchTaskEditor: View {
                             get: { draft.dueDate ?? Date() },
                             set: { draft.dueDate = $0 }
                         ), displayedComponents: .date)
-                        Toggle("Time", isOn: $draft.dueTimeEnabled)
+                        Toggle("Time", isOn: Binding(
+                            get: { draft.dueTimeEnabled },
+                            set: { draft.dueTimeEnabled = $0; draft.normalizeReminders() }
+                        ))
                         if draft.dueTimeEnabled {
                             DatePicker("Time", selection: Binding(
                                 get: { draft.dueDate ?? Date() },
@@ -754,6 +771,9 @@ private struct TaskifyWatchTaskEditor: View {
                             ), displayedComponents: .hourAndMinute)
                         }
                     }
+                }
+                if draft.dueDate != nil, draft.reminders != nil {
+                    TaskifyWatchReminderSection(draft: $draft)
                 }
                 Section {
                     Picker("Priority", selection: $draft.priority) {
@@ -779,6 +799,7 @@ private struct TaskifyWatchTaskEditor: View {
                         if draft.dueTimeEnabled && draft.dueTimeZone == nil {
                             draft.dueTimeZone = TimeZone.current.identifier
                         }
+                        draft.normalizeReminders()
                         if model.editTask(task.id, edit: draft) {
                             WKInterfaceDevice.current().play(.success)
                             dismiss()
@@ -794,5 +815,56 @@ private struct TaskifyWatchTaskEditor: View {
                 Text("This task may no longer be available. Close the editor and refresh your tasks.")
             }
         }
+    }
+}
+
+/// Reminders for a task with a due date: the iPhone editor's presets, plus any other reminder the
+/// task already has so it can be turned off here. A task with no due time also picks the time of
+/// day it is reminded at.
+private struct TaskifyWatchReminderSection: View {
+    @Binding var draft: TaskifyWatchTaskEdit
+
+    private var choices: [String] {
+        let presets = draft.dueTimeEnabled
+            ? TaskifyReminderOffset.timedPresetRawValues
+            : TaskifyReminderOffset.datePresetRawValues
+        let presetMinutes = Set(presets.compactMap(TaskifyReminderOffset.minutesBefore(rawValue:)))
+        let others = (draft.reminders ?? []).filter {
+            TaskifyReminderOffset.minutesBefore(rawValue: $0).map { !presetMinutes.contains($0) } ?? false
+        }
+        return presets + others
+    }
+
+    var body: some View {
+        Section("Reminders") {
+            ForEach(choices, id: \.self) { rawValue in
+                Toggle(TaskifyReminderOffset.label(rawValue: rawValue), isOn: Binding(
+                    get: { draft.hasReminder(rawValue) },
+                    set: { draft.setReminder(rawValue, enabled: $0) }
+                ))
+            }
+            if !draft.dueTimeEnabled, !(draft.reminders ?? []).isEmpty {
+                DatePicker("Remind at", selection: reminderTime, displayedComponents: .hourAndMinute)
+            }
+        }
+    }
+
+    /// The "HH:mm" reminder time as a date today, for the picker.
+    private var reminderTime: Binding<Date> {
+        Binding(
+            get: {
+                let parts = (draft.reminderTime ?? "09:00").split(separator: ":").compactMap { Int($0) }
+                return Calendar.current.date(
+                    bySettingHour: parts.first ?? TaskifyReminderPhrase.defaultReminderHour,
+                    minute: parts.dropFirst().first ?? 0,
+                    second: 0,
+                    of: Date()
+                ) ?? Date()
+            },
+            set: { date in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                draft.reminderTime = String(format: "%02d:%02d", parts.hour ?? 9, parts.minute ?? 0)
+            }
+        )
     }
 }

@@ -40,7 +40,6 @@ private enum MacSettingsSection: String, CaseIterable, Identifiable {
 struct MacSettingsView: View {
     @Environment(AppModel.self) private var model
     @EnvironmentObject private var runtime: MacRuntime
-    @EnvironmentObject private var wallet: WalletViewModel
     @State private var relay = ""
     @State private var identity = ""
     @State private var accountLabel = ""

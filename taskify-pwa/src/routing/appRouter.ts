@@ -55,7 +55,10 @@ export class AppHistoryRouter {
   /** An overlay that takes the place of closed ones once Back reaches `entry` (see `openOverlay`). */
   private swapAt: { entry: number; overlay: AppOverlayRoute } | null = null;
 
-  constructor(private readonly browserWindow: Window) {
+  private readonly browserWindow: Window;
+
+  constructor(browserWindow: Window) {
+    this.browserWindow = browserWindow;
     const existing = storedRoute(browserWindow.history.state);
     const parsed = parseAppRoute(browserWindow.location.href);
     this.current = existing?.route ?? parsed ?? { page: "boards" };

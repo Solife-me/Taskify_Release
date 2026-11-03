@@ -124,6 +124,20 @@ struct TaskifyWatchIdentityStore {
     }
 }
 
+enum TaskifyWatchShortcutTaskError: LocalizedError {
+    case notSetUp
+    case noBoard
+    case noTime
+
+    var errorDescription: String? {
+        switch self {
+        case .notSetUp: "Open Taskify on your iPhone to set up this Apple Watch."
+        case .noBoard: "Add a board in Taskify first."
+        case .noTime: "Say when to be reminded."
+        }
+    }
+}
+
 enum TaskifyWatchShortcutSendError: LocalizedError {
     case watchLocked
     case conversationUnavailable
@@ -1080,6 +1094,33 @@ final class TaskifyWatchAppModel: NSObject {
         return true
     }
 
+    /// Siri's Remind Me on the Watch. The reminder travels as a one-task dictation would: to the
+    /// iPhone, which saves it and schedules the notification, or straight to the relays when the
+    /// iPhone is out of reach. Returns the name of the board it was added to.
+    func addReminderFromShortcut(_ phrase: TaskifyReminderPhrase) throws -> String {
+        guard isProvisioned else { throw TaskifyWatchShortcutTaskError.notSetUp }
+        guard let boardID = quickAddBoardID else { throw TaskifyWatchShortcutTaskError.noBoard }
+        guard let dueDate = phrase.dueDate else { throw TaskifyWatchShortcutTaskError.noTime }
+        let dueISO: String
+        if phrase.hasTime {
+            dueISO = ISO8601DateFormatter().string(from: dueDate)
+        } else {
+            let day = DateFormatter()
+            day.calendar = Calendar(identifier: .gregorian)
+            day.timeZone = .current
+            day.locale = Locale(identifier: "en_US_POSIX")
+            day.dateFormat = "yyyy-MM-dd"
+            dueISO = day.string(from: dueDate)
+        }
+        let draft = TaskifyWatchVoiceDraft(
+            title: phrase.title,
+            dueISO: dueISO,
+            reminderMinutesBeforeDue: [0]
+        )
+        guard addVoiceTasks([draft], boardID: boardID) else { throw TaskifyWatchShortcutTaskError.noBoard }
+        return boardName(for: boardID)
+    }
+
     /// Refreshes encrypted Taskify task records through the Watch HTTPS transport. This works
     /// over the Watch's own Wi-Fi/cellular route and does not require a reachable iPhone.
     func refreshLatestData(forceComplicationReload: Bool = false) async {
@@ -1369,33 +1410,15 @@ final class TaskifyWatchAppModel: NSObject {
         return try JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    /// Maps Worker reminder offsets (minutes before due) onto the app's reminder
-    /// preset strings ("5m", "15m", "1h", "custom-N"...), deduplicating while
-    /// preserving the order the user spoke them.
+    /// Maps Worker reminder offsets (minutes before due) onto the app's reminder strings,
+    /// deduplicating while preserving the order the user spoke them.
     private static func voiceReminderPayload(minutes: [Int]?, dateOnly: Bool) -> [String] {
         guard let minutes else { return [] }
         var seen = Set<String>()
-        var reminders: [String] = []
-        for value in minutes where value >= 0 {
-            let rawValue: String
-            if value == 0 {
-                rawValue = dateOnly ? "0d" : "0h"
-            } else {
-                switch value {
-                case 5: rawValue = "5m"
-                case 15: rawValue = "15m"
-                case 30: rawValue = "30m"
-                case 60: rawValue = "1h"
-                case 1_440: rawValue = "1d"
-                case 10_080: rawValue = "1w"
-                default: rawValue = "custom-\(value)"
-                }
-            }
-            if seen.insert(rawValue).inserted {
-                reminders.append(rawValue)
-            }
-        }
-        return reminders
+        return minutes
+            .filter { $0 >= 0 }
+            .map { TaskifyReminderOffset.rawValue(minutesBefore: $0, dateOnly: dateOnly) }
+            .filter { seen.insert($0).inserted }
     }
 
     private func updatingPayload(_ data: Data, values: [String: Any]) throws -> Data {
@@ -2164,7 +2187,7 @@ final class TaskifyWatchAppModel: NSObject {
         reloadChatComplicationTimelines()
         if !widgetSnapshot.hasSameDirectory(as: previous) {
             WidgetCenter.shared.invalidateConfigurationRecommendations()
-            TaskifyWatchChatShortcuts.updateAppShortcutParameters()
+            TaskifyWatchShortcuts.updateAppShortcutParameters()
         }
     }
 

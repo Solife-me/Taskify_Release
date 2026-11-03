@@ -35,6 +35,32 @@ struct TaskifyShortcuts: AppShortcutsProvider {
             shortTitle: "Quick Add Task",
             systemImageName: "plus.circle"
         )
+        // “Siri, in Taskify remind me to take out the trash tomorrow at 1pm.”
+        AppShortcut(
+            intent: TaskifyNaturalRemindMeIntent(),
+            phrases: [
+                "In \(.applicationName) remind me \(\.$reminder)",
+                "\(.applicationName) remind me \(\.$reminder)",
+                "Remind me \(\.$reminder) in \(.applicationName)",
+                "Use \(.applicationName) to remind me \(\.$reminder)",
+                "Set a \(.applicationName) reminder \(\.$reminder)",
+            ],
+            shortTitle: "Quick Reminder",
+            systemImageName: "bell.badge"
+        )
+        AppShortcut(
+            intent: TaskifyRemindMeIntent(),
+            phrases: [
+                "Remind me in \(.applicationName)",
+                "Set a reminder in \(.applicationName)",
+                "Set a \(.applicationName) reminder",
+                "Create a \(.applicationName) reminder",
+                "Add a reminder to \(.applicationName)",
+                "New \(.applicationName) reminder",
+            ],
+            shortTitle: "Remind Me",
+            systemImageName: "bell"
+        )
     }
 }
 #endif

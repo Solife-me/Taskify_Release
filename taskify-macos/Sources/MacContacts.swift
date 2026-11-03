@@ -361,3 +361,36 @@ private struct MacContactEditor: View {
         }
     }
 }
+
+/// Chooses a saved contact, for example an event participant.
+struct MacContactPicker: View {
+    let title: String
+    var select: (NostrContact) -> Void
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    private var contacts: [NostrContact] {
+        model.nostrContacts
+            .filter { search.isEmpty || $0.displayName.localizedCaseInsensitiveContains(search) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title).font(.title2.bold())
+            TextField("Search contacts", text: $search).textFieldStyle(.roundedBorder)
+            if contacts.isEmpty {
+                ContentUnavailableView("No Contacts", systemImage: "person.2", description: Text("Save a contact from Chat first."))
+            } else {
+                List(contacts) { contact in
+                    Button { select(contact); dismiss() } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(contact.displayName)
+                            Text(contact.npub).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                        }
+                    }.buttonStyle(.plain)
+                }
+            }
+            HStack { Spacer(); Button("Cancel", role: .cancel) { dismiss() } }
+        }.padding(24).frame(width: 420, height: 480)
+    }
+}

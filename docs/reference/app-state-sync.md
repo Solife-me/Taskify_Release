@@ -61,13 +61,15 @@ honored rather than undone:
 ## Cadence
 
 - **PWA**: live subscription per d-tag. Bible tracker and scripture memory publish 1.5 s after
-  the last change. Chat state publishes 15 s after the first unpublished change, and early when
-  the tab is hidden.
-- **Native**: one REQ per relay fetches all three records on launch and on foreground, at most
-  every 30 s. Publishes go through the durable outbox (scope `__taskify-app-state__`), which
-  replaces a pending publish for the same record. Bible tracker and scripture memory publish
-  2 s after the last change. Chat state publishes 15 s after the first unpublished change, and
-  immediately on backgrounding.
+  the last change. Chat state publishes 15 s after the first unpublished read marker, and early
+  when the tab is hidden. A new inbox answer publishes at once.
+- **Native**: `TaskSyncEngine` holds a live subscription to all three records (one REQ per
+  account relay, set with `setAppStateSubscription`), so another device's change is delivered
+  as `TaskSyncUpdate.appState` while the app runs. One REQ per relay also fetches them on launch
+  and on foreground, at most every 30 s. Publishes go through the durable outbox (scope
+  `__taskify-app-state__`), which replaces a pending publish for the same record. Bible tracker
+  and scripture memory publish 2 s after the last change. Chat state publishes 15 s after the
+  first unpublished read marker, 2 s after a new inbox answer, and immediately on backgrounding.
 - Neither client publishes when the relays already hold everything it has. For chat state this
   check is cheap enough to run on every read marker.
 
@@ -79,3 +81,12 @@ including the first one a device creates when none is active, has id
 reads and writes the PWA's `scriptureMemoryEnabled`, `scriptureMemoryBoardId` and
 `scriptureMemoryFrequency` through the encrypted account backup. Both clients then place and
 schedule review tasks the same way instead of repeatedly moving each other's tasks.
+
+Series cutoffs ("delete this and future") never apply to this series: Scripture Memory's
+settings start and stop it, and deleting a review deletes only that review (`seriesIgnoresCutoffs`
+in taskify-core, `ScriptureMemoryAlgorithm.seriesIgnoresCutoffs` natively). Cutoffs are kept
+per device, so one recorded for this series made that device delete every later review on
+arrival while other devices still showed it. Clients drop such cutoffs when loading, and ignore
+any end date a review's recurrence still carries from them. A native device with no open review
+restores the newest review a cutoff deleted, if it is due today or later, and republishes it so
+every device converges on it.

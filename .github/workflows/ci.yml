@@ -44,8 +44,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/taskify-macos-ui-derived" \
             -skipPackagePluginValidation \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink \
-            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWalletRemovalPreviewShowsRecoveryWithoutReceive \
-            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive \
+            -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWorkspaceHasNoWallet \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCreateEditCompleteAndReopenTaskThroughDeepLink \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testStaleEditorCannotOverwriteNewerWindowEdit \
             -only-testing:TaskifyMacUITests/TaskifyMacUITests/testAccountSwitchClosesEditorsAndResetsEveryWindow \
@@ -200,7 +199,9 @@ jobs:
         working-directory: taskify-pwa
       - run: npm run lint
         working-directory: taskify-pwa
-      - run: npx tsc -b
+      # tsconfig.app.json holds the strict app checks (unused code, erasable syntax); a bare
+      # `tsc -b` reads only tsconfig.json and skipped them.
+      - run: npm run typecheck
         working-directory: taskify-pwa
       - run: npm test
         working-directory: taskify-pwa

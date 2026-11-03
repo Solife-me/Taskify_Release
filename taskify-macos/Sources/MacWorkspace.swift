@@ -3,14 +3,13 @@ import SwiftUI
 import TaskifyCore
 
 private enum MacDestination: String, CaseIterable {
-    case today, upcoming, chat, wallet, inbox
+    case today, upcoming, chat, inbox
     var title: String { rawValue.capitalized }
     var symbol: String {
         switch self {
         case .today: "sun.max"
         case .upcoming: "calendar"
         case .chat: "bubble.left.and.bubble.right"
-        case .wallet: "wallet.bifold"
         case .inbox: "tray"
         }
     }
@@ -46,7 +45,6 @@ struct MacWorkspace: View {
     @Environment(AppModel.self) private var model
     @EnvironmentObject private var runtime: MacRuntime
     let initialLink: URL?
-    let isWalletRecoveryMode: Bool
     @SceneStorage("mac.destination") private var destination = "today"
     @State private var search = ""
     @State private var selectedTaskID: String?
@@ -68,11 +66,9 @@ struct MacWorkspace: View {
     @State private var printingChecklist = false
     @State private var pendingLink: URL?
     @State private var didHandleInitialLink = false
-    @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
 
-    init(initialLink: URL? = nil, isWalletRecoveryMode: Bool = false) {
+    init(initialLink: URL? = nil) {
         self.initialLink = initialLink
-        self.isWalletRecoveryMode = isWalletRecoveryMode
     }
 
     private var board: Board? { model.board(withID: destination) }
@@ -91,7 +87,6 @@ struct MacWorkspace: View {
                 destination: $destination,
                 boardToManage: $boardToManage,
                 splitDestination: splitDestination,
-                walletEnabled: walletEnabled,
                 newBoard: { creatingBoard = true },
                 openSplit: { openSplitView($0) },
                 closeSplit: closeSplitView,
@@ -154,15 +149,8 @@ struct MacWorkspace: View {
             handleAccountChange(oldValue: oldValue, newValue: newValue)
         }
         .onChange(of: notificationRouter.pendingDestination) { _, value in handlePendingDestination(value) }
-        .onChange(of: walletEnabled) { _, enabled in handleWalletEnabledChange(enabled) }
         .onAppear(perform: handleAppear)
         .onChange(of: model.isLoading) { _, isLoading in handleLoadingChange(isLoading) }
-        .background {
-            WalletPhaseOutNoticePresenter(
-                suppressed: model.isLoading || model.showsFirstRunOnboarding,
-                openWallet: { destination = MacDestination.wallet.rawValue }
-            )
-        }
         .onContinueUserActivity(CSSearchableItemActionType, perform: openSearchableItem)
         .onOpenURL(perform: openWhenReady)
     }
@@ -200,24 +188,16 @@ struct MacWorkspace: View {
     private func handlePendingDestination(_ value: TaskifyNotificationContract.Destination?) {
         guard let value else { return }
         guard !model.isLoading, !model.identityPublicKey.isEmpty else { return }
-        if value.rawValue != MacDestination.wallet.rawValue || walletEnabled {
+        // A wallet notification from the iPhone has no Mac destination and is dropped.
+        if MacDestination(rawValue: value.rawValue) != nil {
             destination = value.rawValue
         }
         _ = notificationRouter.consumeDestination(for: model.identityPublicKey)
     }
 
-    private func handleWalletEnabledChange(_ enabled: Bool) {
-        guard !enabled else { return }
-        if destination == MacDestination.wallet.rawValue { destination = "today" }
-        if splitDestination == MacDestination.wallet.rawValue { splitDestination = nil }
-    }
-
     private func handleAppear() {
         if model.board(withID: destination) == nil,
            MacDestination(rawValue: destination) == nil {
-            destination = "today"
-        }
-        if destination == MacDestination.wallet.rawValue && !walletEnabled {
             destination = "today"
         }
         handlePendingDestination(notificationRouter.pendingDestination)
@@ -391,16 +371,6 @@ struct MacWorkspace: View {
                 )
             case .chat:
                 MacChatView(search: search, drafts: chatDrafts, selection: chatSelection)
-            case .wallet:
-                if walletEnabled {
-                    if isWalletRecoveryMode {
-                        WalletRecoveryView()
-                    } else {
-                        MacWalletView()
-                    }
-                } else {
-                    MacAgendaView(todayOnly: true, search: search, selectedTaskID: selectedTaskID, edit: edit)
-                }
             case .inbox:
                 MacInboxView()
             case nil:
@@ -416,7 +386,7 @@ struct MacWorkspace: View {
     @ViewBuilder private func splitDestinationMenuItems() -> some View {
         MacSplitDestinationMenuItems(
             splitDestination: splitDestination,
-            destinations: MacDestination.allCases.filter { $0 != .wallet || walletEnabled },
+            destinations: MacDestination.allCases,
             boards: model.visibleBoards,
             open: openSplitView,
             close: closeSplitView
@@ -467,7 +437,6 @@ private struct MacWorkspaceSidebar: View {
     @Binding var destination: String
     @Binding var boardToManage: Board?
     let splitDestination: String?
-    let walletEnabled: Bool
     let newBoard: () -> Void
     let openSplit: (String) -> Void
     let closeSplit: () -> Void
@@ -483,13 +452,13 @@ private struct MacWorkspaceSidebar: View {
                 MacAccountSwitcher()
             }
             Section("Workspace") {
-                ForEach(MacDestination.allCases.filter { $0 != .wallet || walletEnabled }, id: \.rawValue) { item in
+                ForEach(MacDestination.allCases, id: \.rawValue) { item in
                     Label(item.title, systemImage: item.symbol).tag(item.rawValue)
                 }
                 Menu {
                     MacSplitDestinationMenuItems(
                         splitDestination: splitDestination,
-                        destinations: MacDestination.allCases.filter { $0 != .wallet || walletEnabled },
+                        destinations: MacDestination.allCases,
                         boards: model.visibleBoards,
                         open: openSplit,
                         close: closeSplit

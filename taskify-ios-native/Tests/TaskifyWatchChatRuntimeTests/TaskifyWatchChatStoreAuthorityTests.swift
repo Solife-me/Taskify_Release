@@ -784,6 +784,160 @@ final class TaskifyWatchChatStoreAuthorityTests: XCTestCase {
         XCTAssertEqual(disk.cursor, "saved")
     }
 
+    // MARK: - Attachment placeholders
+
+    private func attachmentWrap(
+        to identity: String,
+        url: String,
+        mimeType: String
+    ) throws -> (wrap: TaskifyWatchNostrEvent, rumorID: String) {
+        let rumor = try TaskifyWatchNIP17Rumor(
+            publicKey: try publicKeyHex(for: peerKey),
+            createdAt: Int(Date().timeIntervalSince1970),
+            kind: TaskifyWatchNIP17.attachmentKind,
+            tags: [
+                ["p", identity],
+                ["file-type", mimeType],
+                ["encryption-algorithm", "aes-gcm"],
+                ["decryption-key", String(repeating: "ab", count: 32)],
+                ["decryption-nonce", String(repeating: "cd", count: 16)],
+            ],
+            content: url
+        )
+        let recipient = Data(stride(from: 0, to: identity.count, by: 2).map {
+            let start = identity.index(identity.startIndex, offsetBy: $0)
+            return UInt8(identity[start..<identity.index(start, offsetBy: 2)], radix: 16)!
+        })
+        let wrap = try TaskifyWatchNIP17.wrap(
+            rumor: rumor, senderPrivateKey: peerKey, recipientPublicKey: recipient
+        )
+        return (wrap, rumor.id)
+    }
+
+    /// The cache an older build left behind: the message stored as a placeholder without its
+    /// attachment, and its wrap already in the dedupe ledger.
+    private func writeLegacyPlaceholder(
+        wrapID: String,
+        rumorID: String,
+        identity: String,
+        to fileURL: URL
+    ) throws {
+        let peer = try publicKeyHex(for: peerKey)
+        let placeholder = TaskifyWatchChatMessage(
+            rumorID: rumorID,
+            wrapID: wrapID,
+            conversationID: peer,
+            senderPublicKey: peer,
+            memberPublicKeys: [identity, peer],
+            content: "Open attachment on iPhone",
+            createdAt: Int(Date().timeIntervalSince1970),
+            kind: .unsupportedAttachment
+        )
+        let legacy = TaskifyWatchChatSnapshot(
+            schemaVersion: 2,
+            messages: [placeholder],
+            cursor: "old",
+            processedWrapIDs: [wrapID],
+            processedRumorIDs: [rumorID]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try encoder.encode(legacy).write(to: fileURL)
+    }
+
+    func testAudioPublishedWithAnHTTPURLIsPlayableAudio() async throws {
+        let (store, _) = makeStore()
+        let identity = try publicKeyHex(for: identityKey)
+        let (wrap, _) = try attachmentWrap(
+            to: identity, url: "http://files.example.com/blob.bin", mimeType: "audio/mp4"
+        )
+
+        _ = try await store.ingest(wraps: [wrap], cursor: "c1", privateKey: identityKey)
+
+        let snapshot = await store.snapshot()
+        let message = try XCTUnwrap(snapshot.messages.first)
+        XCTAssertEqual(message.kind, .audio)
+        XCTAssertEqual(message.content, "Audio")
+        XCTAssertEqual(message.attachment?.url.absoluteString, "https://files.example.com/blob.bin")
+    }
+
+    func testLegacyPlaceholderIsReReadAndReplacedByTheParsedAudio() async throws {
+        let (_, fileURL) = makeStore()
+        let identity = try publicKeyHex(for: identityKey)
+        let (wrap, rumorID) = try attachmentWrap(
+            to: identity, url: "http://files.example.com/blob.bin", mimeType: "audio/mp4"
+        )
+        try writeLegacyPlaceholder(
+            wrapID: wrap.id, rumorID: rumorID, identity: identity, to: fileURL
+        )
+        let store = TaskifyWatchChatStore(fileURL: fileURL)
+        let loaded = await store.snapshot()
+        XCTAssertNil(loaded.cursor, "A placeholder without its attachment re-pages the inbox")
+        XCTAssertEqual(loaded.schemaVersion, TaskifyWatchChatSnapshot.currentSchemaVersion)
+
+        let inserted = try await store.ingest(wraps: [wrap], cursor: "c1", privateKey: identityKey)
+
+        XCTAssertEqual(inserted, 0, "Replacing a row is not a new message")
+        let disk = await TaskifyWatchChatStore(fileURL: fileURL).snapshot()
+        XCTAssertEqual(disk.messages.count, 1)
+        XCTAssertEqual(disk.messages.first?.kind, .audio)
+        XCTAssertNotNil(disk.messages.first?.attachment)
+        XCTAssertEqual(disk.cursor, "c1")
+        XCTAssertGreaterThan(disk.generatedAt, loaded.generatedAt)
+    }
+
+    func testStillUnsupportedAttachmentKeepsItsPlaceholder() async throws {
+        let (_, fileURL) = makeStore()
+        let identity = try publicKeyHex(for: identityKey)
+        let (wrap, rumorID) = try attachmentWrap(
+            to: identity, url: "https://files.example.com/doc.bin", mimeType: "application/pdf"
+        )
+        try writeLegacyPlaceholder(
+            wrapID: wrap.id, rumorID: rumorID, identity: identity, to: fileURL
+        )
+        let store = TaskifyWatchChatStore(fileURL: fileURL)
+
+        _ = try await store.ingest(wraps: [wrap], cursor: "c1", privateKey: identityKey)
+        _ = try await store.ingest(wraps: [wrap], cursor: "c2", privateKey: identityKey)
+
+        let snapshot = await store.snapshot()
+        XCTAssertEqual(snapshot.messages.count, 1)
+        XCTAssertEqual(snapshot.messages.first?.kind, .unsupportedAttachment)
+    }
+
+    func testLegacyRowThatKeptItsAudioAttachmentIsReclassifiedWithoutARefetch() throws {
+        let identity = try publicKeyHex(for: identityKey)
+        let peer = try publicKeyHex(for: peerKey)
+        let attachment = try XCTUnwrap(TaskifyWatchChatAttachment(
+            url: URL(string: "https://files.example.com/blob.bin")!,
+            mimeType: "audio/mp4",
+            keyHex: String(repeating: "ab", count: 32),
+            nonceHex: String(repeating: "cd", count: 16)
+        ))
+        let stored = TaskifyWatchChatMessage(
+            rumorID: String(repeating: "1", count: 64),
+            wrapID: String(repeating: "2", count: 64),
+            conversationID: peer,
+            senderPublicKey: peer,
+            memberPublicKeys: [identity, peer],
+            content: "Open attachment on iPhone",
+            createdAt: 1,
+            kind: .unsupportedAttachment,
+            attachment: attachment
+        )
+        let legacy = TaskifyWatchChatSnapshot(schemaVersion: 2, messages: [stored], cursor: "old")
+
+        let migrated = legacy.migrated()
+
+        XCTAssertEqual(migrated.messages.first?.kind, .audio)
+        XCTAssertEqual(migrated.messages.first?.content, "Audio")
+        XCTAssertEqual(migrated.cursor, "old", "Nothing left to re-read, so keep the cursor")
+        XCTAssertEqual(migrated.migrated(), migrated)
+    }
+
     func testBackgroundRejectsOversizedPageWithoutAdvancingCursor() async throws {
         let identity = try publicKeyHex(for: identityKey)
         let wrap = try peerWrap(to: identity, from: peerKey, content: "Bound crypto work",

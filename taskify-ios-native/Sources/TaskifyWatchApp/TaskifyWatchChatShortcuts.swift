@@ -132,9 +132,37 @@ struct TaskifyWatchSendMessageIntent: AppIntent {
     }
 }
 
-/// Must live in the app target; see `TaskifyShortcuts` on the iPhone.
-struct TaskifyWatchChatShortcuts: AppShortcutsProvider {
+/// The Watch app's only shortcuts provider (an app may have one): messages and reminders. Must
+/// live in the app target; see `TaskifyShortcuts` on the iPhone.
+struct TaskifyWatchShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        // “Siri, in Taskify remind me to take out the trash tomorrow at 1pm.” The same phrases
+        // as the iPhone and Mac.
+        AppShortcut(
+            intent: TaskifyWatchNaturalRemindMeIntent(),
+            phrases: [
+                "In \(.applicationName) remind me \(\.$reminder)",
+                "\(.applicationName) remind me \(\.$reminder)",
+                "Remind me \(\.$reminder) in \(.applicationName)",
+                "Use \(.applicationName) to remind me \(\.$reminder)",
+                "Set a \(.applicationName) reminder \(\.$reminder)",
+            ],
+            shortTitle: "Quick Reminder",
+            systemImageName: "bell.badge"
+        )
+        AppShortcut(
+            intent: TaskifyWatchRemindMeIntent(),
+            phrases: [
+                "Remind me in \(.applicationName)",
+                "Set a reminder in \(.applicationName)",
+                "Set a \(.applicationName) reminder",
+                "Create a \(.applicationName) reminder",
+                "Add a reminder to \(.applicationName)",
+                "New \(.applicationName) reminder",
+            ],
+            shortTitle: "Remind Me",
+            systemImageName: "bell"
+        )
         AppShortcut(
             intent: TaskifyWatchOpenMessagesIntent(),
             phrases: [

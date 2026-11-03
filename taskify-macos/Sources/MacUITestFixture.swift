@@ -11,14 +11,6 @@ enum MacUITestFixture {
 
     static func prepare(_ configuration: MacUITestRuntimeConfiguration) throws {
         let files = FileManager.default
-        UserDefaults.standard.set(
-            configuration.walletEnabled || configuration.walletRecoveryPreview,
-            forKey: WalletPhaseOut.walletEnabledKey
-        )
-        UserDefaults.standard.set(
-            configuration.walletRecoveryPreview,
-            forKey: WalletPhaseOut.removalPreviewKey
-        )
         if configuration.resetsStore,
            files.fileExists(atPath: configuration.rootDirectory.path) {
             try files.removeItem(at: configuration.rootDirectory)

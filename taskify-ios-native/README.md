@@ -51,6 +51,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - Immediate task completion with native success haptics and concurrent PWA-style checkmarks flying to the completed control
 - Local task completion and PWA-style recurring deletion choices, with synced durable series
   cutoffs that prevent deleted future task/event occurrences from reappearing after relay replay
+  (never for Scripture Memory reviews, whose series its settings run; see `docs/reference/app-state-sync.md`)
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks, with PWA-familiar interactive inline checklists on task cards
 - Moving tasks between boards from the task editor's Board picker or the selection bar's Move, including list → week board (the task lands on the chosen day, or its date, in the current week); Copy Task (card menu or editor) puts the task on the clipboard in the PWA's JSON, and pasting that into any board's New Task field on either client recreates it (`TaskClipboard` in TaskifyCore)
 - Markdown task notes (`TaskNoteMarkdown` in TaskifyCore, mirrored by the PWA's `noteMarkdown.ts`): tapping a card's note opens a viewer with tickable checklist items; Edit, or tapping the notes in the task editor, opens a Markdown editor with a formatting bar, Write/Preview, list continuation on Return, and conversion of the checklist into subtasks
@@ -192,6 +193,24 @@ for confirmation, and refuses message requests; it waits up to 12 seconds for re
 and only then says the message was sent, otherwise it stays in the durable outbox. watchOS has no
 configuration screen for complications, so the Conversation choices in the face editor are the
 provider's `recommendations()`.
+
+#### Siri reminders (iPhone, Mac, Watch)
+
+“Siri, in Taskify remind me to take out the trash tomorrow at 1pm” adds a task due tomorrow at
+1:00 PM with a reminder at its due time, without opening the app. The phrases are the same on all
+three clients (`TaskifyShortcuts`, and `TaskifyWatchShortcuts` on the Watch); “Remind me in
+Taskify” asks what and when instead. `TaskifyReminderPhraseParser` (TaskifyWatchShared) splits the
+sentence: `NSDataDetector` for calendar words, plus relative offsets (“in 20 minutes”) and a bare
+hour (“at 5” is the next 5 o'clock). A day without a time reminds at the task's reminder time, 9:00
+AM. Siri asks again for a missing subject or time and refuses a time already past. On the iPhone
+and Mac the intent saves through `TaskifyExternalActions.addTask` and schedules the notification
+itself (`TaskNotificationCoordinator.scheduleReminders`, same identifiers as the app's full
+reschedule), so it fires even if the app isn't opened first. The Watch sends it as a one-task
+dictation: through the iPhone, which schedules it, or straight to the relays when the iPhone is out
+of reach (the reminder then fires once the iPhone syncs). On iOS 27 and macOS 27, Siri's
+conversational route uses the reminders App Schema (`TaskifyCreateReminderIntent`), which keeps
+the time and sets the same reminder. The Watch task editor sets reminders too, with the iPhone's
+presets; an edit from an older Watch build carries none and leaves the iPhone's alone.
 
 Physical-device acceptance checks (not established by simulator/unit tests):
 

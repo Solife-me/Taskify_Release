@@ -1131,8 +1131,11 @@ struct TaskCardView: View {
                     }
                 }
                 Button(role: .destructive) {
-                    if task.recurrence?.isActive == true {
-                        missedForDeletion = model.missedOccurrenceCount(for: task.id)
+                    let missed = task.recurrence?.isActive == true
+                        ? model.missedOccurrenceCount(for: task.id)
+                        : nil
+                    if task.canEndRecurringSeries || missed != nil {
+                        missedForDeletion = missed
                         confirmingRecurringDeletion = true
                     } else {
                         model.deleteTask(task.id, scope: .single)
@@ -1155,14 +1158,18 @@ struct TaskCardView: View {
             Button("Delete This Task", role: .destructive) {
                 model.deleteTask(task.id, scope: .single)
             }
-            Button("Delete This and Future Tasks", role: .destructive) {
-                model.deleteTask(task.id, scope: .thisAndFuture)
+            if task.canEndRecurringSeries {
+                Button("Delete This and Future Tasks", role: .destructive) {
+                    model.deleteTask(task.id, scope: .thisAndFuture)
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(missedForDeletion == nil
                 ? "Choose whether to delete only this occurrence or end the recurring series here."
-                : "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series.")
+                : task.canEndRecurringSeries
+                    ? "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series."
+                    : "Catching up keeps the series and leaves one task for today.")
         }
         .sheet(isPresented: $showingEditor) {
             TaskEditorView(task: task)

@@ -1,8 +1,9 @@
 # Taskify for macOS
 
 Native SwiftUI/AppKit application for macOS 14 and later. This target shares the
-existing iOS `AppModel`, wallet controller, TaskifyCore, calendar store and
-notification scheduling. It is an active port, not yet complete iOS parity.
+existing iOS `AppModel`, TaskifyCore, calendar store and notification scheduling.
+It is an active port, not yet complete iOS parity. It has no wallet: the Cashu
+wallet is iPhone-only and being phased out, and the Mac app does not link it.
 
 ## Build
 
@@ -13,9 +14,9 @@ signing team for a signed sandboxed build. No Catalyst runtime is used.
 
 Saved accounts share a verified Keychain vault, but each account has its own task store,
 outbox, preference suite, relays, app-state ledger, notifications, and Spotlight scope. Account
-switches stop and fence the previous model before changing the active Keychain identity. Wallet
-funds/connections, APNs installation state, appearance, and primary-account widget/App Intent/
-Watch projections remain intentionally device-wide. See
+switches stop and fence the previous model before changing the active Keychain identity. APNs
+installation state, appearance, and primary-account widget/App Intent/Watch projections remain
+intentionally device-wide. See
 [`docs/audits/macos-multi-account-isolation-2026-10-30.md`](../docs/audits/macos-multi-account-isolation-2026-10-30.md)
 for the threat model, fixes, invariants, and residual boundaries.
 
@@ -29,8 +30,7 @@ xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
   -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath /tmp/taskify-macos-ui-tests \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink \
-  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWalletRemovalPreviewShowsRecoveryWithoutReceive \
-  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testLiveWalletShowsWithdrawOnlyRoutesWithoutReceive \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWorkspaceHasNoWallet \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCreateEditCompleteAndReopenTaskThroughDeepLink \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testStaleEditorCannotOverwriteNewerWindowEdit \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testAccountSwitchClosesEditorsAndResetsEveryWindow \
@@ -46,14 +46,13 @@ Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 51 presentation/runtime tests, the unsigned app build and the twelve isolated app-host smoke tests on
+the 47 presentation/runtime tests, the unsigned app build and the eleven isolated app-host smoke tests on
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
-a session-scoped temporary store/outbox and Keychain service, and no relay or wallet startup. They
+a session-scoped temporary store/outbox and Keychain service, and no relay startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing
-process-global environment. The first smoke also terminates Taskify, invokes Add Task out of process
-through `AppIntentsTesting`, relaunches, and verifies the task in the same isolated store. App Intent
-metadata is deliberately limited to this configuration until that test passes with Apple development
-signing; Local, Debug, and Release publish no Mac shortcuts yet. The attachment smoke puts raw PNG data without a file URL on the real
+process-global environment. The first smoke also terminates Taskify, invokes Add Task and Remind Me out of
+process through `AppIntentsTesting`, relaunches, and verifies both tasks in the same isolated store. Every configuration publishes the Siri and Shortcuts intents (Add Task, Remind
+Me, and on macOS 27 the reminders App Schema); see the iOS README's Siri section. The attachment smoke puts raw PNG data without a file URL on the real
 pasteboard and stages it in both task and chat composers. A developer Mac must allow Xcode UI automation before the test runner
 can execute. `Local` retains
 app debugging while Swift package dependencies use their release configuration;
@@ -64,10 +63,12 @@ they do not verify sandbox, Keychain provisioning or distribution signing.
 
 The `SHARED_SOURCES` and `PACKAGE_PRODUCTS` manifests in `generate-project.py`
 are the reviewable boundary between the two app targets. Their files — including
-`AppModel.swift`, `ScaledFont.swift`, the app-model extension splits and the
-temporary wallet sources — are also compiled into the iOS app. An iOS-only symbol
-used outside an `#if os(iOS)` or `#if canImport(UIKit)` guard therefore breaks the
-Mac gate. Moving shared app code into a new extension file means adding it to the
+`AppModel.swift`, `ScaledFont.swift` and the app-model extension splits — are also
+compiled into the iOS app. An iOS-only symbol used outside an `#if os(iOS)` or
+`#if canImport(UIKit)` guard therefore breaks the Mac gate. The iPhone's wallet code in
+those shared files (`AppModel`, `TaskNotificationCoordinator`, `TaskOrderingSettings`) is
+behind `#if os(iOS)`; `TaskifyWallet` is not in `PACKAGE_PRODUCTS`, and
+`testMacAppDoesNotLinkOrCompileTheWallet` keeps it and the `Features/Wallet` sources out. Moving shared app code into a new extension file means adding it to the
 manifest in the same change; CI rejects a project that was not regenerated.
 
 ## Current desktop implementation
@@ -114,7 +115,7 @@ manifest in the same change; CI rejects a project that was not regenerated.
 - DM/group conversation layouts, replies, reactions, history search, unread
   state, archive/block controls and encrypted attachments. The selected
   conversation and its per-conversation drafts persist in `MacWorkspace`, so
-  they survive leaving the Chat destination entirely (Wallet, Boards, …) and
+  they survive leaving the Chat destination entirely (Boards, Inbox, …) and
   coming back. A thread opens at its newest message with only the latest 100
   timeline items loaded; reaching the top loads another 100 while preserving
   the reader's position. Conversation search still covers the complete retained
@@ -143,33 +144,15 @@ manifest in the same change; CI rejects a project that was not regenerated.
   responded-to item still shows with its resulting status where it was
   actually shared — matches iOS's `ChatTimelineItem` merge exactly, including
   which messages get excluded from the plain-text history in favor of their
-  card). Plain-text Cashu tokens render as a tappable card that opens a
-  focused redeem sheet; HTTP(S) links render as link-preview cards. All
-  detection reuses the same TaskifyCore parsers the iOS app uses.
+  card). A Cashu token received as chat text renders as a card that copies it
+  for redeeming in another Cashu wallet (the Mac never redeems it); HTTP(S)
+  links render as link-preview cards. All detection reuses the same TaskifyCore
+  parsers the iOS app uses (`CashuTokenText` for tokens).
 - Basic Bible reading tracker plus Scripture Memory (add a passage, spaced-review
   list sorted by due/canonical/added date, remove) and Fasting Reminders
   (weekly-weekday or random-per-month pattern) — both reuse AppModel's existing
   entry/settings management and task reconciliation; there is no separate Mac
   scheduling logic.
-- Mint balances/activity, ecash receive/send, Lightning invoice/address (LNURL)
-  pay, pending receive retries/discard, saved outgoing tokens with check-status
-  and reclaim, mint add/remove and mint-to-mint transfer, authenticated wallet
-  backup and seed recovery. Payment preparation/confirmation and recovery use
-  the existing wallet service; pending results are not reported as settled
-  payments. An NWC wallet mode (connect, move or leave the ecash balance,
-  switch back) is also available, on the same shared view model and
-  `NWCWalletService` as iOS — see `MacNWCWallet.swift`. Since Mac (like iPad)
-  isn't the phone, `WalletViewModel.automaticallyRedeemsIncomingPayments` is
-  false here: incoming shared-DM tokens, NUT-18 payment requests and
-  npub.cash claims are not auto-redeemed, avoiding a race with the phone over
-  the same payment. Incoming-payment redemption was removed with iOS's
-  withdraw-only wallet transition; the remaining Mac wallet is retired in C11-2.
-- Contact payments: pay a contact's Lightning address (falling back to
-  `npub@solife.me`) or send them locked ecash as an encrypted message, using
-  the same wire format as the PWA. P2PK key generation/import/removal for
-  advanced locking. Cashu payment requests: create (with optional P2PK lock),
-  cancel, and pay an incoming request. Static QR codes for invoices, tokens,
-  requests and the receiving Lightning address.
 - Print Checklist (toolbar on week/list boards; "Print & Scan…" in the Bible
   tracker's Reading tab): renders tasks grouped by column, or all 66 books'
   chapters grouped by book, through the shared `PhysicalChecklistLayout`
@@ -183,20 +166,17 @@ manifest in the same change; CI rejects a project that was not regenerated.
   import/export, profile publishing, task backup/restore, relay controls,
   file-server selection and notification permission. Chat message retention
   (Forever down to 30 days, local-device-only — it prunes this device's
-  history, not other clients' or relays') and a Bitcoin-denomination display
-  picker (₿ symbol vs. "sat") round out Settings; there is deliberately no
-  primary-currency (sats/USD) picker, matching iOS, since that's meant to be
-  changed by tapping a wallet amount directly rather than from Settings — Mac's
-  wallet views don't have that tap gesture yet.
+  history, not other clients' or relays') rounds out Settings. The wallet
+  currency settings synced in the account backup are left as the iPhone or PWA
+  wrote them; the Mac neither shows nor rewrites them.
 
 Shortcuts: New Window `⌘N`, New Task `⇧⌘N`, New Board `⇧⌘B`, Sync `⇧⌘R`,
 Send Message `Return` or `⌘Return`, New Line `⇧Return`, Settings `⌘,`.
 
 ## Data and platform boundaries
 
-Mac identity and wallet Keychain services use the Mac bundle identifier, separate
-from iOS. Import the same Nostr identity for account continuity; wallet recovery
-is a separate explicit operation. A signed build uses the Mac target's app-specific
+Mac identity Keychain services use the Mac bundle identifier, separate from iOS.
+Import the same Nostr identity for account continuity. A signed build uses the Mac target's app-specific
 Keychain access group and migrates legacy login-Keychain items into the data-protection
 Keychain when they are first read. An ad-hoc or unsigned build cannot perform that
 migration and must not replace the signed app used with real account data.
@@ -218,11 +198,9 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   more investigation, and pasteboard content-type negotiation is exactly the
   kind of thing that compiles cleanly while being silently wrong at runtime —
   don't call it done without a live paste test, which needs a launched build.
-- npub.cash Lightning-address provider selection and claim UI (the always-on
-  `npub@solife.me` forwarding address is exposed; npub.cash is not), animated
-  multi-frame QR for transfers too large for one code, and camera-based QR
-  scanning (no camera-driven scan UI on Mac yet — paste remains the only input).
-- Voice entry, widgets, App Intents and share extension integration.
+- Camera-based QR scanning (no camera-driven scan UI on Mac yet — paste remains
+  the only input).
+- Voice entry, widgets and share extension integration.
 - Contact detail has no photos/files/links tabs (browsing media shared across
   a contact's whole message history) — only the info tab (QR, NIP-05, copyable
   fields) was ported; that media browser lives with Chat's own conversation
@@ -252,7 +230,7 @@ rejects device registration rather than submitting a Mac token to the iOS topic.
   to plug in.
 - Complete preferences and accessibility QA.
 - Signed sandbox testing, quit/relaunch and offline/reconnect stress tests,
-  cross-client relay sync and wallet recovery with controlled test funds.
+  and cross-client relay sync.
 
 ## Validation recorded during implementation
 
@@ -747,8 +725,7 @@ outbox under `taskify-accounts/<public-key>/`. This prevents boards, chats,
 attachments or queued publishes from crossing between accounts and preserves
 each account's offline state between switches.
 
-The Cashu wallet remains device-level with its own recovery phrase rather than
-being duplicated for every Nostr account. System widgets and App Intents remain
+System widgets and App Intents remain
 backed by the primary/default store; multi-account switching is implemented for
 the main Mac app.
 
@@ -760,3 +737,24 @@ but intentionally leaves its local data on disk.
 Verified: account path isolation, metadata upserts and current/primary markers
 are covered in `MacPresentationTests`; the unsigned Local Mac build and the
 isolated UI-test build both succeed.
+
+## Wallet removed (November 2, 2026)
+
+The Mac app had not been released, so no Mac wallet ever held funds; it was removed
+outright with no migration or recovery path. The Mac target no longer links
+`TaskifyWallet` (and so no longer bundles the Cashu framework) or compiles the iPhone's
+`Features/Wallet` sources and `NpubCashSettings.swift`. Gone with it: the Wallet sidebar
+destination, the phase-out notice and recovery mode, NWC, contact payments, payment
+requests, P2PK keys, mint transfer, the denomination picker, the wallet start plan in
+`MacRuntimeConfiguration`, and the wallet UI tests. The shared iPhone code it relied on is
+behind `#if os(iOS)`: the Mac does not queue incoming Cashu payments from chat for
+redemption (the iPhone still does) and does not write the wallet currency keys into the
+account backup, which keeps the remote values. `MacContactPicker`, used by the event
+editor, moved to `MacContacts.swift`. A wallet notification routed from the iPhone has no
+Mac destination and is dropped.
+
+Verified: Release, Local and UITest builds; the Release bundle has no `Frameworks`
+directory and the binary no wallet symbols; the iOS Simulator build still compiles the
+wallet; 47 `swift test` cases (including the new `testMacAppDoesNotLinkOrCompileTheWallet`)
+and the 963 TaskifyCore tests pass. The replacement UI smoke, `testWorkspaceHasNoWallet`,
+runs in CI; it needs Xcode UI automation allowed to run locally.

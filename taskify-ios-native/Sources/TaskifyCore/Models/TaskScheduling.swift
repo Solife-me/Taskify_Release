@@ -1,4 +1,5 @@
 import Foundation
+import TaskifyWatchShared
 
 public enum TaskRecurrenceUnit: String, Codable, CaseIterable, Sendable {
     case hour
@@ -238,52 +239,15 @@ public struct TaskReminder: RawRepresentable, Codable, Hashable, Sendable, Ident
     }
 
     public init(minutesBefore: Int, dateOnly: Bool = false) {
-        if minutesBefore == 0 {
-            rawValue = dateOnly ? "0d" : "0h"
-            return
-        }
-        switch minutesBefore {
-        case 5: rawValue = "5m"
-        case 15: rawValue = "15m"
-        case 30: rawValue = "30m"
-        case 60: rawValue = "1h"
-        case 1_440: rawValue = "1d"
-        case 10_080: rawValue = "1w"
-        default: rawValue = "custom-\(minutesBefore)"
-        }
+        rawValue = TaskifyReminderOffset.rawValue(minutesBefore: minutesBefore, dateOnly: dateOnly)
     }
 
     public var minutesBefore: Int? {
-        switch rawValue {
-        case "0h", "0d": return 0
-        case "5m": return 5
-        case "15m": return 15
-        case "30m": return 30
-        case "1h": return 60
-        case "1d": return 1_440
-        case "1w": return 10_080
-        default:
-            guard rawValue.hasPrefix("custom-"),
-                  let value = Int(rawValue.dropFirst("custom-".count)),
-                  abs(value) <= 99_999_999 else { return nil }
-            return value
-        }
+        TaskifyReminderOffset.minutesBefore(rawValue: rawValue)
     }
 
     public var label: String {
-        guard let minutesBefore else { return "Reminder" }
-        if minutesBefore == 0 { return rawValue == "0h" ? "At due time" : "On the day" }
-        let absolute = abs(minutesBefore)
-        let direction = minutesBefore < 0 ? "after" : "before"
-        if absolute % 1_440 == 0 {
-            let days = absolute / 1_440
-            return "\(days) day\(days == 1 ? "" : "s") \(direction)"
-        }
-        if absolute % 60 == 0 {
-            let hours = absolute / 60
-            return "\(hours) hour\(hours == 1 ? "" : "s") \(direction)"
-        }
-        return "\(absolute) minute\(absolute == 1 ? "" : "s") \(direction)"
+        TaskifyReminderOffset.label(rawValue: rawValue)
     }
 
     public var eventLabel: String {
@@ -294,20 +258,9 @@ public struct TaskReminder: RawRepresentable, Codable, Hashable, Sendable, Ident
         }
     }
 
-    public static let timedPresets: [TaskReminder] = [
-        TaskReminder(rawValue: "0h"),
-        TaskReminder(rawValue: "5m"),
-        TaskReminder(rawValue: "15m"),
-        TaskReminder(rawValue: "30m"),
-        TaskReminder(rawValue: "1h"),
-        TaskReminder(rawValue: "1d"),
-    ]
+    public static let timedPresets = TaskifyReminderOffset.timedPresetRawValues.map(TaskReminder.init(rawValue:))
 
-    public static let datePresets: [TaskReminder] = [
-        TaskReminder(rawValue: "1w"),
-        TaskReminder(rawValue: "1d"),
-        TaskReminder(rawValue: "0d"),
-    ]
+    public static let datePresets = TaskifyReminderOffset.datePresetRawValues.map(TaskReminder.init(rawValue:))
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
