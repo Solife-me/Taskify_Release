@@ -1332,7 +1332,6 @@ struct BoardPrintChooserSheet: View {
 
     let title: String
     let choices: [BoardPrintListChoice]
-    let includeCompleted: Bool
     let onContinue: (Set<String>?) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -1342,16 +1341,14 @@ struct BoardPrintChooserSheet: View {
     init(
         title: String,
         choices: [BoardPrintListChoice],
-        includeCompleted: Bool,
         onContinue: @escaping (Set<String>?) -> Void
     ) {
         self.title = title
         self.choices = choices
-        self.includeCompleted = includeCompleted
         self.onContinue = onContinue
         _selectedListIDs = State(initialValue: Set(
             choices.filter { choice in
-                choice.items.contains { includeCompleted || !$0.filled }
+                choice.items.contains { !$0.filled }
             }.map(\.id)
         ))
     }
@@ -1359,7 +1356,7 @@ struct BoardPrintChooserSheet: View {
     private var printableCount: Int {
         let selected = scope == .board ? choices : choices.filter { selectedListIDs.contains($0.id) }
         return selected.reduce(0) { count, choice in
-            count + choice.items.filter { includeCompleted || !$0.filled }.count
+            count + choice.items.filter { !$0.filled }.count
         }
     }
 
@@ -1378,7 +1375,7 @@ struct BoardPrintChooserSheet: View {
                 if scope == .lists {
                     Section("Lists") {
                         ForEach(choices) { choice in
-                            let count = choice.items.filter { includeCompleted || !$0.filled }.count
+                            let count = choice.items.filter { !$0.filled }.count
                             Button {
                                 if selectedListIDs.contains(choice.id) {
                                     selectedListIDs.remove(choice.id)
@@ -1408,12 +1405,12 @@ struct BoardPrintChooserSheet: View {
 
                 Section {
                     Label(
-                        includeCompleted ? "Completed tasks will be included." : "Only incomplete tasks will be printed.",
-                        systemImage: includeCompleted ? "checkmark.circle.fill" : "circle.dashed"
+                        "Only incomplete tasks and events will be printed.",
+                        systemImage: "circle.dashed"
                     )
                     .font(.caption)
                     .foregroundStyle(TaskifyTheme.secondaryText)
-                    Text("\(printableCount) task\(printableCount == 1 ? "" : "s") selected")
+                    Text("\(printableCount) item\(printableCount == 1 ? "" : "s") selected")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(TaskifyTheme.primaryText)
                 }
@@ -1444,6 +1441,7 @@ struct BoardShareSheet: View {
     @Environment(AppModel.self) private var model
     let board: Board
     let onPrint: () -> Void
+    let onScan: () -> Void
 
     @State private var shareMode = ShareMode.board
     @State private var copied = false
@@ -1650,7 +1648,7 @@ struct BoardShareSheet: View {
                 Label("Printable checklist", systemImage: "printer")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(TaskifyTheme.accent)
-                Text("Print open tasks as a paper checklist, or scan a printed sheet to mark tasks complete.")
+                Text("Print open tasks and events as a paper checklist, or scan a printed sheet to mark tasks complete.")
                     .font(.caption)
                     .foregroundStyle(TaskifyTheme.secondaryText)
                     .multilineTextAlignment(.center)
@@ -1667,11 +1665,21 @@ struct BoardShareSheet: View {
                 dismiss()
                 onPrint()
             } label: {
-                Label("Print or scan checklist", systemImage: "printer")
+                Label("Print checklist", systemImage: "printer")
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
             }
             .buttonStyle(.borderedProminent)
+
+            Button {
+                dismiss()
+                onScan()
+            } label: {
+                Label("Scan checklist", systemImage: "doc.viewfinder")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+            }
+            .buttonStyle(.bordered)
         }
     }
 

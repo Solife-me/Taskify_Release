@@ -158,13 +158,11 @@ struct BoardsView: View {
             if let board = model.selectedBoard {
                 BoardPrintChooserSheet(
                     title: board.name,
-                    choices: makeBoardPrintChoices(for: board),
-                    includeCompleted: completedTabEnabled
+                    choices: makeBoardPrintChoices(for: board)
                 ) { selectedListIDs in
                     pendingBoardPrintJob = makeBoardPrintJob(
                         for: board,
-                        selectedListIDs: selectedListIDs,
-                        includeCompleted: completedTabEnabled
+                        selectedListIDs: selectedListIDs
                     )
                 }
             }
@@ -198,6 +196,8 @@ struct BoardsView: View {
             if let board = model.selectedBoard {
                 BoardShareSheet(board: board) {
                     requestBoardPrintAfterShare = true
+                } onScan: {
+                    openPrintedChecklistScanner()
                 }
             }
         }
@@ -514,22 +514,6 @@ struct BoardsView: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel("Share \(model.selectedBoard?.name ?? "board")")
 
-                        Rectangle()
-                            .fill(TaskifyTheme.border)
-                            .frame(width: 1, height: 23)
-
-                        Button {
-                            openPrintedChecklistScanner()
-                        } label: {
-                            Image(systemName: "doc.viewfinder")
-                                .scaledFont(size: 15, weight: .semibold)
-                                .frame(width: 42, height: 42)
-                                .contentShape(Rectangle())
-                        }
-                        .foregroundStyle(TaskifyTheme.primaryText)
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Scan printed checklist")
-                        .accessibilityIdentifier("scan-printed-checklist")
                     }
                 }
                 .taskifyGlassControl(in: Capsule())
@@ -633,11 +617,7 @@ struct BoardsView: View {
         guard let board = model.selectedBoard, board.kind != .bible else { return }
         let ownerID = "board:\(board.effectiveNostrBoardID)"
         let launchJob = PhysicalChecklistJobStore.load(ownerID: ownerID)
-            ?? makeBoardPrintJob(
-                for: board,
-                selectedListIDs: nil,
-                includeCompleted: completedTabEnabled
-            )
+            ?? makeBoardPrintJob(for: board, selectedListIDs: nil)
         guard let launchJob else {
             model.errorMessage = "There is no printed checklist to scan yet. Add a task, then print a checklist first."
             return
@@ -653,16 +633,30 @@ struct BoardsView: View {
                 let section = board.kind == .compound
                     ? "\(scopedBoard.name) — \(column.name)"
                     : column.name
-                let items = model.tasks(
+                var items = model.tasks(
                     boardID: scopedBoard.id,
                     columnID: column.id,
-                    includeCompleted: true
+                    includeCompleted: false
                 ).map { task in
                     PhysicalChecklistItem(
                         id: task.id,
                         title: task.title,
                         section: section,
-                        filled: task.completed
+                        filled: false
+                    )
+                }
+                // Events have no completion state, so every uncompleted-scoped event prints.
+                let weekday = WeekdayColumn(rawValue: column.id)
+                items += model.boardEvents(
+                    boardID: scopedBoard.id,
+                    columnID: column.id,
+                    weekday: weekday
+                ).map { event in
+                    PhysicalChecklistItem(
+                        id: event.id,
+                        title: event.title,
+                        section: section,
+                        filled: false
                     )
                 }
                 return BoardPrintListChoice(
@@ -674,10 +668,11 @@ struct BoardsView: View {
         }
     }
 
+    /// Only uncompleted tasks and events are printable; completed tasks never make it onto a
+    /// paper checklist (events have no completion state, so all of them print).
     private func makeBoardPrintJob(
         for board: Board,
-        selectedListIDs: Set<String>?,
-        includeCompleted: Bool
+        selectedListIDs: Set<String>?
     ) -> PhysicalChecklistJob? {
         let choices = makeBoardPrintChoices(for: board)
         let scopedChoices = selectedListIDs.map { selected in
@@ -685,7 +680,7 @@ struct BoardsView: View {
         } ?? choices
         let items = scopedChoices
             .flatMap(\.items)
-            .filter { includeCompleted || !$0.filled }
+            .filter { !$0.filled }
 
         guard !items.isEmpty else { return nil }
         return PhysicalChecklistJob(
