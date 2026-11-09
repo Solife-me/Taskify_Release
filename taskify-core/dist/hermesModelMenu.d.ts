@@ -1,10 +1,10 @@
 /**
- * Taskify's Hermes model-menu adapter.
+ * Taskify's Hermes bot-menu adapter.
  *
  * Hermes has no structured UI callback on non-Telegram platforms. Its `/model` text fallback
  * carries provider previews, while a one-provider agent request can return a complete JSON
- * catalog. These parsers are deliberately strict: clients should render buttons only from values
- * that were recognized in a known Hermes response shape.
+ * catalog, and `/sessions` returns named sessions. These parsers are deliberately strict: clients
+ * should render buttons only from values recognized in a known Hermes response shape.
  */
 export declare const HERMES_PROVIDER_PAGE_SIZE = 10;
 export declare const HERMES_MODEL_PAGE_SIZE = 8;
@@ -29,11 +29,22 @@ export type HermesModelSwitchConfirmation = {
     modelId: string;
     providerName: string | null;
 };
+export type HermesSession = {
+    title: string;
+    sessionId: string;
+    isCurrent: boolean;
+};
+export type HermesSessionListing = {
+    sessions: HermesSession[];
+};
 export declare function isValidHermesProviderSlug(value: unknown): value is string;
 export declare function isValidHermesModelId(value: unknown): value is string;
+export declare function isValidHermesSessionId(value: unknown): value is string;
 export declare function parseHermesModelListing(text: string): HermesModelListing | null;
 export declare function parseHermesProviderCatalog(text: string, expectedProviderSlug?: string): HermesProviderCatalog | null;
 export declare function parseHermesModelSwitchConfirmation(text: string): HermesModelSwitchConfirmation | null;
+export declare function parseHermesSessionListing(text: string): HermesSessionListing | null;
+export declare function buildHermesSessionResumeCommand(sessionId: string): string;
 /** Encrypted rumor tags used to hide Taskify bot-UI commands and correlate their replies. */
 export declare const TASKIFY_BOT_UI_TAG = "taskify-bot-ui";
 export declare const TASKIFY_BOT_UI_VERSION = "v1";

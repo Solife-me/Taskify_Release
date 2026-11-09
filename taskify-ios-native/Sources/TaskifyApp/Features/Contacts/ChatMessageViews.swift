@@ -1850,6 +1850,136 @@ extension ScrollGeometry {
     }
 }
 
+// MARK: - Hermes session picker
+
+struct HermesSessionPickerChatView: View {
+    @Environment(AppModel.self) private var model
+    let peerPublicKey: String
+    let listing: HermesSessionListing
+
+    @State private var resumingSessionID: String?
+    @State private var sentSessionID: String?
+    @State private var actionError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 9) {
+                Image(systemName: "rectangle.stack")
+                    .font(.subheadline)
+                    .foregroundStyle(TaskifyTheme.accent)
+                    .frame(width: 29, height: 29)
+                    .background(TaskifyTheme.accent.opacity(0.13), in: Circle())
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Named sessions")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                    Text("Choose a session to resume")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+                Spacer(minLength: 4)
+                Text(listing.sessions.count, format: .number)
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            VStack(spacing: 6) {
+                ForEach(listing.sessions, id: \.sessionId) { session in
+                    sessionButton(session)
+                }
+            }
+
+            if let actionError {
+                Text(actionError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: 540, alignment: .leading)
+        .taskifyGlassControl(in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+    }
+
+    private func sessionButton(_ session: HermesSession) -> some View {
+        Button {
+            resume(session)
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TaskifyTheme.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(session.sessionId)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                if resumingSessionID == session.sessionId {
+                    ProgressView().controlSize(.small)
+                } else if sentSessionID == session.sessionId {
+                    Label("Sent", systemImage: "checkmark")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                } else if session.isCurrent {
+                    Text("Current")
+                        .font(.caption2)
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.bold())
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            session.isCurrent ? TaskifyTheme.accent.opacity(0.1) : TaskifyTheme.panelFill,
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(
+                    session.isCurrent ? TaskifyTheme.accent.opacity(0.4) : TaskifyTheme.border.opacity(0.7),
+                    lineWidth: 1
+                )
+        )
+        .disabled(resumingSessionID != nil)
+        .opacity(resumingSessionID == nil || resumingSessionID == session.sessionId ? 1 : 0.46)
+        .accessibilityLabel("Resume session: \(session.title)")
+        .accessibilityValue(session.isCurrent ? "Current" : "")
+    }
+
+    private func resume(_ session: HermesSession) {
+        guard resumingSessionID == nil else { return }
+        resumingSessionID = session.sessionId
+        sentSessionID = nil
+        actionError = nil
+        Task { @MainActor in
+            do {
+                try await model.sendDirectMessage(
+                    to: peerPublicKey,
+                    content: HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
+                )
+                sentSessionID = session.sessionId
+            } catch {
+                actionError = error.localizedDescription
+            }
+            resumingSessionID = nil
+        }
+    }
+}
+
 // MARK: - Hermes model picker
 
 private struct HermesModelCatalogCacheEntry: Codable, Equatable {

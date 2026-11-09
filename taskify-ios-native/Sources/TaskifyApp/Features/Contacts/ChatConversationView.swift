@@ -74,6 +74,8 @@ struct ChatConversationPresentation {
     let stackedMessageIDs: Set<String>
     /// Verified-bot Hermes menus keyed by the visible `/model` listing message.
     let hermesMenusByListingMessageID: [String: HermesModelMenuProjection]
+    /// Verified-bot Hermes session listings keyed by the visible `/sessions` response.
+    let hermesSessionsByListingMessageID: [String: HermesSessionListing]
 }
 
 /// A conversation owns only its current snapshot projection and a bounded amount of parsed
@@ -656,7 +658,8 @@ struct DirectMessageConversationView: View {
             structuredSenderName: values.max { $0.0 < $1.0 }?.1,
             photoStacks: photoStacks.stacks,
             stackedMessageIDs: photoStacks.stackedMessageIDs,
-            hermesMenusByListingMessageID: hermesProjection.menusByListingMessageID
+            hermesMenusByListingMessageID: hermesProjection.menusByListingMessageID,
+            hermesSessionsByListingMessageID: hermesProjection.sessionsByListingMessageID
         )
     }
     private var isStranger: Bool {
@@ -1273,6 +1276,15 @@ struct DirectMessageConversationView: View {
                             projection: hermesMenu
                         )
                         .frame(maxWidth: 540, alignment: .leading)
+                        Spacer(minLength: 30)
+                    }
+                    .padding(.vertical, 4)
+                } else if let sessions = presentation.hermesSessionsByListingMessageID[message.id] {
+                    HStack(alignment: .top, spacing: 0) {
+                        HermesSessionPickerChatView(
+                            peerPublicKey: peerPublicKey,
+                            listing: sessions
+                        )
                         Spacer(minLength: 30)
                     }
                     .padding(.vertical, 4)

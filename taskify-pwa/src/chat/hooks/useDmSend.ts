@@ -104,8 +104,8 @@ export function useDmSend({
     },
     [resolveNip17Timestamp],
   );
-  const sendBotUiCommand = useCallback(
-    async (peerPubkey: string, content: string, action: TaskifyBotUiAction): Promise<void> => {
+  const sendDirectTextMessage = useCallback(
+    async (peerPubkey: string, content: string, extraTags?: string[][]): Promise<void> => {
       const command = content.trim();
       if (!command) throw new Error("The bot command is empty.");
       const { identity, reason } = readNostrIdentity();
@@ -124,7 +124,7 @@ export function useDmSend({
         recipientHex,
         senderSecret: identity.secret,
         publish,
-        extraTags: [buildTaskifyBotUiActionTag(action)],
+        extraTags,
       });
       if (selfWrapEvent) await handleDmEvent(selfWrapEvent);
     },
@@ -137,6 +137,12 @@ export function useDmSend({
       resolveNip17Relays,
       safePublish,
     ],
+  );
+  const sendBotUiCommand = useCallback(
+    async (peerPubkey: string, content: string, action: TaskifyBotUiAction): Promise<void> => {
+      await sendDirectTextMessage(peerPubkey, content, [buildTaskifyBotUiActionTag(action)]);
+    },
+    [sendDirectTextMessage],
   );
 
   const handleSendReaction = useCallback(
@@ -486,6 +492,7 @@ export function useDmSend({
     resolveNip17Timestamp,
     resolveNip17Relays,
     publishNip17Giftwraps,
+    sendDirectTextMessage,
     sendBotUiCommand,
     handleSendReaction,
     handleForwardMessage,

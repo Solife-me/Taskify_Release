@@ -76,6 +76,11 @@ When a 1:1 conversation opens, the client:
 
 Typing `/` at the start of the composer then shows the menu, filtered as you type; tapping a command inserts `/name ` into the draft.
 
+Recognized Hermes `/model` and `/sessions` responses also render interactive cards in verified bot
+conversations. Session buttons retain the title and current marker from Hermes's `Named Sessions`
+response and send the ordinary visible NIP-17 message `/resume <session id>`. No custom event tag or
+Hermes-side integration is required; unrecognized response text remains a normal readable message.
+
 The native iOS client revalidates the list whenever the conversation opens or returns to the foreground, even if its persisted cache is fresh. Cached commands stay available while the request runs or if the relays cannot be reached. Passive contact lookups retain a 24-hour cache interval.
 
 ## Shortcut: taskify CLI

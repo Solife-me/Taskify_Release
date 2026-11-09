@@ -2,8 +2,9 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, test, vi } from "vitest";
-import { parseHermesModelListing } from "taskify-core";
+import { parseHermesModelListing, parseHermesSessionListing } from "taskify-core";
 import { HermesModelPicker } from "./HermesModelPicker";
+import { HermesSessionPicker } from "./HermesSessionPicker";
 import { saveHermesCatalogCache, type HermesMenuProjection } from "./hermesModelPickerState";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -94,6 +95,34 @@ test("opening an uncached provider requests only that provider's complete catalo
   expect(prompt).toContain('{"provider":"nous","models":["model-id"]}');
   expect(action).toEqual({ kind: "catalog-request", menuId: LISTING_ID, providerSlug: "nous" });
   expect(container.textContent).toContain("Loading Nous Portal models…");
+
+  await act(async () => root.unmount());
+});
+
+test("a named-session button sends the exact resume command", async () => {
+  const listing = parseHermesSessionListing(`📋 **Named Sessions**
+
+1. **Give MCP access to Nextcloud server** (current) — \`20261109_020143_82e5b835\` — _nextcloud_
+2. **Write comprehensive audit plan paper** — \`20261109_013330_790ece03\` — _audit_`);
+  if (!listing) throw new Error("session fixture did not parse");
+  const sendDirectTextMessage = vi.fn().mockResolvedValue(undefined);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+
+  await act(async () => root.render(
+    <HermesSessionPicker
+      peerPubkey={PEER}
+      listing={listing}
+      sendDirectTextMessage={sendDirectTextMessage}
+    />,
+  ));
+  expect(container.textContent).toContain("Current");
+  expect(container.querySelectorAll("button")).toHaveLength(2);
+
+  await act(async () => buttonWithText(container, "Write comprehensive audit plan paper").click());
+
+  expect(sendDirectTextMessage).toHaveBeenCalledWith(PEER, "/resume 20261109_013330_790ece03");
+  expect(container.textContent).toContain("Sent ✓");
 
   await act(async () => root.unmount());
 });

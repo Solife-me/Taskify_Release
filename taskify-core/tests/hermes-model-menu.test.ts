@@ -11,9 +11,13 @@ import {
   parseHermesModelListing,
   parseHermesModelSwitchConfirmation,
   parseHermesProviderCatalog,
+  buildHermesSessionResumeCommand,
+  isValidHermesSessionId,
+  parseHermesSessionListing,
   type HermesModelListing,
   type HermesProviderCatalog,
   type HermesModelSwitchConfirmation,
+  type HermesSessionListing,
 } from "../dist/index.js";
 
 type VectorFile = {
@@ -27,6 +31,8 @@ type VectorFile = {
   confirmations: Array<{ name: string; text: string; expected: HermesModelSwitchConfirmation }>;
   invalidModelListings: string[];
   invalidProviderCatalogs: string[];
+  sessionListings: Array<{ name: string; text: string; expected: HermesSessionListing }>;
+  invalidSessionListings: string[];
 };
 
 const fixture = JSON.parse(
@@ -51,10 +57,24 @@ for (const vector of fixture.confirmations) {
   });
 }
 
+for (const vector of fixture.sessionListings) {
+  test(`Hermes session listing: ${vector.name}`, () => {
+    assert.deepEqual(parseHermesSessionListing(vector.text), vector.expected);
+  });
+}
+
 test("Hermes parsers reject unrecognized or mismatched shapes", () => {
   for (const text of fixture.invalidModelListings) assert.equal(parseHermesModelListing(text), null);
   for (const text of fixture.invalidProviderCatalogs) assert.equal(parseHermesProviderCatalog(text, "custom:local"), null);
+  for (const text of fixture.invalidSessionListings) assert.equal(parseHermesSessionListing(text), null);
   assert.equal(parseHermesModelSwitchConfirmation("Model not changed."), null);
+});
+
+test("Hermes session resume commands use only validated session identifiers", () => {
+  assert.equal(isValidHermesSessionId("20261109_020143_82e5b835"), true);
+  assert.equal(isValidHermesSessionId("20261109_020143_82e5b835\n/help"), false);
+  assert.equal(buildHermesSessionResumeCommand("20261109_013330_790ece03"), "/resume 20261109_013330_790ece03");
+  assert.throws(() => buildHermesSessionResumeCommand("bad session"), /Invalid Hermes session/);
 });
 
 test("Hermes menu identifiers are strict and page sizes match the adapter contract", () => {
