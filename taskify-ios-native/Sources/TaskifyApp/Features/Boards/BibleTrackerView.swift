@@ -973,10 +973,6 @@ struct PhysicalChecklistSheet: View {
         self.onApply = onApply
     }
 
-    private var lastPrintedJob: PhysicalChecklistJob? {
-        PhysicalChecklistJobStore.load(ownerID: job.ownerID)
-    }
-
     private var reviewedItems: [PhysicalChecklistItem] {
         guard let scanJob else { return [] }
         return scanReview.reviewedItems(from: scanJob.items)
@@ -1025,21 +1021,6 @@ struct PhysicalChecklistSheet: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
-
-                        Button {
-                            let nextJob = lastPrintedJob ?? job
-                            if scanJob?.id != nextJob.id {
-                                scanReview = PhysicalChecklistScanReview()
-                                scanMessage = nil
-                            }
-                            scanJob = nextJob
-                            showingScanner = true
-                        } label: {
-                            Label("Scan completed checklist", systemImage: "doc.viewfinder")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!VNDocumentCameraViewController.isSupported)
                     }
 
                     if let scanMessage {

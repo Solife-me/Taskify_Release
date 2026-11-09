@@ -46,20 +46,29 @@ final class BoardRenderUITests: XCTestCase {
         XCTAssertLessThanOrEqual(card.frame.width, 330, "a card never grows past its 330 pt column")
     }
 
-    func testPrintedChecklistScannerIsAvailableFromBoardHeader() throws {
+    /// The dedicated scanner button lives in the share sheet's Print tab (the board header only
+    /// offers Share), and the final print page no longer offers a scan button.
+    func testScannerLivesInSharePrintTabAndPrintPageHasNoScanButton() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launchEnvironment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] = "1"
         app.launch()
         app.buttons["Boards"].firstMatch.tap()
 
-        let scan = app.buttons["scan-printed-checklist"]
-        XCTAssertTrue(scan.waitForExistence(timeout: 15))
-        scan.tap()
+        // The board header no longer has a dedicated scan button.
+        XCTAssertFalse(app.buttons["scan-printed-checklist"].waitForExistence(timeout: 3))
 
-        // Document scanning is unavailable in Simulator, so the containing verification sheet
-        // remains visible. A real iPhone presents the scanner immediately over this sheet.
-        XCTAssertTrue(app.staticTexts["Physical checklist"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Scan completed checklist"].exists)
+        // Share sheet -> Print tab offers separate Print and Scan buttons.
+        let share = app.buttons["Share Performance fixture"].firstMatch
+        if !share.exists {
+            app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'share'")).firstMatch.tap()
+        } else {
+            share.tap()
+        }
+        let printTab = app.buttons["Print"].firstMatch
+        XCTAssertTrue(printTab.waitForExistence(timeout: 15))
+        printTab.tap()
+        XCTAssertTrue(app.buttons["Print checklist"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Scan checklist"].waitForExistence(timeout: 5))
     }
 }

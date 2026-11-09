@@ -1280,6 +1280,32 @@ private enum TaskNoteClipboardImage {
 final class TaskNoteRichUITextView: UITextView {
     weak var controller: TaskNoteRichEditorController?
 
+    /// A sheet's text view must not take first responder while that sheet is still being
+    /// presented. Doing so can dismiss the sheet again on iOS 26 when another field already
+    /// has the keyboard. Load the text immediately, but hand over keyboard focus only after
+    /// UIKit completes the presentation (or cancel it if the sheet never finished opening).
+    func focusAfterPresentation() {
+        guard window != nil else {
+            DispatchQueue.main.async { [weak self] in self?.focusAfterPresentation() }
+            return
+        }
+
+        var responder: UIResponder? = self
+        while let current = responder {
+            if let viewController = current as? UIViewController,
+               let transition = viewController.transitionCoordinator {
+                transition.animate(alongsideTransition: nil) { [weak self] context in
+                    guard !context.isCancelled, let self, self.window != nil else { return }
+                    self.becomeFirstResponder()
+                }
+                return
+            }
+            responder = current.next
+        }
+
+        becomeFirstResponder()
+    }
+
     override func copy(_ sender: Any?) {
         guard let markdown = controller?.copySelection() else { return super.copy(sender) }
         UIPasteboard.general.string = markdown
@@ -1361,7 +1387,7 @@ struct TaskNoteRichTextEditor: UIViewRepresentable {
         controller.onPasteImage = onPasteImage
         DispatchQueue.main.async {
             controller.load(markdown: initialMarkdown)
-            view.becomeFirstResponder()
+            view.focusAfterPresentation()
         }
         return view
     }

@@ -376,6 +376,35 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertFalse(cardNote.exists, "The note was only the checklist, so nothing is left to preview")
     }
 
+    func testTaskNoteEditorStaysOpenWhenTitleKeyboardIsAlreadyVisible() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+
+        app.buttons["Boards"].tap()
+        let addDetailsButton = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
+        ).firstMatch
+        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
+        addDetailsButton.tap()
+        XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 3))
+
+        app.buttons["task-editor-notes"].tap()
+        let noteText = app.textViews["task-note-editor-text"]
+        XCTAssertTrue(noteText.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Notes"].waitForExistence(timeout: 3))
+
+        // Let both the sheet and keyboard transitions finish before checking for an immediate
+        // return to the task editor, rather than accepting a text view that only briefly existed.
+        Thread.sleep(forTimeInterval: 0.75)
+        XCTAssertTrue(noteText.exists, "The note editor must stay open after its keyboard appears")
+        XCTAssertTrue(app.navigationBars["Notes"].exists)
+        noteText.typeText("Keyboard handoff")
+        XCTAssertEqual(noteText.value as? String, "Keyboard handoff")
+    }
+
     func testNoteViewerCopiesCodeOnTap() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
