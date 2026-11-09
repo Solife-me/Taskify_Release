@@ -1011,10 +1011,199 @@ private struct MacMessageRow: View {
         } else if let paymentToken {
             MacPaymentTokenCard(token: paymentToken)
         } else {
-            Text(.init(message.displayContent)).textSelection(.enabled)
+            MacChatMarkdownText(markdown: message.displayContent)
             ForEach(TaskContentLinks.allURLs(in: message.content), id: \.absoluteString) { url in
                 MacLinkCard(url: url)
             }
+        }
+    }
+}
+
+/// Chat Markdown with the same click-to-copy code affordance as iPhone and the PWA. The shared
+/// parser keeps headings, lists, quotes and fenced blocks consistent with the other native apps;
+/// ordinary links still open normally, while its private inline-code links are handled locally.
+private struct MacChatMarkdownText: View {
+    private let document: NostrChatMarkdownDocument
+    @State private var copiedCode: String?
+
+    init(markdown: String) {
+        document = NostrChatMarkdown.document(markdown)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(document.blocks.enumerated()), id: \.offset) { index, block in
+                blockView(block)
+                    .padding(.top, topPadding(for: block, at: index))
+            }
+        }
+        .textSelection(.enabled)
+        .environment(\.openURL, OpenURLAction { url in
+            guard let code = NostrChatMarkdown.copiedCode(from: url) else {
+                return .systemAction
+            }
+            copy(code)
+            return .handled
+        })
+        .overlay(alignment: .topTrailing) {
+            if copiedCode != nil {
+                Label("Copied", systemImage: "checkmark")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.black.opacity(0.78), in: Capsule())
+                    .offset(y: -29)
+                    .transition(.scale.combined(with: .opacity))
+                    .allowsHitTesting(false)
+            }
+        }
+        .task(id: copiedCode) {
+            guard copiedCode != nil else { return }
+            do {
+                try await Task.sleep(for: .seconds(1.25))
+            } catch {
+                return
+            }
+            withAnimation(.easeOut(duration: 0.18)) {
+                copiedCode = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: NostrChatMarkdownBlock) -> some View {
+        switch block {
+        case .paragraph(let content):
+            inlineText(content, font: .body)
+        case let .heading(level, content):
+            inlineText(content, font: headingFont(level: level))
+        case let .unorderedListItem(depth, content):
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text("•")
+                    .font(.body.weight(.bold))
+                    .frame(width: 12, alignment: .trailing)
+                inlineText(content, font: .body)
+            }
+            .padding(.leading, CGFloat(depth) * 15)
+        case let .orderedListItem(depth, number, content):
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text("\(number).")
+                    .font(.callout.weight(.semibold))
+                    .frame(minWidth: 18, alignment: .trailing)
+                inlineText(content, font: .body)
+            }
+            .padding(.leading, CGFloat(depth) * 15)
+        case let .blockQuote(depth, content):
+            HStack(alignment: .top, spacing: 8) {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Color.primary.opacity(0.38))
+                    .frame(width: 3)
+                inlineText(content, font: .body.italic())
+                    .foregroundStyle(Color.primary.opacity(0.88))
+            }
+            .padding(.leading, CGFloat(max(0, depth - 1)) * 12)
+        case let .codeBlock(language, content):
+            VStack(alignment: .leading, spacing: 5) {
+                if let language {
+                    Text(language.uppercased())
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.primary.opacity(0.62))
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(content)
+                        .font(.system(size: 13, design: .monospaced))
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .padding(10)
+            .background(codeBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .onTapGesture { copy(content) }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Copies code")
+        case .thematicBreak:
+            Rectangle()
+                .fill(Color.primary.opacity(0.24))
+                .frame(minWidth: 120, maxWidth: .infinity, minHeight: 1, maxHeight: 1)
+        }
+    }
+
+    private func inlineText(_ markdown: String, font: Font) -> some View {
+        Text(styledInlineMarkdown(markdown))
+            .font(font)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func styledInlineMarkdown(_ markdown: String) -> AttributedString {
+        var attributed = NostrChatMarkdown.inlineAttributedString(markdown)
+        let runs = attributed.runs.map { run in
+            (range: run.range, intent: run.inlinePresentationIntent, link: run.link)
+        }
+        for run in runs {
+            if run.intent?.contains(.code) == true {
+                let code = String(attributed[run.range].characters)
+                attributed[run.range].font = .system(
+                    size: 13,
+                    weight: .medium,
+                    design: .monospaced
+                )
+                attributed[run.range].foregroundColor = .labelColor
+                attributed[run.range].backgroundColor = .quaternaryLabelColor
+                attributed[run.range].link = NostrChatMarkdown.copyURL(for: code)
+                continue
+            }
+            if let link = run.link, !isSafeExternalLink(link) {
+                attributed[run.range].link = nil
+            }
+        }
+        return attributed
+    }
+
+    private var codeBackground: Color {
+        Color.primary.opacity(0.08)
+    }
+
+    private func headingFont(level: Int) -> Font {
+        switch level {
+        case 1: .title2.bold()
+        case 2: .title3.bold()
+        case 3: .headline
+        default: .body.weight(.semibold)
+        }
+    }
+
+    private func topPadding(for block: NostrChatMarkdownBlock, at index: Int) -> CGFloat {
+        guard index > 0 else { return 0 }
+        let previous = document.blocks[index - 1]
+        if isListItem(block), isListItem(previous) { return 4 }
+        if isBlockQuote(block), isBlockQuote(previous) { return 4 }
+        return 10
+    }
+
+    private func isListItem(_ block: NostrChatMarkdownBlock) -> Bool {
+        switch block {
+        case .unorderedListItem, .orderedListItem: true
+        default: false
+        }
+    }
+
+    private func isBlockQuote(_ block: NostrChatMarkdownBlock) -> Bool {
+        if case .blockQuote = block { return true }
+        return false
+    }
+
+    private func isSafeExternalLink(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "https" || scheme == "http" || scheme == "mailto"
+    }
+
+    private func copy(_ code: String) {
+        guard !code.isEmpty else { return }
+        macCopy(code)
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
+            copiedCode = code
         }
     }
 }

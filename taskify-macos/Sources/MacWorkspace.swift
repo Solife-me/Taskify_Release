@@ -442,6 +442,7 @@ private struct MacWorkspaceSidebar: View {
     let closeSplit: () -> Void
     let moveTasks: ([String], Board) -> Bool
     @State private var archivedExpanded = false
+    @State private var showingSyncQueue = false
 
     var body: some View {
         List(selection: Binding<String?>(
@@ -505,13 +506,33 @@ private struct MacWorkspaceSidebar: View {
         .navigationTitle("Taskify")
         .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
         .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 5) {
-                Label(model.syncStatus, systemImage: "arrow.triangle.2.circlepath")
-                Text(model.pendingSyncChangeCount == 0 ? "Local changes saved automatically" : "\(model.pendingSyncChangeCount) changes waiting to sync")
-                    .font(.caption).foregroundStyle(.secondary)
+            Button {
+                showingSyncQueue = true
+            } label: {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(model.syncStatus, systemImage: "arrow.triangle.2.circlepath")
+                        Text(model.pendingSyncChangeCount == 0 ? "Local changes saved automatically" : "\(model.pendingSyncChangeCount) changes waiting to sync")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
             }
-            .font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(14)
+            .buttonStyle(.plain)
+            .font(.caption)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
             .background(.bar)
+            .help("Inspect sync queue")
+            .accessibilityIdentifier("sync-queue-button")
+        }
+        .sheet(isPresented: $showingSyncQueue) {
+            MacSyncQueueInspector().environment(model)
         }
     }
 
