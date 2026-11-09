@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState, useSyncExternalStore } from "react";
+import {
+  activateWaitingServiceWorker,
+  dismissServiceWorkerUpdate,
+  isServiceWorkerUpdateAvailable,
+  subscribeServiceWorkerUpdate,
+} from "../../pwa/serviceWorkerClient";
 
 type UseWalletShellStateParams = {
   activePage: string;
@@ -27,29 +33,19 @@ export function useWalletShellState({
     });
   }, [loadWalletModal, walletEnabled]);
   const [walletTokenStateResetNonce, setWalletTokenStateResetNonce] = useState(0);
-  const [updateToastVisible, setUpdateToastVisible] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    function handleUpdateAvailable() {
-      setUpdateToastVisible(true);
-    }
-
-    window.addEventListener("taskify:update-available", handleUpdateAvailable);
-    return () => {
-      window.removeEventListener("taskify:update-available", handleUpdateAvailable);
-    };
-  }, []);
+  const updateToastVisible = useSyncExternalStore(
+    subscribeServiceWorkerUpdate,
+    isServiceWorkerUpdateAvailable,
+    isServiceWorkerUpdateAvailable,
+  );
 
   const handleReloadNow = useCallback(() => {
-    setUpdateToastVisible(false);
-    if (typeof window !== "undefined") {
-      window.location.reload();
-    }
+    dismissServiceWorkerUpdate();
+    void activateWaitingServiceWorker();
   }, []);
 
   const handleReloadLater = useCallback(() => {
-    setUpdateToastVisible(false);
+    dismissServiceWorkerUpdate();
   }, []);
 
   const handleResetWalletTokenTracking = useCallback(() => {

@@ -2,9 +2,25 @@ import { defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import { injectBuiltServiceWorker } from "./scripts/service-worker-build.mjs";
+
+function serviceWorkerBuild() {
+  let outDir = "";
+  return {
+    name: "taskify-service-worker-build",
+    apply: "build" as const,
+    configResolved(config: { root: string; build: { outDir: string } }) {
+      outDir = resolve(config.root, config.build.outDir);
+    },
+    async closeBundle() {
+      await injectBuiltServiceWorker(outDir);
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [tailwindcss(), react()],
+  plugins: [tailwindcss(), react(), serviceWorkerBuild()],
   resolve: {
     preserveSymlinks: true,
     dedupe: ["@nostr-dev-kit/ndk", "nostr-tools", "tseep"],

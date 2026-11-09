@@ -1,6 +1,8 @@
 import { Component, StrictMode, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { whenWindowLoaded } from './lib/whenWindowLoaded'
+import { initializeInstallPromptCapture } from './pwa/installPrompt'
+import { watchServiceWorkerRegistration } from './pwa/serviceWorkerClient'
 import './index.css'
 
 // Windows often doesn't render backdrop-filter blur, so the frosted sheets there get an opaque
@@ -132,7 +134,6 @@ async function bootstrapApp(): Promise<void> {
     </StrictMode>,
   );
 
-  setupServiceWorkers();
 }
 async function recoverFromBootstrapFailure(err: unknown): Promise<boolean> {
   const message = err instanceof Error ? err.message : String(err);
@@ -168,6 +169,9 @@ async function recoverFromBootstrapFailure(err: unknown): Promise<boolean> {
   }
 }
 
+initializeInstallPromptCapture();
+setupServiceWorkers();
+
 void bootstrapApp().catch(async (err) => {
   console.error('Taskify bootstrap failed', err);
   const recovered = await recoverFromBootstrapFailure(err);
@@ -195,27 +199,10 @@ async function cleanupDevServiceWorkers() {
 function setupServiceWorkers() {
   if (!('serviceWorker' in navigator)) return;
   if (import.meta.env.PROD) {
-    const emitUpdateAvailable = () => {
-      window.dispatchEvent(new CustomEvent('taskify:update-available'));
-    };
-
-    navigator.serviceWorker.addEventListener('message', (event) => {
-      const data = event.data;
-      if (data && typeof data === 'object' && data.type === 'UPDATE_AVAILABLE') {
-        emitUpdateAvailable();
-      }
-    });
-
-    // This runs at the end of an asynchronous bootstrap, normally after `load` has fired, so a
-    // plain `load` listener would never register the worker (no offline cache, no reminders).
     whenWindowLoaded(() => {
       navigator.serviceWorker
         .register('/sw.js')
-        .then((registration) => {
-          if (registration.waiting) {
-            emitUpdateAvailable();
-          }
-        })
+        .then((registration) => watchServiceWorkerRegistration(registration))
         .catch((err) => {
           console.warn('Service worker registration failed', err);
         });
