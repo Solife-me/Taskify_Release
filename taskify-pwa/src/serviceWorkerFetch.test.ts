@@ -1,51 +1,140 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import serviceWorkerSource from "../public/sw.js?raw";
 
-/**
- * The real public/sw.js, loaded with stand-ins for the worker globals it touches at start-up, so
- * its fetch handler can be driven directly.
- */
-function loadServiceWorker() {
-  const listeners = new Map<string, (event: unknown) => void>();
+type WorkerHarnessOptions = {
+  cachedResponse?: Response;
+  networkResponse?: Response;
+};
+
+/** Runs the real worker with small stand-ins for the browser-owned worker globals. */
+function loadServiceWorker(options: WorkerHarnessOptions = {}) {
+  const listeners = new Map<string, (event: any) => void>();
+  const postedMessages: unknown[] = [];
+  const skipWaiting = vi.fn(async () => {});
+  const cache = {
+    delete: vi.fn(async () => true),
+    keys: vi.fn(async () => [] as Request[]),
+    match: vi.fn(async (request: Request | string) => {
+      if (request === "worker-base-url") return undefined;
+      return options.cachedResponse?.clone();
+    }),
+    put: vi.fn(async () => {}),
+  };
+  const caches = {
+    delete: vi.fn(async () => true),
+    keys: vi.fn(async () => [] as string[]),
+    open: vi.fn(async () => cache),
+  };
+  const fetch = vi.fn(async (_request: Request | string, _init?: RequestInit) => (
+    options.networkResponse?.clone()
+    ?? new Response("ok", { headers: { "Content-Type": "text/plain" } })
+  ));
   const self = {
     location: new URL("https://taskify.solife.me/sw.js"),
     addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
-    clients: { claim: async () => {}, matchAll: async () => [] },
+    clients: {
+      claim: async () => {},
+      matchAll: async () => [{ id: "window-1", postMessage: (message: unknown) => postedMessages.push(message) }],
+    },
     registration: { showNotification: async () => {} },
-    skipWaiting: async () => {},
+    skipWaiting,
   };
-  const caches = { open: async () => ({ match: async () => undefined, put: async () => {}, keys: async () => [] }), keys: async () => [] };
   const globals = {
     self,
     caches,
     importScripts: () => {},
-    fetch: () => Promise.reject(new TypeError("Failed to fetch")),
+    fetch,
   };
-  // The worker's globals are passed as parameters; everything else is the test runner's.
   new Function(...Object.keys(globals), serviceWorkerSource)(...Object.values(globals));
-  return (request: Request) => {
-    let responded = false;
-    listeners.get("fetch")!({ request, respondWith: () => { responded = true; }, waitUntil: () => {} });
-    return { responded };
+
+  async function dispatchExtendable(type: string, extra: Record<string, unknown> = {}) {
+    const waits: Promise<unknown>[] = [];
+    listeners.get(type)!({
+      ...extra,
+      waitUntil: (promise: Promise<unknown>) => waits.push(Promise.resolve(promise)),
+    });
+    await Promise.all(waits);
+  }
+
+  async function dispatchFetch(request: Request) {
+    const waits: Promise<unknown>[] = [];
+    let responsePromise: Promise<Response> | undefined;
+    listeners.get("fetch")!({
+      request,
+      respondWith: (response: Promise<Response>) => { responsePromise = Promise.resolve(response); },
+      waitUntil: (promise: Promise<unknown>) => waits.push(Promise.resolve(promise)),
+    });
+    const response = await responsePromise;
+    await Promise.all(waits);
+    return { responded: Boolean(responsePromise), response };
+  }
+
+  return {
+    cache,
+    dispatchFetch,
+    dispatchInstall: () => dispatchExtendable("install"),
+    dispatchMessage: (data: unknown) => dispatchExtendable("message", { data }),
+    fetch,
+    postedMessages,
+    skipWaiting,
   };
 }
 
-test("relay and API traffic goes straight to the network, never through the service worker", () => {
-  // A request the service worker re-fetches and fails turns into a second, uncaught error in
-  // the worker. Left alone, the browser makes it and reports it once, where the page asked.
-  const dispatch = loadServiceWorker();
+test("relay and API traffic goes straight to the network, never through the service worker", async () => {
+  const worker = loadServiceWorker();
   const requests = [
     new Request("https://push.solife.me/", { headers: { Accept: "application/nostr+json" } }),
     new Request("https://relay.example.com/"),
     new Request("https://taskify.solife.me/api/config"),
   ];
   for (const request of requests) {
-    expect(dispatch(request).responded, request.url).toBe(false);
+    expect((await worker.dispatchFetch(request)).responded, request.url).toBe(false);
   }
 });
 
-test("the app shell is still served by the service worker", () => {
-  const dispatch = loadServiceWorker();
+test("the app shell is still served by the service worker", async () => {
+  const worker = loadServiceWorker();
   const shell = new Request("https://taskify.solife.me/assets/App-abc123.js");
-  expect(dispatch(shell).responded).toBe(true);
+  expect((await worker.dispatchFetch(shell)).responded).toBe(true);
+});
+
+test("installation pre-caches the app shell without forcing a waiting update to activate", async () => {
+  const worker = loadServiceWorker({
+    networkResponse: new Response("<!doctype html>", { headers: { "Content-Type": "text/html" } }),
+  });
+
+  await worker.dispatchInstall();
+
+  expect(worker.fetch).toHaveBeenCalled();
+  expect(worker.fetch.mock.calls.some(([request]) => (
+    new URL(typeof request === "string" ? request : request.url).pathname === "/"
+  ))).toBe(true);
+  expect(worker.cache.put).toHaveBeenCalled();
+  expect(worker.skipWaiting).not.toHaveBeenCalled();
+});
+
+test("a waiting worker activates only after the page sends SKIP_WAITING", async () => {
+  const worker = loadServiceWorker();
+
+  expect(worker.skipWaiting).not.toHaveBeenCalled();
+  await worker.dispatchMessage({ type: "SKIP_WAITING" });
+  expect(worker.skipWaiting).toHaveBeenCalledOnce();
+});
+
+test("changing Cloudflare-injected HTML does not produce a false app update", async () => {
+  const cachedAt = String(Date.now());
+  const worker = loadServiceWorker({
+    cachedResponse: new Response("<main>Taskify</main><script>ray=old</script>", {
+      headers: { "Content-Type": "text/html", "x-taskify-sw-cached-at": cachedAt },
+    }),
+    networkResponse: new Response("<main>Taskify</main><script>ray=new</script>", {
+      headers: { "Content-Type": "text/html" },
+    }),
+  });
+
+  await worker.dispatchFetch(new Request("https://taskify.solife.me/", {
+    headers: { Accept: "text/html" },
+  }));
+
+  expect(worker.postedMessages).toEqual([]);
 });

@@ -35,6 +35,7 @@ import { SupportSection } from "./SupportSection";
 import { StorageSection } from "./StorageSection";
 import { SettingsAccordion } from "./SettingsAccordion";
 import { ManageBoardModal } from "./ManageBoardModal";
+import { InstallAppSettingsGroup } from "./InstallAppSettingsGroup";
 
 
 export function SettingsModal({
@@ -337,6 +338,8 @@ export function SettingsModal({
       >
         <BackupSection embedded onReloadNeeded={onReloadNeeded} />
       </SettingsAccordion>
+
+      <InstallAppSettingsGroup />
 
       <SettingsAccordion
         title="Support development"

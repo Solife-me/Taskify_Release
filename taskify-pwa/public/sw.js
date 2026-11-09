@@ -2,21 +2,22 @@
 importScripts('/reminder-titles.js');
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(clearOldCaches().then(() => self.skipWaiting()));
+  event.waitUntil(precacheAppShell());
 });
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
       await clearOldCaches();
       await self.clients.claim();
-      activatedAt = Date.now();
     })(),
   );
 });
 
 const CACHE_PREFIX = 'taskify-cache-';
-const CACHE = `${CACHE_PREFIX}v9`;
+const CACHE_VERSION = /*__TASKIFY_BUILD_ID__*/ 'source-v10';
+const CACHE = `${CACHE_PREFIX}${CACHE_VERSION}`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
+const PRECACHE_URLS = /*__TASKIFY_PRECACHE_URLS__*/ ['/'];
 const CACHE_TIMESTAMP_HEADER = 'x-taskify-sw-cached-at';
 const MAX_CACHE_ENTRIES = 160;
 const CACHE_TRIM_TARGET = 140;
@@ -26,11 +27,28 @@ const MAX_DOCUMENT_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_WORKER_BASE_URL = self.location.origin;
 let workerBaseUrl = DEFAULT_WORKER_BASE_URL;
 let workerBaseUrlReady = restoreWorkerBaseUrl();
-const notifiedClients = new Set();
 const cacheAccessTimes = new Map();
 let cachePutsSinceTrim = 16;
 let cacheTrimPromise = null;
-let activatedAt = 0;
+
+async function precacheAppShell() {
+  const cache = await caches.open(CACHE);
+  try {
+    await Promise.all(PRECACHE_URLS.map(async (path) => {
+      const url = new URL(path, self.location.origin);
+      const headers = path === '/' ? { Accept: 'text/html' } : undefined;
+      const request = new Request(url.href, { cache: 'reload', headers });
+      const response = await fetch(request);
+      if (!response || !response.ok || response.type === 'opaque') {
+        throw new Error(`Unable to pre-cache ${path}`);
+      }
+      await putStampedResponse(cache, request, response);
+    }));
+  } catch (error) {
+    await caches.delete(CACHE);
+    throw error;
+  }
+}
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
@@ -52,7 +70,7 @@ self.addEventListener('fetch', (event) => {
     (async () => {
       const cache = await caches.open(CACHE);
       const cached = await matchFreshCachedResponse(cache, cacheKey);
-      const cachedForCompare = cached ? cached.clone() : null;
+      const cachedForFallback = cached ? cached.clone() : null;
 
       // Vite content-hashed assets are immutable: a new deployment produces a
       // new URL. Cache-first avoids a background network request for every
@@ -65,7 +83,7 @@ self.addEventListener('fetch', (event) => {
       // This keeps startup snappy while still refreshing cached HTML when network is available.
       if (isDocumentRequest(event.request)) {
         if (cached) {
-          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForCompare, cacheKey)
+          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForFallback, cacheKey)
             .then((response) => response || cached)
             .catch(() => cached);
           const timeoutFallback = wait(700).then(() => cached);
@@ -74,14 +92,14 @@ self.addEventListener('fetch', (event) => {
           return winner;
         }
         try {
-          const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForCompare, cacheKey);
+          const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForFallback, cacheKey);
           if (networkResponse) return networkResponse;
         } catch {}
         return new Response(null, { status: 504, statusText: 'Gateway Timeout' });
       }
 
       // Stale-while-revalidate for static/data requests.
-      const fetchPromise = fetchAndUpdateCache(cache, event.request, cachedForCompare);
+      const fetchPromise = fetchAndUpdateCache(cache, event.request, cachedForFallback);
 
       if (cached) {
         event.waitUntil(fetchPromise.catch(() => undefined));
@@ -115,12 +133,10 @@ async function fetchAndUpdateCache(cache, request, cachedResponse, cacheKey = re
   try {
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok) {
-      let cacheUpdated = false;
       if (isCacheableResponse(request, networkResponse)) {
         let cacheError = null;
         try {
           await putStampedResponse(cache, cacheKey, networkResponse);
-          cacheUpdated = true;
         } catch (err) {
           cacheError = err;
           const message = (err && err.message) || '';
@@ -128,7 +144,6 @@ async function fetchAndUpdateCache(cache, request, cachedResponse, cacheKey = re
             try {
               await evictOldestCacheEntries(cache, Math.max(1, Math.ceil((await cache.keys()).length / 4)));
               await putStampedResponse(cache, cacheKey, networkResponse);
-              cacheUpdated = true;
               cacheError = null;
             } catch (retryErr) {
               cacheError = retryErr;
@@ -138,9 +153,6 @@ async function fetchAndUpdateCache(cache, request, cachedResponse, cacheKey = re
         if (cacheError) {
           console.warn('SW cache put failed', cacheError);
         }
-      }
-      if (cacheUpdated && await shouldNotifyUpdate(request, cachedResponse, networkResponse)) {
-        await notifyClientsAboutUpdate();
       }
     }
     return networkResponse;
@@ -270,61 +282,6 @@ function isDocumentRequest(request) {
   );
 }
 
-async function shouldNotifyUpdate(request, cachedResponse, networkResponse) {
-  if (!cachedResponse) return false;
-  if (!isDocumentRequest(request)) return false;
-
-  const cachedEtag = cachedResponse.headers.get('etag');
-  const networkEtag = networkResponse.headers.get('etag');
-  if (cachedEtag && networkEtag) {
-    if (cachedEtag === networkEtag) return false;
-    return true;
-  }
-
-  const cachedLastMod = cachedResponse.headers.get('last-modified');
-  const networkLastMod = networkResponse.headers.get('last-modified');
-  if (cachedLastMod && networkLastMod) {
-    if (cachedLastMod === networkLastMod) return false;
-    return true;
-  }
-
-  const cachedLength = cachedResponse.headers.get('content-length');
-  const networkLength = networkResponse.headers.get('content-length');
-  if (cachedLength && networkLength) {
-    if (cachedLength === networkLength) return false;
-    return true;
-  }
-
-  try {
-    const cachedBody = await cachedResponse.clone().text();
-    const networkBody = await networkResponse.clone().text();
-    return cachedBody !== networkBody;
-  } catch (err) {
-    console.warn('SW compare failed', err);
-  }
-
-  // Default to false — if we can't determine whether an update occurred,
-  // suppress the notification to avoid false-positive reload prompts.
-  return false;
-}
-
-async function notifyClientsAboutUpdate() {
-  // Suppress notification during the first 5 seconds after activation to avoid
-  // false-positive update prompts triggered by stale-while-revalidate on initial load.
-  if (activatedAt && Date.now() - activatedAt < 5000) return;
-
-  const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  await Promise.all(
-    clientList.map((client) => {
-      if (notifiedClients.has(client.id)) return Promise.resolve();
-      notifiedClients.add(client.id);
-      return client.postMessage({
-        type: 'UPDATE_AVAILABLE',
-      });
-    }),
-  );
-}
-
 async function clearOldCaches() {
   const keys = await caches.keys();
   const deletions = keys
@@ -351,6 +308,7 @@ function isChatPush(event) {
 async function showChatNotification() {
   await self.registration.showNotification('New message', {
     body: 'Open Taskify to read it.',
+    icon: '/icon-192.png',
     // One alert stands for any number of unread messages.
     tag: 'taskify_chat',
     renotify: true,
@@ -364,6 +322,7 @@ async function handlePushEvent() {
   if (!reminders.length) {
     await self.registration.showNotification('Task reminder', {
       body: 'You have an upcoming task.',
+      icon: '/icon-192.png',
       tag: 'taskify_reminder',
     });
     return;
@@ -383,6 +342,7 @@ async function handlePushEvent() {
     const url = item.taskId ? `/?task=${encodeURIComponent(item.taskId)}` : '/';
     await self.registration.showNotification(title, {
       body,
+      icon: '/icon-192.png',
       tag,
       data: {
         ...item,
@@ -507,6 +467,10 @@ async function getWorkerBaseUrl() {
 self.addEventListener('message', (event) => {
   const data = event.data;
   if (!data || typeof data !== 'object') return;
+  if (data.type === 'SKIP_WAITING') {
+    event.waitUntil(self.skipWaiting());
+    return;
+  }
   if (data.type !== 'TASKIFY_CONFIG') return;
   const normalized = normalizeBaseUrl(data.workerBaseUrl);
   if (!normalized) return;

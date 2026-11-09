@@ -95,6 +95,14 @@ The Worker lives in `worker/src/index.ts` and shares this repository. It serves 
 3. Edit any task, add a due time and one or more reminder offsets. When the Worker’s cron job reaches the scheduled send time it fires a push ping.
 4. The service worker fetches reminder details on receipt and shows user-friendly notifications with links back into Taskify.
 
+## Install, offline, and update behavior
+
+- On Chromium-based Android browsers, the install prompt is captured and exposed as **Settings → Install app** when the browser says the app is installable. Browsers without that API, including iOS Safari, do not render the control.
+- Each production build injects a build-specific service-worker cache name and precaches the app shell plus its startup assets. API and relay requests always bypass that cache.
+- A new service worker waits until the user accepts the in-app update notice. The page reloads only after the new worker becomes the active controller, avoiding a mixed old/new build.
+- The manifest includes stable app identity, scope, Android shortcuts, and colors matched to the initial app shell. Existing Apple standalone, touch-icon, and status-bar metadata remains in place for iOS PWAs.
+- Production headers keep the service worker and manifest revalidating while allowing fingerprinted Vite assets to use long-lived immutable caching.
+
 ## Scripts
 
 Inside `taskify-pwa`:
@@ -113,7 +121,11 @@ At repository root:
 Before committing or deploying run:
 
 ```bash
+npm test
+npm run typecheck
 npm run lint
+npm run build
+npm run check:startup
 ```
 
 ## Environment recap
