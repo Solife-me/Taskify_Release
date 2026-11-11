@@ -5,6 +5,31 @@ import XCTest
 import TaskifyWatchShared
 
 final class TaskifyWatchDataTests: XCTestCase {
+    func testWatchSiriBatchParserCapturesOneSpokenList() {
+        let batch = TaskifyWatchSpokenTaskBatchParser.parse(
+            "First standup, then add planning; and then retrospective"
+        )
+
+        XCTAssertEqual(batch.titles, ["standup", "planning", "retrospective"])
+        XCTAssertEqual(batch.omittedCount, 0)
+    }
+
+    func testWatchSiriBatchParserPreservesQuotedConjunctions() {
+        let batch = TaskifyWatchSpokenTaskBatchParser.parse(
+            "\"Research and Development\", planning and retrospective"
+        )
+
+        XCTAssertEqual(batch.titles, ["Research and Development", "planning", "retrospective"])
+    }
+
+    func testWatchSiriBatchParserReportsRatherThanSilentlyDroppingOverflow() {
+        let input = (1...22).map { "Task \($0)" }.joined(separator: ", ")
+        let batch = TaskifyWatchSpokenTaskBatchParser.parse(input)
+
+        XCTAssertEqual(batch.titles.count, 20)
+        XCTAssertEqual(batch.omittedCount, 2)
+    }
+
     func testWatchEditsRoundTripAndPreserveUneditedPayload() throws {
         let payload = Data(#"{"title":"Original","note":"Notes","subtasks":[{"id":"s1","title":"Child","completed":true}],"images":["image"],"recurrence":{"freq":"daily"},"custom":"keep"}"#.utf8)
         let task = TaskifyWatchTask(

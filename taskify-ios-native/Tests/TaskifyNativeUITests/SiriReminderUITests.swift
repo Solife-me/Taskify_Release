@@ -43,6 +43,35 @@ final class SiriReminderUITests: XCTestCase {
         attach(relaunched, name: "siri-reminder-02-editor")
     }
 
+    @available(iOS 27.0, *)
+    func testAddMultipleTasksCapturesOneSpokenList() async throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
+        app.launch()
+        let field = app.textFields.matching(NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")).firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "a fresh store has a board to add to")
+        app.terminate()
+
+        let suffix = UUID().uuidString.filter(\.isLetter).prefix(6).lowercased()
+        let titles = ["Alpha meeting \(suffix)", "Beta meeting \(suffix)", "Gamma meeting \(suffix)"]
+        try await IntentDefinitions(bundleIdentifier: "solife.me.Taskify.Native")
+            .intents["TaskifyAddTasksIntent"]
+            .makeIntent(taskList: titles.joined(separator: " and then "))
+            .run()
+
+        let relaunched = XCUIApplication()
+        relaunched.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        relaunched.launch()
+        for title in titles {
+            XCTAssertTrue(
+                relaunched.buttons["Edit \(title)"].waitForExistence(timeout: 10),
+                "the single batch intent added \(title)"
+            )
+        }
+        attach(relaunched, name: "siri-batch-01-board")
+    }
+
     private func attach(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

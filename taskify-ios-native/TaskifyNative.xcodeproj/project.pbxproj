@@ -101,6 +101,8 @@
 		C116A0000000000000000F01 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C116A0000000000000000F00 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift */; };
 		C1A700000000000000000F01 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */; };
 		B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */; };
+		D5C100000000000000000001 /* Sources/TaskifyApp/App/TaskifySiriCalendarValues.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C100000000000000000002 /* Sources/TaskifyApp/App/TaskifySiriCalendarValues.swift */; };
+		D5C100000000000000000003 /* Sources/TaskifyApp/App/TaskifySiriCalendarSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C100000000000000000004 /* Sources/TaskifyApp/App/TaskifySiriCalendarSchema.swift */; };
 		B00000000000000000000125 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */; };
 		B00000000000000000000126 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */; };
 		A20000000000000000000201 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000101 /* Sources/TaskifyApp/Watch/TaskifyWatchBridge.swift */; };
@@ -297,6 +299,8 @@
 		C116A0000000000000000F00 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyShortcuts.swift; sourceTree = SOURCE_ROOT; };
 		C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift; sourceTree = SOURCE_ROOT; };
+		D5C100000000000000000002 /* Sources/TaskifyApp/App/TaskifySiriCalendarValues.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySiriCalendarValues.swift; sourceTree = SOURCE_ROOT; };
+		D5C100000000000000000004 /* Sources/TaskifyApp/App/TaskifySiriCalendarSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifySiriCalendarSchema.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000227 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift; sourceTree = SOURCE_ROOT; };
 		B57A04A7BDAAD50903529915 /* TaskSelectionUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TaskSelectionUITests.swift; sourceTree = "<group>"; };
@@ -480,6 +484,8 @@
 				C116A0000000000000000F00 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift */,
 				C1A700000000000000000F00 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift */,
 				B00000000000000000000228 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift */,
+				D5C100000000000000000002 /* Sources/TaskifyApp/App/TaskifySiriCalendarValues.swift */,
+				D5C100000000000000000004 /* Sources/TaskifyApp/App/TaskifySiriCalendarSchema.swift */,
 				B0000000000000000000S01 /* Sources/Shared/TaskifyQuickAddIntent.swift */,
 				D5EA1D000000000000000003 /* Sources/Shared/TaskifyShortcutTaskNameEntity.swift */,
 				B00000000000000000000226 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift */,
@@ -968,6 +974,8 @@
 				C116A0000000000000000F01 /* Sources/TaskifyApp/App/TaskifyShortcuts.swift in Sources */,
 				C1A700000000000000000F01 /* Sources/TaskifyApp/App/TaskifySpotlightIndexer.swift in Sources */,
 				B00000000000000000000128 /* Sources/TaskifyApp/App/TaskifySiriReminderSchema.swift in Sources */,
+				D5C100000000000000000001 /* Sources/TaskifyApp/App/TaskifySiriCalendarValues.swift in Sources */,
+				D5C100000000000000000003 /* Sources/TaskifyApp/App/TaskifySiriCalendarSchema.swift in Sources */,
 				B0000000000000000000S02 /* Sources/Shared/TaskifyQuickAddIntent.swift in Sources */,
 				B00000000000000000000125 /* Sources/TaskifyApp/Features/Voice/SpeechDictationRecognizer.swift in Sources */,
 				B00000000000000000000126 /* Sources/TaskifyApp/Features/Voice/VoiceDictationSheet.swift in Sources */,
