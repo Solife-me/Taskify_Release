@@ -1,11 +1,36 @@
 import AppKit
+import Observation
 import SwiftUI
 import TaskifyCore
 import TaskifyWatchShared
 
+/// Drafts live outside `MacWorkspace`'s `@State` so typing only invalidates the composer that
+/// reads the current conversation's text, not the sidebar, split view, or chat timeline.
+@MainActor
+@Observable
+final class MacChatDraftStore {
+    private var drafts: [String: String] = [:]
+
+    func text(for peer: String) -> String {
+        drafts[peer, default: ""]
+    }
+
+    func setText(_ text: String, for peer: String) {
+        if text.isEmpty {
+            drafts.removeValue(forKey: peer)
+        } else {
+            drafts[peer] = text
+        }
+    }
+
+    func removeAll() {
+        drafts.removeAll()
+    }
+}
+
 struct MacChatView: View {
     let search: String
-    @Binding var drafts: [String: String]
+    let drafts: MacChatDraftStore
     @Binding var selection: String?
     @Environment(AppModel.self) private var model
     @State private var showNew = false
@@ -72,7 +97,10 @@ struct MacChatView: View {
             }.frame(minWidth: 230, idealWidth: 280, maxWidth: 340)
             if let selection {
                 MacConversation(peer: selection, title: name(selection),
-                    composer: Binding(get: { drafts[selection, default: ""] }, set: { drafts[selection] = $0 }))
+                    composer: Binding(
+                        get: { drafts.text(for: selection) },
+                        set: { drafts.setText($0, for: selection) }
+                    ))
                     .id(selection).frame(minWidth: 340)
             } else {
                 ContentUnavailableView("Your Conversations", systemImage: "bubble.left.and.bubble.right", description: Text("Choose a conversation or start a new one."))
@@ -107,89 +135,78 @@ struct MacChatView: View {
     }
 }
 
+private struct MacChatPresentation {
+    let timeline: [MacChatTimelineItem]
+    let messagesByID: [String: NostrDirectMessage]
+    let hermesSessionsByListingMessageID: [String: HermesSessionListing]
+}
+
+/// Conversation history is independent of composer/search/send state. Cache the expensive merge,
+/// sort and bot-response projection until chat or inbox content actually changes.
+@MainActor
+private final class MacChatRenderCache {
+    private struct Key: Equatable {
+        let revision: Int
+        let identity: String
+        let peer: String
+        let botCommandsVersion: Int
+    }
+
+    private var key: Key?
+    private var cachedPresentation: MacChatPresentation?
+
+    func presentation(
+        revision: Int,
+        identity: String,
+        peer: String,
+        botCommandsVersion: Int,
+        build: () -> MacChatPresentation
+    ) -> MacChatPresentation {
+        let nextKey = Key(
+            revision: revision,
+            identity: identity,
+            peer: peer,
+            botCommandsVersion: botCommandsVersion
+        )
+        if key == nextKey, let cachedPresentation { return cachedPresentation }
+        let presentation = build()
+        key = nextKey
+        cachedPresentation = presentation
+        return presentation
+    }
+}
+
 private struct MacConversation: View {
     let peer: String
     let title: String
     @Binding var composer: String
     @Environment(AppModel.self) private var model
     @Environment(\.controlActiveState) private var activeState
-    @StateObject private var attachments = MacAttachmentQueue()
-    @State private var audioRecorder = ChatAudioRecorder(
-        directory: { try AttachmentFiles.directory() },
-        onWillRecord: { MacChatAudioPlayback.shared.pauseForRecording() }
-    )
-    /// A stopped recording waiting to be played back, sent or discarded.
-    @State private var recordedAudio: ChatAudioRecorder.Recording?
-    @State private var recordedAudioPlayer = ChatAudioDraftPlayer(
-        onWillPlay: { MacChatAudioPlayback.shared.pauseForRecording() }
-    )
-    @State private var sending = false
     @State private var deleting = false
     @State private var groupDetails = false
-    @State private var reply: NostrDirectMessage?
-    @State private var error: String?
     @State private var search = ""
-    @State private var isDropTargeted = false
     @State private var taskDropTargeted = false
     @State private var sharingDroppedTaskCount = 0
-    @State private var sendTask: Task<Void, Never>?
     @State private var timelineHistoryTask: Task<Void, Never>?
     @State private var loadedTimelineItemCount = MacChatTimelineWindow.initialPageSize
     @State private var isLoadingEarlierTimelineItems = false
     @State private var canLoadEarlierAtTop = false
     @State private var followsLatestMessage = true
     @State private var lastSearchResultID: String?
-    private var messages: [NostrDirectMessage] { model.directMessages(with: peer) }
+    @State private var renderCache = MacChatRenderCache()
+    @State private var composerProxy = MacChatComposerProxy()
     private var isGroup: Bool { model.groupConversation(id: peer) != nil }
-    private var visibleBotCommands: [BotCommand]? {
-        guard !isGroup, composer.hasPrefix("/"), let commands = model.botCommands(publicKey: peer), !commands.isEmpty else { return nil }
-        let query = String(composer.dropFirst()).lowercased()
-        let matched = commands.filter { $0.name.hasPrefix(query) }
-        return matched.isEmpty ? nil : matched
+    private var presentation: MacChatPresentation {
+        renderCache.presentation(
+            revision: model.conversationRevision,
+            identity: model.identityPublicKey,
+            peer: peer,
+            botCommandsVersion: model.botCommandsVersion
+        ) {
+            makePresentation()
+        }
     }
-    private var canSend: Bool {
-        !sending && !attachments.importing &&
-        (!composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.files.isEmpty) &&
-        !model.isDirectMessagePeerBlocked(peer) && !model.hasLeftDirectMessageGroup(peer)
-    }
-
-
-    // Shared items delivered to this conversation, correlated the same way the Inbox tab
-    // correlates them — filtered here by peer instead of by pending status, so a responded-to
-    // item still shows (with its resulting status) where it was actually shared.
-    private var sharedTaskItems: [SharedInboxItem] {
-        model.sharedInboxItems.filter { $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame }
-    }
-    private var sharedContactItems: [SharedContactInboxItem] {
-        model.sharedContactInboxItems.filter { $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame }
-    }
-    private var calendarInviteItems: [SharedCalendarInviteInboxItem] {
-        model.sharedCalendarInviteItems.filter { $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame }
-    }
-    private var sharedBoardItems: [SharedBoardInboxItem] {
-        model.sharedBoardInboxItems.filter { $0.status != .deleted && $0.sender.publicKey.caseInsensitiveCompare(peer) == .orderedSame }
-    }
-    /// Merges plain messages with correlated shared items, matching iOS's `ChatTimelineItem`
-    /// construction exactly: a message whose rumor became a shared task or calendar invite is
-    /// excluded (the correlated card replaces it), while shared contacts/boards are added
-    /// alongside their message since those aren't excluded from the raw history.
-    private var timeline: [MacChatTimelineItem] {
-        let tasks = sharedTaskItems
-        let invites = calendarInviteItems
-        let structuredRumorIDs = Set(tasks.map(\.rumorEventID) + invites.map(\.rumorEventID))
-        let items: [MacChatTimelineItem] =
-            messages.filter { !structuredRumorIDs.contains($0.rumorEventID) }.map(MacChatTimelineItem.message)
-                + tasks.map(MacChatTimelineItem.sharedTask)
-                + sharedContactItems.map(MacChatTimelineItem.sharedContact)
-                + invites.map(MacChatTimelineItem.calendarInvite)
-                + sharedBoardItems.map(MacChatTimelineItem.sharedBoard)
-        // Nostr timestamps have one-second resolution; break ties by original array order
-        // (messages first, in their existing order) rather than by id, which would be effectively
-        // random and could shuffle a reply in front of the message it replies to.
-        return items.enumerated()
-            .sorted { $0.element.timestamp != $1.element.timestamp ? $0.element.timestamp < $1.element.timestamp : $0.offset < $1.offset }
-            .map(\.element)
-    }
+    private var timeline: [MacChatTimelineItem] { presentation.timeline }
     private var isSearchingConversation: Bool {
         !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -215,12 +232,66 @@ private struct MacConversation: View {
     }
     private var drawnVisibleTimeline: [MacChatTimelineItem] {
         let grouped = photoStacks
+        return drawnTimeline(using: grouped)
+    }
+    private func drawnTimeline(using grouped: DirectMessagePhotoStacks.Grouping) -> [MacChatTimelineItem] {
         return visibleTimeline.filter { item in
             if case .message(let message) = item { return !grouped.stackedMessageIDs.contains(message.id) }
             return true
         }
     }
+    private func makePresentation() -> MacChatPresentation {
+        let messages = model.directMessages(with: peer)
+        let sharedTasks = model.sharedInboxItems.filter {
+            $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame
+        }
+        let sharedContacts = model.sharedContactInboxItems.filter {
+            $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame
+        }
+        let calendarInvites = model.sharedCalendarInviteItems.filter {
+            $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame
+        }
+        let sharedBoards = model.sharedBoardInboxItems.filter {
+            $0.status != .deleted && $0.sender.publicKey.caseInsensitiveCompare(peer) == .orderedSame
+        }
+        let structuredRumorIDs = Set(sharedTasks.map(\.rumorEventID) + calendarInvites.map(\.rumorEventID))
+        let hermesProjection = HermesModelPickerProjection.project(
+            messages: messages,
+            enabled: !isGroup && model.isBot(publicKey: peer)
+        )
+        let items: [MacChatTimelineItem] =
+            messages.filter {
+                !structuredRumorIDs.contains($0.rumorEventID) &&
+                    !hermesProjection.hiddenMessageIDs.contains($0.rumorEventID)
+            }.map(MacChatTimelineItem.message)
+                + sharedTasks.map(MacChatTimelineItem.sharedTask)
+                + sharedContacts.map(MacChatTimelineItem.sharedContact)
+                + calendarInvites.map(MacChatTimelineItem.calendarInvite)
+                + sharedBoards.map(MacChatTimelineItem.sharedBoard)
+        // Nostr timestamps have one-second resolution; preserve store order for ties so a reply
+        // cannot move behind the message it answers.
+        let timeline = items.enumerated()
+            .sorted {
+                $0.element.timestamp != $1.element.timestamp
+                    ? $0.element.timestamp < $1.element.timestamp
+                    : $0.offset < $1.offset
+            }
+            .map(\.element)
+        var messagesByID: [String: NostrDirectMessage] = [:]
+        messagesByID.reserveCapacity(messages.count * 2)
+        for message in messages {
+            messagesByID[message.rumorEventID] = message
+            messagesByID[message.wrapEventID] = message
+        }
+        return MacChatPresentation(
+            timeline: timeline,
+            messagesByID: messagesByID,
+            hermesSessionsByListingMessageID: hermesProjection.sessionsByListingMessageID
+        )
+    }
     var body: some View {
+        let stacks = photoStacks
+        let drawnItems = drawnTimeline(using: stacks)
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -247,21 +318,33 @@ private struct MacConversation: View {
                             if hasEarlierTimelineItems {
                                 earlierTimelineLoader(proxy: proxy)
                             }
-                            let stacks = photoStacks
-                            ForEach(drawnVisibleTimeline) { item in
+                            ForEach(drawnItems) { item in
                                 MacChatTimelineRow(
                                     item: item,
+                                    peer: peer,
                                     photoStack: {
                                         if case .message(let message) = item { return stacks.stacks[message.id] }
                                         return nil
                                     }(),
-                                    parent: { id in messages.first { $0.id == id } },
+                                    sessionListing: {
+                                        if case .message(let message) = item {
+                                            return presentation.hermesSessionsByListingMessageID[message.id]
+                                        }
+                                        return nil
+                                    }(),
+                                    parent: { id in presentation.messagesByID[id] },
                                     reactions: { message in model.directMessageReactions(for: message) },
-                                    reply: { reply = $0 },
+                                    reply: { composerProxy.reply(to: $0) },
                                     react: { target, emoji in
-                                        Task { do { try await model.sendDirectMessageReaction(to: target, emoji: emoji) } catch { self.error = error.localizedDescription } }
+                                        Task {
+                                            do {
+                                                try await model.sendDirectMessageReaction(to: target, emoji: emoji)
+                                            } catch {
+                                                composerProxy.report(error.localizedDescription)
+                                            }
+                                        }
                                     },
-                                    reportError: { error = $0 }
+                                    reportError: { composerProxy.report($0) }
                                 ).id(item.id)
                             }
                         }
@@ -314,77 +397,8 @@ private struct MacConversation: View {
             }
             .background(Color(nsColor: .underPageBackgroundColor).opacity(0.5))
             Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                if let reply {
-                    HStack { Text("Replying to: \(reply.displayContent)").font(.caption).lineLimit(1); Spacer(); Button("Cancel Reply") { self.reply = nil } }
-                }
-                if let error { Text(error).font(.caption).foregroundStyle(.red) }
-                if let commands = visibleBotCommands {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(commands) { command in
-                                Button { composer = "/\(command.name) " } label: {
-                                    HStack {
-                                        Text("/\(command.name)").font(.subheadline.weight(.semibold)).foregroundStyle(Color.accentColor)
-                                        Spacer(minLength: 8)
-                                        Text(command.description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }.padding(.horizontal, 10).padding(.vertical, 7).contentShape(Rectangle())
-                                }.buttonStyle(.plain)
-                            }
-                        }
-                    }.frame(maxHeight: 160).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                }
-                MacAttachmentQueueView(queue: attachments, busy: sending, onCancel: { sendTask?.cancel() })
-                if isAudioComposerActive {
-                    audioComposer
-                } else {
-                HStack(alignment: .bottom, spacing: 12) {
-                    Button { attachments.chooseFiles() } label: { Image(systemName: "paperclip") }.disabled(sending || attachments.importing)
-                    PasteButton(payloadType: MacAttachmentTransferPayload.self) { payloads in
-                        attachments.stage(payloads.map(\.source))
-                    }
-                        .labelStyle(.iconOnly).disabled(sending || attachments.importing || model.isDirectMessagePeerBlocked(peer))
-                        .help("Paste Files")
-                        .accessibilityIdentifier("chat-attachment-paste-button")
-                    ZStack(alignment: .topLeading) {
-                        if composer.isEmpty {
-                            Text("Message").font(.body).foregroundStyle(.secondary)
-                                .padding(.top, 12).padding(.leading, 2).allowsHitTesting(false)
-                        }
-                        MacChatComposerTextView(
-                            text: $composer,
-                            onSubmit: { if canSend { send() } }
-                        )
-                    }
-                    .overlay(alignment: .trailing) {
-                        // Messages' waveform button in the empty field: click to record.
-                        if composer.isEmpty, attachments.files.isEmpty {
-                            Button(action: startAudioRecording) {
-                                Image(systemName: "waveform").font(.title3).foregroundStyle(.secondary)
-                                    .frame(width: 28, height: 28).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(sending || attachments.importing || audioRecorder.isRequestingPermission
-                                || model.isDirectMessagePeerBlocked(peer))
-                            .help("Record Audio Message")
-                            .accessibilityLabel("Record audio message")
-                            .accessibilityIdentifier("chat-audio-record-button")
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(isDropTargeted ? Color.accentColor : .clear, lineWidth: 2))
-                    Button(action: send) { if sending { ProgressView().controlSize(.small) } else { Label("Send", systemImage: "arrow.up") } }
-                        .buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
-                        .disabled(!canSend)
-                }
-                .dropDestination(for: URL.self) { urls, _ in
-                    guard !sending, !model.isDirectMessagePeerBlocked(peer) else { return false }
-                    attachments.stage(urls)
-                    return true
-                } isTargeted: { isDropTargeted = $0 }
-                }
-            }.padding(16)
+            MacChatComposer(peer: peer, composer: $composer, proxy: composerProxy)
+                .padding(16)
         }
         .dropDestination(for: String.self) { values, _ in
             shareDroppedTasks(values)
@@ -411,74 +425,14 @@ private struct MacConversation: View {
             Button("Cancel", role: .cancel) {}
         }
         .task { await model.prepareDirectMessageRecipient(peer) }
-        .task(id: peer) { if !isGroup { await model.refreshBotCommands(publicKey: peer) } }
+        .onAppear {
+            composerProxy.onSendStarted = { followsLatestMessage = true }
+        }
         .onChange(of: activeState) { _, _ in markRead() }
         .onDisappear {
             timelineHistoryTask?.cancel()
-            audioRecorder.cancel()
-            discardRecordedAudio()
+            composerProxy.onSendStarted = nil
         }
-    }
-    private var isAudioComposerActive: Bool { audioRecorder.isRecording || recordedAudio != nil }
-    /// Recording: the live waveform, time and stop. Stopped: discard, then play, the clip's
-    /// waveform, "+ time" to record more, and send — the iPhone composer's controls.
-    private var audioComposer: some View {
-        HStack(spacing: 10) {
-            if recordedAudio != nil, !audioRecorder.isRecording {
-                Button(action: discardRecordedAudio) {
-                    Image(systemName: "xmark").frame(width: 30, height: 30)
-                        .background(.quaternary.opacity(0.5), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(sending)
-                .help("Discard Recording")
-                .accessibilityLabel("Cancel audio message")
-            }
-            ChatAudioComposerControls(
-                recorder: audioRecorder,
-                recording: recordedAudio,
-                player: recordedAudioPlayer,
-                isBusy: sending,
-                accent: .accentColor,
-                onStop: stopAudioRecording,
-                onContinue: {
-                    guard let recordedAudio else { return }
-                    recordedAudioPlayer.stop()
-                    startAudioRecording(continuing: recordedAudio)
-                },
-                onSend: sendRecordedAudio
-            )
-            .frame(maxWidth: .infinity)
-            .background(.quaternary.opacity(0.4), in: Capsule())
-        }
-    }
-    private func startAudioRecording() { startAudioRecording(continuing: nil) }
-    private func startAudioRecording(continuing previous: ChatAudioRecorder.Recording?) {
-        Task {
-            do { try await audioRecorder.start(continuing: previous) }
-            catch is CancellationError {}
-            catch { self.error = error.localizedDescription }
-        }
-    }
-    private func stopAudioRecording() {
-        Task {
-            do { recordedAudio = try await audioRecorder.finish() }
-            catch { self.error = error.localizedDescription }
-        }
-    }
-    private func sendRecordedAudio() {
-        guard let recording = recordedAudio, !sending else { return }
-        recordedAudioPlayer.stop()
-        recordedAudio = nil
-        // The queue owns the file from here on; a failed send leaves it staged for retry.
-        attachments.stagePrepared(MacStagedFile(url: recording.fileURL, name: recording.suggestedName, mimeType: "audio/mp4"))
-        if canSend { send() }
-    }
-    private func discardRecordedAudio() {
-        audioRecorder.cancel()
-        recordedAudioPlayer.stop()
-        if let recordedAudio { try? FileManager.default.removeItem(at: recordedAudio.fileURL) }
-        recordedAudio = nil
     }
     private func markRead() { if activeState == .key { model.markDirectMessageThreadRead(peerPublicKey: peer) } }
     private func shareDroppedTasks(_ values: [String]) -> Bool {
@@ -499,7 +453,7 @@ private struct MacConversation: View {
                     )
                 }
             } catch {
-                self.error = error.localizedDescription
+                composerProxy.report(error.localizedDescription)
             }
         }
         return true
@@ -598,30 +552,294 @@ private struct MacConversation: View {
         }
         self.lastSearchResultID = nil
     }
+}
+
+/// A plain callback bridge keeps row actions out of the conversation's observed state. Replying
+/// only updates the isolated composer instead of rebuilding the timeline.
+@MainActor
+final class MacChatComposerProxy {
+    var onReply: ((NostrDirectMessage) -> Void)?
+    var onError: ((String) -> Void)?
+    var onSendStarted: (() -> Void)?
+
+    func reply(to message: NostrDirectMessage) { onReply?(message) }
+    func report(_ error: String) { onError?(error) }
+}
+
+/// Owns all high-frequency chat input state. The conversation above can stay cached while the
+/// user types, stages attachments, records audio, or waits for a send to leave.
+private struct MacChatComposer: View {
+    let peer: String
+    @Binding var composer: String
+    let proxy: MacChatComposerProxy
+    @Environment(AppModel.self) private var model
+    @StateObject private var attachments = MacAttachmentQueue()
+    @State private var audioRecorder = ChatAudioRecorder(
+        directory: { try AttachmentFiles.directory() },
+        onWillRecord: { MacChatAudioPlayback.shared.pauseForRecording() }
+    )
+    @State private var recordedAudio: ChatAudioRecorder.Recording?
+    @State private var recordedAudioPlayer = ChatAudioDraftPlayer(
+        onWillPlay: { MacChatAudioPlayback.shared.pauseForRecording() }
+    )
+    @State private var sending = false
+    @State private var reply: NostrDirectMessage?
+    @State private var error: String?
+    @State private var isDropTargeted = false
+    @State private var sendTask: Task<Void, Never>?
+
+    private var isGroup: Bool { model.groupConversation(id: peer) != nil }
+    private var isAudioComposerActive: Bool { audioRecorder.isRecording || recordedAudio != nil }
+    private var visibleBotCommands: [BotCommand]? {
+        guard !isGroup,
+              composer.hasPrefix("/"),
+              let commands = model.botCommands(publicKey: peer),
+              !commands.isEmpty else { return nil }
+        let query = String(composer.dropFirst()).lowercased()
+        let matched = commands.filter { $0.name.hasPrefix(query) }
+        return matched.isEmpty ? nil : matched
+    }
+    private var canSend: Bool {
+        !sending && !attachments.importing &&
+            (!composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.files.isEmpty) &&
+            !model.isDirectMessagePeerBlocked(peer) && !model.hasLeftDirectMessageGroup(peer)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let reply {
+                HStack {
+                    Text("Replying to: \(reply.displayContent)").font(.caption).lineLimit(1)
+                    Spacer()
+                    Button("Cancel Reply") { self.reply = nil }
+                }
+            }
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            if let commands = visibleBotCommands {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(commands) { command in
+                            Button { composer = "/\(command.name) " } label: {
+                                HStack {
+                                    Text("/\(command.name)")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.accentColor)
+                                    Spacer(minLength: 8)
+                                    Text(command.description)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 160)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            }
+            MacAttachmentQueueView(queue: attachments, busy: sending, onCancel: { sendTask?.cancel() })
+            if isAudioComposerActive {
+                audioComposer
+            } else {
+                HStack(alignment: .bottom, spacing: 12) {
+                    Button { attachments.chooseFiles() } label: { Image(systemName: "paperclip") }
+                        .disabled(sending || attachments.importing)
+                    PasteButton(payloadType: MacAttachmentTransferPayload.self) { payloads in
+                        attachments.stage(payloads.map(\.source))
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(sending || attachments.importing || model.isDirectMessagePeerBlocked(peer))
+                    .help("Paste Files")
+                    .accessibilityIdentifier("chat-attachment-paste-button")
+                    ZStack(alignment: .topLeading) {
+                        if composer.isEmpty {
+                            Text("Message")
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 12)
+                                .padding(.leading, 2)
+                                .allowsHitTesting(false)
+                        }
+                        MacChatComposerTextView(
+                            text: $composer,
+                            onSubmit: { if canSend { send() } }
+                        )
+                    }
+                    .overlay(alignment: .trailing) {
+                        if composer.isEmpty, attachments.files.isEmpty {
+                            Button(action: startAudioRecording) {
+                                Image(systemName: "waveform")
+                                    .font(.title3)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(
+                                sending || attachments.importing || audioRecorder.isRequestingPermission
+                                    || model.isDirectMessagePeerBlocked(peer)
+                            )
+                            .help("Record Audio Message")
+                            .accessibilityLabel("Record audio message")
+                            .accessibilityIdentifier("chat-audio-record-button")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(isDropTargeted ? Color.accentColor : .clear, lineWidth: 2)
+                    )
+                    Button(action: send) {
+                        if sending {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Send", systemImage: "arrow.up")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!canSend)
+                }
+                .dropDestination(for: URL.self) { urls, _ in
+                    guard !sending, !model.isDirectMessagePeerBlocked(peer) else { return false }
+                    attachments.stage(urls)
+                    return true
+                } isTargeted: { isDropTargeted = $0 }
+            }
+        }
+        .task(id: peer) {
+            if !isGroup { await model.refreshBotCommands(publicKey: peer) }
+        }
+        .onAppear {
+            proxy.onReply = { message in reply = message }
+            proxy.onError = { message in error = message }
+        }
+        .onDisappear {
+            proxy.onReply = nil
+            proxy.onError = nil
+            audioRecorder.cancel()
+            discardRecordedAudio()
+        }
+    }
+
+    private var audioComposer: some View {
+        HStack(spacing: 10) {
+            if recordedAudio != nil, !audioRecorder.isRecording {
+                Button(action: discardRecordedAudio) {
+                    Image(systemName: "xmark")
+                        .frame(width: 30, height: 30)
+                        .background(.quaternary.opacity(0.5), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(sending)
+                .help("Discard Recording")
+                .accessibilityLabel("Cancel audio message")
+            }
+            ChatAudioComposerControls(
+                recorder: audioRecorder,
+                recording: recordedAudio,
+                player: recordedAudioPlayer,
+                isBusy: sending,
+                accent: .accentColor,
+                onStop: stopAudioRecording,
+                onContinue: {
+                    guard let recordedAudio else { return }
+                    recordedAudioPlayer.stop()
+                    startAudioRecording(continuing: recordedAudio)
+                },
+                onSend: sendRecordedAudio
+            )
+            .frame(maxWidth: .infinity)
+            .background(.quaternary.opacity(0.4), in: Capsule())
+        }
+    }
+
+    private func startAudioRecording() { startAudioRecording(continuing: nil) }
+    private func startAudioRecording(continuing previous: ChatAudioRecorder.Recording?) {
+        Task {
+            do { try await audioRecorder.start(continuing: previous) }
+            catch is CancellationError {}
+            catch { self.error = error.localizedDescription }
+        }
+    }
+    private func stopAudioRecording() {
+        Task {
+            do { recordedAudio = try await audioRecorder.finish() }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+    private func sendRecordedAudio() {
+        guard let recording = recordedAudio, !sending else { return }
+        recordedAudioPlayer.stop()
+        recordedAudio = nil
+        attachments.stagePrepared(MacStagedFile(
+            url: recording.fileURL,
+            name: recording.suggestedName,
+            mimeType: "audio/mp4"
+        ))
+        if canSend { send() }
+    }
+    private func discardRecordedAudio() {
+        audioRecorder.cancel()
+        recordedAudioPlayer.stop()
+        if let recordedAudio { try? FileManager.default.removeItem(at: recordedAudio.fileURL) }
+        recordedAudio = nil
+    }
     private func send() {
         let text = composer
-        followsLatestMessage = true
-        sending = true; error = nil
+        let replyTarget = reply
+        let hasAttachments = !attachments.files.isEmpty
+        proxy.onSendStarted?()
+        sending = true
+        error = nil
+        // Make the action feel immediate even when relay discovery or proof of work takes time.
+        // Restore the draft only if the send fails and the user has not typed something new.
+        composer = ""
+        reply = nil
         sendTask = Task {
             defer { sending = false; sendTask = nil }
             do {
-                if attachments.files.isEmpty {
-                    try await model.sendDirectMessage(to: peer, content: text, replyToEventID: reply?.id)
-                } else {
+                if hasAttachments {
                     let uploaded = try await attachments.uploadChat(
                         identity: model.cachedIdentity,
                         settingsDefaults: model.accountDefaults
                     )
                     attachments.progress = "Sending message…"
-                    try await model.sendDirectMessageAttachments(to: peer, attachments: uploaded, replyToEventID: reply?.id, comment: text)
+                    try await model.sendDirectMessageAttachments(
+                        to: peer,
+                        attachments: uploaded,
+                        replyToEventID: replyTarget?.id,
+                        comment: text
+                    )
                     attachments.clear()
+                } else {
+                    try await model.sendDirectMessage(
+                        to: peer,
+                        content: text,
+                        replyToEventID: replyTarget?.id
+                    )
                 }
-                if composer == text { composer = "" }
-                reply = nil
             } catch is CancellationError {
                 attachments.progress = nil
-            } catch { self.error = error.localizedDescription }
+                restoreFailedDraft(text, reply: replyTarget, ifEmpty: composer.isEmpty && !text.isEmpty)
+            } catch {
+                self.error = error.localizedDescription
+                restoreFailedDraft(text, reply: replyTarget, ifEmpty: composer.isEmpty && !text.isEmpty)
+            }
         }
+    }
+    private func restoreFailedDraft(_ text: String, reply: NostrDirectMessage?, ifEmpty isEmpty: Bool) {
+        guard isEmpty else { return }
+        composer = text
+        self.reply = reply
     }
 }
 
@@ -765,7 +983,9 @@ private enum MacChatTimelineItem: Identifiable {
 
 private struct MacChatTimelineRow: View {
     let item: MacChatTimelineItem
+    let peer: String
     var photoStack: [NostrDirectMessage]? = nil
+    var sessionListing: HermesSessionListing? = nil
     var parent: (String) -> NostrDirectMessage?
     var reactions: (NostrDirectMessage) -> [NostrDirectMessageReaction]
     var reply: (NostrDirectMessage) -> Void
@@ -775,15 +995,22 @@ private struct MacChatTimelineRow: View {
     var body: some View {
         switch item {
         case .message(let message):
-            MacMessageRow(
-                message: message,
-                parent: message.replyToEventID.flatMap(parent),
-                reactions: (photoStack ?? [message]).flatMap(reactions),
-                photoStack: photoStack,
-                reply: reply,
-                react: react,
-                reportError: reportError
-            )
+            if let sessionListing {
+                HStack(alignment: .top, spacing: 0) {
+                    MacHermesSessionPicker(peerPublicKey: peer, listing: sessionListing)
+                    Spacer(minLength: 60)
+                }
+            } else {
+                MacMessageRow(
+                    message: message,
+                    parent: message.replyToEventID.flatMap(parent),
+                    reactions: (photoStack ?? [message]).flatMap(reactions),
+                    photoStack: photoStack,
+                    reply: reply,
+                    react: react,
+                    reportError: reportError
+                )
+            }
         case .sharedTask(let task):
             aligned(incoming: true) { MacSharedTaskCard(item: task) }
         case .sharedContact(let contact):
@@ -800,6 +1027,137 @@ private struct MacChatTimelineRow: View {
             if !incoming { Spacer(minLength: 60) }
             card()
             if incoming { Spacer(minLength: 60) }
+        }
+    }
+}
+
+/// Hermes reports `/sessions` as text. Once a verified bot listing is recognized, replace that
+/// text with tappable sessions; choosing one sends the validated `/resume <id>` command.
+private struct MacHermesSessionPicker: View {
+    @Environment(AppModel.self) private var model
+    let peerPublicKey: String
+    let listing: HermesSessionListing
+    @State private var resumingSessionID: String?
+    @State private var sentSessionID: String?
+    @State private var actionError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 9) {
+                Image(systemName: "rectangle.stack")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 29, height: 29)
+                    .background(Color.accentColor.opacity(0.13), in: Circle())
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Named sessions").font(.subheadline.bold())
+                    Text("Choose a session to resume")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Text("\(listing.sessions.count)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(listing.sessions, id: \.sessionId) { session in
+                        sessionButton(session)
+                    }
+                }
+            }
+            .frame(height: min(CGFloat(listing.sessions.count) * 54, 432))
+
+            if let actionError {
+                Text(actionError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: 540, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 15))
+        .overlay {
+            RoundedRectangle(cornerRadius: 15)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private func sessionButton(_ session: HermesSession) -> some View {
+        Button {
+            resume(session)
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.title)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(session.sessionId)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                if resumingSessionID == session.sessionId {
+                    ProgressView().controlSize(.small)
+                } else if sentSessionID == session.sessionId {
+                    Label("Sent", systemImage: "checkmark")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                } else if session.isCurrent {
+                    Text("Current").font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            session.isCurrent ? Color.accentColor.opacity(0.10) : Color(nsColor: .underPageBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 9)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(
+                    session.isCurrent ? Color.accentColor.opacity(0.4) : Color.primary.opacity(0.08),
+                    lineWidth: 1
+                )
+        }
+        .disabled(resumingSessionID != nil)
+        .opacity(resumingSessionID == nil || resumingSessionID == session.sessionId ? 1 : 0.46)
+        .accessibilityLabel("Resume session: \(session.title)")
+        .accessibilityValue(session.isCurrent ? "Current" : "")
+    }
+
+    private func resume(_ session: HermesSession) {
+        guard resumingSessionID == nil else { return }
+        resumingSessionID = session.sessionId
+        sentSessionID = nil
+        actionError = nil
+        Task { @MainActor in
+            defer { resumingSessionID = nil }
+            do {
+                try await model.sendDirectMessage(
+                    to: peerPublicKey,
+                    content: HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
+                )
+                sentSessionID = session.sessionId
+            } catch {
+                actionError = error.localizedDescription
+            }
         }
     }
 }
