@@ -253,7 +253,7 @@ struct TaskifyWatchTaskQuery: EntityStringQuery {
 struct TaskifyWatchAddTaskIntent: AppIntent {
     static var title: LocalizedStringResource = "Add Task"
     static var description = IntentDescription(
-        "Adds a task using the paired iPhone or the Apple Watch's independent connection."
+        "Adds a Taskify task using the best available connection."
     )
     static var openAppWhenRun: Bool = false
 
@@ -329,7 +329,7 @@ struct TaskifyWatchAddTasksIntent: AppIntent {
 
 struct TaskifyWatchCompleteTaskIntent: AppIntent {
     static var title: LocalizedStringResource = "Complete Task"
-    static var description = IntentDescription("Completes a Taskify task from Apple Watch.")
+    static var description = IntentDescription("Completes an open Taskify task.")
     static var openAppWhenRun: Bool = false
 
     @Parameter(title: "Task", requestValueDialog: "Which task should I complete?")
