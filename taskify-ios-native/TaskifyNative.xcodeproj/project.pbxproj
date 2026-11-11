@@ -1131,7 +1131,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1159,7 +1159,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1186,7 +1186,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1215,7 +1215,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1247,7 +1247,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1310,7 +1310,7 @@
 				APS_ENVIRONMENT = development;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1338,7 +1338,7 @@
 				APS_ENVIRONMENT = production;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1398,7 +1398,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1428,7 +1428,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1456,7 +1456,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
@@ -1488,7 +1488,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
@@ -1514,8 +1514,8 @@
 			};
 			name = Release;
 		};
-		310F1F8FFEED769065395003 /* Share Debug */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 187; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Debug; };
-		6C89F5E3190431CFA3653B92 /* Share Release */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 187; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Release; };
+		310F1F8FFEED769065395003 /* Share Debug */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 189; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Debug; };
+		6C89F5E3190431CFA3653B92 /* Share Release */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 189; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Release; };
 		2FCBC48C20CEC7C5076104BB /* Local */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1538,7 +1538,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1568,7 +1568,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1593,7 +1593,7 @@
 			};
 			name = Local;
 		};
-		756E28F9D8058B71150C3350 /* Local */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 187; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Local; };
+		756E28F9D8058B71150C3350 /* Local */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 189; MARKETING_VERSION = 0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Local; };
 		5A14D1304D553942E03601B3 /* Local */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1619,7 +1619,7 @@
 				APS_ENVIRONMENT = development;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1646,7 +1646,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 187;
+				CURRENT_PROJECT_VERSION = 189;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;

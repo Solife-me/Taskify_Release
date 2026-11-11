@@ -89,6 +89,21 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Wallet"].exists)
     }
 
+    func testSidebarSyncStatusOpensQueueInspector() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        let syncStatus = app.buttons["sync-queue-button"]
+        XCTAssertTrue(syncStatus.waitForExistence(timeout: 10))
+        syncStatus.click()
+
+        XCTAssertTrue(app.staticTexts["Sync queue"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Delivery snapshot"].exists)
+        XCTAssertTrue(app.staticTexts["Queued"].exists)
+        XCTAssertTrue(app.buttons["Done"].exists)
+    }
+
     func testWeekBoardCentersTodayEveryTimeItOpens() {
         let app = XCUIApplication()
         app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]

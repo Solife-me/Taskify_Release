@@ -55,13 +55,13 @@ struct MacWorkspace: View {
     @State private var inspectorVisible = true
     @State private var boardToManage: Board?
     @State private var notificationRouter = TaskNotificationNavigationRouter.shared
-    @State private var chatDrafts: [String: String] = [:]
+    @State private var chatDrafts = MacChatDraftStore()
     @State private var chatSelection: String?
     @State private var splitDestination: String?
     @State private var splitSearch = ""
     @State private var splitSelectedTaskID: String?
     @State private var splitEditingTask: TaskItem?
-    @State private var splitChatDrafts: [String: String] = [:]
+    @State private var splitChatDrafts = MacChatDraftStore()
     @State private var splitChatSelection: String?
     @State private var printingChecklist = false
     @State private var pendingLink: URL?
@@ -175,13 +175,13 @@ struct MacWorkspace: View {
         printingChecklist = false
         selectedTaskID = nil
         chatSelection = nil
-        chatDrafts = [:]
+        chatDrafts.removeAll()
         splitDestination = nil
         splitSearch = ""
         splitSelectedTaskID = nil
         splitEditingTask = nil
         splitChatSelection = nil
-        splitChatDrafts = [:]
+        splitChatDrafts.removeAll()
         destination = "today"
     }
 
@@ -250,7 +250,7 @@ struct MacWorkspace: View {
             search: search,
             selectedTaskID: $selectedTaskID,
             edit: { editingTask = $0 },
-            chatDrafts: $chatDrafts,
+            chatDrafts: chatDrafts,
             chatSelection: $chatSelection
         )
     }
@@ -336,7 +336,7 @@ struct MacWorkspace: View {
                     search: splitSearch,
                     selectedTaskID: $splitSelectedTaskID,
                     edit: { splitEditingTask = $0 },
-                    chatDrafts: $splitChatDrafts,
+                    chatDrafts: splitChatDrafts,
                     chatSelection: $splitChatSelection
                 )
             }
@@ -355,7 +355,7 @@ struct MacWorkspace: View {
         search: String,
         selectedTaskID: Binding<String?>,
         edit: @escaping (TaskItem) -> Void,
-        chatDrafts: Binding<[String: String]>,
+        chatDrafts: MacChatDraftStore,
         chatSelection: Binding<String?>
     ) -> some View {
         if let paneBoard = model.board(withID: target) {
@@ -442,6 +442,7 @@ private struct MacWorkspaceSidebar: View {
     let closeSplit: () -> Void
     let moveTasks: ([String], Board) -> Bool
     @State private var archivedExpanded = false
+    @State private var showingSyncQueue = false
 
     var body: some View {
         List(selection: Binding<String?>(
@@ -505,13 +506,33 @@ private struct MacWorkspaceSidebar: View {
         .navigationTitle("Taskify")
         .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
         .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 5) {
-                Label(model.syncStatus, systemImage: "arrow.triangle.2.circlepath")
-                Text(model.pendingSyncChangeCount == 0 ? "Local changes saved automatically" : "\(model.pendingSyncChangeCount) changes waiting to sync")
-                    .font(.caption).foregroundStyle(.secondary)
+            Button {
+                showingSyncQueue = true
+            } label: {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(model.syncStatus, systemImage: "arrow.triangle.2.circlepath")
+                        Text(model.pendingSyncChangeCount == 0 ? "Local changes saved automatically" : "\(model.pendingSyncChangeCount) changes waiting to sync")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
             }
-            .font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(14)
+            .buttonStyle(.plain)
+            .font(.caption)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
             .background(.bar)
+            .help("Inspect sync queue")
+            .accessibilityIdentifier("sync-queue-button")
+        }
+        .sheet(isPresented: $showingSyncQueue) {
+            MacSyncQueueInspector().environment(model)
         }
     }
 

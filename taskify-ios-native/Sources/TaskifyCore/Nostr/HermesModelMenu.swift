@@ -1,6 +1,6 @@
 import Foundation
 
-/// Taskify's native adapter for Hermes's text-only `/model` experience.
+/// Taskify's native adapter for Hermes's text-only `/model` and `/sessions` experiences.
 /// Hermes cannot emit Taskify UI metadata, so only values recognized in its known response shapes
 /// become buttons. The shared fixture in `taskify-core/fixtures/hermes-bot-menu-vectors.json`
 /// keeps this parser aligned with the PWA parser.
@@ -51,6 +51,91 @@ public struct HermesModelSwitchConfirmation: Codable, Equatable, Sendable {
     public init(modelId: String, providerName: String?) {
         self.modelId = modelId
         self.providerName = providerName
+    }
+}
+
+public struct HermesSession: Codable, Equatable, Sendable {
+    public var title: String
+    public var sessionId: String
+    public var isCurrent: Bool
+
+    public init(title: String, sessionId: String, isCurrent: Bool) {
+        self.title = title
+        self.sessionId = sessionId
+        self.isCurrent = isCurrent
+    }
+}
+
+public struct HermesSessionListing: Codable, Equatable, Sendable {
+    public var sessions: [HermesSession]
+
+    public init(sessions: [HermesSession]) {
+        self.sessions = sessions
+    }
+}
+
+public enum HermesSessionMenuError: Error {
+    case invalidSessionId
+}
+
+public enum HermesSessionMenuParser {
+    private static let sessionPattern = #"^\d{8}_\d{6}_[0-9A-Fa-f]{8}$"#
+
+    public static func isValidSessionId(_ value: String) -> Bool {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .range(of: sessionPattern, options: .regularExpression) != nil
+    }
+
+    private static func cleanLabel(_ value: String) -> String {
+        value.components(separatedBy: .controlCharacters)
+            .joined(separator: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .prefix(120)
+            .description
+    }
+
+    public static func parseListing(_ text: String) -> HermesSessionListing? {
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        guard let headingIndex = lines.firstIndex(where: {
+            $0.range(
+                of: #"^\s*(?:📋\s*)?\*\*Named Sessions\*\*\s*$"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil
+        }) else { return nil }
+
+        let rowPattern = #"^\s*\d+[.)]\s+\*\*(.+?)\*\*\s*(\(current\))?\s*[—–-]\s*`([^`\n]+)`(?:\s*[—–-].*)?$"#
+        guard let expression = try? NSRegularExpression(pattern: rowPattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        var sessions: [HermesSession] = []
+        var seen = Set<String>()
+        for line in lines.dropFirst(headingIndex + 1) {
+            let range = NSRange(line.startIndex..., in: line)
+            guard let match = expression.firstMatch(in: line, range: range),
+                  let titleRange = Range(match.range(at: 1), in: line),
+                  let idRange = Range(match.range(at: 3), in: line) else { continue }
+            let title = cleanLabel(String(line[titleRange]))
+            let sessionId = String(line[idRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, isValidSessionId(sessionId), seen.insert(sessionId.lowercased()).inserted else {
+                continue
+            }
+            sessions.append(HermesSession(
+                title: title,
+                sessionId: sessionId,
+                isCurrent: match.range(at: 2).location != NSNotFound
+            ))
+            if sessions.count == 100 { break }
+        }
+        return sessions.isEmpty ? nil : HermesSessionListing(sessions: sessions)
+    }
+
+    public static func resumeCommand(sessionId: String) throws -> String {
+        let value = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidSessionId(value) else { throw HermesSessionMenuError.invalidSessionId }
+        return "/resume \(value)"
     }
 }
 
@@ -411,13 +496,16 @@ public struct HermesModelMenuProjection: Equatable, Sendable {
 public struct HermesBotUiProjection: Equatable, Sendable {
     public var hiddenMessageIDs: Set<String>
     public var menusByListingMessageID: [String: HermesModelMenuProjection]
+    public var sessionsByListingMessageID: [String: HermesSessionListing]
 
     public init(
         hiddenMessageIDs: Set<String> = [],
-        menusByListingMessageID: [String: HermesModelMenuProjection] = [:]
+        menusByListingMessageID: [String: HermesModelMenuProjection] = [:],
+        sessionsByListingMessageID: [String: HermesSessionListing] = [:]
     ) {
         self.hiddenMessageIDs = hiddenMessageIDs
         self.menusByListingMessageID = menusByListingMessageID
+        self.sessionsByListingMessageID = sessionsByListingMessageID
     }
 }
 
@@ -435,8 +523,13 @@ public enum HermesModelPickerProjection {
 
         var hidden = Set<String>()
         var menusByListingMessageID: [String: HermesModelMenuProjection] = [:]
+        var sessionsByListingMessageID: [String: HermesSessionListing] = [:]
         var menusByMenuID: [String: HermesModelMenuProjection] = [:]
         for message in ordered where message.isIncoming && message.groupID == nil && message.attachment == nil {
+            if let sessions = HermesSessionMenuParser.parseListing(message.content) {
+                sessionsByListingMessageID[message.rumorEventID] = sessions
+                continue
+            }
             guard let listing = HermesModelMenuParser.parseListing(message.content) else { continue }
             let menuId = message.rumorEventID
             guard menuId.range(of: #"^[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil else {
@@ -451,7 +544,11 @@ public enum HermesModelPickerProjection {
             menusByMenuID[menuId] = menu
         }
         guard !menusByMenuID.isEmpty else {
-            return HermesBotUiProjection(hiddenMessageIDs: hidden, menusByListingMessageID: menusByListingMessageID)
+            return HermesBotUiProjection(
+                hiddenMessageIDs: hidden,
+                menusByListingMessageID: menusByListingMessageID,
+                sessionsByListingMessageID: sessionsByListingMessageID
+            )
         }
 
         var pending: TaskifyBotUiAction?
@@ -517,7 +614,8 @@ public enum HermesModelPickerProjection {
 
         return HermesBotUiProjection(
             hiddenMessageIDs: hidden,
-            menusByListingMessageID: menusByListingMessageID
+            menusByListingMessageID: menusByListingMessageID,
+            sessionsByListingMessageID: sessionsByListingMessageID
         )
     }
 }

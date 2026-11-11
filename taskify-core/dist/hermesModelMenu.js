@@ -1,20 +1,24 @@
 /**
- * Taskify's Hermes model-menu adapter.
+ * Taskify's Hermes bot-menu adapter.
  *
  * Hermes has no structured UI callback on non-Telegram platforms. Its `/model` text fallback
  * carries provider previews, while a one-provider agent request can return a complete JSON
- * catalog. These parsers are deliberately strict: clients should render buttons only from values
- * that were recognized in a known Hermes response shape.
+ * catalog, and `/sessions` returns named sessions. These parsers are deliberately strict: clients
+ * should render buttons only from values recognized in a known Hermes response shape.
  */
 export const HERMES_PROVIDER_PAGE_SIZE = 10;
 export const HERMES_MODEL_PAGE_SIZE = 8;
 const PROVIDER_SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+~-]{0,199}$/;
+const SESSION_ID_PATTERN = /^\d{8}_\d{6}_[0-9A-Fa-f]{8}$/;
 export function isValidHermesProviderSlug(value) {
     return typeof value === "string" && PROVIDER_SLUG_PATTERN.test(value.trim());
 }
 export function isValidHermesModelId(value) {
     return typeof value === "string" && MODEL_ID_PATTERN.test(value.trim());
+}
+export function isValidHermesSessionId(value) {
+    return typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
 }
 function cleanLabel(value, limit = 120) {
     if (typeof value !== "string")
@@ -165,6 +169,33 @@ export function parseHermesModelSwitchConfirmation(text) {
             providerName = cleanLabel(providerMatch[1]) || null;
     }
     return modelId ? { modelId, providerName } : null;
+}
+export function parseHermesSessionListing(text) {
+    const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+    const headingIndex = lines.findIndex((line) => /^\s*(?:📋\s*)?\*\*Named Sessions\*\*\s*$/i.test(line));
+    if (headingIndex < 0)
+        return null;
+    const sessions = [];
+    const seen = new Set();
+    for (const line of lines.slice(headingIndex + 1)) {
+        const match = line.match(/^\s*\d+[.)]\s+\*\*(.+?)\*\*\s*(\(current\))?\s*[—–-]\s*`([^`\n]+)`(?:\s*[—–-].*)?$/i);
+        if (!match)
+            continue;
+        const title = cleanLabel(match[1]);
+        const sessionId = match[3]?.trim() || "";
+        if (!title || !isValidHermesSessionId(sessionId) || seen.has(sessionId.toLowerCase()))
+            continue;
+        seen.add(sessionId.toLowerCase());
+        sessions.push({ title, sessionId, isCurrent: !!match[2] });
+        if (sessions.length >= 100)
+            break;
+    }
+    return sessions.length ? { sessions } : null;
+}
+export function buildHermesSessionResumeCommand(sessionId) {
+    if (!isValidHermesSessionId(sessionId))
+        throw new Error("Invalid Hermes session identifier.");
+    return `/resume ${sessionId.trim()}`;
 }
 /** Encrypted rumor tags used to hide Taskify bot-UI commands and correlate their replies. */
 export const TASKIFY_BOT_UI_TAG = "taskify-bot-ui";

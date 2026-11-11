@@ -64,6 +64,26 @@
       }
     }
   ],
+  "sessionListings": [
+    {
+      "name": "named sessions with current marker and resume help",
+      "text": "📋 **Named Sessions**\n\n1. **Give MCP access to Nextcloud server** (current) — `20261109_020143_82e5b835` — _how do I give you MCP access to my nextc_\n2. **Write comprehensive audit plan paper** — `20261109_013330_790ece03` — _I need to write a paper following these _\n3. **Analyze scan-1793987189626.pdf** — `20261106_170340_140e76ad` — _[The user sent a document: 'nostr-k15-30_\n4. **Summarize scan-1793976672202.pdf contents** — `20261106_144100_9e128e5d` — _[The user sent a document: 'nostr-k15-9e_\n5. **Write discussion post on audit completion** — `20261106_052458_72e3e016` — _I need to write a discussion post accord_\n6. **Exact file path for Christmas website** — `20261105_221633_44e8e0ea` — _I added you a new shared folder “Website_\n7. **Categorize and approve car purchase transfers** — `20261105_210426_3758180d` — _The 6700 in YNAB was for buying a car, a_\n8. **Review scan-1793833105641.pdf** — `20261104_020905_7c061ecf` — _[The user sent a document: 'nostr-k15-76_\n9. **US election today news and results** — `20261104_012509_d14c9fe7` — _Tell me what I need to know about the us_\n10. **Local Ollama provider URL** — `20261103_155523_5311b458` — _Whats the url for the local ollama provi_\n\nResume: `/resume <session id>` or `/resume <number>` from `/resume`.\nMore: `/sessions all`, `/sessions full`, `/sessions search <query>`.",
+      "expected": {
+        "sessions": [
+          { "title": "Give MCP access to Nextcloud server", "sessionId": "20261109_020143_82e5b835", "isCurrent": true },
+          { "title": "Write comprehensive audit plan paper", "sessionId": "20261109_013330_790ece03", "isCurrent": false },
+          { "title": "Analyze scan-1793987189626.pdf", "sessionId": "20261106_170340_140e76ad", "isCurrent": false },
+          { "title": "Summarize scan-1793976672202.pdf contents", "sessionId": "20261106_144100_9e128e5d", "isCurrent": false },
+          { "title": "Write discussion post on audit completion", "sessionId": "20261106_052458_72e3e016", "isCurrent": false },
+          { "title": "Exact file path for Christmas website", "sessionId": "20261105_221633_44e8e0ea", "isCurrent": false },
+          { "title": "Categorize and approve car purchase transfers", "sessionId": "20261105_210426_3758180d", "isCurrent": false },
+          { "title": "Review scan-1793833105641.pdf", "sessionId": "20261104_020905_7c061ecf", "isCurrent": false },
+          { "title": "US election today news and results", "sessionId": "20261104_012509_d14c9fe7", "isCurrent": false },
+          { "title": "Local Ollama provider URL", "sessionId": "20261103_155523_5311b458", "isCurrent": false }
+        ]
+      }
+    }
+  ],
   "invalidModelListings": [
     "No provider list here.",
     "**Broken** --provider local:\n  `model`"
@@ -72,5 +92,10 @@
     "{\"provider\":\"custom:local\",\"models\":\"not-an-array\"}",
     "{\"provider\":\"wrong-provider\",\"models\":[\"beam\"]}",
     "{\"providers\":[{\"slug\":\"nous\",\"models\":[\"openai/gpt-6-astra\"]}]}"
+  ],
+  "invalidSessionListings": [
+    "No named sessions here.",
+    "📋 **Named Sessions**\n\n1. **Invalid identifier** — `not a session`",
+    "1. **Missing heading** — `20261109_020143_82e5b835`"
   ]
 }

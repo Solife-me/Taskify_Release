@@ -64,4 +64,26 @@ extension ChatRenderUITests {
             ).firstMatch.exists
         )
     }
+
+    func testHermesSessionButtonSendsResumeCommand() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_HERMES_SESSIONS"] = "1"
+        app.launch()
+
+        app.buttons["Chat"].firstMatch.tap()
+        let contact = app.staticTexts["UI Test Contact"].firstMatch
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+
+        let session = app.buttons["Resume session: Write comprehensive audit plan paper"]
+        XCTAssertTrue(session.waitForExistence(timeout: 10))
+        session.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["/resume 20261109_013330_790ece03"].firstMatch.waitForExistence(timeout: 10)
+        )
+    }
 }

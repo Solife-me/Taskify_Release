@@ -102,6 +102,18 @@ describe("Hermes model picker projection", () => {
     const listing = message({ content: LISTING, preview: LISTING });
     const projection = projectHermesBotUi([listing], false);
     expect(projection.menusByListingEventId.size).toBe(0);
+    expect(projection.sessionsByListingEventId.size).toBe(0);
+  });
+
+  test("recognizes session buttons only in a verified bot conversation", () => {
+    const listing = message({
+      content: "📋 **Named Sessions**\n\n1. **Audit plan** (current) — `20261109_013330_790ece03` — _draft_",
+    });
+    const enabled = projectHermesBotUi([listing], true);
+    expect(enabled.sessionsByListingEventId.get(listing.eventId)?.sessions).toEqual([
+      { title: "Audit plan", sessionId: "20261109_013330_790ece03", isCurrent: true },
+    ]);
+    expect(projectHermesBotUi([listing], false).sessionsByListingEventId.size).toBe(0);
   });
 });
 

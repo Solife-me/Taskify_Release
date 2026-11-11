@@ -9,6 +9,8 @@ final class HermesModelMenuTests: XCTestCase {
         let confirmations: [ConfirmationVector]
         let invalidModelListings: [String]
         let invalidProviderCatalogs: [String]
+        let sessionListings: [SessionListingVector]
+        let invalidSessionListings: [String]
     }
 
     private struct ModelListingVector: Decodable {
@@ -28,6 +30,12 @@ final class HermesModelMenuTests: XCTestCase {
         let name: String
         let text: String
         let expected: HermesModelSwitchConfirmation
+    }
+
+    private struct SessionListingVector: Decodable {
+        let name: String
+        let text: String
+        let expected: HermesSessionListing
     }
 
     private static let fixtureURL = URL(fileURLWithPath: #filePath)
@@ -63,6 +71,12 @@ final class HermesModelMenuTests: XCTestCase {
         }
     }
 
+    func testSessionListingsMatchSharedVectors() throws {
+        for vector in try fixture().sessionListings {
+            XCTAssertEqual(HermesSessionMenuParser.parseListing(vector.text), vector.expected, vector.name)
+        }
+    }
+
     func testInvalidShapesAreIgnored() throws {
         let file = try fixture()
         for text in file.invalidModelListings {
@@ -71,7 +85,20 @@ final class HermesModelMenuTests: XCTestCase {
         for text in file.invalidProviderCatalogs {
             XCTAssertNil(HermesModelMenuParser.parseProviderCatalog(text, expectedProviderSlug: "custom:local"))
         }
+        for text in file.invalidSessionListings {
+            XCTAssertNil(HermesSessionMenuParser.parseListing(text))
+        }
         XCTAssertNil(HermesModelMenuParser.parseConfirmation("Model not changed."))
+    }
+
+    func testSessionResumeCommandsUseValidatedIdentifiers() throws {
+        XCTAssertTrue(HermesSessionMenuParser.isValidSessionId("20261109_020143_82e5b835"))
+        XCTAssertFalse(HermesSessionMenuParser.isValidSessionId("20261109_020143_82e5b835\n/help"))
+        XCTAssertEqual(
+            try HermesSessionMenuParser.resumeCommand(sessionId: "20261109_013330_790ece03"),
+            "/resume 20261109_013330_790ece03"
+        )
+        XCTAssertThrowsError(try HermesSessionMenuParser.resumeCommand(sessionId: "bad session"))
     }
 
     func testIdentifiersAndPageSizesMatchPWA() {

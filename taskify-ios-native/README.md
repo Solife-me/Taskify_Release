@@ -6,8 +6,10 @@ This is the clean native SwiftUI replacement for the current `taskify-ios/` WebV
 
 The native app and its iOS extensions now target both iPhone and iPad. They share
 all feature implementations, persistence, sync, wallet and messaging services.
-iPad supports every orientation and resizable windows. On iOS 26+, the system tab
-bar can become a sidebar; older regular-width windows use a navigation sidebar.
+iPad supports every orientation and resizable windows. Its adaptive navigation rail mirrors the
+PWA desktop shell: app pages stay at the top, the user's boards remain directly reachable below,
+and board creation lives beside that list. The rail collapses for narrow split-screen and Stage
+Manager windows. iPhone keeps the existing tab-bar layout.
 Boards fit readable columns to the window and cap the floating entry controls.
 Wide Chat windows show the conversation list beside the selected conversation;
 wide Upcoming calendar windows show the selected day's agenda beside the calendar.

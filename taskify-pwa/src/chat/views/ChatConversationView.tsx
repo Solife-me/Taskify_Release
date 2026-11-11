@@ -32,6 +32,7 @@ import {
 import { ChatTokenBubble } from "../ChatTokenBubble";
 import { useChatRuntime } from "../ChatRuntime";
 import { HermesModelPicker } from "../HermesModelPicker";
+import { HermesSessionPicker } from "../HermesSessionPicker";
 import { projectHermesBotUi } from "../hermesModelPickerState";
 
 export function ChatConversationView() {
@@ -99,6 +100,7 @@ export function ChatConversationView() {
     resolveNip17Relays,
     safePublish,
     sendBotUiCommand,
+    sendDirectTextMessage,
     sendMessengerFileAttachments,
     setActiveContactId,
     setActiveGroupId,
@@ -581,6 +583,16 @@ export function ChatConversationView() {
                                       peerPubkey={activeThread.peerPubkey}
                                       projection={hermesMenu}
                                       sendBotUiCommand={sendBotUiCommand}
+                                    />
+                                  );
+                                }
+                                const hermesSessions = hermesBotUi.sessionsByListingEventId.get(msg.eventId);
+                                if (hermesSessions) {
+                                  return (
+                                    <HermesSessionPicker
+                                      peerPubkey={activeThread.peerPubkey}
+                                      listing={hermesSessions}
+                                      sendDirectTextMessage={sendDirectTextMessage}
                                     />
                                   );
                                 }

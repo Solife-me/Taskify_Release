@@ -31,6 +31,7 @@ xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
   -derivedDataPath /tmp/taskify-macos-ui-tests \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testIsolatedHostOpensFixtureTaskFromInjectedDeepLink \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testWorkspaceHasNoWallet \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testSidebarSyncStatusOpensQueueInspector \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testCreateEditCompleteAndReopenTaskThroughDeepLink \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testStaleEditorCannotOverwriteNewerWindowEdit \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testAccountSwitchClosesEditorsAndResetsEveryWindow \
@@ -46,7 +47,7 @@ Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 47 presentation/runtime tests, the unsigned app build and the eleven isolated app-host smoke tests on
+the 47 presentation/runtime tests, the unsigned app build and the twelve isolated app-host smoke tests on
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
 a session-scoped temporary store/outbox and Keychain service, and no relay startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing
@@ -78,7 +79,8 @@ manifest in the same change; CI rejects a project that was not regenerated.
   accounts resets every window's open task/board/event editor, selected chat
   conversation and its drafts, and navigation state, since each window's own
   copy would otherwise keep pointing at data from the account just switched
-  away from.
+  away from. The sync status at the bottom of the sidebar opens a live queue
+  inspector with per-feature, per-board and per-relay delivery details.
 - Week/list/compound boards, board settings (including column rename/delete,
   with a required destination or explicit deletion for that column's tasks),
   archives, sharing/joining, task cards and a sortable native table. Task cards
@@ -144,10 +146,13 @@ manifest in the same change; CI rejects a project that was not regenerated.
   responded-to item still shows with its resulting status where it was
   actually shared — matches iOS's `ChatTimelineItem` merge exactly, including
   which messages get excluded from the plain-text history in favor of their
-  card). A Cashu token received as chat text renders as a card that copies it
-  for redeeming in another Cashu wallet (the Mac never redeems it); HTTP(S)
-  links render as link-preview cards. All detection reuses the same TaskifyCore
-  parsers the iOS app uses (`CashuTokenText` for tokens).
+  card). Markdown messages render headings, lists, quotes, links and code;
+  clicking inline code or a fenced code block copies just that code and shows
+  the same confirmation used by the iPhone app. A Cashu token received as chat
+  text renders as a card that copies it for redeeming in another Cashu wallet
+  (the Mac never redeems it); HTTP(S) links render as link-preview cards. All
+  detection reuses the same TaskifyCore parsers the iOS app uses
+  (`CashuTokenText` for tokens).
 - Basic Bible reading tracker plus Scripture Memory (add a passage, spaced-review
   list sorted by due/canonical/added date, remove) and Fasting Reminders
   (weekly-weekday or random-per-month pattern) — both reuse AppModel's existing

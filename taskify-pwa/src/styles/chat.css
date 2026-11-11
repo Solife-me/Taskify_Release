@@ -3293,6 +3293,97 @@ html.light .hermes-model-picker__error {
   background: rgba(191, 61, 61, 0.09);
 }
 
+.hermes-session-picker {
+  min-width: min(24rem, 76vw);
+}
+
+.hermes-session-picker__count {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.hermes-session-picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.38rem;
+  min-width: 0;
+}
+
+.hermes-session-picker__session {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.48rem 0.58rem;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 0.58rem;
+  background: rgba(255, 255, 255, 0.075);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.hermes-session-picker__session.is-current {
+  border-color: rgba(190, 170, 255, 0.5);
+  background: rgba(139, 112, 222, 0.17);
+}
+
+.hermes-session-picker__session:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.125);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+html.light .hermes-session-picker__session {
+  border-color: rgba(17, 24, 39, 0.1);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+html.light .hermes-session-picker__session.is-current {
+  border-color: rgba(100, 75, 180, 0.32);
+  background: rgba(100, 75, 180, 0.09);
+}
+
+html.light .hermes-session-picker__session:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(17, 24, 39, 0.18);
+}
+
+.hermes-session-picker__copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+
+.hermes-session-picker__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.hermes-session-picker__id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.62rem;
+}
+
+.hermes-session-picker__state {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+  white-space: nowrap;
+}
+
 .hermes-model-picker__inline-retry {
   margin-left: 0.4rem;
   border: 0;

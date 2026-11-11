@@ -6,8 +6,10 @@ import {
   parseHermesModelListing,
   parseHermesModelSwitchConfirmation,
   parseHermesProviderCatalog,
+  parseHermesSessionListing,
   type HermesModelListing,
   type HermesProviderCatalog,
+  type HermesSessionListing,
   type TaskifyBotUiAction,
 } from "taskify-core";
 import type { WalletDmMessage } from "./hooks/useDmState";
@@ -39,11 +41,13 @@ export type HermesMenuProjection = {
 export type HermesBotUiProjection = {
   hiddenEventIds: Set<string>;
   menusByListingEventId: Map<string, HermesMenuProjection>;
+  sessionsByListingEventId: Map<string, HermesSessionListing>;
 };
 
 const EMPTY_PROJECTION: HermesBotUiProjection = {
   hiddenEventIds: new Set(),
   menusByListingEventId: new Map(),
+  sessionsByListingEventId: new Map(),
 };
 
 function stableMenuId(message: WalletDmMessage): string | null {
@@ -56,7 +60,7 @@ function isPlainTextMessage(message: WalletDmMessage): boolean {
 }
 
 /**
- * Reconstruct every Hermes model menu from the encrypted message history.
+ * Reconstruct Hermes model menus and named-session listings from the encrypted message history.
  *
  * Taskify-generated commands carry an encrypted `taskify-bot-ui` tag. The next incoming bot
  * message is accepted as the response only when it parses as the exact shape requested by that
@@ -69,10 +73,16 @@ export function projectHermesBotUi(messages: WalletDmMessage[], enabled = true):
   const ordered = [...messages].sort((a, b) => a.createdAt - b.createdAt);
   const hiddenEventIds = new Set<string>();
   const menusByListingEventId = new Map<string, HermesMenuProjection>();
+  const sessionsByListingEventId = new Map<string, HermesSessionListing>();
   const menusByMenuId = new Map<string, HermesMenuProjection>();
 
   for (const message of ordered) {
     if (!message.isIncoming || message.groupId || !isPlainTextMessage(message)) continue;
+    const sessionListing = parseHermesSessionListing(message.content);
+    if (sessionListing) {
+      sessionsByListingEventId.set(message.eventId, sessionListing);
+      continue;
+    }
     const listing = parseHermesModelListing(message.content);
     if (!listing) continue;
     const menuId = stableMenuId(message);
@@ -90,7 +100,7 @@ export function projectHermesBotUi(messages: WalletDmMessage[], enabled = true):
     menusByMenuId.set(menuId, projection);
   }
 
-  if (!menusByMenuId.size) return { hiddenEventIds, menusByListingEventId };
+  if (!menusByMenuId.size) return { hiddenEventIds, menusByListingEventId, sessionsByListingEventId };
 
   let pending: { action: TaskifyBotUiAction; responseEventId: string } | null = null;
   for (const message of ordered) {
@@ -148,7 +158,7 @@ export function projectHermesBotUi(messages: WalletDmMessage[], enabled = true):
     pending = null;
   }
 
-  return { hiddenEventIds, menusByListingEventId };
+  return { hiddenEventIds, menusByListingEventId, sessionsByListingEventId };
 }
 
 export function buildHermesProviderCatalogPrompt(providerSlug: string): string {

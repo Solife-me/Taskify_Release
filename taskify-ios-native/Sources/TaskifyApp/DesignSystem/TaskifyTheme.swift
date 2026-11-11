@@ -571,6 +571,19 @@ extension EnvironmentValues {
     }
 }
 
+/// The iPad desktop-style shell owns board selection in its persistent rail. Views use this only
+/// to avoid repeating that control in their headers; the default preserves the iPhone layout.
+private struct TaskifyShowsBoardRailKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var taskifyShowsBoardRail: Bool {
+        get { self[TaskifyShowsBoardRailKey.self] }
+        set { self[TaskifyShowsBoardRailKey.self] = newValue }
+    }
+}
+
 extension View {
     /// A soft dark halo behind small or dim text that has no guaranteed backdrop.
     ///

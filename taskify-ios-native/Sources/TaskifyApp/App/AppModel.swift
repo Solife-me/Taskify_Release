@@ -5442,6 +5442,34 @@ final class AppModel {
             ))
             snapshot.directMessages = messages
         }
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_HERMES_SESSIONS"] == "1" {
+            botCommandsCache.save(
+                [
+                    BotCommand(name: "sessions", description: "List named sessions"),
+                    BotCommand(name: "resume", description: "Resume a named session"),
+                ],
+                for: peerPublicKey
+            )
+            botCommandsVersion += 1
+            var messages = snapshot.directMessages ?? []
+            messages.append(NostrDirectMessage(
+                rumorEventID: String(repeating: "c", count: 64),
+                wrapEventID: String(repeating: "d", count: 64),
+                peerPublicKey: peerPublicKey,
+                senderPublicKey: peerPublicKey,
+                content: """
+                📋 **Named Sessions**
+
+                1. **Give MCP access to Nextcloud server** (current) — `20261109_020143_82e5b835` — _nextcloud_
+                2. **Write comprehensive audit plan paper** — `20261109_013330_790ece03` — _audit_
+
+                Resume: `/resume <session id>` or `/resume <number>` from `/resume`.
+                """,
+                createdAt: fixtureStart + fixtureMessageCount + 2,
+                isIncoming: true
+            ))
+            snapshot.directMessages = messages
+        }
         snapshot.directMessageReadAt = [:]
         snapshot.directMessageArchivedAt = [:]
         snapshot.directMessageDeletedEventIDs = [:]

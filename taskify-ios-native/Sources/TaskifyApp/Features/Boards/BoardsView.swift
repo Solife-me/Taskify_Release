@@ -12,6 +12,7 @@ private struct BoardPrintRequest: Identifiable {
 
 struct BoardsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.taskifyShowsBoardRail) private var showsBoardRail
     @AppStorage("taskify.board.sort.mode") private var sortModeRaw = UpcomingSortMode.manual.rawValue
     @AppStorage("taskify.board.sort.direction") private var sortDirectionRaw = UpcomingSortDirection.ascending.rawValue
     @AppStorage(TaskPresentationSettings.completedTabKey)
@@ -463,38 +464,48 @@ struct BoardsView: View {
         TaskifyGlassControlGroup(spacing: 10) {
             HStack(spacing: 10) {
                 HStack(spacing: 0) {
-                    Menu {
-                        ForEach(model.visibleBoards) { board in
-                            Button {
-                                model.selectBoard(board.id)
-                            } label: {
-                                if board.id == model.selectedBoardID {
-                                    Label(board.name, systemImage: "checkmark")
-                                } else {
-                                    Text(board.name)
+                    if showsBoardRail {
+                        Text(model.selectedBoard?.name ?? "Boards")
+                            .scaledFont(size: 17, weight: .semibold)
+                            .lineLimit(1)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .padding(.leading, 16)
+                            .padding(.trailing, 11)
+                            .frame(height: 42)
+                    } else {
+                        Menu {
+                            ForEach(model.visibleBoards) { board in
+                                Button {
+                                    model.selectBoard(board.id)
+                                } label: {
+                                    if board.id == model.selectedBoardID {
+                                        Label(board.name, systemImage: "checkmark")
+                                    } else {
+                                        Text(board.name)
+                                    }
                                 }
                             }
-                        }
 
-                        Divider()
+                            Divider()
 
-                        Button {
-                            showingAddBoard = true
+                            Button {
+                                showingAddBoard = true
+                            } label: {
+                                Label("Add or join board", systemImage: "plus")
+                            }
                         } label: {
-                            Label("Add or join board", systemImage: "plus")
+                            HStack(spacing: 8) {
+                                Text(model.selectedBoard?.name ?? "Boards")
+                                    .scaledFont(size: 17, weight: .semibold)
+                                    .lineLimit(1)
+                                Image(systemName: "chevron.down")
+                                    .scaledFont(size: 11, weight: .bold)
+                            }
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                            .padding(.leading, 16)
+                            .padding(.trailing, 11)
+                            .frame(height: 42)
                         }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text(model.selectedBoard?.name ?? "Boards")
-                                .scaledFont(size: 17, weight: .semibold)
-                                .lineLimit(1)
-                            Image(systemName: "chevron.down")
-                                .scaledFont(size: 11, weight: .bold)
-                        }
-                        .foregroundStyle(TaskifyTheme.primaryText)
-                        .padding(.leading, 16)
-                        .padding(.trailing, 11)
-                        .frame(height: 42)
                     }
 
                     if model.selectedBoard?.kind != .bible {
