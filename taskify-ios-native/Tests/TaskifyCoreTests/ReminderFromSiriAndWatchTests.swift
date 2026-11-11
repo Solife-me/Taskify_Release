@@ -134,6 +134,47 @@ final class ReminderFromSiriAndWatchTests: XCTestCase {
         XCTAssertTrue(TaskifyTaskReminderNotification.notifications(for: deleted, accountID: account, after: fixedNow).isEmpty)
     }
 
+    func testSnoozedReminderIsDeviceLocalAndStable() throws {
+        let account = String(repeating: "b", count: 64)
+        let task = TaskItem(
+            id: "t1", boardID: "board", title: "Take out the trash",
+            dueDate: at(dayOffset: 1, hour: 13), dueDateEnabled: true, dueTimeEnabled: true,
+            reminders: [TaskReminder(rawValue: "0h")]
+        )
+
+        let notification = try XCTUnwrap(
+            TaskifySnoozedTaskNotification.notification(
+                for: task,
+                accountID: account,
+                after: fixedNow
+            )
+        )
+        XCTAssertEqual(notification.identifier, "taskify.snooze.\(account).t1")
+        XCTAssertEqual(notification.fireDate, fixedNow.addingTimeInterval(15 * 60))
+        XCTAssertEqual(notification.title, "Take out the trash")
+        XCTAssertEqual(notification.body, "Still pending")
+        XCTAssertEqual(notification.userInfo, [
+            TaskifyNotificationContract.accountIDKey: account,
+            TaskifyNotificationContract.taskIDKey: "t1",
+            TaskifyNotificationContract.boardIDKey: "board",
+        ])
+        XCTAssertEqual(
+            TaskifySnoozedTaskNotification.notification(
+                for: task,
+                accountID: account,
+                after: fixedNow.addingTimeInterval(30)
+            )?.identifier,
+            notification.identifier
+        )
+
+        var done = task
+        done.completed = true
+        XCTAssertNil(TaskifySnoozedTaskNotification.notification(for: done, accountID: account, after: fixedNow))
+        var deleted = task
+        deleted.deleted = true
+        XCTAssertNil(TaskifySnoozedTaskNotification.notification(for: deleted, accountID: account, after: fixedNow))
+    }
+
     // MARK: - Watch editor
 
     private func watchTask(payload: String?, dueTimeEnabled: Bool = true) -> TaskifyWatchTask {

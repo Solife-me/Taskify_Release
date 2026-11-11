@@ -1882,6 +1882,35 @@ final class AppModel {
         await refreshNotificationsImmediately()
     }
 
+    /// Schedules a temporary local follow-up from the notification action. Unlike completion, a
+    /// snooze does not edit, save, or publish the task; it belongs only to the device where the
+    /// notification was handled.
+    func snoozeTaskFromNotification(_ taskID: String) async {
+        let loadDeadline = Date().addingTimeInterval(15)
+        while isLoading, Date() < loadDeadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard !Task.isCancelled,
+              !isLoading,
+              isAccountActive,
+              !identityPublicKey.isEmpty,
+              let task = task(withID: taskID),
+              !task.completed,
+              !task.isDeleted else { return }
+
+        let scheduled = await notificationCoordinator.snooze(
+            task: task,
+            accountID: identityPublicKey
+        )
+        guard scheduled else { return }
+        guard let current = self.task(withID: taskID),
+              !current.completed,
+              !current.isDeleted else {
+            await refreshNotificationsImmediately()
+            return
+        }
+    }
+
     /// Bulk counterpart to `deleteTask`. Deletes through one local copy and refreshes
     /// notifications once instead of once per task.
     func deleteTasks<S: Sequence>(_ taskIDs: S) where S.Element == String {

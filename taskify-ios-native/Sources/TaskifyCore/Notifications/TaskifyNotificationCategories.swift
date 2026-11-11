@@ -18,9 +18,14 @@ public enum TaskifyNotificationCategories {
             title: "Mark Complete",
             options: []
         )
+        let snooze = UNNotificationAction(
+            identifier: TaskifyNotificationContract.snoozeTaskActionIdentifier,
+            title: "Remind in 15 min",
+            options: []
+        )
         return UNNotificationCategory(
             identifier: TaskifyNotificationContract.taskCategoryIdentifier,
-            actions: [complete],
+            actions: [complete, snooze],
             intentIdentifiers: [],
             options: []
         )

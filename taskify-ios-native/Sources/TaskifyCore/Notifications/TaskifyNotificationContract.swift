@@ -7,6 +7,7 @@ import Foundation
 public enum TaskifyNotificationContract {
     public static let taskCategoryIdentifier = "me.solife.taskify.notification.task"
     public static let completeTaskActionIdentifier = "me.solife.taskify.notification.complete-task"
+    public static let snoozeTaskActionIdentifier = "me.solife.taskify.notification.snooze-task"
     public static let accountIDKey = "taskifyAccountID"
     public static let taskIDKey = "taskID"
     public static let boardIDKey = "boardID"
@@ -44,12 +45,22 @@ public enum TaskifyNotificationContract {
 
     public enum Action: Equatable, Sendable {
         case completeTask(accountID: String, taskID: String)
+        case snoozeTask(accountID: String, taskID: String)
         case reply(accountID: String, to: ReplyTarget, text: String)
 
         public var accountID: String {
             switch self {
-            case .completeTask(let accountID, _), .reply(let accountID, _, _):
+            case .completeTask(let accountID, _),
+                 .snoozeTask(let accountID, _),
+                 .reply(let accountID, _, _):
                 accountID
+            }
+        }
+
+        public var isTaskAction: Bool {
+            switch self {
+            case .completeTask, .snoozeTask: true
+            case .reply: false
             }
         }
     }
@@ -70,6 +81,10 @@ public enum TaskifyNotificationContract {
             guard let taskID = userInfo[taskIDKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !taskID.isEmpty else { return nil }
             return .completeTask(accountID: accountID, taskID: taskID)
+        case snoozeTaskActionIdentifier:
+            guard let taskID = userInfo[taskIDKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !taskID.isEmpty else { return nil }
+            return .snoozeTask(accountID: accountID, taskID: taskID)
         case replyDirectMessageActionIdentifier:
             guard let conversationID = userInfo[conversationIDKey]?
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
@@ -147,6 +162,41 @@ public struct TaskifyTaskReminderNotification: Equatable, Sendable {
                 )
             }
             .sorted { $0.fireDate < $1.fireDate }
+    }
+}
+
+/// One temporary, device-local follow-up for a task reminder the user snoozed.
+///
+/// A snooze deliberately does not change the task's due date or stored reminder offsets. Its
+/// account-scoped stable identifier lets another snooze replace the first instead of accumulating
+/// duplicate notifications.
+public struct TaskifySnoozedTaskNotification: Equatable, Sendable {
+    public static let identifierPrefix = "taskify.snooze."
+    public static let delay: TimeInterval = 15 * 60
+
+    public let identifier: String
+    public let title: String
+    public let body: String
+    public let userInfo: [String: String]
+    public let fireDate: Date
+
+    public static func notification(
+        for task: TaskItem,
+        accountID: String,
+        after now: Date
+    ) -> TaskifySnoozedTaskNotification? {
+        guard !task.isDeleted, !task.completed else { return nil }
+        return TaskifySnoozedTaskNotification(
+            identifier: identifierPrefix + accountID + "." + task.id,
+            title: task.title,
+            body: "Still pending",
+            userInfo: [
+                TaskifyNotificationContract.accountIDKey: accountID,
+                TaskifyNotificationContract.taskIDKey: task.id,
+                TaskifyNotificationContract.boardIDKey: task.boardID,
+            ],
+            fireDate: now.addingTimeInterval(delay)
+        )
     }
 }
 

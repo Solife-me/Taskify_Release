@@ -322,6 +322,7 @@ is public and contains both architectures before changing the StartOS image pin.
 | `src/nostr/useNostrChatStateSync.test.tsx`, `src/domains/inbox/inboxResponseSync.test.ts` | PWA chat state sync | Coalesced publishing, echo suppression, remote read markers and shared-item and calendar-invite responses |
 | `src/nostr/boardVerifyUnseen.test.tsx` | PWA board sync | Re-verification of tasks missing from a board's initial sync is applied, and ignored after teardown |
 | `taskify-ios-native/Tests/TaskifyCoreTests/ScriptureMemorySyncTests.swift`, `src/domains/scripture/scriptureUtils.test.ts` | Scripture memory | Review applied exactly once across timestamp precisions, PWA key spelling, whole-chapter passages, shared review-task ids |
+| `taskify-ios-native/Tests/TaskifyCoreTests/TaskifyNotificationContractTests.swift`, `TaskifyNotificationCategoriesTests.swift`, `ReminderFromSiriAndWatchTests.swift` | Native task notification actions | Stable account/task parsing for Complete and Snooze, exactly two background actions in the task category, and a deterministic device-local 15-minute follow-up that is not created for completed or deleted tasks |
 | `tests/taskMovePersistence.test.ts` | Task drag persistence | Monotonic relay clocks and source cleanup for cross-board moves |
 | `tests/recurrenceCutoffs.test.ts` | Task recurrence | Durable delete-future cutoffs, legacy instances, and recoverable bounties |
 | `tests/calendarRecurrenceCutoffs.test.ts` | Taskify event recurrence | Durable delete-future cutoffs and stale-occurrence rejection |
