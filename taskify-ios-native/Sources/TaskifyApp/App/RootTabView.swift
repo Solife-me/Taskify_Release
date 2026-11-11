@@ -44,6 +44,8 @@ struct RootTabView: View {
     @State private var pendingQuickAdd = false
     @State private var pendingQuickAddColumnID: String?
     @State private var pendingWatchSetupRequestID: UUID?
+    /// The desktop PWA keeps board creation in its rail. The iPad rail mirrors that placement.
+    @State private var showingAddBoardFromSidebar = false
     /// Pushed in by `ChatUnreadCountReader`, so this view re-renders only when the number changes.
     @State private var chatUnreadCount = 0
     /// A task opened from Spotlight, shown in its editor over its board.
@@ -188,7 +190,9 @@ struct RootTabView: View {
             // few hundred milliseconds later. The spinner covers that pass, so the user never
             // sees it; they only feel the main thread it blocks. Wait for the real data.
             if !model.isLoading {
-                if #available(iOS 26.0, *) {
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    ipadNavigation
+                } else if #available(iOS 26.0, *) {
                     nativeTabView
                 } else if horizontalSizeClass == .regular {
                     tabletNavigation
@@ -302,6 +306,109 @@ struct RootTabView: View {
             legacyContent
         }
         .navigationSplitViewStyle(.balanced)
+    }
+
+    /// Mirrors the desktop PWA's rail: app destinations stay at the top and the user's boards
+    /// remain directly reachable below them. NavigationSplitView still collapses the rail for a
+    /// narrow Stage Manager or split-screen window, while the phone continues to use its existing
+    /// tab layout.
+    private var ipadNavigation: some View {
+        NavigationSplitView {
+            List {
+                Section("Pages") {
+                    ForEach(AppTab.visible(walletEnabled: walletEnabled)) { tab in
+                        Button {
+                            selectedTab = tab
+                        } label: {
+                            HStack(spacing: 10) {
+                                Label(tab.title, systemImage: tab.icon)
+                                Spacer(minLength: 8)
+                                if tab == .chat, chatUnreadCount > 0 {
+                                    Text(chatUnreadCount, format: .number)
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 2)
+                                        .background(.thinMaterial, in: Capsule())
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(selectedTab == tab ? Color.accentColor : .primary)
+                        .listRowBackground(
+                            selectedTab == tab
+                                ? Color.accentColor.opacity(0.14)
+                                : Color.clear
+                        )
+                        .accessibilityIdentifier("ipad-page-\(tab.rawValue)")
+                    }
+                }
+
+                Section {
+                    ForEach(model.visibleBoards) { board in
+                        Button {
+                            model.selectBoard(board.id)
+                            selectedTab = .boards
+                        } label: {
+                            Label(board.name, systemImage: ipadBoardIcon(for: board.kind))
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(
+                            selectedTab == .boards && board.id == model.selectedBoardID
+                                ? Color.accentColor
+                                : .primary
+                        )
+                        .listRowBackground(
+                            selectedTab == .boards && board.id == model.selectedBoardID
+                                ? Color.accentColor.opacity(0.14)
+                                : Color.clear
+                        )
+                        .accessibilityIdentifier("ipad-board-\(board.id)")
+                    }
+                } header: {
+                    HStack {
+                        Text("Boards")
+                        Spacer()
+                        Button {
+                            showingAddBoardFromSidebar = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .frame(width: 28, height: 28)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Add or join board")
+                        .accessibilityIdentifier("ipad-add-board")
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(.ultraThinMaterial)
+            .navigationTitle("Taskify")
+            .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 300)
+        } detail: {
+            legacyContent
+                .environment(\.taskifyShowsBoardRail, true)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .sheet(isPresented: $showingAddBoardFromSidebar) {
+            BoardAddSheet()
+                .environment(model)
+        }
+    }
+
+    private func ipadBoardIcon(for kind: BoardKind) -> String {
+        switch kind {
+        case .week: "calendar"
+        case .list: "list.bullet.rectangle"
+        case .compound: "square.stack.3d.up"
+        case .bible: "book.closed"
+        }
     }
 
     @ViewBuilder
