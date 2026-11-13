@@ -1435,9 +1435,35 @@ public actor TaskSyncEngine {
                 ))
             }
         }
+        await repairQueuedProofOfWorkBacklog()
         await pruneStaleReplicaBacklog()
         await completeUnreachableRelayTargets()
         return await outbox.pendingRelayURLs().subtracting(excludedRelayURLs)
+    }
+
+    /// Repairs low-work entries even when an older attempt put them behind a rejection backoff.
+    /// The ordinary per-relay scheduler intentionally omits held entries, so without this pass a
+    /// board key that became available later could not repair the event until hours or days later.
+    private func repairQueuedProofOfWorkBacklog() async {
+        let entries = await outbox.allEntries()
+        let relayURLs = Set(entries.flatMap(\.pendingRelayURLs)).subtracting(excludedRelayURLs)
+        var requirements: [String: Int] = [:]
+        for relayURL in relayURLs {
+            requirements[relayURL] = await proofOfWorkRequirement(relayURL)
+        }
+
+        for entry in entries where entry.dependsOnEventID == nil {
+            let required = entry.pendingRelayURLs.reduce(0) { current, relayURL in
+                max(current, requirements[relayURL] ?? 0)
+            }
+            guard required > TaskifyRelayProofOfWork.leadingZeroBits(entry.event.id),
+                  signingKey(for: entry) != nil else { continue }
+            if await replaceQueuedEventForProofOfWork(eventID: entry.event.id, required: required) {
+                for relayURL in entry.pendingRelayURLs where (requirements[relayURL] ?? 0) > 0 {
+                    relayMessages[relayURL] = nil
+                }
+            }
+        }
     }
 
     private func scheduleOutboxFlush() {
@@ -2195,9 +2221,13 @@ public actor TaskSyncEngine {
     /// board's derived signing key.
     private func signingKey(for entry: NostrOutboxEntry) -> Data? {
         if let identity, identity.publicKeyHex == entry.event.publicKey { return identity.privateKey }
-        guard let board = boards.first(where: { $0.id == entry.boardLocalID }),
-              (try? BoardCrypto.signingPublicKey(for: board.effectiveNostrBoardID).hexString) == entry.event.publicKey
-        else { return nil }
+        // A restored account can preserve the board's Nostr ID while assigning it a new local ID.
+        // Prefer the recorded local board, then recover by the event's signing author so durable
+        // entries created before that remapping can still be re-signed.
+        let candidates = boards.filter { $0.id == entry.boardLocalID } + boards.filter { $0.id != entry.boardLocalID }
+        guard let board = candidates.first(where: {
+            (try? BoardCrypto.signingPublicKey(for: $0.effectiveNostrBoardID).hexString) == entry.event.publicKey
+        }) else { return nil }
         return BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID)
     }
 

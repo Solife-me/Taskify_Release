@@ -4,6 +4,9 @@
  * be scanned by another without depending on display order or client-local state.
  */
 export const BOARD_PRINT_CONTRACT_VERSION = "v3";
+/** The PWA's detailed sheet: the same page markers and job code, with rows tall enough for
+ * subtasks and photo thumbnails. Clients that only know v3 reject it rather than mis-scan it. */
+export const BOARD_PRINT_DETAIL_LAYOUT_VERSION = "v4";
 export const BOARD_PRINT_MAX_PAGES = (1 << 6) - 1;
 export const BOARD_PRINT_PAPER_MM = {
     letter: { widthMm: 215.9, heightMm: 279.4 },
@@ -53,5 +56,8 @@ export function boardPrintPagePattern(pageIndex) {
     return Array.from({ length: BOARD_PRINT_LAYOUT_MM.pageIdBits }, (_, bit) => (value >> bit) & 1);
 }
 export function isSupportedBoardPrintVersion(version) {
-    return version === BOARD_PRINT_CONTRACT_VERSION || version === "v1" || version === "v2";
+    return (version === BOARD_PRINT_CONTRACT_VERSION ||
+        version === BOARD_PRINT_DETAIL_LAYOUT_VERSION ||
+        version === "v1" ||
+        version === "v2");
 }

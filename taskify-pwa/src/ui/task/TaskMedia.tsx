@@ -8,7 +8,7 @@ import { extractFirstUrl, isUrlLike } from "../../lib/urlPreview";
 import { autolink, stripUrlsFromText, fallbackTitleFromUrl, useTaskPreview } from "./TaskTitle";
 import { DocumentThumbnail } from "./DocumentThumbnail";
 import { notePreviewText } from "../../domains/tasks/noteMarkdown";
-import { decryptAttachment } from "../../lib/attachmentCrypto";
+import { decryptAttachment, inferAttachmentMimeFromUrl } from "../../lib/attachmentCrypto";
 import type { DownloadProgress } from "../../lib/binary";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
@@ -68,16 +68,6 @@ export function UrlPreviewCard({ preview }: { preview: UrlPreviewData; indent?: 
 
 const decryptedImageCache = new Map<string, string>();
 
-function inferMimeFromUrl(url: string): string {
-  const clean = url.split("?")[0].toLowerCase();
-  if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
-  if (clean.endsWith(".png")) return "image/png";
-  if (clean.endsWith(".gif")) return "image/gif";
-  if (clean.endsWith(".webp")) return "image/webp";
-  if (clean.endsWith(".heic")) return "image/heic";
-  return "application/octet-stream";
-}
-
 function useDecryptedSrc(src: string, boardId: string | undefined) {
   const [decryptedSrc, setDecryptedSrc] = useState<string | null>(() => {
     if (src.startsWith("data:") || !boardId) return src;
@@ -109,7 +99,7 @@ function useDecryptedSrc(src: string, boardId: string | undefined) {
     decryptAttachment({
       boardId,
       url: src,
-      mimeType: inferMimeFromUrl(src),
+      mimeType: inferAttachmentMimeFromUrl(src),
       onProgress: (next) => { if (!cancelled) setProgress(next); },
     })
       .then((next) => {

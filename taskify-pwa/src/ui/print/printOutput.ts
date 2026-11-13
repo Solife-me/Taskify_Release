@@ -233,7 +233,7 @@ export function boardPrintCss(pageWidthMm: number, pageHeightMm: number): string
   .board-print-row {
     position: absolute;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 2.4mm;
   }
   .board-print-circle {
@@ -243,6 +243,16 @@ export function boardPrintCss(pageWidthMm: number, pageHeightMm: number): string
     background: #ffffff;
     flex-shrink: 0;
   }
+  .board-print-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .board-print-title-band {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
   .board-print-title {
     font-size: 8pt;
     font-weight: 500;
@@ -251,6 +261,66 @@ export function boardPrintCss(pageWidthMm: number, pageHeightMm: number): string
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .board-print-detail {
+    display: flex;
+    align-items: center;
+    height: 3.4mm;
+    font-size: 5.8pt;
+    font-weight: 500;
+    color: rgba(16, 24, 40, 0.62);
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .board-print-subtask {
+    display: flex;
+    align-items: center;
+    gap: 1mm;
+    height: 3.6mm;
+    min-width: 0;
+  }
+  .board-print-subtask__box {
+    box-sizing: border-box;
+    width: 1.8mm;
+    height: 1.8mm;
+    flex: 0 0 auto;
+    border: 0.2mm solid #1f2937;
+    border-radius: 0.2mm;
+    background: #ffffff;
+  }
+  .board-print-subtask__box[data-completed="true"] {
+    background: #101828;
+  }
+  .board-print-subtask__title {
+    font-size: 5.8pt;
+    line-height: 1;
+    color: #101828;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .board-print-subtask--more .board-print-subtask__title {
+    color: rgba(16, 24, 40, 0.55);
+  }
+  .board-print-photos {
+    display: flex;
+    align-items: center;
+    gap: 1.5mm;
+    height: 15mm;
+    padding-top: 1mm;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .board-print-photo {
+    width: 13mm;
+    height: 13mm;
+    flex: 0 0 auto;
+    object-fit: cover;
+    border: 0.2mm solid rgba(16, 24, 40, 0.25);
+    border-radius: 1mm;
+    background: #ffffff;
   }
   .board-print-label {
     font-size: 7pt;

@@ -102,6 +102,12 @@ export type NostrPrintJobManifest = {
         title: string;
         section?: string;
         filled?: boolean;
+        detail?: string;
+        subtasks?: Array<{
+            title: string;
+            completed?: boolean;
+        }>;
+        photoCount?: number;
     }>;
 };
 /** Newest manifest wins per stable board/tracker owner; cap history to keep the event bounded. */

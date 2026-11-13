@@ -686,7 +686,7 @@ private struct TaskLinkPreviewCard: View {
     }
 }
 
-private actor TaskAttachmentThumbnailLoader {
+actor TaskAttachmentThumbnailLoader {
     static let shared = TaskAttachmentThumbnailLoader()
 
     private let cache: NSCache<NSString, UIImage> = {
@@ -733,7 +733,7 @@ private actor TaskAttachmentThumbnailLoader {
     }
 }
 
-private enum TaskAttachmentDataLoader {
+enum TaskAttachmentDataLoader {
     static func load(
         source: String,
         encrypted: Bool,

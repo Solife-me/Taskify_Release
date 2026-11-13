@@ -21,12 +21,27 @@ export function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
         if (!taskId || !title) return null;
         const label = typeof task.label === "string" ? task.label : undefined;
         const listId = typeof task.listId === "string" ? task.listId : undefined;
+        const detail = typeof task.detail === "string" ? task.detail.trim() : "";
+        const subtasks = Array.isArray(task.subtasks)
+          ? task.subtasks
+            .map((subtask: any) => ({
+              title: typeof subtask?.title === "string" ? subtask.title.trim() : "",
+              ...(subtask?.completed === true ? { completed: true } : {}),
+            }))
+            .filter((subtask: { title: string }) => !!subtask.title)
+          : [];
+        const photoCount = typeof task.photoCount === "number" && task.photoCount > 0
+          ? Math.min(3, Math.floor(task.photoCount))
+          : 0;
         return {
           id: taskId,
           title,
           ...(label ? { label } : {}),
           ...(listId ? { listId } : {}),
           ...(task.completed === true ? { completed: true } : {}),
+          ...(detail ? { detail } : {}),
+          ...(subtasks.length ? { subtasks } : {}),
+          ...(photoCount ? { photoCount } : {}),
         };
       })
       .filter(Boolean) as BoardPrintTask[]
@@ -105,6 +120,11 @@ export function boardPrintJobManifest(job: BoardPrintJob): NostrPrintJobManifest
       title: task.title,
       ...(task.label ? { section: task.label } : {}),
       ...(task.completed ? { filled: true } : {}),
+      ...(task.detail ? { detail: task.detail } : {}),
+      ...(task.subtasks?.length ? { subtasks: task.subtasks } : {}),
+      ...(task.photos?.length || task.photoCount
+        ? { photoCount: Math.min(3, task.photos?.length || task.photoCount || 0) }
+        : {}),
     })),
   };
 }
@@ -139,6 +159,9 @@ export function mergeSyncedBoardPrintJobs(
         title: item.title,
         ...(item.section ? { label: item.section } : {}),
         ...(item.filled ? { completed: true } : {}),
+        ...(item.detail ? { detail: item.detail } : {}),
+        ...(item.subtasks?.length ? { subtasks: item.subtasks } : {}),
+        ...(item.photoCount ? { photoCount: Math.min(3, item.photoCount) } : {}),
       })),
     };
   }

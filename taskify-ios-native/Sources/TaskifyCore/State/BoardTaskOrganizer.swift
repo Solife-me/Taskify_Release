@@ -21,6 +21,7 @@ public enum BoardTaskOrganizer {
         boards: [Board],
         includedBoardIDs: Set<String>? = nil,
         includeCompleted: Bool,
+        includeUpcoming: Bool = false,
         weekStartsOn: WeekdayColumn,
         now: Date = Date(),
         calendar: Calendar = .current
@@ -42,6 +43,7 @@ public enum BoardTaskOrganizer {
                       task,
                       boardKind: boardKinds[task.boardID],
                       includeCompleted: includeCompleted,
+                      includeUpcoming: includeUpcoming,
                       weekStartsOn: weekStartsOn,
                       now: now,
                       calendar: calendar
@@ -62,6 +64,7 @@ public enum BoardTaskOrganizer {
         columnID: String,
         boardKind: BoardKind?,
         includeCompleted: Bool,
+        includeUpcoming: Bool = false,
         weekStartsOn: WeekdayColumn,
         now: Date = Date(),
         calendar: Calendar = .current
@@ -74,6 +77,7 @@ public enum BoardTaskOrganizer {
                         $0,
                         boardKind: boardKind,
                         includeCompleted: includeCompleted,
+                        includeUpcoming: includeUpcoming,
                         weekStartsOn: weekStartsOn,
                         now: now,
                         calendar: calendar
@@ -86,13 +90,17 @@ public enum BoardTaskOrganizer {
         _ task: TaskItem,
         boardKind: BoardKind?,
         includeCompleted: Bool,
+        includeUpcoming: Bool,
         weekStartsOn: WeekdayColumn,
         now: Date,
         calendar: Calendar
     ) -> Bool {
         guard !task.isDeleted, includeCompleted || !task.completed else { return false }
-        if let hiddenUntilDate = task.hiddenUntilDate, hiddenUntilDate > now { return false }
-        guard boardKind == .week,
+        if !includeUpcoming,
+           let hiddenUntilDate = task.hiddenUntilDate,
+           hiddenUntilDate > now { return false }
+        guard !includeUpcoming,
+              boardKind == .week,
               task.dueDateEnabled,
               let dueDate = task.dueDate else { return true }
 

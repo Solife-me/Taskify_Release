@@ -160,10 +160,11 @@ struct BoardsView: View {
                 BoardPrintChooserSheet(
                     title: board.name,
                     choices: makeBoardPrintChoices(for: board)
-                ) { selectedListIDs in
+                ) { selectedListIDs, options in
                     pendingBoardPrintJob = makeBoardPrintJob(
                         for: board,
-                        selectedListIDs: selectedListIDs
+                        selectedListIDs: selectedListIDs,
+                        options: options
                     )
                 }
             }
@@ -628,7 +629,7 @@ struct BoardsView: View {
         guard let board = model.selectedBoard, board.kind != .bible else { return }
         let ownerID = "board:\(board.effectiveNostrBoardID)"
         let launchJob = PhysicalChecklistJobStore.load(ownerID: ownerID)
-            ?? makeBoardPrintJob(for: board, selectedListIDs: nil)
+            ?? makeBoardPrintJob(for: board, selectedListIDs: nil, options: .default)
         guard let launchJob else {
             model.errorMessage = "There is no printed checklist to scan yet. Add a task, then print a checklist first."
             return
@@ -637,38 +638,72 @@ struct BoardsView: View {
         physicalChecklistJob = launchJob
     }
 
-    private func makeBoardPrintChoices(for board: Board) -> [BoardPrintListChoice] {
+    /// Every task and event on the board, with the flags the chooser uses to count what its
+    /// options would print. Details, subtasks and photo sources are added when the job is built.
+    private func makeBoardPrintChoices(for board: Board, options: PhysicalChecklistPrintOptions? = nil) -> [BoardPrintListChoice] {
         let boards = board.kind == .compound ? model.compoundChildBoards(for: board.id) : [board]
+        let now = Date()
         return boards.flatMap { scopedBoard in
             scopedBoard.columns.sorted { $0.order < $1.order }.map { column in
                 let section = board.kind == .compound
                     ? "\(scopedBoard.name) — \(column.name)"
                     : column.name
-                var items = model.tasks(
+                var items: [PhysicalChecklistItem] = []
+                for task in model.tasks(
                     boardID: scopedBoard.id,
                     columnID: column.id,
-                    includeCompleted: false
-                ).map { task in
-                    PhysicalChecklistItem(
+                    includeCompleted: true,
+                    includeUpcoming: true
+                ) {
+                    let upcoming = (task.hiddenUntilDate ?? .distantPast) > now
+                    if let options {
+                        guard (!task.completed || options.includeCompleted),
+                              (!upcoming || options.includeUpcoming) else { continue }
+                    }
+                    var item = PhysicalChecklistItem(
                         id: task.id,
                         title: task.title,
                         section: section,
-                        filled: false
+                        filled: task.completed,
+                        detail: options.flatMap { printDetail(for: task, options: $0) },
+                        subtasks: options?.includeSubtasks == true
+                            ? (task.subtasks ?? []).map {
+                                PhysicalChecklistSubtask(title: $0.title, completed: $0.completed)
+                            }
+                            : [],
+                        photoCount: options?.includePhotos == true
+                            ? min(task.images?.count ?? 0, PhysicalChecklistLayout.photoMax)
+                            : 0
                     )
+                    item.upcoming = upcoming
+                    if options?.includePhotos == true {
+                        item.photoSources = Array((task.images ?? []).prefix(PhysicalChecklistLayout.photoMax))
+                        item.photoBoardID = task.boardID
+                    }
+                    items.append(item)
                 }
-                // Events have no completion state, so every uncompleted-scoped event prints.
+                // Events have no completion state, so every visible event prints.
                 let weekday = WeekdayColumn(rawValue: column.id)
                 items += model.boardEvents(
                     boardID: scopedBoard.id,
                     columnID: column.id,
                     weekday: weekday
                 ).map { event in
-                    PhysicalChecklistItem(
+                    var item = PhysicalChecklistItem(
                         id: event.id,
                         title: event.title,
                         section: section,
-                        filled: false
+                        filled: false,
+                        detail: options.flatMap { printDetail(for: event, options: $0) }
                     )
+                    if options?.includePhotos == true,
+                       let image = event.imageURL,
+                       !image.isEmpty {
+                        item.photoCount = 1
+                        item.photoSources = [image]
+                        item.photoBoardID = scopedBoard.id
+                    }
+                    return item
                 }
                 return BoardPrintListChoice(
                     id: "\(scopedBoard.id):\(column.id)",
@@ -679,26 +714,85 @@ struct BoardsView: View {
         }
     }
 
-    /// Only uncompleted tasks and events are printable; completed tasks never make it onto a
-    /// paper checklist (events have no completion state, so all of them print).
     private func makeBoardPrintJob(
         for board: Board,
-        selectedListIDs: Set<String>?
+        selectedListIDs: Set<String>?,
+        options: PhysicalChecklistPrintOptions
     ) -> PhysicalChecklistJob? {
-        let choices = makeBoardPrintChoices(for: board)
+        let choices = makeBoardPrintChoices(for: board, options: options)
         let scopedChoices = selectedListIDs.map { selected in
             choices.filter { selected.contains($0.id) }
         } ?? choices
-        let items = scopedChoices
-            .flatMap(\.items)
-            .filter { !$0.filled }
+        let items = scopedChoices.flatMap(\.items)
 
         guard !items.isEmpty else { return nil }
         return PhysicalChecklistJob(
             ownerID: "board:\(board.effectiveNostrBoardID)",
             title: board.name,
-            items: items
+            items: items,
+            layoutVersion: options.layoutVersion
         )
+    }
+
+    private func printDetail(for task: TaskItem, options: PhysicalChecklistPrintOptions) -> String? {
+        var parts: [String] = []
+        if options.includeDue, task.dueDateEnabled, let due = task.dueDate {
+            parts.append(formattedPrintDate(due, includeTime: task.dueTimeEnabled, timeZoneID: task.dueTimeZone))
+        }
+        if options.includeNotes {
+            let note = singleLinePrintText(task.note)
+            if !note.isEmpty { parts.append(note) }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func printDetail(for event: TaskifyEvent, options: PhysicalChecklistPrintOptions) -> String? {
+        var parts: [String] = []
+        if options.includeDue {
+            switch event.schedule {
+            case .date:
+                if let key = event.startDateValue, !key.isEmpty {
+                    parts.append(formattedPrintDateKey(key))
+                }
+            case .time:
+                if let iso = event.startISO,
+                   let date = ISO8601DateFormatter().date(from: iso) {
+                    parts.append(formattedPrintDate(date, includeTime: true, timeZoneID: event.startTimeZoneID))
+                }
+            }
+        }
+        if options.includeNotes {
+            let note = singleLinePrintText(event.details ?? event.summary ?? "")
+            if !note.isEmpty { parts.append(note) }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func singleLinePrintText(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func formattedPrintDate(_ date: Date, includeTime: Bool, timeZoneID: String?) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = includeTime ? .short : .none
+        if let timeZoneID, let zone = TimeZone(identifier: timeZoneID) {
+            formatter.timeZone = zone
+        }
+        return formatter.string(from: date)
+    }
+
+    private func formattedPrintDateKey(_ dateKey: String) -> String {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: dateKey) else { return dateKey }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
     }
 
     private func printSection(for task: TaskItem, selectedBoard: Board) -> String {

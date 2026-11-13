@@ -5,6 +5,9 @@ import Foundation
 /// board cannot silently complete unrelated tasks.
 public enum BoardPrintContract {
     public static let version = "v3"
+    /// Detailed sheets (subtasks and photo thumbnails) use the same markers and job code with
+    /// taller, variable-height rows. Mirrors `BOARD_PRINT_DETAIL_LAYOUT_VERSION` in taskify-core.
+    public static let detailVersion = "v4"
     public static let maxPages = (1 << 6) - 1
     public static let baseMarginMM = 10.0
     public static let a6BindingMarginMM = 4.0
@@ -47,6 +50,6 @@ public enum BoardPrintContract {
     }
 
     public static func isSupportedVersion(_ value: String) -> Bool {
-        value == version || value == "v1" || value == "v2"
+        value == version || value == detailVersion || value == "v1" || value == "v2"
     }
 }

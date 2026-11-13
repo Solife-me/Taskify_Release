@@ -121,6 +121,51 @@ final class OutboxDeliveryRecoveryTests: XCTestCase {
         XCTAssertTrue(published.contains(mined.id), "The mined change is sent in its place")
     }
 
+    func testAHeldBoardEventRecoversAfterItsBoardKeyBecomesAvailable() async throws {
+        let outbox = makeOutbox()
+        let relay = RecordingRelayTransport()
+        let engine = makeEngine(relay: relay, outbox: outbox, proofOfWork: 12)
+        let board = Board(
+            id: "current-local-id",
+            name: "Recovered board",
+            nostrBoardID: "stable-nostr-board-id",
+            relayURLs: [keptRelay]
+        )
+        let unmined = try NostrEvent.signed(
+            privateKey: BoardCrypto.signingPrivateKey(for: board.effectiveNostrBoardID),
+            createdAt: 1_000,
+            kind: TaskEventCodec.taskEventKind,
+            tags: [["d", "queued-task"]],
+            content: "queued"
+        )
+        try XCTSkipIf(TaskifyRelayProofOfWork.leadingZeroBits(unmined.id) >= 12, "Unmined id already meets the target")
+        try await outbox.enqueue(NostrOutboxEntry(
+            event: unmined,
+            relayURLs: [keptRelay],
+            boardLocalID: "stale-local-id",
+            taskID: "queued-task"
+        ))
+        _ = try await outbox.recordRejection(eventID: unmined.id, relayURL: keptRelay)
+        _ = try await outbox.recordRejection(eventID: unmined.id, relayURL: keptRelay)
+
+        await engine.configure(boards: [board], auxiliaryRelayURLs: [], inboxRelayURLs: [keptRelay])
+        for _ in 0..<200 where await outbox.entry(eventID: unmined.id) != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let recoveredEntries = await outbox.allEntries()
+        let queued = try XCTUnwrap(recoveredEntries.first)
+        XCTAssertNotEqual(queued.event.id, unmined.id)
+        XCTAssertGreaterThanOrEqual(TaskifyRelayProofOfWork.leadingZeroBits(queued.event.id), 12)
+        XCTAssertEqual(queued.event.publicKey, unmined.publicKey)
+        XCTAssertNil(queued.relayRejections, "The replacement is not held by the old event's backoff")
+        for _ in 0..<100 where await !relay.publishedEventIDs.contains(queued.event.id) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let published = await relay.publishedEventIDs
+        XCTAssertTrue(published.contains(queued.event.id))
+    }
+
     /// nos.lol and other strfry write policies can enforce proof of work without advertising it
     /// in NIP-11. The refusal names the floor; ignoring it left every change queued there.
     func testAProofOfWorkRefusalNamingAnUnadvertisedFloorIsMinedAndRemembered() async throws {

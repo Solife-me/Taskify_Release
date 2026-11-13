@@ -1,6 +1,12 @@
 import { TOTAL_BIBLE_CHAPTERS, type BibleTrackerState } from "../domains/scripture/bibleTrackerModel";
 import { buildBiblePrintLayout } from "../components/BibleTrackerPrintLayout";
-import { buildBoardPrintLayout, type BoardPrintJob } from "../components/BoardPrintLayout";
+import {
+  BOARD_PRINT_DETAIL_LINE_MM,
+  BOARD_PRINT_PHOTO_SIZE_MM,
+  BOARD_PRINT_SUBTASK_LINE_MM,
+  buildBoardPrintLayout,
+  type BoardPrintJob,
+} from "../components/BoardPrintLayout";
 import type { BiblePrintMeta } from "../components/BibleTrackerPrintSheet";
 import type { PrintPaperSize } from "../components/printPaper";
 import { toBlobPart } from "./binary";
@@ -329,11 +335,67 @@ function renderBiblePrintPageImage(options: {
   return { canvas, widthPt, heightPt };
 }
 
+const PRINT_PHOTO_GAP_MM = 1.5;
+
+function loadPrintPhotoImage(src: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = src;
+  });
+}
+
+async function loadPrintPhotoImages(job: BoardPrintJob): Promise<Map<string, HTMLImageElement>> {
+  const sources = new Set<string>();
+  job.tasks.forEach((task) => task.photos?.forEach((src) => sources.add(src)));
+  const entries = await Promise.all(
+    [...sources].map(async (src) => [src, await loadPrintPhotoImage(src)] as const),
+  );
+  return new Map(entries.filter((entry): entry is readonly [string, HTMLImageElement] => !!entry[1]));
+}
+
+function drawPrintPhoto(
+  ctx: CanvasRenderingContext2D,
+  image: HTMLImageElement | undefined,
+  x: number,
+  y: number,
+  size: number,
+): void {
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(x, y, size, size);
+  if (image && image.naturalWidth > 0 && image.naturalHeight > 0) {
+    const scale = Math.max(size / image.naturalWidth, size / image.naturalHeight);
+    const sourceWidth = size / scale;
+    const sourceHeight = size / scale;
+    ctx.drawImage(
+      image,
+      (image.naturalWidth - sourceWidth) / 2,
+      (image.naturalHeight - sourceHeight) / 2,
+      sourceWidth,
+      sourceHeight,
+      x,
+      y,
+      size,
+      size,
+    );
+  } else {
+    ctx.fillStyle = "rgba(16, 24, 40, 0.08)";
+    ctx.fillRect(x, y, size, size);
+  }
+  ctx.strokeStyle = "rgba(16, 24, 40, 0.25)";
+  ctx.lineWidth = mmToPx(0.2);
+  ctx.strokeRect(x, y, size, size);
+  ctx.restore();
+}
+
 function renderBoardPrintPageImage(options: {
   job: BoardPrintJob;
   paperSize: PrintPaperSize;
   layout: ReturnType<typeof buildBoardPrintLayout>;
   pageIndex: number;
+  photos: Map<string, HTMLImageElement>;
 }): { canvas: HTMLCanvasElement; widthPt: number; heightPt: number } {
   const layout = options.layout;
   const page = layout.pages[options.pageIndex];
@@ -445,6 +507,7 @@ function renderBoardPrintPageImage(options: {
   const circleSizePx = mmToPx(layout.circle.sizeMm);
   const titleFontPx = ptToPx(8);
   const labelFontPx = ptToPx(7);
+  const detailFontPx = ptToPx(5.8);
 
   page.rows.forEach((row) => {
     if (row.kind === "header") {
@@ -457,7 +520,7 @@ function renderBoardPrintPageImage(options: {
       ctx.fillStyle = "rgba(16, 24, 40, 0.6)";
       ctx.font = `700 ${labelFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
       const label = ellipsize(ctx, row.label.toUpperCase(), maxLabelWidthPx);
-      const midY = y + mmToPx(layout.rows.heightMm) / 2;
+      const midY = y + mmToPx(row.heightMm) / 2;
       ctx.fillText(label, x, midY);
       const labelWidth = ctx.measureText(label).width;
       const ruleX = x + labelWidth + mmToPx(2);
@@ -487,7 +550,9 @@ function renderBoardPrintPageImage(options: {
 
     const textX = mmToPx(row.textX);
     const maxWidthPx = mmToPx(row.textWidthMm);
-    const midY = mmToPx(row.y) + mmToPx(layout.rows.heightMm) / 2;
+    const bandCenterY = mmToPx(row.y) + mmToPx(row.titleBandMm) / 2;
+    const detailInsideBand = !!row.detail && !row.detailBelow;
+    const titleY = detailInsideBand ? bandCenterY - ptToPx(2.2) : bandCenterY;
 
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
@@ -499,7 +564,7 @@ function renderBoardPrintPageImage(options: {
       ctx.font = `600 ${labelFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
       const labelText = `${row.label.toUpperCase()} `;
       const fittedLabel = ellipsize(ctx, labelText, Math.max(0, remainingWidth * 0.35));
-      ctx.fillText(fittedLabel, cursorX, midY);
+      ctx.fillText(fittedLabel, cursorX, titleY);
       const labelWidth = ctx.measureText(fittedLabel).width;
       cursorX += labelWidth;
       remainingWidth = Math.max(0, maxWidthPx - (cursorX - textX));
@@ -508,7 +573,53 @@ function renderBoardPrintPageImage(options: {
     ctx.fillStyle = "#101828";
     ctx.font = `500 ${titleFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
     const fittedTitle = ellipsize(ctx, row.title, remainingWidth);
-    ctx.fillText(fittedTitle, cursorX, midY);
+    ctx.fillText(fittedTitle, cursorX, titleY);
+
+    ctx.fillStyle = "rgba(16, 24, 40, 0.62)";
+    ctx.font = `500 ${detailFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+    if (detailInsideBand && row.detail) {
+      ctx.fillText(ellipsize(ctx, row.detail, maxWidthPx), textX, bandCenterY + ptToPx(2.8));
+    }
+
+    let cursorY = mmToPx(row.y + row.titleBandMm);
+    if (row.detailBelow && row.detail) {
+      const lineHeight = mmToPx(BOARD_PRINT_DETAIL_LINE_MM);
+      ctx.fillText(ellipsize(ctx, row.detail, maxWidthPx), textX, cursorY + lineHeight / 2);
+      cursorY += lineHeight;
+    }
+
+    const subtaskLineHeight = mmToPx(BOARD_PRINT_SUBTASK_LINE_MM);
+    const subtaskBox = mmToPx(1.8);
+    const subtaskTextX = textX + mmToPx(4);
+    const subtaskWidth = Math.max(0, maxWidthPx - (subtaskTextX - textX));
+    (row.subtasks ?? []).forEach((subtask) => {
+      const lineCenter = cursorY + subtaskLineHeight / 2;
+      ctx.lineWidth = mmToPx(0.2);
+      ctx.strokeStyle = "#1f2937";
+      ctx.fillStyle = subtask.completed ? "#101828" : "#ffffff";
+      ctx.fillRect(textX, lineCenter - subtaskBox / 2, subtaskBox, subtaskBox);
+      ctx.strokeRect(textX, lineCenter - subtaskBox / 2, subtaskBox, subtaskBox);
+      ctx.fillStyle = "#101828";
+      ctx.font = `500 ${detailFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+      ctx.fillText(ellipsize(ctx, subtask.title, subtaskWidth), subtaskTextX, lineCenter);
+      cursorY += subtaskLineHeight;
+    });
+    if (row.hiddenSubtaskCount) {
+      const lineCenter = cursorY + subtaskLineHeight / 2;
+      ctx.fillStyle = "rgba(16, 24, 40, 0.55)";
+      ctx.font = `500 ${detailFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+      ctx.fillText(`+${row.hiddenSubtaskCount} more`, subtaskTextX, lineCenter);
+      cursorY += subtaskLineHeight;
+    }
+
+    if (row.photos?.length) {
+      const photoSize = mmToPx(BOARD_PRINT_PHOTO_SIZE_MM);
+      const photoGap = mmToPx(PRINT_PHOTO_GAP_MM);
+      const photoY = cursorY + mmToPx(1);
+      row.photos.forEach((src, photoIndex) => {
+        drawPrintPhoto(ctx, options.photos.get(src), textX + photoIndex * (photoSize + photoGap), photoY, photoSize);
+      });
+    }
   });
 
   const widthPt = mmToPt(layout.page.widthMm);
@@ -566,6 +677,7 @@ export async function buildBoardPrintPdf(options: {
     paperSize: options.paperSize,
     jobId: options.job.id,
   });
+  const photos = await loadPrintPhotoImages(options.job);
   const pages: PdfImagePage[] = [];
 
   for (let pageIndex = 0; pageIndex < layout.page.count; pageIndex += 1) {
@@ -574,6 +686,7 @@ export async function buildBoardPrintPdf(options: {
       paperSize: options.paperSize,
       layout,
       pageIndex,
+      photos,
     });
     const widthPx = canvas.width;
     const heightPx = canvas.height;

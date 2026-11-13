@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useToast } from "../../context/ToastContext";
-import { tasksForBoardPrintScope, type BoardPrintJob, type BoardPrintListChoice, type BoardPrintScope } from "../../components/BoardPrintLayout";
+import { tasksForBoardPrintScope, type BoardPrintJob, type BoardPrintListChoice, type BoardPrintOptions, type BoardPrintScope } from "../../components/BoardPrintLayout";
 import { BoardPrintChooser } from "../../components/BoardPrintChooser";
 import { BoardPrintPreview } from "../../components/BoardPrintSheet";
 import { BoardScanPanel } from "../../components/BoardScanSheet";
@@ -27,12 +27,12 @@ export type PrintSheetsProps = {
   boardPrintListChoices: BoardPrintListChoice[];
   boardPrintBoardName: string;
   boardPrintSelectedCount: number;
-  boardPrintIncludeCompleted: boolean;
+  boardPrintOptions: BoardPrintOptions;
   boardPrintPortal: HTMLDivElement | null;
   boardScanOpen: boolean;
   handleApplyBibleScan: (scanProgress: BibleTrackerProgress) => void;
   handleApplyBoardScan: (taskIds: string[]) => void;
-  handleContinueBoardPrint: (scope: BoardPrintScope) => void;
+  handleContinueBoardPrint: (scope: BoardPrintScope, options: BoardPrintOptions) => void;
   handleBiblePaperSizeChange: (paperSize: PrintPaperSize) => void;
   handleBoardPaperSizeChange: (paperSize: PrintPaperSize) => void;
   setBiblePrintOpen: (open: boolean) => void;
@@ -55,7 +55,7 @@ export function PrintSheets({
   boardPrintListChoices,
   boardPrintBoardName,
   boardPrintSelectedCount,
-  boardPrintIncludeCompleted,
+  boardPrintOptions,
   boardPrintPortal,
   boardScanOpen,
   handleApplyBibleScan,
@@ -202,7 +202,7 @@ export function PrintSheets({
         boardName={boardPrintBoardName}
         lists={boardPrintListChoices}
         selectedCount={boardPrintSelectedCount}
-        includeCompleted={boardPrintIncludeCompleted}
+        defaults={boardPrintOptions}
         onClose={() => setBoardPrintChooserOpen(false)}
         onContinue={handleContinueBoardPrint}
       />

@@ -16,7 +16,26 @@ export function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
         const title = typeof task.title === "string" ? task.title : "";
         if (!taskId || !title) return null;
         const label = typeof task.label === "string" ? task.label : undefined;
-        return { id: taskId, title, ...(label ? { label } : {}) };
+        const detail = typeof task.detail === "string" ? task.detail.trim() : "";
+        const subtasks = Array.isArray(task.subtasks)
+          ? task.subtasks
+            .map((subtask: any) => ({
+              title: typeof subtask?.title === "string" ? subtask.title.trim() : "",
+              ...(subtask?.completed === true ? { completed: true } : {}),
+            }))
+            .filter((subtask: { title: string }) => !!subtask.title)
+          : [];
+        const photoCount = typeof task.photoCount === "number" && task.photoCount > 0
+          ? Math.min(3, Math.floor(task.photoCount))
+          : 0;
+        return {
+          id: taskId,
+          title,
+          ...(label ? { label } : {}),
+          ...(detail ? { detail } : {}),
+          ...(subtasks.length ? { subtasks } : {}),
+          ...(photoCount ? { photoCount } : {}),
+        };
       })
       .filter(Boolean) as BoardPrintTask[]
     : [];
