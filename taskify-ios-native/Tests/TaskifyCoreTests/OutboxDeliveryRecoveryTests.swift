@@ -13,13 +13,15 @@ final class OutboxDeliveryRecoveryTests: XCTestCase {
     private func makeEngine(
         relay: RecordingRelayTransport,
         outbox: NostrOutboxStore,
-        proofOfWork: Int = 0
+        proofOfWork: Int = 0,
+        recordProofOfWork: @escaping @Sendable (String, Int) async -> Void = { _, _ in }
     ) -> TaskSyncEngine {
         let engine = TaskSyncEngine(
             outbox: outbox,
             connectionFactory: { _ in relay },
             unreachableRelayGrace: 0.2,
-            proofOfWorkRequirement: { _ in proofOfWork }
+            proofOfWorkRequirement: { _ in proofOfWork },
+            recordProofOfWorkRequirement: recordProofOfWork
         )
         addTeardownBlock { await engine.stop() }
         return engine
@@ -121,6 +123,54 @@ final class OutboxDeliveryRecoveryTests: XCTestCase {
         XCTAssertTrue(published.contains(mined.id), "The mined change is sent in its place")
     }
 
+    /// nos.lol and other strfry write policies can enforce proof of work without advertising it
+    /// in NIP-11. The refusal names the floor; ignoring it left every change queued there.
+    func testAProofOfWorkRefusalNamingAnUnadvertisedFloorIsMinedAndRemembered() async throws {
+        let outbox = makeOutbox()
+        let relay = RecordingRelayTransport()
+        let recorded = RecordedProofOfWork()
+        let engine = makeEngine(
+            relay: relay,
+            outbox: outbox,
+            proofOfWork: 0,
+            recordProofOfWork: { relayURL, difficulty in
+                await recorded.record(relayURL, difficulty)
+            }
+        )
+        let identity = try NostrIdentity(privateKey: key)
+        await engine.setIdentity(identity)
+        await engine.configure(boards: [], auxiliaryRelayURLs: [keptRelay], inboxRelayURLs: [keptRelay])
+        let unmined = try note("scripture-memory")
+        try XCTSkipIf(TaskifyRelayProofOfWork.leadingZeroBits(unmined.id) >= 12, "Unmined id already meets the target")
+        try await engine.enqueueForPublish([TaskSyncRelayPublishRequest(
+            event: unmined, relayURLs: [keptRelay], outboxScope: "app-state", recordID: "scripture-memory",
+            acknowledgementPolicy: .everyRelay
+        )])
+        for _ in 0..<100 where await !relay.publishedEventIDs.contains(unmined.id) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        await engine.handle(
+            .acknowledgement(eventID: unmined.id, accepted: false,
+                             message: "pow: difficulty 8 is less than 12"),
+            from: keptRelay
+        )
+
+        let entries = await outbox.allEntries()
+        let queued = try XCTUnwrap(entries.first)
+        XCTAssertGreaterThanOrEqual(
+            TaskifyRelayProofOfWork.leadingZeroBits(queued.event.id), 12,
+            "Mined to the floor the refusal named, not the zero NIP-11 advertises"
+        )
+        let learning = await recorded.entries
+        XCTAssertEqual(learning[keptRelay], 12, "Remembered so the next event is mined up front")
+        for _ in 0..<100 where await !relay.publishedEventIDs.contains(queued.event.id) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let published = await relay.publishedEventIDs
+        XCTAssertTrue(published.contains(queued.event.id))
+    }
+
     func testAProofOfWorkRefusalThisClientCantMeetIsHeldBack() async throws {
         let outbox = makeOutbox()
         let relay = RecordingRelayTransport()
@@ -159,4 +209,10 @@ private actor RecordingRelayTransport: TaskSyncRelayTransport {
     func closeSubscription(id: String) {}
     func publish(_ event: NostrEvent) { publishedEventIDs.append(event.id) }
     func authenticate(_ event: NostrEvent) {}
+}
+
+private actor RecordedProofOfWork {
+    private(set) var entries: [String: Int] = [:]
+
+    func record(_ relayURL: String, _ difficulty: Int) { entries[relayURL] = difficulty }
 }

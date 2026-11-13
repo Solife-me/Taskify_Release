@@ -366,7 +366,10 @@ private struct MacConversation: View {
                     .onPreferenceChange(MacChatScrollMetricsKey.self) { metrics in
                         guard metrics.topOffset.isFinite, metrics.contentHeight > 0 else { return }
                         let distanceFromBottom = metrics.contentHeight + metrics.topOffset - viewport.size.height
-                        followsLatestMessage = distanceFromBottom <= 80
+                        // Preference changes arrive while AppKit is laying out; only write when the
+                        // answer changes, so a growing composer cannot keep invalidating the graph.
+                        let follows = distanceFromBottom <= 80
+                        if follows != followsLatestMessage { followsLatestMessage = follows }
                         guard canLoadEarlierAtTop,
                               hasEarlierTimelineItems,
                               !isLoadingEarlierTimelineItems,
@@ -893,21 +896,36 @@ private struct MacChatComposerTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let view = scrollView.documentView as? MacChatComposerField else { return }
-        if view.string != text {
-            view.string = text
-            view.invalidateIntrinsicContentSize()
-        }
+        // No intrinsic-size invalidation here: update passes run inside SwiftUI's layout, and
+        // marking the hosting view's subtree for another constraint update from there is what
+        // makes the window abort once a long draft starts resizing the composer on every key.
+        if view.string != text { view.string = text }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
         guard let view = nsView.documentView as? MacChatComposerField,
-              let width = proposal.width, width.isFinite
+              let width = proposal.width, width.isFinite, width > 0
         else { return nil }
-        view.layoutManager?.ensureLayout(for: view.textContainer!)
-        let lineHeight = if let font = view.font { font.ascender - font.descender } else { CGFloat(17) }
-        let contentHeight = view.layoutManager?.usedRect(for: view.textContainer!).height ?? 0
-        let height = min(max(contentHeight, lineHeight * 2), lineHeight * 8)
-        return CGSize(width: width, height: height)
+        return CGSize(width: width, height: Self.height(of: view, width: width))
+    }
+
+    /// Measures the draft without laying out the live text view. Forcing TextKit layout
+    /// (`ensureLayout`/`usedRect`) on a descendant of the hosting view from inside SwiftUI's
+    /// measurement re-enters AppKit's layout pass; a long draft can keep re-invalidating the
+    /// window until it aborts. A plain text measurement has no side effects.
+    private static func height(of view: MacChatComposerField, width: CGFloat) -> CGFloat {
+        let font = view.font ?? NSFont.preferredFont(forTextStyle: .body)
+        let padding = view.textContainer?.lineFragmentPadding ?? 0
+        let available = max(1, width - padding * 2)
+        let bounds = (view.string as NSString).boundingRect(
+            with: CGSize(width: available, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        )
+        return MacChatComposerMetrics.height(
+            contentHeight: bounds.height,
+            lineHeight: font.ascender - font.descender + font.leading
+        )
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {

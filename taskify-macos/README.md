@@ -40,6 +40,7 @@ xcodebuild test -project taskify-macos/TaskifyMac.xcodeproj -scheme TaskifyMac \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testSpotlightTaskOpensAndCompletionRemovesIt \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testRawPNGCanBePastedIntoTaskAndChatComposers \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testChatComposerShiftReturnStartsANewLineAndReturnSends \
+  -only-testing:TaskifyMacUITests/TaskifyMacUITests/testChatComposerLongDraftScrollsWithoutCrashing \
   -only-testing:TaskifyMacUITests/TaskifyMacUITests/testChatAttachmentsRenderInThreadWithRecordButton
 ```
 
@@ -47,7 +48,7 @@ Commands run from the repository root. Project generation is deterministic and
 requires Python 3 only. `--check` is read-only and fails if the committed project
 does not match the source/product manifest; run the script without `--check` after
 adding a Mac source or changing the explicit shared-source list. CI runs the check,
-the 47 presentation/runtime tests, the unsigned app build and the twelve isolated app-host smoke tests on
+the 50 presentation/runtime tests, the unsigned app build and the thirteen isolated app-host smoke tests on
 the Xcode 27 runner. The smoke tests use the `UITest` configuration: a separate bundle identifier,
 a session-scoped temporary store/outbox and Keychain service, and no relay startup. They
 inject fixtures and an initial URL through immutable runtime dependencies rather than changing
@@ -763,3 +764,25 @@ directory and the binary no wallet symbols; the iOS Simulator build still compil
 wallet; 47 `swift test` cases (including the new `testMacAppDoesNotLinkOrCompileTheWallet`)
 and the 963 TaskifyCore tests pass. The replacement UI smoke, `testWorkspaceHasNoWallet`,
 runs in CI; it needs Xcode UI automation allowed to run locally.
+
+## Chat composer layout crash (November 12, 2026)
+
+Typing a long chat draft aborted the window: two crash reports showed AppKit raising
+from `-[NSWindow _postWindowNeedsUpdateConstraints]` while SwiftUI's hosting view was
+mid-layout. The composer's `sizeThatFits` forced TextKit layout (`ensureLayout` and
+`usedRect`) on the live text view, which is a descendant of the hosting view being laid
+out, and `updateNSView` invalidated the intrinsic content size from inside that same
+pass. Once a draft passed the height cap, each keystroke changed the editor's height and
+the invalidation never settled: AppKit's display-cycle layout aborted the process.
+
+`MacChatComposerTextView` now measures the draft with a plain text measurement that has
+no layout side effects, returns whole-point heights (min one line, max eight lines)
+through `MacChatComposerMetrics`, and no longer invalidates intrinsic content size during
+an update. The timeline's scroll-metrics preference also only writes
+`followsLatestMessage` when its value changes, so a growing composer cannot keep
+re-invalidating the graph from a preference callback.
+
+Verified: Release app build; 50 `swift test` cases, including the new height-stability
+test and the full 1,023-case TaskifyCore suite. `testChatComposerLongDraftScrollsWithoutCrashing`
+types a twelve-line draft in the isolated host; it could not run on this machine because
+Xcode UI automation timed out, so it is added to CI but not yet exercised locally.

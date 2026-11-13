@@ -604,6 +604,9 @@ public actor TaskSyncEngine {
     private let makePublishPacer: @Sendable (String) -> RelayPublishPacer
     /// A relay's minimum proof-of-work difficulty (NIP-11 `min_pow_difficulty`).
     private let proofOfWorkRequirement: @Sendable (String) async -> Int
+    /// Remembers the floor a relay stated in a `pow:` refusal, which its NIP-11 document does not
+    /// always advertise, so later events are mined to it before they are offered.
+    private let recordProofOfWorkRequirement: @Sendable (String, Int) async -> Void
     /// When each relay that queued changes still target was first seen outside the configuration.
     private var relayUnwantedSince: [String: Date] = [:]
     private var unreachableTargetCheckTask: Task<Void, Never>?
@@ -741,12 +744,16 @@ public actor TaskSyncEngine {
         proofOfWorkRequirement: @escaping @Sendable (String) async -> Int = {
             await TaskifyRelayRequirements.shared.difficulty(for: [$0])
         },
+        recordProofOfWorkRequirement: @escaping @Sendable (String, Int) async -> Void = { relayURL, difficulty in
+            await TaskSyncEngine.recordProofOfWork(relayURL, difficulty)
+        },
         networkingEnabled: Bool = true
     ) {
         self.outbox = outbox
         self.unreachableRelayGrace = unreachableRelayGrace
         self.makePublishPacer = makePublishPacer
         self.proofOfWorkRequirement = proofOfWorkRequirement
+        self.recordProofOfWorkRequirement = recordProofOfWorkRequirement
         self.publishAcknowledgementTimeout = publishAcknowledgementTimeout
         self.connectionFactory = connectionFactory
         self.oneShotFallback = oneShotFallback
@@ -2109,13 +2116,27 @@ public actor TaskSyncEngine {
         await completeUnreachableRelayTargets()
     }
 
+    /// The default record for a relay's stated proof-of-work floor. Named rather than written as
+    /// a closure in the initializer's default argument, where the compiler infers actor isolation
+    /// for the closure and flags the crossing `await` as unnecessary.
+    static func recordProofOfWork(_ relayURL: String, _ difficulty: Int) async {
+        await TaskifyRelayRequirements.shared.record(difficulty: difficulty, for: relayURL)
+    }
+
     /// A relay refused an event for too little proof of work, usually because the event was
     /// signed while the relay's requirement couldn't be looked up. When this client holds the
-    /// signing key, the same change is re-mined to the relay's advertised floor and queued in its
-    /// place; otherwise the refusal is recorded, so it isn't resent on every reconnect.
+    /// signing key, the same change is re-mined to the floor the refusal names (or the relay's
+    /// advertised one) and queued in its place; otherwise the refusal is recorded, so it isn't
+    /// resent on every reconnect.
     private func remineForProofOfWork(eventID: String, relayURL: String, message: String) async {
         guard let entry = await outbox.entry(eventID: eventID) else { return }
-        let required = await proofOfWorkRequirement(relayURL)
+        // Some relays enforce proof of work in a write policy without advertising it in NIP-11;
+        // the refusal is the only statement of the floor they actually apply. Prefer the number
+        // it names, and remember it so the next event is mined correctly before it is offered.
+        let advertised = await proofOfWorkRequirement(relayURL)
+        let stated = TaskifyProofOfWorkRejection.difficulty(fromMessage: message) ?? 0
+        if stated > 0 { await recordProofOfWorkRequirement(relayURL, stated) }
+        let required = max(advertised, stated)
         let event = entry.event
         var replaced = false
         if required > TaskifyRelayProofOfWork.leadingZeroBits(eventID), required <= 32,
