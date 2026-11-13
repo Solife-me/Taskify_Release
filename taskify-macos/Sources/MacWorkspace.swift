@@ -257,12 +257,21 @@ struct MacWorkspace: View {
 
     private var detailPanes: some View {
         HSplitView {
-            content.frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+            content.frame(
+                minWidth: MacWorkspaceLayout.minimumPaneWidth,
+                idealWidth: MacWorkspaceLayout.idealPaneWidth,
+                maxWidth: .infinity,
+                maxHeight: .infinity
+            )
             if splitDestination != nil {
                 splitPane
             } else if inspectorVisible && supportsTasks, let task = selectedTask {
                 MacTaskInspector(task: task) { editingTask = task }
-                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 420)
+                    .frame(
+                        minWidth: MacWorkspaceLayout.inspectorMinimumWidth,
+                        idealWidth: 300,
+                        maxWidth: 420
+                    )
             }
         }
     }
@@ -307,26 +316,7 @@ struct MacWorkspace: View {
     @ViewBuilder private var splitPane: some View {
         if let splitDestination {
             VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    Menu {
-                        splitDestinationMenuItems()
-                    } label: {
-                        Label(splitPaneTitle(splitDestination), systemImage: splitPaneSymbol(splitDestination))
-                            .font(.headline)
-                    }
-                    if model.board(withID: splitDestination) != nil {
-                        TextField("Search split tab", text: $splitSearch)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 220)
-                    }
-                    Spacer()
-                    Button { closeSplitView() } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.plain)
-                    .help("Close Split View")
-                    .accessibilityLabel("Close split view")
-                }
+                splitPaneHeader(splitDestination)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(.bar)
@@ -340,13 +330,62 @@ struct MacWorkspace: View {
                     chatSelection: $splitChatSelection
                 )
             }
-            .frame(minWidth: 560, idealWidth: 640, maxHeight: .infinity)
+            .frame(
+                minWidth: MacWorkspaceLayout.minimumPaneWidth,
+                idealWidth: MacWorkspaceLayout.idealPaneWidth,
+                maxWidth: .infinity,
+                maxHeight: .infinity
+            )
             .background(Color(nsColor: .windowBackgroundColor))
             .accessibilityIdentifier("split-workspace-\(splitDestination)")
             .sheet(item: $splitEditingTask) { task in
                 MacTaskEditor(task: task, boardID: task.boardID)
             }
         }
+    }
+
+    @ViewBuilder
+    private func splitPaneHeader(_ target: String) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                splitDestinationMenu(target)
+                if model.board(withID: target) != nil {
+                    TextField("Search split tab", text: $splitSearch)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
+                }
+                Spacer(minLength: 8)
+                closeSplitButton
+            }
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    splitDestinationMenu(target)
+                    Spacer(minLength: 8)
+                    closeSplitButton
+                }
+                if model.board(withID: target) != nil {
+                    TextField("Search split tab", text: $splitSearch)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+        }
+    }
+
+    private func splitDestinationMenu(_ target: String) -> some View {
+        Menu {
+            splitDestinationMenuItems()
+        } label: {
+            Label(splitPaneTitle(target), systemImage: splitPaneSymbol(target))
+                .font(.headline)
+                .lineLimit(1)
+        }
+    }
+
+    private var closeSplitButton: some View {
+        Button { closeSplitView() } label: { Image(systemName: "xmark") }
+            .buttonStyle(.plain)
+            .help("Close Split View")
+            .accessibilityLabel("Close split view")
     }
 
     @ViewBuilder

@@ -23,16 +23,21 @@ struct MacBoardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(board.kind == .week ? "Make room for what matters this week." : "A clear view of what comes next.")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Picker("View", selection: $tableView) {
-                    Image(systemName: "rectangle.split.3x1").tag(false)
-                    Image(systemName: "list.bullet").tag(true)
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 90).help("Board or Table View")
-                Toggle("Show Completed", isOn: $showCompleted).toggleStyle(.checkbox)
-            }.padding(.horizontal, 24).padding(.vertical, 14)
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text(board.kind == .week ? "Make room for what matters this week." : "A clear view of what comes next.")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 16)
+                    boardViewControls
+                }
+                HStack(spacing: 12) {
+                    boardViewControls
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
             Divider()
             if board.kind == .bible {
                 MacBibleView()
@@ -99,6 +104,22 @@ struct MacBoardView: View {
                   taskSelection.taskIDs.count != 1 || !taskSelection.contains(id)
             else { return }
             taskSelection.selectOnly(id)
+        }
+    }
+
+    private var boardViewControls: some View {
+        HStack(spacing: 12) {
+            Picker("View", selection: $tableView) {
+                Image(systemName: "rectangle.split.3x1").tag(false)
+                Image(systemName: "list.bullet").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 90)
+            .help("Board or Table View")
+            Toggle("Show Completed", isOn: $showCompleted)
+                .toggleStyle(.checkbox)
+                .lineLimit(1)
         }
     }
 
@@ -411,6 +432,7 @@ struct MacAgendaView: View {
     @State private var editingEvent: TaskifyEvent?
     @State private var filterDate = false
     @State private var taskSelection = Set<String>()
+    @State private var showingCompactCalendar = false
     @EnvironmentObject private var deviceCalendar: DeviceCalendarStore
     private var tasks: [TaskItem] {
         let filtered = UpcomingTaskOrganizer.filter(model.snapshot.tasks, searchText: search,
@@ -423,77 +445,120 @@ struct MacAgendaView: View {
             mode: .dueDate, direction: .ascending, boardGrouping: .mixed, boardOrder: model.visibleBoards.map(\.id))
     }
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(todayOnly ? Date().formatted(.dateTime.weekday(.wide).month(.wide).day()) : "Your days, at a glance")
-                        .font(.title2.bold())
-                    Text("\(tasks.count) tasks \(todayOnly ? "due today or overdue" : "in your agenda")").foregroundStyle(.secondary)
-                }.padding(24)
-                if tasks.isEmpty {
-                    ContentUnavailableView("You're All Caught Up", systemImage: "checkmark.seal", description: Text("Scheduled tasks will appear here."))
-                } else {
-                    List(selection: $taskSelection) {
-                        ForEach(tasks) { task in
-                            HStack(spacing: 18) {
-                                Text(task.dueDate?.formatted(.dateTime.month(.abbreviated).day()) ?? "")
-                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 62, alignment: .leading)
-                                MacTaskCard(task: task, selected: taskSelection.contains(task.id))
-                                    .onTapGesture(count: 2) { edit(task) }
-                            }.tag(task.id).listRowSeparator(.hidden)
-                        }
-                    }
-                    .listStyle(.inset)
-                    .onChange(of: taskSelection) { _, ids in
-                        selectedTaskID = ids.count == 1 ? ids.first : nil
-                    }
-                    .onChange(of: tasks.map(\.id)) { _, ids in
-                        taskSelection.formIntersection(Set(ids))
-                        selectedTaskID = taskSelection.count == 1 ? taskSelection.first : nil
-                    }
-                    .onChange(of: selectedTaskID) { _, id in
-                        guard let id, tasks.contains(where: { $0.id == id }),
-                              taskSelection != [id]
-                        else { return }
-                        taskSelection = [id]
-                    }
-                    .onAppear {
-                        guard let selectedTaskID, tasks.contains(where: { $0.id == selectedTaskID }) else { return }
-                        taskSelection = [selectedTaskID]
-                    }
+        GeometryReader { geometry in
+            let compact = MacWorkspaceLayout.panePresentation(for: geometry.size.width) == .compact
+            HStack(alignment: .top, spacing: 0) {
+                agendaList(compact: compact)
+                if !todayOnly, !compact {
+                    Divider()
+                    calendarPanel
+                        .padding(20)
+                        .frame(width: 270)
                 }
             }
-            if !todayOnly {
-                Divider()
-                VStack(alignment: .leading, spacing: 16) {
-                    DatePicker("Calendar", selection: $calendarDate, displayedComponents: .date).datePickerStyle(.graphical)
-                        .onChange(of: calendarDate) { _, _ in filterDate = true; deviceCalendar.refresh(monthContaining: calendarDate) }
-                    Toggle("Only selected date", isOn: $filterDate)
-                    Divider()
-                    Button("Connect Calendars") { deviceCalendar.requestAccess(monthContaining: calendarDate) }
-                    Button("Connect Reminders") { deviceCalendar.requestReminderAccess(monthContaining: calendarDate) }
-                    if let error = deviceCalendar.calendarErrorMessage ?? deviceCalendar.reminderErrorMessage { Text(error).font(.caption).foregroundStyle(.red) }
-                    Text("TASKIFY EVENTS").font(.caption).foregroundStyle(.secondary)
-                    ForEach(model.taskifyEvents.filter { event in
-                        guard let start = event.startDate else { return false }
-                        return Calendar.current.isDate(start, inSameDayAs: calendarDate)
-                    }) { event in
-                        Button(event.title) { editingEvent = event }.buttonStyle(.plain)
+        }
+        .sheet(isPresented: $showingCompactCalendar) {
+            ScrollView { calendarPanel.padding(20) }
+                .frame(minWidth: 320, minHeight: 480)
+        }
+        .sheet(item: $editingEvent) { MacEventEditor(event: $0, initialBoardID: $0.boardID ?? model.selectedBoardID) }
+    }
+
+    private func agendaList(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(todayOnly ? Date().formatted(.dateTime.weekday(.wide).month(.wide).day()) : "Your days, at a glance")
+                        .font(compact ? .headline : .title2.bold())
+                    Text("\(tasks.count) tasks \(todayOnly ? "due today or overdue" : "in your agenda")")
+                        .foregroundStyle(.secondary)
+                        .font(compact ? .caption : .body)
+                }
+                Spacer(minLength: 0)
+                if compact, !todayOnly {
+                    Button { showingCompactCalendar = true } label: {
+                        Label("Calendar", systemImage: "calendar")
                     }
-                    Text("DEVICE CALENDARS").font(.caption).foregroundStyle(.secondary)
-                    ForEach(deviceCalendar.events(on: calendarDate)) { event in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(event.title).font(.headline)
-                            Text(event.isAllDay ? "All day" : event.startDate.formatted(date: .omitted, time: .shortened)).font(.caption)
-                            Text(event.calendarTitle).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    ForEach(deviceCalendar.reminders(on: calendarDate)) { reminder in
-                        Button { _ = deviceCalendar.completeReminder(reminder) } label: { Label(reminder.title, systemImage: "circle") }.buttonStyle(.plain)
-                    }
-                }.padding(20).frame(width: 270)
+                    .labelStyle(.iconOnly)
+                    .help("Calendar and date filter")
+                }
             }
-        }.sheet(item: $editingEvent) { MacEventEditor(event: $0, initialBoardID: $0.boardID ?? model.selectedBoardID) }
+            .padding(compact ? 16 : 24)
+            if tasks.isEmpty {
+                ContentUnavailableView("You're All Caught Up", systemImage: "checkmark.seal", description: Text("Scheduled tasks will appear here."))
+            } else {
+                List(selection: $taskSelection) {
+                    ForEach(tasks) { task in
+                        HStack(spacing: compact ? 8 : 18) {
+                            Text(task.dueDate?.formatted(.dateTime.month(.abbreviated).day()) ?? "")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: compact ? 42 : 62, alignment: .leading)
+                            MacTaskCard(task: task, selected: taskSelection.contains(task.id))
+                                .onTapGesture(count: 2) { edit(task) }
+                        }
+                        .tag(task.id)
+                        .listRowSeparator(.hidden)
+                    }
+                }
+                .listStyle(.inset)
+                .onChange(of: taskSelection) { _, ids in
+                    selectedTaskID = ids.count == 1 ? ids.first : nil
+                }
+                .onChange(of: tasks.map(\.id)) { _, ids in
+                    taskSelection.formIntersection(Set(ids))
+                    selectedTaskID = taskSelection.count == 1 ? taskSelection.first : nil
+                }
+                .onChange(of: selectedTaskID) { _, id in
+                    guard let id, tasks.contains(where: { $0.id == id }), taskSelection != [id] else { return }
+                    taskSelection = [id]
+                }
+                .onAppear {
+                    guard let selectedTaskID, tasks.contains(where: { $0.id == selectedTaskID }) else { return }
+                    taskSelection = [selectedTaskID]
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var calendarPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            DatePicker("Calendar", selection: $calendarDate, displayedComponents: .date)
+                .datePickerStyle(.graphical)
+                .onChange(of: calendarDate) { _, _ in
+                    filterDate = true
+                    deviceCalendar.refresh(monthContaining: calendarDate)
+                }
+            Toggle("Only selected date", isOn: $filterDate)
+            Divider()
+            Button("Connect Calendars") { deviceCalendar.requestAccess(monthContaining: calendarDate) }
+            Button("Connect Reminders") { deviceCalendar.requestReminderAccess(monthContaining: calendarDate) }
+            if let error = deviceCalendar.calendarErrorMessage ?? deviceCalendar.reminderErrorMessage {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            Text("TASKIFY EVENTS").font(.caption).foregroundStyle(.secondary)
+            ForEach(model.taskifyEvents.filter { event in
+                guard let start = event.startDate else { return false }
+                return Calendar.current.isDate(start, inSameDayAs: calendarDate)
+            }) { event in
+                Button(event.title) { editingEvent = event }.buttonStyle(.plain)
+            }
+            Text("DEVICE CALENDARS").font(.caption).foregroundStyle(.secondary)
+            ForEach(deviceCalendar.events(on: calendarDate)) { event in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(event.title).font(.headline)
+                    Text(event.isAllDay ? "All day" : event.startDate.formatted(date: .omitted, time: .shortened)).font(.caption)
+                    Text(event.calendarTitle).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            ForEach(deviceCalendar.reminders(on: calendarDate)) { reminder in
+                Button { _ = deviceCalendar.completeReminder(reminder) } label: {
+                    Label(reminder.title, systemImage: "circle")
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 }
 

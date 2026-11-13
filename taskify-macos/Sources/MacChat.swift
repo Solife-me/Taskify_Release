@@ -49,65 +49,107 @@ struct MacChatView: View {
         }
     }
     var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                HStack {
-                    Toggle("Archived", isOn: $showArchived).toggleStyle(.checkbox)
-                    Spacer()
-                    Button { showContacts = true } label: { Image(systemName: "person.2") }.help("Contacts")
-                    Button { showNew = true } label: { Image(systemName: "square.and.pencil") }.help("New Conversation")
-                }.padding(14)
-                List(selection: $selection) {
-                    ForEach(peers, id: \.self) { peer in
-                        HStack(spacing: 10) {
-                            Text(String(name(peer).prefix(1)).uppercased()).font(.headline)
-                                .frame(width: 36, height: 36).background(Color.accentColor.opacity(0.12), in: Circle())
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(name(peer)).font(.headline).lineLimit(1)
-                                Text(model.directMessages(with: peer).last?.displayContent ?? "Start a conversation")
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                            }
-                            Spacer(minLength: 0)
-                            if let count = model.directMessageThreads.first(where: { $0.peerPublicKey == peer })?.unreadCount, count > 0 {
-                                Text("\(count)").font(.caption2.bold()).padding(5).background(Color.accentColor, in: Circle()).foregroundStyle(.white)
-                            }
-                        }.padding(.vertical, 5).tag(peer)
-                            .contentShape(Rectangle())
-                            .background(
-                                taskDropPeer == peer ? Color.accentColor.opacity(0.14) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 7)
-                            )
-                            .contextMenu {
-                                Button(showArchived ? "Unarchive" : "Archive") {
-                                    if showArchived { model.unarchiveDirectMessageThread(peerPublicKey: peer) }
-                                    else { model.archiveDirectMessageThread(peerPublicKey: peer) }
-                                }
-                                Button(model.isDirectMessagePeerBlocked(peer) ? "Unblock" : "Block") {
-                                    model.setDirectMessagePeerBlocked(peer, blocked: !model.isDirectMessagePeerBlocked(peer))
-                                }
-                            }
-                            .dropDestination(for: String.self) { values, _ in
-                                shareDroppedTasks(values, with: peer)
-                            } isTargeted: { targeted in
-                                if targeted { taskDropPeer = peer }
-                                else if taskDropPeer == peer { taskDropPeer = nil }
-                            }
-                    }
-                }.listStyle(.sidebar)
-            }.frame(minWidth: 230, idealWidth: 280, maxWidth: 340)
-            if let selection {
-                MacConversation(peer: selection, title: name(selection),
-                    composer: Binding(
-                        get: { drafts.text(for: selection) },
-                        set: { drafts.setText($0, for: selection) }
-                    ))
-                    .id(selection).frame(minWidth: 340)
+        GeometryReader { geometry in
+            let compact = MacWorkspaceLayout.panePresentation(for: geometry.size.width) == .compact
+            if compact {
+                if let selection {
+                    conversation(peer: selection, compact: true)
+                } else {
+                    conversationList
+                }
             } else {
-                ContentUnavailableView("Your Conversations", systemImage: "bubble.left.and.bubble.right", description: Text("Choose a conversation or start a new one."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                HSplitView {
+                    conversationList
+                        .frame(minWidth: 220, idealWidth: 270, maxWidth: 320)
+                    if let selection {
+                        conversation(peer: selection, compact: false)
+                            .frame(minWidth: 320)
+                    } else {
+                        ContentUnavailableView(
+                            "Your Conversations",
+                            systemImage: "bubble.left.and.bubble.right",
+                            description: Text("Choose a conversation or start a new one.")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
             }
-        }.sheet(isPresented: $showNew) { MacNewConversation { selection = $0 } }
-            .sheet(isPresented: $showContacts) { MacContactsView() }
+        }
+        .sheet(isPresented: $showNew) { MacNewConversation { selection = $0 } }
+        .sheet(isPresented: $showContacts) { MacContactsView() }
+    }
+
+    private var conversationList: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Toggle("Archived", isOn: $showArchived).toggleStyle(.checkbox)
+                Spacer()
+                Button { showContacts = true } label: { Image(systemName: "person.2") }.help("Contacts")
+                Button { showNew = true } label: { Image(systemName: "square.and.pencil") }.help("New Conversation")
+            }
+            .padding(14)
+            List(selection: $selection) {
+                ForEach(peers, id: \.self) { peer in
+                    HStack(spacing: 10) {
+                        Text(String(name(peer).prefix(1)).uppercased()).font(.headline)
+                            .frame(width: 36, height: 36)
+                            .background(Color.accentColor.opacity(0.12), in: Circle())
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(name(peer)).font(.headline).lineLimit(1)
+                            Text(model.directMessages(with: peer).last?.displayContent ?? "Start a conversation")
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer(minLength: 0)
+                        if let count = model.directMessageThreads.first(where: { $0.peerPublicKey == peer })?.unreadCount,
+                           count > 0 {
+                            Text("\(count)").font(.caption2.bold()).padding(5)
+                                .background(Color.accentColor, in: Circle()).foregroundStyle(.white)
+                        }
+                    }
+                    .padding(.vertical, 5)
+                    .tag(peer)
+                    .contentShape(Rectangle())
+                    .background(
+                        taskDropPeer == peer ? Color.accentColor.opacity(0.14) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 7)
+                    )
+                    .contextMenu {
+                        Button(showArchived ? "Unarchive" : "Archive") {
+                            if showArchived { model.unarchiveDirectMessageThread(peerPublicKey: peer) }
+                            else { model.archiveDirectMessageThread(peerPublicKey: peer) }
+                        }
+                        Button(model.isDirectMessagePeerBlocked(peer) ? "Unblock" : "Block") {
+                            model.setDirectMessagePeerBlocked(
+                                peer,
+                                blocked: !model.isDirectMessagePeerBlocked(peer)
+                            )
+                        }
+                    }
+                    .dropDestination(for: String.self) { values, _ in
+                        shareDroppedTasks(values, with: peer)
+                    } isTargeted: { targeted in
+                        if targeted { taskDropPeer = peer }
+                        else if taskDropPeer == peer { taskDropPeer = nil }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func conversation(peer: String, compact: Bool) -> some View {
+        MacConversation(
+            peer: peer,
+            title: name(peer),
+            composer: Binding(
+                get: { drafts.text(for: peer) },
+                set: { drafts.setText($0, for: peer) }
+            ),
+            compactNavigation: compact,
+            onBack: { selection = nil }
+        )
+        .id(peer)
     }
     private func name(_ peer: String) -> String {
         model.groupConversation(id: peer)?.displayName ?? model.nostrContact(publicKey: peer)?.displayName ?? String(peer.prefix(16))
@@ -180,6 +222,8 @@ private struct MacConversation: View {
     let peer: String
     let title: String
     @Binding var composer: String
+    let compactNavigation: Bool
+    let onBack: () -> Void
     @Environment(AppModel.self) private var model
     @Environment(\.controlActiveState) private var activeState
     @State private var deleting = false
@@ -293,23 +337,33 @@ private struct MacConversation: View {
         let stacks = photoStacks
         let drawnItems = drawnTimeline(using: stacks)
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.headline)
-                    Label("End-to-end encrypted", systemImage: "lock").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                TextField("Find in conversation", text: $search).textFieldStyle(.roundedBorder).frame(width: 200)
-                Menu {
-                    if model.groupConversation(id: peer) != nil {
-                        Button("Group Details…") { groupDetails = true }
-                        Button(model.isDirectMessageGroupMuted(peer) ? "Unmute Group" : "Mute Group") { model.setDirectMessageGroupMuted(peer, muted: !model.isDirectMessageGroupMuted(peer)) }
-                        Button(model.hasLeftDirectMessageGroup(peer) ? "Rejoin Group" : "Leave Group") { model.setDirectMessageGroupLeft(peer, left: !model.hasLeftDirectMessageGroup(peer)) }
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    if compactNavigation {
+                        Button(action: onBack) { Image(systemName: "chevron.left") }
+                            .buttonStyle(.plain)
+                            .help("Conversations")
+                            .accessibilityLabel("Back to conversations")
                     }
-                    Button("Archive Conversation") { model.archiveDirectMessageThread(peerPublicKey: peer) }
-                    Button("Delete Conversation…", role: .destructive) { deleting = true }
-                } label: { Image(systemName: "ellipsis.circle") }
-            }.padding(18)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title).font(.headline).lineLimit(1)
+                        Label("End-to-end encrypted", systemImage: "lock")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    if !compactNavigation {
+                        TextField("Find in conversation", text: $search)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 200)
+                    }
+                    conversationMenu
+                }
+                if compactNavigation {
+                    TextField("Find in conversation", text: $search)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+            .padding(compactNavigation ? 12 : 18)
             Divider()
             GeometryReader { viewport in
                 ScrollViewReader { proxy in
@@ -348,7 +402,7 @@ private struct MacConversation: View {
                                 ).id(item.id)
                             }
                         }
-                        .padding(22)
+                        .padding(compactNavigation ? 12 : 22)
                         .background {
                             GeometryReader { geometry in
                                 let frame = geometry.frame(in: .named("mac-chat-scroll"))
@@ -401,7 +455,7 @@ private struct MacConversation: View {
             .background(Color(nsColor: .underPageBackgroundColor).opacity(0.5))
             Divider()
             MacChatComposer(peer: peer, composer: $composer, proxy: composerProxy)
-                .padding(16)
+                .padding(compactNavigation ? 10 : 16)
         }
         .dropDestination(for: String.self) { values, _ in
             shareDroppedTasks(values)
@@ -437,6 +491,33 @@ private struct MacConversation: View {
             composerProxy.onSendStarted = nil
         }
     }
+
+    private var conversationMenu: some View {
+        Menu {
+            if model.groupConversation(id: peer) != nil {
+                Button("Group Details…") { groupDetails = true }
+                Button(model.isDirectMessageGroupMuted(peer) ? "Unmute Group" : "Mute Group") {
+                    model.setDirectMessageGroupMuted(
+                        peer,
+                        muted: !model.isDirectMessageGroupMuted(peer)
+                    )
+                }
+                Button(model.hasLeftDirectMessageGroup(peer) ? "Rejoin Group" : "Leave Group") {
+                    model.setDirectMessageGroupLeft(
+                        peer,
+                        left: !model.hasLeftDirectMessageGroup(peer)
+                    )
+                }
+            }
+            Button("Archive Conversation") {
+                model.archiveDirectMessageThread(peerPublicKey: peer)
+            }
+            Button("Delete Conversation…", role: .destructive) { deleting = true }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+    }
+
     private func markRead() { if activeState == .key { model.markDirectMessageThreadRead(peerPublicKey: peer) } }
     private func shareDroppedTasks(_ values: [String]) -> Bool {
         let taskIDs = Array(Set(values)).filter { model.task(withID: $0) != nil }
@@ -650,7 +731,7 @@ private struct MacChatComposer: View {
             if isAudioComposerActive {
                 audioComposer
             } else {
-                HStack(alignment: .bottom, spacing: 12) {
+                HStack(alignment: .bottom, spacing: 8) {
                     Button { attachments.chooseFiles() } label: { Image(systemName: "paperclip") }
                         .disabled(sending || attachments.importing)
                     PasteButton(payloadType: MacAttachmentTransferPayload.self) { payloads in
@@ -660,12 +741,11 @@ private struct MacChatComposer: View {
                     .disabled(sending || attachments.importing || model.isDirectMessagePeerBlocked(peer))
                     .help("Paste Files")
                     .accessibilityIdentifier("chat-attachment-paste-button")
-                    ZStack(alignment: .topLeading) {
+                    ZStack(alignment: .leading) {
                         if composer.isEmpty {
                             Text("Message")
                                 .font(.body)
                                 .foregroundStyle(.secondary)
-                                .padding(.top, 12)
                                 .padding(.leading, 2)
                                 .allowsHitTesting(false)
                         }
@@ -694,7 +774,8 @@ private struct MacChatComposer: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
@@ -704,7 +785,10 @@ private struct MacChatComposer: View {
                         if sending {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("Send", systemImage: "arrow.up")
+                            ViewThatFits(in: .horizontal) {
+                                Label("Send", systemImage: "arrow.up")
+                                Image(systemName: "arrow.up")
+                            }
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -820,14 +904,16 @@ private struct MacChatComposer: View {
                         to: peer,
                         attachments: uploaded,
                         replyToEventID: replyTarget?.id,
-                        comment: text
+                        comment: text,
+                        optimisticLocalEcho: true
                     )
                     attachments.clear()
                 } else {
                     try await model.sendDirectMessage(
                         to: peer,
                         content: text,
-                        replyToEventID: replyTarget?.id
+                        replyToEventID: replyTarget?.id,
+                        optimisticLocalEcho: true
                     )
                 }
             } catch is CancellationError {
@@ -1407,12 +1493,11 @@ private struct MacChatMarkdownText: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(document.blocks.enumerated()), id: \.offset) { index, block in
-                blockView(block)
-                    .padding(.top, topPadding(for: block, at: index))
-            }
-        }
+        // One Text owns the complete Markdown document. Separate Text views per block make
+        // AppKit end a selection at each paragraph, so a reader cannot drag-copy a whole message.
+        Text(attributedDocument)
+            .fixedSize(horizontal: false, vertical: true)
+            .lineSpacing(2)
         .textSelection(.enabled)
         .environment(\.openURL, OpenURLAction { url in
             guard let code = NostrChatMarkdown.copiedCode(from: url) else {
@@ -1447,73 +1532,77 @@ private struct MacChatMarkdownText: View {
         }
     }
 
-    @ViewBuilder
-    private func blockView(_ block: NostrChatMarkdownBlock) -> some View {
+    private var attributedDocument: AttributedString {
+        var result = AttributedString()
+        for (index, block) in document.blocks.enumerated() {
+            if index > 0 {
+                let previous = document.blocks[index - 1]
+                result.append(AttributedString(
+                    isCompactPair(block, previous) ? "\n" : "\n\n"
+                ))
+            }
+            result.append(attributedText(for: block))
+        }
+        return result
+    }
+
+    private func attributedText(for block: NostrChatMarkdownBlock) -> AttributedString {
         switch block {
         case .paragraph(let content):
-            inlineText(content, font: .body)
+            return styledInlineMarkdown(content, font: .body)
         case let .heading(level, content):
-            inlineText(content, font: headingFont(level: level))
+            return styledInlineMarkdown(content, font: headingFont(level: level))
         case let .unorderedListItem(depth, content):
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text("•")
-                    .font(.body.weight(.bold))
-                    .frame(width: 12, alignment: .trailing)
-                inlineText(content, font: .body)
-            }
-            .padding(.leading, CGFloat(depth) * 15)
+            var value = styledPrefix(String(repeating: "  ", count: max(0, depth)) + "• ")
+            value.append(styledInlineMarkdown(content, font: .body))
+            return value
         case let .orderedListItem(depth, number, content):
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text("\(number).")
-                    .font(.callout.weight(.semibold))
-                    .frame(minWidth: 18, alignment: .trailing)
-                inlineText(content, font: .body)
-            }
-            .padding(.leading, CGFloat(depth) * 15)
+            var value = styledPrefix(
+                String(repeating: "  ", count: max(0, depth)) + "\(number). "
+            )
+            value.append(styledInlineMarkdown(content, font: .body))
+            return value
         case let .blockQuote(depth, content):
-            HStack(alignment: .top, spacing: 8) {
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(Color.primary.opacity(0.38))
-                    .frame(width: 3)
-                inlineText(content, font: .body.italic())
-                    .foregroundStyle(Color.primary.opacity(0.88))
-            }
-            .padding(.leading, CGFloat(max(0, depth - 1)) * 12)
+            var prefix = AttributedString(
+                String(repeating: "  ", count: max(0, depth - 1)) + "▎ "
+            )
+            prefix.font = .body.weight(.semibold)
+            prefix.foregroundColor = .secondary
+            var value = prefix
+            value.append(styledInlineMarkdown(content, font: .body.italic()))
+            return value
         case let .codeBlock(language, content):
-            VStack(alignment: .leading, spacing: 5) {
-                if let language {
-                    Text(language.uppercased())
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color.primary.opacity(0.62))
-                }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(content)
-                        .font(.system(size: 13, design: .monospaced))
-                        .fixedSize(horizontal: true, vertical: false)
-                }
+            var value = AttributedString()
+            if let language {
+                var label = AttributedString(language.uppercased() + "\n")
+                label.font = .system(size: 9, weight: .bold, design: .monospaced)
+                label.foregroundColor = .secondary
+                value.append(label)
             }
-            .padding(10)
-            .background(codeBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .onTapGesture { copy(content) }
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isButton)
-            .accessibilityHint("Copies code")
+            var code = AttributedString(content)
+            code.font = .system(size: 13, design: .monospaced)
+            code.foregroundColor = .primary
+            code.backgroundColor = Color(nsColor: .quaternaryLabelColor)
+            code.link = NostrChatMarkdown.copyURL(for: content)
+            value.append(code)
+            return value
         case .thematicBreak:
-            Rectangle()
-                .fill(Color.primary.opacity(0.24))
-                .frame(minWidth: 120, maxWidth: .infinity, minHeight: 1, maxHeight: 1)
+            var value = AttributedString("────────────────")
+            value.font = .caption
+            value.foregroundColor = .secondary
+            return value
         }
     }
 
-    private func inlineText(_ markdown: String, font: Font) -> some View {
-        Text(styledInlineMarkdown(markdown))
-            .font(font)
-            .fixedSize(horizontal: false, vertical: true)
+    private func styledPrefix(_ value: String) -> AttributedString {
+        var prefix = AttributedString(value)
+        prefix.font = .body.weight(.semibold)
+        return prefix
     }
 
-    private func styledInlineMarkdown(_ markdown: String) -> AttributedString {
+    private func styledInlineMarkdown(_ markdown: String, font: Font) -> AttributedString {
         var attributed = NostrChatMarkdown.inlineAttributedString(markdown)
+        attributed.font = font
         let runs = attributed.runs.map { run in
             (range: run.range, intent: run.inlinePresentationIntent, link: run.link)
         }
@@ -1537,10 +1626,6 @@ private struct MacChatMarkdownText: View {
         return attributed
     }
 
-    private var codeBackground: Color {
-        Color.primary.opacity(0.08)
-    }
-
     private func headingFont(level: Int) -> Font {
         switch level {
         case 1: .title2.bold()
@@ -1550,12 +1635,12 @@ private struct MacChatMarkdownText: View {
         }
     }
 
-    private func topPadding(for block: NostrChatMarkdownBlock, at index: Int) -> CGFloat {
-        guard index > 0 else { return 0 }
-        let previous = document.blocks[index - 1]
-        if isListItem(block), isListItem(previous) { return 4 }
-        if isBlockQuote(block), isBlockQuote(previous) { return 4 }
-        return 10
+    private func isCompactPair(
+        _ block: NostrChatMarkdownBlock,
+        _ previous: NostrChatMarkdownBlock
+    ) -> Bool {
+        (isListItem(block) && isListItem(previous))
+            || (isBlockQuote(block) && isBlockQuote(previous))
     }
 
     private func isListItem(_ block: NostrChatMarkdownBlock) -> Bool {
