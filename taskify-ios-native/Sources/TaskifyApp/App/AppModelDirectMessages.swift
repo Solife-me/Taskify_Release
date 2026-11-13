@@ -15,7 +15,8 @@ extension AppModel {
         to recipientValue: String,
         content: String,
         replyToEventID: String? = nil,
-        additionalTags: [[String]] = []
+        additionalTags: [[String]] = [],
+        optimisticLocalEcho: Bool = false
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NostrDirectMessageError.emptyMessage }
@@ -45,7 +46,8 @@ extension AppModel {
                 additionalTags: additionalTags
             )],
             replyToEventID: replyToEventID,
-            attachmentComment: nil
+            attachmentComment: nil,
+            optimisticLocalEcho: optimisticLocalEcho
         )
     }
 
@@ -128,7 +130,8 @@ extension AppModel {
         to recipientValue: String,
         attachments: [NostrDirectMessageAttachment],
         replyToEventID: String? = nil,
-        comment: String? = nil
+        comment: String? = nil,
+        optimisticLocalEcho: Bool = false
     ) async throws {
         guard !attachments.isEmpty,
               attachments.count <= NostrDirectMessageAttachment.maximumBatchCount else {
@@ -179,7 +182,8 @@ extension AppModel {
             to: recipientValue,
             drafts: drafts,
             replyToEventID: replyToEventID,
-            attachmentComment: comment
+            attachmentComment: comment,
+            optimisticLocalEcho: optimisticLocalEcho
         )
     }
 
@@ -187,7 +191,8 @@ extension AppModel {
         to recipientValue: String,
         drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
-        attachmentComment: String?
+        attachmentComment: String?,
+        optimisticLocalEcho: Bool
     ) async throws {
         guard !drafts.isEmpty else { throw NostrDirectMessageError.emptyMessage }
         if let group = snapshot.groupConversation(id: recipientValue) {
@@ -198,7 +203,8 @@ extension AppModel {
                 group: group,
                 drafts: drafts,
                 replyToEventID: replyToEventID,
-                attachmentComment: attachmentComment
+                attachmentComment: attachmentComment,
+                optimisticLocalEcho: optimisticLocalEcho
             )
             return
         }
@@ -225,79 +231,96 @@ extension AppModel {
             throw NostrDirectMessageError.invalidRecipient
         }
         let recipientHex = recipientPublicKey.hexString
-        let fallbackRelays = directMessageDiscoveryRelayURLs(recipientPublicKey: recipientHex)
-        guard !fallbackRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
-        let resolutionStartedAt = ProcessInfo.processInfo.systemUptime
-        guard let deliveryPlan = await nip17DeliveryPlan(
-            recipientPublicKey: recipientHex,
-            discoveryRelayURLs: fallbackRelays,
-            identity: identity
-        ) else { throw NostrDirectMessageError.noRelays }
-        os_signpost(
-            .event,
-            log: Self.dmPerformanceLog,
-            name: "DM Relay Resolution",
-            signpostID: sendSignpostID,
-            "duration_ms=%.1f recipient_relays=%d discovery_relays=%d",
-            (ProcessInfo.processInfo.systemUptime - resolutionStartedAt) * 1_000,
-            deliveryPlan.recipientRelayURLs.count,
-            fallbackRelays.count
-        )
-
         // Strictly increasing timestamps keep a multi-file batch ordered on
         // every client; a single draft keeps today's exact wire behavior.
         let replyTag = validNostrEventID(replyToEventID).map { ["e", $0] }
         let baseCreatedAt = currentDirectMessageTimestamp()
-        let cryptoStartedAt = ProcessInfo.processInfo.systemUptime
-        let batch = try await TaskifyRelayProofOfWork.prepare(relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs) {
-            let rumors = try drafts.enumerated().map { index, draft in
-                var rumorTags = [["p", recipientHex]] + draft.additionalTags
-                if let replyTag { rumorTags.append(replyTag) }
-                return try NIP17Rumor(
-                    publicKey: identity.publicKeyHex,
-                    createdAt: baseCreatedAt + index,
-                    kind: draft.kind,
-                    tags: rumorTags,
-                    content: draft.content
+        let rumors = try drafts.enumerated().map { index, draft in
+            var rumorTags = [["p", recipientHex]] + draft.additionalTags
+            if let replyTag { rumorTags.append(replyTag) }
+            return try NIP17Rumor(
+                publicKey: identity.publicKeyHex,
+                createdAt: baseCreatedAt + index,
+                kind: draft.kind,
+                tags: rumorTags,
+                content: draft.content
+            )
+        }
+        let optimisticMessages = try optimisticLocalEcho
+            ? ingestOptimisticDirectMessages(
+                rumors: rumors,
+                attachmentComment: attachmentComment,
+                identity: identity
+            )
+            : []
+        do {
+            let fallbackRelays = directMessageDiscoveryRelayURLs(recipientPublicKey: recipientHex)
+            guard !fallbackRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
+            let resolutionStartedAt = ProcessInfo.processInfo.systemUptime
+            guard let deliveryPlan = await nip17DeliveryPlan(
+                recipientPublicKey: recipientHex,
+                discoveryRelayURLs: fallbackRelays,
+                identity: identity
+            ) else { throw NostrDirectMessageError.noRelays }
+            os_signpost(
+                .event,
+                log: Self.dmPerformanceLog,
+                name: "DM Relay Resolution",
+                signpostID: sendSignpostID,
+                "duration_ms=%.1f recipient_relays=%d discovery_relays=%d",
+                (ProcessInfo.processInfo.systemUptime - resolutionStartedAt) * 1_000,
+                deliveryPlan.recipientRelayURLs.count,
+                fallbackRelays.count
+            )
+            let cryptoStartedAt = ProcessInfo.processInfo.systemUptime
+            let batch = try await TaskifyRelayProofOfWork.prepare(
+                relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
+            ) {
+                var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
+                routes[recipientHex] = deliveryPlan.recipientRelayURLs
+                return try NIP17OutgoingMessageBatch(
+                    rumors: rumors,
+                    attachmentComment: attachmentComment,
+                    identity: identity,
+                    relayURLsByRecipient: routes
                 )
             }
-            var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
-            routes[recipientHex] = deliveryPlan.recipientRelayURLs
-            return try NIP17OutgoingMessageBatch(rumors: rumors, attachmentComment: attachmentComment,
-                identity: identity, relayURLsByRecipient: routes)
-        }
-        os_signpost(
-            .event,
-            log: Self.dmPerformanceLog,
-            name: "DM Gift Wrap",
-            signpostID: sendSignpostID,
-            "duration_ms=%.1f",
-            (ProcessInfo.processInfo.systemUptime - cryptoStartedAt) * 1_000
-        )
-        let allDeliveryRelays = TaskifyRelayURL.normalizedList(
-            deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
-        )
-        let enqueueStartedAt = ProcessInfo.processInfo.systemUptime
-        try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: false)
-        let queuedCount = await syncEngine.pendingPublishCount()
-        os_signpost(
-            .event,
-            log: Self.dmPerformanceLog,
-            name: "DM Durable Queue",
-            signpostID: sendSignpostID,
-            "duration_ms=%.1f outbox_entries=%d target_relays=%d",
-            (ProcessInfo.processInfo.systemUptime - enqueueStartedAt) * 1_000,
-            queuedCount,
-            allDeliveryRelays.count
-        )
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: allDeliveryRelays,
-                inboxPublicKey: identity.publicKeyHex,
-                inboxRelayURLs: deliveryPlan.senderRelayURLs
+            os_signpost(
+                .event,
+                log: Self.dmPerformanceLog,
+                name: "DM Gift Wrap",
+                signpostID: sendSignpostID,
+                "duration_ms=%.1f",
+                (ProcessInfo.processInfo.systemUptime - cryptoStartedAt) * 1_000
             )
+            let allDeliveryRelays = TaskifyRelayURL.normalizedList(
+                deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
+            )
+            let enqueueStartedAt = ProcessInfo.processInfo.systemUptime
+            try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: false)
+            let queuedCount = await syncEngine.pendingPublishCount()
+            os_signpost(
+                .event,
+                log: Self.dmPerformanceLog,
+                name: "DM Durable Queue",
+                signpostID: sendSignpostID,
+                "duration_ms=%.1f outbox_entries=%d target_relays=%d",
+                (ProcessInfo.processInfo.systemUptime - enqueueStartedAt) * 1_000,
+                queuedCount,
+                allDeliveryRelays.count
+            )
+            let boards = snapshot.boardsForSync
+            Task { [syncEngine] in
+                await syncEngine.configure(
+                    boards: boards,
+                    auxiliaryRelayURLs: allDeliveryRelays,
+                    inboxPublicKey: identity.publicKeyHex,
+                    inboxRelayURLs: deliveryPlan.senderRelayURLs
+                )
+            }
+        } catch {
+            markOptimisticDirectMessagesFailed(optimisticMessages)
+            throw error
         }
     }
 
@@ -409,7 +432,8 @@ extension AppModel {
         group: NostrGroupConversation,
         drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
-        attachmentComment: String?
+        attachmentComment: String?,
+        optimisticLocalEcho: Bool
     ) async throws {
         let identity = try outboundIdentity()
         guard group.memberPublicKeys.contains(identity.publicKeyHex),
@@ -431,34 +455,79 @@ extension AppModel {
                 content: draft.content
             )
         }
-        let relayMap = await groupDeliveryRelays(group: group, identity: identity)
-        let recipientRelays = relayMap.values.flatMap { $0 }
-        if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
-        let senderRelays = effectiveNIP17InboxRelayURLs
-        let recipientCount = group.memberPublicKeys.filter {
-            $0 != identity.publicKeyHex
-        }.count
-        guard relayMap.count == recipientCount,
-              !recipientRelays.isEmpty,
-              !senderRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
-
-        let batch = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
-            var routes = relayMap
-            routes[identity.publicKeyHex] = senderRelays
-            return try NIP17OutgoingMessageBatch(rumors: rumors, attachmentComment: attachmentComment,
-                identity: identity, relayURLsByRecipient: routes)
-        }
-        let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
-        try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: true)
-        let boards = snapshot.boardsForSync
-        Task { [syncEngine] in
-            await syncEngine.configure(
-                boards: boards,
-                auxiliaryRelayURLs: allRelays,
-                inboxPublicKey: identity.publicKeyHex,
-                inboxRelayURLs: senderRelays
+        let optimisticMessages = try optimisticLocalEcho
+            ? ingestOptimisticDirectMessages(
+                rumors: rumors,
+                attachmentComment: attachmentComment,
+                identity: identity
             )
+            : []
+        do {
+            let relayMap = await groupDeliveryRelays(group: group, identity: identity)
+            let recipientRelays = relayMap.values.flatMap { $0 }
+            if nip17InboxRelayURLs.isEmpty { await ensureNIP17InboxRelayPreference() }
+            let senderRelays = effectiveNIP17InboxRelayURLs
+            let recipientCount = group.memberPublicKeys.filter {
+                $0 != identity.publicKeyHex
+            }.count
+            guard relayMap.count == recipientCount,
+                  !recipientRelays.isEmpty,
+                  !senderRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
+
+            let batch = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
+                var routes = relayMap
+                routes[identity.publicKeyHex] = senderRelays
+                return try NIP17OutgoingMessageBatch(
+                    rumors: rumors,
+                    attachmentComment: attachmentComment,
+                    identity: identity,
+                    relayURLsByRecipient: routes
+                )
+            }
+            let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
+            try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: true)
+            let boards = snapshot.boardsForSync
+            Task { [syncEngine] in
+                await syncEngine.configure(
+                    boards: boards,
+                    auxiliaryRelayURLs: allRelays,
+                    inboxPublicKey: identity.publicKeyHex,
+                    inboxRelayURLs: senderRelays
+                )
+            }
+        } catch {
+            markOptimisticDirectMessagesFailed(optimisticMessages)
+            throw error
         }
+    }
+
+    private func ingestOptimisticDirectMessages(
+        rumors: [NIP17Rumor],
+        attachmentComment: String?,
+        identity: NostrIdentity
+    ) throws -> [NostrDirectMessage] {
+        let messages = try NIP17OutgoingMessageBatch.optimisticLocalMessages(
+            rumors: rumors,
+            attachmentComment: attachmentComment,
+            identity: identity
+        )
+        var changed = false
+        for message in messages {
+            changed = snapshot.ingestDirectMessage(message) || changed
+        }
+        if changed { scheduleSave() }
+        return messages
+    }
+
+    private func markOptimisticDirectMessagesFailed(_ messages: [NostrDirectMessage]) {
+        var changed = false
+        for message in messages {
+            changed = snapshot.setDirectMessageDeliveryState(
+                rumorEventID: message.rumorEventID,
+                state: .failed
+            ) || changed
+        }
+        if changed { scheduleSave() }
     }
 
     private func enqueueDirectMessageBatch(

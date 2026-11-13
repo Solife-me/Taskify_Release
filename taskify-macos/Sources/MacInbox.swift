@@ -26,24 +26,33 @@ struct MacInboxView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(item.task.title).font(.headline)
                         Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
-                        HStack {
-                            Button("Accept") { _ = model.respondToSharedInboxItem(item.id, status: .accepted) }
-                            Button("Tentative") { _ = model.respondToSharedInboxItem(item.id, status: .tentative) }
-                            Button("Decline") { _ = model.respondToSharedInboxItem(item.id, status: .declined) }
+                        ViewThatFits(in: .horizontal) {
+                            HStack {
+                                sharedTaskButton("Accept", item: item, status: .accepted)
+                                sharedTaskButton("Tentative", item: item, status: .tentative)
+                                sharedTaskButton("Decline", item: item, status: .declined)
+                            }
+                            VStack(alignment: .leading, spacing: 8) {
+                                sharedTaskButton("Accept", item: item, status: .accepted)
+                                sharedTaskButton("Tentative", item: item, status: .tentative)
+                                sharedTaskButton("Decline", item: item, status: .declined)
+                            }
                         }
                     }.padding(10)
                 }
             }
             Section("Shared Boards") {
                 ForEach(model.sharedBoardInboxItems.filter { $0.status == .pending }) { item in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.board.boardName ?? "Shared board").font(.headline)
-                            Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
+                    ViewThatFits(in: .horizontal) {
+                        HStack {
+                            sharedBoardLabel(item)
+                            Spacer(minLength: 12)
+                            sharedBoardButtons(item)
                         }
-                        Spacer()
-                        Button("Join") { _ = model.acceptSharedBoardInboxItem(item.id) }
-                        Button("Dismiss") { model.dismissSharedBoardInboxItem(item.id) }
+                        VStack(alignment: .leading, spacing: 3) {
+                            sharedBoardLabel(item)
+                            sharedBoardButtons(item)
+                        }
                     }
                 }
             }
@@ -53,11 +62,12 @@ struct MacInboxView: View {
                         Text(item.event.title ?? "Calendar invitation").font(.headline)
                         Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
                         if let start = formattedISO(item.event.start) { Text(start).font(.caption).foregroundStyle(.secondary) }
-                        HStack {
-                            ForEach([SharedInboxItemStatus.accepted, .tentative, .declined], id: \.rawValue) { status in
-                                Button(status.rawValue.capitalized) {
-                                    Task { do { try await model.respondToSharedCalendarInvite(item.id, status: status) } catch { model.errorMessage = error.localizedDescription } }
-                                }
+                        ViewThatFits(in: .horizontal) {
+                            HStack {
+                                calendarInviteButtons(item)
+                            }
+                            VStack(alignment: .leading, spacing: 8) {
+                                calendarInviteButtons(item)
                             }
                         }
                     }.padding(10)
@@ -65,20 +75,84 @@ struct MacInboxView: View {
             }
             Section("Shared Contacts") {
                 ForEach(model.sharedContactInboxItems.filter { $0.status == .pending }) { item in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.contact.displayName.trimmedOrNil ?? item.contact.name.trimmedOrNil ?? item.contact.npub).font(.headline)
-                            Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
-                            if let about = item.contact.about.trimmedOrNil { Text(about).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                    ViewThatFits(in: .horizontal) {
+                        HStack {
+                            sharedContactLabel(item)
+                            Spacer(minLength: 12)
+                            sharedContactButtons(item)
                         }
-                        Spacer()
-                        Button("Save Contact") { Task { do { try await model.acceptSharedContactInboxItem(item.id) } catch { model.errorMessage = error.localizedDescription } } }
-                        Button("Dismiss") { model.dismissSharedContactInboxItem(item.id) }
+                        VStack(alignment: .leading, spacing: 8) {
+                            sharedContactLabel(item)
+                            sharedContactButtons(item)
+                        }
                     }
                 }
             }
         }.listStyle(.inset)
             .overlay { if model.pendingSharedInboxCount == 0 { ContentUnavailableView("Inbox Clear", systemImage: "tray", description: Text("Tasks, contacts and boards shared with you will appear here.")) } }
+    }
+
+    private func sharedTaskButton(
+        _ title: String,
+        item: SharedInboxItem,
+        status: SharedInboxItemStatus
+    ) -> some View {
+        Button(title) { _ = model.respondToSharedInboxItem(item.id, status: status) }
+    }
+
+    private func sharedBoardLabel(_ item: SharedBoardInboxItem) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(item.board.boardName ?? "Shared board").font(.headline)
+            Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func sharedBoardButtons(_ item: SharedBoardInboxItem) -> some View {
+        HStack {
+            Button("Join") { _ = model.acceptSharedBoardInboxItem(item.id) }
+            Button("Dismiss") { model.dismissSharedBoardInboxItem(item.id) }
+        }
+    }
+
+    @ViewBuilder
+    private func calendarInviteButtons(_ item: SharedCalendarInviteInboxItem) -> some View {
+        ForEach([SharedInboxItemStatus.accepted, .tentative, .declined], id: \.rawValue) { status in
+            Button(status.rawValue.capitalized) {
+                Task {
+                    do {
+                        try await model.respondToSharedCalendarInvite(item.id, status: status)
+                    } catch {
+                        model.errorMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    private func sharedContactLabel(_ item: SharedContactInboxItem) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(item.contact.displayName.trimmedOrNil ?? item.contact.name.trimmedOrNil ?? item.contact.npub)
+                .font(.headline)
+            Text("From \(senderLabel(item.sender))").font(.caption).foregroundStyle(.secondary)
+            if let about = item.contact.about.trimmedOrNil {
+                Text(about).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+    }
+
+    private func sharedContactButtons(_ item: SharedContactInboxItem) -> some View {
+        HStack {
+            Button("Save Contact") {
+                Task {
+                    do {
+                        try await model.acceptSharedContactInboxItem(item.id)
+                    } catch {
+                        model.errorMessage = error.localizedDescription
+                    }
+                }
+            }
+            Button("Dismiss") { model.dismissSharedContactInboxItem(item.id) }
+        }
     }
 }
 

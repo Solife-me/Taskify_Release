@@ -1546,6 +1546,28 @@ public actor TaskSyncEngine {
         guard connections[relayURL] != nil,
               rateLimitRetryTasks[relayURL] == nil,
               await outbox.isPending(eventID: entry.event.id, relayURL: relayURL) else { return }
+
+        // Durable entries may have been signed before this client learned a relay's hidden PoW
+        // floor. Preflight them here instead of waiting for another rejection: some relays do not
+        // reliably return a useful `pow:` OK for every custom event kind, leaving an otherwise
+        // replicated change to cycle through acknowledgement timeouts forever.
+        let requiredProofOfWork = await proofOfWorkRequirement(relayURL)
+        if requiredProofOfWork > TaskifyRelayProofOfWork.leadingZeroBits(entry.event.id) {
+            let replaced = await replaceQueuedEventForProofOfWork(
+                eventID: entry.event.id,
+                required: requiredProofOfWork
+            )
+            if replaced {
+                relayMessages[relayURL] = nil
+            } else if await outbox.isPending(eventID: entry.event.id, relayURL: relayURL) {
+                _ = try? await outbox.recordRejection(eventID: entry.event.id, relayURL: relayURL)
+                relayMessages[relayURL] = "Could not prepare required proof of work • change remains queued"
+            }
+            await emitStatus()
+            scheduleOutboxFlush()
+            return
+        }
+
         guard await waitForPublishWindow(relayURL: relayURL) else { return }
         guard let connection = connections[relayURL],
               rateLimitRetryTasks[relayURL] == nil,
@@ -2129,7 +2151,6 @@ public actor TaskSyncEngine {
     /// advertised one) and queued in its place; otherwise the refusal is recorded, so it isn't
     /// resent on every reconnect.
     private func remineForProofOfWork(eventID: String, relayURL: String, message: String) async {
-        guard let entry = await outbox.entry(eventID: eventID) else { return }
         // Some relays enforce proof of work in a write policy without advertising it in NIP-11;
         // the refusal is the only statement of the floor they actually apply. Prefer the number
         // it names, and remember it so the next event is mined correctly before it is offered.
@@ -2137,25 +2158,7 @@ public actor TaskSyncEngine {
         let stated = TaskifyProofOfWorkRejection.difficulty(fromMessage: message) ?? 0
         if stated > 0 { await recordProofOfWorkRequirement(relayURL, stated) }
         let required = max(advertised, stated)
-        let event = entry.event
-        var replaced = false
-        if required > TaskifyRelayProofOfWork.leadingZeroBits(eventID), required <= 32,
-           let privateKey = signingKey(for: entry) {
-            let mining = Task.detached(priority: .utility) {
-                try TaskifyRelayProofOfWork.$difficulty.withValue(required) {
-                    try NostrEvent.signed(
-                        privateKey: privateKey,
-                        createdAt: event.createdAt,
-                        kind: event.kind,
-                        tags: event.tags.filter { $0.first != "nonce" },
-                        content: event.content
-                    )
-                }
-            }
-            if let mined = try? await mining.value {
-                replaced = (try? await outbox.replaceEvent(eventID, with: mined)) == true
-            }
-        }
+        let replaced = await replaceQueuedEventForProofOfWork(eventID: eventID, required: required)
         if replaced {
             relayMessages[relayURL] = nil
         } else {
@@ -2164,6 +2167,28 @@ public actor TaskSyncEngine {
         }
         await emitStatus()
         scheduleOutboxFlush()
+    }
+
+    /// Re-signs one durable logical change with enough NIP-13 work while retaining its replica
+    /// acknowledgements and redirecting any dependent queued event to the replacement ID.
+    private func replaceQueuedEventForProofOfWork(eventID: String, required: Int) async -> Bool {
+        guard let entry = await outbox.entry(eventID: eventID) else { return false }
+        let event = entry.event
+        guard required > TaskifyRelayProofOfWork.leadingZeroBits(eventID), required <= 32,
+              let privateKey = signingKey(for: entry) else { return false }
+        let mining = Task.detached(priority: .utility) {
+            try TaskifyRelayProofOfWork.$difficulty.withValue(required) {
+                try NostrEvent.signed(
+                    privateKey: privateKey,
+                    createdAt: event.createdAt,
+                    kind: event.kind,
+                    tags: event.tags.filter { $0.first != "nonce" },
+                    content: event.content
+                )
+            }
+        }
+        guard let mined = try? await mining.value else { return false }
+        return (try? await outbox.replaceEvent(eventID, with: mined)) == true
     }
 
     /// The key that signed a queued event, when this client holds it: the account's own, or the
