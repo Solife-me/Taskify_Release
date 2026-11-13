@@ -1332,31 +1332,38 @@ struct BoardPrintChooserSheet: View {
 
     let title: String
     let choices: [BoardPrintListChoice]
-    let onContinue: (Set<String>?) -> Void
+    let onContinue: (Set<String>?, PhysicalChecklistPrintOptions) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(TaskPresentationSettings.completedTabKey)
+    private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var scope = Scope.board
     @State private var selectedListIDs: Set<String>
+    @State private var options = PhysicalChecklistPrintOptions.default
 
     init(
         title: String,
         choices: [BoardPrintListChoice],
-        onContinue: @escaping (Set<String>?) -> Void
+        onContinue: @escaping (Set<String>?, PhysicalChecklistPrintOptions) -> Void
     ) {
         self.title = title
         self.choices = choices
         self.onContinue = onContinue
         _selectedListIDs = State(initialValue: Set(
             choices.filter { choice in
-                choice.items.contains { !$0.filled }
+                choice.items.contains { !$0.filled && !$0.upcoming }
             }.map(\.id)
         ))
+    }
+
+    private func isPrintable(_ item: PhysicalChecklistItem) -> Bool {
+        (!item.upcoming || options.includeUpcoming) && (!item.filled || options.includeCompleted)
     }
 
     private var printableCount: Int {
         let selected = scope == .board ? choices : choices.filter { selectedListIDs.contains($0.id) }
         return selected.reduce(0) { count, choice in
-            count + choice.items.filter { !$0.filled }.count
+            count + choice.items.filter(isPrintable).count
         }
     }
 
@@ -1375,7 +1382,7 @@ struct BoardPrintChooserSheet: View {
                 if scope == .lists {
                     Section("Lists") {
                         ForEach(choices) { choice in
-                            let count = choice.items.filter { !$0.filled }.count
+                            let count = choice.items.filter(isPrintable).count
                             Button {
                                 if selectedListIDs.contains(choice.id) {
                                     selectedListIDs.remove(choice.id)
@@ -1389,7 +1396,7 @@ struct BoardPrintChooserSheet: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(choice.name)
                                             .foregroundStyle(TaskifyTheme.primaryText)
-                                        Text("\(count) task\(count == 1 ? "" : "s")")
+                                        Text("\(count) item\(count == 1 ? "" : "s")")
                                             .font(.caption)
                                             .foregroundStyle(TaskifyTheme.secondaryText)
                                     }
@@ -1403,16 +1410,27 @@ struct BoardPrintChooserSheet: View {
                     }
                 }
 
+                Section("Include") {
+                    Toggle("Upcoming tasks", isOn: $options.includeUpcoming)
+                    Toggle("Completed tasks", isOn: $options.includeCompleted)
+                }
+
+                Section("Details") {
+                    Toggle("Notes", isOn: $options.includeNotes)
+                    Toggle("Due date and time", isOn: $options.includeDue)
+                    Toggle("Subtasks", isOn: $options.includeSubtasks)
+                    Toggle("Photos", isOn: $options.includePhotos)
+                }
+
                 Section {
-                    Label(
-                        "Only incomplete tasks and events will be printed.",
-                        systemImage: "circle.dashed"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-                    Text("\(printableCount) item\(printableCount == 1 ? "" : "s") selected")
+                    Text("\(printableCount) item\(printableCount == 1 ? "" : "s") will print")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(TaskifyTheme.primaryText)
+                    if options.includeSubtasks || options.includePhotos {
+                        Text("Tasks with subtasks or photos print taller, so fewer fit on each page.")
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
@@ -1425,7 +1443,7 @@ struct BoardPrintChooserSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Continue") {
-                        onContinue(scope == .board ? nil : selectedListIDs)
+                        onContinue(scope == .board ? nil : selectedListIDs, options)
                         dismiss()
                     }
                     .disabled(printableCount == 0)
@@ -1433,6 +1451,9 @@ struct BoardPrintChooserSheet: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onAppear {
+            options.includeCompleted = completedTabEnabled
+        }
     }
 }
 

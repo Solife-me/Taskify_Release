@@ -303,6 +303,7 @@ public final class SnapshotLookupCache {
         boardID: String,
         columnID: String,
         includeCompleted: Bool,
+        includeUpcoming: Bool = false,
         sortMode: UpcomingSortMode = .manual,
         sortDirection: UpcomingSortDirection = .ascending,
         snapshot: TaskifySnapshot,
@@ -310,6 +311,25 @@ public final class SnapshotLookupCache {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [TaskItem] {
+        // Upcoming items are not cached: the print builder is the only caller that wants them, and
+        // it runs once per print.
+        if includeUpcoming {
+            ensureTaskIndex(snapshot: snapshot)
+            let boardKind = snapshot.boards.first { $0.id == boardID }?.kind
+            let raw = BoardTaskOrganizer.tasks(
+                taskIndex?.tasksByBoardID[boardID] ?? [],
+                boardID: boardID,
+                columnID: columnID,
+                boardKind: boardKind,
+                includeCompleted: includeCompleted,
+                includeUpcoming: true,
+                weekStartsOn: weekStartsOn,
+                now: now,
+                calendar: calendar
+            )
+            guard sortMode != .manual else { return raw }
+            return UpcomingTaskOrganizer.sortBoardTasks(raw, mode: sortMode, direction: sortDirection)
+        }
         let context = TaskTimeContext(
             minute: Int(now.timeIntervalSince1970 / 60),
             weekStartsOn: weekStartsOn,

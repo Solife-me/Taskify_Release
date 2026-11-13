@@ -1,7 +1,18 @@
-import { BOARD_PRINT_CONTRACT_VERSION, BOARD_PRINT_LAYOUT_MM, BOARD_PRINT_MAX_PAGES, boardPrintJobCodePattern, boardPrintPagePattern, isSupportedBoardPrintVersion } from "taskify-core";
+import {
+  BOARD_PRINT_CONTRACT_VERSION,
+  BOARD_PRINT_DETAIL_LAYOUT_VERSION,
+  BOARD_PRINT_LAYOUT_MM,
+  BOARD_PRINT_MAX_PAGES,
+  boardPrintJobCodePattern,
+  boardPrintPagePattern,
+  isSupportedBoardPrintVersion,
+} from "taskify-core";
 import { getPaperDefinition, type PrintPaperSize } from "./printPaper";
 
 export const BOARD_PRINT_LAYOUT_VERSION = BOARD_PRINT_CONTRACT_VERSION;
+export { BOARD_PRINT_DETAIL_LAYOUT_VERSION };
+
+export type BoardPrintSubtask = { title: string; completed?: boolean };
 
 export type BoardPrintTask = {
   id: string;
@@ -10,12 +21,98 @@ export type BoardPrintTask = {
   /** Stable list/day identifier used when the user prints only selected lists. */
   listId?: string;
   completed?: boolean;
+  /** A compact second line under the title: due date/time and/or the start of the note. */
+  detail?: string;
+  subtasks?: BoardPrintSubtask[];
+  /** Printable photo thumbnails (data URLs), capped when the job is prepared. */
+  photos?: string[];
+  /** How many photo thumbnails to reserve space for when only the synced geometry is known. */
+  photoCount?: number;
+  /** Only needed while preparing photos, so an encrypted attachment can be decrypted. */
+  boardId?: string;
 };
 
 export type BoardPrintScope =
   | { kind: "board" }
   | { kind: "lists"; listIds: string[] }
   | { kind: "selection" };
+
+export type BoardPrintOptions = {
+  /** Tasks the board is holding back until a future date. */
+  includeUpcoming: boolean;
+  includeCompleted: boolean;
+  includeNotes: boolean;
+  includeDue: boolean;
+  includeSubtasks: boolean;
+  includePhotos: boolean;
+};
+
+export const DEFAULT_BOARD_PRINT_OPTIONS: BoardPrintOptions = {
+  includeUpcoming: false,
+  includeCompleted: false,
+  includeNotes: false,
+  includeDue: false,
+  includeSubtasks: false,
+  includePhotos: false,
+};
+
+/** The detailed layout is used whenever a row needs more than the title band. */
+export function boardPrintLayoutVersionFor(options: BoardPrintOptions): string {
+  return options.includeSubtasks || options.includePhotos
+    ? BOARD_PRINT_DETAIL_LAYOUT_VERSION
+    : BOARD_PRINT_LAYOUT_VERSION;
+}
+
+type BoardPrintDueOptions = { includeTime?: boolean; timeZone?: string };
+
+function formatPrintIntl(date: Date, options: Intl.DateTimeFormatOptions): string | undefined {
+  try {
+    return new Intl.DateTimeFormat(undefined, options).format(date);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A due date, and the time when the task carries one, in the task's own time zone. */
+export function formatBoardPrintDue(
+  iso: string | null | undefined,
+  options?: BoardPrintDueOptions,
+): string | undefined {
+  if (!iso) return undefined;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return undefined;
+  const timeZone = options?.timeZone;
+  const dateText =
+    formatPrintIntl(date, { dateStyle: "medium", ...(timeZone ? { timeZone } : {}) }) ??
+    formatPrintIntl(date, { dateStyle: "medium" });
+  if (!dateText) return undefined;
+  if (!options?.includeTime) return dateText;
+  const timeText =
+    formatPrintIntl(date, { hour: "numeric", minute: "2-digit", ...(timeZone ? { timeZone } : {}) }) ??
+    formatPrintIntl(date, { hour: "numeric", minute: "2-digit" });
+  return timeText ? `${dateText}, ${timeText}` : dateText;
+}
+
+/** A calendar event's all-day date key, formatted without shifting across time zones. */
+export function formatBoardPrintDateKey(dateKey: string | null | undefined): string | undefined {
+  if (!dateKey) return undefined;
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  if (!parts) return undefined;
+  const date = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]), 12);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return formatPrintIntl(date, { dateStyle: "medium" });
+}
+
+/** The detail line's text: due first, then the note, on one line. */
+export function composeBoardPrintDetail(
+  due?: string | null,
+  note?: string | null,
+): string | undefined {
+  const parts = [due, note]
+    .map((part) => (part ?? "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  return parts.length ? parts.join(" · ") : undefined;
+}
 
 export type BoardPrintListChoice = {
   id: string;
@@ -70,6 +167,12 @@ const PAGE_ID_BITS = BOARD_PRINT_LAYOUT_MM.pageIdBits;
 const JOB_CODE_MARKER_SIZE_MM = BOARD_PRINT_LAYOUT_MM.jobCodeMarkerSizeMm;
 const JOB_CODE_MARKER_GAP_MM = BOARD_PRINT_LAYOUT_MM.jobCodeMarkerGapMm;
 const JOB_CODE_BITS = BOARD_PRINT_LAYOUT_MM.jobCodeBits;
+export const BOARD_PRINT_DETAIL_LINE_MM = 3.4;
+export const BOARD_PRINT_SUBTASK_LINE_MM = 3.6;
+const SUBTASK_MAX = 6;
+export const BOARD_PRINT_PHOTO_SIZE_MM = 13;
+export const BOARD_PRINT_PHOTO_MAX = 3;
+const PHOTO_BLOCK_MM = BOARD_PRINT_PHOTO_SIZE_MM + 2;
 
 type BoardPrintMargins = {
   top: number;
@@ -100,9 +203,17 @@ export type BoardPrintTaskRow = {
   taskId: string;
   title: string;
   label?: string;
+  detail?: string;
+  /** Detailed sheets put the detail block below the title band instead of inside it. */
+  detailBelow?: boolean;
+  subtasks?: BoardPrintSubtask[];
+  hiddenSubtaskCount?: number;
+  photos?: string[];
   x: number;
   y: number;
   widthMm: number;
+  heightMm: number;
+  titleBandMm: number;
   textX: number;
   textWidthMm: number;
   circleX: number;
@@ -115,6 +226,7 @@ export type BoardPrintHeaderRow = {
   x: number;
   y: number;
   widthMm: number;
+  heightMm: number;
   textWidthMm: number;
 };
 
@@ -272,7 +384,53 @@ export function buildBoardPrintLayout(
     tasks.forEach((task) => rows.push({ kind: "task", task }));
   }
 
-  const pageCount = Math.max(1, Math.ceil(rows.length / rowsPerPage));
+  const detailed = layoutVersion === BOARD_PRINT_DETAIL_LAYOUT_VERSION;
+  const detailedTask = (task: BoardPrintTask) => {
+    const allSubtasks = (task.subtasks ?? []).filter((subtask) => subtask.title.trim());
+    const subtasks = allSubtasks.slice(0, SUBTASK_MAX);
+    const hiddenSubtaskCount = allSubtasks.length - subtasks.length;
+    const photos = (task.photos ?? []).slice(0, BOARD_PRINT_PHOTO_MAX);
+    const photoTotal = Math.min(task.photos?.length ?? task.photoCount ?? 0, BOARD_PRINT_PHOTO_MAX);
+    const detailMm = task.detail ? BOARD_PRINT_DETAIL_LINE_MM : 0;
+    const subtaskMm = (subtasks.length + (hiddenSubtaskCount ? 1 : 0)) * BOARD_PRINT_SUBTASK_LINE_MM;
+    const photoMm = photoTotal > 0 ? PHOTO_BLOCK_MM : 0;
+    const gapMm = detailMm || subtaskMm || photoMm ? 1 : 0;
+    return {
+      subtasks,
+      hiddenSubtaskCount,
+      photos,
+      heightMm: ROW_HEIGHT_MM + detailMm + subtaskMm + photoMm + gapMm,
+    };
+  };
+  const geometryFor = (rowItem: (typeof rows)[number]) =>
+    rowItem.kind === "header" || !detailed ? null : detailedTask(rowItem.task);
+
+  const slots: { pageIndex: number; yMm: number; heightMm: number }[] = [];
+  if (detailed) {
+    let pageIndex = 0;
+    let usedMm = 0;
+    rows.forEach((rowItem) => {
+      const heightMm = rowItem.kind === "header" ? ROW_HEIGHT_MM : detailedTask(rowItem.task).heightMm;
+      if (usedMm > 0 && usedMm + heightMm > contentHeightMm) {
+        pageIndex += 1;
+        usedMm = 0;
+      }
+      slots.push({ pageIndex, yMm: contentTopMm + usedMm, heightMm });
+      usedMm += heightMm;
+    });
+  } else {
+    rows.forEach((_, index) => {
+      slots.push({
+        pageIndex: Math.floor(index / rowsPerPage),
+        yMm: contentTopMm + (index % rowsPerPage) * ROW_HEIGHT_MM,
+        heightMm: ROW_HEIGHT_MM,
+      });
+    });
+  }
+
+  const pageCount = detailed
+    ? Math.max(1, ...slots.map((slot) => slot.pageIndex + 1))
+    : Math.max(1, Math.ceil(rows.length / rowsPerPage));
   if (pageCount > BOARD_PRINT_MAX_PAGES) {
     throw new Error(`This print needs ${pageCount} pages; the versioned scan format supports ${BOARD_PRINT_MAX_PAGES}.`);
   }
@@ -290,18 +448,15 @@ export function buildBoardPrintLayout(
     x: jobCodeOriginXMm + index * (JOB_CODE_MARKER_SIZE_MM + JOB_CODE_MARKER_GAP_MM),
     y: jobCodeOriginYMm,
   }));
-  const includeJobCode = layoutVersion === BOARD_PRINT_CONTRACT_VERSION;
+  const includeJobCode = layoutVersion === BOARD_PRINT_CONTRACT_VERSION || layoutVersion === BOARD_PRINT_DETAIL_LAYOUT_VERSION;
   const jobCodePattern = boardPrintJobCodePattern(options?.jobId || "unknown");
 
   rows.forEach((rowItem, index) => {
-    const pageIndex = Math.floor(index / rowsPerPage);
-    const page = pages[pageIndex];
-    if (!page) return;
-    const indexInPage = index % rowsPerPage;
-    const columnIndex = Math.floor(indexInPage / rowsPerColumn);
-    const rowIndex = indexInPage % rowsPerColumn;
-    const originX = margin.left + columnIndex * (columnWidthMm + COLUMN_GAP_MM);
-    const originY = contentTopMm + rowIndex * ROW_HEIGHT_MM;
+    const slot = slots[index];
+    const page = pages[slot?.pageIndex ?? 0];
+    if (!slot || !page) return;
+    const originX = margin.left;
+    const originY = slot.yMm;
     if (rowItem.kind === "header") {
       page.rows.push({
         kind: "header",
@@ -309,24 +464,34 @@ export function buildBoardPrintLayout(
         x: originX,
         y: originY,
         widthMm: columnWidthMm,
+        heightMm: ROW_HEIGHT_MM,
         textWidthMm: columnWidthMm,
       });
       return;
     }
 
+    const titleBandMm = ROW_HEIGHT_MM;
     const circleX = originX;
-    const circleY = originY + (ROW_HEIGHT_MM - CIRCLE_SIZE_MM) / 2;
+    const circleY = originY + (titleBandMm - CIRCLE_SIZE_MM) / 2;
     const textX = originX + CIRCLE_SIZE_MM + CIRCLE_TEXT_GAP_MM;
     const textWidthMm = columnWidthMm - CIRCLE_SIZE_MM - CIRCLE_TEXT_GAP_MM;
+    const geometry = geometryFor(rowItem);
 
     page.rows.push({
       kind: "task",
       taskId: rowItem.task.id,
       title: rowItem.task.title,
       label: rowItem.task.label,
+      ...(rowItem.task.detail ? { detail: rowItem.task.detail } : {}),
+      ...(detailed && rowItem.task.detail ? { detailBelow: true } : {}),
+      ...(geometry?.subtasks.length ? { subtasks: geometry.subtasks } : {}),
+      ...(geometry?.hiddenSubtaskCount ? { hiddenSubtaskCount: geometry.hiddenSubtaskCount } : {}),
+      ...(geometry?.photos.length ? { photos: geometry.photos } : {}),
       x: originX,
       y: originY,
       widthMm: columnWidthMm,
+      heightMm: slot.heightMm,
+      titleBandMm,
       textX,
       textWidthMm,
       circleX,

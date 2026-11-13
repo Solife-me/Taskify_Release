@@ -1017,6 +1017,7 @@ final class AppModel {
         boardID: String,
         columnID: String,
         includeCompleted: Bool,
+        includeUpcoming: Bool = false,
         sortMode: UpcomingSortMode = .manual,
         sortDirection: UpcomingSortDirection = .ascending
     ) -> [TaskItem] {
@@ -1024,6 +1025,7 @@ final class AppModel {
             boardID: boardID,
             columnID: columnID,
             includeCompleted: includeCompleted,
+            includeUpcoming: includeUpcoming,
             sortMode: sortMode,
             sortDirection: sortDirection,
             snapshot: tasksSnapshot,

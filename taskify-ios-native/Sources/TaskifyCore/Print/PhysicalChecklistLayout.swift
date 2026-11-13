@@ -22,17 +22,121 @@ public enum PhysicalChecklistPaper: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public struct PhysicalChecklistSubtask: Codable, Equatable, Sendable {
+    public var title: String
+    public var completed: Bool
+
+    public init(title: String, completed: Bool = false) {
+        self.title = title
+        self.completed = completed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, completed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decode(String.self, forKey: .title)
+        completed = try container.decodeIfPresent(Bool.self, forKey: .completed) ?? false
+    }
+}
+
 public struct PhysicalChecklistItem: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var title: String
     public var section: String?
     public var filled: Bool
+    /// The compact line under the title: due date/time and/or the start of the note.
+    public var detail: String?
+    public var subtasks: [PhysicalChecklistSubtask]
+    /// How many photo thumbnails the detailed row reserves space for.
+    public var photoCount: Int
 
-    public init(id: String, title: String, section: String? = nil, filled: Bool = false) {
+    /// Printing only: the thumbnails themselves and where to decrypt them from. Never encoded,
+    /// so synced manifests and the saved-job cache stay small.
+    public var photos: [Data] = []
+    public var photoSources: [String] = []
+    public var photoBoardID: String?
+    /// Printing only: the board is holding this task back until a future date.
+    public var upcoming: Bool = false
+
+    public init(
+        id: String,
+        title: String,
+        section: String? = nil,
+        filled: Bool = false,
+        detail: String? = nil,
+        subtasks: [PhysicalChecklistSubtask] = [],
+        photoCount: Int = 0
+    ) {
         self.id = id
         self.title = title
         self.section = section
         self.filled = filled
+        self.detail = detail
+        self.subtasks = subtasks
+        self.photoCount = photoCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, section, filled, detail, subtasks, photoCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        section = try container.decodeIfPresent(String.self, forKey: .section)
+        filled = try container.decodeIfPresent(Bool.self, forKey: .filled) ?? false
+        detail = try container.decodeIfPresent(String.self, forKey: .detail)
+        subtasks = try container.decodeIfPresent([PhysicalChecklistSubtask].self, forKey: .subtasks) ?? []
+        photoCount = try container.decodeIfPresent(Int.self, forKey: .photoCount) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(section, forKey: .section)
+        try container.encode(filled, forKey: .filled)
+        try container.encodeIfPresent(detail, forKey: .detail)
+        if !subtasks.isEmpty { try container.encode(subtasks, forKey: .subtasks) }
+        if photoCount > 0 { try container.encode(photoCount, forKey: .photoCount) }
+    }
+}
+
+/// What the native print chooser asks for, mirroring the PWA's print options.
+public struct PhysicalChecklistPrintOptions: Equatable, Sendable {
+    public var includeUpcoming: Bool
+    public var includeCompleted: Bool
+    public var includeNotes: Bool
+    public var includeDue: Bool
+    public var includeSubtasks: Bool
+    public var includePhotos: Bool
+
+    public init(
+        includeUpcoming: Bool = false,
+        includeCompleted: Bool = false,
+        includeNotes: Bool = false,
+        includeDue: Bool = false,
+        includeSubtasks: Bool = false,
+        includePhotos: Bool = false
+    ) {
+        self.includeUpcoming = includeUpcoming
+        self.includeCompleted = includeCompleted
+        self.includeNotes = includeNotes
+        self.includeDue = includeDue
+        self.includeSubtasks = includeSubtasks
+        self.includePhotos = includePhotos
+    }
+
+    public static let `default` = PhysicalChecklistPrintOptions()
+
+    public var isDetailed: Bool { includeSubtasks || includePhotos }
+
+    public var layoutVersion: String {
+        isDetailed ? BoardPrintContract.detailVersion : BoardPrintContract.version
     }
 }
 
@@ -49,6 +153,12 @@ public struct PhysicalChecklistJob: Codable, Equatable, Identifiable, Sendable {
     public var paper: PhysicalChecklistPaper
     public var format: Format
     public var items: [PhysicalChecklistItem]
+    /// Optional so jobs saved before detailed sheets still decode; those are all v3.
+    public var layoutVersion: String?
+
+    public var effectiveLayoutVersion: String {
+        layoutVersion ?? BoardPrintContract.version
+    }
 
     public init(
         id: String = UUID().uuidString,
@@ -57,7 +167,8 @@ public struct PhysicalChecklistJob: Codable, Equatable, Identifiable, Sendable {
         createdAt: Date = Date(),
         paper: PhysicalChecklistPaper = .letter,
         format: Format = .taskList,
-        items: [PhysicalChecklistItem]
+        items: [PhysicalChecklistItem],
+        layoutVersion: String? = BoardPrintContract.version
     ) {
         self.id = id
         self.ownerID = ownerID
@@ -66,6 +177,7 @@ public struct PhysicalChecklistJob: Codable, Equatable, Identifiable, Sendable {
         self.paper = paper
         self.format = format
         self.items = items
+        self.layoutVersion = layoutVersion
     }
 }
 
@@ -83,7 +195,7 @@ public struct NostrPrintJobManifest: Codable, Equatable, Sendable {
     public var items: [PhysicalChecklistItem]
 
     public init(job: PhysicalChecklistJob) {
-        layoutVersion = BoardPrintContract.version
+        layoutVersion = job.effectiveLayoutVersion
         id = job.id
         ownerID = job.ownerID
         title = job.title
@@ -103,7 +215,8 @@ public struct NostrPrintJobManifest: Codable, Equatable, Sendable {
             createdAt: Date(timeIntervalSince1970: TimeInterval(createdAt)),
             paper: paper,
             format: format,
-            items: items
+            items: items,
+            layoutVersion: layoutVersion
         )
     }
 
@@ -194,11 +307,15 @@ public struct PhysicalChecklistRow: Equatable, Sendable {
     public var xMM: Double
     public var yMM: Double
     public var widthMM: Double
+    public var heightMM: Double
+    public var titleBandMM: Double
     public var circleCenterMM: (x: Double, y: Double)?
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.kind == rhs.kind && lhs.xMM == rhs.xMM && lhs.yMM == rhs.yMM &&
-            lhs.widthMM == rhs.widthMM && lhs.circleCenterMM?.x == rhs.circleCenterMM?.x &&
+            lhs.widthMM == rhs.widthMM && lhs.heightMM == rhs.heightMM &&
+            lhs.titleBandMM == rhs.titleBandMM &&
+            lhs.circleCenterMM?.x == rhs.circleCenterMM?.x &&
             lhs.circleCenterMM?.y == rhs.circleCenterMM?.y
     }
 }
@@ -218,6 +335,15 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
     public static let pageIDSizeMM = BoardPrintContract.pageIDMarkerSizeMM
     public static let pageIDGapMM = BoardPrintContract.pageIDMarkerGapMM
 
+    public static let detailLineMM = 3.4
+    public static let subtaskLineMM = 3.6
+    public static let subtaskMax = 6
+    public static let photoSizeMM = 13.0
+    public static let photoMax = 3
+    private static let photoBlockMM = photoSizeMM + 2
+
+    public var layoutVersion: String
+    public var detailed: Bool
     public var paper: PhysicalChecklistPaper
     public var pages: [PhysicalChecklistPage]
     public var headerTopMM: Double
@@ -231,6 +357,7 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
         let contentTop = headerTop + BoardPrintContract.headerHeightMM + BoardPrintContract.headerGapMM
         let contentHeight = size.height - marginMM - contentTop
         let compact = job.format == .bibleChapters
+        let detailed = !compact && job.effectiveLayoutVersion == BoardPrintContract.detailVersion
         let rowHeight = compact ? 5.5 : rowHeightMM
         let circleSize = compact ? 3.4 : circleSizeMM
         let columnCount = compact ? (job.paper == .a6 ? 2 : 3) : 1
@@ -253,15 +380,67 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
             logicalRows.append(.item(item))
         }
 
-        let pageCount = max(1, Int(ceil(Double(logicalRows.count) / Double(rowsPerPage))))
+        func itemHeight(_ item: PhysicalChecklistItem) -> Double {
+            guard detailed else { return rowHeight }
+            let subtaskCount = item.subtasks.filter {
+                !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }.count
+            let subtaskLines = min(subtaskCount, subtaskMax) + (subtaskCount > subtaskMax ? 1 : 0)
+            let hasDetail = !(item.detail ?? "").isEmpty
+            let extra =
+                (hasDetail ? detailLineMM : 0) +
+                Double(subtaskLines) * subtaskLineMM +
+                (item.photoCount > 0 ? photoBlockMM : 0)
+            return rowHeight + extra + (extra > 0 ? 1 : 0)
+        }
+
+        func heightForRow(_ kind: PhysicalChecklistRow.Kind) -> Double {
+            switch kind {
+            case .section: rowHeight
+            case let .item(item): itemHeight(item)
+            }
+        }
+
+        var slots: [(pageIndex: Int, yMM: Double, heightMM: Double)] = []
+        if detailed {
+            var pageIndex = 0
+            var usedMM = 0.0
+            for kind in logicalRows {
+                let height = heightForRow(kind)
+                if usedMM > 0, usedMM + height > contentHeight {
+                    pageIndex += 1
+                    usedMM = 0
+                }
+                slots.append((pageIndex, contentTop + usedMM, height))
+                usedMM += height
+            }
+        } else {
+            for (index, _) in logicalRows.enumerated() {
+                slots.append((
+                    index / rowsPerPage,
+                    contentTop + Double(index % rowsPerPage) * rowHeight,
+                    rowHeight
+                ))
+            }
+        }
+
+        let pageCount = detailed
+            ? max(1, (slots.map(\.pageIndex).max() ?? 0) + 1)
+            : max(1, Int(ceil(Double(logicalRows.count) / Double(rowsPerPage))))
         var pages = (0..<pageCount).map { PhysicalChecklistPage(index: $0, rows: []) }
         for (index, kind) in logicalRows.enumerated() {
-            let pageIndex = index / rowsPerPage
-            let indexInPage = index % rowsPerPage
-            let columnIndex = indexInPage / rowsPerColumn
-            let rowIndex = indexInPage % rowsPerColumn
-            let x = leftMargin + Double(columnIndex) * (width + columnGap)
-            let y = contentTop + Double(rowIndex) * rowHeight
+            guard slots.indices.contains(index) else { continue }
+            let slot = slots[index]
+            guard pages.indices.contains(slot.pageIndex) else { continue }
+            let x: Double
+            if detailed {
+                x = leftMargin
+            } else {
+                let indexInPage = index % rowsPerPage
+                let columnIndex = indexInPage / rowsPerColumn
+                x = leftMargin + Double(columnIndex) * (width + columnGap)
+            }
+            let y = slot.yMM
             let center: (x: Double, y: Double)?
             switch kind {
             case .section:
@@ -269,16 +448,20 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
             case .item:
                 center = (x + circleSize / 2, y + rowHeight / 2)
             }
-            pages[pageIndex].rows.append(PhysicalChecklistRow(
+            pages[slot.pageIndex].rows.append(PhysicalChecklistRow(
                 kind: kind,
                 xMM: x,
                 yMM: y,
                 widthMM: width,
+                heightMM: slot.heightMM,
+                titleBandMM: rowHeight,
                 circleCenterMM: center
             ))
         }
 
         return Self(
+            layoutVersion: job.effectiveLayoutVersion,
+            detailed: detailed,
             paper: job.paper,
             pages: pages,
             headerTopMM: headerTop,

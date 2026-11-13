@@ -114,7 +114,7 @@ export function AppModalStack({
         />
       )}
 
-      {(print.biblePrintOpen || print.bibleScanOpen || print.boardPrintOpen || print.boardScanOpen) && (
+      {(print.biblePrintOpen || print.bibleScanOpen || print.boardPrintChooserOpen || print.boardPrintOpen || print.boardScanOpen) && (
         <Suspense fallback={null}>
           <PrintSheets {...print} />
         </Suspense>

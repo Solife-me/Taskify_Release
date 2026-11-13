@@ -74,6 +74,17 @@ export function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
   return `data:${mimeType};base64,${btoa(binary)}`;
 }
 
+/** The MIME type an attachment URL's extension implies, for decryption and printing. */
+export function inferAttachmentMimeFromUrl(url: string): string {
+  const clean = url.split("?")[0].toLowerCase();
+  if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
+  if (clean.endsWith(".png")) return "image/png";
+  if (clean.endsWith(".gif")) return "image/gif";
+  if (clean.endsWith(".webp")) return "image/webp";
+  if (clean.endsWith(".heic")) return "image/heic";
+  return "application/octet-stream";
+}
+
 export async function encryptAndUploadAttachment(opts: {
   boardId: string;
   data: Uint8Array;

@@ -956,6 +956,7 @@ struct PhysicalChecklistSheet: View {
     @State private var scanReview = PhysicalChecklistScanReview()
     @State private var scanMessage: String?
     @State private var scanJob: PhysicalChecklistJob?
+    @State private var preparingPhotos = false
 
     let onApply: ([String]) -> Void
 
@@ -968,6 +969,9 @@ struct PhysicalChecklistSheet: View {
         let storedJob = PhysicalChecklistJobStore.load(ownerID: job.ownerID)
         _showingScanner = State(
             initialValue: startWithScanner && VNDocumentCameraViewController.isSupported
+        )
+        _preparingPhotos = State(
+            initialValue: job.items.contains { !$0.photoSources.isEmpty && $0.photos.isEmpty }
         )
         _scanJob = State(initialValue: startWithScanner ? (storedJob ?? job) : nil)
         self.onApply = onApply
@@ -1013,6 +1017,7 @@ struct PhysicalChecklistSheet: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(TaskifyTheme.accent)
+                        .disabled(preparingPhotos)
 
                         Button {
                             shareChecklist()
@@ -1021,6 +1026,13 @@ struct PhysicalChecklistSheet: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
+                        .disabled(preparingPhotos)
+
+                        if preparingPhotos {
+                            Label("Preparing photo thumbnails…", systemImage: "photo")
+                                .font(.caption)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
                     }
 
                     if let scanMessage {
@@ -1111,6 +1123,9 @@ struct PhysicalChecklistSheet: View {
                 }
             }
         }
+        .task(id: job.id) {
+            await preparePhotosIfNeeded()
+        }
         .sheet(item: $sharePayload) { payload in
             PhysicalChecklistActivityView(items: [payload.url])
         }
@@ -1118,7 +1133,8 @@ struct PhysicalChecklistSheet: View {
             PhysicalChecklistDocumentScanner { images in
                 showingScanner = false
                 guard let scanJob else { return }
-                let result = PhysicalChecklistScanAnalyzer.scan(images: images, job: scanJob)
+                let grayImages = images.compactMap(physicalChecklistGrayImage)
+                let result = PhysicalChecklistScanAnalyzer.scan(images: grayImages, job: scanJob)
                 if result.mismatchedJobs > 0 {
                     scanMessage = "This sheet belongs to a different print or board. Reprint the current checklist before scanning."
                 } else if result.unreadablePageIDs > 0 {
@@ -1136,6 +1152,42 @@ struct PhysicalChecklistSheet: View {
             }
             .ignoresSafeArea()
         }
+    }
+
+    /// Decrypts and shrinks each photo attachment into printable thumbnails, then updates the
+    /// job so its tall rows match the photos that are actually drawn.
+    private func preparePhotosIfNeeded() async {
+        guard job.items.contains(where: { !$0.photoSources.isEmpty && $0.photos.isEmpty }) else { return }
+        preparingPhotos = true
+        defer { preparingPhotos = false }
+
+        var updated = job
+        for index in updated.items.indices {
+            let sources = Array(updated.items[index].photoSources.prefix(PhysicalChecklistLayout.photoMax))
+            guard !sources.isEmpty, let boardID = updated.items[index].photoBoardID else { continue }
+            var photos: [Data] = []
+            for source in sources {
+                do {
+                    let data = try await TaskAttachmentDataLoader.load(
+                        source: source,
+                        encrypted: !source.hasPrefix("data:"),
+                        boardID: boardID
+                    )
+                    if let image = await TaskAttachmentThumbnailLoader.shared.image(
+                        data: data,
+                        cacheKey: "print::\(boardID)::\(source)",
+                        maximumPixelSize: 240
+                    ), let jpeg = image.jpegData(compressionQuality: 0.72) {
+                        photos.append(jpeg)
+                    }
+                } catch {
+                    continue
+                }
+            }
+            updated.items[index].photos = photos
+            updated.items[index].photoCount = photos.count
+        }
+        job = updated
     }
 
     private func pdfURL() throws -> URL {
@@ -1241,7 +1293,7 @@ private enum PhysicalChecklistPDFRenderer {
                 .foregroundColor: UIColor.black,
             ]
         )
-        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count) • Print \(PhysicalChecklistLayout.version)"
+        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count) • Print \(layout.layoutVersion)"
         (subtitle as NSString).draw(
             in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5),
             withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.darkGray]
@@ -1300,24 +1352,112 @@ private enum PhysicalChecklistPDFRenderer {
                     circle.fill()
                 }
                 let textX = center.x + side / 2 + (jobTextGap(for: layout))
-                let textY = row.yMM + (jobTextTop(for: layout))
+                let textWidth = max(1, row.xMM + row.widthMM - textX)
+                let titleHeight = 4.6
                 (item.title as NSString).draw(
-                    in: rectMM(textX, textY, max(1, row.xMM + row.widthMM - textX), 4.6),
+                    in: rectMM(textX, row.yMM + (row.titleBandMM - titleHeight) / 2, textWidth, titleHeight),
                     withAttributes: [
                         .font: UIFont.systemFont(ofSize: layout.circleSizeMM < 4 ? 6.4 : 8.2),
                         .foregroundColor: UIColor.black,
                     ]
                 )
+                if layout.detailed {
+                    drawDetailedContent(item: item, row: row, textX: textX, textWidth: textWidth)
+                }
             }
         }
     }
 
-    private static func jobTextGap(for layout: PhysicalChecklistLayout) -> Double {
-        layout.circleSizeMM < 4 ? 1.2 : 2.4
+    private static func drawDetailedContent(
+        item: PhysicalChecklistItem,
+        row: PhysicalChecklistRow,
+        textX: Double,
+        textWidth: Double
+    ) {
+        let font = UIFont.systemFont(ofSize: 5.8)
+        let mutedColor = UIColor(white: 0.25, alpha: 0.72)
+        var cursorY = row.yMM + row.titleBandMM
+
+        if let detail = item.detail, !detail.isEmpty {
+            (detail as NSString).draw(
+                in: rectMM(textX, cursorY + 0.7, textWidth, 3.0),
+                withAttributes: [.font: font, .foregroundColor: mutedColor]
+            )
+            cursorY += PhysicalChecklistLayout.detailLineMM
+        }
+
+        let subtasks = item.subtasks.filter {
+            !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let shownSubtasks = subtasks.prefix(PhysicalChecklistLayout.subtaskMax)
+        for subtask in shownSubtasks {
+            let boxSide = 1.8
+            let boxRect = rectMM(
+                textX,
+                cursorY + (PhysicalChecklistLayout.subtaskLineMM - boxSide) / 2,
+                boxSide,
+                boxSide
+            )
+            let box = UIBezierPath(rect: boxRect)
+            if subtask.completed {
+                UIColor.black.setFill()
+                box.fill()
+            } else {
+                UIColor.black.setStroke()
+                box.lineWidth = 0.6
+                box.stroke()
+            }
+            (subtask.title as NSString).draw(
+                in: rectMM(textX + 2.8, cursorY + 0.7, max(1, textWidth - 2.8), 3.0),
+                withAttributes: [.font: font, .foregroundColor: UIColor.black]
+            )
+            cursorY += PhysicalChecklistLayout.subtaskLineMM
+        }
+        if subtasks.count > shownSubtasks.count {
+            ("+\(subtasks.count - shownSubtasks.count) more" as NSString).draw(
+                in: rectMM(textX + 2.8, cursorY + 0.7, max(1, textWidth - 2.8), 3.0),
+                withAttributes: [.font: font, .foregroundColor: mutedColor]
+            )
+            cursorY += PhysicalChecklistLayout.subtaskLineMM
+        }
+
+        let photos = item.photos.prefix(PhysicalChecklistLayout.photoMax)
+        guard !photos.isEmpty else { return }
+        let photoSize = PhysicalChecklistLayout.photoSizeMM
+        let photoGap = 1.5
+        for (index, data) in photos.enumerated() {
+            guard let image = UIImage(data: data) else { continue }
+            let rect = rectMM(
+                textX + Double(index) * (photoSize + photoGap),
+                cursorY + 1,
+                photoSize,
+                photoSize
+            )
+            drawPhoto(image, in: rect)
+        }
     }
 
-    private static func jobTextTop(for layout: PhysicalChecklistLayout) -> Double {
-        layout.circleSizeMM < 4 ? 0.9 : 1.35
+    private static func drawPhoto(_ image: UIImage, in rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        context.saveGState()
+        UIBezierPath(rect: rect).addClip()
+        UIColor.white.setFill()
+        UIRectFill(rect)
+        let scale = max(rect.width / max(image.size.width, 1), rect.height / max(image.size.height, 1))
+        let drawSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        image.draw(in: CGRect(
+            x: rect.midX - drawSize.width / 2,
+            y: rect.midY - drawSize.height / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        ))
+        context.restoreGState()
+        UIColor(white: 0.25, alpha: 0.25).setStroke()
+        UIBezierPath(rect: rect).stroke()
+    }
+
+    private static func jobTextGap(for layout: PhysicalChecklistLayout) -> Double {
+        layout.circleSizeMM < 4 ? 1.2 : 2.4
     }
 }
 
@@ -1372,143 +1512,33 @@ private struct PhysicalChecklistDocumentScanner: UIViewControllerRepresentable {
     }
 }
 
-private enum PhysicalChecklistScanAnalyzer {
-    struct Result {
-        var detectedIDs: [String]
-        var recognizedPages: Int
-        var mismatchedJobs: Int
-        var unreadablePageIDs: Int
+private func physicalChecklistGrayImage(_ source: UIImage) -> PhysicalChecklistGrayImage? {
+    let targetWidth = 900
+    let aspect = max(source.size.height / max(source.size.width, 1), 0.2)
+    let targetHeight = max(1, Int(Double(targetWidth) * aspect))
+    let renderer = UIGraphicsImageRenderer(size: CGSize(width: targetWidth, height: targetHeight))
+    let normalized = renderer.image { _ in
+        source.draw(in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
     }
-
-    private struct GrayImage {
-        let pixels: [UInt8]
-        let width: Int
-        let height: Int
-
-        func mean(x: Double, y: Double, radius: Double) -> Double {
-            let cx = min(max(Int(x * Double(width)), 0), width - 1)
-            let cy = min(max(Int(y * Double(height)), 0), height - 1)
-            let r = max(1, Int(radius * Double(min(width, height))))
-            var sum = 0
-            var count = 0
-            for py in max(0, cy - r)...min(height - 1, cy + r) {
-                for px in max(0, cx - r)...min(width - 1, cx + r) {
-                    let dx = px - cx
-                    let dy = py - cy
-                    guard dx * dx + dy * dy <= r * r else { continue }
-                    sum += Int(pixels[py * width + px])
-                    count += 1
-                }
-            }
-            return count == 0 ? 255 : Double(sum) / Double(count)
-        }
+    guard let cgImage = normalized.cgImage else { return nil }
+    var pixels = [UInt8](repeating: 255, count: targetWidth * targetHeight)
+    let rendered = pixels.withUnsafeMutableBytes { buffer -> Bool in
+        guard let context = CGContext(
+            data: buffer.baseAddress,
+            width: targetWidth,
+            height: targetHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: targetWidth,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else { return false }
+        context.interpolationQuality = .high
+        // Bitmap contexts use a bottom-left origin while the checklist layout and UIKit use
+        // top-left coordinates. Normalize once here so every marker/row sample maps directly.
+        context.translateBy(x: 0, y: CGFloat(targetHeight))
+        context.scaleBy(x: 1, y: -1)
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        return true
     }
-
-    static func scan(images: [UIImage], job: PhysicalChecklistJob) -> Result {
-        let layout = PhysicalChecklistLayout.build(job: job)
-        let paperSize = job.paper.sizeMM
-        var detected = Set<String>()
-        var recognized = Set<Int>()
-        var mismatchedJobs = 0
-        var unreadablePageIDs = 0
-
-        for image in images {
-            autoreleasepool {
-                guard let gray = makeGrayImage(image) else { return }
-                let markerCenters = layout.markerRectsMM().map {
-                    (($0.x + $0.width / 2) / paperSize.width, ($0.y + $0.height / 2) / paperSize.height)
-                }
-                let darkMarkerCount = markerCenters.filter {
-                    gray.mean(x: $0.0, y: $0.1, radius: 0.004) < 185
-                }.count
-                guard darkMarkerCount >= 3 else { return }
-
-                let expectedJobCode = BoardPrintContract.jobCode(jobID: job.id)
-                var observedJobCode = 0
-                for (bit, center) in layout.jobCodeBitCentersMM(jobID: job.id).enumerated() {
-                    let value = gray.mean(
-                        x: center.x / paperSize.width,
-                        y: center.y / paperSize.height,
-                        radius: 0.002
-                    )
-                    if value < 170 { observedJobCode |= 1 << bit }
-                }
-                guard observedJobCode == expectedJobCode else {
-                    mismatchedJobs += 1
-                    return
-                }
-
-                var encodedPage = 0
-                for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
-                    let value = gray.mean(
-                        x: center.x / paperSize.width,
-                        y: center.y / paperSize.height,
-                        radius: 0.0025
-                    )
-                    if value < 170 { encodedPage |= 1 << bit }
-                }
-                let decodedIndex = encodedPage - 1
-                let pageIndex: Int
-                if layout.pages.count == 1 {
-                    pageIndex = 0
-                } else if layout.pages.indices.contains(decodedIndex) {
-                    pageIndex = decodedIndex
-                } else {
-                    unreadablePageIDs += 1
-                    return
-                }
-                recognized.insert(pageIndex)
-
-                for row in layout.pages[pageIndex].rows {
-                    guard case let .item(item) = row.kind, let center = row.circleCenterMM else { continue }
-                    let darkness = gray.mean(
-                        x: center.x / paperSize.width,
-                        y: center.y / paperSize.height,
-                        radius: max(0.0015, layout.circleSizeMM / paperSize.width * 0.12)
-                    )
-                    if darkness < 168 {
-                        detected.insert(item.id)
-                    }
-                }
-            }
-        }
-
-        return Result(
-            detectedIDs: detected.sorted(),
-            recognizedPages: recognized.count,
-            mismatchedJobs: mismatchedJobs,
-            unreadablePageIDs: unreadablePageIDs
-        )
-    }
-
-    private static func makeGrayImage(_ source: UIImage) -> GrayImage? {
-        let targetWidth = 900
-        let aspect = max(source.size.height / max(source.size.width, 1), 0.2)
-        let targetHeight = max(1, Int(Double(targetWidth) * aspect))
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: targetWidth, height: targetHeight))
-        let normalized = renderer.image { _ in
-            source.draw(in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-        }
-        guard let cgImage = normalized.cgImage else { return nil }
-        var pixels = [UInt8](repeating: 255, count: targetWidth * targetHeight)
-        let rendered = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(
-                data: buffer.baseAddress,
-                width: targetWidth,
-                height: targetHeight,
-                bitsPerComponent: 8,
-                bytesPerRow: targetWidth,
-                space: CGColorSpaceCreateDeviceGray(),
-                bitmapInfo: CGImageAlphaInfo.none.rawValue
-            ) else { return false }
-            context.interpolationQuality = .high
-            // Bitmap contexts use a bottom-left origin while the checklist layout and UIKit use
-            // top-left coordinates. Normalize once here so every marker/row sample maps directly.
-            context.translateBy(x: 0, y: CGFloat(targetHeight))
-            context.scaleBy(x: 1, y: -1)
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-            return true
-        }
-        return rendered ? GrayImage(pixels: pixels, width: targetWidth, height: targetHeight) : nil
-    }
+    return rendered ? PhysicalChecklistGrayImage(pixels: pixels, width: targetWidth, height: targetHeight) : nil
 }

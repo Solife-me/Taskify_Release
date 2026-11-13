@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "../ui/Modal";
-import type { BoardPrintListChoice, BoardPrintScope } from "./BoardPrintLayout";
+import type { BoardPrintListChoice, BoardPrintOptions, BoardPrintScope } from "./BoardPrintLayout";
 
 export function BoardPrintChooser({
   open,
   boardName,
   lists,
   selectedCount,
-  includeCompleted,
+  defaults,
   onClose,
   onContinue,
 }: {
@@ -15,18 +15,20 @@ export function BoardPrintChooser({
   boardName: string;
   lists: BoardPrintListChoice[];
   selectedCount: number;
-  includeCompleted: boolean;
+  defaults: BoardPrintOptions;
   onClose: () => void;
-  onContinue: (scope: BoardPrintScope) => void;
+  onContinue: (scope: BoardPrintScope, options: BoardPrintOptions) => void;
 }) {
   const [kind, setKind] = useState<BoardPrintScope["kind"]>("board");
   const [selectedListIds, setSelectedListIds] = useState<Set<string>>(() => new Set(lists.map((list) => list.id)));
+  const [options, setOptions] = useState<BoardPrintOptions>(defaults);
 
   useEffect(() => {
     if (!open) return;
     setKind("board");
     setSelectedListIds(new Set(lists.map((list) => list.id)));
-  }, [lists, open]);
+    setOptions(defaults);
+  }, [defaults, lists, open]);
 
   const canContinue = useMemo(() => {
     if (kind === "board" || kind === "selection") return true;
@@ -44,10 +46,14 @@ export function BoardPrintChooser({
     });
   };
 
+  const setOption = (key: keyof BoardPrintOptions, value: boolean) => {
+    setOptions((previous) => ({ ...previous, [key]: value }));
+  };
+
   const continuePrint = () => {
     if (!canContinue) return;
-    if (kind === "lists") onContinue({ kind, listIds: lists.map((list) => list.id).filter((id) => selectedListIds.has(id)) });
-    else onContinue({ kind });
+    if (kind === "lists") onContinue({ kind, listIds: lists.map((list) => list.id).filter((id) => selectedListIds.has(id)) }, options);
+    else onContinue({ kind }, options);
   };
 
   return (
@@ -107,10 +113,68 @@ export function BoardPrintChooser({
           </fieldset>
         )}
 
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-semibold text-primary">Include</legend>
+          <label className="board-print-chooser__option">
+            <input
+              type="checkbox"
+              checked={options.includeUpcoming}
+              onChange={(event) => setOption("includeUpcoming", event.target.checked)}
+            />
+            <span><strong>Upcoming tasks</strong><small>Tasks scheduled for a future date that the board is holding back.</small></span>
+          </label>
+          <label className="board-print-chooser__option">
+            <input
+              type="checkbox"
+              checked={options.includeCompleted}
+              onChange={(event) => setOption("includeCompleted", event.target.checked)}
+            />
+            <span><strong>Completed tasks</strong><small>Tasks you have already checked off.</small></span>
+          </label>
+        </fieldset>
+
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-semibold text-primary">Details</legend>
+          <label className="board-print-chooser__option">
+            <input
+              type="checkbox"
+              checked={options.includeNotes}
+              onChange={(event) => setOption("includeNotes", event.target.checked)}
+            />
+            <span><strong>Notes</strong><small>Print the start of each note on its own line under the title.</small></span>
+          </label>
+          <label className="board-print-chooser__option">
+            <input
+              type="checkbox"
+              checked={options.includeDue}
+              onChange={(event) => setOption("includeDue", event.target.checked)}
+            />
+            <span><strong>Due date and time</strong><small>Print when each task or event is due.</small></span>
+          </label>
+          <label className="board-print-chooser__option">
+            <input
+              type="checkbox"
+              checked={options.includeSubtasks}
+              onChange={(event) => setOption("includeSubtasks", event.target.checked)}
+            />
+            <span><strong>Subtasks</strong><small>Print each subtask on its own line, ticked when complete.</small></span>
+          </label>
+          <label className="board-print-chooser__option">
+            <input
+              type="checkbox"
+              checked={options.includePhotos}
+              onChange={(event) => setOption("includePhotos", event.target.checked)}
+            />
+            <span><strong>Photos</strong><small>Print a small thumbnail of up to three photo attachments.</small></span>
+          </label>
+        </fieldset>
+
         <div className="board-print-chooser__note text-xs text-secondary">
-          {includeCompleted
-            ? "Completed tasks are included because the Completed tab is enabled."
-            : "Only incomplete tasks will print. Enable the Completed tab in View settings to include completed tasks."}
+          {options.includeSubtasks || options.includePhotos
+            ? "Tasks with subtasks or photos print taller, so fewer fit on each page. Long notes are shortened to fit."
+            : options.includeNotes || options.includeDue
+              ? "Details print as a small line under each title. Long notes are shortened to fit."
+              : "Turn on Notes or Due date and time to print details under each title."}
         </div>
       </div>
     </Modal>

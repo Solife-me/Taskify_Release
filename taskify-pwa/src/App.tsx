@@ -55,7 +55,22 @@ import {
   MAX_VERSE_COUNT,
 } from "./domains/scripture/bibleTrackerModel";
 import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
-import { isTaskPrintable, tasksForBoardPrintScope, type BoardPrintJob, type BoardPrintListChoice, type BoardPrintScope, type BoardPrintTask } from "./components/BoardPrintLayout";
+import {
+  BOARD_PRINT_PHOTO_MAX,
+  boardPrintLayoutVersionFor,
+  composeBoardPrintDetail,
+  DEFAULT_BOARD_PRINT_OPTIONS,
+  formatBoardPrintDateKey,
+  formatBoardPrintDue,
+  isTaskPrintable,
+  tasksForBoardPrintScope,
+  type BoardPrintJob,
+  type BoardPrintListChoice,
+  type BoardPrintOptions,
+  type BoardPrintScope,
+  type BoardPrintTask,
+} from "./components/BoardPrintLayout";
+import { resolvePrintTaskPhotos } from "./domains/print/printPhotos";
 import { type PrintPaperSize } from "./components/printPaper";
 import { type AddScripturePayload, type ScriptureMemoryListItem } from "./components/ScriptureMemoryCard";
 import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
@@ -380,7 +395,6 @@ const SettingsModal = lazy(() =>
 );
 
 const ADD_BOARD_OPTION_ID = "__add-board__";
-const BOARD_PRINT_LAYOUT_VERSION = "v2";
 const BOARD_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 
@@ -640,6 +654,10 @@ export default function App() {
   const [boardScanOpen, setBoardScanOpen] = useState(false);
   const [boardPrintJob, setBoardPrintJob] = useState<BoardPrintJob | null>(null);
   const [boardPrintJobs, setBoardPrintJobs] = useState<Record<string, BoardPrintJob>>(() => loadBoardPrintJobs());
+  const [boardPrintOptions, setBoardPrintOptions] = useState<BoardPrintOptions>(() => ({
+    ...DEFAULT_BOARD_PRINT_OPTIONS,
+    includeCompleted: settings.completedTab,
+  }));
   const boardPrintPortal = usePrintPortal("board-print-portal");
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
   scriptureEntriesRef.current = scriptureMemory.entries;
@@ -2545,24 +2563,48 @@ export default function App() {
     return [];
   }, [currentBoard, listColumns, settings.weekStart]);
 
-  const buildBoardPrintTasks = useCallback((options?: {
-    onlyTaskIds?: ReadonlySet<string>;
-    includeCompleted?: boolean;
-  }): BoardPrintTask[] => {
+  const buildBoardPrintTasks = useCallback((options: BoardPrintOptions, onlyTaskIds?: ReadonlySet<string>): BoardPrintTask[] => {
     if (!currentBoard) return [];
     const titleForTask = (task: Task) => {
       const labelSource = task.title || (task.images?.length ? "Image" : task.documents?.[0]?.name || "");
       return labelSource.trim() || "Task";
     };
     const titleForEvent = (ev: CalendarEvent) => (ev.title || "").trim() || "Event";
-    const onlyIds = options?.onlyTaskIds;
-    const includeCompleted = options?.includeCompleted === true;
-    const includeId = (id: string) => !onlyIds || onlyIds.has(id);
+    const includeId = (id: string) => !onlyTaskIds || onlyTaskIds.has(id);
     const visibleTasks = tasksForBoard.filter((task) => {
-      if (!isTaskPrintable(task, includeCompleted)) return false;
-      if (!isVisibleNow(task)) return false;
+      if (!isTaskPrintable(task, options.includeCompleted)) return false;
+      if (!options.includeUpcoming && !isVisibleNow(task)) return false;
       return includeId(task.id);
     });
+    const taskDetail = (task: Task) => composeBoardPrintDetail(
+      options.includeDue
+        ? formatBoardPrintDue(task.dueISO, { includeTime: !!task.dueTimeEnabled, timeZone: task.dueTimeZone })
+        : undefined,
+      options.includeNotes ? task.note : undefined,
+    );
+    const eventDetail = (ev: CalendarEvent) => composeBoardPrintDetail(
+      options.includeDue
+        ? ev.kind === "date"
+          ? formatBoardPrintDateKey(ev.startDate)
+          : formatBoardPrintDue(ev.startISO, { includeTime: true, timeZone: ev.startTzid })
+        : undefined,
+      options.includeNotes ? ev.description ?? ev.summary : undefined,
+    );
+    const taskExtras = (task: Task) => ({
+      ...(options.includeSubtasks && task.subtasks?.length
+        ? { subtasks: task.subtasks.map((subtask) => ({ title: subtask.title, completed: subtask.completed })) }
+        : {}),
+      ...(options.includePhotos && task.images?.length
+        ? {
+            photos: task.images,
+            photoCount: Math.min(task.images.length, BOARD_PRINT_PHOTO_MAX),
+            boardId: task.boardId,
+          }
+        : {}),
+    });
+    const eventExtras = (ev: CalendarEvent) => (
+      options.includePhotos && ev.image ? { photos: [ev.image], photoCount: 1, boardId: ev.boardId } : {}
+    );
 
     if (currentBoard.kind === "week") {
       const dayOrder = Array.from({ length: 7 }, (_, i) => ((settings.weekStart + i) % 7) as Weekday);
@@ -2582,11 +2624,13 @@ export default function App() {
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         dayTasks.forEach((task) => {
-          output.push({ id: task.id, title: titleForTask(task), label, listId, completed: task.completed });
+          const detail = taskDetail(task);
+          output.push({ id: task.id, title: titleForTask(task), label, listId, completed: task.completed, ...(detail ? { detail } : {}), ...taskExtras(task) });
         });
         const dayEvents = (calendarByDay.get(day) ?? []).filter((ev) => includeId(ev.id));
         dayEvents.forEach((ev) => {
-          output.push({ id: ev.id, title: titleForEvent(ev), label, listId });
+          const detail = eventDetail(ev);
+          output.push({ id: ev.id, title: titleForEvent(ev), label, listId, ...(detail ? { detail } : {}), ...eventExtras(ev) });
         });
       });
       return output;
@@ -2615,20 +2659,28 @@ export default function App() {
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         taskBucket.forEach((task) => {
-          output.push({ id: task.id, title: titleForTask(task), label: col.name, listId: col.id, completed: task.completed });
+          const detail = taskDetail(task);
+          output.push({ id: task.id, title: titleForTask(task), label: col.name, listId: col.id, completed: task.completed, ...(detail ? { detail } : {}), ...taskExtras(task) });
         });
         const eventBucket = (calendarItemsByColumn.get(col.id) ?? []).filter((ev) => includeId(ev.id));
         eventBucket.forEach((ev) => {
-          output.push({ id: ev.id, title: titleForEvent(ev), label: col.name, listId: col.id });
+          const detail = eventDetail(ev);
+          output.push({ id: ev.id, title: titleForEvent(ev), label: col.name, listId: col.id, ...(detail ? { detail } : {}), ...eventExtras(ev) });
         });
       });
       return output;
     }
 
-    const tasksOutput = visibleTasks.map((task) => ({ id: task.id, title: titleForTask(task), completed: task.completed }));
+    const tasksOutput = visibleTasks.map((task) => {
+      const detail = taskDetail(task);
+      return { id: task.id, title: titleForTask(task), completed: task.completed, ...(detail ? { detail } : {}), ...taskExtras(task) };
+    });
     const eventsOutput = calendarEventsForBoard
       .filter((ev) => includeId(ev.id))
-      .map((ev) => ({ id: ev.id, title: titleForEvent(ev) }));
+      .map((ev) => {
+        const detail = eventDetail(ev);
+        return { id: ev.id, title: titleForEvent(ev), ...(detail ? { detail } : {}), ...eventExtras(ev) };
+      });
     return [...tasksOutput, ...eventsOutput];
   }, [calendarByDay, calendarEventsForBoard, calendarItemsByColumn, currentBoard, listColumns, listColumnSources, settings.weekStart, tasksForBoard]);
 
@@ -2639,25 +2691,46 @@ export default function App() {
   }, [closeShareBoard, currentBoard]);
 
   const rememberBoardPrintJob = useCallback((job: BoardPrintJob) => {
+    // Thumbnails are for the sheet in hand, not for local storage; a saved job only needs what
+    // the scanner reads.
+    const stored: BoardPrintJob = job.tasks.some((task) => task.photos?.length)
+      ? {
+          ...job,
+          tasks: job.tasks.map((task) => {
+            if (!task.photos?.length) return task;
+            const copy = { ...task };
+            delete copy.photos;
+            delete copy.boardId;
+            return copy;
+          }),
+        }
+      : job;
     setBoardPrintJobs((previous) => {
-      const next = { ...previous, [job.boardId]: job };
+      const next = { ...previous, [job.boardId]: stored };
       saveBoardPrintJobs(next);
       return next;
     });
   }, []);
 
-  const handleContinueBoardPrint = useCallback((scope: BoardPrintScope) => {
+  const handleContinueBoardPrint = useCallback(async (scope: BoardPrintScope, options: BoardPrintOptions) => {
     if (!currentBoard) return;
-    const tasks = scope.kind === "selection"
-      ? buildBoardPrintTasks({
-          onlyTaskIds: new Set(selectedItemIds),
-          includeCompleted: settings.completedTab,
-        })
-      : buildBoardPrintTasks({ includeCompleted: settings.completedTab });
-    const scopedTasks = tasksForBoardPrintScope(tasks, scope);
-    if (!scopedTasks.length) {
+    setBoardPrintOptions(options);
+    const built = scope.kind === "selection"
+      ? buildBoardPrintTasks(options, new Set(selectedItemIds))
+      : buildBoardPrintTasks(options);
+    if (!tasksForBoardPrintScope(built, scope).length) {
       showToast("No tasks to print for that selection.", 2500);
       return;
+    }
+    setBoardPrintChooserOpen(false);
+    let tasks = built;
+    if (options.includePhotos) {
+      showToast("Preparing photo thumbnails for print…", 2200);
+      const photoResult = await resolvePrintTaskPhotos(built);
+      tasks = photoResult.tasks;
+      if (photoResult.failed > 0) {
+        showToast(`${photoResult.failed} photo${photoResult.failed === 1 ? "" : "s"} couldn't be printed.`, 3000);
+      }
     }
     const job: BoardPrintJob = {
       id: crypto.randomUUID(),
@@ -2665,16 +2738,15 @@ export default function App() {
       ownerId: `board:${currentBoard.nostr?.boardId || currentBoard.id}`,
       boardName: scope.kind === "lists" ? `${currentBoard.name || "Board"} – Lists` : currentBoard.name || "Board",
       printedAtISO: new Date().toISOString(),
-      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
+      layoutVersion: boardPrintLayoutVersionFor(options),
       paperSize: boardPrintJob?.paperSize ?? "letter",
       scope,
       tasks,
     };
-    setBoardPrintChooserOpen(false);
     setBoardPrintJob(job);
     rememberBoardPrintJob(job);
     setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, currentBoard, rememberBoardPrintJob, selectedItemIds, settings.completedTab, showToast]);
+  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, currentBoard, rememberBoardPrintJob, selectedItemIds, showToast]);
 
   const listColumnGroupIds = useCallback((columnId: string): string[] => {
     const taskIds = (itemsByColumn.get(columnId) ?? []).filter((t) => !t.completed).map((t) => t.id);
@@ -2710,23 +2782,33 @@ export default function App() {
     }
   }, [selectedItemIdSet]);
 
-  const handlePrintSelectedTasks = useCallback(() => {
+  const handlePrintSelectedTasks = useCallback(async () => {
     if (!currentBoard) return;
     if (!selectedItemIds.length) return;
     const filter = new Set(selectedItemIds);
-    const tasks = buildBoardPrintTasks({ onlyTaskIds: filter, includeCompleted: settings.completedTab });
-    if (!tasks.length) {
+    const options = { ...boardPrintOptions, includeCompleted: true };
+    const built = buildBoardPrintTasks(options, filter);
+    if (!built.length) {
       showToast("No printable tasks selected.", 2500);
       return;
     }
     closeShareBoard();
+    let tasks = built;
+    if (options.includePhotos) {
+      showToast("Preparing photo thumbnails for print…", 2200);
+      const photoResult = await resolvePrintTaskPhotos(built);
+      tasks = photoResult.tasks;
+      if (photoResult.failed > 0) {
+        showToast(`${photoResult.failed} photo${photoResult.failed === 1 ? "" : "s"} couldn't be printed.`, 3000);
+      }
+    }
     const job: BoardPrintJob = {
       id: crypto.randomUUID(),
       boardId: currentBoard.id,
       ownerId: `board:${currentBoard.nostr?.boardId || currentBoard.id}`,
       boardName: `${currentBoard.name || "Board"} – Selected`,
       printedAtISO: new Date().toISOString(),
-      layoutVersion: BOARD_PRINT_LAYOUT_VERSION,
+      layoutVersion: boardPrintLayoutVersionFor(options),
       paperSize: boardPrintJob?.paperSize ?? "letter",
       scope: { kind: "selection" },
       tasks,
@@ -2734,7 +2816,7 @@ export default function App() {
     setBoardPrintJob(job);
     rememberBoardPrintJob(job);
     setBoardPrintOpen(true);
-  }, [boardPrintJob?.paperSize, buildBoardPrintTasks, closeShareBoard, currentBoard, rememberBoardPrintJob, selectedItemIds, settings.completedTab, showToast]);
+  }, [boardPrintJob?.paperSize, boardPrintOptions, buildBoardPrintTasks, closeShareBoard, currentBoard, rememberBoardPrintJob, selectedItemIds, showToast]);
 
   const handleBoardPaperSizeChange = useCallback((paperSize: PrintPaperSize) => {
     setBoardPrintJob((prev) => {
@@ -6331,7 +6413,7 @@ export default function App() {
             boardPrintListChoices={boardPrintListChoices}
             boardPrintBoardName={currentBoard?.name || "Board"}
             boardPrintSelectedCount={selectedCount}
-            boardPrintIncludeCompleted={settings.completedTab}
+            boardPrintOptions={boardPrintOptions}
             boardPrintPortal={boardPrintPortal}
             boardScanOpen={boardScanOpen}
             closeAddBoard={closeAddBoard}

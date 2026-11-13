@@ -61,3 +61,45 @@ test("a newer manifest from another client maps its stable owner to the local bo
   const merged = mergeSyncedBoardPrintJobs(local, [remote], [{ id: "board", name: "Work", nostr: { boardId: "nostr-board" } }]);
   expect(merged.board).toMatchObject({ id: "mac-print", boardId: "board", tasks: [{ id: "task-2", title: "From Mac", label: "Today" }] });
 });
+
+test("a detailed print manifest keeps the geometry another client needs to scan it", () => {
+  const job = {
+    id: "detail-print",
+    boardId: "board",
+    ownerId: "board:nostr-board",
+    boardName: "Work",
+    printedAtISO: "2026-09-13T12:00:00Z",
+    layoutVersion: "v4",
+    paperSize: "letter" as const,
+    tasks: [{
+      id: "task-1",
+      title: "Detailed",
+      detail: "Sep 4, 2026 · note",
+      subtasks: [{ title: "Buy stamps" }, { title: "Post", completed: true as const }],
+      photos: ["data:image/jpeg;base64,AA"],
+      photoCount: 1,
+    }],
+  };
+  const manifest = boardPrintJobManifest(job);
+  expect(manifest.layoutVersion).toBe("v4");
+  expect(manifest.items[0]).toMatchObject({
+    detail: "Sep 4, 2026 · note",
+    subtasks: [{ title: "Buy stamps" }, { title: "Post", completed: true }],
+    photoCount: 1,
+  });
+
+  const merged = mergeSyncedBoardPrintJobs(
+    {},
+    [{ ...manifest, createdAt: 1_800_000_000 }],
+    [{ id: "board", name: "Work", nostr: { boardId: "nostr-board" } }],
+  );
+  expect(merged.board).toMatchObject({
+    layoutVersion: "v4",
+    tasks: [{
+      id: "task-1",
+      detail: "Sep 4, 2026 · note",
+      subtasks: [{ title: "Buy stamps" }, { title: "Post", completed: true }],
+      photoCount: 1,
+    }],
+  });
+});

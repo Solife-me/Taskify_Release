@@ -265,6 +265,9 @@ export type NostrPrintJobManifest = {
     title: string;
     section?: string;
     filled?: boolean;
+    detail?: string;
+    subtasks?: Array<{ title: string; completed?: boolean }>;
+    photoCount?: number;
   }>;
 };
 

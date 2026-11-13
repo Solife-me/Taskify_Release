@@ -27,7 +27,11 @@ function formatPrintDate(iso: string): string {
 function boardMarkGeometry(layout: BoardPrintLayout): ScanMarkGeometry {
   const circleSizeMm = layout.circle.sizeMm;
   const backgroundOffsetX = Math.max(circleSizeMm * 0.8, 2);
-  const backgroundOffsetY = Math.max(layout.rows.heightMm * 0.45, circleSizeMm * 0.6);
+  // A detailed sheet prints text under the title band, so sample closer above and below the
+  // circle to stay on paper beside the row rather than on its own detail lines.
+  const backgroundOffsetY = layout.version === "v4"
+    ? Math.min(2.4, circleSizeMm * 0.6)
+    : Math.max(layout.rows.heightMm * 0.45, circleSizeMm * 0.6);
   return {
     sampleRadiusMm: Math.max(0.55, circleSizeMm * 0.16),
     innerOffsetMm: circleSizeMm * 0.25,

@@ -41,9 +41,10 @@ private let boardPrintVectorsURL = URL(fileURLWithPath: #filePath)
 
 @Test func boardPrintContractKeepsSafeLegacyVersionsReadable() {
     #expect(BoardPrintContract.isSupportedVersion("v3"))
+    #expect(BoardPrintContract.isSupportedVersion("v4"))
     #expect(BoardPrintContract.isSupportedVersion("v2"))
     #expect(BoardPrintContract.isSupportedVersion("v1"))
-    #expect(!BoardPrintContract.isSupportedVersion("v4"))
+    #expect(!BoardPrintContract.isSupportedVersion("v5"))
 }
 
 @Test func encryptedPrintManifestUsesCrossClientKeysAndNewestOwnerWins() throws {
@@ -66,4 +67,37 @@ private let boardPrintVectorsURL = URL(fileURLWithPath: #filePath)
     let json = String(decoding: try JSONEncoder().encode(merged[0]), as: UTF8.self)
     #expect(json.contains("\"ownerId\":\"board:shared\""))
     #expect(json.contains("\"createdAt\":20"))
+}
+
+@Test func detailedPrintManifestKeepsTheGeometryAnotherClientNeeds() throws {
+    let job = PhysicalChecklistJob(
+        id: "detail-print",
+        ownerID: "board:shared",
+        title: "Board",
+        items: [PhysicalChecklistItem(
+            id: "task-1",
+            title: "Detailed",
+            detail: "Sep 4, 2026 · note",
+            subtasks: [
+                PhysicalChecklistSubtask(title: "Buy stamps"),
+                PhysicalChecklistSubtask(title: "Post", completed: true),
+            ],
+            photoCount: 1
+        )],
+        layoutVersion: BoardPrintContract.detailVersion
+    )
+    let manifest = NostrPrintJobManifest(job: job)
+    #expect(manifest.layoutVersion == BoardPrintContract.detailVersion)
+
+    let data = try JSONEncoder().encode(manifest)
+    let decoded = try JSONDecoder().decode(NostrPrintJobManifest.self, from: data)
+    let restored = try #require(decoded.job)
+    let item = try #require(restored.items.first)
+    #expect(restored.effectiveLayoutVersion == BoardPrintContract.detailVersion)
+    #expect(item.detail == "Sep 4, 2026 · note")
+    #expect(item.subtasks == [
+        PhysicalChecklistSubtask(title: "Buy stamps"),
+        PhysicalChecklistSubtask(title: "Post", completed: true),
+    ])
+    #expect(item.photoCount == 1)
 }

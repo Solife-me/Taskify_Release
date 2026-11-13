@@ -157,7 +157,7 @@ export function BoardPrintPreview({
                         left: `${row.x}mm`,
                         top: `${row.y}mm`,
                         width: `${row.widthMm}mm`,
-                        height: `${layout.rows.heightMm}mm`,
+                        height: `${row.heightMm}mm`,
                       }}
                     >
                       <div className="board-print-group__text">
@@ -176,7 +176,7 @@ export function BoardPrintPreview({
                       left: `${row.x}mm`,
                       top: `${row.y}mm`,
                       width: `${row.widthMm}mm`,
-                      height: `${layout.rows.heightMm}mm`,
+                      height: `${row.heightMm}mm`,
                     }}
                   >
                     <div
@@ -184,11 +184,36 @@ export function BoardPrintPreview({
                       style={{
                         width: `${layout.circle.sizeMm}mm`,
                         height: `${layout.circle.sizeMm}mm`,
+                        marginTop: `${Math.max(0, (row.titleBandMm - layout.circle.sizeMm) / 2)}mm`,
                       }}
                     />
-                    <div className="board-print-title" style={{ width: `${row.textWidthMm}mm` }}>
-                      {!hasGroupHeaders && row.label ? <span className="board-print-label">{row.label}</span> : null}
-                      {row.title}
+                    <div className="board-print-text" style={{ width: `${row.textWidthMm}mm` }}>
+                      <div className="board-print-title-band" style={{ height: `${row.titleBandMm}mm` }}>
+                        <div className="board-print-title">
+                          {!hasGroupHeaders && row.label ? <span className="board-print-label">{row.label}</span> : null}
+                          {row.title}
+                        </div>
+                        {!row.detailBelow && row.detail ? <div className="board-print-detail">{row.detail}</div> : null}
+                      </div>
+                      {row.detailBelow && row.detail ? <div className="board-print-detail">{row.detail}</div> : null}
+                      {row.subtasks?.map((subtask, subtaskIndex) => (
+                        <div key={`${row.taskId}-subtask-${subtaskIndex}`} className="board-print-subtask">
+                          <span className="board-print-subtask__box" data-completed={subtask.completed ? "true" : undefined} />
+                          <span className="board-print-subtask__title">{subtask.title}</span>
+                        </div>
+                      ))}
+                      {row.hiddenSubtaskCount ? (
+                        <div className="board-print-subtask board-print-subtask--more">
+                          <span className="board-print-subtask__title">+{row.hiddenSubtaskCount} more</span>
+                        </div>
+                      ) : null}
+                      {row.photos?.length ? (
+                        <div className="board-print-photos">
+                          {row.photos.map((src, photoIndex) => (
+                            <img key={`${row.taskId}-photo-${photoIndex}`} src={src} alt="" className="board-print-photo" />
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 );
