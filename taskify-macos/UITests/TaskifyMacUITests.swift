@@ -459,6 +459,37 @@ final class TaskifyMacUITests: XCTestCase {
         )
     }
 
+    /// The composer grows to a cap and then scrolls. A regression here once re-entered AppKit's
+    /// layout pass on every keystroke, and typing a draft past the cap aborted the window.
+    func testChatComposerLongDraftScrollsWithoutCrashing() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
+        app.launch()
+
+        let chat = app.staticTexts["Chat"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        chat.click()
+        let fixturePeer = app.staticTexts["Paste Test Contact"]
+        XCTAssertTrue(fixturePeer.waitForExistence(timeout: 5))
+        fixturePeer.click()
+
+        let composer = app.textViews["chat-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        let lines = (1...12).map { "Draft line \($0)" }
+        for (index, line) in lines.enumerated() {
+            composer.typeText(line)
+            if index < lines.count - 1 {
+                composer.typeKey(.return, modifierFlags: .shift)
+            }
+        }
+
+        XCTAssertEqual(composer.value as? String, lines.joined(separator: "\n"))
+        XCTAssertEqual(app.state, .runningForeground, "A long draft must not abort the window")
+        composer.typeText("!")
+        XCTAssertEqual(composer.value as? String, lines.joined(separator: "\n") + "!")
+    }
+
     func testChatAttachmentsRenderInThreadWithRecordButton() {
         let app = XCUIApplication()
         app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]

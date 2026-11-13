@@ -4,6 +4,19 @@ import TaskifyCore
 @testable import MacPresentation
 
 final class MacPresentationTests: XCTestCase {
+    func testWorkspacePaneLayoutUsesCompactPresentationAtSplitWidths() {
+        XCTAssertEqual(MacWorkspaceLayout.panePresentation(for: 300), .compact)
+        XCTAssertEqual(MacWorkspaceLayout.panePresentation(for: 639), .compact)
+        XCTAssertEqual(MacWorkspaceLayout.panePresentation(for: 640), .regular)
+        XCTAssertEqual(MacWorkspaceLayout.panePresentation(for: 900), .regular)
+    }
+
+    func testTwoCompactPanesFitInsideMinimumWorkspaceDetail() {
+        XCTAssertLessThanOrEqual(MacWorkspaceLayout.minimumPaneWidth * 2, 660)
+        XCTAssertGreaterThan(MacWorkspaceLayout.idealPaneWidth, MacWorkspaceLayout.minimumPaneWidth)
+        XCTAssertLessThan(MacWorkspaceLayout.inspectorMinimumWidth, MacWorkspaceLayout.minimumPaneWidth)
+    }
+
     func testUITestExternalActionsUseTheDefaultIsolatedStoreAndNeverPublish() {
         let root = URL(fileURLWithPath: "/tmp/taskify-shortcuts-test", isDirectory: true)
 
@@ -348,6 +361,18 @@ final class MacPresentationTests: XCTestCase {
             ),
             225
         )
+    }
+
+    func testChatComposerHeightIsWholePointsCappedAndStable() {
+        // One line at minimum, measured content rounded up, and never past the eight-line cap.
+        XCTAssertEqual(MacChatComposerMetrics.height(contentHeight: 0, lineHeight: 16), 16)
+        XCTAssertEqual(MacChatComposerMetrics.height(contentHeight: 17.2, lineHeight: 16), 18)
+        XCTAssertEqual(MacChatComposerMetrics.height(contentHeight: 400, lineHeight: 16), 128)
+        // Measuring the height it just reported yields that same height: the layout system
+        // converges in one pass instead of trading sub-point updates.
+        let once = MacChatComposerMetrics.height(contentHeight: 74.6, lineHeight: 19.5)
+        XCTAssertEqual(once, 75)
+        XCTAssertEqual(MacChatComposerMetrics.height(contentHeight: once, lineHeight: 19.5), once)
     }
 
     func testChatComposerShiftReturnInsertsANewlineAndReturnSends() {
