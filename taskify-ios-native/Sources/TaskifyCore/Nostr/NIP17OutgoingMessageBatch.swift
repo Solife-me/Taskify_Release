@@ -44,26 +44,10 @@ public struct NIP17OutgoingMessageBatch: Sendable {
                 throw NIP17GiftWrapError.wrongRecipient
             }
         }
-        var wrappedRumors = rumors
-        let comment = attachmentComment?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !comment.isEmpty {
-            guard NostrDirectMessageAttachment(rumor: first) != nil else {
-                throw NIP17GiftWrapError.invalidRumor
-            }
-            // NIP-17 kind 15 content remains the file URL. The comment is a
-            // separate kind 14 whose e tag names the last file's canonical
-            // rumor, never its recipient-specific gift wrap. Only conversation
-            // tags carry over; file keys and the attachment's own reply target
-            // do not. Sharing the last file's createdAt keeps the single-file
-            // wire behavior unchanged, and the same-second parent is what the
-            // history reparenting uses to keep a caption after every file even
-            // when events arrive out of order.
-            let tags = first.tags.filter { $0.first == "p" || $0.first == "subject" }
-                + [["e", rumors.last!.id]]
-            wrappedRumors.append(try NIP17Rumor(publicKey: first.publicKey,
-                createdAt: rumors.last!.createdAt, kind: NIP17GiftWrap.rumorKind,
-                tags: tags, content: comment))
-        }
+        let wrappedRumors = try Self.rumorsIncludingAttachmentComment(
+            rumors,
+            attachmentComment: attachmentComment
+        )
 
         var messages: [NostrDirectMessage] = []
         var deliveries: [NIP17OutgoingDelivery] = []
@@ -93,6 +77,60 @@ public struct NIP17OutgoingMessageBatch: Sendable {
         }
         self.localMessages = messages
         self.deliveries = deliveries
+    }
+
+    /// Builds the same local rows as a fully wrapped batch before relay discovery and gift
+    /// wrapping finish. The rumor IDs are final, so ingesting the wrapped copy later reconciles
+    /// with these rows instead of showing duplicates. The temporary wrap ID is intentionally the
+    /// rumor ID; delivery-state reconciliation is keyed by the canonical rumor ID.
+    public static func optimisticLocalMessages(
+        rumors: [NIP17Rumor],
+        attachmentComment: String? = nil,
+        identity: NostrIdentity
+    ) throws -> [NostrDirectMessage] {
+        let completedRumors = try rumorsIncludingAttachmentComment(
+            rumors,
+            attachmentComment: attachmentComment
+        )
+        return try completedRumors.map { rumor in
+            guard rumor.publicKey == identity.publicKeyHex,
+                  rumor.verifyID(),
+                  var message = NostrDirectMessage(
+                      decrypted: NIP17DecryptedRumor(wrapEventID: rumor.id, rumor: rumor),
+                      identityPublicKey: identity.publicKeyHex
+                  ) else {
+                throw NIP17GiftWrapError.invalidRumor
+            }
+            message.deliveryState = .queued
+            return message
+        }
+    }
+
+    private static func rumorsIncludingAttachmentComment(
+        _ rumors: [NIP17Rumor],
+        attachmentComment: String?
+    ) throws -> [NIP17Rumor] {
+        guard let first = rumors.first else { throw NIP17GiftWrapError.invalidRumor }
+        var completedRumors = rumors
+        let comment = attachmentComment?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !comment.isEmpty else { return completedRumors }
+        guard NostrDirectMessageAttachment(rumor: first) != nil,
+              let last = rumors.last else {
+            throw NIP17GiftWrapError.invalidRumor
+        }
+        // NIP-17 kind 15 content remains the file URL. The comment is a separate kind 14 whose
+        // e tag names the last file's canonical rumor. Matching this construction for the early
+        // local echo guarantees that the optimistic and wrapped caption have the same event ID.
+        let tags = first.tags.filter { $0.first == "p" || $0.first == "subject" }
+            + [["e", last.id]]
+        completedRumors.append(try NIP17Rumor(
+            publicKey: first.publicKey,
+            createdAt: last.createdAt,
+            kind: NIP17GiftWrap.rumorKind,
+            tags: tags,
+            content: comment
+        ))
+        return completedRumors
     }
 
     public init(

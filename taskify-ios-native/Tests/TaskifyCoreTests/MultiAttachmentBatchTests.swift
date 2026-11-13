@@ -61,6 +61,45 @@ final class MultiAttachmentBatchTests: XCTestCase {
         }
     }
 
+    func testOptimisticRowsUseFinalRumorIDsAndReconcileWithoutDuplicates() throws {
+        let fixture = try fixture()
+        let sender = fixture.identities[0]
+        let recipient = fixture.identities[1].publicKeyHex
+        let rumors = try attachmentRumors(sender: sender, recipients: [recipient], count: 2)
+        let optimistic = try NIP17OutgoingMessageBatch.optimisticLocalMessages(
+            rumors: rumors,
+            attachmentComment: "Caption",
+            identity: sender
+        )
+        let batch = try NIP17OutgoingMessageBatch(
+            rumors: rumors,
+            attachmentComment: "Caption",
+            identity: sender,
+            relayURLsByRecipient: fixture.routes
+        )
+
+        XCTAssertEqual(optimistic.map(\.rumorEventID), batch.localMessages.map(\.rumorEventID))
+        XCTAssertEqual(optimistic.map(\.content), batch.localMessages.map(\.content))
+        XCTAssertEqual(optimistic.map(\.deliveryState), Array(repeating: .queued, count: 3))
+
+        var snapshot = TaskifySnapshot.empty
+        for message in optimistic {
+            XCTAssertTrue(snapshot.ingestDirectMessage(message))
+        }
+        for message in batch.localMessages {
+            XCTAssertFalse(snapshot.ingestDirectMessage(message))
+        }
+        XCTAssertEqual(snapshot.directMessageHistory.count, optimistic.count)
+
+        for message in batch.localMessages {
+            var sent = message
+            sent.deliveryState = .sent
+            XCTAssertTrue(snapshot.ingestDirectMessage(sent))
+        }
+        XCTAssertEqual(snapshot.directMessageHistory.count, optimistic.count)
+        XCTAssertTrue(snapshot.directMessageHistory.allSatisfy { $0.deliveryState == .sent })
+    }
+
     func testMultiAttachmentBatchWithoutCommentSendsOnlyFiles() throws {
         let fixture = try fixture()
         let sender = fixture.identities[0]
