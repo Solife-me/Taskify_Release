@@ -85,7 +85,7 @@ final class OutboxDeliveryRecoveryTests: XCTestCase {
 
     // MARK: - Proof of work
 
-    func testAProofOfWorkRefusalReminesTheChangeWithItsOwnKey() async throws {
+    func testAKnownProofOfWorkFloorReminesBeforeFirstPublish() async throws {
         let outbox = makeOutbox()
         let relay = RecordingRelayTransport()
         let engine = makeEngine(relay: relay, outbox: outbox, proofOfWork: 12)
@@ -98,12 +98,9 @@ final class OutboxDeliveryRecoveryTests: XCTestCase {
             event: unmined, relayURLs: [keptRelay], outboxScope: "app-state", recordID: "scripture-memory",
             acknowledgementPolicy: .everyRelay
         )])
-        for _ in 0..<100 where await !relay.publishedEventIDs.contains(unmined.id) {
+        for _ in 0..<100 where await outbox.entry(eventID: unmined.id) != nil {
             try await Task.sleep(for: .milliseconds(10))
         }
-
-        await engine.handle(.acknowledgement(eventID: unmined.id, accepted: false, message: "pow: difficulty too low"),
-                            from: keptRelay)
 
         let entries = await outbox.allEntries()
         let queued = try XCTUnwrap(entries.first)
@@ -120,6 +117,7 @@ final class OutboxDeliveryRecoveryTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         let published = await relay.publishedEventIDs
+        XCTAssertFalse(published.contains(unmined.id), "A known floor is applied before the low-work event is offered")
         XCTAssertTrue(published.contains(mined.id), "The mined change is sent in its place")
     }
 
