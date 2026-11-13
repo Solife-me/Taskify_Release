@@ -421,6 +421,10 @@ public actor NostrOutboxStore {
               let index = entries.firstIndex(where: { $0.event.id == eventID }) else { return false }
         let previous = entries
         entries[index].event = replacement
+        // Refusals apply to the old signed event. In particular, a relay that rejected its proof
+        // of work must be allowed to evaluate the newly mined replacement immediately instead of
+        // leaving it behind the old event's exponential retry delay.
+        entries[index].relayRejections = nil
         for dependent in entries.indices where entries[dependent].dependsOnEventID == eventID {
             entries[dependent].dependsOnEventID = replacement.id
         }
