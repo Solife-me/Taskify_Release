@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
 @testable import TaskifyCore
-import TaskifyWatchShared
+@testable import TaskifyWatchShared
 
 /// A relay that refuses an event outright (`blocked:`, `restricted:`, `invalid:`) must not be sent
 /// that event again on every reconnect, yet the change must stay queued: it may be the only copy.
@@ -114,5 +114,11 @@ final class RelayRejectionBackoffTests: XCTestCase {
             TaskifyProofOfWorkRejection.difficulty(fromMessage: "blocked: no unsolicited notes"),
             nil
         )
+    }
+
+    func testNosLolUsesItsUnadvertisedProofOfWorkFloor() {
+        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "wss://nos.lol"), 20)
+        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "WSS://NOS.LOL/"), 20)
+        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "wss://relay.example"), 0)
     }
 }
