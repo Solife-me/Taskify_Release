@@ -716,6 +716,12 @@ public actor TaskSyncEngine {
     private var outboxFlushRequested = false
     private var scheduledRelayOutboxFlushTasks: [String: Task<Void, Never>] = [:]
     private var scheduledRelayOutboxFlushRequests: Set<String> = []
+    private var proofOfWorkRepairTask: Task<Void, Never>?
+    /// A repair pass mines only a few entries for a bounded time, then yields for a minute, so a
+    /// large low-work backlog cannot monopolize the app right after launch.
+    private static let proofOfWorkRepairBudget: TimeInterval = 30
+    private static let proofOfWorkRepairBatch = 8
+    private static let proofOfWorkRepairRetryDelay: Duration = .seconds(60)
     private var lastEmittedReport: TaskSyncReport?
 
     /// `networkingEnabled: false` keeps durable outbox behavior while making configuration and
@@ -783,6 +789,7 @@ public actor TaskSyncEngine {
         subscriptionRetryTasks.values.forEach { $0.cancel() }
         scheduledOutboxFlushTask?.cancel()
         scheduledRelayOutboxFlushTasks.values.forEach { $0.cancel() }
+        proofOfWorkRepairTask?.cancel()
         updateContinuation.finish()
     }
 
@@ -1435,7 +1442,7 @@ public actor TaskSyncEngine {
                 ))
             }
         }
-        await repairQueuedProofOfWorkBacklog()
+        scheduleProofOfWorkRepairIfNeeded()
         await pruneStaleReplicaBacklog()
         await completeUnreachableRelayTargets()
         return await outbox.pendingRelayURLs().subtracting(excludedRelayURLs)
@@ -1444,7 +1451,32 @@ public actor TaskSyncEngine {
     /// Repairs low-work entries even when an older attempt put them behind a rejection backoff.
     /// The ordinary per-relay scheduler intentionally omits held entries, so without this pass a
     /// board key that became available later could not repair the event until hours or days later.
-    private func repairQueuedProofOfWorkBacklog() async {
+    /// Mining is deliberately kept out of the flush path: it can take seconds per entry, and a
+    /// backlog must not delay every other queued change.
+    private func scheduleProofOfWorkRepairIfNeeded() {
+        guard proofOfWorkRepairTask == nil else { return }
+        proofOfWorkRepairTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let more = await self.repairQueuedProofOfWorkBacklog()
+                await self.scheduleOutboxFlush()
+                guard more else { break }
+                do {
+                    try await Task.sleep(for: Self.proofOfWorkRepairRetryDelay)
+                } catch {
+                    break
+                }
+            }
+            await self.clearProofOfWorkRepairTask()
+        }
+    }
+
+    private func clearProofOfWorkRepairTask() {
+        proofOfWorkRepairTask = nil
+    }
+
+    /// Returns true when the pass stopped before examining every entry, so the caller can resume.
+    private func repairQueuedProofOfWorkBacklog() async -> Bool {
         let entries = await outbox.allEntries()
         let relayURLs = Set(entries.flatMap(\.pendingRelayURLs)).subtracting(excludedRelayURLs)
         var requirements: [String: Int] = [:]
@@ -1452,18 +1484,24 @@ public actor TaskSyncEngine {
             requirements[relayURL] = await proofOfWorkRequirement(relayURL)
         }
 
+        let deadline = ProcessInfo.processInfo.systemUptime + Self.proofOfWorkRepairBudget
+        var attempted = 0
         for entry in entries where entry.dependsOnEventID == nil {
             let required = entry.pendingRelayURLs.reduce(0) { current, relayURL in
                 max(current, requirements[relayURL] ?? 0)
             }
             guard required > TaskifyRelayProofOfWork.leadingZeroBits(entry.event.id),
                   signingKey(for: entry) != nil else { continue }
+            guard attempted < Self.proofOfWorkRepairBatch,
+                  ProcessInfo.processInfo.systemUptime < deadline else { return true }
+            attempted += 1
             if await replaceQueuedEventForProofOfWork(eventID: entry.event.id, required: required) {
                 for relayURL in entry.pendingRelayURLs where (requirements[relayURL] ?? 0) > 0 {
                     relayMessages[relayURL] = nil
                 }
             }
         }
+        return false
     }
 
     private func scheduleOutboxFlush() {
