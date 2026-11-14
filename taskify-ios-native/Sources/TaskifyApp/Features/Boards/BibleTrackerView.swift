@@ -990,7 +990,7 @@ struct PhysicalChecklistSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Physical checklist", systemImage: "checklist")
                             .font(.headline)
-                        Text("Print the checklist, fill its circles with a dark pen, then scan it here. Scans stay on this device.")
+                        Text("Print the checklist, mark its circles with a fill, check, or X, then scan it here. Scans stay on this device.")
                             .font(.subheadline)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                     }
@@ -1128,7 +1128,7 @@ struct PhysicalChecklistSheet: View {
                 } else {
                     scanReview.merge(detectedIDs: result.detectedIDs, items: scanJob.items)
                     if result.detectedIDs.isEmpty {
-                        scanMessage = "The page was recognized, but no newly filled circles were found."
+                        scanMessage = "The page was recognized, but no newly marked circles were found."
                     } else {
                         scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
                     }
@@ -1241,7 +1241,7 @@ private enum PhysicalChecklistPDFRenderer {
                 .foregroundColor: UIColor.black,
             ]
         )
-        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count) • Print \(PhysicalChecklistLayout.version)"
+        let subtitle = "Fill, check, or X circles • Page \(page.index + 1) of \(layout.pages.count) • Print \(PhysicalChecklistLayout.version)"
         (subtitle as NSString).draw(
             in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5),
             withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.darkGray]
@@ -1373,115 +1373,14 @@ private struct PhysicalChecklistDocumentScanner: UIViewControllerRepresentable {
 }
 
 private enum PhysicalChecklistScanAnalyzer {
-    struct Result {
-        var detectedIDs: [String]
-        var recognizedPages: Int
-        var mismatchedJobs: Int
-        var unreadablePageIDs: Int
-    }
-
-    private struct GrayImage {
-        let pixels: [UInt8]
-        let width: Int
-        let height: Int
-
-        func mean(x: Double, y: Double, radius: Double) -> Double {
-            let cx = min(max(Int(x * Double(width)), 0), width - 1)
-            let cy = min(max(Int(y * Double(height)), 0), height - 1)
-            let r = max(1, Int(radius * Double(min(width, height))))
-            var sum = 0
-            var count = 0
-            for py in max(0, cy - r)...min(height - 1, cy + r) {
-                for px in max(0, cx - r)...min(width - 1, cx + r) {
-                    let dx = px - cx
-                    let dy = py - cy
-                    guard dx * dx + dy * dy <= r * r else { continue }
-                    sum += Int(pixels[py * width + px])
-                    count += 1
-                }
-            }
-            return count == 0 ? 255 : Double(sum) / Double(count)
-        }
-    }
-
-    static func scan(images: [UIImage], job: PhysicalChecklistJob) -> Result {
-        let layout = PhysicalChecklistLayout.build(job: job)
-        let paperSize = job.paper.sizeMM
-        var detected = Set<String>()
-        var recognized = Set<Int>()
-        var mismatchedJobs = 0
-        var unreadablePageIDs = 0
-
-        for image in images {
-            autoreleasepool {
-                guard let gray = makeGrayImage(image) else { return }
-                let markerCenters = layout.markerRectsMM().map {
-                    (($0.x + $0.width / 2) / paperSize.width, ($0.y + $0.height / 2) / paperSize.height)
-                }
-                let darkMarkerCount = markerCenters.filter {
-                    gray.mean(x: $0.0, y: $0.1, radius: 0.004) < 185
-                }.count
-                guard darkMarkerCount >= 3 else { return }
-
-                let expectedJobCode = BoardPrintContract.jobCode(jobID: job.id)
-                var observedJobCode = 0
-                for (bit, center) in layout.jobCodeBitCentersMM(jobID: job.id).enumerated() {
-                    let value = gray.mean(
-                        x: center.x / paperSize.width,
-                        y: center.y / paperSize.height,
-                        radius: 0.002
-                    )
-                    if value < 170 { observedJobCode |= 1 << bit }
-                }
-                guard observedJobCode == expectedJobCode else {
-                    mismatchedJobs += 1
-                    return
-                }
-
-                var encodedPage = 0
-                for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
-                    let value = gray.mean(
-                        x: center.x / paperSize.width,
-                        y: center.y / paperSize.height,
-                        radius: 0.0025
-                    )
-                    if value < 170 { encodedPage |= 1 << bit }
-                }
-                let decodedIndex = encodedPage - 1
-                let pageIndex: Int
-                if layout.pages.count == 1 {
-                    pageIndex = 0
-                } else if layout.pages.indices.contains(decodedIndex) {
-                    pageIndex = decodedIndex
-                } else {
-                    unreadablePageIDs += 1
-                    return
-                }
-                recognized.insert(pageIndex)
-
-                for row in layout.pages[pageIndex].rows {
-                    guard case let .item(item) = row.kind, let center = row.circleCenterMM else { continue }
-                    let darkness = gray.mean(
-                        x: center.x / paperSize.width,
-                        y: center.y / paperSize.height,
-                        radius: max(0.0015, layout.circleSizeMM / paperSize.width * 0.12)
-                    )
-                    if darkness < 168 {
-                        detected.insert(item.id)
-                    }
-                }
-            }
-        }
-
-        return Result(
-            detectedIDs: detected.sorted(),
-            recognizedPages: recognized.count,
-            mismatchedJobs: mismatchedJobs,
-            unreadablePageIDs: unreadablePageIDs
+    static func scan(images: [UIImage], job: PhysicalChecklistJob) -> PhysicalChecklistScanEngine.Result {
+        PhysicalChecklistScanEngine.scan(
+            images: images.compactMap(makeGrayImage),
+            job: job
         )
     }
 
-    private static func makeGrayImage(_ source: UIImage) -> GrayImage? {
+    private static func makeGrayImage(_ source: UIImage) -> PhysicalChecklistGrayImage? {
         let targetWidth = 900
         let aspect = max(source.size.height / max(source.size.width, 1), 0.2)
         let targetHeight = max(1, Int(Double(targetWidth) * aspect))
@@ -1509,6 +1408,8 @@ private enum PhysicalChecklistScanAnalyzer {
             context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
             return true
         }
-        return rendered ? GrayImage(pixels: pixels, width: targetWidth, height: targetHeight) : nil
+        return rendered
+            ? PhysicalChecklistGrayImage(pixels: pixels, width: targetWidth, height: targetHeight)
+            : nil
     }
 }

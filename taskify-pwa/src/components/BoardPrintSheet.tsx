@@ -59,7 +59,7 @@ export function BoardPrintPreview({
         </div>
         <div className="text-xs text-secondary">
           {paperSize === "a6" ? "A6 layout leaves a left margin for ring holes. " : ""}
-          Fill the circles with a dark pen or marker, then scan from the share sheet to update this board.
+          Fill, check, or X the circles with a dark pen or marker, then scan from the share sheet to update this board.
           {" "}On iOS, use Export PDF for printing to avoid Safari headers/footers.
         </div>
       </div>

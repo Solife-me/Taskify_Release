@@ -705,13 +705,47 @@ function analyzeMarks<K>(
       if (normalized > maxNormalized) maxNormalized = normalized;
     }
 
+    // A deliberate check or X can be much lighter overall than a solid fill. Sample a denser
+    // inner disk (kept well clear of the preprinted outline) and require the dark pixels to span
+    // both axes, which accepts pen strokes without turning a dot or blurred ring into completion.
+    const innerRadius = Math.max(sampleRadiusMm, innerOffsetMm * 1.25);
+    const strokeThreshold = blendedBackground - Math.max(18, contrastRange * 0.24);
+    const strokePoints: ScanPoint[] = [];
+    let strokeSampleCount = 0;
+    const strokeDivisions = 10;
+    for (let row = 0; row <= strokeDivisions; row += 1) {
+      for (let column = 0; column <= strokeDivisions; column += 1) {
+        const dx = (column / strokeDivisions * 2 - 1) * innerRadius;
+        const dy = (row / strokeDivisions * 2 - 1) * innerRadius;
+        if (Math.hypot(dx, dy) > innerRadius) continue;
+        strokeSampleCount += 1;
+        const value = samplePageBrightness(
+          context,
+          { x: centerPage.x + dx, y: centerPage.y + dy },
+          Math.max(0.1, sampleRadiusMm * 0.15),
+        );
+        if (value < strokeThreshold) strokePoints.push({ x: dx, y: dy });
+      }
+    }
+    const strokeFraction = strokeSampleCount ? strokePoints.length / strokeSampleCount : 0;
+    const strokeX = strokePoints.map((point) => point.x);
+    const strokeY = strokePoints.map((point) => point.y);
+    const strokeXSpan = strokePoints.length ? Math.max(...strokeX) - Math.min(...strokeX) : 0;
+    const strokeYSpan = strokePoints.length ? Math.max(...strokeY) - Math.min(...strokeY) : 0;
+    const isIntentionalStroke =
+      strokePoints.length >= 4 &&
+      strokeFraction >= 0.045 &&
+      strokeXSpan >= innerRadius * 0.55 &&
+      strokeYSpan >= innerRadius * 0.45;
+
     const isFilled =
       (normalizedMedian >= normalizedThreshold &&
         contrastMedian >= contrastThreshold &&
         darkSamples >= requiredDarkSamples) ||
       (maxNormalized >= strongNormalizedThreshold &&
         maxContrast >= strongContrastThreshold &&
-        strongSamples >= strongSampleCount);
+        strongSamples >= strongSampleCount) ||
+      isIntentionalStroke;
 
     if (!isFilled) continue;
     filledCount += 1;
