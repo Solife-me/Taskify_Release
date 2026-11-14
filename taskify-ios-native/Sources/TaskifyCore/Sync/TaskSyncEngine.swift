@@ -1456,7 +1456,11 @@ public actor TaskSyncEngine {
             let required = entry.pendingRelayURLs.reduce(0) { current, relayURL in
                 max(current, requirements[relayURL] ?? 0)
             }
-            guard required > TaskifyRelayProofOfWork.leadingZeroBits(entry.event.id),
+            guard !TaskifyRelayProofOfWork.satisfies(
+                id: entry.event.id,
+                tags: entry.event.tags,
+                difficulty: required
+            ),
                   signingKey(for: entry) != nil else { continue }
             if await replaceQueuedEventForProofOfWork(eventID: entry.event.id, required: required) {
                 for relayURL in entry.pendingRelayURLs where (requirements[relayURL] ?? 0) > 0 {
@@ -1578,7 +1582,11 @@ public actor TaskSyncEngine {
         // reliably return a useful `pow:` OK for every custom event kind, leaving an otherwise
         // replicated change to cycle through acknowledgement timeouts forever.
         let requiredProofOfWork = await proofOfWorkRequirement(relayURL)
-        if requiredProofOfWork > TaskifyRelayProofOfWork.leadingZeroBits(entry.event.id) {
+        if !TaskifyRelayProofOfWork.satisfies(
+            id: entry.event.id,
+            tags: entry.event.tags,
+            difficulty: requiredProofOfWork
+        ) {
             let replaced = await replaceQueuedEventForProofOfWork(
                 eventID: entry.event.id,
                 required: requiredProofOfWork
@@ -2200,7 +2208,12 @@ public actor TaskSyncEngine {
     private func replaceQueuedEventForProofOfWork(eventID: String, required: Int) async -> Bool {
         guard let entry = await outbox.entry(eventID: eventID) else { return false }
         let event = entry.event
-        guard required > TaskifyRelayProofOfWork.leadingZeroBits(eventID), required <= 32,
+        guard !TaskifyRelayProofOfWork.satisfies(
+                  id: eventID,
+                  tags: event.tags,
+                  difficulty: required
+              ),
+              required <= 32,
               let privateKey = signingKey(for: entry) else { return false }
         let mining = Task.detached(priority: .utility) {
             try TaskifyRelayProofOfWork.$difficulty.withValue(required) {
