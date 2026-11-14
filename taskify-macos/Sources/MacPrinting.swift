@@ -273,7 +273,7 @@ final class MacPhysicalChecklistPrintView: NSView {
             .font: NSFont.systemFont(ofSize: job.format == .bibleChapters ? 13 : 15, weight: .bold),
             .foregroundColor: NSColor.black,
         ])
-        let subtitle = "Fill circles with a dark pen \u{2022} Page \(page.index + 1) of \(layout.pages.count) \u{2022} Print \(PhysicalChecklistLayout.version)"
+        let subtitle = "Fill, check, or X circles \u{2022} Page \(page.index + 1) of \(layout.pages.count) \u{2022} Print \(PhysicalChecklistLayout.version)"
         (subtitle as NSString).draw(
             in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5, yOffset: yOffset),
             withAttributes: [.font: NSFont.systemFont(ofSize: 7), .foregroundColor: NSColor.darkGray]

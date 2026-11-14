@@ -994,7 +994,7 @@ struct PhysicalChecklistSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Physical checklist", systemImage: "checklist")
                             .font(.headline)
-                        Text("Print the checklist, fill its circles with a dark pen, then scan it here. Scans stay on this device.")
+                        Text("Print the checklist, mark its circles with a fill, check, or X, then scan it here. Scans stay on this device.")
                             .font(.subheadline)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                     }
@@ -1144,7 +1144,7 @@ struct PhysicalChecklistSheet: View {
                 } else {
                     scanReview.merge(detectedIDs: result.detectedIDs, items: scanJob.items)
                     if result.detectedIDs.isEmpty {
-                        scanMessage = "The page was recognized, but no newly filled circles were found."
+                        scanMessage = "The page was recognized, but no newly marked circles were found."
                     } else {
                         scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
                     }
@@ -1328,7 +1328,7 @@ private enum PhysicalChecklistPDFRenderer {
                 .foregroundColor: UIColor.black,
             ]
         )
-        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count) • Print \(layout.layoutVersion)"
+        let subtitle = "Fill, check, or X circles • Page \(page.index + 1) of \(layout.pages.count) • Print \(layout.layoutVersion)"
         (subtitle as NSString).draw(
             in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5),
             withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.darkGray]

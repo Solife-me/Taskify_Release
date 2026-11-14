@@ -17,7 +17,8 @@ const TABLE = 70;
 type Shape =
   | { kind: "rect"; x: number; y: number; size: number; hollow?: number }
   | { kind: "ring"; cx: number; cy: number; r: number; filled: boolean }
-  | { kind: "box"; x: number; y: number; size: number; filled: boolean };
+  | { kind: "box"; x: number; y: number; size: number; filled: boolean }
+  | { kind: "stroke"; x1: number; y1: number; x2: number; y2: number; width: number };
 
 /** Where the page's corners land in the photo, clockwise from top left. */
 type Placement = [ScanPoint, ScanPoint, ScanPoint, ScanPoint];
@@ -52,13 +53,24 @@ function photograph(layout: ScanLayout, shapes: Shape[], placement: Placement, s
       const d = Math.hypot(p.x - shape.cx, p.y - shape.cy);
       return shape.filled ? d <= shape.r * 0.9 : d <= shape.r && d >= shape.r - 0.3;
     }
+    if (shape.kind === "stroke") {
+      const dx = shape.x2 - shape.x1;
+      const dy = shape.y2 - shape.y1;
+      const lengthSquared = dx * dx + dy * dy;
+      const raw = lengthSquared ? ((p.x - shape.x1) * dx + (p.y - shape.y1) * dy) / lengthSquared : 0;
+      const t = Math.min(1, Math.max(0, raw));
+      return Math.hypot(p.x - (shape.x1 + t * dx), p.y - (shape.y1 + t * dy)) <= shape.width / 2;
+    }
     const within = p.x >= shape.x && p.y >= shape.y && p.x <= shape.x + shape.size && p.y <= shape.y + shape.size;
     if (!within || shape.filled) return within;
     return p.x < shape.x + 0.3 || p.y < shape.y + 0.3 || p.x > shape.x + shape.size - 0.3 || p.y > shape.y + shape.size - 0.3;
   };
   for (const shape of shapes) {
-    const [x0, y0, x1, y1] =
-      shape.kind === "ring" ? [shape.cx - shape.r, shape.cy - shape.r, shape.cx + shape.r, shape.cy + shape.r] : [shape.x, shape.y, shape.x + shape.size, shape.y + shape.size];
+    const [x0, y0, x1, y1] = shape.kind === "ring"
+      ? [shape.cx - shape.r, shape.cy - shape.r, shape.cx + shape.r, shape.cy + shape.r]
+      : shape.kind === "stroke"
+        ? [Math.min(shape.x1, shape.x2) - shape.width, Math.min(shape.y1, shape.y2) - shape.width, Math.max(shape.x1, shape.x2) + shape.width, Math.max(shape.y1, shape.y2) + shape.width]
+        : [shape.x, shape.y, shape.x + shape.size, shape.y + shape.size];
     const corners = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }].map((c) => applyHomography(c, toImage));
     const minX = Math.max(0, Math.floor(Math.min(...corners.map((c) => c.x))));
     const maxX = Math.min(size.width - 1, Math.ceil(Math.max(...corners.map((c) => c.x))));
@@ -148,6 +160,16 @@ describe("scanning a board sheet", () => {
 
   test("a blank sheet reads as nothing filled", () => {
     expect(scanBoard(photograph(board, boardSheet(board, 0, new Set()), upright)).filled).toEqual([]);
+  });
+
+  test("a check mark counts without treating empty circle outlines as complete", () => {
+    const target = boardScanMarks(board, 0)[1].centerMm;
+    const shapes = [
+      ...boardSheet(board, 0, new Set()),
+      { kind: "stroke" as const, x1: target.x - 1.1, y1: target.y, x2: target.x - 0.25, y2: target.y + 0.8, width: 0.55 },
+      { kind: "stroke" as const, x1: target.x - 0.25, y1: target.y + 0.8, x2: target.x + 1.15, y2: target.y - 0.8, width: 0.55 },
+    ];
+    expect(scanBoard(photograph(board, shapes, upright)).filled).toEqual(["t1"]);
   });
 
   test("a photo taken upside down is turned the right way by the finder markers", () => {
