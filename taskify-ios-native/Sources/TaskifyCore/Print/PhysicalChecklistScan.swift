@@ -231,7 +231,7 @@ public enum PhysicalChecklistScanAnalyzer {
                 guard markersPresent(page, layout: layout) else { continue }
                 sawPlausibleSheet = true
                 let observedCode = readJobCode(page, layout: layout, jobID: job.id)
-                if observedCode == expectedJobCode {
+                if jobCodeMatches(observedCode, expectedJobCode) {
                     return readPage(page, layout: layout)
                 }
             }
@@ -288,10 +288,17 @@ public enum PhysicalChecklistScanAnalyzer {
         let size = layout.paper.sizeMM
         var code = 0
         for (bit, center) in layout.jobCodeBitCentersMM(jobID: jobID).enumerated() {
-            let value = image.mean(x: center.x / size.width, y: center.y / size.height, radius: 0.0018)
+            let value = image.mean(x: center.x / size.width, y: center.y / size.height, radius: 0.0022)
             if value < bitThreshold { code |= 1 << bit }
         }
         return code
+    }
+
+    /// A photographed bit can read wrong. Accept up to two bit differences, matching the PWA
+    /// scanner, instead of rejecting an otherwise matching sheet.
+    static func jobCodeMatches(_ observed: Int, _ expected: Int) -> Bool {
+        let differences = (observed ^ expected).nonzeroBitCount
+        return differences <= max(1, BoardPrintContract.jobCodeBits / 5)
     }
 
     private static func readPage(_ image: PhysicalChecklistGrayImage, layout: PhysicalChecklistLayout) -> Outcome {
@@ -300,14 +307,29 @@ public enum PhysicalChecklistScanAnalyzer {
         }
 
         let size = layout.paper.sizeMM
-        var encodedPage = 0
-        for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
+        var observedBits: [Int] = []
+        for center in layout.pageIDBitCentersMM() {
             let value = image.mean(x: center.x / size.width, y: center.y / size.height, radius: 0.0025)
-            if value < bitThreshold { encodedPage |= 1 << bit }
+            observedBits.append(value < bitThreshold ? 1 : 0)
         }
-        let pageIndex = encodedPage - 1
-        guard layout.pages.indices.contains(pageIndex) else { return .unreadablePageID }
-        return .recognized(pageIndex: pageIndex, detectedIDs: filledItemIDs(image, layout: layout, pageIndex: pageIndex))
+        let maximumErrors = max(1, BoardPrintContract.pageIDBits / 4)
+        var bestIndex = -1
+        var bestErrors = Int.max
+        var tied = false
+        for pageIndex in layout.pages.indices {
+            let pattern = BoardPrintContract.pagePattern(pageIndex: pageIndex)
+            guard pattern.count == observedBits.count else { continue }
+            let errors = zip(pattern, observedBits).reduce(0) { $0 + ($1.0 == $1.1 ? 0 : 1) }
+            if errors < bestErrors {
+                bestErrors = errors
+                bestIndex = pageIndex
+                tied = false
+            } else if errors == bestErrors {
+                tied = true
+            }
+        }
+        guard bestIndex >= 0, !tied, bestErrors <= maximumErrors else { return .unreadablePageID }
+        return .recognized(pageIndex: bestIndex, detectedIDs: filledItemIDs(image, layout: layout, pageIndex: bestIndex))
     }
 
     private static func filledItemIDs(

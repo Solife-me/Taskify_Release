@@ -214,3 +214,10 @@ private func withBackground(_ page: PhysicalChecklistGrayImage, margin: Double =
     #expect(result.recognizedPages == 1)
     #expect(result.mismatchedJobs == 0)
 }
+
+@Test func scanToleratesAFewMisreadJobCodeBits() {
+    let expected = 0b1010_1010_10
+    #expect(PhysicalChecklistScanAnalyzer.jobCodeMatches(expected, expected))
+    #expect(PhysicalChecklistScanAnalyzer.jobCodeMatches(expected ^ 0b11, expected))
+    #expect(!PhysicalChecklistScanAnalyzer.jobCodeMatches(expected ^ 0b111, expected))
+}
