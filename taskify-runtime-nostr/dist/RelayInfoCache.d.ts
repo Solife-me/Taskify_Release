@@ -45,6 +45,8 @@ type RelayInfoCacheOptions = {
 };
 export declare function normalizeRelayCacheKey(relayUrl: string): string | null;
 export declare function buildNip11Url(relayUrl: string): string | null;
+/** A conservative floor for relays whose enforced write policy is absent from NIP-11. */
+export declare function builtInProofOfWorkDifficulty(relayUrl: string): number;
 export declare class RelayInfoCache {
     private readonly ttlMs;
     private readonly failureTtlMs;

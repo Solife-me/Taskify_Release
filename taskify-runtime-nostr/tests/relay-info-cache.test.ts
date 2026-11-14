@@ -46,6 +46,23 @@ test("RelayInfoCache exposes the maximum NIP-13 difficulty across target relays"
   assert.equal(limits.authRequired, false);
 });
 
+test("RelayInfoCache applies nos.lol's unadvertised write-policy floor to every client", () => {
+  const cache = new RelayInfoCache();
+  assert.equal(cache.getLimits(["wss://nos.lol"]).minPowDifficulty, 20);
+  assert.equal(cache.getLimits(["wss://NOS.LOL/"]).minPowDifficulty, 20);
+  assert.equal(cache.getLimits(["wss://relay.example/"]).minPowDifficulty, 0);
+});
+
+test("RelayInfoCache ignores unsupported advertised and learned targets", async () => {
+  const cache = new RelayInfoCache();
+  await cache.prime("wss://impractical.example/", async () => ({
+    limitation: { min_pow_difficulty: 33 },
+  }));
+  cache.recordProofOfWorkRequirement("wss://impractical.example/", 40);
+  assert.equal(cache.getLimits(["wss://impractical.example/"]).minPowDifficulty, 0);
+  assert.equal(cache.learnedProofOfWork("wss://impractical.example/"), 0);
+});
+
 test("RelayInfoCache raises a relay's difficulty from a pow: rejection and persists it", async () => {
   const store = new Map<string, string>();
   const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); } };

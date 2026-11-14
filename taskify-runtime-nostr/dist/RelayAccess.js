@@ -1,7 +1,7 @@
 import { NDKPrivateKeySigner, NDKRelaySet } from "@nostr-dev-kit/ndk";
 import { RelayInfoCache } from "./RelayInfoCache.js";
 import { RelayAuthManager, createRelayAuthPolicy } from "./RelayAuth.js";
-import { applyProofOfWork, countLeadingZeroBits, parseProofOfWorkRejection } from "./ProofOfWork.js";
+import { applyProofOfWork, countLeadingZeroBits, MAX_PROOF_OF_WORK_DIFFICULTY, parseProofOfWorkRejection } from "./ProofOfWork.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 import { installNdkRelayTimerFix } from "./ndkLifecycle.js";
 import { classifyRelayRejection, takeWhenPublishSlotIsAvailable, } from "./RelayPublishBudget.js";
@@ -35,8 +35,9 @@ export async function relayProofOfWorkDifficulty(relays) {
 /** Records a relay's `pow:` rejection so later writes are mined to its target. */
 export function recordRelayProofOfWorkRejection(relayUrl, message) {
     const required = parseProofOfWorkRejection(message);
-    if (required != null)
-        relayInfoCache.recordProofOfWorkRequirement(relayUrl, required);
+    if (required == null || required > MAX_PROOF_OF_WORK_DIFFICULTY)
+        return null;
+    relayInfoCache.recordProofOfWorkRequirement(relayUrl, required);
     return required;
 }
 /** Standalone clients share the same auth policy; anonymous reads use an ephemeral key. */
