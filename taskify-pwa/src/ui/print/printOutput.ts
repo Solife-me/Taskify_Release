@@ -253,7 +253,31 @@ export function boardPrintCss(pageWidthMm: number, pageHeightMm: number): string
     flex-direction: column;
     justify-content: center;
   }
+  .board-print-title-row {
+    display: flex;
+    align-items: center;
+    gap: 2mm;
+    min-width: 0;
+  }
+  .board-print-due {
+    flex: 0 0 auto;
+    font-size: 6.6pt;
+    font-weight: 600;
+    color: rgba(16, 24, 40, 0.82);
+    white-space: nowrap;
+  }
+  .board-print-note {
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 5.8pt;
+    line-height: 2.8mm;
+    color: rgba(16, 24, 40, 0.72);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow: hidden;
+  }
   .board-print-title {
+    flex: 1 1 auto;
+    min-width: 0;
     font-size: 8pt;
     font-weight: 500;
     color: #101828;

@@ -1191,6 +1191,7 @@ struct PhysicalChecklistSheet: View {
     }
 
     private func pdfURL() throws -> URL {
+        prepareNoteLayout()
         let data = PhysicalChecklistPDFRenderer.render(job: job)
         let safeTitle = job.title.replacingOccurrences(of: "/", with: "-")
         let url = FileManager.default.temporaryDirectory
@@ -1198,6 +1199,40 @@ struct PhysicalChecklistSheet: View {
         try data.write(to: url, options: .atomic)
         model.recordPhysicalChecklistJob(job)
         return url
+    }
+
+    /// Notes wrap below the title, so their line count depends on the chosen paper. Measure them
+    /// for the sheet about to print; the saved job keeps the counts the scanner needs.
+    private func prepareNoteLayout() {
+        var updated = job
+        let widthMM = noteTextWidthMM(for: updated.paper)
+        let font = UIFont(name: "Helvetica", size: 5.8) ?? UIFont.systemFont(ofSize: 5.8)
+        for index in updated.items.indices {
+            guard let note = updated.items[index].note, !note.isEmpty else { continue }
+            // Measure a little narrower so the browser's Helvetica wrapping also fits the row.
+            updated.items[index].noteLineCount = noteLineCount(note, widthMM: widthMM * 0.98, font: font)
+        }
+        job = updated
+    }
+
+    private func noteTextWidthMM(for paper: PhysicalChecklistPaper) -> Double {
+        let size = paper.sizeMM
+        let left = PhysicalChecklistLayout.marginMM
+            + (paper == .a6 ? BoardPrintContract.a6BindingMarginMM : 0)
+        let columnWidth = size.width - left - PhysicalChecklistLayout.marginMM
+        return max(1, columnWidth - PhysicalChecklistLayout.circleSizeMM - 2.4)
+    }
+
+    private func noteLineCount(_ note: String, widthMM: Double, font: UIFont) -> Int {
+        let width = max(1, widthMM * 72.0 / 25.4)
+        let bounds = (note as NSString).boundingRect(
+            with: CGSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        )
+        let lineHeight = max(1, font.ascender - font.descender + font.leading)
+        return max(1, Int((bounds.height / lineHeight).rounded(.up)))
     }
 
     private func reviewSelectionIcon(for item: PhysicalChecklistItem) -> String {
@@ -1354,13 +1389,36 @@ private enum PhysicalChecklistPDFRenderer {
                 let textX = center.x + side / 2 + (jobTextGap(for: layout))
                 let textWidth = max(1, row.xMM + row.widthMM - textX)
                 let titleHeight = 4.6
+                let titleFont = UIFont.systemFont(ofSize: layout.circleSizeMM < 4 ? 6.4 : 8.2)
+                let dueFont = UIFont.systemFont(ofSize: 6.6, weight: .semibold)
+                let dueWidthMM = (item.dueText.map {
+                    ($0 as NSString).size(withAttributes: [.font: dueFont]).width / pointsPerMM
+                } ?? 0)
+                let titleWidth = dueWidthMM > 0 ? max(1, textWidth - dueWidthMM - 2) : textWidth
                 (item.title as NSString).draw(
-                    in: rectMM(textX, row.yMM + (row.titleBandMM - titleHeight) / 2, textWidth, titleHeight),
+                    in: rectMM(textX, row.yMM + (row.titleBandMM - titleHeight) / 2, titleWidth, titleHeight),
                     withAttributes: [
-                        .font: UIFont.systemFont(ofSize: layout.circleSizeMM < 4 ? 6.4 : 8.2),
+                        .font: titleFont,
                         .foregroundColor: UIColor.black,
                     ]
                 )
+                if dueWidthMM > 0, let dueText = item.dueText {
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.alignment = .right
+                    (dueText as NSString).draw(
+                        in: rectMM(
+                            row.xMM + row.widthMM - dueWidthMM - 1,
+                            row.yMM + (row.titleBandMM - titleHeight) / 2,
+                            dueWidthMM + 1,
+                            titleHeight
+                        ),
+                        withAttributes: [
+                            .font: dueFont,
+                            .foregroundColor: UIColor(white: 0.2, alpha: 0.85),
+                            .paragraphStyle: paragraph,
+                        ]
+                    )
+                }
                 if layout.detailed {
                     drawDetailedContent(item: item, row: row, textX: textX, textWidth: textWidth)
                 }
@@ -1374,11 +1432,25 @@ private enum PhysicalChecklistPDFRenderer {
         textX: Double,
         textWidth: Double
     ) {
-        let font = UIFont.systemFont(ofSize: 5.8)
+        let font = UIFont(name: "Helvetica", size: 5.8) ?? UIFont.systemFont(ofSize: 5.8)
         let mutedColor = UIColor(white: 0.25, alpha: 0.72)
         var cursorY = row.yMM + row.titleBandMM
 
-        if let detail = item.detail, !detail.isEmpty {
+        if let note = item.note, !note.isEmpty {
+            let lines = max(1, item.noteLineCount)
+            let height = Double(lines) * PhysicalChecklistLayout.noteLineMM
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byWordWrapping
+            (note as NSString).draw(
+                in: rectMM(textX, cursorY, textWidth, height),
+                withAttributes: [
+                    .font: font,
+                    .foregroundColor: mutedColor,
+                    .paragraphStyle: paragraph,
+                ]
+            )
+            cursorY += height
+        } else if let detail = item.detail, !detail.isEmpty {
             (detail as NSString).draw(
                 in: rectMM(textX, cursorY + 0.7, textWidth, 3.0),
                 withAttributes: [.font: font, .foregroundColor: mutedColor]

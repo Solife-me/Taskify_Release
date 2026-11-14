@@ -2,6 +2,8 @@ import { expect, test } from "vitest";
 import {
   BOARD_PRINT_DETAIL_LAYOUT_VERSION,
   BOARD_PRINT_LAYOUT_VERSION,
+  BOARD_PRINT_MODERN_LAYOUT_VERSION,
+  BOARD_PRINT_NOTE_LINE_MM,
   buildBoardPrintLayout,
   composeBoardPrintDetail,
   isTaskPrintable,
@@ -77,6 +79,22 @@ test("detailed sheets grow a row for subtasks and photo thumbnails", () => {
   expect(taskRows[0].circleY).toBeLessThan(taskRows[0].y + 7);
 });
 
+test("detailed sheets put the due date on the title row and reserve wrapped note lines", () => {
+  const layout = buildBoardPrintLayout([{
+    id: "a",
+    title: "A",
+    dueText: "Nov 8, 2026",
+    note: "A long note. ".repeat(20),
+    noteLineCount: 3,
+  }], { layoutVersion: BOARD_PRINT_MODERN_LAYOUT_VERSION, jobId: "note-print" });
+  const taskRows = layout.pages
+    .flatMap((page) => page.rows)
+    .filter((row): row is BoardPrintTaskRow => row.kind === "task");
+  expect(taskRows[0].dueText).toBe("Nov 8, 2026");
+  expect(taskRows[0].noteLineCount).toBe(3);
+  expect(taskRows[0].heightMm).toBe(7 + 3 * BOARD_PRINT_NOTE_LINE_MM + 1);
+});
+
 test("detailed rows paginate by their own height", () => {
   const tallTasks: BoardPrintTask[] = Array.from({ length: 12 }, (_, index) => ({
     id: `task-${index}`,
@@ -98,6 +116,25 @@ test("detailed rows paginate by their own height", () => {
   }
 });
 
+test("modern sheets keep their last row clear of the bottom markers", () => {
+  const tasksWithSections = Array.from({ length: 80 }, (_, index) => ({
+    id: `task-${index}`,
+    title: `Task ${index}`,
+    label: "Section",
+  }));
+  const layout = buildBoardPrintLayout(tasksWithSections, {
+    layoutVersion: BOARD_PRINT_MODERN_LAYOUT_VERSION,
+    paperSize: "a6",
+    jobId: "clear-print",
+  });
+  const bottomMm = layout.page.heightMm - 10 - layout.markers.sizeMm - 2;
+  for (const page of layout.pages) {
+    for (const row of page.rows) {
+      expect(row.y + row.heightMm).toBeLessThanOrEqual(bottomMm + 0.001);
+    }
+  }
+});
+
 test("v3 sheets carry a job-validation code while legacy jobs remain readable", () => {
   const current = buildBoardPrintLayout(tasks, { jobId: "current-print" });
   const legacy = buildBoardPrintLayout(tasks, { jobId: "legacy-print", layoutVersion: "v2" });
@@ -106,5 +143,5 @@ test("v3 sheets carry a job-validation code while legacy jobs remain readable", 
   expect(current.jobCode?.pattern).toHaveLength(10);
   expect(legacy.version).toBe("v2");
   expect(legacy.jobCode).toBeUndefined();
-  expect(() => buildBoardPrintLayout(tasks, { layoutVersion: "v5" })).toThrow(/unsupported/i);
+  expect(() => buildBoardPrintLayout(tasks, { layoutVersion: "v6" })).toThrow(/unsupported/i);
 });

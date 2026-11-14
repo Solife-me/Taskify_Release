@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 
-import { buildBoardPrintLayout, type BoardPrintJob } from "./BoardPrintLayout";
+import { BOARD_PRINT_NOTE_LINE_MM, buildBoardPrintLayout, type BoardPrintJob } from "./BoardPrintLayout";
 import { getPaperDefinition, PRINT_PAPER_OPTIONS, type PrintPaperSize } from "./printPaper";
 
 const PRINT_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
@@ -189,13 +189,24 @@ export function BoardPrintPreview({
                     />
                     <div className="board-print-text" style={{ width: `${row.textWidthMm}mm` }}>
                       <div className="board-print-title-band" style={{ height: `${row.titleBandMm}mm` }}>
-                        <div className="board-print-title">
-                          {!hasGroupHeaders && row.label ? <span className="board-print-label">{row.label}</span> : null}
-                          {row.title}
+                        <div className="board-print-title-row">
+                          <div className="board-print-title">
+                            {!hasGroupHeaders && row.label ? <span className="board-print-label">{row.label}</span> : null}
+                            {row.title}
+                          </div>
+                          {row.dueText ? <div className="board-print-due">{row.dueText}</div> : null}
                         </div>
                         {!row.detailBelow && row.detail ? <div className="board-print-detail">{row.detail}</div> : null}
                       </div>
                       {row.detailBelow && row.detail ? <div className="board-print-detail">{row.detail}</div> : null}
+                      {row.note ? (
+                        <div
+                          className="board-print-note"
+                          style={{ height: `${Math.max(1, row.noteLineCount ?? 1) * BOARD_PRINT_NOTE_LINE_MM}mm` }}
+                        >
+                          {row.note}
+                        </div>
+                      ) : null}
                       {row.subtasks?.map((subtask, subtaskIndex) => (
                         <div key={`${row.taskId}-subtask-${subtaskIndex}`} className="board-print-subtask">
                           <span className="board-print-subtask__box" data-completed={subtask.completed ? "true" : undefined} />

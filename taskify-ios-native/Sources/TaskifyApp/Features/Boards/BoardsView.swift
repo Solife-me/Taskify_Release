@@ -665,7 +665,8 @@ struct BoardsView: View {
                         title: task.title,
                         section: section,
                         filled: task.completed,
-                        detail: options.flatMap { printDetail(for: task, options: $0) },
+                        dueText: options?.includeDue == true ? printDueText(for: task) : nil,
+                        note: options?.includeNotes == true ? printNoteText(task.note) : nil,
                         subtasks: options?.includeSubtasks == true
                             ? (task.subtasks ?? []).map {
                                 PhysicalChecklistSubtask(title: $0.title, completed: $0.completed)
@@ -694,7 +695,10 @@ struct BoardsView: View {
                         title: event.title,
                         section: section,
                         filled: false,
-                        detail: options.flatMap { printDetail(for: event, options: $0) }
+                        dueText: options?.includeDue == true ? printDueText(for: event) : nil,
+                        note: options?.includeNotes == true
+                            ? printNoteText(event.details ?? event.summary ?? "")
+                            : nil
                     )
                     if options?.includePhotos == true,
                        let image = event.imageURL,
@@ -734,44 +738,26 @@ struct BoardsView: View {
         )
     }
 
-    private func printDetail(for task: TaskItem, options: PhysicalChecklistPrintOptions) -> String? {
-        var parts: [String] = []
-        if options.includeDue, task.dueDateEnabled, let due = task.dueDate {
-            parts.append(formattedPrintDate(due, includeTime: task.dueTimeEnabled, timeZoneID: task.dueTimeZone))
-        }
-        if options.includeNotes {
-            let note = singleLinePrintText(task.note)
-            if !note.isEmpty { parts.append(note) }
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    private func printDueText(for task: TaskItem) -> String? {
+        guard task.dueDateEnabled, let due = task.dueDate else { return nil }
+        return formattedPrintDate(due, includeTime: task.dueTimeEnabled, timeZoneID: task.dueTimeZone)
     }
 
-    private func printDetail(for event: TaskifyEvent, options: PhysicalChecklistPrintOptions) -> String? {
-        var parts: [String] = []
-        if options.includeDue {
-            switch event.schedule {
-            case .date:
-                if let key = event.startDateValue, !key.isEmpty {
-                    parts.append(formattedPrintDateKey(key))
-                }
-            case .time:
-                if let iso = event.startISO,
-                   let date = ISO8601DateFormatter().date(from: iso) {
-                    parts.append(formattedPrintDate(date, includeTime: true, timeZoneID: event.startTimeZoneID))
-                }
-            }
+    private func printDueText(for event: TaskifyEvent) -> String? {
+        switch event.schedule {
+        case .date:
+            guard let key = event.startDateValue, !key.isEmpty else { return nil }
+            return formattedPrintDateKey(key)
+        case .time:
+            guard let iso = event.startISO,
+                  let date = ISO8601DateFormatter().date(from: iso) else { return nil }
+            return formattedPrintDate(date, includeTime: true, timeZoneID: event.startTimeZoneID)
         }
-        if options.includeNotes {
-            let note = singleLinePrintText(event.details ?? event.summary ?? "")
-            if !note.isEmpty { parts.append(note) }
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    private func singleLinePrintText(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private func printNoteText(_ value: String) -> String? {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
     private func formattedPrintDate(_ date: Date, includeTime: Bool, timeZoneID: String?) -> String {

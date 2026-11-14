@@ -42,9 +42,10 @@ private let boardPrintVectorsURL = URL(fileURLWithPath: #filePath)
 @Test func boardPrintContractKeepsSafeLegacyVersionsReadable() {
     #expect(BoardPrintContract.isSupportedVersion("v3"))
     #expect(BoardPrintContract.isSupportedVersion("v4"))
+    #expect(BoardPrintContract.isSupportedVersion("v5"))
     #expect(BoardPrintContract.isSupportedVersion("v2"))
     #expect(BoardPrintContract.isSupportedVersion("v1"))
-    #expect(!BoardPrintContract.isSupportedVersion("v5"))
+    #expect(!BoardPrintContract.isSupportedVersion("v6"))
 }
 
 @Test func encryptedPrintManifestUsesCrossClientKeysAndNewestOwnerWins() throws {

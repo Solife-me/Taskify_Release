@@ -45,8 +45,9 @@ test("board print contract matches the shared TS/Swift vectors", () => {
 test("only versioned print layouts with safe legacy fallback are accepted", () => {
   assert.equal(isSupportedBoardPrintVersion("v3"), true);
   assert.equal(isSupportedBoardPrintVersion("v4"), true);
+  assert.equal(isSupportedBoardPrintVersion("v5"), true);
   assert.equal(isSupportedBoardPrintVersion("v2"), true);
   assert.equal(isSupportedBoardPrintVersion("v1"), true);
-  assert.equal(isSupportedBoardPrintVersion("v5"), false);
+  assert.equal(isSupportedBoardPrintVersion("v6"), false);
   assert.equal(isSupportedBoardPrintVersion(null), false);
 });

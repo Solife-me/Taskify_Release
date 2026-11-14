@@ -2,6 +2,7 @@ import {
   BOARD_PRINT_CONTRACT_VERSION,
   BOARD_PRINT_DETAIL_LAYOUT_VERSION,
   BOARD_PRINT_LAYOUT_MM,
+  BOARD_PRINT_MODERN_LAYOUT_VERSION,
   BOARD_PRINT_MAX_PAGES,
   boardPrintJobCodePattern,
   boardPrintPagePattern,
@@ -10,7 +11,7 @@ import {
 import { getPaperDefinition, type PrintPaperSize } from "./printPaper";
 
 export const BOARD_PRINT_LAYOUT_VERSION = BOARD_PRINT_CONTRACT_VERSION;
-export { BOARD_PRINT_DETAIL_LAYOUT_VERSION };
+export { BOARD_PRINT_DETAIL_LAYOUT_VERSION, BOARD_PRINT_MODERN_LAYOUT_VERSION };
 
 export type BoardPrintSubtask = { title: string; completed?: boolean };
 
@@ -21,8 +22,14 @@ export type BoardPrintTask = {
   /** Stable list/day identifier used when the user prints only selected lists. */
   listId?: string;
   completed?: boolean;
-  /** A compact second line under the title: due date/time and/or the start of the note. */
+  /** Legacy compact line under the title, kept for sheets printed before dates moved up. */
   detail?: string;
+  /** The due date/time, printed at the end of the title row. */
+  dueText?: string;
+  /** The full note, printed wrapped below the title. */
+  note?: string;
+  /** Wrapped note lines reserved in the row, measured for the chosen paper. */
+  noteLineCount?: number;
   subtasks?: BoardPrintSubtask[];
   /** Printable photo thumbnails (data URLs), capped when the job is prepared. */
   photos?: string[];
@@ -57,11 +64,79 @@ export const DEFAULT_BOARD_PRINT_OPTIONS: BoardPrintOptions = {
 };
 
 /** The detailed layout is used whenever a row needs more than the title band. */
-export function boardPrintLayoutVersionFor(options: BoardPrintOptions): string {
-  return options.includeSubtasks || options.includePhotos
-    ? BOARD_PRINT_DETAIL_LAYOUT_VERSION
-    : BOARD_PRINT_LAYOUT_VERSION;
+export function boardPrintLayoutVersionFor(_options: BoardPrintOptions): string {
+  // New prints always use the modern geometry: it keeps content clear of the bottom markers.
+  // v3/v4 remain supported only so sheets printed earlier still scan.
+  return BOARD_PRINT_MODERN_LAYOUT_VERSION;
 }
+let noteMeasureContext: CanvasRenderingContext2D | null = null;
+let noteMeasureUnavailable = false;
+
+/** The printable text width for a task row on this paper, in millimetres. */
+function boardPrintNoteWidthMm(paperSize: PrintPaperSize): number {
+  const paper = getPaperDefinition(paperSize);
+  const left = getBoardPrintMargins(paperSize).left;
+  const right = getBoardPrintMargins(paperSize).right;
+  return Math.max(1, paper.widthMm - left - right - BOARD_PRINT_LAYOUT_MM.circleSizeMm - BOARD_PRINT_LAYOUT_MM.circleTextGapMm);
+}
+
+function measureNoteParagraph(context: CanvasRenderingContext2D, paragraph: string, maxWidth: number): number {
+  if (!paragraph.trim()) return 1;
+  const words = paragraph.split(/\s+/);
+  let lines = 1;
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (context.measureText(candidate).width <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines += 1;
+    const wordWidth = context.measureText(word).width;
+    if (wordWidth <= maxWidth) {
+      current = word;
+    } else {
+      lines += Math.max(1, Math.ceil(wordWidth / maxWidth)) - 1;
+      current = "";
+    }
+  }
+  return lines;
+}
+
+/** How many 3 mm lines the full note needs on the chosen paper. */
+export function measureBoardPrintNoteLines(note: string, paperSize: PrintPaperSize): number {
+  const text = note.trim();
+  if (!text) return 0;
+  if (noteMeasureUnavailable || typeof document === "undefined") {
+    return Math.max(1, Math.ceil(text.length / 55));
+  }
+  if (!noteMeasureContext) {
+    const canvas = document.createElement("canvas");
+    noteMeasureContext = canvas.getContext("2d");
+    if (!noteMeasureContext) {
+      noteMeasureUnavailable = true;
+      return Math.max(1, Math.ceil(text.length / 55));
+    }
+  }
+  noteMeasureContext.font = '5.8pt Helvetica, Arial, sans-serif';
+  // Measure a little narrower than the page so browser and native wrapping both fit the row.
+  const maxWidth = boardPrintNoteWidthMm(paperSize) * (96 / 25.4) * 0.96;
+  let lines = 0;
+  for (const paragraph of text.split(/\r?\n/)) {
+    lines += measureNoteParagraph(noteMeasureContext, paragraph, maxWidth);
+  }
+  return Math.max(1, lines);
+}
+
+/** Fills in the wrapped note height for the paper the job will print on. */
+export function withBoardPrintNoteLines(tasks: BoardPrintTask[], paperSize: PrintPaperSize): BoardPrintTask[] {
+  return tasks.map((task) => (
+    task.note?.trim()
+      ? { ...task, noteLineCount: measureBoardPrintNoteLines(task.note, paperSize) }
+      : task
+  ));
+}
+
 
 type BoardPrintDueOptions = { includeTime?: boolean; timeZone?: string };
 
@@ -168,6 +243,7 @@ const JOB_CODE_MARKER_SIZE_MM = BOARD_PRINT_LAYOUT_MM.jobCodeMarkerSizeMm;
 const JOB_CODE_MARKER_GAP_MM = BOARD_PRINT_LAYOUT_MM.jobCodeMarkerGapMm;
 const JOB_CODE_BITS = BOARD_PRINT_LAYOUT_MM.jobCodeBits;
 export const BOARD_PRINT_DETAIL_LINE_MM = 3.4;
+export const BOARD_PRINT_NOTE_LINE_MM = 3.0;
 export const BOARD_PRINT_SUBTASK_LINE_MM = 3.6;
 const SUBTASK_MAX = 6;
 export const BOARD_PRINT_PHOTO_SIZE_MM = 13;
@@ -204,8 +280,11 @@ export type BoardPrintTaskRow = {
   title: string;
   label?: string;
   detail?: string;
-  /** Detailed sheets put the detail block below the title band instead of inside it. */
+  /** Detailed sheets put the legacy detail block below the title band instead of inside it. */
   detailBelow?: boolean;
+  dueText?: string;
+  note?: string;
+  noteLineCount?: number;
   subtasks?: BoardPrintSubtask[];
   hiddenSubtaskCount?: number;
   photos?: string[];
@@ -322,7 +401,11 @@ export function buildBoardPrintLayout(
   const pageHeightMm = paperDefinition.heightMm;
   const headerTopMm = margin.top + MARKER_SIZE_MM + MARKER_GAP_MM;
   const contentTopMm = headerTopMm + HEADER_HEIGHT_MM + HEADER_GAP_MM;
-  const contentHeightMm = pageHeightMm - margin.bottom - contentTopMm;
+  const modern = layoutVersion === BOARD_PRINT_MODERN_LAYOUT_VERSION;
+  // The modern sheet keeps its last row clear of the bottom alignment markers.
+  const contentHeightMm = modern
+    ? pageHeightMm - margin.bottom - MARKER_SIZE_MM - MARKER_GAP_MM - contentTopMm
+    : pageHeightMm - margin.bottom - contentTopMm;
   const columnWidthMm =
     (pageWidthMm - margin.left - margin.right - COLUMN_GAP_MM * (COLUMN_COUNT - 1)) / COLUMN_COUNT;
   const rowsPerColumn = Math.max(1, Math.floor(contentHeightMm / ROW_HEIGHT_MM));
@@ -336,13 +419,16 @@ export function buildBoardPrintLayout(
   const jobCodeOriginXMm = pageWidthMm - margin.right - jobCodeWidthMm;
   const jobCodeOriginYMm = pageIdOriginYMm + PAGE_ID_MARKER_SIZE_MM + 0.6;
   const marginMm = Math.min(margin.top, margin.right, margin.bottom, margin.left);
+  // Modern markers sit at the physical paper corners (the native contract), so a sheet printed
+  // by either client aligns for the other. Older versions keep the margins they were printed with.
+  const markerBase = modern ? BASE_MARGIN_MM : null;
   const markerPositions = {
-    topLeft: { x: margin.left, y: margin.top },
-    topRight: { x: pageWidthMm - margin.right - MARKER_SIZE_MM, y: margin.top },
-    bottomLeft: { x: margin.left, y: pageHeightMm - margin.bottom - MARKER_SIZE_MM },
+    topLeft: { x: markerBase ?? margin.left, y: markerBase ?? margin.top },
+    topRight: { x: pageWidthMm - (markerBase ?? margin.right) - MARKER_SIZE_MM, y: markerBase ?? margin.top },
+    bottomLeft: { x: markerBase ?? margin.left, y: pageHeightMm - (markerBase ?? margin.bottom) - MARKER_SIZE_MM },
     bottomRight: {
-      x: pageWidthMm - margin.right - MARKER_SIZE_MM,
-      y: pageHeightMm - margin.bottom - MARKER_SIZE_MM,
+      x: pageWidthMm - (markerBase ?? margin.right) - MARKER_SIZE_MM,
+      y: pageHeightMm - (markerBase ?? margin.bottom) - MARKER_SIZE_MM,
     },
   };
   const markerCenters = {
@@ -384,22 +470,27 @@ export function buildBoardPrintLayout(
     tasks.forEach((task) => rows.push({ kind: "task", task }));
   }
 
-  const detailed = layoutVersion === BOARD_PRINT_DETAIL_LAYOUT_VERSION;
+  const detailed = layoutVersion === BOARD_PRINT_DETAIL_LAYOUT_VERSION || modern;
   const detailedTask = (task: BoardPrintTask) => {
     const allSubtasks = (task.subtasks ?? []).filter((subtask) => subtask.title.trim());
     const subtasks = allSubtasks.slice(0, SUBTASK_MAX);
     const hiddenSubtaskCount = allSubtasks.length - subtasks.length;
     const photos = (task.photos ?? []).slice(0, BOARD_PRINT_PHOTO_MAX);
     const photoTotal = Math.min(task.photos?.length ?? task.photoCount ?? 0, BOARD_PRINT_PHOTO_MAX);
-    const detailMm = task.detail ? BOARD_PRINT_DETAIL_LINE_MM : 0;
+    const note = modern ? (task.note ?? "").trim() : "";
+    const noteLineCount = note ? Math.max(1, task.noteLineCount ?? 1) : 0;
+    const legacyDetail = Boolean(task.detail) && !note;
+    const detailMm = legacyDetail ? BOARD_PRINT_DETAIL_LINE_MM : 0;
+    const noteMm = noteLineCount * BOARD_PRINT_NOTE_LINE_MM;
     const subtaskMm = (subtasks.length + (hiddenSubtaskCount ? 1 : 0)) * BOARD_PRINT_SUBTASK_LINE_MM;
     const photoMm = photoTotal > 0 ? PHOTO_BLOCK_MM : 0;
-    const gapMm = detailMm || subtaskMm || photoMm ? 1 : 0;
+    const gapMm = detailMm || noteMm || subtaskMm || photoMm ? 1 : 0;
     return {
       subtasks,
       hiddenSubtaskCount,
       photos,
-      heightMm: ROW_HEIGHT_MM + detailMm + subtaskMm + photoMm + gapMm,
+      noteLineCount,
+      heightMm: ROW_HEIGHT_MM + detailMm + noteMm + subtaskMm + photoMm + gapMm,
     };
   };
   const geometryFor = (rowItem: (typeof rows)[number]) =>
@@ -448,7 +539,9 @@ export function buildBoardPrintLayout(
     x: jobCodeOriginXMm + index * (JOB_CODE_MARKER_SIZE_MM + JOB_CODE_MARKER_GAP_MM),
     y: jobCodeOriginYMm,
   }));
-  const includeJobCode = layoutVersion === BOARD_PRINT_CONTRACT_VERSION || layoutVersion === BOARD_PRINT_DETAIL_LAYOUT_VERSION;
+  const includeJobCode = layoutVersion === BOARD_PRINT_CONTRACT_VERSION
+    || layoutVersion === BOARD_PRINT_DETAIL_LAYOUT_VERSION
+    || layoutVersion === BOARD_PRINT_MODERN_LAYOUT_VERSION;
   const jobCodePattern = boardPrintJobCodePattern(options?.jobId || "unknown");
 
   rows.forEach((rowItem, index) => {
@@ -483,7 +576,10 @@ export function buildBoardPrintLayout(
       title: rowItem.task.title,
       label: rowItem.task.label,
       ...(rowItem.task.detail ? { detail: rowItem.task.detail } : {}),
-      ...(detailed && rowItem.task.detail ? { detailBelow: true } : {}),
+      ...(detailed && rowItem.task.detail && !rowItem.task.note ? { detailBelow: true } : {}),
+      ...(modern && rowItem.task.dueText ? { dueText: rowItem.task.dueText } : {}),
+      ...(modern && rowItem.task.note ? { note: rowItem.task.note } : {}),
+      ...(geometry?.noteLineCount ? { noteLineCount: geometry.noteLineCount } : {}),
       ...(geometry?.subtasks.length ? { subtasks: geometry.subtasks } : {}),
       ...(geometry?.hiddenSubtaskCount ? { hiddenSubtaskCount: geometry.hiddenSubtaskCount } : {}),
       ...(geometry?.photos.length ? { photos: geometry.photos } : {}),

@@ -7,6 +7,8 @@ export declare const BOARD_PRINT_CONTRACT_VERSION = "v3";
 /** The PWA's detailed sheet: the same page markers and job code, with rows tall enough for
  * subtasks and photo thumbnails. Clients that only know v3 reject it rather than mis-scan it. */
 export declare const BOARD_PRINT_DETAIL_LAYOUT_VERSION = "v4";
+/** Due dates on the title row, wrapped notes, and content kept clear of the bottom markers. */
+export declare const BOARD_PRINT_MODERN_LAYOUT_VERSION = "v5";
 export declare const BOARD_PRINT_MAX_PAGES: number;
 export declare const BOARD_PRINT_PAPER_MM: {
     readonly letter: {

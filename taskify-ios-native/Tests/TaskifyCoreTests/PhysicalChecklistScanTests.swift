@@ -187,3 +187,30 @@ private func withBackground(_ page: PhysicalChecklistGrayImage, margin: Double =
     #expect(result.recognizedPages == 1)
     #expect(result.mismatchedJobs == 0)
 }
+
+@Test func scanReadsAModernSheetWithWrappedNotes() {
+    let job = PhysicalChecklistJob(
+        id: "modern-print",
+        ownerID: "board:test",
+        title: "Test",
+        paper: .a6,
+        items: [
+            PhysicalChecklistItem(
+                id: "a", title: "A", section: "Mon",
+                dueText: "Nov 8, 2026",
+                note: "A note that wraps across a couple of lines.",
+                noteLineCount: 2
+            ),
+            PhysicalChecklistItem(id: "b", title: "B", section: "Mon"),
+        ],
+        layoutVersion: BoardPrintContract.modernVersion
+    )
+    let result = PhysicalChecklistScanAnalyzer.scan(
+        images: [renderChecklist(job: job, filledIDs: ["b"])],
+        job: job
+    )
+
+    #expect(result.detectedIDs == ["b"])
+    #expect(result.recognizedPages == 1)
+    #expect(result.mismatchedJobs == 0)
+}
