@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { generateSecretKey, nip19, type EventTemplate } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import { adoptLocalSecretKey, revealLocalSecretKey, useIdentity } from "../identity/identity";
-import { markKeyBroughtByUser, markKeyCreatedHere } from "../onboarding/keyBackup";
 import {
   createNostrPool,
   NOSTR_MIN_EVENT_INTERVAL_MS,
@@ -50,18 +49,6 @@ function normalizeSecretKeyInput(raw: string): string | null {
   return value.toLowerCase();
 }
 
-function toNsec(secret: string): string {
-  const trimmed = (secret || "").trim();
-  if (!trimmed) return "";
-  if (trimmed.startsWith("nsec")) return trimmed;
-  if (!/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed;
-  try {
-    return typeof (nip19 as any)?.nsecEncode === "function" ? (nip19 as any).nsecEncode(hexToBytes(trimmed)) : trimmed;
-  } catch {
-    return trimmed;
-  }
-}
-
 export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
   const pool = useMemo(() => createNostrPool(), []);
   const identity = useIdentity();
@@ -81,26 +68,23 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
     });
   }, [defaultRelays]);
 
-  const rotateNostrKey = useCallback(() => {
+  const rotateNostrKey = useCallback(async () => {
     const skHex = bytesToHex(generateSecretKey());
-    void adoptLocalSecretKey(skHex);
-    markKeyCreatedHere();
-    return toNsec(skHex);
+    await adoptLocalSecretKey(skHex, { createdHere: true });
   }, []);
 
-  const applyCustomNostrKey = useCallback((key: string, options?: { silent?: boolean }): boolean => {
+  const applyCustomNostrKey = useCallback(async (key: string, options?: { silent?: boolean }): Promise<boolean> => {
     const normalized = normalizeSecretKeyInput(key);
     if (!normalized) {
       if (!options?.silent) alert("Invalid private key");
       return false;
     }
-    void adoptLocalSecretKey(normalized);
-    markKeyBroughtByUser();
+    await adoptLocalSecretKey(normalized);
     return true;
   }, []);
 
-  const setCustomNostrKey = useCallback((key: string) => {
-    applyCustomNostrKey(key);
+  const setCustomNostrKey = useCallback(async (key: string) => {
+    await applyCustomNostrKey(key);
   }, [applyCustomNostrKey]);
 
   const eventTimestampClock = useRef(new EventTimestampClock());

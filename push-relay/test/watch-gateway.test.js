@@ -682,3 +682,47 @@ test('forwards to one destination are bounded across all accounts', async (t) =>
   assert.match(second.results[0].message, /destination limit/)
   assert.equal(published.length, 1)
 })
+
+test('Watch history pages a single authorized board and replica, with a separate cache page', async t => {
+  const accountKey = generateSecretKey()
+  const boardKey = generateSecretKey()
+  const otherKey = generateSecretKey()
+  const now = Math.floor(Date.now() / 1000)
+  const old = taskEvent(boardKey, 'cold-task', now - 60, 'old')
+  const recent = taskEvent(boardKey, 'new-task', now, 'recent')
+  const unrelated = taskEvent(otherKey, 'different-board', now - 70, 'unrelated')
+  let fail = false
+  let relayReads = 0
+  const { address, store } = await fixture(t, {
+    async query(relay, filter, limit, options) {
+      relayReads += 1
+      assert.equal(relay, 'wss://tasks.example')
+      assert.equal(filter.until, now - 30)
+      assert.equal(filter.since, 0)
+      assert.equal(limit, 100)
+      assert.equal(options.requireEOSE, true)
+      if (fail) throw new Error('Missing EOSE')
+      return [old]
+    },
+  })
+  await store.putTaskEvents([recent, unrelated])
+  const body = {
+    relays: ['wss://tasks.example'],
+    sources: [{ author: getPublicKey(boardKey), boardTag: taskBoardTag, proof: taskCacheProof(boardKey, getPublicKey(accountKey)) }],
+    limit: 100,
+    history: { until: now - 30 },
+  }
+  let requestNonce = 0
+  const query = async overrides => {
+    const response = await post(address, '/v1/watch/tasks/query', { ...body, ...overrides, requestNonce: ++requestNonce }, accountKey)
+    assert.equal(response.status, 200)
+    return response.json()
+  }
+  const page = await query({})
+  assert.deepEqual(page, { historyPage: true, refreshed: true, events: [JSON.parse(JSON.stringify(old))] })
+  fail = true
+  assert.deepEqual(await query({}), { historyPage: true, refreshed: false, events: [] })
+  const cached = await query({ relays: [], history: { ...body.history, cacheOnly: true } })
+  assert.deepEqual(cached, { historyPage: true, refreshed: true, events: [JSON.parse(JSON.stringify(old))] })
+  assert.equal(relayReads, 2)
+})

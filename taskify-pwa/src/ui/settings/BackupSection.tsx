@@ -111,7 +111,7 @@ export function BackupSection({
   }
 
   const applyBackupData = useCallback(async (data: Partial<TaskifyBackupPayload>) => {
-    await applyBackupDataToStorage(data);
+    if (await applyBackupDataToStorage(data) === "switching") return false;
     // Wait for v3 entity-store writes to durably land before reload.
     await Promise.all([
       taskEntityStore.flush(),
@@ -120,6 +120,7 @@ export function BackupSection({
       externalCalendarEventEntityStore.flush(),
     ]);
     onReloadNeeded();
+    return true;
   }, [onReloadNeeded]);
 
   async function restoreFromBackup(e: React.ChangeEvent<HTMLInputElement>) {
@@ -127,8 +128,9 @@ export function BackupSection({
     if (!file) return;
     try {
       const text = await file.text();
-      await applyBackupData(parseBackupJsonPayload(text));
-      alert("Backup restored. Press close to reload.");
+      if (await applyBackupData(parseBackupJsonPayload(text))) {
+        alert("Backup restored. Press close to reload.");
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Invalid backup file.";
       alert(message);

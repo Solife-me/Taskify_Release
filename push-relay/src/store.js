@@ -337,6 +337,9 @@ export class RelayStore {
       taskEventsFor: statement(`SELECT json, board_tag, author FROM task_events
         WHERE author IN (SELECT value FROM json_each(?))
         ORDER BY kind DESC, created_at DESC, id DESC`),
+      taskHistoryPage: statement(`SELECT json FROM task_events
+        WHERE author = ? AND board_tag = ? AND created_at BETWEEN ? AND ?
+        ORDER BY created_at DESC, id ASC LIMIT ?`),
       deleteTaskEventsByAuthor: statement(`DELETE FROM task_events WHERE author = ? AND (
         id IN (SELECT value FROM json_each(?))
         OR (coordinate IN (SELECT value FROM json_each(?)) AND created_at <= ?))`),
@@ -668,6 +671,12 @@ export class RelayStore {
     }
     // Read newest first to stop at the limit; returned oldest first, as callers expect.
     return matches.reverse()
+  }
+
+  taskHistoryPage(author, boardTag, since, until, limit) {
+    this.pruneForRead()
+    return this.sql.taskHistoryPage.all(author, boardTag, since, until, limit)
+      .map(row => parseStored(row.json)).filter(Boolean)
   }
 
   preferencesFor(authors = []) {

@@ -653,6 +653,18 @@ public actor TaskSyncEngine {
     private var startupBatchFlushTask: Task<Void, Never>?
     private var incompleteHistoryNewest: [String: Int] = [:]
     private var inboxHistoryRecoveryTasks: [String: Task<Void, Never>] = [:]
+    private var taskHistoryRecoveryTasks: [String: Task<Void, Never>] = [:]
+    private struct TaskHistoryBoard: Hashable {
+        let localID: String
+        let nostrID: String
+
+        init(_ board: Board) {
+            localID = board.id
+            nostrID = board.effectiveNostrBoardID
+        }
+    }
+
+    private var taskHistoryCompletedAt: [String: [TaskHistoryBoard: Int]] = [:]
     private var pendingInboxHistoryRecoveries: Set<String> = []
     private var relayBatches: [String: [String: TaskRelayStartupBatch]] = [:]
     var relayPhases: [String: TaskRelayPhase] = [:]
@@ -782,6 +794,7 @@ public actor TaskSyncEngine {
         reconnectTasks.values.forEach { $0.cancel() }
         rateLimitRetryTasks.values.forEach { $0.cancel() }
         inboxHistoryRecoveryTasks.values.forEach { $0.cancel() }
+        taskHistoryRecoveryTasks.values.forEach { $0.cancel() }
         pendingInboxHistoryRecoveries.removeAll()
         publishAcknowledgementTimeoutTasks.values
             .flatMap(\.values)
@@ -885,6 +898,7 @@ public actor TaskSyncEngine {
         if normalizedInboxPublicKey != self.inboxPublicKey {
             inboxHistoryRecoveryTasks.values.forEach { $0.cancel() }
             inboxHistoryRecoveryTasks.removeAll()
+            resetTaskHistoryRecovery()
             pendingInboxHistoryRecoveries.removeAll()
             verifiedEventCreatedAt.removeAll()
             deliveredSharedInboxEventIDs.removeAll()
@@ -921,6 +935,8 @@ public actor TaskSyncEngine {
         for relayURL in Set(connections.keys).subtracting(wantedRelays) {
             flushStartupBatches(relayURL: relayURL)
             cancelInboxHistoryRecoveries(relayURL: relayURL)
+            taskHistoryRecoveryTasks.removeValue(forKey: relayURL)?.cancel()
+            taskHistoryCompletedAt[relayURL] = nil
             listenerTasks.removeValue(forKey: relayURL)?.cancel()
             reconnectTasks.removeValue(forKey: relayURL)?.cancel()
             rateLimitRetryTasks.removeValue(forKey: relayURL)?.cancel()
@@ -1079,6 +1095,7 @@ public actor TaskSyncEngine {
         rateLimitRetryTasks.removeAll()
         inboxHistoryRecoveryTasks.values.forEach { $0.cancel() }
         inboxHistoryRecoveryTasks.removeAll()
+        resetTaskHistoryRecovery()
         pendingInboxHistoryRecoveries.removeAll()
         publishAcknowledgementTimeoutTasks.values
             .flatMap(\.values)
@@ -1229,6 +1246,10 @@ public actor TaskSyncEngine {
                   configuredConnection === currentConnection else { continue }
             await resetForForegroundReconnect(relayURL: relayURL)
             await reconnect(relayURL: relayURL)
+        }
+
+        for (relayURL, responsive) in healthByRelay where responsive {
+            startTaskHistoryRecovery(relayURL: relayURL)
         }
 
         // Foregrounding is also the earliest reliable opportunity to deliver edits that were
@@ -1889,6 +1910,7 @@ public actor TaskSyncEngine {
                 scheduleOutboxFlush()
             }
         case .disconnected(let message):
+            taskHistoryRecoveryTasks.removeValue(forKey: relayURL)?.cancel()
             flushStartupBatches(relayURL: relayURL)
             cancelPublishAcknowledgementTimeouts(relayURL: relayURL)
             inFlightEventIDs.removeValue(forKey: relayURL)
@@ -1966,6 +1988,7 @@ public actor TaskSyncEngine {
             if needsInboxHistoryRecovery, let inboxKey, let inboxPublicKey {
                 startInboxHistoryRecovery(relayURL: relayURL, publicKey: inboxPublicKey, cursorKey: inboxKey)
             }
+            if !boardTags.isEmpty { startTaskHistoryRecovery(relayURL: relayURL) }
             await markRelayOnline(relayURL)
         }
     }
@@ -2540,6 +2563,98 @@ public actor TaskSyncEngine {
         newestEventCreatedAtBySubscription[cursorKey] = max(completedAt, newestObserved)
         incompleteHistoryNewest.removeValue(forKey: cursorKey)
         pendingInboxHistoryRecoveries.remove(cursorKey)
+    }
+
+    private func resetTaskHistoryRecovery() {
+        taskHistoryRecoveryTasks.values.forEach { $0.cancel() }
+        taskHistoryRecoveryTasks.removeAll()
+        taskHistoryCompletedAt.removeAll()
+    }
+
+    /// Reconcile retained task history separately from the live cursor, one REQ at a time per
+    /// relay. The live subscription may have reached EOSE after receiving only a capped page.
+    private func startTaskHistoryRecovery(relayURL: String) {
+        guard taskHistoryRecoveryTasks[relayURL] == nil,
+              !excludedRelayURLs.contains(relayURL),
+              let connection = connections[relayURL] else { return }
+        taskHistoryRecoveryTasks[relayURL] = Task { [weak self] in
+            await self?.recoverTaskHistory(relayURL: relayURL, connection: connection)
+        }
+    }
+
+    private func recoverTaskHistory(relayURL: String, connection: any TaskSyncRelayTransport) async {
+        defer {
+            if !Task.isCancelled { taskHistoryRecoveryTasks[relayURL] = nil }
+        }
+        let startedAt = Int(Date().timeIntervalSince1970)
+        var attempted: Set<TaskHistoryBoard> = []
+        while !Task.isCancelled, connections[relayURL] === connection {
+            guard let board = boards.first(where: {
+                $0.syncRelayURLs.contains(relayURL) &&
+                    !attempted.contains(TaskHistoryBoard($0))
+            }) else { return }
+            let boardKey = TaskHistoryBoard(board)
+            attempted.insert(boardKey)
+            let previous = taskHistoryCompletedAt[relayURL]?[boardKey]
+            if let previous, startedAt - previous < Self.replaySinceSkewSeconds { continue }
+            let since = previous.map { max(0, min($0, startedAt) - 300) } ?? 0
+            if await recoverTaskHistory(
+                board: board, relayURL: relayURL, connection: connection, since: since, until: startedAt
+            ) {
+                taskHistoryCompletedAt[relayURL, default: [:]][boardKey] = startedAt
+            }
+        }
+    }
+
+    private func recoverTaskHistory(
+        board: Board, relayURL: String, connection: any TaskSyncRelayTransport, since: Int, until: Int
+    ) async -> Bool {
+        let boardID = board.effectiveNostrBoardID
+        guard let author = try? BoardCrypto.signingPublicKey(for: boardID).hexString else { return false }
+        let tag = BoardCrypto.boardTag(for: boardID)
+        let pageSize = 200
+        let maxPageSize = 5_000
+        var upperBound = until
+        var limit = pageSize
+        while upperBound >= since, !Task.isCancelled {
+            let filter = NostrRelayFilter(
+                kinds: [TaskEventCodec.taskEventKind], authors: [author], limit: limit,
+                since: since, until: upperBound, bTags: [tag]
+            )
+            guard let result = await requestOnce(
+                relayURL: relayURL, connection: connection, filter: filter, timeout: 15
+            ), !Task.isCancelled, connections[relayURL] === connection,
+                let currentBoard = boards.first(where: {
+                    $0.id == board.id && $0.effectiveNostrBoardID == boardID && $0.syncRelayURLs.contains(relayURL)
+                }) else { return false }
+
+            let events = result.events.filter {
+                $0.kind == TaskEventCodec.taskEventKind && $0.publicKey == author &&
+                    $0.firstTagValue(named: "b") == tag && (since...upperBound).contains($0.createdAt)
+            }
+            var batch = TaskRelayStartupBatch()
+            for event in events where verifiedEventCreatedAt[event.id] == nil {
+                guard let record = try? TaskEventCodec.decodeTaskEvent(event, board: currentBoard),
+                      recordEventIfNew(event) else { continue }
+                batch.insert(record)
+            }
+            let records = batch.drain()
+            if !records.isEmpty { updateContinuation.yield(.batch(tasks: records, calendarEvents: [])) }
+            guard result.completed else { return false }
+            guard let oldest = events.map(\.createdAt).min() else { return true }
+            if oldest < upperBound {
+                // Re-read the inclusive boundary to recover ties split across pages.
+                upperBound = oldest
+                limit = pageSize
+            } else if events.count >= limit {
+                guard limit < maxPageSize else { return false }
+                limit = min(maxPageSize, limit * 2)
+            } else {
+                upperBound = oldest - 1
+                limit = pageSize
+            }
+        }
+        return !Task.isCancelled
     }
 
     /// Board cursors are per board, not per REQ: a group re-issued because its membership

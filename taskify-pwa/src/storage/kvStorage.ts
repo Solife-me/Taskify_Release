@@ -64,6 +64,27 @@ function withKvStorageLocalStorageAccess<T>(fn: () => T): T {
   }
 }
 
+// Bootstrap pins the scope for the life of the page. Device keys have to be readable
+// before choosing an account.
+const DEVICE_KEYS = new Set([
+  "taskify_nostr_sk_v1", "taskify_nostr_sk_v2", "taskify_nostr_sk_backup_pending",
+]);
+let accountPrefix = "";
+
+export function setAccountStoragePrefix(prefix: string): void {
+  accountPrefix = prefix;
+}
+
+function accountStorageKey(key: string, prefix = accountPrefix): string {
+  return DEVICE_KEYS.has(key) ? key : prefix + key;
+}
+
+export function writeAccountStorageValue(prefix: string, key: string, value: string): void {
+  const storage = getLocalStorage();
+  if (!storage) return;
+  withKvStorageLocalStorageAccess(() => storage.setItem(accountStorageKey(key, prefix), value));
+}
+
 export const kvStorage: KvStorage = {
   isAvailable() {
     return getLocalStorage() !== null;
@@ -73,7 +94,7 @@ export const kvStorage: KvStorage = {
     const storage = getLocalStorage();
     if (!storage) return null;
     try {
-      return withKvStorageLocalStorageAccess(() => storage.getItem(key));
+      return withKvStorageLocalStorageAccess(() => storage.getItem(accountStorageKey(key)));
     } catch {
       return null;
     }
@@ -83,7 +104,7 @@ export const kvStorage: KvStorage = {
     const storage = getLocalStorage();
     if (!storage) return;
     try {
-      withKvStorageLocalStorageAccess(() => storage.setItem(key, value));
+      withKvStorageLocalStorageAccess(() => storage.setItem(accountStorageKey(key), value));
     } catch {
       // ignore persistence failures
     }
@@ -93,7 +114,7 @@ export const kvStorage: KvStorage = {
     const storage = getLocalStorage();
     if (!storage) return;
     try {
-      withKvStorageLocalStorageAccess(() => storage.removeItem(key));
+      withKvStorageLocalStorageAccess(() => storage.removeItem(accountStorageKey(key)));
     } catch {
       // ignore removal failures
     }

@@ -167,6 +167,253 @@ struct TaskifyWatchIndependentClient: Sendable {
         return reply.events
     }
 
+    struct TaskHistoryResult: Sendable {
+        var events: [TaskifyWatchNostrEvent]
+        var cursors: [String: TaskifyWatchTaskHistoryCursor]
+        var completed: Bool
+        var receivedPage: Bool
+    }
+
+    private struct TaskHistorySource: Sendable {
+        let boardID: String
+        let author: String
+        let boardTag: String
+        let relay: String?
+
+        var key: String { boardTag + "|" + (relay ?? "") }
+    }
+
+    private struct TaskHistoryPage: Decodable {
+        let events: [TaskifyWatchNostrEvent]
+        let historyPage: Bool?
+        let refreshed: Bool?
+        let authorizations: [TaskifyWatchGatewayRelayResult]?
+    }
+
+    /// Page independent sources in rotation. Each source has its own inclusive timestamp
+    /// boundary so recent activity on other boards cannot crowd out older events.
+    func recoverTaskHistory(
+        boards: [TaskifyWatchBoard],
+        gatewayBaseURL: URL?,
+        profile: TaskifyWatchIndependentProfile,
+        privateKey: Data,
+        previous: [String: TaskifyWatchTaskHistoryCursor] = [:],
+        pageBudget: Int = 24,
+        now: Date = Date()
+    ) async throws -> TaskHistoryResult {
+        let pageSize = 100
+        let maxPageSize = 1_000
+        let stamp = Int(now.timeIntervalSince1970)
+        let gatewayKey = gatewayBaseURL?.absoluteString ?? fallbackBaseURL.absoluteString
+        var sources: [String: TaskHistorySource] = [:]
+        for board in boards {
+            guard let boardID = board.nostrBoardID,
+                  let author = try? TaskifyWatchNostrCrypto.boardPublicKeyHex(for: boardID) else { continue }
+            let boardTag = TaskifyWatchNostrCrypto.boardTag(for: boardID)
+            let relayURLs = normalizedRelays(
+                ((board.relayURLs?.isEmpty == false ? board.relayURLs : nil) ?? profile.relayURLs)
+                    + [TaskifyFirstPartyRelays.relayURL]
+            )
+            var targets: [String?] = relayURLs.map(Optional.some)
+            if gatewayBaseURL != nil { targets.insert(nil, at: 0) }
+            for relay in targets {
+                let source = TaskHistorySource(boardID: boardID, author: author, boardTag: boardTag, relay: relay)
+                sources[gatewayKey + "|" + source.key] = source
+            }
+        }
+
+        var cursors = previous.filter { sources[$0.key] != nil }
+        let ordered = sources.keys.sorted {
+            let lhs = previous[$0]?.lastAttemptAt ?? .distantPast
+            let rhs = previous[$1]?.lastAttemptAt ?? .distantPast
+            return lhs == rhs ? $0 < $1 : lhs < rhs
+        }
+        var pending: [String] = []
+        for key in ordered {
+            let old = cursors[key]
+            if old?.finished == true, let old, stamp < old.startedAt + 60 { continue }
+            if old == nil || old?.finished == true {
+                let since = old.map { max(0, min($0.startedAt, stamp) - 300) } ?? 0
+                cursors[key] = TaskifyWatchTaskHistoryCursor(since: since, until: stamp + 60, startedAt: stamp, limit: pageSize)
+            }
+            pending.append(key)
+        }
+
+        var accepted: [String: TaskifyWatchNostrEvent] = [:]
+        var receivedPage = pending.isEmpty
+        var needsLegacyRead = false
+        let deadline = ContinuousClock.now + .seconds(20)
+        for _ in 0..<max(0, pageBudget) {
+            try Task.checkCancellation()
+            guard !pending.isEmpty, ContinuousClock.now < deadline else { break }
+            let key = pending.removeFirst()
+            guard let source = sources[key], var cursor = cursors[key] else { continue }
+            cursor.lastAttemptAt = Date()
+            defer { cursors[key] = cursor }
+            do {
+                let page = try await taskHistoryPage(
+                    source: source, cursor: cursor, gatewayBaseURL: gatewayBaseURL,
+                    profile: profile, privateKey: privateKey
+                )
+                receivedPage = true
+                needsLegacyRead = needsLegacyRead || (source.relay != nil && page.historyPage != true)
+                let events = page.events.filter {
+                    ($0.kind == TaskifyWatchNostrCrypto.taskEventKind || $0.kind == TaskifyWatchNostrCrypto.boardEventKind)
+                        && $0.publicKey == source.author && $0.firstTagValue(named: "b") == source.boardTag
+                        && (cursor.since...cursor.until).contains($0.createdAt) && TaskifyWatchNostrCrypto.verify($0)
+                }
+                // Keep just the winning version of each address across all pages in this pass.
+                for event in events {
+                    guard let address = event.firstTagValue(named: "d") else { continue }
+                    let addressKey = "\(event.kind)|\(event.publicKey)|\(address)"
+                    if let existing = accepted[addressKey],
+                       !TaskifyWatchRelayVersion(event).wins(over: TaskifyWatchRelayVersion(existing)) { continue }
+                    accepted[addressKey] = event
+                }
+                guard page.historyPage == true, page.refreshed == true,
+                      events.count == page.events.count, events.count <= cursor.limit else { continue }
+                guard let oldest = events.map(\.createdAt).min() else {
+                    cursor.finished = true
+                    continue
+                }
+                if oldest < cursor.until {
+                    cursor.until = oldest
+                    cursor.limit = pageSize
+                } else if events.count >= cursor.limit {
+                    guard cursor.limit < maxPageSize else { continue }
+                    cursor.limit = min(maxPageSize, cursor.limit * 2)
+                } else if oldest == cursor.since {
+                    cursor.finished = true
+                    continue
+                } else {
+                    cursor.until = oldest - 1
+                    cursor.limit = pageSize
+                }
+                pending.append(key)
+            } catch {
+                try Task.checkCancellation()
+                // Leave the previous bound intact; other boards can still make progress.
+            }
+        }
+
+        try Task.checkCancellation()
+        // Older hosted or self-hosted bridges can still supply their recent snapshot while
+        // their history route is rolling out. It cannot establish a history checkpoint.
+        if needsLegacyRead, ContinuousClock.now < deadline,
+           let recent = try? await fetchTasks(boards: boards, gatewayBaseURL: gatewayBaseURL,
+                                              profile: profile, privateKey: privateKey) {
+            let boardTagsByAuthor = Dictionary(sources.values.map { ($0.author, $0.boardTag) },
+                                               uniquingKeysWith: { first, _ in first })
+            for event in recent {
+                guard let tag = boardTagsByAuthor[event.publicKey], event.firstTagValue(named: "b") == tag,
+                      let address = event.firstTagValue(named: "d"), TaskifyWatchNostrCrypto.verify(event) else { continue }
+                let key = "\(event.kind)|\(event.publicKey)|\(address)"
+                if let existing = accepted[key],
+                   !TaskifyWatchRelayVersion(event).wins(over: TaskifyWatchRelayVersion(existing)) { continue }
+                accepted[key] = event
+            }
+        }
+
+        return TaskHistoryResult(
+            events: Array(accepted.values), cursors: cursors,
+            completed: cursors.values.allSatisfy(\.finished), receivedPage: receivedPage
+        )
+    }
+
+    private func taskHistoryPage(
+        source: TaskHistorySource,
+        cursor: TaskifyWatchTaskHistoryCursor,
+        gatewayBaseURL: URL?,
+        profile: TaskifyWatchIndependentProfile,
+        privateKey: Data
+    ) async throws -> TaskHistoryPage {
+        if let gatewayBaseURL {
+            do {
+                let page = try await gatewayTaskHistoryPage(
+                    source: source, cursor: cursor, baseURL: gatewayBaseURL, profile: profile, privateKey: privateKey
+                )
+                if page.historyPage == true || source.relay == nil || !Self.allowsWorkerFallback(after: gatewayBaseURL) {
+                    return page
+                }
+            } catch {
+                try Task.checkCancellation()
+                guard source.relay != nil, Self.allowsWorkerFallback(after: gatewayBaseURL) else { throw error }
+            }
+        }
+        guard let relay = source.relay else { throw TaskifyWatchIndependentError.serviceUnavailable }
+        struct Filter: Encodable {
+            let authors: [String]
+            let boardTags: [String]
+            let since: Int
+            let until: Int
+            let limit: Int
+
+            enum CodingKeys: String, CodingKey {
+                case authors, since, until, limit
+                case boardTags = "#b"
+            }
+        }
+        struct Body: Encodable {
+            let relays: [String]
+            let filter: Filter
+            let history = true
+        }
+        let filter = Filter(authors: [source.author], boardTags: [source.boardTag],
+                            since: cursor.since, until: cursor.until, limit: cursor.limit)
+        return try await authenticatedPost(
+            path: "api/watch/nostr/query", body: Body(relays: [relay], filter: filter), profile: profile, privateKey: privateKey
+        )
+    }
+
+    private func gatewayTaskHistoryPage(
+        source: TaskHistorySource,
+        cursor: TaskifyWatchTaskHistoryCursor,
+        baseURL: URL,
+        profile: TaskifyWatchIndependentProfile,
+        privateKey: Data
+    ) async throws -> TaskHistoryPage {
+        struct Source: Encodable {
+            let author: String
+            let boardTag: String
+            let proof: TaskifyWatchNostrEvent
+        }
+        struct Bounds: Encodable {
+            let since: Int
+            let until: Int
+            let cacheOnly: Bool
+        }
+        struct Body: Encodable {
+            let sources: [Source]
+            let relays: [String]
+            let limit: Int
+            let history: Bounds
+            let requestNonce = UUID()
+        }
+        let endpoint = baseURL.appendingPathComponent("v1/watch/tasks/query")
+        let proof = try TaskifyWatchNostrCrypto.taskCacheAccessProof(
+            boardID: source.boardID, accountPublicKey: profile.publicKeyHex, url: endpoint,
+            createdAt: Int(Date().timeIntervalSince1970)
+        )
+        let body = Body(sources: [Source(author: source.author, boardTag: source.boardTag, proof: proof)],
+                        relays: source.relay.map { [$0] } ?? [], limit: cursor.limit,
+                        history: Bounds(since: cursor.since, until: cursor.until, cacheOnly: source.relay == nil))
+        let page: TaskHistoryPage = try await nip98Post(url: endpoint, body: body, privateKey: privateKey)
+        guard let challenge = page.authorizations?.first,
+              challenge.relay == source.relay, let token = challenge.session, let nonce = challenge.challenge,
+              challenge.status == "auth-required" else { return page }
+        struct Authorization: Encodable { let event: TaskifyWatchNostrEvent }
+        let event = try TaskifyWatchNostrCrypto.nip42AuthorizationEvent(
+            privateKey: privateKey, relayURL: challenge.relay, challenge: nonce
+        )
+        let reply: TaskifyWatchGatewayAuthorizationResult = try await nip98Post(
+            url: baseURL.appendingPathComponent("v1/watch/outbox/\(token)/authorize"),
+            body: Authorization(event: event), privateKey: privateKey
+        )
+        guard reply.result.status == "accepted", let events = reply.events,
+              events.count <= cursor.limit else { return page }
+        return TaskHistoryPage(events: events, historyPage: page.historyPage, refreshed: true, authorizations: nil)
+    }
+
     private func fetchCachedTasks(
         boards: [(boardID: String, author: String, boardTag: String, relays: [String])],
         relayURLs: [String],

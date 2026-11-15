@@ -968,7 +968,7 @@ export default function App() {
   );
   const ledger = ledgerRef.current;
   const recordTaskTombstone = useCallback(
-    (bTag: string, taskId: string, at: number) => ledger.recordTombstone(bTag, taskId, at),
+    (bTag: string, taskId: string, at: number, eventId: string) => ledger.recordTombstone(bTag, taskId, at, eventId),
     [ledger],
   );
   const clearTaskTombstone = useCallback(
@@ -3628,7 +3628,8 @@ export default function App() {
     // Remembered like a local deletion: the task leaves the list, so without this full-week
     // generation recreated an occurrence another device deleted and republished it, open, to
     // every device.
-    if (status === "deleted") recordTaskTombstone(bTag, taskId, ev.created_at);
+    if (status === "deleted") recordTaskTombstone(bTag, taskId, ev.created_at, ev.id);
+    else clearTaskTombstone(bTag, taskId);
 
     const update: IncomingTaskUpdate = status === "deleted"
       ? { deleted: true, at: ev.created_at, eventId: ev.id }
@@ -3665,7 +3666,7 @@ export default function App() {
       );
       return next === prev ? prev : dedupeRecurringInstances(next);
     });
-  }, [recordRecurringSeriesCutoff, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
+  }, [clearTaskTombstone, recordRecurringSeriesCutoff, recordTaskTombstone, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
 
   /**
    * Full-week mode: adds this week's occurrences of frequent series to `arr` and publishes them.

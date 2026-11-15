@@ -60,6 +60,8 @@ export type BoardCache = {
   fetchedAt: number;
   /** Unix seconds: highest created_at seen from relays. Used as `since` on next incremental fetch. */
   lastSyncAt?: number;
+  /** Normalized relay set that completed a paginated recovery for this checkpoint. */
+  historyRelayKey?: string;
 };
 
 export type TaskCache = {

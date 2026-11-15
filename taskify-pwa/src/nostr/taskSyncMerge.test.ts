@@ -217,6 +217,18 @@ describe("live events after the first sync", () => {
     expect(result).toBe(local);
   });
 
+  test("live recovery rejects a stale tombstone even before the ledger knows the saved task", () => {
+    const saved = [task("t1", 200, { _nostrId: "0".repeat(64) })];
+    const result = applyIncomingTask(
+      saved,
+      { boardId: "board1", taskId: "t1" },
+      { deleted: true, at: 200, eventId: "f".repeat(64) },
+      noClock,
+      () => 0,
+    );
+    expect(result).toBe(saved);
+  });
+
   test("a current event updates the task, adds a new one at the given order, or removes a deleted one", () => {
     const current = () => true;
     const updated = applyIncomingTask([task("t1", 100)], { boardId: "board1", taskId: "t1" }, incoming("t1", 200, "Renamed"), current, () => 0);

@@ -118,6 +118,13 @@ Current test count: 3 files. Target: expand to cover 6+ domains.
 
 ---
 
+## Beta Nostr Task Sync Coverage (2026-11-14)
+
+Regression coverage exercises capped relay replay on the CLI and shared native engine,
+tombstone version ordering on PWA reload and live merge, CLI refresh and compound-board
+merges, and Watch account labels through snapshot trimming and command encoding.
+See the [Beta sync audit](../audits/nostr-task-sync-beta-2026-11-14.md) for remaining release checks.
+
 ## Native Board Performance Coverage (2026-09-12)
 
 `SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,

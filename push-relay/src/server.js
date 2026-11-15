@@ -628,11 +628,52 @@ export function createTaskifyPushServer({
         const sources = taskCacheSources(payload, auth.pubkey, expectedURL)
         const authors = Array.from(sources.keys())
         const boardTags = Array.from(sources.values())
-        const relayURLs = normalizeRelayTargets(payload.relays)
+        const relayURLs = payload.history?.cacheOnly === true && Array.isArray(payload.relays) && !payload.relays.length
+          ? [] : normalizeRelayTargets(payload.relays)
         const limit = Math.max(
           1,
           Math.min(WATCH_TASK_EVENT_LIMIT, Number(payload.limit) || WATCH_TASK_EVENT_LIMIT),
         )
+        // A history page covers one source so a busy board or replica cannot conceal another.
+        if (payload.history !== undefined) {
+          const { since = 0, until, cacheOnly = false } = payload.history ?? {}
+          if (authors.length !== 1 || !Number.isSafeInteger(since) || since < 0
+              || !Number.isSafeInteger(until) || until < since
+              || typeof cacheOnly !== 'boolean'
+              || (cacheOnly ? relayURLs.length !== 0 : relayURLs.length !== 1)) {
+            throw new Error('Invalid Watch task history page')
+          }
+          if (cacheOnly) {
+            const events = store.taskHistoryPage(authors[0], boardTags[0], since, until, limit)
+            sendJSON(response, 200, { historyPage: true, refreshed: true, events })
+            return true
+          }
+          const relayURL = relayURLs[0]
+          const filter = { kinds: Array.from(WATCH_TASK_EVENT_KINDS), authors, '#b': boardTags, since, until, limit }
+          const accept = event => {
+            try {
+              assertCacheableTaskEvent(event, sources)
+              return Number.isSafeInteger(event.created_at) && event.created_at >= since && event.created_at <= until
+            } catch {
+              return false
+            }
+          }
+          try {
+            const page = await relayForwarder.query(relayURL, filter, limit, { allowAuth: true, requireEOSE: true })
+            if (page?.outcome === 'auth-required') {
+              const authorization = registerReadAuthorization(page, relayURL, auth.pubkey, limit,
+                accept, events => store.putTaskEvents(events))
+              sendJSON(response, 200, { historyPage: true, refreshed: false, events: [], authorizations: [authorization] })
+              return true
+            }
+            const events = page.filter(accept)
+            if (events.length) await store.putTaskEvents(events)
+            sendJSON(response, 200, { historyPage: true, refreshed: true, events })
+          } catch {
+            sendJSON(response, 200, { historyPage: true, refreshed: false, events: [] })
+          }
+          return true
+        }
         const gathered = typeof relayForwarder.query === 'function'
           ? await mapWithConcurrency(
             relayURLs,

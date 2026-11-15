@@ -114,6 +114,13 @@ account and this exact HTTPS endpoint. Durable task-cache entries contain only t
 coordinate, signed ciphertext event, and last-observed time; no account, device, relay-list, or
 subscription mapping is stored with them.
 
+A history request to `/v1/watch/tasks/query` includes one board proof and an inclusive
+`history: { since, until }` range for one relay. With `history.cacheOnly: true` and an empty
+relay list it pages the gateway's own board cache separately. A page reports `historyPage: true`
+and sets `refreshed` once the relay sends EOSE or the local cache read completes. Clients keep the
+same timestamp boundary across a failed page and retry it later. Requests from older Watch
+builds retain the recent-snapshot response.
+
 Watch DM submissions can opt into `returnAfterFirstAccepted: true`. The gateway responds after
 the first supplied target actually accepts the immutable gift wrap, with unfinished targets
 reported as `pending` (HTTP 202). Local inbox ingestion is scheduled first when the caller

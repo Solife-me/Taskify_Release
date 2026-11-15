@@ -104,35 +104,47 @@ export function whenLoaded(): Promise<void> {
 }
 
 /** Encrypt and persist a new SK. Updates the in-memory cache synchronously. */
-export async function setSk(skHex: string): Promise<void> {
+export async function setSk(skHex: string, activate = true): Promise<void> {
   const trimmed = (skHex || "").trim();
   if (!trimmed) {
-    await clearSk();
+    await clearSk(activate);
     return;
   }
   try {
     const cipher = await encryptWithDeviceKey(trimmed);
     kvStorage.setItem(LS_NOSTR_SK_V2, cipher);
+    if (kvStorage.getItem(LS_NOSTR_SK_V2) !== cipher) throw new Error("The account key could not be saved.");
     kvStorage.removeItem(LS_NOSTR_SK_V1);
-    cached = trimmed;
-    loaded = true;
+    if (activate) {
+      cached = trimmed;
+      loaded = true;
+    }
   } catch (err) {
     // Fallback: if encryption is unavailable for any reason, persist as v1
     // plaintext rather than dropping the SK entirely. This preserves
     // functionality on browsers/contexts without WebCrypto.
     console.warn("[nostrSkStore] encryption unavailable, falling back to v1 plaintext", err);
     kvStorage.setItem(LS_NOSTR_SK_V1, trimmed);
-    cached = trimmed;
-    loaded = true;
+    if (kvStorage.getItem(LS_NOSTR_SK_V1) !== trimmed) throw new Error("The account key could not be saved.");
+    kvStorage.removeItem(LS_NOSTR_SK_V2);
+    if (activate) {
+      cached = trimmed;
+      loaded = true;
+    }
   }
 }
 
-export async function clearSk(): Promise<void> {
+export async function clearSk(activate = true): Promise<void> {
   kvStorage.removeItem(LS_NOSTR_SK_V1);
   kvStorage.removeItem(LS_NOSTR_SK_V2);
   kvStorage.removeItem(LS_NOSTR_SK_BACKUP_PENDING);
-  cached = "";
-  loaded = true;
+  if (kvStorage.getItem(LS_NOSTR_SK_V1) || kvStorage.getItem(LS_NOSTR_SK_V2)) {
+    throw new Error("The account key could not be removed.");
+  }
+  if (activate) {
+    cached = "";
+    loaded = true;
+  }
 }
 
 /** Whether the one-time "back up your nsec" prompt should be shown. True only

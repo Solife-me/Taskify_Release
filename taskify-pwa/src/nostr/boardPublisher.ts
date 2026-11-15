@@ -243,7 +243,7 @@ export class BoardPublisher {
         { sk: keys.sk },
       );
       ledger.noteTask(tag, task.id, createdAt, eventId);
-      ledger.recordTombstone(tag, task.id, createdAt);
+      ledger.recordTombstone(tag, task.id, createdAt, eventId);
     } finally {
       if (versions.finish(pendingKey, version)) {
         ledger.settleTask(tag, task.id);

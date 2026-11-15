@@ -123,10 +123,12 @@ export function applyIncomingTask(
 ): Task[] {
   if (!isCurrent()) return tasks;
   const index = tasks.findIndex((task) => task.id === target.taskId && task.boardId === target.boardId);
+  const current = index >= 0 ? tasks[index] : undefined;
+  const incomingVersion = { createdAt: update.at, id: update.eventId };
+  if (current && compareEventVersions(incomingVersion, syncedTaskVersion(current)) < 0) return tasks;
   if (update.deleted) {
     return index < 0 ? tasks : tasks.filter((_, i) => i !== index);
   }
-  const current = index >= 0 ? tasks[index] : undefined;
   const merged = mergeIncomingTask(current, update.incoming, {
     nostrAt: update.at,
     nostrId: update.eventId,

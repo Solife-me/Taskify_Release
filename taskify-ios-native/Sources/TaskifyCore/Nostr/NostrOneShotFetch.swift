@@ -8,16 +8,18 @@ public struct NostrRelayFilter: Equatable, Sendable {
     public var limit: Int
     public var since: Int?
     public var pTags: [String]?
+    public var bTags: [String]?
     public var until: Int?
 
     public init(kinds: [Int], authors: [String], dTags: [String]? = nil, limit: Int,
-                since: Int? = nil, pTags: [String]? = nil, until: Int? = nil) {
+                since: Int? = nil, pTags: [String]? = nil, until: Int? = nil, bTags: [String]? = nil) {
         self.kinds = kinds
         self.authors = authors
         self.dTags = dTags
         self.limit = limit
         self.since = since
         self.pTags = pTags
+        self.bTags = bTags
         self.until = until
     }
 
@@ -29,6 +31,7 @@ public struct NostrRelayFilter: Equatable, Sendable {
         if let dTags { object["#d"] = dTags }
         if let since { object["since"] = since }
         if let pTags { object["#p"] = pTags }
+        if let bTags { object["#b"] = bTags }
         if let until { object["until"] = until }
         return object
     }

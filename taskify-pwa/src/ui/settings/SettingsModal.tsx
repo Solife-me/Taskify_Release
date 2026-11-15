@@ -83,8 +83,8 @@ export function SettingsModal({
   defaultRelays: string[];
   setDefaultRelays: (rls: string[]) => void;
   pubkeyHex: string;
-  onGenerateKey: () => void;
-  onSetKey: (hex: string) => void;
+  onGenerateKey: () => Promise<void>;
+  onSetKey: (hex: string) => Promise<void>;
   onShareBoard: (boardId: string, relaysCsv?: string) => void;
   onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
   onRegenerateBoardId: (boardId: string) => void;

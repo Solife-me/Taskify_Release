@@ -12,7 +12,7 @@
  */
 
 import { idbStorage } from "../storage/idbStorage";
-import { getTaskifyDb, TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
+import { getDeviceTaskifyDb, TASKIFY_STORE_NOSTR } from "../storage/taskifyDb";
 
 const WRAPPING_KEY_IDB_KEY = "sk_wrapping_key";
 
@@ -31,7 +31,7 @@ function getSubtle(): SubtleCrypto | null {
 async function loadOrCreateWrappingKey(): Promise<CryptoKey> {
   const subtle = getSubtle();
   if (!subtle) throw new Error("WebCrypto SubtleCrypto unavailable");
-  const db = await getTaskifyDb();
+  const db = await getDeviceTaskifyDb();
   const existing = await idbStorage.get<unknown>(db, TASKIFY_STORE_NOSTR, WRAPPING_KEY_IDB_KEY);
   if (existing && typeof existing === "object" && "type" in existing && "algorithm" in existing) {
     return existing as CryptoKey;

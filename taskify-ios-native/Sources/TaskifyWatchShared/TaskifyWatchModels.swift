@@ -245,11 +245,47 @@ public struct TaskifyWatchAccent: Codable, Equatable, Sendable {
     }
 }
 
+/// Independent Watch history is checkpointed with the task cache it populated.
+public struct TaskifyWatchTaskHistoryCursor: Codable, Equatable, Sendable {
+    public var since: Int
+    public var until: Int
+    public var startedAt: Int
+    public var limit: Int
+    public var finished: Bool
+    public var lastAttemptAt: Date
+
+    public init(since: Int, until: Int, startedAt: Int, limit: Int) {
+        self.since = since
+        self.until = until
+        self.startedAt = startedAt
+        self.limit = limit
+        self.finished = false
+        self.lastAttemptAt = .distantPast
+    }
+}
+
+public struct TaskifyWatchRelayVersion: Codable, Equatable, Sendable {
+    public let createdAt: Int
+    public let id: String
+    public let removed: Bool?
+
+    public init(_ event: TaskifyWatchNostrEvent) {
+        self.createdAt = event.createdAt
+        self.id = event.id
+        let status = event.firstTagValue(named: "status")
+        self.removed = status == "done" || status == "deleted"
+    }
+
+    public func wins(over other: Self) -> Bool {
+        createdAt > other.createdAt || (createdAt == other.createdAt && id < other.id)
+    }
+}
+
 public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 2
 
     public let schemaVersion: Int
-    public let tasks: [TaskifyWatchTask]
+    public var tasks: [TaskifyWatchTask]
     public let boards: [TaskifyWatchBoard]
     public let selectedBoardID: String?
     public let generatedAt: Date
@@ -261,6 +297,10 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
     public let chatProjection: TaskifyWatchChatProjection?
     /// Optional keeps snapshots from builds before appearance sync decodable.
     public let accent: TaskifyWatchAccent?
+    public let accountPublicKey: String?
+    public var taskHistory: [String: TaskifyWatchTaskHistoryCursor]?
+    public var taskRelayVersions: [String: TaskifyWatchRelayVersion]?
+    public var tasksTruncated: Bool?
 
     public init(
         schemaVersion: Int = TaskifyWatchSnapshot.currentSchemaVersion,
@@ -270,7 +310,9 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
         generatedAt: Date = Date(),
         acknowledgedCommandIDs: [String]? = nil,
         chatProjection: TaskifyWatchChatProjection? = nil,
-        accent: TaskifyWatchAccent? = nil
+        accent: TaskifyWatchAccent? = nil,
+        accountPublicKey: String? = nil,
+        tasksTruncated: Bool? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.tasks = tasks
@@ -280,6 +322,14 @@ public struct TaskifyWatchSnapshot: Codable, Equatable, Sendable {
         self.acknowledgedCommandIDs = acknowledgedCommandIDs
         self.chatProjection = chatProjection
         self.accent = accent
+        self.accountPublicKey = accountPublicKey
+        self.tasksTruncated = tasksTruncated
+    }
+
+    /// Account labels are optional for older paired-device builds.
+    public func matchesAccount(_ publicKey: String?) -> Bool {
+        guard let accountPublicKey else { return true }
+        return accountPublicKey.lowercased() == publicKey?.lowercased()
     }
 
     public func tasks(for boardID: String) -> [TaskifyWatchTask] {
@@ -678,6 +728,7 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
     public let subtaskID: String?
     public let subtaskCompleted: Bool?
     public let createdAt: Date
+    public var accountPublicKey: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -690,7 +741,8 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
         edit: TaskifyWatchTaskEdit? = nil,
         subtaskID: String? = nil,
         subtaskCompleted: Bool? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        accountPublicKey: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -703,6 +755,12 @@ public struct TaskifyWatchCommand: Identifiable, Codable, Equatable, Sendable {
         self.subtaskID = subtaskID
         self.subtaskCompleted = subtaskCompleted
         self.createdAt = createdAt
+        self.accountPublicKey = accountPublicKey
+    }
+
+    public func matchesAccount(_ publicKey: String?) -> Bool {
+        guard let accountPublicKey else { return true }
+        return accountPublicKey.lowercased() == publicKey?.lowercased()
     }
 }
 
@@ -830,7 +888,7 @@ public enum TaskifyWatchTransfer {
 
         while lowerBound <= upperBound {
             let taskCount = lowerBound + (upperBound - lowerBound) / 2
-            let candidate = taskCount == snapshot.tasks.count
+            var candidate = taskCount == snapshot.tasks.count
                 ? snapshot
                 : TaskifyWatchSnapshot(
                     schemaVersion: snapshot.schemaVersion,
@@ -840,8 +898,11 @@ public enum TaskifyWatchTransfer {
                     generatedAt: snapshot.generatedAt,
                     acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs,
                     chatProjection: snapshot.chatProjection,
-                    accent: snapshot.accent
+                    accent: snapshot.accent,
+                    accountPublicKey: snapshot.accountPublicKey,
+                    tasksTruncated: snapshot.tasksTruncated
                 )
+            if taskCount < snapshot.tasks.count { candidate.tasksTruncated = true }
             let data = try compressedSnapshotData(candidate)
             if data.count <= byteLimit {
                 bestData = data
@@ -862,7 +923,7 @@ public enum TaskifyWatchTransfer {
             upperBound = projection.threads.count
             while lowerBound <= upperBound {
                 let threadCount = lowerBound + (upperBound - lowerBound) / 2
-                let candidate = TaskifyWatchSnapshot(
+                var candidate = TaskifyWatchSnapshot(
                     schemaVersion: snapshot.schemaVersion,
                     tasks: [],
                     boards: snapshot.boards,
@@ -886,8 +947,11 @@ public enum TaskifyWatchTransfer {
                         blockedPublicKeys: projection.blockedPublicKeys,
                         generatedAt: projection.generatedAt
                     ),
-                    accent: snapshot.accent
+                    accent: snapshot.accent,
+                    accountPublicKey: snapshot.accountPublicKey,
+                    tasksTruncated: snapshot.tasksTruncated
                 )
+                if !snapshot.tasks.isEmpty { candidate.tasksTruncated = true }
                 let data = try compressedSnapshotData(candidate)
                 if data.count <= byteLimit {
                     bestData = data
@@ -1006,7 +1070,9 @@ public enum TaskifyWatchTransfer {
             schemaVersion: payload.snapshot.schemaVersion,
             generatedAt: payload.snapshot.generatedAt,
             acknowledgedCommandIDs: payload.snapshot.acknowledgedCommandIDs,
-            accent: payload.snapshot.accent
+            accent: payload.snapshot.accent,
+            accountPublicKey: payload.snapshot.accountPublicKey,
+            tasksTruncated: payload.snapshot.tasksTruncated == true || !payload.snapshot.tasks.isEmpty
         )
         guard let context = payload.chatContext else {
             let candidate = try provisioningCandidate(

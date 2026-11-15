@@ -25,12 +25,16 @@ import {
   LS_PUBLISH_INTENTS,
 } from "../localStorageKeys";
 import { LS_BACKGROUND_IMAGE } from "../domains/storageKeys";
+import { CALENDAR_SERIES_CUTOFFS_KEY } from "../domains/calendar/recurrenceCutoffs";
 import { RECURRING_SERIES_CUTOFFS_KEY } from "../domains/tasks/recurrenceCutoffs";
 
-import { getTaskifyDb, TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./taskifyDb";
+import { TASKIFY_STORE_NOSTR, TASKIFY_STORE_TASKS, TASKIFY_STORE_WALLET } from "./taskifyDb";
 import { idbKeyValue } from "./idbKeyValue";
 import { hasWalletData } from "../wallet/walletFlags";
-import { init as initNostrSkStore } from "../lib/nostrSkStore";
+import { init as initNostrSkStore, LS_NOSTR_SK_V2 } from "../lib/nostrSkStore";
+import { LS_NOSTR_SK } from "../nostrKeys";
+import { currentPubkey } from "../identity/identity";
+import { bindAccountStorage, readPendingAccountBackup, watchAccountStorageSelection } from "./accountStorage";
 import {
   taskEntityStore,
   boardEntityStore,
@@ -61,21 +65,11 @@ const PROFILE_SHARE_CACHE_KEY = "taskify.profileSharePayload.v1";
 const INBOX_PROCESSED_KEY = "taskify_inbox_processed_v1";
 
 export async function initializeStorageBoundaries(): Promise<void> {
-  // Ensure DB exists and stores are created (no-op if IndexedDB unavailable).
-  try {
-    await getTaskifyDb();
-  } catch {
-    // ignore; state hooks still run with in-memory values
-  }
+  // Decrypt the key with the device database before loading any account-specific store.
+  await initNostrSkStore();
+  await bindAccountStorage(currentPubkey());
 
-  // Preload keys needed during initial render.
   await Promise.all([
-    // Decrypt the local Nostr SK (or migrate v1 plaintext → v2 ciphertext on
-    // first run). Must complete before App renders so the synchronous useMemo
-    // in App.tsx that seeds nostrSK state sees the right value.
-    initNostrSkStore().catch((err) => {
-      console.warn("nostrSkStore init failed", err);
-    }),
     // Per-entity v3 stores. Loaded into memory so the synchronous `useState`
     // initializers in App.tsx see populated data on first render.
     taskEntityStore.load(),
@@ -92,6 +86,7 @@ export async function initializeStorageBoundaries(): Promise<void> {
       BOARD_SYNC_CURSORS_KEY, // relay sync cursors — must preload so repeat opens skip limit:500
       TASK_TOMBSTONES_KEY, // persistent deletion tombstones — must preload so first sync hydrates clock
       RECURRING_SERIES_CUTOFFS_KEY, // durable delete-all-future series cutoffs
+      CALENDAR_SERIES_CUTOFFS_KEY,
     ]),
     idbKeyValue.initStore(TASKIFY_STORE_WALLET, [
       CASHU_PROOFS_KEY,
@@ -136,6 +131,25 @@ export async function initializeStorageBoundaries(): Promise<void> {
     ]),
   ]);
 
+  // One-time migration from legacy single-blob storage to per-entity rows.
+  // Idempotent — only runs when the v3 store is empty AND a legacy blob exists.
+  await Promise.all([
+    taskEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, TASKS_KEY)),
+    boardEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, BOARDS_KEY)),
+    calendarEventEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, EVENTS_KEY)),
+    externalCalendarEventEntityStore.migrateFromBlob(
+      idbKeyValue.getItem(TASKIFY_STORE_TASKS, EXTERNAL_EVENTS_KEY),
+    ),
+  ]);
+
+  const pendingBackup = await readPendingAccountBackup();
+  if (pendingBackup) {
+    const { applyBackupDataToStorage, parseBackupJsonPayload } = await import("../domains/backup/backupUtils");
+    await applyBackupDataToStorage(parseBackupJsonPayload(pendingBackup.value), { mergeEntities: true });
+    await pendingBackup.finish();
+  }
+  watchAccountStorageSelection([LS_NOSTR_SK, LS_NOSTR_SK_V2]);
+
   // The (phasing-out) wallet: only a device that holds wallet data loads any wallet code. There,
   // the seed, P2PK keys and NWC connections (device-key ciphertext) are decrypted before anything
   // reads them, and the device decides whether it keeps the wallet UI.
@@ -158,14 +172,4 @@ export async function initializeStorageBoundaries(): Promise<void> {
       });
   }
 
-  // One-time migration from legacy single-blob storage to per-entity rows.
-  // Idempotent — only runs when the v3 store is empty AND a legacy blob exists.
-  await Promise.all([
-    taskEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, TASKS_KEY)),
-    boardEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, BOARDS_KEY)),
-    calendarEventEntityStore.migrateFromBlob(idbKeyValue.getItem(TASKIFY_STORE_TASKS, EVENTS_KEY)),
-    externalCalendarEventEntityStore.migrateFromBlob(
-      idbKeyValue.getItem(TASKIFY_STORE_TASKS, EXTERNAL_EVENTS_KEY),
-    ),
-  ]);
 }

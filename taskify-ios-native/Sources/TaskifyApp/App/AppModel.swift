@@ -4615,7 +4615,9 @@ final class AppModel {
             selectedBoardID: taskSnapshot.selectedBoardID,
             generatedAt: taskSnapshot.generatedAt,
             acknowledgedCommandIDs: taskSnapshot.acknowledgedCommandIDs,
-            accent: accent
+            accent: accent,
+            accountPublicKey: identityPublicKey.isEmpty ? nil : identityPublicKey,
+            tasksTruncated: taskSnapshot.tasksTruncated
         )
     }
 

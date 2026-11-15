@@ -4,6 +4,7 @@ import { jsonResponse, parseJson, unboundLimiter } from "./lib.ts";
 import { assertPublicHttpUrl } from "./public-fetch.ts";
 
 const TASK_KIND = 30_301;
+const BOARD_KIND = 30_300;
 const MAX_RELAYS = 8;
 const MAX_AUTHORS = 128;
 const MAX_EVENTS = 1_000;
@@ -12,7 +13,14 @@ const RELAY_TIMEOUT_MS = 5_000;
 const MAX_RELAY_FRAME_CHARS = 256 * 1024;
 
 type RelayResult = { relay: string; accepted: boolean; message?: string };
-type NostrFilter = { kinds: number[]; authors: string[]; limit: number };
+type NostrFilter = {
+  kinds: number[];
+  authors: string[];
+  limit: number;
+  since?: number;
+  until?: number;
+  "#b"?: string[];
+};
 
 function normalizedRelayURLs(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
@@ -45,10 +53,10 @@ function normalizedRelayURLs(values: unknown): string[] {
   return output;
 }
 
-function validTaskEvent(value: unknown): value is NostrEvent {
+function validTaskEvent(value: unknown, includeBoard = false): value is NostrEvent {
   if (!value || typeof value !== "object") return false;
   const event = value as NostrEvent;
-  return event.kind === TASK_KIND
+  return (event.kind === TASK_KIND || (includeBoard && event.kind === BOARD_KIND))
     && typeof event.id === "string"
     && typeof event.pubkey === "string"
     && Array.isArray(event.tags)
@@ -71,11 +79,29 @@ function normalizedFilter(value: unknown): NostrFilter | null {
   };
 }
 
+function normalizedHistoryFilter(value: unknown): NostrFilter | null {
+  const normalized = normalizedFilter(value);
+  if (!normalized || normalized.authors.length !== 1) return null;
+  const raw = value as Record<string, unknown>;
+  const tags = raw["#b"];
+  const since = raw.since ?? 0;
+  const until = raw.until;
+  if (!Array.isArray(tags) || tags.length !== 1 || typeof tags[0] !== "string" || !/^[0-9a-f]{64}$/.test(tags[0])
+    || typeof since !== "number" || !Number.isSafeInteger(since) || since < 0
+    || typeof until !== "number" || !Number.isSafeInteger(until) || until < since
+    || !Number.isInteger(normalized.limit)) return null;
+  return { ...normalized, kinds: [BOARD_KIND, TASK_KIND], "#b": tags, since, until };
+}
+
 async function openRelay(url: string): Promise<WebSocket> {
   const socket = new WebSocket(url);
   if (socket.readyState === WebSocket.OPEN) return socket;
   return await new Promise<WebSocket>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Relay connection timed out")), RELAY_TIMEOUT_MS);
+    const fail = (message: string) => finish(() => {
+      try { socket.close(); } catch { /* already closed or connecting */ }
+      reject(new Error(message));
+    });
+    const timer = setTimeout(() => fail("Relay connection timed out"), RELAY_TIMEOUT_MS);
     const finish = (callback: () => void) => {
       clearTimeout(timer);
       socket.removeEventListener("open", onOpen);
@@ -83,7 +109,7 @@ async function openRelay(url: string): Promise<WebSocket> {
       callback();
     };
     const onOpen = () => finish(() => resolve(socket));
-    const onError = () => finish(() => reject(new Error("Relay connection failed")));
+    const onError = () => fail("Relay connection failed");
     socket.addEventListener("open", onOpen);
     socket.addEventListener("error", onError);
   });
@@ -123,46 +149,61 @@ async function publishToRelay(relay: string, event: NostrEvent): Promise<RelayRe
   }
 }
 
-async function queryRelay(relay: string, filter: NostrFilter): Promise<NostrEvent[]> {
+async function queryRelay(relay: string, filter: NostrFilter, history: boolean): Promise<{ events: NostrEvent[]; completed: boolean }> {
   let socket: WebSocket | null = null;
-  const events: NostrEvent[] = [];
+  const events = new Map<string, NostrEvent>();
+  let completed = false;
   try {
     socket = await openRelay(relay);
     const subscriptionID = `watch-${crypto.randomUUID()}`;
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, RELAY_TIMEOUT_MS);
-      const finish = () => {
+      let finished = false;
+      let bytes = 0;
+      const timer = setTimeout(finish, RELAY_TIMEOUT_MS);
+      function finish() {
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
         resolve();
-      };
+      }
       socket!.addEventListener("message", (message) => {
-        if (events.length >= filter.limit) return;
+        if (finished) return;
         try {
           const data = String(message.data);
+          bytes += data.length;
+          if (bytes > 4 * 1024 * 1024) { finish(); return; }
           if (data.length > MAX_RELAY_FRAME_CHARS) return;
           const frame = JSON.parse(data);
-          if (!Array.isArray(frame)) return;
-          if (frame[0] === "EVENT" && frame[1] === subscriptionID && validTaskEvent(frame[2])) {
-            events.push(frame[2]);
-            // One relay cannot make the Worker check more events than a whole answer may hold.
-            if (events.length >= filter.limit) finish();
-          } else if (frame[0] === "EOSE" && frame[1] === subscriptionID) {
+          if (!Array.isArray(frame) || frame[1] !== subscriptionID) return;
+          if (frame[0] === "EOSE") {
+            completed = true;
             finish();
+            return;
           }
+          if (frame[0] === "CLOSED") { finish(); return; }
+          if (frame[0] !== "EVENT" || !validTaskEvent(frame[2], history)) return;
+          const event = frame[2];
+          if (!filter.authors.includes(event.pubkey)) return;
+          if (history && (event.created_at < filter.since! || event.created_at > filter.until!
+            || !event.tags.some(tag => tag[0] === "b" && filter["#b"]!.includes(tag[1])))) return;
+          if (!events.has(event.id) && events.size >= filter.limit) { finish(); return; }
+          events.set(event.id, event);
+          if (!history && events.size >= filter.limit) finish();
         } catch {
           // Ignore unrelated or malformed relay frames.
         }
       });
       socket!.addEventListener("close", finish);
+      socket!.addEventListener("error", finish);
       socket!.send(JSON.stringify(["REQ", subscriptionID, filter]));
     });
     try { socket.send(JSON.stringify(["CLOSE", subscriptionID])); } catch { /* closing */ }
-    return events;
   } catch {
-    return [];
+    // The caller can apply partial events and retry without advancing this source.
   } finally {
     try { socket?.close(1000, "Taskify request complete"); } catch { /* already closed */ }
   }
+  return { events: [...events.values()], completed };
 }
 
 /**
@@ -214,13 +255,18 @@ export async function handleWatchNostrQuery(request: Request, env?: BridgeEnv): 
   if (limited) return limited;
   const body = await parseJson(request.clone());
   const relays = normalizedRelayURLs(body?.relays);
-  const filter = normalizedFilter(body?.filter);
-  if (!relays.length || !filter) {
+  const history = body?.history === true;
+  const filter = history ? normalizedHistoryFilter(body?.filter) : normalizedFilter(body?.filter);
+  if (!relays.length || !filter || (history && relays.length !== 1)) {
     return jsonResponse({ error: "A valid relay list and Taskify task filter are required" }, 400);
   }
-  const batches = await Promise.all(relays.map((relay) => queryRelay(relay, filter)));
+  const batches = await Promise.all(relays.map((relay) => queryRelay(relay, filter, history)));
+  if (history) {
+    const page = batches[0];
+    return jsonResponse({ historyPage: true, refreshed: page.completed, events: page.events });
+  }
   const byID = new Map<string, NostrEvent>();
-  for (const event of batches.flat()) {
+  for (const event of batches.flatMap(batch => batch.events)) {
     if (!byID.has(event.id)) byID.set(event.id, event);
     if (byID.size >= MAX_EVENTS) break;
   }
@@ -230,5 +276,6 @@ export async function handleWatchNostrQuery(request: Request, env?: BridgeEnv): 
 export const watchNostrBridgeTestHooks = {
   normalizedRelayURLs,
   normalizedFilter,
+  normalizedHistoryFilter,
   validTaskEvent,
 };

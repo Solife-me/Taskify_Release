@@ -17,6 +17,7 @@ import {
   setSk as storeSecretKey,
   whenLoaded as whenSecretKeyStoreLoaded,
 } from "../lib/nostrSkStore";
+import { accountStorageNeedsSwitch, switchAccountStorage } from "../storage/accountStorage";
 import { createStateStore, type StateStore } from "../state/stateStore";
 import { LocalKeySigner, type NostrSigner } from "./signer";
 
@@ -73,17 +74,26 @@ export function useIdentity(): Identity | null {
 }
 
 /** Signs in with a key held in this browser, storing it (encrypted at rest) for next time. */
-export async function adoptLocalSecretKey(secretKeyHex: string): Promise<Identity> {
+export async function adoptLocalSecretKey(secretKeyHex: string, options?: { createdHere?: boolean; backup?: object }): Promise<Identity> {
   const identity = localIdentity(secretKeyHex);
-  // The key store updates its cache at once and encrypts in the background; so does the identity.
-  const persisted = storeSecretKey((identity.signer as LocalKeySigner).secretKeyHex());
+  const secret = (identity.signer as LocalKeySigner).secretKeyHex();
+  if (accountStorageNeedsSwitch(identity.pubkey)) {
+    await switchAccountStorage(identity.pubkey, () => storeSecretKey(secret, false), options);
+    return identity;
+  }
+  const current = currentIdentity();
+  if (current?.pubkey === identity.pubkey) return current;
+  await storeSecretKey(secret);
   identityStore().set(identity);
-  await persisted;
   return identity;
 }
 
 /** Forgets the identity and the stored key on this device. */
 export async function signOut(): Promise<void> {
+  if (accountStorageNeedsSwitch(null)) {
+    await switchAccountStorage(null, () => clearStoredSecretKey(false));
+    return;
+  }
   await clearStoredSecretKey();
   identityStore().set(null);
 }

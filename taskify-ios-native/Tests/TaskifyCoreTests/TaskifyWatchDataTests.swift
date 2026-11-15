@@ -5,6 +5,32 @@ import XCTest
 import TaskifyWatchShared
 
 final class TaskifyWatchDataTests: XCTestCase {
+    func testWatchTaskTransfersKeepTheirAccountWhenTrimmingSnapshotAndReadingLegacyCommands() throws {
+        let account = String(repeating: "a", count: 64)
+        let otherAccount = String(repeating: "b", count: 64)
+        let task = TaskifyWatchTask(
+            id: "task", title: "Large", boardID: "board", boardName: "Board",
+            columnName: nil, dueDate: nil, dueTimeEnabled: false, priority: nil, order: 0,
+            syncPayload: Data((0..<4_096).flatMap { _ in Array(UUID().uuidString.utf8) })
+        )
+        let snapshot = TaskifyWatchSnapshot(tasks: [task], accountPublicKey: account)
+        let data = try TaskifyWatchTransfer.encodeConnectivitySnapshot(snapshot, maximumBytes: 2_048)
+        let decoded = try TaskifyWatchTransfer.decodeConnectivitySnapshot(data)
+        XCTAssertTrue(decoded.tasks.isEmpty)
+        XCTAssertEqual(decoded.accountPublicKey, account)
+        XCTAssertTrue(decoded.matchesAccount(account.uppercased()))
+        XCTAssertFalse(decoded.matchesAccount(otherAccount))
+
+        let command = TaskifyWatchCommand(kind: .completeTask, taskID: task.id, accountPublicKey: account)
+        let roundTrip = try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(command))
+        XCTAssertTrue(roundTrip.matchesAccount(account))
+        XCTAssertFalse(roundTrip.matchesAccount(otherAccount))
+        let legacy = TaskifyWatchCommand(kind: .completeTask, taskID: task.id)
+        let legacyRoundTrip = try TaskifyWatchTransfer.decodeCommand(TaskifyWatchTransfer.encode(legacy))
+        XCTAssertNil(legacyRoundTrip.accountPublicKey)
+        XCTAssertTrue(legacyRoundTrip.matchesAccount(account))
+    }
+
     func testWatchSiriBatchParserCapturesOneSpokenList() {
         let batch = TaskifyWatchSpokenTaskBatchParser.parse(
             "First standup, then add planning; and then retrospective"

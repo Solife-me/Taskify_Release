@@ -25,8 +25,8 @@ type ActivePage = "boards" | "upcoming" | "wallet" | "wallet-bounties" | "wallet
 
 type UseFirstRunOnboardingParams = {
   activePage: ActivePage;
-  applyCustomNostrKey: (value: string, options?: { silent?: boolean }) => boolean;
-  rotateNostrKey: () => string;
+  applyCustomNostrKey: (value: string, options?: { silent?: boolean }) => Promise<boolean>;
+  rotateNostrKey: () => Promise<void>;
   setActivePage: Dispatch<SetStateAction<ActivePage>>;
 };
 
@@ -52,8 +52,8 @@ export function useFirstRunOnboarding({
     setShowFirstRunOnboarding(false);
   }, []);
   /** Signs in with a key the user already has, then lands on their tasks. */
-  const handleOnboardingUseExistingKey = useCallback((value: string) => {
-    const ok = applyCustomNostrKey(value, { silent: true });
+  const handleOnboardingUseExistingKey = useCallback(async (value: string) => {
+    const ok = await applyCustomNostrKey(value, { silent: true });
     if (ok) completeFirstRunOnboarding();
     return ok;
   }, [applyCustomNostrKey, completeFirstRunOnboarding]);
@@ -61,9 +61,9 @@ export function useFirstRunOnboarding({
    * "Start using Taskify": makes the account key quietly and lands on the board. The key-backup
    * reminder asks the user to save it once they have tasks worth keeping.
    */
-  const handleOnboardingStart = useCallback(() => {
+  const handleOnboardingStart = useCallback(async () => {
     try {
-      rotateNostrKey();
+      await rotateNostrKey();
     } catch {
       return false;
     }
@@ -78,7 +78,7 @@ export function useFirstRunOnboarding({
   }, [completeFirstRunOnboarding]);
   const handleOnboardingRestoreFromBackupFile = useCallback(async (file: File) => {
     const parsed = parseBackupJsonPayload(await file.text());
-    await applyBackupDataToStorage(parsed);
+    if (await applyBackupDataToStorage(parsed) === "switching") return;
     await Promise.all([
       taskEntityStore.flush(),
       boardEntityStore.flush(),

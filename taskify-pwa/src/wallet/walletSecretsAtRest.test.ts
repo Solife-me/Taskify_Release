@@ -12,7 +12,7 @@ vi.mock("../storage/idbStorage", () => ({
 }));
 vi.mock("../storage/taskifyDb", async () => {
   const actual = await vi.importActual<typeof import("../storage/taskifyDb")>("../storage/taskifyDb");
-  return { ...actual, getTaskifyDb: vi.fn(async () => ({} as IDBDatabase)) };
+  return { ...actual, getTaskifyDb: vi.fn(async () => ({} as IDBDatabase)), getDeviceTaskifyDb: vi.fn(async () => ({} as IDBDatabase)) };
 });
 
 import { __resetDeviceKeyForTests } from "../lib/deviceKeyCrypto";

@@ -17,6 +17,8 @@ export type MockRelayOptions = {
   advertisePow?: boolean;
   /** Serve events whoever wrote them, ignoring a filter's `authors`, as a hostile relay might. */
   ignoreAuthors?: boolean;
+  /** Cap stored query results per filter, irrespective of the requested limit. */
+  historyCap?: number;
 };
 
 export type MockRelay = {
@@ -147,8 +149,16 @@ export async function startMockRelay(options: MockRelayOptions = {}): Promise<Mo
           challengeOnce();
           return send(["CLOSED", subId, "auth-required: authenticate to read"]);
         }
-        for (const event of events) {
-          if (filters.some((filter) => matches(event, filter, options))) send(["EVENT", subId, event]);
+        if (options.historyCap === undefined) {
+          for (const event of events) {
+            if (filters.some((filter) => matches(event, filter, options))) send(["EVENT", subId, event]);
+          }
+        } else {
+          const matching = new Set(filters.flatMap((filter) => events
+            .filter((event) => matches(event, filter, options))
+            .sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id))
+            .slice(0, Math.min(options.historyCap, Number(filter.limit ?? Infinity)))));
+          for (const event of matching) send(["EVENT", subId, event]);
         }
         return send(["EOSE", subId]);
       }
