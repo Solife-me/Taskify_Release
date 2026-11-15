@@ -10,10 +10,6 @@ const DEFAULT_STORAGE_KEY = "relay-info-cache";
 // module into the relay metadata cache. Higher targets are not practical on an interactive
 // client and must not prevent an event from reaching the other relays in its target set.
 const MAX_SUPPORTED_POW_DIFFICULTY = 32;
-// nos.lol currently enforces this write-policy floor without advertising min_pow_difficulty in
-// NIP-11. Applying it here covers every TypeScript client that uses the shared runtime (PWA, CLI,
-// browser extension) and avoids filling their durable queues with signatures that cannot pass.
-const BUILT_IN_POW_FLOORS = { "nos.lol": 20 };
 // A relay's `pow:` rejection is remembered for a week, so later writes are mined to its real
 // requirement even when its NIP-11 document doesn't advertise one.
 const DEFAULT_LEARNED_POW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -55,15 +51,6 @@ function sanitizeProofOfWorkDifficulty(value) {
         return 0;
     const rounded = Math.ceil(num);
     return rounded <= MAX_SUPPORTED_POW_DIFFICULTY ? rounded : 0;
-}
-/** A conservative floor for relays whose enforced write policy is absent from NIP-11. */
-export function builtInProofOfWorkDifficulty(relayUrl) {
-    try {
-        return BUILT_IN_POW_FLOORS[new URL(relayUrl.trim()).hostname.toLowerCase()] ?? 0;
-    }
-    catch {
-        return 0;
-    }
 }
 function sanitizeSubscriptionCount(value) {
     const num = Number(value);
@@ -122,7 +109,6 @@ export class RelayInfoCache {
         let maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS;
         let minPowDifficulty = 0;
         for (const url of relayUrls) {
-            minPowDifficulty = Math.max(minPowDifficulty, builtInProofOfWorkDifficulty(url));
             const cached = this.get(url);
             if (!cached)
                 continue;

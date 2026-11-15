@@ -93,11 +93,6 @@ public actor TaskifyRelayRequirements {
     /// Difficulties above this take hours on a client; a relay asking for more cannot be met, so
     /// it must not be remembered as an up-front target.
     private static let maximumDifficulty = 32
-    /// Some relays enforce a write-policy floor without exposing it through NIP-11 and do not
-    /// reliably return a usable `pow:` rejection for every event kind. Keep the conservative
-    /// floor here so both newly signed events and durable backlog entries can be prepared before
-    /// they are offered. A learned or advertised requirement can still raise this value.
-    private static let builtInFloors = ["nos.lol": 20]
     private var cache: [String: Entry] = [:]
     private var pending: [String: Task<Entry, Never>] = [:]
     /// Floors a relay stated in a `pow:` refusal. Remembered so later events are mined to them
@@ -147,15 +142,24 @@ public actor TaskifyRelayRequirements {
         }
     }
 
+    /// Returns only requirements already known in this process or learned from an earlier
+    /// rejection. It never performs network I/O, so latency-sensitive publishers can send an
+    /// unmined copy to ordinary relays before preparing separate copies for PoW relays.
+    public func knownDifficulty(for relay: String) -> Int {
+        guard let key = Self.normalizedKey(relay) else { return 0 }
+        let now = Date()
+        let advertised = cache[key].flatMap { $0.expiresAt > now ? $0.difficulty : nil } ?? 0
+        return max(advertised, learnedFloor(key, now: now))
+    }
+
     private func requirement(_ relay: String) async -> Int {
         guard let key = Self.normalizedKey(relay), let url = Self.advertisedURL(for: relay) else { return 0 }
         let now = Date()
-        let builtIn = Self.builtInDifficulty(for: relay)
         if let entry = cache[key], entry.expiresAt > now {
-            return max(builtIn, entry.difficulty, learnedFloor(key, now: now))
+            return max(entry.difficulty, learnedFloor(key, now: now))
         }
         if let task = pending[key] {
-            return max(builtIn, await task.value.difficulty, learnedFloor(key, now: now))
+            return max(await task.value.difficulty, learnedFloor(key, now: now))
         }
         let task = Task<Entry, Never> {
             do {
@@ -176,7 +180,7 @@ public actor TaskifyRelayRequirements {
         pending[key] = nil
         if cache.count >= 256, let oldest = cache.min(by: { $0.value.expiresAt < $1.value.expiresAt })?.key { cache[oldest] = nil }
         cache[key] = entry
-        return max(builtIn, entry.difficulty, learnedFloor(key, now: now))
+        return max(entry.difficulty, learnedFloor(key, now: now))
     }
 
     private func learnedFloor(_ key: String, now: Date) -> Int {
@@ -203,11 +207,6 @@ public actor TaskifyRelayRequirements {
 
     private static func normalizedKey(_ relay: String) -> String? {
         advertisedURL(for: relay)?.absoluteString
-    }
-
-    static func builtInDifficulty(for relay: String) -> Int {
-        guard let host = URLComponents(string: relay)?.host?.lowercased() else { return 0 }
-        return builtInFloors[host] ?? 0
     }
 
     /// An unsupported relay policy must not prevent the same event from being prepared and

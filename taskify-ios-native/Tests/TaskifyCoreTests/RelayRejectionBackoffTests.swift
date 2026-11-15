@@ -116,12 +116,6 @@ final class RelayRejectionBackoffTests: XCTestCase {
         )
     }
 
-    func testNosLolUsesItsUnadvertisedProofOfWorkFloor() {
-        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "wss://nos.lol"), 20)
-        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "WSS://NOS.LOL/"), 20)
-        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "wss://relay.example"), 0)
-    }
-
     func testUnsupportedAdvertisedProofOfWorkDoesNotBlockOtherRelays() {
         XCTAssertEqual(TaskifyRelayRequirements.supportedAdvertisedDifficulty(nil), 0)
         XCTAssertEqual(TaskifyRelayRequirements.supportedAdvertisedDifficulty(["min_pow_difficulty": 20]), 20)

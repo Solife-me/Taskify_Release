@@ -46,10 +46,10 @@ test("RelayInfoCache exposes the maximum NIP-13 difficulty across target relays"
   assert.equal(limits.authRequired, false);
 });
 
-test("RelayInfoCache applies nos.lol's unadvertised write-policy floor to every client", () => {
+test("RelayInfoCache does not invent a PoW floor that a relay does not advertise", () => {
   const cache = new RelayInfoCache();
-  assert.equal(cache.getLimits(["wss://nos.lol"]).minPowDifficulty, 20);
-  assert.equal(cache.getLimits(["wss://NOS.LOL/"]).minPowDifficulty, 20);
+  assert.equal(cache.getLimits(["wss://nos.lol"]).minPowDifficulty, 0);
+  assert.equal(cache.getLimits(["wss://NOS.LOL/"]).minPowDifficulty, 0);
   assert.equal(cache.getLimits(["wss://relay.example/"]).minPowDifficulty, 0);
 });
 
