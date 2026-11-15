@@ -16,6 +16,7 @@ extension AppModel {
         content: String,
         replyToEventID: String? = nil,
         additionalTags: [[String]] = [],
+        optimisticLocalEcho: Bool = false,
         onLocalEcho: (() -> Void)? = nil
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -59,6 +60,7 @@ extension AppModel {
             )],
             replyToEventID: replyToEventID,
             attachmentComment: nil,
+            optimisticLocalEcho: optimisticLocalEcho,
             onLocalEcho: onLocalEcho
         )
     }
@@ -143,6 +145,7 @@ extension AppModel {
         attachments: [NostrDirectMessageAttachment],
         replyToEventID: String? = nil,
         comment: String? = nil,
+        optimisticLocalEcho: Bool = false,
         onLocalEcho: (() -> Void)? = nil
     ) async throws {
         guard !attachments.isEmpty,
@@ -195,6 +198,7 @@ extension AppModel {
             drafts: drafts,
             replyToEventID: replyToEventID,
             attachmentComment: comment,
+            optimisticLocalEcho: optimisticLocalEcho,
             onLocalEcho: onLocalEcho
         )
     }
@@ -204,6 +208,7 @@ extension AppModel {
         drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
         attachmentComment: String?,
+        optimisticLocalEcho: Bool,
         onLocalEcho: (() -> Void)?
     ) async throws {
         guard !drafts.isEmpty else { throw NostrDirectMessageError.emptyMessage }
@@ -216,6 +221,7 @@ extension AppModel {
                 drafts: drafts,
                 replyToEventID: replyToEventID,
                 attachmentComment: attachmentComment,
+                optimisticLocalEcho: optimisticLocalEcho,
                 onLocalEcho: onLocalEcho
             )
             return
@@ -258,7 +264,7 @@ extension AppModel {
                 content: draft.content
             )
         }
-        let optimisticMessages = try onLocalEcho != nil
+        let optimisticMessages = try (optimisticLocalEcho || onLocalEcho != nil)
             ? ingestOptimisticDirectMessages(
                 rumors: rumors,
                 attachmentComment: attachmentComment,
@@ -433,6 +439,7 @@ extension AppModel {
         drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
         attachmentComment: String?,
+        optimisticLocalEcho: Bool,
         onLocalEcho: (() -> Void)?
     ) async throws {
         let identity = try outboundIdentity()
@@ -455,7 +462,7 @@ extension AppModel {
                 content: draft.content
             )
         }
-        let optimisticMessages = try onLocalEcho != nil
+        let optimisticMessages = try (optimisticLocalEcho || onLocalEcho != nil)
             ? ingestOptimisticDirectMessages(
                 rumors: rumors,
                 attachmentComment: attachmentComment,
