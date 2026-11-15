@@ -248,11 +248,12 @@ and retries recheck the deadline before sending. Other relays retain their indep
 The existing exponential retry and repeated-closure escalation remain in effect.
 
 A relay can enforce proof of work in a write policy without advertising `min_pow_difficulty`
-in its NIP-11 document (nos.lol is one). The sync engine now reads the difficulty named in the
-relay's `pow:` refusal, mines the queued change to that floor, and remembers it for a week so
-later events — including NIP-17 gift wraps, which are signed with an ephemeral key this client
-does not keep — are mined before they are offered. Without that, every event was signed too
-weak, refused, and held back, which is what made the queue grow against that relay.
+in its NIP-11 document. The sync engine reads the difficulty named in the relay's `pow:` refusal,
+mines the queued change to that floor, and remembers it for a week so later events are prepared
+correctly. Chat gift wraps are routed independently: ordinary relays receive their durable copy
+immediately, while advertised or learned PoW relays receive a separately wrapped and mined copy.
+Taskify does not invent a relay-specific floor when neither NIP-11 nor an explicit refusal reports
+one; the November 14, 2026 audit found that nos.lol was accepting stored traffic without NIP-13.
 
 `RelayRetryBackoffTests` covers a stalled consumer, ordered recovery, cancellation, and
 termination. `RelayOutboxLatencyTests` covers the rate-limited subscription/publish pause
