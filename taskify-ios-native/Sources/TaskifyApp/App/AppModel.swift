@@ -97,13 +97,14 @@ final class AppModel {
 
     /// Changes whenever chat or inbox content does: the memo key for conversation views.
     var conversationRevision: Int {
-        chatAreaRevision &* 1_000_003 &+ inboxAreaRevision
+        conversationContentRevision &* 1_000_003 &+ inboxAreaRevision
     }
 
     /// Bumped when that area's content changes; what views observe (see `snapshot`).
     private(set) var tasksAreaRevision = 0
     private(set) var chatAreaRevision = 0
     private(set) var inboxAreaRevision = 0
+    private var conversationContentRevision = 0
 
     private func snapshotDidChange(from oldValue: TaskifySnapshot) {
         let snapshot = storedSnapshot
@@ -113,10 +114,12 @@ final class AppModel {
         if changedAreas.contains(.inbox) { inboxAreaRevision &+= 1 }
         snapshotLookupCache.invalidate(from: oldValue, to: snapshot)
         snapshotRevision &+= 1
-        if snapshot.directMessages != oldValue.directMessages
-            || snapshot.directMessageReadAt != oldValue.directMessageReadAt
+        let conversationContentChanged = snapshot.directMessages != oldValue.directMessages
             || snapshot.directMessageReactions != oldValue.directMessageReactions
             || snapshot.nostrGroupConversations != oldValue.nostrGroupConversations
+        if conversationContentChanged { conversationContentRevision &+= 1 }
+        if conversationContentChanged
+            || snapshot.directMessageReadAt != oldValue.directMessageReadAt
             || snapshot.directMessageArchivedAt != oldValue.directMessageArchivedAt
             || snapshot.directMessageDeletedEventIDs != oldValue.directMessageDeletedEventIDs
             || snapshot.directMessageBlockedPeers != oldValue.directMessageBlockedPeers
@@ -838,20 +841,22 @@ final class AppModel {
     }
 
     func markDirectMessageThreadRead(peerPublicKey: String) {
-        var updated = snapshot
-        guard updated.markDirectMessageThreadRead(peerPublicKey: peerPublicKey) else { return }
+        let through = directMessages(with: peerPublicKey).lazy
+            .filter(\.isIncoming)
+            .map(\.createdAt)
+            .max() ?? 0
+        var updated = storedSnapshot
+        guard updated.advanceDirectMessageRead(peerPublicKey: peerPublicKey, through: through) else { return }
         snapshot = updated
         scheduleSave()
         // The Watch cache owns its own unread badges; converging them is the phone's entire
         // outbound chat traffic. The companion `through:` variant is the Watch-originated
         // echo path and must not bounce the read back.
 #if os(iOS)
-        if let through = updated.directMessageReadAt?[peerPublicKey.lowercased()], through > 0 {
-            TaskifyWatchBridge.shared.pushChatReadUpdate(
-                conversationID: peerPublicKey,
-                through: through
-            )
-        }
+        TaskifyWatchBridge.shared.pushChatReadUpdate(
+            conversationID: peerPublicKey,
+            through: through
+        )
 #endif
     }
 
@@ -2520,28 +2525,30 @@ final class AppModel {
             return false
         }
 
-        var acceptedTaskID: String?
+        var updated = storedSnapshot
+        var stamps: [TaskPublishStamp] = []
         if status == .accepted {
             let destination = destinationBoardID.map { (boardID: $0, columnID: destinationColumnID) }
                 ?? sharedInboxDestination()
             guard let destination,
-                  let task = snapshot.acceptSharedTask(
+                  let task = updated.acceptSharedTask(
                       inboxItemID: itemID,
                       destinationBoardID: destination.boardID,
                       destinationColumnID: destination.columnID,
                       recipientPublicKey: identityPublicKey,
                       asCopy: asCopy
                   ) else { return false }
-            acceptedTaskID = task.id
+            stamps = TaskPublishPlanner.stamp(&updated, taskIDs: [task.id])
         } else {
-            guard snapshot.setSharedInboxStatus(itemID: itemID, status: status) != nil else {
+            guard updated.setSharedInboxStatus(itemID: itemID, status: status) != nil else {
                 return false
             }
         }
 
+        snapshot = updated
         scheduleSave()
-        if let acceptedTaskID {
-            synchronizeTask(acceptedTaskID)
+        enqueueStampedTasks(stamps)
+        if status == .accepted {
             refreshNotifications(requestPermission: false)
         }
         if !asCopy, item.task.isAssignment,
@@ -5796,7 +5803,7 @@ final class AppModel {
         case .appState(let event):
             await receiveAppStateEvent(event)
         case .publishState(let recordID, let state):
-            applyDirectMessagePublishState(recordID: recordID, state: state)
+            await applyDirectMessagePublishState(recordID: recordID, state: state)
         case .status(let report):
             applySyncReport(report)
         }
@@ -5805,10 +5812,8 @@ final class AppModel {
     private func applyDirectMessagePublishState(
         recordID: String,
         state: TaskPublishDeliveryState
-    ) {
-        let tracksRecipientDelivery = recordID.hasSuffix(":recipient") ||
-            (recordID.contains(":group:") && !recordID.hasSuffix(":group:sender"))
-        guard tracksRecipientDelivery,
+    ) async {
+        guard Self.tracksDirectMessageDelivery(recordID),
               let separator = recordID.firstIndex(of: ":") else { return }
         let rumorID = String(recordID[..<separator])
         guard rumorID.count == 64 else { return }
@@ -5818,6 +5823,15 @@ final class AppModel {
         case .sent: deliveryState = .sent
         case .failed: deliveryState = .failed
         }
+        if case .failed = state {
+            let accountID = identityPublicKey
+            let pending = await syncEngine.hasPendingPublish(
+                outboxScope: Self.directMessagesOutboxScope,
+                recordIDPrefix: rumorID + ":",
+                matching: Self.tracksDirectMessageDelivery
+            )
+            guard acceptsAccountActivity(accountID), !pending else { return }
+        }
         var updated = snapshot
         if updated.setDirectMessageDeliveryState(
             rumorEventID: rumorID,
@@ -5826,6 +5840,11 @@ final class AppModel {
             snapshot = updated
             scheduleSave()
         }
+    }
+
+    nonisolated private static func tracksDirectMessageDelivery(_ recordID: String) -> Bool {
+        recordID.hasSuffix(":recipient") ||
+            (recordID.contains(":group:") && !recordID.hasSuffix(":group:sender"))
     }
 
     /// Merges a relay's stored-event backlog in one pass. Mutating a local copy and assigning
@@ -6274,10 +6293,7 @@ final class AppModel {
               responseStatus != .pending else { return }
         let respondedAt = Self.sharedResponseDateFormatter.string(from: Date())
         let senderNpub = identityNpub.nilIfEmpty
-        let responseRelayURLs = TaskifyRelayURL.normalizedList(
-            directMessageDiscoveryRelayURLs(recipientPublicKey: item.sender.publicKey) +
-                (item.task.relayURLs ?? [])
-        )
+        let accountID = identityPublicKey
         let envelope = TaskifyShareEnvelope(
             item: .assignmentResponse(SharedTaskAssignmentResponse(
                 taskID: sourceTaskID,
@@ -6288,14 +6304,19 @@ final class AppModel {
         )
         Task { [weak self] in
             do {
-                guard let self,
+                guard let self, self.acceptsAccountActivity(accountID),
                       let identity = try? self.outboundIdentity(),
                       let recipientPublicKey = try? Data(hex: item.sender.publicKey) else { return }
+                let responseRelayURLs = TaskifyRelayURL.normalizedList(
+                    self.directMessageDiscoveryRelayURLs(recipientPublicKey: item.sender.publicKey)
+                        + (item.task.relayURLs ?? [])
+                )
                 guard let deliveryPlan = await self.nip17DeliveryPlan(
                     recipientPublicKey: item.sender.publicKey,
                     discoveryRelayURLs: responseRelayURLs,
                     identity: identity
                 ) else { throw NostrDirectMessageError.noRelays }
+                guard self.acceptsAccountActivity(accountID) else { return }
                 try await self.publishNIP17Envelope(
                     envelope,
                     recipientPublicKey: recipientPublicKey,
@@ -6304,7 +6325,8 @@ final class AppModel {
                     recordIDBase: "assignment-response:\(sourceTaskID):\(item.sender.publicKey)"
                 )
             } catch {
-                self?.errorMessage = "Your response is saved, but Taskify could not queue its delivery yet."
+                guard let self, self.acceptsAccountActivity(accountID) else { return }
+                self.errorMessage = "Your response is saved, but Taskify could not queue its delivery yet."
             }
         }
     }
@@ -6391,13 +6413,13 @@ final class AppModel {
         var updated = snapshot
         let stamps = TaskPublishPlanner.stamp(&updated, taskIDs: taskIDs + deletionTaskIDs, force: force)
 
-        guard !stamps.isEmpty else {
-            // Matches synchronizeTask: even when nothing is publishable, persist what the caller
-            // just changed.
-            scheduleSave()
-            return
-        }
+        if !stamps.isEmpty { snapshot = updated }
+        scheduleSave()
+        enqueueStampedTasks(stamps)
+    }
 
+    private func enqueueStampedTasks(_ stamps: [TaskPublishStamp]) {
+        guard !stamps.isEmpty else { return }
         var seenBoardIDs = Set<String>()
         var boardPublishes: [(board: Board, timestamp: Int)] = []
         for stamp in stamps where !seenBoardIDs.contains(stamp.board.id) {
@@ -6405,8 +6427,6 @@ final class AppModel {
             boardPublishes.append((stamp.board, nextNostrTimestamp()))
         }
 
-        snapshot = updated
-        scheduleSave()
         // Preserve edit order while moving expensive encoding/encryption/signing off
         // MainActor. Await only durable queueing, never a slow relay's delivery window.
         let accountID = identityPublicKey
@@ -6415,24 +6435,7 @@ final class AppModel {
             await previousPublication?.value
             do {
                 let requests = try await Task.detached(priority: .utility) {
-                    var requests: [TaskSyncPublishRequest] = []
-                    requests.reserveCapacity(boardPublishes.count + stamps.count)
-                    for publish in boardPublishes {
-                        let event = try await TaskEventCodec.prepareBoardEvent(
-                            board: publish.board,
-                            createdAt: publish.timestamp
-                        )
-                        requests.append(TaskSyncPublishRequest(event: event, board: publish.board, taskID: "_board"))
-                    }
-                    for stamp in stamps {
-                        let event = try await TaskEventCodec.prepareTaskEvent(
-                            task: stamp.task,
-                            board: stamp.board,
-                            createdAt: stamp.timestamp
-                        )
-                        requests.append(TaskSyncPublishRequest(event: event, board: stamp.board, taskID: stamp.task.id))
-                    }
-                    return requests
+                    try TaskPublishPlanner.publishRequests(stamps: stamps, boardPublishes: boardPublishes)
                 }.value
                 guard let self, self.acceptsAccountActivity(accountID) else { return }
                 try await syncEngine.enqueueForPublish(requests)
@@ -7262,18 +7265,16 @@ final class AppModel {
         recipientPublicKey: String,
         groupID: String? = nil
     ) -> [String] {
-        let contactRelays = snapshot.contact(
-            publicKeyValue: recipientPublicKey
-        )?.relayURLs ?? []
-        let rememberedRelays = snapshot.directMessageHistory
-            .filter { message in
-                if let groupID {
-                    return message.groupID == groupID ||
-                        message.senderPublicKey == recipientPublicKey
-                }
-                return message.peerPublicKey == recipientPublicKey
-            }
-            .flatMap { $0.relayURLs ?? [] }
+        let recipient = NostrPublicKey.parse(recipientPublicKey)?.hexString ?? recipientPublicKey
+        let contactRelays = nostrContact(publicKey: recipient)?.relayURLs ?? []
+        let rememberedRelays: [String]
+        if let groupID {
+            rememberedRelays = chatSnapshot.directMessageHistory.lazy
+                .filter { $0.groupID == groupID || $0.senderPublicKey == recipientPublicKey }
+                .flatMap { $0.relayURLs ?? [] }
+        } else {
+            rememberedRelays = directMessages(with: recipient).flatMap { $0.relayURLs ?? [] }
+        }
         return TaskifyRelayURL.normalizedList(
             contactRelays + rememberedRelays + appRelays
         )

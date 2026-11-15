@@ -3381,7 +3381,7 @@ public extension TaskifySnapshot {
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
         let nextOrder = (
-            tasks
+            tasks.lazy
                 .filter { $0.boardID == board.id && $0.columnID == columnID && !$0.isDeleted }
                 .map(\.order)
                 .max() ?? -1

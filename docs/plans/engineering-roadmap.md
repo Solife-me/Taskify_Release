@@ -286,3 +286,20 @@ reported crash cause; these transport regressions do not replace that verificati
   fallback only until pre-gateway builds have expired and the Worker bridge is removed.
 - PWA NWC sessions are isolated by client identity and reused across RPCs, with
   idle shutdown and explicit cleanup on disconnect; relay metadata is shared.
+
+
+### iOS task queueing and chat responsiveness (November 2026)
+
+- Task edits and shared-task imports sign and persist their board and task events before relay
+  discovery or proof-of-work mining. The sync engine handles proof of work per relay after
+  queueing. Pending task stamps still survive an interruption before the durable write.
+- Opening an unread conversation reuses the list's message cache. Updating its read marker
+  leaves the timeline presentation in cache. Adding a shared task updates the inbox and task
+  snapshot together and schedules the assignment reply separately.
+- The composer inserts the canonical outgoing bubble before relay discovery and wraps messages
+  off the main actor. Sender copies and recipient copies have separate acknowledgements, and
+  ordinary and proof-of-work copies use separate outbox records. A message stays Sending until
+  a recipient relay accepts a copy. Attachment uploads still happen before their chat bubbles
+  appear so a failed upload can be retried from the composer.
+- Coverage includes offline outbox persistence, optimistic rumor reconciliation, first-relay
+  acceptance, and the iPhone composer with simulated delayed acceptance.

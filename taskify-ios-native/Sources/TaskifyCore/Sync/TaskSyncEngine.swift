@@ -1349,9 +1349,15 @@ public actor TaskSyncEngine {
     /// Atomically persists a group of relay publications, reports them as queued, and schedules
     /// delivery without making the caller wait behind existing relay backlog or rate limits.
     public func enqueueForPublish(_ requests: [TaskSyncRelayPublishRequest]) async throws {
+        var undeliverableGiftWraps: [String] = []
         let entries = requests.compactMap { request -> NostrOutboxEntry? in
             let relayURLs = deliveryRelayURLs(request.relayURLs, for: request.event)
-            guard !relayURLs.isEmpty else { return nil }
+            guard !relayURLs.isEmpty else {
+                if request.event.kind == NIP17GiftWrap.wrapKind {
+                    undeliverableGiftWraps.append(request.recordID)
+                }
+                return nil
+            }
             return NostrOutboxEntry(
                 event: request.event,
                 relayURLs: relayURLs,
@@ -1362,11 +1368,14 @@ public actor TaskSyncEngine {
                 dependsOnEventID: request.dependsOnEventID
             )
         }
-        guard !entries.isEmpty else { return }
-        try await outbox.enqueue(entries)
+        if !entries.isEmpty { try await outbox.enqueue(entries) }
         for entry in entries {
             updateContinuation.yield(.publishState(recordID: entry.taskID, state: .queued))
         }
+        for recordID in undeliverableGiftWraps {
+            updateContinuation.yield(.publishState(recordID: recordID, state: .failed("No delivery relays are available.")))
+        }
+        guard !entries.isEmpty else { return }
         await emitStatus()
         scheduleOutboxFlush()
     }
@@ -1378,6 +1387,17 @@ public actor TaskSyncEngine {
 
     public func pendingPublishCount() async -> Int {
         await outbox.entryCount()
+    }
+
+    public func hasPendingPublish(
+        outboxScope: String,
+        recordIDPrefix: String,
+        matching: @Sendable (String) -> Bool
+    ) async -> Bool {
+        await outbox.allEntries().contains { entry in
+            entry.boardLocalID == outboxScope && entry.taskID.hasPrefix(recordIDPrefix)
+                && matching(entry.taskID)
+        }
     }
 
     /// Every queued entry, oldest first, for the settings screen's queue diagnostics.
@@ -1859,7 +1879,14 @@ public actor TaskSyncEngine {
                 if wasInFlight { scheduleOutboxFlush(to: relayURL) }
                 return
             }
-            if accepted || NostrRelayRejection.isSuperseded(message) {
+            let superseded = NostrRelayRejection.isSuperseded(message)
+            let replaced: Bool
+            if !accepted, superseded, let entry = await outbox.entry(eventID: eventID) {
+                replaced = entry.event.kind != NIP17GiftWrap.wrapKind
+            } else {
+                replaced = false
+            }
+            if accepted || replaced {
                 let completed = try? await outbox.markAccepted(
                     eventID: eventID,
                     relayURL: relayURL
@@ -2316,16 +2343,17 @@ public actor TaskSyncEngine {
         }
     }
 
-    /// Completes queued changes that only waited on excluded relays, reporting each as sent so
-    /// the UI's pending-change count reflects the removal. Later changes never enqueue the
-    /// excluded relays in the first place — publish paths filter them out.
+    /// Completes queued changes that only waited on excluded relays. A gift wrap with
+    /// no acceptance still represents an undelivered message.
     private func stripExcludedRelayTargets() async {
         guard !excludedRelayURLs.isEmpty else { return }
         guard let completed = try? await outbox.stripRelayTargets(excludedRelayURLs) else { return }
         for entry in completed {
+            let neverAcceptedGiftWrap = entry.event.kind == NIP17GiftWrap.wrapKind
+                && (entry.acceptedRelayURLs ?? []).isEmpty
             updateContinuation.yield(.publishState(
                 recordID: entry.taskID,
-                state: .sent
+                state: neverAcceptedGiftWrap ? .failed("All delivery relays were removed.") : .sent
             ))
         }
     }

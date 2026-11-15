@@ -8,9 +8,9 @@ final class RelayOutboxLatencyTests: XCTestCase {
     private let healthyURL = "wss://healthy.example"
     private let slowURL = "wss://slow.example"
 
-    private func event(_ number: Int) -> NostrEvent {
+    private func event(_ number: Int, kind: Int = NIP17GiftWrap.wrapKind) -> NostrEvent {
         NostrEvent(id: String(format: "%064x", number), publicKey: String(repeating: "a", count: 64),
-            createdAt: number, kind: NIP17GiftWrap.wrapKind, tags: [],
+            createdAt: number, kind: kind, tags: [],
             content: "ordinary-message-\(number)", signature: "fixture")
     }
 
@@ -34,6 +34,24 @@ final class RelayOutboxLatencyTests: XCTestCase {
         )
         addTeardownBlock { await engine.stop() }
         return engine
+    }
+
+    func testGiftWrapRequiresAcceptanceInsteadOfSupersededRejection() async throws {
+        let engine = engine(transports: [:])
+        try await engine.enqueueForPublish([TaskSyncRelayPublishRequest(
+            event: event(1), relayURLs: [healthyURL, slowURL], outboxScope: "chat",
+            recordID: "message-1", acknowledgementPolicy: .anyRelay
+        )])
+        await engine.handle(.acknowledgement(
+            eventID: event(1).id, accepted: false, message: "replaced: have newer event"
+        ), from: healthyURL)
+        let pendingAfterRejection = await engine.pendingPublishCount()
+        XCTAssertEqual(pendingAfterRejection, 1)
+        await engine.handle(.acknowledgement(
+            eventID: event(1).id, accepted: true, message: ""
+        ), from: healthyURL)
+        let pendingAfterAcceptance = await engine.pendingPublishCount()
+        XCTAssertEqual(pendingAfterAcceptance, 0)
     }
 
     func testQueueDiagnosticsPreservePartialAcceptanceAndRejectionDetails() async throws {
@@ -127,11 +145,14 @@ final class RelayOutboxLatencyTests: XCTestCase {
             let relay = SuspensibleRelayTransport()
             let engine = engine(transports: [healthyURL: relay])
             await engine.configure(boards: [], auxiliaryRelayURLs: [healthyURL], inboxRelayURLs: [])
-            try await engine.enqueueForPublish([request(number, relayURL: healthyURL)])
+            let taskEvent = event(number, kind: TaskEventCodec.taskEventKind)
+            try await engine.enqueueForPublish([TaskSyncRelayPublishRequest(
+                event: taskEvent, relayURLs: [healthyURL], outboxScope: "board", recordID: "task"
+            )])
             for _ in 0..<50 where await relay.publishedEventIDs.isEmpty {
                 try await Task.sleep(for: .milliseconds(20))
             }
-            await engine.handle(.acknowledgement(eventID: event(number).id, accepted: false, message: message), from: healthyURL)
+            await engine.handle(.acknowledgement(eventID: taskEvent.id, accepted: false, message: message), from: healthyURL)
             let pending = await engine.pendingOutboxRecords()
             XCTAssertTrue(pending.isEmpty, "\(message) must not leave the change queued")
         }

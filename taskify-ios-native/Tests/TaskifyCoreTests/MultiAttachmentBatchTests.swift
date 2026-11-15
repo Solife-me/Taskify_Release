@@ -87,14 +87,20 @@ final class MultiAttachmentBatchTests: XCTestCase {
             XCTAssertTrue(snapshot.ingestDirectMessage(message))
         }
         for message in batch.localMessages {
-            XCTAssertFalse(snapshot.ingestDirectMessage(message))
+            XCTAssertTrue(snapshot.ingestDirectMessage(message))
         }
-        XCTAssertEqual(snapshot.directMessageHistory.count, optimistic.count)
+        XCTAssertEqual(snapshot.directMessageHistory.map(\.wrapEventID), batch.localMessages.map(\.wrapEventID))
+        XCTAssertEqual(snapshot.directMessageHistory.map(\.relayURLs), batch.localMessages.map(\.relayURLs))
 
         for message in batch.localMessages {
-            var sent = message
-            sent.deliveryState = .sent
-            XCTAssertTrue(snapshot.ingestDirectMessage(sent))
+            var senderCopy = message
+            senderCopy.deliveryState = .sent
+            XCTAssertFalse(snapshot.ingestDirectMessage(senderCopy))
+        }
+        XCTAssertTrue(snapshot.directMessageHistory.allSatisfy { $0.deliveryState == .queued })
+
+        for message in batch.localMessages {
+            XCTAssertTrue(snapshot.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .sent))
         }
         XCTAssertEqual(snapshot.directMessageHistory.count, optimistic.count)
         XCTAssertTrue(snapshot.directMessageHistory.allSatisfy { $0.deliveryState == .sent })

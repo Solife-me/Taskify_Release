@@ -24,6 +24,13 @@ public enum TaskPublishPlanner {
         force: Set<String> = [],
         now: Int = Int(Date().timeIntervalSince1970)
     ) -> [TaskPublishStamp] {
+        if let taskID = taskIDs.first, taskIDs.count == 1 {
+            guard let index = snapshot.tasks.firstIndex(where: { $0.id == taskID }),
+                  let board = snapshot.boards.first(where: { $0.id == snapshot.tasks[index].boardID }),
+                  let stamp = stampTask(&snapshot.tasks[index], board: board,
+                                        force: force.contains(taskID), now: now) else { return [] }
+            return [stamp]
+        }
         let indexByID = Dictionary(
             snapshot.tasks.indices.map { (snapshot.tasks[$0].id, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -33,18 +40,39 @@ public enum TaskPublishPlanner {
         var seen = Set<String>()
         for taskID in taskIDs where seen.insert(taskID).inserted {
             guard let index = indexByID[taskID],
-                  let board = boardByID[snapshot.tasks[index].boardID] else { continue }
-            let fingerprint = TaskEventCodec.publishFingerprint(task: snapshot.tasks[index], board: board)
-            if !force.contains(taskID), let fingerprint, fingerprint == snapshot.tasks[index].publishedFingerprint {
-                continue
-            }
-            let timestamp = NostrEvent.nextTimestamp(after: snapshot.tasks[index].nostrUpdatedAt, now: now)
-            snapshot.tasks[index].nostrUpdatedAt = timestamp
-            snapshot.tasks[index].publishedFingerprint = fingerprint
-            snapshot.tasks[index].publishPending = true
-            stamps.append(TaskPublishStamp(board: board, task: snapshot.tasks[index], timestamp: timestamp))
+                  let board = boardByID[snapshot.tasks[index].boardID],
+                  let stamp = stampTask(&snapshot.tasks[index], board: board,
+                                        force: force.contains(taskID), now: now) else { continue }
+            stamps.append(stamp)
         }
         return stamps
+    }
+
+    private static func stampTask(_ task: inout TaskItem, board: Board, force: Bool, now: Int) -> TaskPublishStamp? {
+        let fingerprint = TaskEventCodec.publishFingerprint(task: task, board: board)
+        if !force, let fingerprint, fingerprint == task.publishedFingerprint { return nil }
+        let timestamp = NostrEvent.nextTimestamp(after: task.nostrUpdatedAt, now: now)
+        task.nostrUpdatedAt = timestamp
+        task.publishedFingerprint = fingerprint
+        task.publishPending = true
+        return TaskPublishStamp(board: board, task: task, timestamp: timestamp)
+    }
+
+    /// Signs the initial durable versions without waiting on relay discovery or mining.
+    /// The sync engine handles proof of work independently for each relay.
+    public static func publishRequests(
+        stamps: [TaskPublishStamp],
+        boardPublishes: [(board: Board, timestamp: Int)]
+    ) throws -> [TaskSyncPublishRequest] {
+        let boards = try boardPublishes.map { publish in
+            let event = try TaskEventCodec.boardEvent(board: publish.board, createdAt: publish.timestamp)
+            return TaskSyncPublishRequest(event: event, board: publish.board, taskID: "_board")
+        }
+        let tasks = try stamps.map { stamp in
+            let event = try TaskEventCodec.taskEvent(task: stamp.task, board: stamp.board, createdAt: stamp.timestamp)
+            return TaskSyncPublishRequest(event: event, board: stamp.board, taskID: stamp.task.id)
+        }
+        return boards + tasks
     }
 
     /// The stamped versions are in the durable outbox. A task stamped again since keeps its mark.

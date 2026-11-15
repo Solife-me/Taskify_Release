@@ -578,6 +578,7 @@ struct DirectMessageConversationView: View {
     private func makePresentation() -> ChatConversationPresentation {
         let buildStart = CACurrentMediaTime()
         defer { TaskifyPerfMonitor.shared.recordChatTimelineBuild(seconds: CACurrentMediaTime() - buildStart) }
+        let messages = messages
         let sharedTasks = sharedTasks
         let sharedContacts = sharedContacts
         let calendarInvites = calendarInvites
@@ -600,14 +601,19 @@ struct DirectMessageConversationView: View {
         // `created_at` has one-second precision. Keep the order established by the message store
         // for ties; an event-ID tiebreaker is effectively random and can flip a just-sent message
         // behind the response that followed it.
-        let timeline = items.enumerated()
-            .sorted {
-                if $0.element.timestamp != $1.element.timestamp {
-                    return $0.element.timestamp < $1.element.timestamp
+        let timeline: [ChatTimelineItem]
+        if zip(items, items.dropFirst()).allSatisfy({ $0.0.timestamp <= $0.1.timestamp }) {
+            timeline = items
+        } else {
+            timeline = items.enumerated()
+                .sorted {
+                    if $0.element.timestamp != $1.element.timestamp {
+                        return $0.element.timestamp < $1.element.timestamp
+                    }
+                    return $0.offset < $1.offset
                 }
-                return $0.offset < $1.offset
-            }
-            .map(\.element)
+                .map(\.element)
+        }
         var values: [(Date, String)] = sharedTasks.map { ($0.receivedAt, $0.sender.displayName) }
         values += sharedContacts.compactMap {
             $0.isIncoming ? ($0.receivedAt, $0.sender.displayName) : nil
@@ -885,8 +891,7 @@ struct DirectMessageConversationView: View {
                 proxy.scrollTo(latestID, anchor: .bottom)
             }
             .onChange(of: sentMessageScrollRequest) { _, _ in
-                // Sending from history is explicit navigation. Wait until the send succeeds
-                // and the draft clears; arrivals need no competing imperative animation.
+                // When an outgoing row appears, return the composer to the newest message.
                 if !followsLatestMessage || isScrolledAwayFromBottom {
                     markReadAndScroll(proxy: proxy, animated: false)
                 }
@@ -2202,16 +2207,21 @@ struct DirectMessageConversationView: View {
                     guard account == model.identityPublicKey else { throw NostrDirectMessageError.identityUnavailable }
                     attachmentProgress = .sendingMessage
                     try await model.sendDirectMessageAttachments(to: peerPublicKey, attachments: uploaded,
-                        replyToEventID: capturedReply?.rumorEventID, comment: content)
+                        replyToEventID: capturedReply?.rumorEventID, comment: content,
+                        onLocalEcho: { sentMessageScrollRequest += 1 })
+                    attachmentDrafts.removeAll()
+                    draft = ""
+                    replyingTo = nil
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 } else {
                     try await model.sendDirectMessage(to: peerPublicKey, content: content,
-                        replyToEventID: capturedReply?.rumorEventID)
+                        replyToEventID: capturedReply?.rumorEventID, onLocalEcho: {
+                            draft = ""
+                            replyingTo = nil
+                            sentMessageScrollRequest += 1
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        })
                 }
-                attachmentDrafts.removeAll()
-                draft = ""
-                replyingTo = nil
-                sentMessageScrollRequest += 1
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } catch {
                 if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
                     if !capturedAttachments.isEmpty {
