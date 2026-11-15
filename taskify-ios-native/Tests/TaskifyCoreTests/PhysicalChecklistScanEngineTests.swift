@@ -62,9 +62,32 @@ private enum TestChecklistMark {
     #expect(result.detectedIDs.isEmpty)
 }
 
+@Test func physicalChecklistScannerFindsAllMarkersAcrossDeepUnevenLighting() {
+    let items = (0..<6).map { PhysicalChecklistItem(id: "task-\($0)", title: "Task \($0)") }
+    let job = PhysicalChecklistJob(
+        id: "deep-shadow-regression",
+        ownerID: "board",
+        title: "Personal schedule",
+        paper: .a6,
+        items: items
+    )
+    let image = renderChecklistPhoto(
+        job: job,
+        marks: ["task-1": .check],
+        deepLowerRightShadow: true
+    )
+
+    let result = PhysicalChecklistScanEngine.scan(images: [image], job: job)
+
+    #expect(result.recognizedPages == 1)
+    #expect(result.mismatchedJobs == 0)
+    #expect(result.detectedIDs == ["task-1"])
+}
+
 private func renderChecklistPhoto(
     job: PhysicalChecklistJob,
-    marks: [String: TestChecklistMark]
+    marks: [String: TestChecklistMark],
+    deepLowerRightShadow: Bool = false
 ) -> PhysicalChecklistGrayImage {
     let layout = PhysicalChecklistLayout.build(job: job)
     let paper = job.paper.sizeMM
@@ -96,6 +119,11 @@ private func renderChecklistPhoto(
             let pageX = (Double(px) + 0.5 - originX - shear * pageY) / scaleX
             guard pageX >= 0, pageY >= 0, pageX <= paper.width, pageY <= paper.height else { continue }
             var value = paperLuma
+            if deepLowerRightShadow,
+               pageX >= paper.width * 0.54,
+               pageY >= paper.height * 0.62 {
+                value = 72
+            }
 
             // Dark tabletop visible through the six holes in common ring-bound A6 inserts.
             if punchedHoleCentersY.contains(where: { hypot(pageX - 4.2, pageY - $0) <= 2.2 }) {
