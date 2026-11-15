@@ -1336,20 +1336,17 @@ final class TaskifyWatchAppModel: NSObject {
         var published: [TaskifyWatchDirectMutation] = []
         for original in mutations {
             do {
-                let event = try await TaskifyWatchNostrCrypto.prepareBoardEvent(original.event,
-                    boardID: original.boardNostrID, relayURLs: original.relayURLs)
-                let mutation = TaskifyWatchDirectMutation(event: event, task: original.task,
-                    relayURLs: original.relayURLs, boardNostrID: original.boardNostrID)
                 guard accountRevision == chatAccountRevision else { return false }
-                try await independentClient.publish(
-                    mutation.event,
-                    relayURLs: mutation.relayURLs,
-                    boardID: mutation.boardNostrID,
+                let event = try await independentClient.publish(
+                    original.event,
+                    relayURLs: original.relayURLs,
+                    boardID: original.boardNostrID,
                     gatewayBaseURL: gatewayBaseURL,
                     profile: profile,
                     privateKey: privateKey
                 )
-                published.append(mutation)
+                published.append(TaskifyWatchDirectMutation(event: event, task: original.task,
+                    relayURLs: original.relayURLs, boardNostrID: original.boardNostrID))
             } catch {
                 // Keep the idempotent command in the durable phone queue. A later direct retry or
                 // iPhone reconciliation can safely publish the same stable task identifier.

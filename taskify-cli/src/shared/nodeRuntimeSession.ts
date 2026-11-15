@@ -14,11 +14,14 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { nip19 } from "nostr-tools";
 import { DEFAULT_NOSTR_RELAYS } from "taskify-core";
 import {
   collectRuntimeRelayUrls,
+  boardTagHash,
+  deriveBoardKeyPair,
+  localEventSigner,
   RelayAuthManager,
   RelayHealthTracker,
   RelayInfoCache,
@@ -274,6 +277,19 @@ export function createCliNostrSession(
     }),
     createWalletClient: () => undefined,
     outboxStore: new FileNostrOutboxStore(options.outboxPath),
+    recoverProofOfWorkSigner: async ({ event }) => {
+      if (secretKeyHex) {
+        const account = localEventSigner(hexToBytes(secretKeyHex));
+        if (account.pubkey === event.pubkey) return account;
+      }
+      const boardTag = event.tags.find(tag => tag[0] === "b")?.[1];
+      for (const board of config.boards) {
+        if (!board.id || (boardTag && boardTagHash(board.id) !== boardTag)) continue;
+        const keys = deriveBoardKeyPair(board.id);
+        if (keys.pk === event.pubkey) return localEventSigner(keys.sk);
+      }
+      return undefined;
+    },
     publishBudget: createCliRelayPublishBudget(options.publishBudgetPath),
     isDev: options.verbose,
     proofOfWork: options.proofOfWork,

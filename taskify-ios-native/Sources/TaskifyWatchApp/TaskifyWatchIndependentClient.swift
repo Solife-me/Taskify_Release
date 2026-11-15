@@ -23,6 +23,83 @@ enum TaskifyWatchIndependentError: LocalizedError {
     }
 }
 
+struct TaskifyWatchPublishPlan {
+    private let requirements: TaskifyRelayRequirements
+    private var floors: [String: Int] = [:]
+    let relays: [String]
+
+    init(relays: [String], requirements: TaskifyRelayRequirements) async {
+        self.relays = relays
+        self.requirements = requirements
+        for relay in relays { floors[relay] = await requirements.knownDifficulty(for: relay) }
+    }
+
+    var ordinary: [String] { relays.filter { floors[$0, default: 0] == 0 } }
+
+    mutating func learn(results: [TaskifyWatchGatewayRelayResult], event: TaskifyWatchNostrEvent) async {
+        for result in results where result.status != "accepted" {
+            guard let url = TaskifyWatchRelayRouting.normalizedRelayURLs([result.relay]).first,
+                  let relay = relays.first(where: { TaskifyWatchRelayRouting.normalizedRelayURLs([$0]).first == url }),
+                  let difficulty = result.message.flatMap(TaskifyProofOfWorkRejection.difficulty(fromMessage:)),
+                  difficulty <= 32,
+                  !TaskifyRelayProofOfWork.satisfies(id: event.id, tags: event.tags, difficulty: difficulty) else { continue }
+            floors[relay] = max(floors[relay, default: 0], difficulty)
+            await requirements.record(difficulty: difficulty, for: relay)
+        }
+    }
+
+    mutating func refreshUnaccepted(_ accepted: Set<String>) async {
+        let pending = ordinary.filter { !accepted.contains($0) }
+        await withTaskGroup(of: (String, Int).self) { group in
+            for relay in pending {
+                let requirements = self.requirements
+                group.addTask { (relay, await requirements.difficulty(for: [relay])) }
+            }
+            for await (relay, difficulty) in group { floors[relay] = difficulty }
+        }
+    }
+
+    func strict(excluding accepted: Set<String>) -> (relays: [String], difficulty: Int) {
+        let targets = relays.filter { !accepted.contains($0) && floors[$0, default: 0] > 0 }
+        return (targets, targets.compactMap { floors[$0] }.max() ?? 0)
+    }
+
+    mutating func deliver(
+        _ event: TaskifyWatchNostrEvent,
+        prepare: (Int) async throws -> TaskifyWatchNostrEvent,
+        submit: (TaskifyWatchNostrEvent, [String]) async throws -> [TaskifyWatchGatewayRelayResult]
+    ) async throws -> TaskifyWatchNostrEvent? {
+        var accepted: Set<String> = []
+        var acceptedEvent: TaskifyWatchNostrEvent?
+        if !ordinary.isEmpty {
+            let results = try await submit(event, ordinary)
+            accepted.formUnion(TaskifyWatchRelayRouting.normalizedRelayURLs(results.filter { $0.status == "accepted" }.map(\.relay)))
+            if !accepted.isEmpty { acceptedEvent = event }
+            await learn(results: results, event: event)
+            await refreshUnaccepted(accepted)
+        }
+        var strict = strict(excluding: accepted)
+        for _ in 0..<2 where strict.difficulty > 0 {
+            do {
+                let mined = try await prepare(strict.difficulty)
+                let results = try await submit(mined, strict.relays)
+                let newlyAccepted = TaskifyWatchRelayRouting.normalizedRelayURLs(results.filter { $0.status == "accepted" }.map(\.relay))
+                accepted.formUnion(newlyAccepted)
+                if !newlyAccepted.isEmpty && acceptedEvent == nil { acceptedEvent = mined }
+                await learn(results: results, event: mined)
+                let next = self.strict(excluding: accepted)
+                guard next.difficulty > strict.difficulty else { break }
+                strict = next
+            } catch {
+                if acceptedEvent == nil || Task.isCancelled { throw error }
+                break
+            }
+        }
+        return acceptedEvent
+    }
+
+}
+
 /// High-level HTTPS transport for an independent watchOS app. The bridge receives only signed,
 /// board-encrypted Nostr events and cannot decrypt them; all keys and event construction stay on
 /// Apple Watch. This avoids making unsupported persistent relay WebSockets the Watch's data path.
@@ -31,12 +108,16 @@ struct TaskifyWatchIndependentClient: Sendable {
 
     private let fallbackBaseURL: URL
     private let session: URLSession
+    private let requirements: TaskifyRelayRequirements
 
-    init(baseURL: URL = Self.defaultBaseURL, session: URLSession = .shared) {
+    init(baseURL: URL = Self.defaultBaseURL, session: URLSession = .shared,
+         requirements: TaskifyRelayRequirements = .shared) {
         self.fallbackBaseURL = baseURL
         self.session = session
+        self.requirements = requirements
     }
 
+    @discardableResult
     func publish(
         _ event: TaskifyWatchNostrEvent,
         relayURLs: [String],
@@ -44,42 +125,54 @@ struct TaskifyWatchIndependentClient: Sendable {
         gatewayBaseURL: URL?,
         profile: TaskifyWatchIndependentProfile,
         privateKey: Data
-    ) async throws {
+    ) async throws -> TaskifyWatchNostrEvent {
+        // Watch traffic uses shared server IPs. The iPhone fans the durable board command out
+        // to public relays from its own connection.
+        let targets = TaskifyFirstPartyRelays.watchPublishTargets(boardRelayURLs: relayURLs)
+        var plan = await TaskifyWatchPublishPlan(relays: targets, requirements: requirements)
+        let delivered = try await plan.deliver(event, prepare: { difficulty in
+            try await TaskifyWatchNostrCrypto.prepareBoardEvent(event, boardID: boardID, difficulty: difficulty)
+        }, submit: { wireEvent, relays in
+            try await submitTaskEvent(wireEvent, relays: relays, boardID: boardID,
+                gatewayBaseURL: gatewayBaseURL, profile: profile, privateKey: privateKey)
+        })
+        guard let delivered else { throw TaskifyWatchIndependentError.relayUnavailable }
+        return delivered
+    }
+
+    private func submitTaskEvent(
+        _ event: TaskifyWatchNostrEvent, relays: [String], boardID: String, gatewayBaseURL: URL?,
+        profile: TaskifyWatchIndependentProfile, privateKey: Data
+    ) async throws -> [TaskifyWatchGatewayRelayResult] {
+        if let gatewayBaseURL {
+            do {
+                return try await publishThroughGateway(event, relayURLs: relays, boardID: boardID,
+                    gatewayBaseURL: gatewayBaseURL, privateKey: privateKey)
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                // Only Taskify's own gateway may fall back to the legacy Taskify Worker.
+                guard Self.allowsWorkerFallback(after: gatewayBaseURL) else { throw error }
+            }
+        }
+
         struct Body: Encodable {
             let relays: [String]
             let event: TaskifyWatchNostrEvent
         }
-        // Only Taskify's own relays: this traffic leaves from shared server IPs. The phone fans the
-        // change out to the board's public relays when it applies the queued Watch command.
-        let relayURLs = TaskifyFirstPartyRelays.watchPublishTargets(boardRelayURLs: relayURLs)
-        if let gatewayBaseURL {
-            do {
-                try await publishThroughGateway(
-                    event,
-                    relayURLs: relayURLs,
-                    boardID: boardID,
-                    gatewayBaseURL: gatewayBaseURL,
-                    privateKey: privateKey
-                )
-                return
-            } catch {
-                if Task.isCancelled { throw CancellationError() }
-                // A self-hoster chose this gateway as the task service. Never copy its signed
-                // event to Taskify's Worker when that private service is unavailable.
-                guard Self.allowsWorkerFallback(after: gatewayBaseURL) else { throw error }
-                // Preserve the old Taskify Watch bridge temporarily for Taskify's own gateway.
-                // The immutable event is safe to retry because both paths deduplicate its ID.
-            }
+        struct Reply: Decodable {
+            struct Result: Decodable { let relay: String; let accepted: Bool; let message: String? }
+            let accepted: Int
+            let results: [Result]?
         }
-
-        struct Reply: Decodable { let accepted: Int }
-        let reply: Reply = try await authenticatedPost(
-            path: "api/watch/nostr/publish",
-            body: Body(relays: relayURLs, event: event),
-            profile: profile,
-            privateKey: privateKey
-        )
-        guard reply.accepted > 0 else { throw TaskifyWatchIndependentError.relayUnavailable }
+        let reply: Reply = try await authenticatedPost(path: "api/watch/nostr/publish",
+            body: Body(relays: relays, event: event), profile: profile, privateKey: privateKey,
+            acceptsRelayFailureBody: true)
+        return reply.results?.map {
+            TaskifyWatchGatewayRelayResult(relay: $0.relay, status: $0.accepted ? "accepted" : "rejected",
+                message: $0.message, session: nil, challenge: nil)
+        } ?? relays.prefix(reply.accepted).map {
+            TaskifyWatchGatewayRelayResult(relay: $0, status: "accepted", message: nil, session: nil, challenge: nil)
+        }
     }
 
     func fetchTasks(
@@ -493,26 +586,14 @@ struct TaskifyWatchIndependentClient: Sendable {
         boardID: String,
         gatewayBaseURL: URL,
         privateKey: Data
-    ) async throws {
+    ) async throws -> [TaskifyWatchGatewayRelayResult] {
         struct Body: Encodable {
             let event: TaskifyWatchNostrEvent
             let relays: [String]
         }
-        struct RelayResult: Decodable {
-            let relay: String
-            let status: String
-            let session: String?
-            let challenge: String?
-        }
-        struct Reply: Decodable {
-            let accepted: Int
-            let results: [RelayResult]
-        }
+        struct Reply: Decodable { let results: [TaskifyWatchGatewayRelayResult] }
         struct AuthorizationBody: Encodable { let event: TaskifyWatchNostrEvent }
-        struct AuthorizationReply: Decodable {
-            struct Result: Decodable { let status: String }
-            let result: Result
-        }
+        struct AuthorizationReply: Decodable { let result: TaskifyWatchGatewayRelayResult }
 
         let endpoint = gatewayBaseURL.appendingPathComponent("v1/watch/task-events/publish")
         let reply: Reply = try await nip98Post(
@@ -521,8 +602,9 @@ struct TaskifyWatchIndependentClient: Sendable {
             privateKey: privateKey,
             acceptedStatuses: 200...202
         )
-        var accepted = reply.accepted
-        for result in reply.results where result.status == "auth-required" {
+        var results = reply.results
+        for index in results.indices where results[index].status == "auth-required" {
+            let result = results[index]
             guard let sessionID = result.session,
                   let challenge = result.challenge else { continue }
             let authorization = try TaskifyWatchNostrCrypto.nip42BoardAuthorizationEvent(
@@ -537,11 +619,11 @@ struct TaskifyWatchIndependentClient: Sendable {
                 url: authorizationURL,
                 body: AuthorizationBody(event: authorization),
                 privateKey: privateKey
-            ), authorized.result.status == "accepted" {
-                accepted += 1
+            ) {
+                results[index] = authorized.result
             }
         }
-        guard accepted > 0 else { throw TaskifyWatchIndependentError.relayUnavailable }
+        return results
     }
 
     private func nip98Post<Body: Encodable, Reply: Decodable>(
@@ -722,7 +804,8 @@ struct TaskifyWatchIndependentClient: Sendable {
         body: Body,
         profile: TaskifyWatchIndependentProfile,
         privateKey: Data,
-        acceptsRateLimitBody: Bool = false
+        acceptsRateLimitBody: Bool = false,
+        acceptsRelayFailureBody: Bool = false
     ) async throws -> Reply {
         let data = try encoded(body)
         let url = fallbackBaseURL.appendingPathComponent(path)
@@ -743,17 +826,20 @@ struct TaskifyWatchIndependentClient: Sendable {
         for (name, value) in authentication.headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        return try await response(for: request, acceptsRateLimitBody: acceptsRateLimitBody)
+        return try await response(for: request, acceptsRateLimitBody: acceptsRateLimitBody,
+            acceptsRelayFailureBody: acceptsRelayFailureBody)
     }
 
     private func response<Reply: Decodable>(
         for request: URLRequest,
-        acceptsRateLimitBody: Bool = false
+        acceptsRateLimitBody: Bool = false,
+        acceptsRelayFailureBody: Bool = false
     ) async throws -> Reply {
         let (data, rawResponse) = try await session.data(for: request)
         guard let response = rawResponse as? HTTPURLResponse,
               (200..<300).contains(response.statusCode)
-                || (acceptsRateLimitBody && response.statusCode == 429) else {
+                || (acceptsRateLimitBody && response.statusCode == 429)
+                || (acceptsRelayFailureBody && response.statusCode == 502) else {
             throw TaskifyWatchIndependentError.serviceUnavailable
         }
         guard let decoded = try? JSONDecoder().decode(Reply.self, from: data) else {

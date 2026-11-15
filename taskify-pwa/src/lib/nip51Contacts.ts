@@ -1,4 +1,4 @@
-import { prepareRelayEvent } from "../nostr/prepareRelayEvent";
+import { localEventSigner } from "taskify-runtime-nostr";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip44, type Event as NostrEvent, type EventTemplate } from "nostr-tools";
 
@@ -99,8 +99,9 @@ export async function publishNip51PrivateContactsList(
   options?: { createdAt?: number; tags?: string[][] },
 ): Promise<NostrEvent> {
   const template = await buildNip51PrivateContactsEvent(contacts, keys, options);
-  const signed = await prepareRelayEvent(template, hexToBytes(keys.privateKeyHex), relays);
-  const result = pool.publish(relays, signed);
+  const signer = localEventSigner(hexToBytes(keys.privateKeyHex));
+  const signed = await signer.sign(template);
+  const result = pool.publish(relays, signed, { proofOfWorkSigner: signer });
   try {
     await Promise.resolve(result);
   } catch (err) {

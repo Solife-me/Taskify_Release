@@ -2,6 +2,8 @@ import type { NostrEvent } from "nostr-tools";
 export type NostrOutboxMutationKind = "nostr.publish";
 export type NostrOutboxPublishPayload = {
     event: NostrEvent;
+    proofOfWorkEvent?: NostrEvent;
+    proofOfWorkSealedKey?: string;
     relayUrls: string[];
     replaceableKey?: string | null;
 };
@@ -53,6 +55,7 @@ export declare function createNostrOutboxMutation(args: {
     existing?: NostrOutboxMutation;
     nextAttemptAt?: number | null;
     isRepublish?: boolean;
+    proofOfWorkSealedKey?: string;
 }): NostrOutboxMutation;
 /**
  * Stops sending a board's republished rows anywhere but `keptRelayUrls` (Taskify's own relays).

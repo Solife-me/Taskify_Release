@@ -1,5 +1,7 @@
-import NDK, { type NDKEvent, type NDKRelay } from "@nostr-dev-kit/ndk";
+import NDK, { NDKEvent, type NDKRelay } from "@nostr-dev-kit/ndk";
+import { type NostrEvent } from "nostr-tools";
 import { RelayInfoCache } from "./RelayInfoCache.js";
+import { type EventSigner } from "./ProofOfWork.js";
 import type { RuntimeProofOfWorkSettings } from "./RuntimeNostrSession.js";
 import { type RelayPublishBudget } from "./RelayPublishBudget.js";
 /**
@@ -18,9 +20,10 @@ export declare function recordRelayProofOfWorkRejection(relayUrl: string, messag
 /** Standalone clients share the same auth policy; anonymous reads use an ephemeral key. */
 export declare function configureRelayAccess(ndk: NDK, secretKeyHex?: string): void;
 export declare function prepareStandaloneEvent(event: NDKEvent, relays: string[]): Promise<void>;
-/**
- * Signs (with proof of work where relays ask for it) and publishes an event from a standalone
- * NDK instance. A relay that refuses it for too little work and names a target gets one
- * re-mined copy, as `RuntimeNostrSession.publishSigned` does.
- */
+/** Relay-specific delivery for one-shot clients, where there is no durable publisher. */
+export declare function publishWithRelayProofOfWork(original: NostrEvent, relays: string[], signer: EventSigner, submit: (event: NostrEvent, relays: string[]) => Promise<{
+    accepted: string[];
+    rejections: Map<string, string>;
+}>, settings?: RuntimeProofOfWorkSettings): Promise<void>;
+/** Signs the original in place and uses relay-specific proof for one-off writes. */
 export declare function publishStandaloneEvent(event: NDKEvent, relays: string[], publishBudget?: RelayPublishBudget): Promise<Set<NDKRelay>>;

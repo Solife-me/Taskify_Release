@@ -691,7 +691,8 @@ public struct TaskifyWatchOutboxWrap: Identifiable, Codable, Equatable, Sendable
     public var id: String { event.id }
     public let recipientPublicKey: String
     public var event: TaskifyWatchNostrEvent
-    public var proofOfWorkPrepared: Bool? = false
+    public var proofOfWorkEvent: TaskifyWatchNostrEvent?
+    public var sealedSigningKey: String?
     public var routingDecision: TaskifyWatchRelayDecision
     public var acknowledgements: [TaskifyWatchRelayAcknowledgement]
     public var attempts: Int
@@ -705,10 +706,12 @@ public struct TaskifyWatchOutboxWrap: Identifiable, Codable, Equatable, Sendable
         acknowledgements: [TaskifyWatchRelayAcknowledgement]? = nil,
         attempts: Int = 0,
         nextAttemptAt: Date = Date(),
-        lastSubmissionError: String? = nil
+        lastSubmissionError: String? = nil,
+        sealedSigningKey: String? = nil
     ) {
         self.recipientPublicKey = recipientPublicKey.lowercased()
         self.event = event
+        self.sealedSigningKey = sealedSigningKey
         self.routingDecision = routingDecision
         self.acknowledgements = acknowledgements ?? routingDecision.relayURLs.map {
             TaskifyWatchRelayAcknowledgement(relayURL: $0)

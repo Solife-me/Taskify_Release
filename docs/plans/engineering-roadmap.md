@@ -318,5 +318,13 @@ reported crash cause; these transport regressions do not replace that verificati
 - NIP-17 encrypts one gift wrap per recipient. The local outbox protects its retry signing key
   with the sender’s identity and reuses the same ciphertext for the mined variant. Chat shows
   Sent after the first recipient acceptance while outstanding relay copies remain queued.
+- The PWA and CLI share relay-specific delivery for board, task, and calendar writes and
+  share messages. Browser callers can continue after their first acknowledgement while the
+  durable queue completes the strict-relay copies. The Watch applies the same routing through
+  its gateway for independent task writes, chat and the inbox relay preference. Mac uses the
+  native iPhone sync engine.
+- Regression coverage checks that ordinary relays accept the original before mining, advertised
+  and explicit requirements share a variant at the highest confirmed floor, a saved variant
+  survives reopening the outbox, and the Watch learns explicit gateway refusals.
 - The iOS and PWA Hermes pickers use only the stock model previews and counts. Model switches
   still use the standard `/model` command, and a missing confirmation releases the controls.

@@ -35,6 +35,7 @@ function cloneMutation(mutation: NostrOutboxMutation): NostrOutboxMutation {
     payload: {
       ...mutation.payload,
       event: cloneNostrEvent(mutation.payload.event),
+      proofOfWorkEvent: mutation.payload.proofOfWorkEvent && cloneNostrEvent(mutation.payload.proofOfWorkEvent),
       relayUrls: [...mutation.payload.relayUrls],
     },
     ackedRelays: [...mutation.ackedRelays],

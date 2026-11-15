@@ -1,5 +1,5 @@
 import type { NDKEvent, NDKSigner } from "@nostr-dev-kit/ndk";
-import { type EventTemplate } from "nostr-tools";
+import { type EventTemplate, type NostrEvent } from "nostr-tools";
 export declare class NostrProofOfWorkError extends Error {
     constructor(message: string);
 }
@@ -28,5 +28,15 @@ export declare function parseProofOfWorkRejection(message: string | null | undef
 export declare function mineEventTemplate(template: EventTemplate, secretKey: Uint8Array, difficulty: number, options?: ProofOfWorkOptions): Promise<EventTemplate>;
 /** Mines for a public key whose secret is held elsewhere (an extension or a remote signer). */
 export declare function mineEventTemplateFor(template: EventTemplate, pubkey: string, difficulty: number, options?: ProofOfWorkOptions): Promise<EventTemplate>;
+export type EventSigner = {
+    pubkey: string;
+    sign: (template: EventTemplate) => Promise<NostrEvent>;
+    /** Sender-encrypted recovery material for one-time signing keys. */
+    sealedKey?: string;
+};
+export declare function localEventSigner(secretKey: Uint8Array): EventSigner;
+export declare function satisfiesProofOfWork(event: NostrEvent, difficulty: number): boolean;
+/** Derives a second signed event with the same author, timestamp and payload. */
+export declare function signProofOfWorkVariant(event: NostrEvent, difficulty: number, signer: EventSigner, options?: ProofOfWorkOptions): Promise<NostrEvent>;
 /** Signed events are immutable: callers must prepare proof of work before signing. */
 export declare function applyProofOfWork(event: NDKEvent, signer: NDKSigner | undefined, difficulty: number, options?: ProofOfWorkOptions): Promise<void>;

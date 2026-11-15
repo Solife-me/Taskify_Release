@@ -1,3 +1,4 @@
+import type { EventSigner } from "taskify-runtime-nostr";
 import type { NDKFilter } from "@nostr-dev-kit/ndk";
 import type { NostrEvent } from "nostr-tools";
 import { normalizeRelayUrls } from "taskify-runtime-nostr";
@@ -127,14 +128,14 @@ export class SessionPool {
     }, events[0] as NostrEvent);
   }
 
-  publish(relays: string[], event: NostrEvent, options?: { republish?: boolean }): Promise<unknown> {
+  publish(relays: string[], event: NostrEvent, options?: { republish?: boolean; proofOfWorkSigner?: EventSigner }): Promise<unknown> {
     const relayList = normalizeRelayUrls(relays);
     return NostrSession.init(relayList).then((session) =>
-      session.publishRaw(event, { relayUrls: relayList, returnEvent: false, republish: options?.republish }),
+      session.publishRaw(event, { relayUrls: relayList, returnEvent: false, ...options }),
     );
   }
 
-  publishEvent(relays: string[], event: NostrEvent, options?: { republish?: boolean }): Promise<unknown> {
+  publishEvent(relays: string[], event: NostrEvent, options?: { republish?: boolean; proofOfWorkSigner?: EventSigner }): Promise<unknown> {
     return this.publish(relays, event, options);
   }
 

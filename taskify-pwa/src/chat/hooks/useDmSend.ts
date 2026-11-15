@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { buildTaskifyBotUiActionTag, createNip17Rumor, type TaskifyBotUiAction } from "taskify-core";
-import { nip17Crypto } from "taskify-runtime-nostr";
+import { nip17Crypto, type EventSigner } from "taskify-runtime-nostr";
 import { LocalKeySigner } from "../../identity/signer";
 import { giftWrapNip17Rumor, nip17TimestampSource, recipientInboxRelays } from "../../lib/nip17Messages";
 import {
@@ -68,7 +68,7 @@ export function useDmSend({
       senderHex: string;
       recipientHex: string;
       senderSecret: string;
-      publish: (event: NostrEvent) => Promise<void>;
+      publish: (event: NostrEvent, signer: EventSigner) => Promise<void>;
       kind?: number;
       extraTags?: string[][];
       /** For group messages: all recipient hex pubkeys (excluding sender). */
@@ -93,11 +93,11 @@ export function useDmSend({
         },
         nip17Crypto,
       );
-      const wraps = await giftWrapNip17Rumor(rumor, account, options.relays, resolveNip17Timestamp);
+      const wraps = await giftWrapNip17Rumor(rumor, account, resolveNip17Timestamp);
       // The self-addressed wrap lets callers show the message at once.
       let selfWrapEvent: NostrEvent | null = null;
-      for (const { recipient, wrap } of wraps) {
-        await publish(wrap as NostrEvent);
+      for (const { recipient, wrap, signer } of wraps) {
+        await publish(wrap as NostrEvent, signer);
         if (recipient === normalizedSender) selfWrapEvent = wrap as NostrEvent;
       }
       return { selfWrapEvent };
@@ -116,7 +116,7 @@ export function useDmSend({
       const relays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
       if (!relays.length) throw new Error("No relays available for the bot conversation.");
       const pool = ensureNostrPool();
-      const publish = (event: NostrEvent) => safePublish(pool, relays, event);
+      const publish = (event: NostrEvent, signer: EventSigner) => safePublish(pool, relays, event, signer);
       const { selfWrapEvent } = await publishNip17Giftwraps({
         relays,
         content: command,
@@ -183,7 +183,7 @@ export function useDmSend({
         const publishRelays = Array.from(allRelays);
         if (!publishRelays.length) return;
         const pool = ensureNostrPool();
-        const publish = (ev: NostrEvent) => safePublish(pool, publishRelays, ev);
+        const publish = (ev: NostrEvent, signer: EventSigner) => safePublish(pool, publishRelays, ev, signer);
         const authorPubkey = msg.senderPubkey || (msg.isIncoming ? msg.peerPubkey : senderHex);
         const { selfWrapEvent } = await publishNip17Giftwraps({
           relays: publishRelays,
@@ -216,7 +216,7 @@ export function useDmSend({
         const relays = await resolveNip17Relays(recipientHex, defaultNostrRelays);
         if (!relays.length) return;
         const pool = ensureNostrPool();
-        const publish = (ev: NostrEvent) => safePublish(pool, relays, ev);
+        const publish = (ev: NostrEvent, signer: EventSigner) => safePublish(pool, relays, ev, signer);
         const { selfWrapEvent } = await publishNip17Giftwraps({
           relays,
           content: msg.content,
@@ -253,7 +253,7 @@ export function useDmSend({
       if (!publishRelays.length) return false;
 
       const pool = ensureNostrPool();
-      const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+      const publish = (event: NostrEvent, signer: EventSigner) => safePublish(pool, publishRelays, event, signer);
       const { selfWrapEvent } = await publishNip17Giftwraps({
         relays: publishRelays,
         content: "",
@@ -338,7 +338,7 @@ export function useDmSend({
         return;
       }
       const pool = ensureNostrPool();
-      const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+      const publish = (event: NostrEvent, signer: EventSigner) => safePublish(pool, publishRelays, event, signer);
 
       for (const file of trimmedFiles) {
         const pendingId = crypto.randomUUID();

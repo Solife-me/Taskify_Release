@@ -218,9 +218,9 @@ export async function sendShareMessage(
     },
     nip17Crypto,
   );
-  const wraps = await giftWrapNip17Rumor(rumor, account, publishRelays, nip17TimestampSource(shareTimestampMode()));
-  for (const { wrap } of wraps) {
-    await session.publishRaw(wrap as NostrEvent, { relayUrls: publishRelays, returnEvent: false });
+  const wraps = await giftWrapNip17Rumor(rumor, account, nip17TimestampSource(shareTimestampMode()));
+  for (const { wrap, signer } of wraps) {
+    await session.publishRaw(wrap as NostrEvent, { relayUrls: publishRelays, returnEvent: false, proofOfWorkSigner: signer });
   }
 }
 

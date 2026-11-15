@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-import TaskifyWatchShared
+@testable import TaskifyWatchShared
 @testable import TaskifyWatchChatRuntime
 
 private final class WatchIndependentTransport: URLProtocol {
@@ -177,6 +177,30 @@ final class TaskifyWatchIndependentClientTests: XCTestCase {
             "https://push.solife.me/v1/watch/tasks/query",
             "https://taskify.solife.me/api/watch/nostr/query",
         ])
+    }
+
+    func testDirectTaskRetriesOnlyTheRelayThatNamesAProofOfWorkFloor() async throws {
+        let requirements = TaskifyRelayRequirements(learnedURL: nil)
+        let client = TaskifyWatchIndependentClient(session: session(), requirements: requirements)
+        let event = try TaskifyWatchNostrCrypto.taskEvent(
+            taskID: "task", boardID: "private-board-secret", columnTag: "",
+            status: "open", payload: Data("{}".utf8), createdAt: 1_793_000_000
+        )
+        WatchIndependentTransport.respond { _ in
+            let reply = WatchIndependentTransport.urls.count == 1
+                ? #"{"accepted":1,"results":[{"relay":"wss://push.solife.me","status":"accepted"},{"relay":"wss://relay.solife.me","status":"rejected","message":"pow: difficulty 0 is less than 10"}]}"#
+                : #"{"accepted":1,"results":[{"relay":"wss://relay.solife.me","status":"accepted"}]}"#
+            return Data(reply.utf8)
+        }
+
+        try await client.publish(
+            event, relayURLs: ["wss://push.solife.me", "wss://relay.solife.me", "wss://unrelated.example"],
+            boardID: "private-board-secret", gatewayBaseURL: URL(string: "https://relay.example")!,
+            profile: profile(), privateKey: privateKey
+        )
+        XCTAssertEqual(WatchIndependentTransport.urls.count, 2)
+        let learned = await requirements.knownDifficulty(for: "wss://relay.solife.me")
+        XCTAssertEqual(learned, 10)
     }
 
     func testSelfHostedPublishFailureNeverFallsBackToTaskifyWorker() async throws {

@@ -1,7 +1,7 @@
-import { prepareRelayEvent, prepareSignedRelayEvent } from "./prepareRelayEvent";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { generateSecretKey, nip19, type EventTemplate } from "nostr-tools";
+import { generateSecretKey, nip19, verifyEvent, type EventTemplate } from "nostr-tools";
+import { localEventSigner, type EventSigner } from "taskify-runtime-nostr";
 import { DEFAULT_NOSTR_RELAYS } from "../lib/relays";
 import { adoptLocalSecretKey, revealLocalSecretKey, useIdentity } from "../identity/identity";
 import {
@@ -106,10 +106,10 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
       // Board and other derived keys are passed in; the user's own events are signed by their
       // signer, wherever the key is held. Before sign-in a throwaway key stands in.
       const accountSigner = options?.sk ? null : identity?.signer ?? null;
-      let ev: unknown;
+      let signer: EventSigner;
       if (accountSigner) {
         createdAt = eventTimestampClock.current.next(accountSigner.pubkey, template as { kind: number; tags: string[][] }, createdAt, now);
-        ev = await prepareSignedRelayEvent({ ...template, created_at: createdAt }, accountSigner, relays);
+        signer = accountSigner;
       } else {
         const keySource = options?.sk || nostrSK;
         const signerBytes =
@@ -130,11 +130,13 @@ export function useNostrIdentity({ defaultRelays }: UseNostrIdentityParams) {
               })()
             : keySource;
         createdAt = eventTimestampClock.current.next(bytesToHex(signerBytes), template as { kind: number; tags: string[][] }, createdAt, now);
-        ev = await prepareRelayEvent({ ...template, created_at: createdAt }, signerBytes, relays);
+        signer = localEventSigner(signerBytes);
       }
-      await pool.publishEvent(relays, ev as unknown as NostrEvent, { republish: options?.republish });
+      const event = await signer.sign({ ...template, created_at: createdAt });
+      if (event.pubkey !== signer.pubkey || !verifyEvent(event)) throw new Error("The signer returned an invalid event.");
+      await pool.publishEvent(relays, event, { republish: options?.republish, proofOfWorkSigner: signer });
       lastNostrSentMs.current = Date.now();
-      return options?.returnEvent ? { createdAt, event: ev as unknown as NostrEvent } : createdAt;
+      return options?.returnEvent ? { createdAt, event } : createdAt;
     };
     const next = nostrPublishQueue.current.catch(() => {}).then(run);
     nostrPublishQueue.current = next.then(() => {}, () => {});

@@ -4,7 +4,7 @@ import { type ProofOfWorkHashFactory, type ProofOfWorkOptions } from "./ProofOfW
 import { type RelayAuthOutcome } from "./RelayAuth.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
-import { PublishCoordinator, type PublishOptions, type PublishResult } from "./PublishCoordinator.js";
+import { PublishCoordinator, type PublishCoordinatorOptions, type PublishOptions, type PublishResult } from "./PublishCoordinator.js";
 import type { RelayPublishBudget } from "./RelayPublishBudget.js";
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
@@ -77,6 +77,8 @@ export type RuntimeNostrSessionDeps<TWalletClient> = {
         resolveRelaySet: (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
     }) => TWalletClient;
     outboxStore?: NostrOutboxStore;
+    returnOnFirstAcknowledgement?: boolean;
+    recoverProofOfWorkSigner?: PublishCoordinatorOptions["recoverProofOfWorkSigner"];
     /** Shared per-relay publish pacing. Short-lived clients may supply a persisted budget. */
     publishBudget?: RelayPublishBudget | false;
     isDev?: boolean;
@@ -126,6 +128,7 @@ export declare class RuntimeNostrSession<TWalletClient = unknown> {
     private ensureRelays;
     private fetchRelayInfo;
     private resolveProofOfWorkDifficulty;
+    private knownProofOfWorkDifficulty;
     private miningOptions;
     private resolveRelayLimit;
     subscribe(filters: NDKFilter | NDKFilter[], options?: SubscribeOptions): Promise<ManagedSubscription>;
@@ -142,13 +145,7 @@ export declare class RuntimeNostrSession<TWalletClient = unknown> {
         sign: (template: EventTemplate) => Promise<NostrEvent>;
     }, relayUrls: string[], options?: ProofOfWorkOptions): Promise<NostrEvent>;
     private preparedMiningOptions;
-    /**
-     * Signs (mining NIP-13 proof of work where relays ask for it) and publishes an event. When a
-     * relay refuses it for too little work and names its target, the event is mined again to that
-     * target and resent once: replaceable events go to every relay with a newer timestamp so the
-     * stronger copy wins everywhere; other events go only to the relays that refused them.
-     * `event` is updated in place to the copy that was last published.
-     */
+    /** Signs the original in place. Relay-specific proof of work keeps the same timestamp. */
     publishSigned(event: NDKEvent, signer: NDKSigner, relayUrls: string[], options?: Omit<PublishOptions, "relayUrls" | "signer">): Promise<PublishResult>;
     createEvent(event?: NostrEvent): NDKEvent;
     fetchEvents(filters: NDKFilter[], relayUrls?: string[], timeoutMs?: number, eoseGraceMs?: number, inactivityMs?: number): Promise<NostrEvent[]>;

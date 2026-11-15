@@ -1,3 +1,4 @@
+import type { EventSigner } from "taskify-runtime-nostr";
 import React from "react";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import {
@@ -928,7 +929,7 @@ export function ChatConversationView() {
                               const publishRelays = Array.from(allRelays);
                               if (!publishRelays.length) return;
                               const pool = ensureNostrPool();
-                              const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                              const publish = (event: NostrEvent, signer: EventSigner) => safePublish(pool, publishRelays, event, signer);
                               const extraTags: string[][] = [];
                               if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
                               if (capturedReply) {
@@ -997,7 +998,7 @@ export function ChatConversationView() {
                             const publishRelays = Array.from(allRelays);
                             if (!publishRelays.length) return;
                             const pool = ensureNostrPool();
-                            const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                            const publish = (event: NostrEvent, signer: EventSigner) => safePublish(pool, publishRelays, event, signer);
                             const extraTags: string[][] = [];
                             if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
                             if (capturedReply) {

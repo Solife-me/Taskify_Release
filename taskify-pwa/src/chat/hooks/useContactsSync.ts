@@ -1,4 +1,4 @@
-import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
+import { localEventSigner } from "taskify-runtime-nostr";
 import { useCallback } from "react";
 import { nip44 } from "nostr-tools";
 import type { EventTemplate } from "nostr-tools";
@@ -521,8 +521,9 @@ export function useContactsSync({
           if (template.content !== "") {
             throw new Error("Kind:3 content must be empty.");
           }
-          const signed = await prepareRelayEvent(template, hexToBytes(identity.secret), relays);
-          await safePublish(pool, relays, signed);
+          const signer = localEventSigner(hexToBytes(identity.secret));
+          const signed = await signer.sign(template);
+          await safePublish(pool, relays, signed, signer);
           if (walletDebugEnabled) {
             console.debug("[wallet] Published kind:3 follows", signed.id.slice(0, 8));
           }

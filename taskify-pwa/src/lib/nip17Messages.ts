@@ -10,10 +10,10 @@ import {
   type Nip17Rumor,
   type Nip17SignedEvent,
 } from "taskify-core";
-import { inboxReadRelays, newNip17WrapKey } from "taskify-runtime-nostr";
+import { inboxReadRelays, localEventSigner, newNip17WrapKey, type EventSigner } from "taskify-runtime-nostr";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import type { NostrEvent } from "nostr-tools";
 import { NostrSession } from "../nostr/NostrSession";
-import { prepareRelayEvent } from "../nostr/prepareRelayEvent";
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 
@@ -40,16 +40,23 @@ export function nip17TimestampSource(mode: "now" | "random"): () => number {
   return () => nip17Timestamp(Date.now() / 1000, mode === "now" ? null : Math.random);
 }
 
-/** The rumor's gift wraps for its recipients and the sender, signed for `relays`. */
-export function giftWrapNip17Rumor(
+/** Sign the gift wraps and keep their one-time signers available for relay-specific proof. */
+export async function giftWrapNip17Rumor(
   rumor: Nip17Rumor,
   account: Nip17Account,
-  relays: string[],
   timestamp: () => number,
-): Promise<Array<{ recipient: string; wrap: Nip17SignedEvent }>> {
-  return buildNip17GiftWraps(rumor, account, {
+): Promise<Array<{ recipient: string; wrap: Nip17SignedEvent; signer: EventSigner }>> {
+  const signers = new Map<string, EventSigner>();
+  const wraps = await buildNip17GiftWraps(rumor, account, {
     newWrapKey: newNip17WrapKey,
-    signWrap: async (template, key) => (await prepareRelayEvent(template, key.secretKey, relays)) as Nip17SignedEvent,
+    signWrap: async (template, key) => {
+      const signer = localEventSigner(key.secretKey);
+      const event = await signer.sign(template);
+      signer.sealedKey = await account.nip44Encrypt(account.pubkey, bytesToHex(key.secretKey));
+      signers.set(event.id, signer);
+      return event;
+    },
     timestamp,
   });
+  return wraps.map(({ recipient, wrap }) => ({ recipient, wrap, signer: signers.get(wrap.id)! }));
 }

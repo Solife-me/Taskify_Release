@@ -5,6 +5,8 @@ export type NostrOutboxMutationKind = "nostr.publish";
 
 export type NostrOutboxPublishPayload = {
   event: NostrEvent;
+  proofOfWorkEvent?: NostrEvent;
+  proofOfWorkSealedKey?: string;
   relayUrls: string[];
   replaceableKey?: string | null;
 };
@@ -90,6 +92,7 @@ export function createNostrOutboxMutation(args: {
   existing?: NostrOutboxMutation;
   nextAttemptAt?: number | null;
   isRepublish?: boolean;
+  proofOfWorkSealedKey?: string;
 }): NostrOutboxMutation {
   const nowMs = args.nowMs ?? Date.now();
   const relayUrls = normalizeRelayUrls(args.relayUrls);
@@ -105,6 +108,8 @@ export function createNostrOutboxMutation(args: {
     kind: "nostr.publish",
     payload: {
       event: cloneNostrEvent(args.event),
+      proofOfWorkEvent: sameEvent ? existing.payload.proofOfWorkEvent : undefined,
+      proofOfWorkSealedKey: args.proofOfWorkSealedKey ?? (sameEvent ? existing.payload.proofOfWorkSealedKey : undefined),
       relayUrls,
       replaceableKey: args.replaceableKey ?? null,
     },

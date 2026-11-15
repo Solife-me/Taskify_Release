@@ -1,14 +1,15 @@
 import { NDKEvent, type NDKRelaySet, type NDKSigner } from "@nostr-dev-kit/ndk";
 import type NDK from "@nostr-dev-kit/ndk";
-import type { EventTemplate, NostrEvent } from "nostr-tools";
+import { type EventTemplate, type NostrEvent } from "nostr-tools";
 import { EventCache } from "./EventCache.js";
-import { type NostrOutboxStore } from "./NostrOutbox.js";
-import { type ProofOfWorkOptions } from "./ProofOfWork.js";
+import { type NostrOutboxPublishPayload, type NostrOutboxStore } from "./NostrOutbox.js";
+import { type EventSigner, type ProofOfWorkOptions } from "./ProofOfWork.js";
 import { RelayPublishBudget } from "./RelayPublishBudget.js";
 export type RelayResolver = (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
 export type PublishOptions = {
     relayUrls?: string[];
     signer?: NDKSigner | Uint8Array | string;
+    proofOfWorkSigner?: EventSigner;
     replaceableKey?: string;
     debounceMs?: number;
     returnEvent?: boolean;
@@ -30,7 +31,11 @@ export type PublishCoordinatorOptions = {
     retryBaseMs?: number;
     retryMaxMs?: number;
     signal?: AbortSignal;
+    returnOnFirstAcknowledgement?: boolean;
+    recoverProofOfWorkSigner?: (payload: NostrOutboxPublishPayload) => Promise<EventSigner | undefined>;
+    knownProofOfWorkDifficulty?: (relayUrl: string) => number;
     resolveProofOfWorkDifficulty?: (relayUrls: string[]) => Promise<number>;
+    onMine?: (difficulty: number, relays: string[]) => void;
     /** Mining settings (hasher, timeout) used when a publish needs proof of work. */
     proofOfWork?: Omit<ProofOfWorkOptions, "signal">;
     /** Called when a relay refuses an event for too little proof of work and names its target. */
@@ -54,7 +59,13 @@ export declare class PublishCoordinator {
     private readonly retryBaseMs;
     private readonly retryMaxMs;
     private readonly signal?;
+    private readonly recoverProofOfWorkSigner?;
+    private readonly knownProofOfWorkDifficulty?;
     private readonly resolveProofOfWorkDifficulty?;
+    private readonly onMine?;
+    private readonly returnOnFirstAcknowledgement;
+    private readonly backgroundPublishes;
+    private readonly retrySigners;
     private readonly proofOfWork?;
     private readonly onProofOfWorkRequired?;
     private activeOutboxIds;
@@ -75,7 +86,10 @@ export declare class PublishCoordinator {
     private outboxHasPending;
     private withOutboxLock;
     private enqueueOutbox;
+    private publishForCaller;
+    private persistPartialAcknowledgements;
     private publishNowWithOutbox;
+    private publishByRelay;
     private markOutboxSuccess;
     private markOutboxSuccessLocked;
     private markOutboxFailure;
