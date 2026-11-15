@@ -77,7 +77,10 @@ When a 1:1 conversation opens, the client:
 Typing `/` at the start of the composer then shows the menu, filtered as you type; tapping a command inserts `/name ` into the draft.
 
 Recognized Hermes `/model` and `/sessions` responses also render interactive cards in verified bot
-conversations. Session buttons retain the title and current marker from Hermes's `Named Sessions`
+conversations. The iOS and web model cards use the model IDs and counts in the stock `/model`
+reply. A provider with a truncated list shows the available previews and the reported total.
+Selecting a listed model sends `/model <id> --provider <slug>`. If Hermes has not confirmed the
+change after 15 seconds, the card offers another attempt. Session buttons retain the title and current marker from Hermes's `Named Sessions`
 response and send the ordinary visible NIP-17 message `/resume <session id>`. No custom event tag or
 Hermes-side integration is required; unrecognized response text remains a normal readable message.
 

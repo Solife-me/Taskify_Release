@@ -298,8 +298,25 @@ reported crash cause; these transport regressions do not replace that verificati
   snapshot together and schedules the assignment reply separately.
 - The composer inserts the canonical outgoing bubble before relay discovery and wraps messages
   off the main actor. Sender copies and recipient copies have separate acknowledgements, and
-  ordinary and proof-of-work copies use separate outbox records. A message stays Sending until
-  a recipient relay accepts a copy. Attachment uploads still happen before their chat bubbles
+  the durable outbox retains an ordinary event and a separate proof-of-work variant under
+  one record. A message stays Sending until a recipient relay accepts a copy. Attachment uploads still happen before their chat bubbles
   appear so a failed upload can be retried from the composer.
 - Coverage includes offline outbox persistence, optimistic rumor reconciliation, first-relay
   acceptance, and the iPhone composer with simulated delayed acceptance.
+
+
+### On-device relay and Hermes follow-up (November 2026)
+
+- The iOS build 202 CPU report matched the archive’s symbols and pointed to repeated relay
+  proof-of-work mining. The repair pass schedules a flush only after it changes the outbox.
+  Concurrent sends and repair passes share one job for each event, and a single background
+  worker runs those jobs.
+- Native outbox publication sends the original event to ordinary relays without waiting for
+  relay metadata. Relays with a verified floor share a variant at the highest known target.
+  Acknowledgements map either wire ID to the same durable entry. A relay’s explicit `pow:`
+  refusals are remembered alongside advertised NIP-11 values.
+- NIP-17 encrypts one gift wrap per recipient. The local outbox protects its retry signing key
+  with the sender’s identity and reuses the same ciphertext for the mined variant. Chat shows
+  Sent after the first recipient acceptance while outstanding relay copies remain queued.
+- The iOS and PWA Hermes pickers use only the stock model previews and counts. Model switches
+  still use the standard `/model` command, and a missing confirmation releases the controls.

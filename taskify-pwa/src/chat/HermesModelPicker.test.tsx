@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { beforeEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { parseHermesModelListing, parseHermesSessionListing } from "taskify-core";
 import { HermesModelPicker } from "./HermesModelPicker";
 import { HermesSessionPicker } from "./HermesSessionPicker";
-import { saveHermesCatalogCache, type HermesMenuProjection } from "./hermesModelPickerState";
+import type { HermesMenuProjection } from "./hermesModelPickerState";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -41,11 +41,9 @@ function buttonWithText(container: HTMLElement, text: string): HTMLButtonElement
   return button;
 }
 
-beforeEach(() => window.localStorage.clear());
-
-test("a fresh cached catalog opens without sending a request and a model button sends the exact command", async () => {
+test("an old catalog in the transcript does not add choices to the stock reply and a listed model sends the exact command", async () => {
   const menu = projection();
-  saveHermesCatalogCache(PEER, LISTING_ID, {
+  menu.catalogs.set("custom:local", {
     providerName: "local",
     providerSlug: "custom:local",
     models: ["lfm3-audio:latest", "deepseek-v4.1-flash:cloud", "gemma4:26b-mlx"],
@@ -60,25 +58,25 @@ test("a fresh cached catalog opens without sending a request and a model button 
   await act(async () => buttonWithText(container, "local").click());
 
   expect(sendBotUiCommand).not.toHaveBeenCalled();
-  expect(container.textContent).toContain("gemma4:26b-mlx");
+  expect(container.textContent).not.toContain("gemma4:26b-mlx");
 
-  await act(async () => buttonWithText(container, "gemma4:26b-mlx").click());
+  await act(async () => buttonWithText(container, "lfm3-audio:latest").click());
 
   expect(sendBotUiCommand).toHaveBeenCalledWith(
     PEER,
-    "/model gemma4:26b-mlx --provider custom:local",
+    "/model lfm3-audio:latest --provider custom:local",
     {
       kind: "model-select",
       menuId: LISTING_ID,
       providerSlug: "custom:local",
-      modelId: "gemma4:26b-mlx",
+      modelId: "lfm3-audio:latest",
     },
   );
 
   await act(async () => root.unmount());
 });
 
-test("opening an uncached provider requests only that provider's complete catalog", async () => {
+test("a stock provider preview opens locally and shows the partial list", async () => {
   const sendBotUiCommand = vi.fn().mockResolvedValue(undefined);
   const container = document.createElement("div");
   const root = createRoot(container);
@@ -88,15 +86,37 @@ test("opening an uncached provider requests only that provider's complete catalo
   ));
   await act(async () => buttonWithText(container, "Nous Portal").click());
 
-  expect(sendBotUiCommand).toHaveBeenCalledTimes(1);
-  const [peer, prompt, action] = sendBotUiCommand.mock.calls[0];
-  expect(peer).toBe(PEER);
-  expect(prompt).toContain('provider slug `nous`');
-  expect(prompt).toContain('{"provider":"nous","models":["model-id"]}');
-  expect(action).toEqual({ kind: "catalog-request", menuId: LISTING_ID, providerSlug: "nous" });
-  expect(container.textContent).toContain("Loading Nous Portal models…");
+  expect(sendBotUiCommand).not.toHaveBeenCalled();
+  expect(container.textContent).toContain("anthropic/claude-opus-5.5");
+  expect(container.textContent).toContain("Hermes listed 2 of 69 models.");
+  expect(container.textContent).not.toContain("Loading");
 
   await act(async () => root.unmount());
+});
+
+test("a model switch can be retried if Hermes does not confirm it", async () => {
+  vi.useFakeTimers();
+  const menu = projection();
+  const sendBotUiCommand = vi.fn().mockResolvedValue(undefined);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(
+      <HermesModelPicker peerPubkey={PEER} projection={menu} sendBotUiCommand={sendBotUiCommand} />,
+    ));
+    await act(async () => buttonWithText(container, "Nous Portal").click());
+    const model = buttonWithText(container, "anthropic/claude-opus-5.5");
+    await act(async () => model.click());
+    expect(model.disabled).toBe(true);
+    await act(async () => vi.advanceTimersByTime(15_000));
+    expect(model.disabled).toBe(false);
+    expect(container.textContent).toContain("Hermes hasn’t confirmed the switch.");
+    await act(async () => model.click());
+    expect(sendBotUiCommand).toHaveBeenCalledTimes(2);
+  } finally {
+    await act(async () => root.unmount());
+    vi.useRealTimers();
+  }
 });
 
 test("a named-session button sends the exact resume command", async () => {

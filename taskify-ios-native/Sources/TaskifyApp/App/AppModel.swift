@@ -37,7 +37,7 @@ final class AppModel {
     )
     struct GroupGiftWrapDelivery: Sendable {
         let memberPublicKey: String
-        let event: NostrEvent
+        let wrap: NIP17OutboxGiftWrap
         let relayURLs: [String]
     }
     private static let profileOutboxScope = "__taskify-profile__"
@@ -739,11 +739,11 @@ final class AppModel {
                   !relays.isEmpty else { return nil }
             return (member, publicKey, relays)
         }
-        let wrapped = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
+        let wrapped = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
             let recipientWraps = try recipientPlans.map { member, publicKey, relays in
                 GroupGiftWrapDelivery(
                     memberPublicKey: member,
-                    event: try NIP17GiftWrap.wrap(
+                    wrap: try NIP17GiftWrap.wrapForOutbox(
                         rumor: rumor,
                         sender: identity,
                         recipientPublicKey: publicKey
@@ -751,7 +751,7 @@ final class AppModel {
                     relayURLs: relays
                 )
             }
-            let selfWrap = try NIP17GiftWrap.wrap(
+            let selfWrap = try NIP17GiftWrap.wrapForOutbox(
                 rumor: rumor,
                 sender: identity,
                 recipientPublicKey: identity.publicKey
@@ -763,21 +763,23 @@ final class AppModel {
         let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
         var requests = wrapped.0.map { delivery in
             TaskSyncRelayPublishRequest(
-                event: delivery.event,
+                event: delivery.wrap.event,
                 relayURLs: delivery.relayURLs,
                 outboxScope: Self.directMessagesOutboxScope,
                 recordID: "group-metadata:\(renamedGroup.groupID):\(delivery.memberPublicKey)",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
+                acknowledgementPolicy: .firstRelay,
+                expiresAt: expiresAt,
+                encryptedProofOfWorkKey: delivery.wrap.encryptedProofOfWorkKey
             )
         }
         requests.append(TaskSyncRelayPublishRequest(
-            event: wrapped.1,
+            event: wrapped.1.event,
             relayURLs: senderRelays,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "group-metadata:\(renamedGroup.groupID):sender",
-            acknowledgementPolicy: .anyRelay,
-            expiresAt: expiresAt
+            acknowledgementPolicy: .firstRelay,
+            expiresAt: expiresAt,
+            encryptedProofOfWorkKey: wrapped.1.encryptedProofOfWorkKey
         ))
         try await syncEngine.enqueueForPublish(requests)
         let boards = snapshot.boardsForSync
@@ -3155,7 +3157,7 @@ final class AppModel {
         let previousEventID = ownProfileEventID
         let createdAt = max(nextNostrTimestamp(), (ownProfile?.eventCreatedAt ?? 0) + 1)
         let previousContent = ownProfileEventContent
-        let event = try await TaskifyRelayProofOfWork.prepare(relays: relays) {
+        let event = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
             try NostrProfileContract.event(
             draft: draft,
             previousContent: previousContent,
@@ -3198,7 +3200,7 @@ final class AppModel {
         if let previousEventID, previousEventID != event.id {
             guard acceptsAccountActivity(identity.publicKeyHex) else { return }
             let deletionTimestamp = nextNostrTimestamp()
-            let deletion = try await TaskifyRelayProofOfWork.prepare(relays: relays) {
+            let deletion = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
                 try NostrProfileContract.deletionEvent(
                 previousEventID: previousEventID,
                 identity: identity,
@@ -4045,7 +4047,7 @@ final class AppModel {
                 )
                 let boardEvent = try await TaskEventCodec.prepareBoardEvent(
                     board: board,
-                    createdAt: timestamp
+                    createdAt: timestamp, forOutbox: true
                 )
                 try await syncEngine.publish(
                     boardEvent,
@@ -4095,7 +4097,7 @@ final class AppModel {
         var refreshedEvents: [TaskifyEvent] = []
         var requests: [TaskSyncPublishRequest] = [
             TaskSyncPublishRequest(
-                event: try await TaskEventCodec.prepareBoardEvent(board: board, createdAt: boardTimestamp),
+                event: try await TaskEventCodec.prepareBoardEvent(board: board, createdAt: boardTimestamp, forOutbox: true),
                 board: board,
                 taskID: "_board"
             )
@@ -4107,7 +4109,7 @@ final class AppModel {
             task.nostrUpdatedAt = timestamp
             refreshedTasks.append(task)
             requests.append(TaskSyncPublishRequest(
-                event: try await TaskEventCodec.prepareTaskEvent(task: task, board: board, createdAt: timestamp),
+                event: try await TaskEventCodec.prepareTaskEvent(task: task, board: board, createdAt: timestamp, forOutbox: true),
                 board: board,
                 taskID: task.id
             ))
@@ -4119,7 +4121,8 @@ final class AppModel {
             let pair = try await TaskifyCalendarEventCodec.prepareEventPair(
                 event: current,
                 board: board,
-                createdAt: nextNostrTimestamp()
+                createdAt: nextNostrTimestamp(),
+                forOutbox: true
             )
             refreshedEvents.append(pair.normalizedEvent)
             requests.append(TaskSyncPublishRequest(
@@ -4251,7 +4254,8 @@ final class AppModel {
                     event: try await TaskEventCodec.prepareEventDeletionRequest(
                         eventIDs: Array(staleIDs[start..<end]),
                         board: board,
-                        createdAt: nextNostrTimestamp()
+                        createdAt: nextNostrTimestamp(),
+                        forOutbox: true
                     ),
                     board: board,
                     taskID: "cleanup:\(start / 50)"
@@ -4510,6 +4514,8 @@ final class AppModel {
         // so a shared snapshot can use one current timestamp without pushing a
         // large board's later tasks artificially into the future.
         let templateCreatedAt = nextNostrTimestamp()
+        // The temporary template board is not in the account's sync configuration.
+        // Prepare its proof of work while its signing key is in scope.
         let boardEvent = try await TaskEventCodec.prepareBoardEvent(
             board: templateBoard,
             createdAt: templateCreatedAt
@@ -6540,13 +6546,13 @@ final class AppModel {
                 for batch in batches {
                     let boardEvent = try await TaskEventCodec.prepareBoardEvent(
                         board: batch.board,
-                        createdAt: batch.boardTimestamp
+                        createdAt: batch.boardTimestamp, forOutbox: true
                     )
                     try await syncEngine.publish(boardEvent, board: batch.board, taskID: "_board")
                     for stagedPair in batch.pairs {
                         let pair = try await TaskifyCalendarEventCodec.prepareEventPair(
                             event: stagedPair.normalizedEvent, board: batch.board,
-                            createdAt: stagedPair.canonical.createdAt
+                            createdAt: stagedPair.canonical.createdAt, forOutbox: true
                         )
                         try await syncEngine.publish(
                             pair.canonical,
@@ -6646,13 +6652,13 @@ final class AppModel {
                 for batch in batches {
                     let boardEvent = try await TaskEventCodec.prepareBoardEvent(
                         board: batch.board,
-                        createdAt: batch.boardTimestamp
+                        createdAt: batch.boardTimestamp, forOutbox: true
                     )
                     try await syncEngine.publish(boardEvent, board: batch.board, taskID: "_board")
                     for stagedPair in batch.pairs {
                         let pair = try await TaskifyCalendarEventCodec.prepareEventPair(
                             event: stagedPair.normalizedEvent, board: batch.board,
-                            createdAt: stagedPair.canonical.createdAt
+                            createdAt: stagedPair.canonical.createdAt, forOutbox: true
                         )
                         try await syncEngine.publish(
                             pair.canonical,
@@ -6728,7 +6734,7 @@ final class AppModel {
             do {
                 let sourceBoardEvent = try await TaskEventCodec.prepareBoardEvent(
                     board: sourceBoard,
-                    createdAt: sourceTombstoneTimestamp
+                    createdAt: sourceTombstoneTimestamp, forOutbox: true
                 )
                 try await syncEngine.publish(
                     sourceBoardEvent,
@@ -6738,7 +6744,7 @@ final class AppModel {
                 let sourceTaskEvent = try await TaskEventCodec.prepareTaskEvent(
                     task: sourceTombstone,
                     board: sourceBoard,
-                    createdAt: sourceTombstoneTimestamp
+                    createdAt: sourceTombstoneTimestamp, forOutbox: true
                 )
                 try await syncEngine.publish(
                     sourceTaskEvent,
@@ -6748,7 +6754,7 @@ final class AppModel {
 
                 let targetBoardEvent = try await TaskEventCodec.prepareBoardEvent(
                     board: targetBoard,
-                    createdAt: targetTimestamp
+                    createdAt: targetTimestamp, forOutbox: true
                 )
                 try await syncEngine.publish(
                     targetBoardEvent,
@@ -6758,7 +6764,7 @@ final class AppModel {
                 let targetTaskEvent = try await TaskEventCodec.prepareTaskEvent(
                     task: targetTask,
                     board: targetBoard,
-                    createdAt: targetTimestamp
+                    createdAt: targetTimestamp, forOutbox: true
                 )
                 try await syncEngine.publish(
                     targetTaskEvent,
@@ -6781,7 +6787,7 @@ final class AppModel {
         let timestamp = nextNostrTimestamp()
         Task { [syncEngine] in
             do {
-                let event = try await TaskEventCodec.prepareBoardEvent(board: board, createdAt: timestamp)
+                let event = try await TaskEventCodec.prepareBoardEvent(board: board, createdAt: timestamp, forOutbox: true)
                 try await syncEngine.publish(event, board: board, taskID: "_board")
             } catch {
                 await MainActor.run {
@@ -7168,7 +7174,7 @@ final class AppModel {
             nip17DiscoveryRelayURLs + nip17InboxRelayURLs + inboxRelays
         )
         let timestamp = nextNostrTimestamp()
-        let event = try await TaskifyRelayProofOfWork.prepare(relays: publicationRelays) {
+        let event = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
             try NIP17InboxRelayPreference.event(
             identity: identity,
             relayURLs: inboxRelays,
@@ -7311,13 +7317,19 @@ final class AppModel {
         recordIDBase: String? = nil
     ) async throws -> NIP17GiftWrapPair {
         let createdAt = nextNostrTimestamp()
-        let pair = try await TaskifyRelayProofOfWork.prepare(relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs) {
-            try NIP17GiftWrap.wrapPair(
+        let (pair, recipientKey, senderKey) = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
+            let recipientKey = try NostrIdentity.generate()
+            let senderKey = try NostrIdentity.generate()
+            let pair = try NIP17GiftWrap.wrapPair(
                 envelope: envelope,
                 sender: identity,
                 recipientPublicKey: recipientPublicKey,
-                createdAt: createdAt
+                createdAt: createdAt,
+                recipientEphemeralIdentity: recipientKey,
+                senderEphemeralIdentity: senderKey
             )
+            return (pair, try NIP17GiftWrap.encryptOutboxKey(recipientKey, sender: identity),
+                    try NIP17GiftWrap.encryptOutboxKey(senderKey, sender: identity))
         }
         let base = recordIDBase ?? pair.rumor.id
         let allDeliveryRelays = TaskifyRelayURL.normalizedList(
@@ -7330,16 +7342,18 @@ final class AppModel {
                 relayURLs: deliveryPlan.recipientRelayURLs,
                 outboxScope: Self.sharedInboxOutboxScope,
                 recordID: "\(base):recipient",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
+                acknowledgementPolicy: .firstRelay,
+                expiresAt: expiresAt,
+                encryptedProofOfWorkKey: recipientKey
             ),
             TaskSyncRelayPublishRequest(
                 event: pair.senderWrap,
                 relayURLs: deliveryPlan.senderRelayURLs,
                 outboxScope: Self.sharedInboxOutboxScope,
                 recordID: "\(base):sender",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
+                acknowledgementPolicy: .firstRelay,
+                expiresAt: expiresAt,
+                encryptedProofOfWorkKey: senderKey
             ),
         ])
         let boards = snapshot.boardsForSync
@@ -7456,7 +7470,7 @@ final class AppModel {
         guard !relays.isEmpty else { throw NostrContactDirectoryError.noRelays }
         let contacts = snapshot.contacts ?? []
         let extraTags = snapshot.contactsListExtraTags ?? []
-        let event = try await TaskifyRelayProofOfWork.prepare(relays: relays) {
+        let event = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
             try NIP51ContactListContract.event(
             contacts: contacts,
             identity: identity,
@@ -7621,7 +7635,7 @@ final class AppModel {
 
         do {
             let preparedPayload = updatedPayload
-            let event = try await TaskifyRelayProofOfWork.prepare(relays: relayURLs) {
+            let event = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
                 try NostrAppBackupContract.event(
                 payload: preparedPayload,
                 identity: identity,

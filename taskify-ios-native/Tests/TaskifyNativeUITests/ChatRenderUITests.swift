@@ -27,7 +27,7 @@ final class ChatRenderUITests: XCTestCase {
 }
 
 extension ChatRenderUITests {
-    func testHermesModelMenuUsesButtonsWithoutRawCatalogTraffic() throws {
+    func testHermesModelMenuUsesStockPreviewAndSwitchesModel() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
@@ -46,6 +46,9 @@ extension ChatRenderUITests {
         ).firstMatch
         XCTAssertTrue(nous.waitForExistence(timeout: 5))
         nous.tap()
+        XCTAssertTrue(app.staticTexts["Hermes listed 5 of 69 models."].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Refresh"].exists)
+        XCTAssertFalse(app.buttons["Switch to openai/gpt-6-astra"].exists)
 
         let model = app.buttons["Switch to anthropic/claude-opus-5.5"]
         XCTAssertTrue(model.waitForExistence(timeout: 10))
@@ -63,6 +66,30 @@ extension ChatRenderUITests {
                 NSPredicate(format: "label CONTAINS %@", #"{"provider":"nous""#)
             ).firstMatch.exists
         )
+    }
+
+    func testHermesModelSwitchCanBeRetriedWithoutConfirmation() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_HERMES_MENU"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_HERMES_NO_CONFIRMATION"] = "1"
+        app.launch()
+        app.buttons["Chat"].firstMatch.tap()
+        let contact = app.staticTexts["UI Test Contact"].firstMatch
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        contact.tap()
+        let nous = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Nous Portal")).firstMatch
+        XCTAssertTrue(nous.waitForExistence(timeout: 5))
+        nous.tap()
+        let model = app.buttons["Switch to anthropic/claude-opus-5.5"]
+        XCTAssertTrue(model.waitForExistence(timeout: 5))
+        model.tap()
+        XCTAssertFalse(model.isEnabled)
+        let timeout = app.staticTexts["Hermes hasn’t confirmed the switch. Tap the model to retry."]
+        XCTAssertTrue(timeout.waitForExistence(timeout: 19))
+        XCTAssertTrue(model.isEnabled)
     }
 
     func testHermesSessionButtonSendsResumeCommand() throws {

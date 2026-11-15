@@ -132,6 +132,54 @@ final class MultiAttachmentBatchTests: XCTestCase {
         }
     }
 
+    func testAttachmentSuccessOnOneRelayReleasesItsNextFileWhileReplicasWait() async throws {
+        let fixture = try fixture()
+        let sender = fixture.identities[0]
+        let recipient = fixture.identities[1].publicKeyHex
+        let relays = ["wss://ordinary.example", "wss://pow.example"]
+        let batch = try NIP17OutgoingMessageBatch(
+            rumors: attachmentRumors(sender: sender, recipients: [recipient], count: 2),
+            identity: sender,
+            relayURLsByRecipient: [sender.publicKeyHex: relays, recipient: relays]
+        )
+        let copies = batch.deliveries.filter { $0.recipientPublicKey == recipient }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("outbox.json")
+        let store = NostrOutboxStore(fileURL: fileURL)
+        try await store.enqueue(copies.map {
+            NostrOutboxEntry(event: $0.event, relayURLs: relays, boardLocalID: "chat", taskID: $0.rumorEventID,
+                acknowledgementPolicy: .firstRelay, dependsOnEventID: $0.dependsOnEventID)
+        })
+        _ = try await store.markAccepted(eventID: copies[0].event.id, relayURL: relays[0])
+        let restored = NostrOutboxStore(fileURL: fileURL)
+        let readyOnOrdinary = await restored.pendingEntries(for: relays[0])
+        let readyOnPoW = await restored.pendingEntries(for: relays[1])
+        XCTAssertEqual(readyOnOrdinary.map(\.id), [copies[1].event.id])
+        XCTAssertEqual(readyOnPoW.map(\.id), [copies[0].event.id])
+    }
+
+    func testProofOfWorkRetryKeyIsEncryptedToTheSender() throws {
+        let fixture = try fixture()
+        let sender = fixture.identities[0]
+        let recipient = fixture.identities[1]
+        let rumors = try attachmentRumors(sender: sender, recipients: [recipient.publicKeyHex], count: 2)
+        let batch = try NIP17OutgoingMessageBatch(
+            rumors: rumors,
+            attachmentComment: "Caption",
+            identity: sender,
+            relayURLsByRecipient: fixture.routes,
+            allowProofOfWorkRetry: true
+        )
+        for delivery in batch.deliveries {
+            let encrypted = try XCTUnwrap(delivery.encryptedProofOfWorkKey)
+            XCTAssertThrowsError(try NIP44V2.decrypt(encrypted, privateKey: recipient.privateKey, publicKey: recipient.publicKey))
+            let recovered = try NIP44V2.decrypt(encrypted, privateKey: sender.privateKey, publicKey: sender.publicKey)
+            XCTAssertEqual(try NostrIdentity(privateKey: recovered).publicKeyHex, delivery.event.publicKey)
+            XCTAssertFalse(delivery.event.tags.contains { $0.first == "nonce" })
+        }
+    }
+
     func testBatchCanRouteOrdinaryAndProofOfWorkCopiesIndependently() throws {
         let fixture = try fixture()
         let sender = fixture.identities[0]

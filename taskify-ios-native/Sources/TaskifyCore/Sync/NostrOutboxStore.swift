@@ -6,11 +6,17 @@ public enum NostrOutboxAcknowledgementPolicy: String, Codable, Equatable, Sendab
     /// Delivery events are complete once one destination accepts them. Other inbox relays are
     /// redundancy, not a reason to leave a chat message pending forever.
     case anyRelay
+    /// Acknowledge delivery to the user on the first acceptance and keep sending replicas.
+    case firstRelay
 }
 
 public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
     public var id: String { event.id }
     public var event: NostrEvent
+    /// Ordinary relays keep the original event. Relays with a confirmed floor share this variant.
+    public var proofOfWorkEvent: NostrEvent?
+    /// NIP-17 ephemeral signing key encrypted to the sender account for local retry only.
+    var encryptedProofOfWorkKey: String?
     public var relayURLs: [String]
     public var boardLocalID: String
     public var taskID: String
@@ -39,10 +45,12 @@ public struct NostrOutboxEntry: Codable, Equatable, Sendable, Identifiable {
         acknowledgementPolicy: NostrOutboxAcknowledgementPolicy = .everyRelay,
         expiresAt: Date? = nil,
         dependsOnEventID: String? = nil,
-        isRepublish: Bool = false
+        isRepublish: Bool = false,
+        encryptedProofOfWorkKey: String? = nil
     ) {
         self.isRepublish = isRepublish
         self.event = event
+        self.encryptedProofOfWorkKey = encryptedProofOfWorkKey
         self.relayURLs = relayURLs
         self.boardLocalID = boardLocalID
         self.taskID = taskID
@@ -126,10 +134,13 @@ public actor NostrOutboxStore {
         excludingEventIDs: Set<String> = [],
         now: Date = Date()
     ) -> [NostrOutboxEntry] {
-        entries
+        let acceptedParents = Set(entries.lazy.filter {
+            $0.effectiveAcknowledgementPolicy == .firstRelay && $0.acceptedRelayURLs?.contains(relayURL) == true
+        }.map(\.id))
+        return entries
             .filter {
                 !excludingEventIDs.contains($0.event.id) &&
-                    $0.dependsOnEventID == nil &&
+                    ($0.dependsOnEventID.map(acceptedParents.contains) ?? true) &&
                     $0.pendingRelayURLs.contains(relayURL) &&
                     !$0.isHeldBack(for: relayURL, now: now)
             }
@@ -158,7 +169,12 @@ public actor NostrOutboxStore {
 
     public func isPending(eventID: String, relayURL: String) -> Bool {
         guard let entry = entries.first(where: { $0.event.id == eventID }) else { return false }
-        return entry.dependsOnEventID == nil && entry.pendingRelayURLs.contains(relayURL)
+        guard entry.pendingRelayURLs.contains(relayURL) else { return false }
+        guard let parentID = entry.dependsOnEventID else { return true }
+        return entries.contains {
+            $0.id == parentID && $0.effectiveAcknowledgementPolicy == .firstRelay
+                && $0.acceptedRelayURLs?.contains(relayURL) == true
+        }
     }
 
     public func enqueue(_ entry: NostrOutboxEntry) throws {
@@ -184,6 +200,7 @@ public actor NostrOutboxStore {
               entries[index].relayURLs.contains(relayURL) else { return nil }
 
         let hasDependents = entries.contains { $0.dependsOnEventID == eventID }
+        let confirmsPerRelay = entries[index].effectiveAcknowledgementPolicy == .firstRelay
         let previous = hasDependents ? entries : nil
         var accepted = Set(entries[index].acceptedRelayURLs ?? [])
         accepted.insert(relayURL)
@@ -192,7 +209,7 @@ public actor NostrOutboxStore {
             entries[index].pendingRelayURLs.isEmpty
         let completed = isComplete ? entries.remove(at: index) : nil
         if let completed { releaseDependents(of: [completed.id]) }
-        if completed != nil && hasDependents {
+        if hasDependents && (completed != nil || confirmsPerRelay) {
             // Commit the acknowledgement and the released replies together
             // before the scheduler can publish a follow-up.
             do { try persist() }
@@ -421,6 +438,7 @@ public actor NostrOutboxStore {
               let index = entries.firstIndex(where: { $0.event.id == eventID }) else { return false }
         let previous = entries
         entries[index].event = replacement
+        entries[index].proofOfWorkEvent = nil
         // Refusals apply to the old signed event. In particular, a relay that rejected its proof
         // of work must be allowed to evaluate the newly mined replacement immediately instead of
         // leaving it behind the old event's exponential retry delay.
@@ -433,8 +451,26 @@ public actor NostrOutboxStore {
         return true
     }
 
+    /// Persists the mined copy without replacing the durable original or rewriting dependencies.
+    /// Refusals only follow the prior event sent to the relays receiving the new variant.
+    func saveProofOfWorkEvent(_ event: NostrEvent, for originalID: String, relayURLs: Set<String>) throws -> Bool {
+        guard event.id != originalID,
+              let index = entries.firstIndex(where: { $0.id == originalID }),
+              entries[index].proofOfWorkEvent?.id != event.id,
+              !relayURLs.isDisjoint(with: entries[index].pendingRelayURLs) else { return false }
+        let previous = entries
+        entries[index].proofOfWorkEvent = event
+        for relay in relayURLs {
+            entries[index].relayRejections?.removeValue(forKey: relay)
+        }
+        if entries[index].relayRejections?.isEmpty == true { entries[index].relayRejections = nil }
+        do { try persist() }
+        catch { entries = previous; throw error }
+        return true
+    }
+
     public func entry(eventID: String) -> NostrOutboxEntry? {
-        entries.first { $0.event.id == eventID }
+        entries.first { $0.id == eventID || $0.proofOfWorkEvent?.id == eventID }
     }
 
     /// Shared target-stripping core: rewrites every entry's targets with `retaining`, completes

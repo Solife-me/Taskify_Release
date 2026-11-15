@@ -3,14 +3,10 @@ import { beforeEach, describe, expect, test } from "vitest";
 import type { TaskifyBotUiAction } from "taskify-core";
 import type { WalletDmMessage } from "./hooks/useDmState";
 import {
-  HERMES_CATALOG_CACHE_TTL_MS,
   buildHermesModelSwitchCommand,
   buildHermesProviderCatalogPrompt,
-  isHermesCatalogCacheFresh,
-  loadHermesCatalogCache,
   pageSlice,
   projectHermesBotUi,
-  saveHermesCatalogCache,
 } from "./hermesModelPickerState";
 
 const LISTING = `Current: \`deepseek-v4.1-flash:cloud\` on custom:local
@@ -127,18 +123,7 @@ describe("Hermes model picker helpers", () => {
       .toBe("/model deepseek-v4.1-flash:cloud --provider custom:local");
   });
 
-  test("scopes cached catalogs to the menu listing and expires them after ten minutes", () => {
-    const catalog = {
-      providerName: "local",
-      providerSlug: "custom:local",
-      models: ["lfm3-audio:latest", "deepseek-v4.1-flash:cloud"],
-    };
-    const saved = saveHermesCatalogCache("bot", "listing-1", catalog, 1_000);
-    expect(loadHermesCatalogCache("bot", "custom:local")).toEqual(saved);
-    expect(isHermesCatalogCacheFresh(saved, 1_001, "listing-2")).toBe(false);
-    expect(isHermesCatalogCacheFresh(saved, 1_000 + HERMES_CATALOG_CACHE_TTL_MS - 1)).toBe(true);
-    expect(isHermesCatalogCacheFresh(saved, 1_000 + HERMES_CATALOG_CACHE_TTL_MS)).toBe(false);
-  });
+
 
   test("paginates models at eight per page", () => {
     expect(pageSlice(Array.from({ length: 13 }, (_, index) => index), 1, 8)).toEqual([8, 9, 10, 11, 12]);

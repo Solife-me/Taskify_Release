@@ -8,6 +8,7 @@ public struct NIP17OutgoingDelivery: Sendable {
     public let event: NostrEvent
     public let relayURLs: [String]
     public let dependsOnEventID: String?
+    public let encryptedProofOfWorkKey: String?
 }
 
 /// Constructs one or more attachments and their optional text reply together,
@@ -30,7 +31,8 @@ public struct NIP17OutgoingMessageBatch: Sendable {
         rumors: [NIP17Rumor],
         attachmentComment: String? = nil,
         identity: NostrIdentity,
-        relayURLsByRecipient: [String: [String]]
+        relayURLsByRecipient: [String: [String]],
+        allowProofOfWorkRetry: Bool = false
     ) throws {
         guard let first = rumors.first else {
             throw NIP17GiftWrapError.invalidRumor
@@ -57,31 +59,42 @@ public struct NIP17OutgoingMessageBatch: Sendable {
             attachmentComment: attachmentComment
         )
 
+        let routes = try targets.sorted().map { target -> (String, Data, [String]) in
+            let relays = TaskifyRelayURL.normalizedList(relayURLsByRecipient[target] ?? [])
+            guard !relays.isEmpty, let publicKey = NostrPublicKey.parse(target) else {
+                throw NIP17GiftWrapError.wrongRecipient
+            }
+            return (target, publicKey, relays)
+        }
         var messages: [NostrDirectMessage] = []
         var deliveries: [NIP17OutgoingDelivery] = []
         var previousWraps: [String: String] = [:]
         let allRelays = TaskifyRelayURL.normalizedList(relayURLsByRecipient.values.flatMap { $0 })
         for item in wrappedRumors {
-            for target in targets.sorted() {
-                guard let publicKey = NostrPublicKey.parse(target) else {
-                    throw NIP17GiftWrapError.wrongRecipient
+            var senderWrapID = item.id
+            for (target, publicKey, relays) in routes {
+                let event: NostrEvent
+                let encryptedKey: String?
+                if allowProofOfWorkRetry {
+                    let wrapped = try NIP17GiftWrap.wrapForOutbox(rumor: item, sender: identity, recipientPublicKey: publicKey)
+                    event = wrapped.event
+                    encryptedKey = wrapped.encryptedProofOfWorkKey
+                } else {
+                    event = try NIP17GiftWrap.wrap(rumor: item, sender: identity, recipientPublicKey: publicKey)
+                    encryptedKey = nil
                 }
-                let relays = TaskifyRelayURL.normalizedList(relayURLsByRecipient[target] ?? [])
-                guard !relays.isEmpty else { throw NIP17GiftWrapError.wrongRecipient }
-                let event = try NIP17GiftWrap.wrap(rumor: item, sender: identity, recipientPublicKey: publicKey)
                 deliveries.append(NIP17OutgoingDelivery(rumorEventID: item.id,
                     recipientPublicKey: target, event: event, relayURLs: relays,
-                    dependsOnEventID: previousWraps[target]))
+                    dependsOnEventID: previousWraps[target], encryptedProofOfWorkKey: encryptedKey))
                 previousWraps[target] = event.id
-                if target == identity.publicKeyHex {
-                    guard var message = NostrDirectMessage(
-                        decrypted: NIP17DecryptedRumor(wrapEventID: event.id, rumor: item),
-                        identityPublicKey: identity.publicKeyHex, relayURLs: allRelays
-                    ) else { throw NIP17GiftWrapError.invalidRumor }
-                    message.deliveryState = .queued
-                    messages.append(message)
-                }
+                if target == identity.publicKeyHex { senderWrapID = event.id }
             }
+            guard var message = NostrDirectMessage(
+                decrypted: NIP17DecryptedRumor(wrapEventID: senderWrapID, rumor: item),
+                identityPublicKey: identity.publicKeyHex, relayURLs: allRelays
+            ) else { throw NIP17GiftWrapError.invalidRumor }
+            message.deliveryState = .queued
+            messages.append(message)
         }
         self.localMessages = messages
         self.deliveries = deliveries
@@ -101,7 +114,8 @@ public struct NIP17OutgoingMessageBatch: Sendable {
                 recipientPublicKey: delivery.recipientPublicKey,
                 event: delivery.event,
                 relayURLs: relays,
-                dependsOnEventID: delivery.dependsOnEventID
+                dependsOnEventID: delivery.dependsOnEventID,
+                encryptedProofOfWorkKey: delivery.encryptedProofOfWorkKey
             )
         }
         guard !filtered.isEmpty else { return nil }

@@ -84,44 +84,14 @@ extension AppModel {
 #if DEBUG
         if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_HERMES_MENU"] == "1",
            ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] == "1" {
-            let responseText: String
-            switch action.kind {
-            case .catalogRequest:
-                let models: [String]
-                switch action.providerSlug {
-                case "nous":
-                    models = [
-                        "anthropic/claude-fable-5.1", "anthropic/claude-fable-5",
-                        "anthropic/claude-opus-5.5", "anthropic/claude-opus-5",
-                        "anthropic/claude-opus-4.8", "anthropic/claude-sonnet-5.5",
-                        "openai/gpt-6-astra", "google/gemini-4-argon",
-                        "x-ai/grok-4.7", "deepseek/deepseek-v4-pro",
-                        "qwen/qwen3.8-max-0902", "moonshotai/kimi-k3",
-                        "z-ai/glm-5.3",
-                    ]
-                default:
-                    models = [
-                        "lfm3-audio:latest", "lfm3-omni:latest",
-                        "phonon:40m-multilingual", "phonon:latest", "bonsai-2:27b",
-                        "beam:cloud", "minimax-m3.1-flash:cloud",
-                        "deepseek-v4.1-flash:cloud", "glm-5.3-flash:cloud",
-                        "ornith-1.5:35b", "kimi-k3:cloud", "gemma4:26b-mlx",
-                        "nomic-embed-text-v2-moe:latest",
-                    ]
-                }
-                let payload = try JSONSerialization.data(withJSONObject: [
-                    "provider": action.providerSlug,
-                    "models": models,
-                ])
-                responseText = String(decoding: payload, as: UTF8.self)
-            case .modelSelect:
-                responseText = """
-                Model switched to `\(action.modelId ?? "")`
-                Provider: \(action.providerSlug)
-                Context: 1,048,576 tokens
-                _(session only — add --global to persist)_
-                """
-            }
+            guard action.kind == .modelSelect,
+                  ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_HERMES_NO_CONFIRMATION"] != "1" else { return }
+            let responseText = """
+            Model switched to `\(action.modelId ?? "")`
+            Provider: \(action.providerSlug)
+            Context: 1,048,576 tokens
+            _(session only — add --global to persist)_
+            """
             let responseID = UUID().uuidString
             if snapshot.ingestDirectMessage(NostrDirectMessage(
                 rumorEventID: responseID,
@@ -364,7 +334,7 @@ extension AppModel {
         ) else { throw NostrDirectMessageError.noRelays }
 
         let createdAt = nextNostrTimestamp()
-        let wrapped = try await TaskifyRelayProofOfWork.prepare(relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs) {
+        let wrapped = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
             let rumor = try NIP17Rumor(
                 publicKey: identity.publicKeyHex,
                 createdAt: createdAt,
@@ -376,14 +346,14 @@ extension AppModel {
                 ],
                 content: value
             )
-            let recipientWrap = try NIP17GiftWrap.wrap(
+            let recipientWrap = try NIP17GiftWrap.wrapForOutbox(
                 rumor: rumor,
                 sender: identity,
                 recipientPublicKey: recipientPublicKey
             )
             let senderWrap = isSelfMessage
                 ? recipientWrap
-                : try NIP17GiftWrap.wrap(
+                : try NIP17GiftWrap.wrapForOutbox(
                     rumor: rumor,
                     sender: identity,
                     recipientPublicKey: identity.publicKey
@@ -393,7 +363,7 @@ extension AppModel {
         let rumor = wrapped.0
         let recipientWrap = wrapped.1
         let senderWrap = wrapped.2
-        let decrypted = NIP17DecryptedRumor(wrapEventID: senderWrap.id, rumor: rumor)
+        let decrypted = NIP17DecryptedRumor(wrapEventID: senderWrap.event.id, rumor: rumor)
         guard let localReaction = NostrDirectMessageReaction(
             decrypted: decrypted,
             identityPublicKey: identity.publicKeyHex
@@ -405,21 +375,23 @@ extension AppModel {
         )
         let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
         var requests = [TaskSyncRelayPublishRequest(
-            event: recipientWrap,
+            event: recipientWrap.event,
             relayURLs: deliveryPlan.recipientRelayURLs,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):reaction:recipient",
-            acknowledgementPolicy: .anyRelay,
-            expiresAt: expiresAt
+            acknowledgementPolicy: .firstRelay,
+            expiresAt: expiresAt,
+            encryptedProofOfWorkKey: recipientWrap.encryptedProofOfWorkKey
         )]
         if !isSelfMessage {
             requests.append(TaskSyncRelayPublishRequest(
-                event: senderWrap,
+                event: senderWrap.event,
                 relayURLs: deliveryPlan.senderRelayURLs,
                 outboxScope: Self.directMessagesOutboxScope,
                 recordID: "\(rumor.id):reaction:sender",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
+                acknowledgementPolicy: .firstRelay,
+                expiresAt: expiresAt,
+                encryptedProofOfWorkKey: senderWrap.encryptedProofOfWorkKey
             ))
         }
         try await syncEngine.enqueueForPublish(requests)
@@ -552,12 +524,10 @@ extension AppModel {
     private func enqueueDirectMessageBatch(
         _ batch: NIP17OutgoingMessageBatch,
         identity: NostrIdentity,
-        isGroup: Bool,
-        isProofOfWorkCopy: Bool = false,
-        ingestLocalMessages: Bool = true
+        isGroup: Bool
     ) async throws {
         guard identityPublicKey == identity.publicKeyHex else { throw NostrDirectMessageError.identityUnavailable }
-        if ingestLocalMessages { ingestLocalDirectMessages(batch.localMessages) }
+        ingestLocalDirectMessages(batch.localMessages)
         let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
         let isSelfMessage = !isGroup && batch.localMessages.first?.peerPublicKey == identity.publicKeyHex
         let requests = batch.deliveries.map { delivery in
@@ -565,29 +535,27 @@ extension AppModel {
             let suffix = isGroup
                 ? "group:\(isSender ? "sender" : delivery.recipientPublicKey)"
                 : (isSender && !isSelfMessage ? "sender" : "recipient")
-            let replica = isProofOfWorkCopy ? "pow:" : ""
             return TaskSyncRelayPublishRequest(
                 event: delivery.event,
                 relayURLs: delivery.relayURLs,
                 outboxScope: Self.directMessagesOutboxScope,
-                recordID: "\(delivery.rumorEventID):\(replica)\(suffix)",
-                acknowledgementPolicy: .anyRelay,
+                recordID: "\(delivery.rumorEventID):\(suffix)",
+                acknowledgementPolicy: .firstRelay,
                 expiresAt: expiresAt,
-                dependsOnEventID: delivery.dependsOnEventID
+                dependsOnEventID: delivery.dependsOnEventID,
+                encryptedProofOfWorkKey: delivery.encryptedProofOfWorkKey
             )
         }
         do {
             try await syncEngine.enqueueForPublish(requests)
         } catch {
-            if ingestLocalMessages { markOptimisticDirectMessagesFailed(batch.localMessages) }
+            markOptimisticDirectMessagesFailed(batch.localMessages)
             throw error
         }
     }
 
-    /// Enqueues ordinary-relay copies before starting any NIP-13 mining. A gift wrap's signing
-    /// key is intentionally ephemeral, so PoW copies must be wrapped separately while that key
-    /// exists; mining one shared copy for the maximum target used to delay Solife and every other
-    /// zero-work relay by up to the mining timeout.
+    /// Gift wraps are encrypted once per recipient. The durable outbox keeps the wrap
+    /// and its encrypted signing key so it can add proof of work if a relay requires it.
     private func enqueueRoutedDirectMessageBatch(
         rumors: [NIP17Rumor],
         attachmentComment: String?,
@@ -595,88 +563,17 @@ extension AppModel {
         relayURLsByRecipient: [String: [String]],
         isGroup: Bool
     ) async throws {
-        let allRelays = TaskifyRelayURL.normalizedList(
-            relayURLsByRecipient.values.flatMap { $0 }
-        )
-        var proofOfWorkRelays = Set<String>()
-        for relay in allRelays {
-            if await TaskifyRelayRequirements.shared.knownDifficulty(for: relay) > 0 {
-                proofOfWorkRelays.insert(relay)
-            }
-        }
-        let ordinaryRelays = Set(allRelays).subtracting(proofOfWorkRelays)
-        let unmined = try await Task.detached(priority: .userInitiated) {
+        let batch = try await Task.detached(priority: .userInitiated) {
             try NIP17OutgoingMessageBatch(
                 rumors: rumors,
                 attachmentComment: attachmentComment,
                 identity: identity,
-                relayURLsByRecipient: relayURLsByRecipient
+                relayURLsByRecipient: relayURLsByRecipient,
+                allowProofOfWorkRetry: true
             )
         }.value
         try Task.checkCancellation()
-        let isSelfMessage = !isGroup && unmined.localMessages.first?.peerPublicKey == identity.publicKeyHex
-        func hasRecipientCopy(_ batch: NIP17OutgoingMessageBatch) -> Bool {
-            batch.deliveries.contains { isSelfMessage || $0.recipientPublicKey != identity.publicKeyHex }
-        }
-        let ordinary = unmined.restrictingRelayURLs(to: ordinaryRelays)
-        if let ordinary {
-            try await enqueueDirectMessageBatch(ordinary, identity: identity, isGroup: isGroup)
-        }
-        let prepareProofOfWorkCopy: @Sendable (Set<String>) async throws -> NIP17OutgoingMessageBatch? = { relays in
-            guard !relays.isEmpty else { return nil }
-            let wrapped = try await TaskifyRelayProofOfWork.prepare(
-                relays: Array(relays)
-            ) {
-                try NIP17OutgoingMessageBatch(
-                    rumors: rumors,
-                    attachmentComment: attachmentComment,
-                    identity: identity,
-                    relayURLsByRecipient: relayURLsByRecipient
-                )
-            }
-            return wrapped.restrictingRelayURLs(to: relays)
-        }
-
-        if let ordinary, hasRecipientCopy(ordinary) {
-            Task { [weak self] in
-                do {
-                    var requiredRelays = proofOfWorkRelays
-                    let advertisedRelays = await withTaskGroup(of: String?.self) { group in
-                        for relay in ordinaryRelays {
-                            group.addTask {
-                                await TaskifyRelayRequirements.shared.difficulty(for: [relay]) > 0
-                                    ? relay
-                                    : nil
-                            }
-                        }
-                        var relays = Set<String>()
-                        for await relay in group {
-                            if let relay { relays.insert(relay) }
-                        }
-                        return relays
-                    }
-                    requiredRelays.formUnion(advertisedRelays)
-                    guard let copy = try await prepareProofOfWorkCopy(requiredRelays) else { return }
-                    try await self?.enqueueDirectMessageBatch(
-                        copy,
-                        identity: identity,
-                        isGroup: isGroup,
-                        isProofOfWorkCopy: true,
-                        ingestLocalMessages: false
-                    )
-                } catch {
-                    #if DEBUG
-                    print("Taskify could not queue a PoW chat replica: \(error.localizedDescription)")
-                    #endif
-                }
-            }
-        } else {
-            guard let copy = try await prepareProofOfWorkCopy(proofOfWorkRelays),
-                  hasRecipientCopy(copy) else { throw NostrDirectMessageError.noRelays }
-            try await enqueueDirectMessageBatch(
-                copy, identity: identity, isGroup: isGroup, isProofOfWorkCopy: true
-            )
-        }
+        try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: isGroup)
     }
 
     private func publishGroupReaction(
@@ -716,8 +613,8 @@ extension AppModel {
                   !relays.isEmpty else { return nil }
             return (member, publicKey, relays)
         }
-        let wrapped = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
-            let selfWrap = try NIP17GiftWrap.wrap(
+        let wrapped = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
+            let selfWrap = try NIP17GiftWrap.wrapForOutbox(
                 rumor: rumor,
                 sender: identity,
                 recipientPublicKey: identity.publicKey
@@ -725,7 +622,7 @@ extension AppModel {
             let deliveries = try recipientPlans.map { member, publicKey, relays in
                 GroupGiftWrapDelivery(
                     memberPublicKey: member,
-                    event: try NIP17GiftWrap.wrap(
+                    wrap: try NIP17GiftWrap.wrapForOutbox(
                         rumor: rumor,
                         sender: identity,
                         recipientPublicKey: publicKey
@@ -737,7 +634,7 @@ extension AppModel {
         }
         let selfWrap = wrapped.0
         guard let localReaction = NostrDirectMessageReaction(
-            decrypted: NIP17DecryptedRumor(wrapEventID: selfWrap.id, rumor: rumor),
+            decrypted: NIP17DecryptedRumor(wrapEventID: selfWrap.event.id, rumor: rumor),
             identityPublicKey: identity.publicKeyHex
         ) else { throw NostrDirectMessageError.invalidGroup }
         if snapshot.ingestDirectMessageReaction(localReaction) { scheduleSave() }
@@ -745,21 +642,23 @@ extension AppModel {
         let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
         var requests = wrapped.1.map { delivery in
             TaskSyncRelayPublishRequest(
-                event: delivery.event,
+                event: delivery.wrap.event,
                 relayURLs: delivery.relayURLs,
                 outboxScope: Self.directMessagesOutboxScope,
                 recordID: "\(rumor.id):group-reaction:\(delivery.memberPublicKey)",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
+                acknowledgementPolicy: .firstRelay,
+                expiresAt: expiresAt,
+                encryptedProofOfWorkKey: delivery.wrap.encryptedProofOfWorkKey
             )
         }
         requests.append(TaskSyncRelayPublishRequest(
-            event: selfWrap,
+            event: selfWrap.event,
             relayURLs: senderRelays,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):group-reaction:sender",
-            acknowledgementPolicy: .anyRelay,
-            expiresAt: expiresAt
+            acknowledgementPolicy: .firstRelay,
+            expiresAt: expiresAt,
+            encryptedProofOfWorkKey: selfWrap.encryptedProofOfWorkKey
         ))
         try await syncEngine.enqueueForPublish(requests)
 

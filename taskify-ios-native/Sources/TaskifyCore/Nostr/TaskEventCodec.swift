@@ -341,17 +341,17 @@ public struct BoardSyncPayload: Codable, Equatable, Sendable {
 }
 
 public enum TaskEventCodec {
-    public static func prepareBoardEvent(board: Board, createdAt: Int) async throws -> NostrEvent {
-        try await TaskifyRelayProofOfWork.prepare(relays: board.syncRelayURLs) { try boardEvent(board: board, createdAt: createdAt) }
+    public static func prepareBoardEvent(board: Board, createdAt: Int, forOutbox: Bool = false) async throws -> NostrEvent {
+        try await TaskifyRelayProofOfWork.prepare(relays: forOutbox ? [] : board.syncRelayURLs) { try boardEvent(board: board, createdAt: createdAt) }
     }
-    public static func prepareTaskEvent(task: TaskItem, board: Board, createdAt: Int) async throws -> NostrEvent {
-        try await TaskifyRelayProofOfWork.prepare(relays: board.syncRelayURLs) { try taskEvent(task: task, board: board, createdAt: createdAt) }
+    public static func prepareTaskEvent(task: TaskItem, board: Board, createdAt: Int, forOutbox: Bool = false) async throws -> NostrEvent {
+        try await TaskifyRelayProofOfWork.prepare(relays: forOutbox ? [] : board.syncRelayURLs) { try taskEvent(task: task, board: board, createdAt: createdAt) }
     }
     public static func prepareDeletionEvent(taskID: String, board: Board, createdAt: Int) async throws -> NostrEvent {
         try await TaskifyRelayProofOfWork.prepare(relays: board.syncRelayURLs) { try deletionEvent(taskID: taskID, board: board, createdAt: createdAt) }
     }
-    public static func prepareEventDeletionRequest(eventIDs: [String], board: Board, createdAt: Int) async throws -> NostrEvent {
-        try await TaskifyRelayProofOfWork.prepare(relays: board.syncRelayURLs) { try eventDeletionRequest(eventIDs: eventIDs, board: board, createdAt: createdAt) }
+    public static func prepareEventDeletionRequest(eventIDs: [String], board: Board, createdAt: Int, forOutbox: Bool = false) async throws -> NostrEvent {
+        try await TaskifyRelayProofOfWork.prepare(relays: forOutbox ? [] : board.syncRelayURLs) { try eventDeletionRequest(eventIDs: eventIDs, board: board, createdAt: createdAt) }
     }
 
     public static let boardEventKind = 30_300
@@ -644,8 +644,8 @@ public enum TaskifyCalendarEventCodec {
             .base64EncodedString()
     }
 
-    public static func prepareEventPair(event: TaskifyEvent, board: Board, createdAt: Int) async throws -> TaskifyCalendarEventPair {
-        try await TaskifyRelayProofOfWork.prepare(relays: board.syncRelayURLs) {
+    public static func prepareEventPair(event: TaskifyEvent, board: Board, createdAt: Int, forOutbox: Bool = false) async throws -> TaskifyCalendarEventPair {
+        try await TaskifyRelayProofOfWork.prepare(relays: forOutbox ? [] : board.syncRelayURLs) {
             try eventPair(event: event, board: board, createdAt: createdAt)
         }
     }

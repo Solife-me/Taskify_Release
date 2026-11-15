@@ -24,3 +24,17 @@ Taskify had a hard-coded 20-bit floor for nos.lol in both the Swift and TypeScri
 - Native focused PoW/outbox/routing suite: 25 tests passed.
 - PWA TypeScript checks passed.
 - Complete unsigned iOS app build succeeded.
+
+
+## Follow-up on Beta
+
+The native hard-coded floor returned in a merge. It has been removed again. The current
+native outbox preserves a plain event for ordinary relays and shares a separate mined copy
+across verified PoW targets. Relay-specified floors can come from NIP-11 or an explicit
+`pow:` rejection.
+
+- The Solife relay advertised `min_pow_difficulty: 10`.
+- Snort and Minibits advertised no floor. A read-only sample found recent events below 10 bits
+  on Primal, Snort, and Minibits.
+- Damus and nos.lol did not provide conclusive results in the follow-up. The earlier nos.lol
+  sample above showed stored events below 20 bits.

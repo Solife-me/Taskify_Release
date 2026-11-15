@@ -16,8 +16,6 @@ import type { WalletDmMessage } from "./hooks/useDmState";
 
 export { HERMES_MODEL_PAGE_SIZE, HERMES_PROVIDER_PAGE_SIZE };
 
-export const HERMES_CATALOG_CACHE_TTL_MS = 10 * 60 * 1000;
-
 export type HermesSelectedModel = {
   modelId: string;
   providerSlug: string;
@@ -182,95 +180,4 @@ export function pageSlice<T>(values: readonly T[], page: number, pageSize: numbe
   const count = pageCount(values.length, pageSize);
   const safePage = Math.max(0, Math.min(count - 1, Math.floor(page)));
   return values.slice(safePage * pageSize, safePage * pageSize + pageSize);
-}
-
-export type HermesCatalogCacheEntry = {
-  providerSlug: string;
-  providerName: string | null;
-  models: string[];
-  fetchedAt: number;
-  listingId: string;
-};
-
-export const LS_HERMES_MODEL_CATALOG_CACHE = "taskify_hermes_model_catalog_cache_v1";
-
-type CatalogCacheMap = Record<string, HermesCatalogCacheEntry>;
-
-function catalogCacheKey(peerPubkey: string, providerSlug: string): string {
-  return `${peerPubkey.trim().toLowerCase()}|${providerSlug.trim().toLowerCase()}`;
-}
-
-function loadCatalogCacheMap(): CatalogCacheMap {
-  try {
-    const raw = window.localStorage.getItem(LS_HERMES_MODEL_CATALOG_CACHE);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as CatalogCacheMap : {};
-  } catch {
-    return {};
-  }
-}
-
-function persistCatalogCacheMap(map: CatalogCacheMap): void {
-  try {
-    window.localStorage.setItem(LS_HERMES_MODEL_CATALOG_CACHE, JSON.stringify(map));
-  } catch {
-    // A full or unavailable cache only causes the picker to request a fresh catalog.
-  }
-}
-
-function isCacheEntry(value: unknown): value is HermesCatalogCacheEntry {
-  if (!value || typeof value !== "object") return false;
-  const entry = value as Partial<HermesCatalogCacheEntry>;
-  return (
-    typeof entry.providerSlug === "string" &&
-    isValidHermesProviderSlug(entry.providerSlug) &&
-    (entry.providerName === null || typeof entry.providerName === "string") &&
-    Array.isArray(entry.models) &&
-    entry.models.every(isValidHermesModelId) &&
-    typeof entry.fetchedAt === "number" &&
-    Number.isFinite(entry.fetchedAt) &&
-    typeof entry.listingId === "string"
-  );
-}
-
-/** Any listing's cached catalog, shown until refreshed; `isHermesCatalogCacheFresh` checks the listing. */
-export function loadHermesCatalogCache(
-  peerPubkey: string,
-  providerSlug: string,
-): HermesCatalogCacheEntry | null {
-  const key = catalogCacheKey(peerPubkey, providerSlug);
-  const entry = loadCatalogCacheMap()[key];
-  if (!isCacheEntry(entry)) return null;
-  if (entry.providerSlug.toLowerCase() !== providerSlug.toLowerCase()) return null;
-  return entry;
-}
-
-export function isHermesCatalogCacheFresh(
-  entry: HermesCatalogCacheEntry,
-  now = Date.now(),
-  currentListingId?: string,
-): boolean {
-  return (!currentListingId || entry.listingId === currentListingId)
-    && now - entry.fetchedAt >= 0
-    && now - entry.fetchedAt < HERMES_CATALOG_CACHE_TTL_MS;
-}
-
-export function saveHermesCatalogCache(
-  peerPubkey: string,
-  listingId: string,
-  catalog: HermesProviderCatalog,
-  fetchedAt = Date.now(),
-): HermesCatalogCacheEntry {
-  const entry: HermesCatalogCacheEntry = {
-    providerSlug: catalog.providerSlug,
-    providerName: catalog.providerName,
-    models: [...catalog.models],
-    fetchedAt,
-    listingId,
-  };
-  const map = loadCatalogCacheMap();
-  map[catalogCacheKey(peerPubkey, catalog.providerSlug)] = entry;
-  persistCatalogCacheMap(map);
-  return entry;
 }
