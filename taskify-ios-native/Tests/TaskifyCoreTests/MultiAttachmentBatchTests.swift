@@ -126,6 +126,37 @@ final class MultiAttachmentBatchTests: XCTestCase {
         }
     }
 
+    func testBatchCanRouteOrdinaryAndProofOfWorkCopiesIndependently() throws {
+        let fixture = try fixture()
+        let sender = fixture.identities[0]
+        let recipient = fixture.identities[1].publicKeyHex
+        let rumor = try NIP17Rumor(
+            publicKey: sender.publicKeyHex,
+            createdAt: 1_000,
+            kind: NIP17GiftWrap.rumorKind,
+            tags: [["p", recipient]],
+            content: "Immediate delivery"
+        )
+        let routes = Dictionary(uniqueKeysWithValues: fixture.identities.map {
+            ($0.publicKeyHex, ["wss://relay.solife.me", "wss://pow.example"])
+        })
+        let batch = try NIP17OutgoingMessageBatch(
+            rumor: rumor,
+            identity: sender,
+            relayURLsByRecipient: routes
+        )
+
+        let ordinary = try XCTUnwrap(batch.restrictingRelayURLs(to: ["wss://relay.solife.me"]))
+        let proofOfWork = try XCTUnwrap(batch.restrictingRelayURLs(to: ["wss://pow.example"]))
+        XCTAssertEqual(ordinary.localMessages, batch.localMessages)
+        XCTAssertEqual(proofOfWork.localMessages, batch.localMessages)
+        XCTAssertEqual(ordinary.deliveries.count, batch.deliveries.count)
+        XCTAssertEqual(proofOfWork.deliveries.count, batch.deliveries.count)
+        XCTAssertTrue(ordinary.deliveries.allSatisfy { $0.relayURLs == ["wss://relay.solife.me"] })
+        XCTAssertTrue(proofOfWork.deliveries.allSatisfy { $0.relayURLs == ["wss://pow.example"] })
+        XCTAssertNil(batch.restrictingRelayURLs(to: ["wss://missing.example"]))
+    }
+
     func testMultiAttachmentBatchRejectsEmptyAndMismatchedRecipientSets() throws {
         let fixture = try fixture()
         let sender = fixture.identities[0]

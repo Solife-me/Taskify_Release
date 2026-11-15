@@ -10,6 +10,20 @@ public struct TaskifySpokenTaskRequest: Equatable, Sendable {
     }
 }
 
+public struct TaskifySpokenTaskBatchRequest: Equatable, Sendable {
+    public var titles: [String]
+    public var requestedBoardName: String?
+    /// Items beyond the bounded intent payload. Callers must reject the entire request when this
+    /// is nonzero so Siri never reports success after silently dropping dictated tasks.
+    public var omittedCount: Int
+
+    public init(titles: [String], requestedBoardName: String?, omittedCount: Int = 0) {
+        self.titles = titles
+        self.requestedBoardName = requestedBoardName
+        self.omittedCount = omittedCount
+    }
+}
+
 /// Interprets the natural sentence Siri may provide after asking for a task name.
 ///
 /// App Intents treats a String response as an opaque value. If somebody answers Siri with
@@ -22,6 +36,33 @@ public enum TaskifySpokenTaskRequestParser {
         explicitlyRequestedBoardName: String? = nil,
         visibleBoardNames: [String]
     ) -> TaskifySpokenTaskRequest {
+        parse(
+            input,
+            explicitlyRequestedBoardName: explicitlyRequestedBoardName,
+            visibleBoardNames: visibleBoardNames,
+            preservesTaskList: false
+        )
+    }
+
+    fileprivate static func parsePreservingTaskList(
+        _ input: String,
+        explicitlyRequestedBoardName: String? = nil,
+        visibleBoardNames: [String]
+    ) -> TaskifySpokenTaskRequest {
+        parse(
+            input,
+            explicitlyRequestedBoardName: explicitlyRequestedBoardName,
+            visibleBoardNames: visibleBoardNames,
+            preservesTaskList: true
+        )
+    }
+
+    private static func parse(
+        _ input: String,
+        explicitlyRequestedBoardName: String?,
+        visibleBoardNames: [String],
+        preservesTaskList: Bool
+    ) -> TaskifySpokenTaskRequest {
         let input = removingTaskifyInvocationSuffix(
             from: input.trimmingCharacters(in: .whitespacesAndNewlines)
         )
@@ -31,7 +72,11 @@ public enum TaskifySpokenTaskRequestParser {
         // naturally spoken quoted title, but never reinterpret the requested destination.
         if let explicitBoard {
             return TaskifySpokenTaskRequest(
-                title: spokenTitleWithoutDestination(from: input, boardName: nil),
+                title: spokenTitleWithoutDestination(
+                    from: input,
+                    boardName: nil,
+                    preservesTaskList: preservesTaskList
+                ),
                 requestedBoardName: explicitBoard
             )
         }
@@ -42,16 +87,21 @@ public enum TaskifySpokenTaskRequestParser {
             .first { containsBoardName($0, in: input) }
 
         return TaskifySpokenTaskRequest(
-            title: spokenTitleWithoutDestination(from: input, boardName: matchedBoard),
+            title: spokenTitleWithoutDestination(
+                from: input,
+                boardName: matchedBoard,
+                preservesTaskList: preservesTaskList
+            ),
             requestedBoardName: matchedBoard
         )
     }
 
     private static func spokenTitleWithoutDestination(
         from input: String,
-        boardName: String?
+        boardName: String?,
+        preservesTaskList: Bool
     ) -> String {
-        if let quoted = firstQuotedValue(in: input), beginsLikeTaskCommand(input) {
+        if !preservesTaskList, let quoted = firstQuotedValue(in: input), beginsLikeTaskCommand(input) {
             return quoted
         }
 
@@ -73,7 +123,7 @@ public enum TaskifySpokenTaskRequestParser {
 
             for pattern in patterns {
                 if let capture = firstCapture(in: input, pattern: pattern) {
-                    return unwrapQuotes(capture)
+                    return preservesTaskList ? capture : unwrapQuotes(capture)
                 }
             }
         }
@@ -89,12 +139,12 @@ public enum TaskifySpokenTaskRequestParser {
             ]
             for pattern in patterns {
                 if let capture = firstCapture(in: input, pattern: pattern) {
-                    return unwrapQuotes(capture)
+                    return preservesTaskList ? capture : unwrapQuotes(capture)
                 }
             }
         }
 
-        return unwrapQuotes(input)
+        return preservesTaskList ? input.trimmingCharacters(in: .whitespacesAndNewlines) : unwrapQuotes(input)
     }
 
     private static func containsBoardName(_ boardName: String, in input: String) -> Bool {
@@ -117,7 +167,7 @@ public enum TaskifySpokenTaskRequestParser {
 
     private static func removingTaskifyInvocationSuffix(from input: String) -> String {
         guard let expression = try? NSRegularExpression(
-            pattern: "(?i)\\s+(?:in|using|with)\\s+taskify[.!?]*\\s*$"
+            pattern: "(?i)\\s+(?:in|to|on|using|with)\\s+taskify[.!?]*\\s*$"
         ) else { return input }
         let range = NSRange(input.startIndex..<input.endIndex, in: input)
         return expression.stringByReplacingMatches(
@@ -152,5 +202,147 @@ public enum TaskifySpokenTaskRequestParser {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty else { return nil }
         return value
+    }
+}
+
+/// Splits the one free-form value captured by Taskify's batch Siri intent into task titles.
+///
+/// The batch intent is deliberately one String instead of an App Intents collection. Siri often
+/// resolves a collection by asking for each value separately, which defeats voice capture such as
+/// “standup, planning, and retrospective”. Because the user explicitly chose *Add Multiple Tasks*,
+/// commas and conjunctions are list separators here. Quoted titles remain intact, so
+/// “Research and Development” can still be one item.
+public enum TaskifySpokenTaskBatchParser {
+    public static let maximumTaskCount = 20
+
+    public static func parse(
+        _ input: String,
+        explicitlyRequestedBoardName: String? = nil,
+        visibleBoardNames: [String]
+    ) -> TaskifySpokenTaskBatchRequest {
+        let request = TaskifySpokenTaskRequestParser.parsePreservingTaskList(
+            input,
+            explicitlyRequestedBoardName: explicitlyRequestedBoardName,
+            visibleBoardNames: visibleBoardNames
+        )
+        var text = request.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        text = replacing(
+            "(?i)^(?:these|the following|multiple|several)\\s+tasks?\\s*(?::|are)?\\s*",
+            in: text,
+            with: ""
+        )
+
+        let allTitles = splitOutsideQuotes(text)
+            .map(cleanItem)
+            .filter { !$0.isEmpty }
+        let titles = Array(allTitles.prefix(maximumTaskCount))
+
+        return TaskifySpokenTaskBatchRequest(
+            titles: titles,
+            requestedBoardName: request.requestedBoardName,
+            omittedCount: max(0, allTitles.count - titles.count)
+        )
+    }
+
+    private static func splitOutsideQuotes(_ input: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var quote: Character?
+        var index = input.startIndex
+
+        func finishItem() {
+            let item = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !item.isEmpty { result.append(item) }
+            current = ""
+        }
+
+        while index < input.endIndex {
+            let character = input[index]
+            if let activeQuote = quote {
+                if closes(character, quote: activeQuote) {
+                    quote = nil
+                } else {
+                    current.append(character)
+                }
+                index = input.index(after: index)
+                continue
+            }
+
+            if isOpeningQuote(character) {
+                quote = character
+                index = input.index(after: index)
+                continue
+            }
+
+            if character == "," || character == ";" || character.isNewline {
+                finishItem()
+                index = input.index(after: index)
+                continue
+            }
+
+            if let separatorEnd = conjunctionEnd(in: input, from: index) {
+                finishItem()
+                index = separatorEnd
+                continue
+            }
+
+            current.append(character)
+            index = input.index(after: index)
+        }
+        finishItem()
+        return result
+    }
+
+    private static func conjunctionEnd(in input: String, from index: String.Index) -> String.Index? {
+        let rest = input[index...]
+        let words = ["and then", "then add", "next task", "also add", "and", "then"]
+        for word in words where rest.lowercased().hasPrefix(word) {
+            let end = input.index(index, offsetBy: word.count)
+            let beforeIsBoundary = index == input.startIndex || !input[input.index(before: index)].isLetter
+            let afterIsBoundary = end == input.endIndex || !input[end].isLetter
+            if beforeIsBoundary && afterIsBoundary { return end }
+        }
+        return nil
+    }
+
+    private static func cleanItem(_ input: String) -> String {
+        let leadingAndTrailing = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "-•"))
+        var item = input.trimmingCharacters(in: leadingAndTrailing)
+        item = replacing(
+            "(?i)^(?:(?:first|second|third|fourth|fifth|next|finally)|\\d{1,2}[.)])\\s*",
+            in: item,
+            with: ""
+        )
+        item = replacing(
+            "(?i)^(?:add|create|make|put)\\s+(?:(?:a|another|the)\\s+)?(?:new\\s+)?(?:task\\s+)?",
+            in: item,
+            with: ""
+        )
+        let punctuation = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: ",;:.!?\"'“”‘’"))
+        item = item.trimmingCharacters(in: punctuation)
+        return item
+    }
+
+    private static func isOpeningQuote(_ character: Character) -> Bool {
+        ["\"", "“", "‘"].contains(character)
+    }
+
+    private static func closes(_ character: Character, quote: Character) -> Bool {
+        switch quote {
+        case "“": character == "”"
+        case "‘": character == "’"
+        default: character == quote
+        }
+    }
+
+    private static func replacing(_ pattern: String, in input: String, with template: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return input }
+        return expression.stringByReplacingMatches(
+            in: input,
+            range: NSRange(input.startIndex..<input.endIndex, in: input),
+            withTemplate: template
+        )
     }
 }

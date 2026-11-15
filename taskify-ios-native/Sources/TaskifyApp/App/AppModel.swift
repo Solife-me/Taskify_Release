@@ -1884,6 +1884,35 @@ final class AppModel {
         await refreshNotificationsImmediately()
     }
 
+    /// Schedules a temporary local follow-up from the notification action. Unlike completion, a
+    /// snooze does not edit, save, or publish the task; it belongs only to the device where the
+    /// notification was handled.
+    func snoozeTaskFromNotification(_ taskID: String) async {
+        let loadDeadline = Date().addingTimeInterval(15)
+        while isLoading, Date() < loadDeadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard !Task.isCancelled,
+              !isLoading,
+              isAccountActive,
+              !identityPublicKey.isEmpty,
+              let task = task(withID: taskID),
+              !task.completed,
+              !task.isDeleted else { return }
+
+        let scheduled = await notificationCoordinator.snooze(
+            task: task,
+            accountID: identityPublicKey
+        )
+        guard scheduled else { return }
+        guard let current = self.task(withID: taskID),
+              !current.completed,
+              !current.isDeleted else {
+            await refreshNotificationsImmediately()
+            return
+        }
+    }
+
     /// Bulk counterpart to `deleteTask`. Deletes through one local copy and refreshes
     /// notifications once instead of once per task.
     func deleteTasks<S: Sequence>(_ taskIDs: S) where S.Element == String {
@@ -2367,7 +2396,9 @@ final class AppModel {
         guard !isLoading,
               let modified = await store.tasksModificationDate(),
               modified > lastStoreWriteAt.addingTimeInterval(0.5),
-              let onDisk = try? await store.readTasksWrittenElsewhere() else { return }
+              let onDisk = try? await store.readTasksWrittenElsewhere(),
+              let onDiskBoards = try? await store.readBoardsWrittenElsewhere(),
+              let onDiskEvents = try? await store.readTaskifyEventsWrittenElsewhere() else { return }
         let merge = TaskifySnapshot.mergingExternalTaskChanges(
             base: persistedTasks,
             ours: snapshot.tasks,
@@ -2375,17 +2406,50 @@ final class AppModel {
         )
         persistedTasks = onDisk
         lastStoreWriteAt = Date()
-        guard !merge.changedTaskIDs.isEmpty else { return }
-        snapshot.tasks = merge.tasks
+        let pendingBoardIDs = TaskifyExternalBoardMutationStore.pendingIDs()
+        var importedBoards: [Board] = []
+        if !pendingBoardIDs.isEmpty {
+            for board in onDiskBoards where pendingBoardIDs.contains(board.id) {
+                if let index = snapshot.boards.firstIndex(where: { $0.id == board.id }) {
+                    snapshot.boards[index] = board
+                } else {
+                    snapshot.boards.append(board)
+                }
+                importedBoards.append(board)
+            }
+        }
+        let pendingEventIDs = TaskifyExternalCalendarMutationStore.pendingIDs()
+        var importedEventIDs: [String] = []
+        if !pendingEventIDs.isEmpty {
+            for event in onDiskEvents where pendingEventIDs.contains(event.id) {
+                _ = snapshot.upsertTaskifyEvent(event)
+                importedEventIDs.append(event.id)
+            }
+        }
+        guard !merge.changedTaskIDs.isEmpty || !importedBoards.isEmpty || !importedEventIDs.isEmpty else { return }
+        if !merge.changedTaskIDs.isEmpty {
+            snapshot.tasks = merge.tasks
+        }
         // The same steps as a completion in the app: Scripture Memory reviews are reconciled
         // (and their tasks published) before the rest.
-        let reconciledIDs = reconcileScriptureMemory()
-        let liveIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
-        let changedIDs = merge.changedTaskIDs.filter { liveIDs.contains($0) && !reconciledIDs.contains($0) }
-        // Stamped by the extension but not accepted by every relay: send again (C10-4).
-        let pendingIDs = Set(snapshot.tasks.lazy.filter { $0.publishPending == true }.map(\.id))
-        synchronizeTasks(changedIDs, force: pendingIDs.intersection(changedIDs))
-        refreshNotifications(requestPermission: false)
+        if !merge.changedTaskIDs.isEmpty {
+            let reconciledIDs = reconcileScriptureMemory()
+            let liveIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
+            let changedIDs = merge.changedTaskIDs.filter { liveIDs.contains($0) && !reconciledIDs.contains($0) }
+            // Stamped by the extension but not accepted by every relay: send again (C10-4).
+            let pendingIDs = Set(snapshot.tasks.lazy.filter { $0.publishPending == true }.map(\.id))
+            synchronizeTasks(changedIDs, force: pendingIDs.intersection(changedIDs))
+            refreshNotifications(requestPermission: false)
+        }
+        for board in importedBoards {
+            publishBoard(board)
+        }
+        TaskifyExternalBoardMutationStore.removePending(importedBoards.map(\.id))
+        if !importedEventIDs.isEmpty {
+            synchronizeTaskifyEvents(importedEventIDs)
+            TaskifyExternalCalendarMutationStore.removePending(importedEventIDs)
+            refreshNotifications(requestPermission: false)
+        }
         scheduleSave()
     }
 
@@ -5015,6 +5079,20 @@ final class AppModel {
             await refreshPendingPublishRecords()
         }
         applyStartupBoardPreference()
+        let pendingExternalBoardIDs = TaskifyExternalBoardMutationStore.pendingIDs()
+        let pendingExternalBoards = snapshot.boards.filter { pendingExternalBoardIDs.contains($0.id) }
+        for board in pendingExternalBoards {
+            publishBoard(board)
+        }
+        TaskifyExternalBoardMutationStore.removePending(pendingExternalBoards.map(\.id))
+        let pendingExternalEventIDs = TaskifyExternalCalendarMutationStore.pendingIDs()
+        let availableExternalEventIDs = (snapshot.taskifyEvents ?? [])
+            .filter { pendingExternalEventIDs.contains($0.id) }
+            .map(\.id)
+        if !availableExternalEventIDs.isEmpty {
+            synchronizeTaskifyEvents(availableExternalEventIDs)
+            TaskifyExternalCalendarMutationStore.removePending(availableExternalEventIDs)
+        }
         refreshNotifications(requestPermission: false)
         reconcileFastingReminders()
         reconcileScriptureMemory()

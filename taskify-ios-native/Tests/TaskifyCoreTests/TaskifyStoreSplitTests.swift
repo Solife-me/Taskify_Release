@@ -191,6 +191,32 @@ final class TaskifyStoreSplitTests: XCTestCase {
         XCTAssertEqual(attachmentBytes(full), attachmentBytes(loaded))
     }
 
+    func testExternalAddPreservesAttachmentFilesWithoutMaterializingThem() async throws {
+        let app = JSONTaskStore(fileURL: legacyURL, migratesLegacyStore: true)
+        var snapshot = populated()
+        let image = "data:image/jpeg;base64," + Data(repeating: 4, count: 750_000).base64EncodedString()
+        snapshot.tasks[0].images = [image]
+        try await app.save(snapshot)
+
+        let intentStore = JSONTaskStore(fileURL: legacyURL)
+        let lightweight = try await intentStore.loadPreservingAttachmentReferences(areas: [.tasks])
+        XCTAssertTrue(try XCTUnwrap(lightweight.tasks[0].images?.first).hasPrefix("taskify-file:"))
+
+        _ = try await TaskifyExternalActions.addTask(
+            title: "Added by Siri",
+            requestedBoardName: nil,
+            store: intentStore,
+            publisher: .disabled
+        )
+
+        let storedReferences = try await JSONTaskStore(fileURL: legacyURL).read(areas: [.tasks])
+        XCTAssertTrue(try XCTUnwrap(storedReferences.tasks.first { $0.id == "t1" }?.images?.first)
+            .hasPrefix("taskify-file:"))
+        let reloaded = try await JSONTaskStore(fileURL: legacyURL).load(areas: [.tasks])
+        XCTAssertEqual(reloaded.tasks.first { $0.id == "t1" }?.images, [image])
+        XCTAssertTrue(reloaded.tasks.contains { $0.title == "Added by Siri" })
+    }
+
     private static func footprint() -> Int {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)

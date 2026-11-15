@@ -59,6 +59,10 @@ const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_FAILURE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_CACHE_ENTRIES = 64;
 const DEFAULT_STORAGE_KEY = "relay-info-cache";
+// Keep this aligned with ProofOfWork.MAX_PROOF_OF_WORK_DIFFICULTY without importing the mining
+// module into the relay metadata cache. Higher targets are not practical on an interactive
+// client and must not prevent an event from reaching the other relays in its target set.
+const MAX_SUPPORTED_POW_DIFFICULTY = 32;
 // A relay's `pow:` rejection is remembered for a week, so later writes are mined to its real
 // requirement even when its NIP-11 document doesn't advertise one.
 const DEFAULT_LEARNED_POW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -98,7 +102,8 @@ function sanitizeMessageLength(value: unknown): number {
 function sanitizeProofOfWorkDifficulty(value: unknown): number {
   const num = Number(value);
   if (!Number.isFinite(num) || num <= 0) return 0;
-  return Math.ceil(num);
+  const rounded = Math.ceil(num);
+  return rounded <= MAX_SUPPORTED_POW_DIFFICULTY ? rounded : 0;
 }
 
 function sanitizeSubscriptionCount(value: unknown): number {

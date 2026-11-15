@@ -272,32 +272,19 @@ extension AppModel {
                 deliveryPlan.recipientRelayURLs.count,
                 fallbackRelays.count
             )
-            let cryptoStartedAt = ProcessInfo.processInfo.systemUptime
-            let batch = try await TaskifyRelayProofOfWork.prepare(
-                relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
-            ) {
-                var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
-                routes[recipientHex] = deliveryPlan.recipientRelayURLs
-                return try NIP17OutgoingMessageBatch(
-                    rumors: rumors,
-                    attachmentComment: attachmentComment,
-                    identity: identity,
-                    relayURLsByRecipient: routes
-                )
-            }
-            os_signpost(
-                .event,
-                log: Self.dmPerformanceLog,
-                name: "DM Gift Wrap",
-                signpostID: sendSignpostID,
-                "duration_ms=%.1f",
-                (ProcessInfo.processInfo.systemUptime - cryptoStartedAt) * 1_000
+            let enqueueStartedAt = ProcessInfo.processInfo.systemUptime
+            var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
+            routes[recipientHex] = deliveryPlan.recipientRelayURLs
+            try await enqueueRoutedDirectMessageBatch(
+                rumors: rumors,
+                attachmentComment: attachmentComment,
+                identity: identity,
+                relayURLsByRecipient: routes,
+                isGroup: false
             )
             let allDeliveryRelays = TaskifyRelayURL.normalizedList(
                 deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
             )
-            let enqueueStartedAt = ProcessInfo.processInfo.systemUptime
-            try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: false)
             let queuedCount = await syncEngine.pendingPublishCount()
             os_signpost(
                 .event,
@@ -474,18 +461,16 @@ extension AppModel {
                   !recipientRelays.isEmpty,
                   !senderRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
 
-            let batch = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
-                var routes = relayMap
-                routes[identity.publicKeyHex] = senderRelays
-                return try NIP17OutgoingMessageBatch(
-                    rumors: rumors,
-                    attachmentComment: attachmentComment,
-                    identity: identity,
-                    relayURLsByRecipient: routes
-                )
-            }
+            var routes = relayMap
+            routes[identity.publicKeyHex] = senderRelays
+            try await enqueueRoutedDirectMessageBatch(
+                rumors: rumors,
+                attachmentComment: attachmentComment,
+                identity: identity,
+                relayURLsByRecipient: routes,
+                isGroup: true
+            )
             let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
-            try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: true)
             let boards = snapshot.boardsForSync
             Task { [syncEngine] in
                 await syncEngine.configure(
@@ -533,11 +518,15 @@ extension AppModel {
     private func enqueueDirectMessageBatch(
         _ batch: NIP17OutgoingMessageBatch,
         identity: NostrIdentity,
-        isGroup: Bool
+        isGroup: Bool,
+        ingestLocalMessages: Bool = true,
+        markFailedOnError: Bool = true
     ) async throws {
         guard identityPublicKey == identity.publicKeyHex else { throw NostrDirectMessageError.identityUnavailable }
-        for message in batch.localMessages {
-            if snapshot.ingestDirectMessage(message) { scheduleSave() }
+        if ingestLocalMessages {
+            for message in batch.localMessages {
+                if snapshot.ingestDirectMessage(message) { scheduleSave() }
+            }
         }
         let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
         let isSelfMessage = !isGroup && batch.localMessages.first?.peerPublicKey == identity.publicKeyHex
@@ -559,12 +548,99 @@ extension AppModel {
         do {
             try await syncEngine.enqueueForPublish(requests)
         } catch {
-            for message in batch.localMessages {
-                if snapshot.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .failed) {
-                    scheduleSave()
+            if markFailedOnError {
+                for message in batch.localMessages {
+                    if snapshot.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .failed) {
+                        scheduleSave()
+                    }
                 }
             }
             throw error
+        }
+    }
+
+    /// Enqueues ordinary-relay copies before starting any NIP-13 mining. A gift wrap's signing
+    /// key is intentionally ephemeral, so PoW copies must be wrapped separately while that key
+    /// exists; mining one shared copy for the maximum target used to delay Solife and every other
+    /// zero-work relay by up to the mining timeout.
+    private func enqueueRoutedDirectMessageBatch(
+        rumors: [NIP17Rumor],
+        attachmentComment: String?,
+        identity: NostrIdentity,
+        relayURLsByRecipient: [String: [String]],
+        isGroup: Bool
+    ) async throws {
+        let allRelays = TaskifyRelayURL.normalizedList(
+            relayURLsByRecipient.values.flatMap { $0 }
+        )
+        var proofOfWorkRelays = Set<String>()
+        for relay in allRelays {
+            if await TaskifyRelayRequirements.shared.knownDifficulty(for: relay) > 0 {
+                proofOfWorkRelays.insert(relay)
+            }
+        }
+        let ordinaryRelays = Set(allRelays).subtracting(proofOfWorkRelays)
+        let unmined = try NIP17OutgoingMessageBatch(
+            rumors: rumors,
+            attachmentComment: attachmentComment,
+            identity: identity,
+            relayURLsByRecipient: relayURLsByRecipient
+        )
+        var queuedOrdinaryCopy = false
+        if let ordinary = unmined.restrictingRelayURLs(to: ordinaryRelays) {
+            try await enqueueDirectMessageBatch(ordinary, identity: identity, isGroup: isGroup)
+            queuedOrdinaryCopy = true
+        }
+        let prepareProofOfWorkCopy: @Sendable (Set<String>) async throws -> NIP17OutgoingMessageBatch? = { relays in
+            guard !relays.isEmpty else { return nil }
+            let wrapped = try await TaskifyRelayProofOfWork.prepare(
+                relays: Array(relays)
+            ) {
+                try NIP17OutgoingMessageBatch(
+                    rumors: rumors,
+                    attachmentComment: attachmentComment,
+                    identity: identity,
+                    relayURLsByRecipient: relayURLsByRecipient
+                )
+            }
+            return wrapped.restrictingRelayURLs(to: relays)
+        }
+
+        if queuedOrdinaryCopy {
+            Task { [weak self] in
+                do {
+                    var requiredRelays = proofOfWorkRelays
+                    let advertisedRelays = await withTaskGroup(of: String?.self) { group in
+                        for relay in ordinaryRelays {
+                            group.addTask {
+                                await TaskifyRelayRequirements.shared.difficulty(for: [relay]) > 0
+                                    ? relay
+                                    : nil
+                            }
+                        }
+                        var relays = Set<String>()
+                        for await relay in group {
+                            if let relay { relays.insert(relay) }
+                        }
+                        return relays
+                    }
+                    requiredRelays.formUnion(advertisedRelays)
+                    guard let copy = try await prepareProofOfWorkCopy(requiredRelays) else { return }
+                    try await self?.enqueueDirectMessageBatch(
+                        copy,
+                        identity: identity,
+                        isGroup: isGroup,
+                        ingestLocalMessages: false,
+                        markFailedOnError: false
+                    )
+                } catch {
+                    #if DEBUG
+                    print("Taskify could not queue a PoW chat replica: \(error.localizedDescription)")
+                    #endif
+                }
+            }
+        } else if let copy = try await prepareProofOfWorkCopy(proofOfWorkRelays) {
+            try await enqueueDirectMessageBatch(copy, identity: identity, isGroup: isGroup)
         }
     }
 

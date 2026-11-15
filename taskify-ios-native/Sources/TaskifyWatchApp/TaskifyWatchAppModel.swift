@@ -3,6 +3,7 @@ import Observation
 import OSLog
 import Security
 import TaskifyWatchShared
+import UserNotifications
 import WatchConnectivity
 import WidgetKit
 
@@ -128,14 +129,29 @@ enum TaskifyWatchShortcutTaskError: LocalizedError {
     case notSetUp
     case noBoard
     case noTime
+    case taskUnavailable
 
     var errorDescription: String? {
         switch self {
         case .notSetUp: "Open Taskify on your iPhone to set up this Apple Watch."
         case .noBoard: "Add a board in Taskify first."
         case .noTime: "Say when to be reminded."
+        case .taskUnavailable: "That task is no longer available on this Apple Watch."
         }
     }
+}
+
+enum TaskifyWatchShortcutSyncState: Equatable {
+    case syncingThroughPhone
+    case syncedDirectly
+    case savedForLater
+}
+
+struct TaskifyWatchShortcutSubmission: Equatable {
+    let commandID: String
+    let boardName: String
+    let itemCount: Int
+    let syncState: TaskifyWatchShortcutSyncState
 }
 
 enum TaskifyWatchShortcutSendError: LocalizedError {
@@ -1094,10 +1110,83 @@ final class TaskifyWatchAppModel: NSObject {
         return true
     }
 
+    /// Siri mutations use the same durable command queue as the Watch UI, but keep the intent
+    /// alive for an independent publish when the paired iPhone is unavailable. That matters on a
+    /// cellular Watch: a fire-and-forget task can be suspended as soon as Siri finishes speaking.
+    func addTasksFromShortcut(
+        titles: [String],
+        boardID requestedBoardID: String?
+    ) async throws -> TaskifyWatchShortcutSubmission {
+        guard isProvisioned else { throw TaskifyWatchShortcutTaskError.notSetUp }
+        guard let boardID = requestedBoardID ?? quickAddBoardID,
+              let board = snapshot.boards.first(where: { $0.id == boardID }) else {
+            throw TaskifyWatchShortcutTaskError.noBoard
+        }
+        let drafts = titles.compactMap { raw -> TaskifyWatchVoiceDraft? in
+            let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return title.isEmpty ? nil : TaskifyWatchVoiceDraft(title: title)
+        }
+        guard !drafts.isEmpty else { throw TaskifyWatchShortcutTaskError.taskUnavailable }
+        let command = TaskifyWatchCommand(
+            kind: .createVoiceTasks,
+            boardID: board.id,
+            voiceTasks: drafts
+        )
+        pendingCommands.append(command)
+        persistPendingCommands()
+        statusMessage = drafts.count == 1 ? "Adding task…" : "Adding \(drafts.count) tasks…"
+        let syncState = await deliverShortcutCommand(command)
+        return TaskifyWatchShortcutSubmission(
+            commandID: command.id,
+            boardName: board.name,
+            itemCount: drafts.count,
+            syncState: syncState
+        )
+    }
+
+    func completeTaskFromShortcut(_ taskID: String) async throws -> TaskifyWatchShortcutSubmission {
+        guard isProvisioned else { throw TaskifyWatchShortcutTaskError.notSetUp }
+        guard let task = snapshot.tasks.first(where: { $0.id == taskID }),
+              !pendingCompletionIDs.contains(taskID) else {
+            throw TaskifyWatchShortcutTaskError.taskUnavailable
+        }
+        let command = TaskifyWatchCommand(kind: .completeTask, taskID: taskID)
+        pendingCommands.append(command)
+        pendingCompletionIDs.insert(taskID)
+        persistPendingCommands()
+        persistWidgetSnapshot()
+        let syncState = await deliverShortcutCommand(command)
+        return TaskifyWatchShortcutSubmission(
+            commandID: command.id,
+            boardName: task.boardName,
+            itemCount: 1,
+            syncState: syncState
+        )
+    }
+
+    private func deliverShortcutCommand(
+        _ command: TaskifyWatchCommand
+    ) async -> TaskifyWatchShortcutSyncState {
+        let phoneIsReachable = WCSession.isSupported()
+            && WCSession.default.activationState == .activated
+            && WCSession.default.isReachable
+        deliver(command)
+        if phoneIsReachable { return .syncingThroughPhone }
+
+        guard independentProfile != nil,
+              directSyncCommandIDs.insert(command.id).inserted else {
+            return .savedForLater
+        }
+        defer { directSyncCommandIDs.remove(command.id) }
+        return await publishDirectly(command) ? .syncedDirectly : .savedForLater
+    }
+
     /// Siri's Remind Me on the Watch. The reminder travels as a one-task dictation would: to the
     /// iPhone, which saves it and schedules the notification, or straight to the relays when the
     /// iPhone is out of reach. Returns the name of the board it was added to.
-    func addReminderFromShortcut(_ phrase: TaskifyReminderPhrase) throws -> String {
+    func addReminderFromShortcut(
+        _ phrase: TaskifyReminderPhrase
+    ) async throws -> TaskifyWatchShortcutSubmission {
         guard isProvisioned else { throw TaskifyWatchShortcutTaskError.notSetUp }
         guard let boardID = quickAddBoardID else { throw TaskifyWatchShortcutTaskError.noBoard }
         guard let dueDate = phrase.dueDate else { throw TaskifyWatchShortcutTaskError.noTime }
@@ -1117,8 +1206,24 @@ final class TaskifyWatchAppModel: NSObject {
             dueISO: dueISO,
             reminderMinutesBeforeDue: [0]
         )
-        guard addVoiceTasks([draft], boardID: boardID) else { throw TaskifyWatchShortcutTaskError.noBoard }
-        return boardName(for: boardID)
+        guard let board = snapshot.boards.first(where: { $0.id == boardID }) else {
+            throw TaskifyWatchShortcutTaskError.noBoard
+        }
+        let command = TaskifyWatchCommand(
+            kind: .createVoiceTasks,
+            boardID: boardID,
+            voiceTasks: [draft]
+        )
+        pendingCommands.append(command)
+        persistPendingCommands()
+        statusMessage = "Adding reminder…"
+        let syncState = await deliverShortcutCommand(command)
+        return TaskifyWatchShortcutSubmission(
+            commandID: command.id,
+            boardName: board.name,
+            itemCount: 1,
+            syncState: syncState
+        )
     }
 
     /// Refreshes encrypted Taskify task records through the Watch HTTPS transport. This works
@@ -1199,11 +1304,12 @@ final class TaskifyWatchAppModel: NSObject {
         }
     }
 
-    private func publishDirectly(_ command: TaskifyWatchCommand) async {
+    @discardableResult
+    private func publishDirectly(_ command: TaskifyWatchCommand) async -> Bool {
         guard let profile = independentProfile,
               let privateKey = try? identityStore.load(),
               let mutations = try? directMutations(for: command),
-              !mutations.isEmpty else { return }
+              !mutations.isEmpty else { return false }
 
         var published: [TaskifyWatchDirectMutation] = []
         for original in mutations {
@@ -1226,7 +1332,7 @@ final class TaskifyWatchAppModel: NSObject {
                 // iPhone reconciliation can safely publish the same stable task identifier.
             }
         }
-        guard !published.isEmpty else { return }
+        guard !published.isEmpty else { return false }
         applyDirectMutations(published)
         if published.count == mutations.count {
             statusMessage = command.kind == .completeTask
@@ -1235,6 +1341,7 @@ final class TaskifyWatchAppModel: NSObject {
         } else {
             statusMessage = "Some Watch changes synced; the rest are safely queued."
         }
+        return published.count == mutations.count
     }
 
     private func directMutations(
@@ -1791,6 +1898,9 @@ final class TaskifyWatchAppModel: NSObject {
     private func finish(commandID: String) {
         let completedKind = pendingCommands.first(where: { $0.id == commandID })?.kind
         pendingCommands.removeAll { $0.id == commandID }
+        UNUserNotificationCenter.current().removePendingNotificationRequests(
+            withIdentifiers: [TaskifyWatchReminderNotification.identifier(commandID: commandID)]
+        )
         refreshPendingCompletionIDs()
         persistPendingCommands()
         if pendingCommands.isEmpty {
@@ -2140,6 +2250,8 @@ final class TaskifyWatchAppModel: NSObject {
         )
         guard TaskifyWatchWidgetCache.saveIfChanged(widgetSnapshot) else { return }
         reloadComplicationTimelines()
+        // Task completion entities and "What's Due" suggestions are sourced from this cache.
+        TaskifyWatchShortcuts.updateAppShortcutParameters()
     }
 
     private func reloadComplicationTimelines() {

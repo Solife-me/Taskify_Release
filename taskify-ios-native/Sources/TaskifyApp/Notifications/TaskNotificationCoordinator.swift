@@ -55,6 +55,7 @@ enum TaskUrgentAlarmPreferences {
 
 actor TaskNotificationCoordinator {
     private static let taskIdentifierPrefix = TaskifyTaskReminderNotification.identifierPrefix
+    private static let snoozeIdentifierPrefix = TaskifySnoozedTaskNotification.identifierPrefix
     private static let eventIdentifierPrefix = "taskify.event."
     private static let managedAlarmIDsDefaultsKey = "taskify.notifications.managedAlarmIDs"
     private let center: UNUserNotificationCenter
@@ -80,7 +81,9 @@ actor TaskNotificationCoordinator {
         isClosed = true
         let pending = await center.pendingNotificationRequests()
         let identifiers = pending.map(\.identifier).filter {
-            $0.hasPrefix(Self.taskIdentifierPrefix) || $0.hasPrefix(Self.eventIdentifierPrefix)
+            $0.hasPrefix(Self.taskIdentifierPrefix)
+                || $0.hasPrefix(Self.snoozeIdentifierPrefix)
+                || $0.hasPrefix(Self.eventIdentifierPrefix)
         }
         if !identifiers.isEmpty {
             center.removePendingNotificationRequests(withIdentifiers: identifiers)
@@ -121,14 +124,29 @@ actor TaskNotificationCoordinator {
 
         let pending = await center.pendingNotificationRequests()
         guard !isClosed else { return "Unavailable" }
+        let openTaskIDs = Set(tasks.lazy.filter { !$0.isDeleted && !$0.completed }.map(\.id))
+        let pendingSnoozes = pending.filter {
+            $0.identifier.hasPrefix(Self.snoozeIdentifierPrefix)
+        }
+        let validSnoozes = pendingSnoozes.filter { request in
+            let userInfo = request.content.userInfo
+            guard userInfo[TaskifyNotificationContract.accountIDKey] as? String == accountID,
+                  let taskID = userInfo[TaskifyNotificationContract.taskIDKey] as? String else {
+                return false
+            }
+            return openTaskIDs.contains(taskID)
+        }
+        let invalidSnoozeIDs = Set(pendingSnoozes.map(\.identifier))
+            .subtracting(validSnoozes.map(\.identifier))
         let existingIDs = pending
             .map(\.identifier)
             .filter {
                 $0.hasPrefix(Self.taskIdentifierPrefix)
                     || $0.hasPrefix(Self.eventIdentifierPrefix)
             }
-        if !existingIDs.isEmpty {
-            center.removePendingNotificationRequests(withIdentifiers: existingIDs)
+        let identifiersToRemove = existingIDs + Array(invalidSnoozeIDs)
+        if !identifiersToRemove.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: Array(identifiersToRemove))
         }
 
         guard Self.canSchedule(settings.authorizationStatus) else {
@@ -185,7 +203,9 @@ actor TaskNotificationCoordinator {
             }
         let upcoming = (taskReminders + urgentFallbacks + eventReminders)
             .sorted { $0.fireDate < $1.fireDate }
-            .prefix(60)
+            // Preserve the headroom this scheduler already leaves below the system limit while
+            // making active snoozes part of the same request budget.
+            .prefix(max(0, 60 - validSnoozes.count))
 
         for scheduled in upcoming {
             guard !Task.isCancelled, !isClosed else { break }
@@ -221,6 +241,39 @@ actor TaskNotificationCoordinator {
             try? await center.add(ScheduledReminder(task: notification).request)
         }
         return true
+    }
+
+    /// Schedules a single device-local follow-up without changing the task's saved reminder
+    /// offsets. Its stable request identifier makes repeated snoozes replace one another.
+    @discardableResult
+    func snooze(
+        task: TaskItem,
+        accountID: String,
+        now: Date = Date()
+    ) async -> Bool {
+        guard !isClosed,
+              let notification = TaskifySnoozedTaskNotification.notification(
+                for: task,
+                accountID: accountID,
+                after: now
+              ) else { return false }
+        let settings = await center.notificationSettings()
+        guard !isClosed, Self.canSchedule(settings.authorizationStatus) else { return false }
+        await TaskifyNotificationCategories.registerIfNeeded(center: center)
+        guard !isClosed else { return false }
+
+        let request = ScheduledReminder(snoozedTask: notification).request
+        center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
+        do {
+            try await center.add(request)
+            if isClosed {
+                center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
+                return false
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Whether Taskify may post notifications, without asking.
@@ -407,6 +460,17 @@ private struct ScheduledReminder: Sendable {
     }
 
     init(task notification: TaskifyTaskReminderNotification) {
+        self.init(
+            identifier: notification.identifier,
+            title: notification.title,
+            body: notification.body,
+            userInfo: notification.userInfo,
+            categoryIdentifier: TaskifyNotificationContract.taskCategoryIdentifier,
+            fireDate: notification.fireDate
+        )
+    }
+
+    init(snoozedTask notification: TaskifySnoozedTaskNotification) {
         self.init(
             identifier: notification.identifier,
             title: notification.title,
@@ -693,8 +757,9 @@ private final class NotificationPresentationDelegate: NSObject, UNUserNotificati
             completionHandler()
             return
         }
-        // Task reminders are local notifications; a pushed one cannot complete a task.
-        if case .completeTask = action,
+        // Task reminder actions are local-only; a pushed notification cannot mutate or snooze a
+        // task even if an untrusted payload names this category and copies the action metadata.
+        if action.isTaskAction,
            response.notification.request.trigger is UNPushNotificationTrigger {
             completionHandler()
             return
@@ -793,6 +858,8 @@ final class TaskNotificationActionRouter {
         switch action {
         case .completeTask(_, let taskID):
             await model.completeTaskFromNotification(taskID)
+        case .snoozeTask(_, let taskID):
+            await model.snoozeTaskFromNotification(taskID)
         case .reply(_, let target, let text):
             await model.replyToDirectMessageFromNotification(to: target, text: text)
         }

@@ -148,47 +148,22 @@ public enum PhysicalChecklistScanEngine {
         let pixelCount = image.width * image.height
         guard pixelCount > 0 else { return nil }
         let otsu = otsuThreshold(image.pixels)
-        let threshold = min(190, max(45, otsu + 8))
-        let mask = image.pixels.map { $0 <= threshold }
-        var visited = [Bool](repeating: false, count: pixelCount)
-        var candidates: [Component] = []
         let minimumArea = max(12, Int(Double(pixelCount) * 0.00002))
         let maximumArea = max(minimumArea, Int(Double(pixelCount) * 0.03))
-        var stack: [Int] = []
-
-        for start in 0..<pixelCount where mask[start] && !visited[start] {
-            visited[start] = true
-            stack.removeAll(keepingCapacity: true)
-            stack.append(start)
-            var component = Component(
-                minX: image.width,
-                minY: image.height,
-                maxX: 0,
-                maxY: 0,
-                area: 0
+        // A single global threshold fails when a corner lies in a deep camera shadow: the
+        // shaded paper and marker merge into one oversized component. Darker passes separate
+        // the actual ink while the ordinary Otsu pass still handles evenly lit pages.
+        let thresholds = Set([
+            min(190, max(45, otsu + 8)),
+            min(190, max(32, otsu - 12)),
+        ])
+        var candidates = thresholds.flatMap {
+            markerComponents(
+                image: image,
+                threshold: $0,
+                minimumArea: minimumArea,
+                maximumArea: maximumArea
             )
-
-            while let current = stack.popLast() {
-                let x = current % image.width
-                let y = current / image.width
-                component.minX = min(component.minX, x)
-                component.minY = min(component.minY, y)
-                component.maxX = max(component.maxX, x)
-                component.maxY = max(component.maxY, y)
-                component.area += 1
-
-                if x > 0 { appendNeighbor(current - 1, mask: mask, visited: &visited, stack: &stack) }
-                if x + 1 < image.width { appendNeighbor(current + 1, mask: mask, visited: &visited, stack: &stack) }
-                if y > 0 { appendNeighbor(current - image.width, mask: mask, visited: &visited, stack: &stack) }
-                if y + 1 < image.height { appendNeighbor(current + image.width, mask: mask, visited: &visited, stack: &stack) }
-            }
-
-            guard component.area >= minimumArea, component.area <= maximumArea,
-                  component.width >= 4, component.height >= 4 else { continue }
-            let aspect = Double(component.width) / Double(component.height)
-            let fill = Double(component.area) / component.boxArea
-            guard aspect >= 0.55, aspect <= 1.55, fill >= 0.10 else { continue }
-            candidates.append(component)
         }
 
         guard candidates.count >= 4 else { return nil }
@@ -196,7 +171,17 @@ public enum PhysicalChecklistScanEngine {
             if lhs.boxArea != rhs.boxArea { return lhs.boxArea > rhs.boxArea }
             return lhs.area > rhs.area
         }
-        candidates = Array(candidates.prefix(48))
+        var unique: [Component] = []
+        for candidate in candidates {
+            let duplicate = unique.contains { existing in
+                distance(candidate.center, existing.center) <= 2.5 &&
+                    abs(candidate.width - existing.width) <= 4 &&
+                    abs(candidate.height - existing.height) <= 4
+            }
+            if !duplicate { unique.append(candidate) }
+            if unique.count == 64 { break }
+        }
+        candidates = unique
 
         let centerX = Double(image.width) / 2
         let centerY = Double(image.height) / 2
@@ -277,6 +262,55 @@ public enum PhysicalChecklistScanEngine {
             }
         }
         return resolved
+    }
+
+    private static func markerComponents(
+        image: PhysicalChecklistGrayImage,
+        threshold: Int,
+        minimumArea: Int,
+        maximumArea: Int
+    ) -> [Component] {
+        let pixelCount = image.width * image.height
+        let mask = image.pixels.map { $0 <= threshold }
+        var visited = [Bool](repeating: false, count: pixelCount)
+        var components: [Component] = []
+        var stack: [Int] = []
+
+        for start in 0..<pixelCount where mask[start] && !visited[start] {
+            visited[start] = true
+            stack.removeAll(keepingCapacity: true)
+            stack.append(start)
+            var component = Component(
+                minX: image.width,
+                minY: image.height,
+                maxX: 0,
+                maxY: 0,
+                area: 0
+            )
+
+            while let current = stack.popLast() {
+                let x = current % image.width
+                let y = current / image.width
+                component.minX = min(component.minX, x)
+                component.minY = min(component.minY, y)
+                component.maxX = max(component.maxX, x)
+                component.maxY = max(component.maxY, y)
+                component.area += 1
+
+                if x > 0 { appendNeighbor(current - 1, mask: mask, visited: &visited, stack: &stack) }
+                if x + 1 < image.width { appendNeighbor(current + 1, mask: mask, visited: &visited, stack: &stack) }
+                if y > 0 { appendNeighbor(current - image.width, mask: mask, visited: &visited, stack: &stack) }
+                if y + 1 < image.height { appendNeighbor(current + image.width, mask: mask, visited: &visited, stack: &stack) }
+            }
+
+            guard component.area >= minimumArea, component.area <= maximumArea,
+                  component.width >= 4, component.height >= 4 else { continue }
+            let aspect = Double(component.width) / Double(component.height)
+            let fill = Double(component.area) / component.boxArea
+            guard aspect >= 0.55, aspect <= 1.55, fill >= 0.10 else { continue }
+            components.append(component)
+        }
+        return components
     }
 
     private static func appendNeighbor(

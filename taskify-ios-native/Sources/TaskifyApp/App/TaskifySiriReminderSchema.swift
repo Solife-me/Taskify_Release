@@ -61,7 +61,7 @@ struct TaskifySiriBoardEntity {
 
     struct BoardQuery: EntityStringQuery {
         func entities(for identifiers: [String]) async throws -> [TaskifySiriBoardEntity] {
-            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
+            let snapshot = try await JSONTaskStore().read(areas: [.tasks])
             let boards = TaskifyAddTaskDestination.namedBoards(in: snapshot)
             return identifiers.compactMap { identifier in
                 boards.first(where: { $0.id == identifier }).map(TaskifySiriBoardEntity.init)
@@ -82,7 +82,7 @@ struct TaskifySiriBoardEntity {
         }
 
         private func addableBoards() async throws -> [TaskifySiriBoardEntity] {
-            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
+            let snapshot = try await JSONTaskStore().read(areas: [.tasks])
             return TaskifyAddTaskDestination.namedBoards(in: snapshot)
                 .map(TaskifySiriBoardEntity.init)
         }
@@ -110,11 +110,9 @@ struct TaskifySiriSectionEntity {
 
     struct SectionQuery: EntityStringQuery {
         func entities(for identifiers: [String]) async throws -> [TaskifySiriSectionEntity] {
-            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
+            let snapshot = try await JSONTaskStore().read(areas: [.tasks])
             return identifiers.compactMap { identifier in
-                guard let separator = identifier.range(of: Self.separator) else { return nil }
-                let boardID = String(identifier[..<separator.lowerBound])
-                let columnID = String(identifier[separator.upperBound...])
+                guard let (boardID, columnID) = Self.components(from: identifier) else { return nil }
                 guard let board = snapshot.boards.first(where: { $0.id == boardID }),
                       let column = board.columns.first(where: { $0.id == columnID }) else { return nil }
                 return TaskifySiriSectionEntity(
@@ -133,7 +131,7 @@ struct TaskifySiriSectionEntity {
         }
 
         func suggestedEntities() async throws -> [TaskifySiriSectionEntity] {
-            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
+            let snapshot = try await JSONTaskStore().read(areas: [.tasks])
             return TaskifyAddTaskDestination.namedBoards(in: snapshot).flatMap { board in
                 let list = TaskifySiriBoardEntity(board: board)
                 return board.columns.map { column in
@@ -150,6 +148,18 @@ struct TaskifySiriSectionEntity {
 
         static func identifier(boardID: String, columnID: String) -> String {
             boardID + separator + columnID
+        }
+
+        static func components(from identifier: String) -> (boardID: String, columnID: String)? {
+            guard let separator = identifier.range(of: Self.separator) else { return nil }
+            return (
+                String(identifier[..<separator.lowerBound]),
+                String(identifier[separator.upperBound...])
+            )
+        }
+
+        static func columnID(from identifier: String) -> String? {
+            components(from: identifier)?.columnID
         }
     }
 }
@@ -187,7 +197,7 @@ struct TaskifySiriLocationTriggerEntity {
 @available(iOS 27.0, macOS 27.0, *)
 @AppEntity(schema: .reminders.reminder)
 struct TaskifySiriTaskEntity {
-    static let defaultQuery = TaskQuery()
+    static let defaultQuery = SiriTaskQuery()
 
     let id: String
     var title: String
@@ -248,7 +258,10 @@ struct TaskifySiriTaskEntity {
         dueDate = taskDueDate.map {
             Self.dateComponents(from: $0, includesTime: taskHasDueTime)
         }
-        recurrence = nil
+        recurrence = TaskifySiriRecurrence.calendarRule(
+            from: task.recurrence,
+            startDate: taskDueDate
+        )
         isCompleted = taskCompleted
         isFlagged = taskPriority == .high
         creationDate = taskCreatedAt
@@ -265,9 +278,9 @@ struct TaskifySiriTaskEntity {
         return Calendar.current.dateComponents(components, from: date)
     }
 
-    struct TaskQuery: EntityStringQuery {
+    struct SiriTaskQuery: EntityStringQuery {
         func entities(for identifiers: [String]) async throws -> [TaskifySiriTaskEntity] {
-            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
+            let snapshot = try await JSONTaskStore().read(areas: [.tasks])
             return identifiers.compactMap { identifier in
                 guard let task = snapshot.tasks.first(where: {
                     $0.id == identifier && $0.deleted != true
@@ -289,15 +302,25 @@ struct TaskifySiriTaskEntity {
 
         func entities(matching string: String) async throws -> [TaskifySiriTaskEntity] {
             let needle = string.trimmingCharacters(in: .whitespacesAndNewlines)
-            return try await suggestedEntities().filter {
-                needle.isEmpty || $0.title.localizedCaseInsensitiveContains(needle)
-            }
+            let snapshot = try await JSONTaskStore().read(areas: [.tasks])
+            return Self.entities(in: snapshot, matching: needle)
         }
 
         func suggestedEntities() async throws -> [TaskifySiriTaskEntity] {
-            let snapshot = try await JSONTaskStore().load(areas: [.tasks])
+            let snapshot = try await JSONTaskStore().read(areas: [.tasks])
+            return Self.entities(in: snapshot, matching: "")
+        }
+
+        private static func entities(
+            in snapshot: TaskifySnapshot,
+            matching needle: String
+        ) -> [TaskifySiriTaskEntity] {
             return snapshot.tasks
-                .filter { !$0.isDeleted && !$0.completed }
+                .filter {
+                    !$0.isDeleted && !$0.completed && (
+                        needle.isEmpty || $0.title.localizedCaseInsensitiveContains(needle)
+                    )
+                }
                 .sorted { $0.createdAt > $1.createdAt }
                 .prefix(100)
                 .compactMap { task in
@@ -338,13 +361,32 @@ struct TaskifyCreateReminderIntent {
         // A reminder's due date is when it goes off, as in Apple's Reminders: a time reminds at
         // that time, a day alone reminds on the day at the task's reminder time.
         let due = dueDate.flatMap(TaskifySiriDueDate.init)
+        let requestedList = section?.list ?? list
+        let taskRecurrence: TaskRecurrence?
+        if let recurrence {
+            guard due != nil else { throw TaskifySiriSchemaError.recurrenceNeedsDueDate }
+            guard let converted = TaskifySiriRecurrence.taskRecurrence(
+                from: recurrence,
+                startDate: due?.date
+            ) else {
+                throw TaskifySiriSchemaError.unsupportedRecurrence
+            }
+            taskRecurrence = converted
+        } else {
+            taskRecurrence = nil
+        }
         let created = try await TaskifyIntentTaskWriter.addTask(
             title: title,
-            requestedBoardName: list?.name ?? section?.list.name,
+            requestedBoardName: requestedList?.name,
+            requestedBoardID: requestedList?.id,
+            requestedColumnID: section.flatMap {
+                TaskifySiriSectionEntity.SectionQuery.columnID(from: $0.id)
+            },
             note: note.map { String($0.characters) } ?? "",
             dueDate: due?.date,
             dueTimeEnabled: due?.hasTime ?? false,
             reminders: due.map { [$0.reminder] } ?? [],
+            recurrence: taskRecurrence,
             priority: isFlagged == true ? .high : nil
         )
         let canNotify = await TaskifyIntentTaskWriter.scheduleReminders(for: created.task)
@@ -381,6 +423,128 @@ struct TaskifySiriDueDate {
 }
 
 @available(iOS 27.0, macOS 27.0, *)
+enum TaskifySiriRecurrence {
+    static func taskRecurrence(
+        from rule: Calendar.RecurrenceRule,
+        startDate: Date?
+    ) -> TaskRecurrence? {
+        let interval = max(1, rule.interval)
+        let until = rule.end.date
+        switch rule.frequency {
+        case .hourly:
+            return .every(interval, .hour, until: until)
+        case .daily:
+            return interval == 1 ? .daily(until: until) : .every(interval, .day, until: until)
+        case .weekly:
+            let days = rule.weekdays.compactMap(taskifyWeekday)
+            if interval == 1, !days.isEmpty {
+                return .weekly(days: Array(Set(days)).sorted(), until: until)
+            }
+            // An interval anchored to the task's due date preserves one selected weekday. The
+            // Taskify model cannot faithfully represent multiple weekdays every N weeks.
+            guard days.count <= 1 else { return nil }
+            return .every(interval, .week, until: until)
+        case .monthly:
+            let fallbackDay = startDate.map { rule.calendar.component(.day, from: $0) }
+            guard let day = rule.daysOfTheMonth.first ?? fallbackDay else { return nil }
+            return .monthlyDay(day: min(max(day, 1), 28), interval: interval, until: until)
+        case .minutely, .yearly:
+            return nil
+        @unknown default:
+            return nil
+        }
+    }
+
+    static func calendarRule(
+        from recurrence: TaskRecurrence?,
+        startDate: Date?
+    ) -> Calendar.RecurrenceRule? {
+        guard let recurrence, recurrence.isActive else { return nil }
+        let calendar = Calendar.current
+        let end = recurrence.untilDate.map(Calendar.RecurrenceRule.End.afterDate) ?? .never
+        switch recurrence {
+        case .none:
+            return nil
+        case .daily:
+            return .daily(calendar: calendar, end: end)
+        case .weekly(let days, _):
+            return .weekly(
+                calendar: calendar,
+                end: end,
+                weekdays: days.compactMap(calendarWeekday).map(Calendar.RecurrenceRule.Weekday.every)
+            )
+        case .every(let rawInterval, let unit, _):
+            let interval = max(1, rawInterval)
+            switch unit {
+            case .hour:
+                return .hourly(calendar: calendar, interval: interval, end: end)
+            case .day:
+                return .daily(calendar: calendar, interval: interval, end: end)
+            case .week:
+                let weekday = startDate
+                    .map { calendar.component(.weekday, from: $0) - 1 }
+                    .flatMap(calendarWeekday)
+                return .weekly(
+                    calendar: calendar,
+                    interval: interval,
+                    end: end,
+                    weekdays: weekday.map { [.every($0)] } ?? []
+                )
+            }
+        case .monthlyDay(let rawDay, let rawInterval, _):
+            return .monthly(
+                calendar: calendar,
+                interval: max(1, rawInterval ?? 1),
+                end: end,
+                daysOfTheMonth: [min(max(rawDay, 1), 28)]
+            )
+        }
+    }
+
+    private static func taskifyWeekday(_ weekday: Calendar.RecurrenceRule.Weekday) -> Int? {
+        guard case .every(let day) = weekday else { return nil }
+        return switch day {
+        case .sunday: 0
+        case .monday: 1
+        case .tuesday: 2
+        case .wednesday: 3
+        case .thursday: 4
+        case .friday: 5
+        case .saturday: 6
+        @unknown default: nil
+        }
+    }
+
+    private static func calendarWeekday(_ day: Int) -> Locale.Weekday? {
+        switch day {
+        case 0: .sunday
+        case 1: .monday
+        case 2: .tuesday
+        case 3: .wednesday
+        case 4: .thursday
+        case 5: .friday
+        case 6: .saturday
+        default: nil
+        }
+    }
+}
+
+@available(iOS 27.0, macOS 27.0, *)
+enum TaskifySiriSchemaError: LocalizedError {
+    case recurrenceNeedsDueDate
+    case unsupportedRecurrence
+
+    var errorDescription: String? {
+        switch self {
+        case .recurrenceNeedsDueDate:
+            "Choose a due date before making the Taskify task repeat."
+        case .unsupportedRecurrence:
+            "Taskify supports hourly, daily, weekly, and monthly task repetition."
+        }
+    }
+}
+
+@available(iOS 27.0, macOS 27.0, *)
 @AppIntent(schema: .reminders.updateReminder)
 struct TaskifyUpdateReminderIntent {
     var target: TaskifySiriTaskEntity
@@ -397,7 +561,9 @@ struct TaskifyUpdateReminderIntent {
 
     func perform() async throws -> some ReturnsValue<TaskifySiriTaskEntity> & ProvidesDialog {
         let store = JSONTaskStore()
-        var snapshot = try await store.load(areas: [.tasks])
+        // Preserve attachment file references while changing metadata. Publishing is deferred to
+        // the app below, where a normal load can materialize those files safely.
+        var snapshot = try await store.loadPreservingAttachmentReferences(areas: [.tasks])
         let existingIDs = Set(snapshot.tasks.lazy.filter { !$0.isDeleted }.map(\.id))
         guard var task = snapshot.tasks.first(where: {
             $0.id == target.id && !$0.isDeleted
@@ -405,10 +571,12 @@ struct TaskifyUpdateReminderIntent {
             throw TaskifyAddTaskIntentError.taskNotCreated
         }
 
-        if let list {
+        var requestedListForPresentation: TaskifySiriBoardEntity?
+        if case .set(let requestedList) = $list.valueState, let requestedList {
+            requestedListForPresentation = requestedList
             guard let destination = TaskifyAddTaskDestination.resolve(
                 in: snapshot,
-                requestedBoardName: list.name
+                requestedBoardID: requestedList.id
             ) else {
                 throw TaskifyAddTaskIntentError.noAddableBoard
             }
@@ -426,36 +594,94 @@ struct TaskifyUpdateReminderIntent {
             }
         }
 
-        let requestedDue = dueDate.flatMap(TaskifySiriDueDate.init)
-        let requestedDate = requestedDue?.date
-        let requestedDueTime = requestedDue?.hasTime
-        // Giving a task with no reminders a due date asks to be reminded then, as in Reminders.
-        let existingReminders = task.reminders ?? []
-        let reminders = existingReminders.isEmpty ? (requestedDue.map { [$0.reminder] } ?? []) : existingReminders
+        var updatedTitle = task.title
+        if case .set(let requestedTitle) = $title.valueState {
+            guard let requestedTitle,
+                  !requestedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw TaskifyAddTaskIntentError.emptyTitle
+            }
+            updatedTitle = requestedTitle
+        }
+
+        var updatedNote = task.note
+        if case .set(let requestedNote) = $note.valueState {
+            updatedNote = requestedNote.map { String($0.characters) } ?? ""
+        }
+
+        var updatedDueDate = task.dueDate
+        var updatedDueDateEnabled = task.dueDateEnabled
+        var updatedDueTimeEnabled = task.dueTimeEnabled
+        var updatedDueTimeZone = task.dueTimeZone
+        var updatedReminders = task.reminders ?? []
+        var updatedReminderTime = task.reminderTime
+        if case .set(let requestedComponents) = $dueDate.valueState {
+            if let requestedComponents, let requestedDue = TaskifySiriDueDate(requestedComponents) {
+                updatedDueDate = requestedDue.date
+                updatedDueDateEnabled = true
+                updatedDueTimeEnabled = requestedDue.hasTime
+                updatedDueTimeZone = requestedDue.hasTime
+                    ? (requestedComponents.timeZone?.identifier ?? TimeZone.current.identifier)
+                    : nil
+                // Setting a Reminders-style due date also asks for a notification at that date.
+                updatedReminders = [requestedDue.reminder]
+                updatedReminderTime = nil
+            } else {
+                // An explicit nil means “clear the due date”; an unset parameter preserves it.
+                updatedDueDate = nil
+                updatedDueDateEnabled = false
+                updatedDueTimeEnabled = false
+                updatedDueTimeZone = nil
+                updatedReminders = []
+                updatedReminderTime = nil
+            }
+        }
+
+        var updatedPriority = task.priority
+        if case .set(let requestedFlag) = $isFlagged.valueState {
+            updatedPriority = requestedFlag == true ? .high : nil
+        }
+
+        var updatedRecurrence = task.recurrence
+        if case .set(let requestedRecurrence) = $recurrence.valueState {
+            if let requestedRecurrence {
+                guard updatedDueDateEnabled, updatedDueDate != nil else {
+                    throw TaskifySiriSchemaError.recurrenceNeedsDueDate
+                }
+                guard let converted = TaskifySiriRecurrence.taskRecurrence(
+                    from: requestedRecurrence,
+                    startDate: updatedDueDate
+                ) else {
+                    throw TaskifySiriSchemaError.unsupportedRecurrence
+                }
+                updatedRecurrence = converted
+            } else {
+                updatedRecurrence = nil
+            }
+        }
+
         let updated = snapshot.updateTask(
             taskID: task.id,
-            title: title ?? task.title,
-            note: note.map { String($0.characters) } ?? task.note,
-            dueDate: requestedDate ?? task.dueDate,
-            dueDateEnabled: requestedDate != nil ? true : task.dueDateEnabled,
-            dueTimeEnabled: requestedDueTime ?? task.dueTimeEnabled,
-            dueTimeZone: requestedDueTime == true
-                ? (dueDate?.timeZone?.identifier ?? task.dueTimeZone)
-                : task.dueTimeZone,
-            priority: isFlagged.map { $0 ? .high : nil } ?? task.priority,
+            title: updatedTitle,
+            note: updatedNote,
+            dueDate: updatedDueDate,
+            dueDateEnabled: updatedDueDateEnabled,
+            dueTimeEnabled: updatedDueTimeEnabled,
+            dueTimeZone: updatedDueTimeZone,
+            priority: updatedPriority,
             columnID: task.columnID,
             subtasks: task.subtasks ?? [],
-            recurrence: task.recurrence,
-            reminders: reminders,
-            reminderTime: task.reminderTime
+            recurrence: updatedRecurrence,
+            reminders: updatedReminders,
+            reminderTime: updatedReminderTime
         )
         guard updated else { throw TaskifyAddTaskIntentError.taskNotCreated }
 
-        if let isCompleted,
+        if case .set(let requestedCompletion) = $isCompleted.valueState,
+           let requestedCompletion,
            let current = snapshot.tasks.first(where: { $0.id == task.id }),
-           current.completed != isCompleted {
+           current.completed != requestedCompletion {
             guard TaskifyExternalActions.setCompleted(
-                isCompleted, taskID: task.id, in: &snapshot, settings: .load()
+                requestedCompletion, taskID: task.id, in: &snapshot, settings: .load()
             ) else {
                 throw TaskifyAddTaskIntentError.taskNotCreated
             }
@@ -465,14 +691,20 @@ struct TaskifyUpdateReminderIntent {
               let storageBoard = snapshot.boards.first(where: { $0.id == savedTask.boardID }) else {
             throw TaskifyAddTaskIntentError.taskNotCreated
         }
-        let displayBoard = TaskifyIntentBoardPresentation.board(
+        let displayBoard = TaskifyAddTaskDestination.displayBoard(
             for: storageBoard,
-            requestedBoardName: list?.name,
+            requestedBoardID: requestedListForPresentation?.id,
             in: snapshot
         )
-        // The task, and a next occurrence its completion created, go to the relays now (C10-4).
+        // Stamp and save now, but leave network encoding to the app. Existing attachment values
+        // are file references in this lightweight snapshot and must not be published directly.
         let createdIDs = snapshot.tasks.filter { !$0.isDeleted && !existingIDs.contains($0.id) }.map(\.id)
-        try await TaskifyExternalActions.commit(snapshot, changedTaskIDs: [task.id] + createdIDs, store: store)
+        try await TaskifyExternalActions.commit(
+            snapshot,
+            changedTaskIDs: [task.id] + createdIDs,
+            store: store,
+            publisher: .disabled
+        )
         await TaskifyIntentTaskWriter.scheduleReminders(for: savedTask)
 
         return .result(
@@ -486,4 +718,66 @@ struct TaskifyUpdateReminderIntent {
     }
 
 }
+
+@available(iOS 27.0, macOS 27.0, *)
+@AppIntent(schema: .reminders.createList)
+struct TaskifyCreateReminderListIntent {
+    var type: TaskifySiriListType
+    var name: String
+
+    func perform() async throws -> some ReturnsValue<TaskifySiriBoardEntity> & ProvidesDialog {
+        let board = try await TaskifyExternalActions.createListBoard(name: name)
+        return .result(
+            value: TaskifySiriBoardEntity(board: board),
+            dialog: "Created the \(board.name) board in Taskify."
+        )
+    }
+}
+
+@available(iOS 27.0, macOS 27.0, *)
+@AppIntent(schema: .reminders.createSection)
+struct TaskifyCreateReminderSectionIntent {
+    var name: String
+    var list: TaskifySiriBoardEntity
+
+    func perform() async throws -> some ReturnsValue<TaskifySiriSectionEntity> & ProvidesDialog {
+        let created = try await TaskifyExternalActions.createListSection(
+            name: name,
+            boardID: list.id
+        )
+        let section = TaskifySiriSectionEntity(
+            id: TaskifySiriSectionEntity.SectionQuery.identifier(
+                boardID: created.board.id,
+                columnID: created.column.id
+            ),
+            name: created.column.name,
+            list: TaskifySiriBoardEntity(board: created.board)
+        )
+        return .result(
+            value: section,
+            dialog: "Created the \(created.column.name) section in \(created.board.name)."
+        )
+    }
+}
+
+@available(iOS 27.0, macOS 27.0, *)
+@AppIntent(schema: .reminders.deleteReminders)
+struct TaskifyDeleteRemindersIntent: DeleteIntent {
+    var entities: [TaskifySiriTaskEntity]
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let count = try await TaskifyExternalActions.deleteTasks(
+            entities.map(\.id),
+            publisher: .disabled,
+            preserveAttachmentReferences: true
+        )
+        guard count > 0 else {
+            return .result(dialog: "Those Taskify tasks were already removed.")
+        }
+        return .result(dialog: count == 1
+            ? "Deleted the Taskify task."
+            : "Deleted \(count) Taskify tasks.")
+    }
+}
+
 #endif

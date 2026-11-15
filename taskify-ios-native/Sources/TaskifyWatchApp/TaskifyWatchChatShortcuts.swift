@@ -132,10 +132,52 @@ struct TaskifyWatchSendMessageIntent: AppIntent {
     }
 }
 
-/// The Watch app's only shortcuts provider (an app may have one): messages and reminders. Must
-/// live in the app target; see `TaskifyShortcuts` on the iPhone.
+/// The Watch app's only shortcuts provider (an app may have one): tasks, reminders, and messages.
+/// Must live in the app target; see `TaskifyShortcuts` on the iPhone.
 struct TaskifyWatchShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: TaskifyWatchAddTaskIntent(),
+            phrases: [
+                "Add \(\.$task) to \(.applicationName)",
+                "Create \(\.$task) in \(.applicationName)",
+                "\(.applicationName) add \(\.$task)",
+                "Add a task to \(.applicationName)",
+            ],
+            shortTitle: "Add Task",
+            systemImageName: "plus.circle"
+        )
+        AppShortcut(
+            intent: TaskifyWatchAddTasksIntent(),
+            phrases: [
+                "Add \(\.$tasks) as tasks to \(.applicationName)",
+                "Add multiple tasks to \(.applicationName)",
+                "Add several tasks to \(.applicationName)",
+                "Create a list of tasks in \(.applicationName)",
+            ],
+            shortTitle: "Add Multiple Tasks",
+            systemImageName: "checklist.checked"
+        )
+        AppShortcut(
+            intent: TaskifyWatchCompleteTaskIntent(),
+            phrases: [
+                "Complete \(\.$task) in \(.applicationName)",
+                "Finish \(\.$task) in \(.applicationName)",
+                "Mark \(\.$task) complete in \(.applicationName)",
+            ],
+            shortTitle: "Complete Task",
+            systemImageName: "checkmark.circle"
+        )
+        AppShortcut(
+            intent: TaskifyWatchDueTodayIntent(),
+            phrases: [
+                "What is due today in \(.applicationName)",
+                "What are my \(.applicationName) tasks today",
+                "Read my \(.applicationName) tasks due today",
+            ],
+            shortTitle: "Due Today",
+            systemImageName: "calendar.badge.clock"
+        )
         // “Siri, in Taskify remind me to take out the trash tomorrow at 1pm.” The same phrases
         // as the iPhone and Mac.
         AppShortcut(

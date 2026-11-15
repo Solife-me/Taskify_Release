@@ -652,7 +652,7 @@ struct UpcomingView: View {
                         }
 
                         if !group.tasks.isEmpty {
-                            UpcomingTaskList(tasks: group.tasks, boardGrouping: boardGrouping)
+                            UpcomingTaskList(tasks: group.tasks)
                         }
                     }
                 }
@@ -783,7 +783,7 @@ struct UpcomingView: View {
                 }
 
                 if !selectedDayTasks.isEmpty {
-                    UpcomingTaskList(tasks: selectedDayTasks, boardGrouping: boardGrouping)
+                    UpcomingTaskList(tasks: selectedDayTasks)
                 }
             }
         }

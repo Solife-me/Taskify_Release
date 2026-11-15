@@ -41,6 +41,17 @@ public enum TaskifyRelayProofOfWork {
         return result
     }
 
+    /// NIP-13 requires both the achieved hash work and a `nonce` tag committing to at least the
+    /// relay's target. A lucky low-work event ID is not enough on relays that enforce the target
+    /// commitment, so durable queue preflight must check both before deciding an event is ready.
+    public static func satisfies(id: String, tags: [[String]], difficulty: Int) -> Bool {
+        guard difficulty > 0 else { return true }
+        guard leadingZeroBits(id) >= difficulty else { return false }
+        let committed = tags.first(where: { $0.first == "nonce" && $0.count >= 3 })
+            .flatMap { Int($0[2]) } ?? 0
+        return committed >= difficulty
+    }
+
     public static func mineTags(_ tags: [[String]], hash: ([[String]]) throws -> String) throws -> [[String]] {
         let target = difficulty
         guard target > 0 else { return tags }
@@ -136,6 +147,16 @@ public actor TaskifyRelayRequirements {
         }
     }
 
+    /// Returns only requirements already known in this process or learned from an earlier
+    /// rejection. It never performs network I/O, so latency-sensitive publishers can send an
+    /// unmined copy to ordinary relays before preparing separate copies for PoW relays.
+    public func knownDifficulty(for relay: String) -> Int {
+        guard let key = Self.normalizedKey(relay) else { return 0 }
+        let now = Date()
+        let advertised = cache[key].flatMap { $0.expiresAt > now ? $0.difficulty : nil } ?? 0
+        return max(advertised, learnedFloor(key, now: now))
+    }
+
     private func requirement(_ relay: String) async -> Int {
         guard let key = Self.normalizedKey(relay), let url = Self.advertisedURL(for: relay) else { return 0 }
         let now = Date()
@@ -156,8 +177,7 @@ public actor TaskifyRelayRequirements {
                     return Entry(difficulty: 0, expiresAt: Date().addingTimeInterval(Self.failureLifetime))
                 }
                 let limitation = json["limitation"] as? [String: Any]
-                let target = (limitation?["min_pow_difficulty"] as? NSNumber)?.doubleValue ?? 0
-                let difficulty = target.isFinite && target > 0 ? Int(min(256, ceil(target))) : 0
+                let difficulty = Self.supportedAdvertisedDifficulty(limitation)
                 return Entry(difficulty: difficulty, expiresAt: Date().addingTimeInterval(Self.advertisedLifetime))
             } catch { return Entry(difficulty: 0, expiresAt: Date().addingTimeInterval(Self.failureLifetime)) }
         }
@@ -198,6 +218,16 @@ public actor TaskifyRelayRequirements {
     static func builtInDifficulty(for relay: String) -> Int {
         guard let host = URLComponents(string: relay)?.host?.lowercased() else { return 0 }
         return builtInFloors[host] ?? 0
+    }
+
+    /// An unsupported relay policy must not prevent the same event from being prepared and
+    /// durably queued for every usable relay. The unsupported relay will refuse its copy and be
+    /// held by the normal rejection backoff instead of failing the whole multi-relay operation.
+    static func supportedAdvertisedDifficulty(_ limitation: [String: Any]?) -> Int {
+        let target = (limitation?["min_pow_difficulty"] as? NSNumber)?.doubleValue ?? 0
+        guard target.isFinite, target > 0 else { return 0 }
+        let rounded = Int(ceil(target))
+        return rounded <= maximumDifficulty ? rounded : 0
     }
 
     private static func advertisedURL(for relay: String) -> URL? {

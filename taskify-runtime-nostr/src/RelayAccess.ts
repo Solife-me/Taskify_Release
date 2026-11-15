@@ -1,7 +1,7 @@
 import NDK, { NDKPrivateKeySigner, NDKRelaySet, type NDKEvent, type NDKRelay } from "@nostr-dev-kit/ndk";
 import { RelayInfoCache } from "./RelayInfoCache.js";
 import { RelayAuthManager, createRelayAuthPolicy } from "./RelayAuth.js";
-import { applyProofOfWork, countLeadingZeroBits, parseProofOfWorkRejection } from "./ProofOfWork.js";
+import { applyProofOfWork, countLeadingZeroBits, MAX_PROOF_OF_WORK_DIFFICULTY, parseProofOfWorkRejection } from "./ProofOfWork.js";
 import type { RuntimeProofOfWorkSettings } from "./RuntimeNostrSession.js";
 import { normalizeRelayUrls } from "./relayUrls.js";
 import { installNdkRelayTimerFix } from "./ndkLifecycle.js";
@@ -45,7 +45,8 @@ export async function relayProofOfWorkDifficulty(relays: string[]): Promise<numb
 /** Records a relay's `pow:` rejection so later writes are mined to its target. */
 export function recordRelayProofOfWorkRejection(relayUrl: string, message: string): number | null {
   const required = parseProofOfWorkRejection(message);
-  if (required != null) relayInfoCache.recordProofOfWorkRequirement(relayUrl, required);
+  if (required == null || required > MAX_PROOF_OF_WORK_DIFFICULTY) return null;
+  relayInfoCache.recordProofOfWorkRequirement(relayUrl, required);
   return required;
 }
 

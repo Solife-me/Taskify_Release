@@ -37,6 +37,8 @@ export class NostrSession {
         get: (relayUrl) => relayInfoCache.get(relayUrl),
         getAgeMs: (relayUrl) => relayInfoCache.getAgeMs(relayUrl),
         getLimits: (relayUrls) => relayInfoCache.getLimits(relayUrls),
+        recordProofOfWorkRequirement: (relayUrl, difficulty) =>
+          relayInfoCache.recordProofOfWorkRequirement(relayUrl, difficulty),
       };
       const relayHealthAdapter: RelayHealthLike = {
         canAttempt: (relayUrl) => relayHealth.canAttempt(relayUrl),

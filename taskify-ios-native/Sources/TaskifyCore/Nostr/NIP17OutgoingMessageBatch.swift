@@ -18,6 +18,14 @@ public struct NIP17OutgoingMessageBatch: Sendable {
     public let localMessages: [NostrDirectMessage]
     public let deliveries: [NIP17OutgoingDelivery]
 
+    private init(
+        localMessages: [NostrDirectMessage],
+        deliveries: [NIP17OutgoingDelivery]
+    ) {
+        self.localMessages = localMessages
+        self.deliveries = deliveries
+    }
+
     public init(
         rumors: [NIP17Rumor],
         attachmentComment: String? = nil,
@@ -77,6 +85,27 @@ public struct NIP17OutgoingMessageBatch: Sendable {
         }
         self.localMessages = messages
         self.deliveries = deliveries
+    }
+
+    /// Keeps independently signed copies only for `relayURLs`. This lets chat enqueue a zero-work
+    /// copy to ordinary relays immediately, while a separately wrapped copy is mined for relays
+    /// with a known NIP-13 requirement. Attachment dependencies remain within their own copy.
+    public func restrictingRelayURLs(to relayURLs: Set<String>) -> NIP17OutgoingMessageBatch? {
+        let allowed = Set(TaskifyRelayURL.normalizedList(Array(relayURLs)))
+        guard !allowed.isEmpty else { return nil }
+        let filtered = deliveries.compactMap { delivery -> NIP17OutgoingDelivery? in
+            let relays = delivery.relayURLs.filter { allowed.contains($0) }
+            guard !relays.isEmpty else { return nil }
+            return NIP17OutgoingDelivery(
+                rumorEventID: delivery.rumorEventID,
+                recipientPublicKey: delivery.recipientPublicKey,
+                event: delivery.event,
+                relayURLs: relays,
+                dependsOnEventID: delivery.dependsOnEventID
+            )
+        }
+        guard !filtered.isEmpty else { return nil }
+        return NIP17OutgoingMessageBatch(localMessages: localMessages, deliveries: filtered)
     }
 
     /// Builds the same local rows as a fully wrapped batch before relay discovery and gift

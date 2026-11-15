@@ -35,6 +35,27 @@ struct TaskifyShortcuts: AppShortcutsProvider {
             shortTitle: "Quick Add Task",
             systemImageName: "plus.circle"
         )
+        AppShortcut(
+            intent: TaskifyAddTasksIntent(),
+            phrases: [
+                "Add multiple tasks to \(.applicationName)",
+                "Add several tasks to \(.applicationName)",
+                "Create a list of tasks in \(.applicationName)",
+                "Batch add tasks to \(.applicationName)",
+            ],
+            shortTitle: "Add Multiple Tasks",
+            systemImageName: "checklist.checked"
+        )
+        AppShortcut(
+            intent: TaskifyNaturalAddTasksIntent(),
+            phrases: [
+                "Add \(\.$tasks) as tasks to \(.applicationName)",
+                "Create \(\.$tasks) as tasks in \(.applicationName)",
+                "In \(.applicationName) add these tasks \(\.$tasks)",
+            ],
+            shortTitle: "Quick Add Multiple Tasks",
+            systemImageName: "text.badge.plus"
+        )
         // “Siri, in Taskify remind me to take out the trash tomorrow at 1pm.”
         AppShortcut(
             intent: TaskifyNaturalRemindMeIntent(),
@@ -60,6 +81,26 @@ struct TaskifyShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Remind Me",
             systemImageName: "bell"
+        )
+        AppShortcut(
+            intent: TaskifyCompleteTaskIntent(),
+            phrases: [
+                "Complete \(\.$task) in \(.applicationName)",
+                "Finish \(\.$task) in \(.applicationName)",
+                "Mark \(\.$task) done in \(.applicationName)",
+            ],
+            shortTitle: "Complete Task",
+            systemImageName: "checkmark.circle"
+        )
+        AppShortcut(
+            intent: TaskifyDueTodayIntent(),
+            phrases: [
+                "What is due today in \(.applicationName)",
+                "Show my \(.applicationName) tasks due today",
+                "Read my \(.applicationName) tasks for today",
+            ],
+            shortTitle: "Due Today",
+            systemImageName: "calendar"
         )
     }
 }
