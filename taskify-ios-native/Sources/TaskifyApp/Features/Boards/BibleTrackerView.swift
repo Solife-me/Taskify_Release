@@ -1593,24 +1593,5 @@ private func physicalChecklistGrayImage(_ source: UIImage) -> PhysicalChecklistG
         source.draw(in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
     }
     guard let cgImage = normalized.cgImage else { return nil }
-    var pixels = [UInt8](repeating: 255, count: targetWidth * targetHeight)
-    let rendered = pixels.withUnsafeMutableBytes { buffer -> Bool in
-        guard let context = CGContext(
-            data: buffer.baseAddress,
-            width: targetWidth,
-            height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: targetWidth,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return false }
-        context.interpolationQuality = .high
-        // Bitmap contexts use a bottom-left origin while the checklist layout and UIKit use
-        // top-left coordinates. Normalize once here so every marker/row sample maps directly.
-        context.translateBy(x: 0, y: CGFloat(targetHeight))
-        context.scaleBy(x: 1, y: -1)
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-        return true
-    }
-    return rendered ? PhysicalChecklistGrayImage(pixels: pixels, width: targetWidth, height: targetHeight) : nil
+    return PhysicalChecklistGrayImage.from(cgImage: cgImage, targetWidth: targetWidth)
 }

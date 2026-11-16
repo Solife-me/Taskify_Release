@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Testing
 @testable import TaskifyCore
 
@@ -220,4 +221,36 @@ private func withBackground(_ page: PhysicalChecklistGrayImage, margin: Double =
     #expect(PhysicalChecklistScanAnalyzer.jobCodeMatches(expected, expected))
     #expect(PhysicalChecklistScanAnalyzer.jobCodeMatches(expected ^ 0b11, expected))
     #expect(!PhysicalChecklistScanAnalyzer.jobCodeMatches(expected ^ 0b111, expected))
+}
+
+@Test func grayImageConversionKeepsCameraRowsInTopLeftOrder() throws {
+    let width = 8
+    let height = 8
+    var sourcePixels = [UInt8](repeating: 255, count: width * height)
+    for y in 0..<(height / 2) {
+        for x in 0..<width {
+            sourcePixels[y * width + x] = 0
+        }
+    }
+    let provider = try #require(CGDataProvider(data: Data(sourcePixels) as CFData))
+    let source = try #require(CGImage(
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bitsPerPixel: 8,
+        bytesPerRow: width,
+        space: CGColorSpaceCreateDeviceGray(),
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    ))
+
+    let converted = try #require(PhysicalChecklistGrayImage.from(cgImage: source, targetWidth: width))
+
+    #expect(converted.width == width)
+    #expect(converted.height == height)
+    #expect(converted.pixels.prefix(width).allSatisfy { $0 < 40 })
+    #expect(converted.pixels.suffix(width).allSatisfy { $0 > 215 })
 }

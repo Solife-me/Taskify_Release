@@ -423,6 +423,13 @@ public enum PhysicalChecklistScanEngine {
         })
         let paper = median([localBackground, backgroundMedian, (localBackground + backgroundMedian) / 2])
         let darkThreshold = paper - max(18, (paper - markerMedian) * 0.24)
+        let locatedCenter = locateCircleCenter(
+            context: context,
+            expectedCenter: center,
+            circleSizeMM: circleSizeMM,
+            paper: paper,
+            markerMedian: markerMedian
+        )
         let radius = circleSizeMM * 0.32 // excludes the preprinted ring, even with modest blur
         let divisions = 10
         var darkPoints: [Point] = []
@@ -436,7 +443,7 @@ public enum PhysicalChecklistScanEngine {
                 sampled += 1
                 let value = samplePage(
                     context: context,
-                    point: Point(x: center.x + dx, y: center.y + dy),
+                    point: Point(x: locatedCenter.x + dx, y: locatedCenter.y + dy),
                     radiusMM: 0.10
                 )
                 if value < darkThreshold { darkPoints.append(Point(x: dx, y: dy)) }
@@ -450,6 +457,69 @@ public enum PhysicalChecklistScanEngine {
         let xSpan = darkPoints.map(\.x).max()! - darkPoints.map(\.x).min()!
         let ySpan = darkPoints.map(\.y).max()! - darkPoints.map(\.y).min()!
         return darkFraction >= 0.045 && xSpan >= radius * 0.55 && ySpan >= radius * 0.45
+    }
+
+    /// Browser printing can shift a row's checkbox by a millimetre relative to the registration
+    /// grid. Recenter on the printed outline before reading its interior so that displacement does
+    /// not look like a filled circle.
+    private static func locateCircleCenter(
+        context: ScanContext,
+        expectedCenter: Point,
+        circleSizeMM: Double,
+        paper: Double,
+        markerMedian: Double
+    ) -> Point {
+        var best = expectedCenter
+        var bestScore = -1.0
+        for ix in -3...3 {
+            for iy in -3...3 {
+                let candidate = Point(
+                    x: expectedCenter.x + Double(ix) * 0.5,
+                    y: expectedCenter.y + Double(iy) * 0.5
+                )
+                let score = circleOutlineScore(
+                    context: context,
+                    center: candidate,
+                    circleSizeMM: circleSizeMM,
+                    paper: paper,
+                    markerMedian: markerMedian
+                )
+                if score > bestScore {
+                    best = candidate
+                    bestScore = score
+                }
+            }
+        }
+        return bestScore >= 0.12 ? best : expectedCenter
+    }
+
+    private static func circleOutlineScore(
+        context: ScanContext,
+        center: Point,
+        circleSizeMM: Double,
+        paper: Double,
+        markerMedian: Double
+    ) -> Double {
+        let darkThreshold = paper - max(20, (paper - markerMedian) * 0.15)
+        var dark = 0
+        var sampled = 0
+        for factor in [0.36, 0.45, 0.54, 0.62] {
+            let radius = circleSizeMM * factor
+            for index in 0..<16 {
+                let angle = Double(index) / 16 * 2 * Double.pi
+                let value = samplePage(
+                    context: context,
+                    point: Point(
+                        x: center.x + cos(angle) * radius,
+                        y: center.y + sin(angle) * radius
+                    ),
+                    radiusMM: 0.08
+                )
+                sampled += 1
+                if value < darkThreshold { dark += 1 }
+            }
+        }
+        return sampled == 0 ? 0 : Double(dark) / Double(sampled)
     }
 
     // MARK: - Sampling and math

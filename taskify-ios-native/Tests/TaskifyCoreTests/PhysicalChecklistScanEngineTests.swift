@@ -84,10 +84,32 @@ private enum TestChecklistMark {
     #expect(result.detectedIDs == ["task-1"])
 }
 
+@Test func physicalChecklistScannerLocatesAMarkedCircleShiftedFromTheGrid() {
+    let items = (0..<6).map { PhysicalChecklistItem(id: "task-\($0)", title: "Task \($0)") }
+    let job = PhysicalChecklistJob(
+        id: "shifted-circle-regression",
+        ownerID: "board",
+        title: "Personal schedule",
+        paper: .a6,
+        items: items
+    )
+    let image = renderChecklistPhoto(
+        job: job,
+        marks: ["task-3": .check],
+        circleOffsetXMM: 1.2
+    )
+
+    let result = PhysicalChecklistScanEngine.scan(images: [image], job: job)
+
+    #expect(result.recognizedPages == 1)
+    #expect(result.detectedIDs == ["task-3"])
+}
+
 private func renderChecklistPhoto(
     job: PhysicalChecklistJob,
     marks: [String: TestChecklistMark],
-    deepLowerRightShadow: Bool = false
+    deepLowerRightShadow: Bool = false,
+    circleOffsetXMM: Double = 0
 ) -> PhysicalChecklistGrayImage {
     let layout = PhysicalChecklistLayout.build(job: job)
     let paper = job.paper.sizeMM
@@ -110,7 +132,7 @@ private func renderChecklistPhoto(
     let punchedHoleCentersY = [23.0, 37.0, 65.0, 83.0, 111.0, 125.0]
     let itemRows = layout.pages[0].rows.compactMap { row -> (String, Double, Double)? in
         guard case let .item(item) = row.kind, let center = row.circleCenterMM else { return nil }
-        return (item.id, center.x, center.y)
+        return (item.id, center.x + circleOffsetXMM, center.y)
     }
 
     for py in 0..<height {
