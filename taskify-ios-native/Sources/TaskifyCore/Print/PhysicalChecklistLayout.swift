@@ -248,13 +248,14 @@ public struct NostrPrintJobManifest: Codable, Equatable, Sendable {
     ) -> [NostrPrintJobManifest] {
         var newest: [String: NostrPrintJobManifest] = [:]
         for manifest in remote + local where manifest.version == 1 && !manifest.ownerID.isEmpty {
-            guard let current = newest[manifest.ownerID] else {
-                newest[manifest.ownerID] = manifest
+            let ownerKey = manifest.ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let current = newest[ownerKey] else {
+                newest[ownerKey] = manifest
                 continue
             }
             if manifest.createdAt > current.createdAt
                 || (manifest.createdAt == current.createdAt && manifest.id > current.id) {
-                newest[manifest.ownerID] = manifest
+                newest[ownerKey] = manifest
             }
         }
         return Array(newest.values)
@@ -273,7 +274,7 @@ public enum PhysicalChecklistJobStore {
 
     public static func save(_ job: PhysicalChecklistJob, defaults: UserDefaults = .standard) {
         var jobs = loadAll(defaults: defaults)
-        jobs[job.ownerID] = job
+        jobs[ownerKey(job.ownerID)] = job
         persist(jobs, defaults: defaults)
     }
 
@@ -281,7 +282,7 @@ public enum PhysicalChecklistJobStore {
         ownerID: String,
         defaults: UserDefaults = .standard
     ) -> PhysicalChecklistJob? {
-        loadAll(defaults: defaults)[ownerID]
+        loadAll(defaults: defaults)[ownerKey(ownerID)]
     }
 
     public static func loadAll(defaults: UserDefaults = .standard) -> [String: PhysicalChecklistJob] {
@@ -289,7 +290,13 @@ public enum PhysicalChecklistJobStore {
               let jobs = try? JSONDecoder().decode([String: PhysicalChecklistJob].self, from: data) else {
             return [:]
         }
-        return jobs
+        var normalized: [String: PhysicalChecklistJob] = [:]
+        for job in jobs.values {
+            let key = ownerKey(job.ownerID)
+            if let current = normalized[key], current.createdAt > job.createdAt { continue }
+            normalized[key] = job
+        }
+        return normalized
     }
 
     public static func merge(
@@ -299,10 +306,15 @@ public enum PhysicalChecklistJobStore {
         var jobs = loadAll(defaults: defaults)
         for manifest in manifests {
             guard let job = manifest.job else { continue }
-            if let current = jobs[job.ownerID], current.createdAt > job.createdAt { continue }
-            jobs[job.ownerID] = job
+            let key = ownerKey(job.ownerID)
+            if let current = jobs[key], current.createdAt > job.createdAt { continue }
+            jobs[key] = job
         }
         persist(jobs, defaults: defaults)
+    }
+
+    private static func ownerKey(_ ownerID: String) -> String {
+        ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func persist(

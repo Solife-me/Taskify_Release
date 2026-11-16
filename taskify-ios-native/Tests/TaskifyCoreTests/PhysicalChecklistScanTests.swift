@@ -223,6 +223,19 @@ private func withBackground(_ page: PhysicalChecklistGrayImage, margin: Double =
     #expect(!PhysicalChecklistScanAnalyzer.jobCodeMatches(expected ^ 0b111, expected))
 }
 
+@Test func scanMatchSelectsThePrintJobWhoseCodeIsOnTheSheet() {
+    let expected = makeJob(paper: .a6, id: "matching-print")
+    let other = makeJob(paper: .a6, id: "other-print")
+    let match = PhysicalChecklistScanAnalyzer.match(
+        images: [renderChecklist(job: expected, filledIDs: ["b"])],
+        jobs: [other, expected]
+    )
+
+    #expect(match.job?.id == expected.id)
+    #expect(match.result.detectedIDs == ["b"])
+    #expect(match.result.recognizedPages == 1)
+}
+
 @Test func grayImageConversionKeepsCameraRowsInTopLeftOrder() throws {
     let width = 8
     let height = 8

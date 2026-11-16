@@ -202,6 +202,16 @@ public struct PhysicalChecklistScanResult: Sendable {
     }
 }
 
+public struct PhysicalChecklistScanMatch: Sendable {
+    public var job: PhysicalChecklistJob?
+    public var result: PhysicalChecklistScanResult
+
+    public init(job: PhysicalChecklistJob?, result: PhysicalChecklistScanResult) {
+        self.job = job
+        self.result = result
+    }
+}
+
 /// Reads photographed checklist pages: the paper, orientation and corner markers are worked out
 /// from the sheet itself, then the print code proves it belongs to this job and the page bits name
 /// the page. Every paper and orientation is tried because a sheet can be printed on one paper size
@@ -259,6 +269,34 @@ public enum PhysicalChecklistScanAnalyzer {
             recognizedPages: recognized.count,
             mismatchedJobs: mismatchedJobs,
             unreadablePageIDs: unreadablePageIDs
+        )
+    }
+
+    /// Tries every compatible print manifest and lets the page's encoded print job select the
+    /// correct mapping. PWA boards can arrive under a local owner key or a different UUID casing;
+    /// the job code remains the authority on which cached manifest belongs to this sheet.
+    public static func match(
+        images: [PhysicalChecklistGrayImage],
+        jobs: [PhysicalChecklistJob]
+    ) -> PhysicalChecklistScanMatch {
+        var mismatchedJobs = 0
+        var unreadablePageIDs = 0
+        for job in jobs {
+            let result = scan(images: images, job: job)
+            if result.recognizedPages > 0 {
+                return PhysicalChecklistScanMatch(job: job, result: result)
+            }
+            mismatchedJobs = max(mismatchedJobs, result.mismatchedJobs)
+            unreadablePageIDs = max(unreadablePageIDs, result.unreadablePageIDs)
+        }
+        return PhysicalChecklistScanMatch(
+            job: nil,
+            result: PhysicalChecklistScanResult(
+                detectedIDs: [],
+                recognizedPages: 0,
+                mismatchedJobs: mismatchedJobs,
+                unreadablePageIDs: unreadablePageIDs
+            )
         )
     }
 

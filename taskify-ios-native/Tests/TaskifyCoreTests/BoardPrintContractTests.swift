@@ -48,6 +48,24 @@ private let boardPrintVectorsURL = URL(fileURLWithPath: #filePath)
     #expect(!BoardPrintContract.isSupportedVersion("v6"))
 }
 
+@Test func printJobStoreMatchesOwnerIDsCaseInsensitively() {
+    let suiteName = "taskify-print-job-store-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let job = PhysicalChecklistJob(
+        id: "case-insensitive-print",
+        ownerID: "board:ABCDEF",
+        title: "Work",
+        items: [PhysicalChecklistItem(id: "task", title: "Task")]
+    )
+
+    PhysicalChecklistJobStore.save(job, defaults: defaults)
+
+    #expect(PhysicalChecklistJobStore.load(ownerID: "board:abcdef", defaults: defaults) == job)
+    #expect(PhysicalChecklistJobStore.load(ownerID: " BOARD:AbCdEf ", defaults: defaults) == job)
+}
+
 @Test func encryptedPrintManifestUsesCrossClientKeysAndNewestOwnerWins() throws {
     let old = PhysicalChecklistJob(
         id: "old", ownerID: "board:shared", title: "Board",

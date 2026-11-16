@@ -35,3 +35,10 @@ allows faded toner up to 210 luma while retaining the separate marker-contrast a
 checks. Blank lower-page noise could also satisfy the old four-pixel check/X span rule, so stroke
 detection now requires at least ten dark samples. The second scan recognizes one page and only the
 marked task.
+
+Build 209 then exposed an identity mismatch rather than an image-reading failure. Print-job owner
+IDs were stored case-sensitively, and the scanner only loaded the exact current board key before
+falling back to a newly generated native print ID. Owner lookup is now case-insensitive, and the
+scanner tries equivalent cached print jobs with the same board title, using the encoded print code
+to select the correct task mapping. This covers PWA boards that sync with differently-cased or
+client-local owner keys.

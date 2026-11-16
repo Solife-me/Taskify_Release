@@ -956,6 +956,7 @@ struct PhysicalChecklistSheet: View {
     @State private var scanReview = PhysicalChecklistScanReview()
     @State private var scanMessage: String?
     @State private var scanJob: PhysicalChecklistJob?
+    @State private var scanCandidates: [PhysicalChecklistJob] = []
     @State private var preparingPhotos = false
 
     let onApply: ([String]) -> Void
@@ -967,14 +968,48 @@ struct PhysicalChecklistSheet: View {
     ) {
         _job = State(initialValue: job)
         let storedJob = PhysicalChecklistJobStore.load(ownerID: job.ownerID)
+        let candidates = Self.scanCandidates(for: job, storedJob: storedJob)
         _showingScanner = State(
             initialValue: startWithScanner && VNDocumentCameraViewController.isSupported
         )
         _preparingPhotos = State(
             initialValue: job.items.contains { !$0.photoSources.isEmpty && $0.photos.isEmpty }
         )
-        _scanJob = State(initialValue: startWithScanner ? (storedJob ?? job) : nil)
+        _scanJob = State(initialValue: startWithScanner ? candidates.first : nil)
+        _scanCandidates = State(initialValue: startWithScanner ? candidates : [])
         self.onApply = onApply
+    }
+
+    private static func scanCandidates(
+        for job: PhysicalChecklistJob,
+        storedJob: PhysicalChecklistJob?
+    ) -> [PhysicalChecklistJob] {
+        let ownerID = job.ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let boardTitle = job.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let related = PhysicalChecklistJobStore.loadAll().values.filter { candidate in
+            let candidateOwner = candidate.ownerID
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let candidateTitle = candidate.title
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return candidateOwner == ownerID
+                || candidateTitle == boardTitle
+                || candidateTitle.hasPrefix("\(boardTitle) –")
+        }
+        .sorted { lhs, rhs in
+            let lhsExact = lhs.ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == ownerID
+            let rhsExact = rhs.ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == ownerID
+            if lhsExact != rhsExact { return lhsExact }
+            return lhs.createdAt > rhs.createdAt
+        }
+        var result = related
+        if let storedJob, !result.contains(where: { $0.id == storedJob.id }) {
+            result.insert(storedJob, at: 0)
+        } else if !result.contains(where: { $0.id == job.id }) {
+            result.append(job)
+        }
+        return result
     }
 
     private var reviewedItems: [PhysicalChecklistItem] {
@@ -1132,9 +1167,10 @@ struct PhysicalChecklistSheet: View {
         .fullScreenCover(isPresented: $showingScanner) {
             PhysicalChecklistDocumentScanner { images in
                 showingScanner = false
-                guard let scanJob else { return }
+                guard !scanCandidates.isEmpty else { return }
                 let grayImages = images.compactMap(physicalChecklistGrayImage)
-                let result = PhysicalChecklistScanAnalyzer.scan(images: grayImages, job: scanJob)
+                let match = PhysicalChecklistScanAnalyzer.match(images: grayImages, jobs: scanCandidates)
+                let result = match.result
                 if result.mismatchedJobs > 0 {
                     scanMessage = "This sheet belongs to a different print or board. Reprint the current checklist before scanning."
                 } else if result.unreadablePageIDs > 0 {
@@ -1142,7 +1178,9 @@ struct PhysicalChecklistSheet: View {
                 } else if result.recognizedPages == 0 {
                     scanMessage = "No Taskify checklist page was recognized. Keep the whole page visible and try again in even light."
                 } else {
-                    scanReview.merge(detectedIDs: result.detectedIDs, items: scanJob.items)
+                    guard let matchedJob = match.job else { return }
+                    scanJob = matchedJob
+                    scanReview.merge(detectedIDs: result.detectedIDs, items: matchedJob.items)
                     if result.detectedIDs.isEmpty {
                         scanMessage = "The page was recognized, but no newly marked circles were found."
                     } else {
