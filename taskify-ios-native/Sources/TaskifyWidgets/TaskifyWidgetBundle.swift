@@ -355,6 +355,22 @@ private struct CalendarTaskWidgetRow: View {
     let item: TaskifyWidgetTask
     let compact: Bool
     let dense: Bool
+    let destinationOverride: URL?
+    let timingOverride: String?
+
+    init(
+        item: TaskifyWidgetTask,
+        compact: Bool,
+        dense: Bool,
+        destinationOverride: URL? = nil,
+        timingOverride: String? = nil
+    ) {
+        self.item = item
+        self.compact = compact
+        self.dense = dense
+        self.destinationOverride = destinationOverride
+        self.timingOverride = timingOverride
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: dense ? 2 : (compact ? 5 : 7)) {
@@ -377,14 +393,14 @@ private struct CalendarTaskWidgetRow: View {
             }
 
             // Only the text opens the task, so it can't swallow the checkbox's taps.
-            Link(destination: destination) {
+            Link(destination: destinationOverride ?? defaultDestination) {
                 HStack(alignment: .center, spacing: 5) {
                     Text(item.title)
                         .font((dense ? Font.system(size: 8.5) : (compact ? Font.caption : .subheadline)).weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 3)
-                    if let timing = timingLabel {
+                    if let timing = timingOverride ?? timingLabel {
                         Text(timing)
                             .font(dense ? .system(size: 8) : .caption2)
                             .foregroundStyle(.secondary)
@@ -401,7 +417,7 @@ private struct CalendarTaskWidgetRow: View {
         .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: dense ? 5.5 : (compact ? 8 : 10), style: .continuous))
     }
 
-    private var destination: URL {
+    private var defaultDestination: URL {
         guard item.kind == .task else { return TaskifyWidgetLink.upcoming.url }
         return TaskifyWidgetLink.task(id: item.id, boardID: item.boardID).url
     }
@@ -417,9 +433,25 @@ private struct CalendarEventWidgetRow: View {
     let item: TaskifyWidgetTask
     let compact: Bool
     let dense: Bool
+    let destinationOverride: URL?
+    let timingOverride: String?
+
+    init(
+        item: TaskifyWidgetTask,
+        compact: Bool,
+        dense: Bool,
+        destinationOverride: URL? = nil,
+        timingOverride: String? = nil
+    ) {
+        self.item = item
+        self.compact = compact
+        self.dense = dense
+        self.destinationOverride = destinationOverride
+        self.timingOverride = timingOverride
+    }
 
     var body: some View {
-        Link(destination: TaskifyWidgetLink.upcoming.url) {
+        Link(destination: destinationOverride ?? TaskifyWidgetLink.upcoming.url) {
             HStack(alignment: .center, spacing: dense ? 2 : (compact ? 5 : 7)) {
                 Capsule()
                     .fill(Color.accentColor)
@@ -446,7 +478,12 @@ private struct CalendarEventWidgetRow: View {
 
     @ViewBuilder
     private var eventTiming: some View {
-        if item.isAllDay {
+        if let timingOverride {
+            Text(timingOverride)
+                .font(dense ? .system(size: 8) : .caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } else if item.isAllDay {
             Text("all-day")
                 .font(dense ? .system(size: 8) : .caption2)
                 .foregroundStyle(.secondary)
@@ -829,48 +866,57 @@ struct BoardWidgetView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 3 : 5) {
-            HStack(alignment: .firstTextBaseline, spacing: compact ? 3 : 5) {
-                Text(entry.data?.board.name ?? "Board")
-                    .font(.system(size: compact ? 10 : 12, weight: .bold))
+        VStack(alignment: .leading, spacing: compact ? 2 : 1) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text((entry.data?.board.name ?? "Board").uppercased())
+                    .font(.system(size: compact ? 9 : 10, weight: .bold))
+                    .tracking(0.35)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
-                Text("\(presentation.itemCount)")
-                    .font(.system(size: compact ? 9 : 10, weight: .medium))
-                    .foregroundStyle(.secondary)
                 Spacer(minLength: 2)
+                if presentation.hiddenItemCount > 0 {
+                    Text("+\(presentation.hiddenItemCount)")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
                 Link(destination: quickAddURL) {
                     Image(systemName: "plus.circle.fill")
-                        .font(.system(size: compact ? 14 : 16, weight: .semibold))
+                        .font(.system(size: compact ? 12 : 14, weight: .semibold))
                         .foregroundStyle(.tint)
-                        .frame(width: compact ? 16 : 18, height: compact ? 16 : 18)
+                        .frame(width: compact ? 14 : 16, height: compact ? 14 : 16)
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Add task to \(entry.data?.board.name ?? "board")")
             }
-            .frame(minHeight: compact ? 16 : 18)
 
             if presentation.rows.isEmpty {
                 Spacer(minLength: 0)
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Nothing in \(entry.data?.scopeName.lowercased() ?? "this view")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                HStack {
+                    Spacer()
+                    VStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.green)
+                        Text("Nothing in \(entry.data?.scopeName.lowercased() ?? "this view")")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                    Spacer()
                 }
                 Spacer(minLength: 0)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(presentation.rows.enumerated()), id: \.element.id) { index, item in
-                        BoardWidgetItemRow(item: item, referenceDate: entry.date, compact: compact)
-                        if index < presentation.rows.count - 1 {
-                            Divider().padding(.leading, compact ? 17 : 24)
-                        }
+                VStack(alignment: .leading, spacing: compact ? 2 : 1) {
+                    ForEach(presentation.rows) { item in
+                        BoardWidgetScheduleRow(
+                            item: item,
+                            referenceDate: entry.date,
+                            compact: compact
+                        )
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -885,62 +931,36 @@ struct BoardWidgetView: View {
     }
 }
 
-private struct BoardWidgetItemRow: View {
+private struct BoardWidgetScheduleRow: View {
     let item: TaskifyWidgetTask
     let referenceDate: Date
     let compact: Bool
 
     var body: some View {
-        HStack(spacing: compact ? 3 : 4) {
-            if item.kind.isCompletable {
-                Button(intent: CompleteTaskIntent(taskID: item.id)) {
-                    Image(systemName: item.kind.symbolName)
-                        .font(.system(size: compact ? 9 : 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: compact ? 14 : 20, height: compact ? 17 : 21)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            } else {
-                Image(systemName: item.kind.symbolName)
-                    .font(.system(size: compact ? 9 : 11, weight: .semibold))
-                    .foregroundStyle(.tint)
-                    .frame(width: compact ? 14 : 20, height: compact ? 17 : 21)
-            }
-
-            Link(destination: destination) {
-                HStack(spacing: compact ? 3 : 5) {
-                    Text(item.title)
-                        .font(.system(
-                            size: compact ? 10 : 11,
-                            weight: item.kind == .event ? .semibold : .medium
-                        ))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    Spacer(minLength: 3)
-                    if let dueLabel {
-                        Text(dueLabel)
-                            .font(.system(size: compact ? 8 : 9))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: compact ? 17 : 21,
-                    alignment: .leading
-                )
-                .contentShape(Rectangle())
-            }
+        if item.kind == .event || item.kind == .calendar {
+            CalendarEventWidgetRow(
+                item: item,
+                compact: compact,
+                dense: true,
+                destinationOverride: destination,
+                timingOverride: dueLabel
+            )
+        } else {
+            CalendarTaskWidgetRow(
+                item: item,
+                compact: compact,
+                dense: true,
+                destinationOverride: destination,
+                timingOverride: dueLabel
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var dueLabel: String? {
         guard let dueDate = item.dueDate else { return nil }
+        if item.isAllDay { return "all-day" }
         if Calendar.current.isDate(dueDate, inSameDayAs: referenceDate) {
-            return item.isAllDay ? "Today" : dueDate.formatted(date: .omitted, time: .shortened)
+            return dueDate.formatted(date: .omitted, time: .shortened)
         }
         return dueDate.formatted(.dateTime.month(.abbreviated).day())
     }

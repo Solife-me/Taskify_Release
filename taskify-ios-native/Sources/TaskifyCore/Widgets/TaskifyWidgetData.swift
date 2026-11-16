@@ -101,18 +101,13 @@ public struct TaskifyBoardWidgetData: Equatable, Sendable {
     }
 }
 
-/// The two supported Board widget widths use different row limits because the compact widget has
-/// less horizontal room for task titles, while both share the same vertical budget.
+/// Both supported Board widget widths share a six-row budget. The compact presentation uses
+/// denser spacing, while the wider presentation keeps the same rows and gains title width.
 public enum TaskifyBoardWidgetSize: Equatable, Sendable {
     case compact
     case wide
 
-    fileprivate var visibleItemLimit: Int {
-        switch self {
-        case .compact: 4
-        case .wide: 5
-        }
-    }
+    fileprivate var visibleItemLimit: Int { 6 }
 }
 
 /// The exact rows a Board widget should render. The full item count remains available for the
