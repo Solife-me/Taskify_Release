@@ -1024,6 +1024,38 @@ struct PhysicalChecklistSheet: View {
         return scanReview.applyableIDs(from: scanJob.items)
     }
 
+    /// Builds a scan job in the exact top-to-bottom title order OCR found on the paper. The task
+    /// IDs still come from the shared board, while OCR only establishes which rows were printed.
+    private func ocrResolvedScanJob(lines: [PhysicalChecklistOCRLine]) -> PhysicalChecklistJob? {
+        guard let catalog = scanFallbackJobs.max(by: { lhs, rhs in
+            if lhs.items.count != rhs.items.count { return lhs.items.count < rhs.items.count }
+            let lhsDetails = lhs.items.filter { !($0.detail ?? "").isEmpty }.count
+            let rhsDetails = rhs.items.filter { !($0.detail ?? "").isEmpty }.count
+            return lhsDetails < rhsDetails
+        }), !catalog.items.isEmpty else { return nil }
+
+        var nextIndex = 0
+        var resolved: [PhysicalChecklistItem] = []
+        for line in lines.sorted(by: { $0.y < $1.y }) {
+            guard nextIndex < catalog.items.count else { break }
+            var best: (index: Int, score: Double)?
+            for index in nextIndex..<catalog.items.count {
+                let score = PhysicalChecklistScanEngine.titleMatchScore(catalog.items[index].title, line.text)
+                if score > (best?.score ?? 0) { best = (index, score) }
+            }
+            guard let best, best.score >= 0.58 else { continue }
+            resolved.append(catalog.items[best.index])
+            nextIndex = best.index + 1
+        }
+        guard resolved.count >= min(3, catalog.items.count) else { return nil }
+        return PhysicalChecklistJob(
+            ownerID: catalog.ownerID,
+            title: catalog.title,
+            items: resolved,
+            layoutVersion: BoardPrintContract.detailVersion
+        )
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -1173,11 +1205,13 @@ struct PhysicalChecklistSheet: View {
                 let grayImages = images.compactMap(physicalChecklistGrayImage)
                 Task { @MainActor in
                     let ocrLines = await physicalChecklistOCRLines(images.first)
+                    let ocrJob = ocrResolvedScanJob(lines: ocrLines)
                     let match = PhysicalChecklistScanAnalyzer.match(images: grayImages, jobs: scanCandidates)
                     var matchedJob = match.job
                     var result = match.result
                     if matchedJob == nil {
-                        let rankedFallbacks = scanFallbackJobs.map { fallbackJob in
+                        let fallbackJobs = (ocrJob.map { [$0] } ?? []) + scanFallbackJobs
+                        let rankedFallbacks = fallbackJobs.map { fallbackJob in
                             let titleScore = grayImages.first.map {
                                 PhysicalChecklistScanEngine.alignmentScore(
                                     image: $0,
@@ -1212,6 +1246,7 @@ struct PhysicalChecklistSheet: View {
                             let markBonus = detectedIDs.isEmpty ? 0 : 0.5
                             let excessMarkPenalty = Double(max(0, detectedIDs.count - 1)) * 0.08
                             let rank = markedTitleScore * 5 + candidate.score + markBonus - excessMarkPenalty
+                                + (fallbackJob.id == ocrJob?.id ? 0.35 : 0)
                             if bestFallback == nil || rank > bestFallback!.rank {
                                 bestFallback = (fallbackJob, fallbackResult, rank)
                             }
@@ -1674,7 +1709,7 @@ private struct PhysicalChecklistDocumentScanner: UIViewControllerRepresentable {
 }
 
 private func physicalChecklistGrayImage(_ source: UIImage) -> PhysicalChecklistGrayImage? {
-    let targetWidth = 900
+    let targetWidth = 1600
     let aspect = max(source.size.height / max(source.size.width, 1), 0.2)
     let targetHeight = max(1, Int(Double(targetWidth) * aspect))
     let renderer = UIGraphicsImageRenderer(size: CGSize(width: targetWidth, height: targetHeight))

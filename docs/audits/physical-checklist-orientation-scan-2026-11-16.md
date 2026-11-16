@@ -60,3 +60,8 @@ The marked rows receive a second, stronger OCR check. A shifted candidate can co
 false-positive circle readings even when its page-wide title score is respectable; scoring the
 detected rows specifically selects the layout where the colored circle actually aligns with the
 printed task title.
+
+The final fallback builds a row order directly from the OCR titles when enough of them are
+recognized, so tasks completed or reordered in the app cannot shift the printed rows. The camera
+grayscale handed to the geometry engine is also increased from 900 to 1600 pixels wide to preserve
+separated circle outlines and reduce false fill readings.

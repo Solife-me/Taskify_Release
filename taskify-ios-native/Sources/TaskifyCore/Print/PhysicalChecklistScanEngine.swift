@@ -177,7 +177,9 @@ public enum PhysicalChecklistScanEngine {
         return rows == 0 ? 0 : total / Double(rows)
     }
 
-    private static func titleMatchScore(_ expected: String, _ observed: String) -> Double {
+    /// Similarity between a candidate task title and an OCR line, after case, punctuation and
+    /// diacritic normalization. Shared with fallback row reconstruction in the app target.
+    public static func titleMatchScore(_ expected: String, _ observed: String) -> Double {
         let expectedText = normalizedTitle(expected)
         let observedText = normalizedTitle(observed)
         guard !expectedText.isEmpty, !observedText.isEmpty else { return 0 }
