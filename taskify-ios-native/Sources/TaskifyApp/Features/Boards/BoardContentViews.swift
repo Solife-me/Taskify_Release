@@ -1080,7 +1080,9 @@ struct TaskCardView: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .modifier(TaskDragSourceModifier(
-            payload: (allowsDragging && !isSelectionMode) ? TaskDragPayload(taskID: task.id) : nil,
+            payload: allowsDragging && (!isSelectionMode || isSelected)
+                ? TaskDragPayload(taskID: task.id, selectedTaskIDs: isSelectionMode ? selection?.selectedTaskIDs : nil)
+                : nil,
             title: displayTitle
         ))
         .accessibilityAction(named: isSelectionMode ? "Toggle selection" : "Edit task") {

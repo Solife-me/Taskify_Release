@@ -1254,6 +1254,8 @@ final class AppModel {
             // The moved task's own tombstone-then-publish ordering is handled by
             // synchronizeTaskMove; batch the dependents into one pass.
             synchronizeTasks(result.updatedTaskIDs.filter { $0 != taskID })
+        } else if result.updatedTaskIDs.isEmpty {
+            scheduleSave()
         } else {
             synchronizeTasks(result.updatedTaskIDs)
         }
@@ -1943,10 +1945,17 @@ final class AppModel {
         reconcileScriptureMemory()
     }
 
-    /// Bulk counterpart to `moveTask`, for the Boards multi-select "Move" action. Moves through
+    /// Bulk counterpart to `moveTask`, for selection moves and drops. Moves through
     /// one local copy and refreshes notifications once instead of once per task.
-    func moveTasks<S: Sequence>(_ taskIDs: S, toBoardID boardID: String, columnID: String) where S.Element == String {
+    @discardableResult
+    func moveTasks<S: Sequence>(
+        _ taskIDs: S,
+        toBoardID boardID: String,
+        columnID: String,
+        beforeTaskID: String? = nil
+    ) -> Bool where S.Element == String {
         var updated = snapshot
+        var movedAny = false
         var movedTaskIDs: Set<String> = []
         var crossedMoves: [(taskID: String, sourceTask: TaskItem, sourceBoard: Board)] = []
         for taskID in taskIDs {
@@ -1956,9 +1965,11 @@ final class AppModel {
                     taskID: taskID,
                     toBoardID: boardID,
                     columnID: columnID,
+                    beforeTaskID: beforeTaskID,
                     editorPublicKey: identityPublicKey.nilIfEmpty,
                     calendar: weekCalendar
                   ) else { continue }
+            movedAny = true
             if result.crossedBoards {
                 // Preserve the single-move ordering: a crossed-board task is published through
                 // synchronizeTaskMove (source tombstone first), never through the batch pass.
@@ -1966,8 +1977,14 @@ final class AppModel {
             }
             movedTaskIDs.formUnion(result.updatedTaskIDs)
         }
-        guard !movedTaskIDs.isEmpty else { return }
+        guard movedAny else { return false }
+        // Order changes are local and may produce no task IDs to publish.
+        guard updated != snapshot else { return true }
         snapshot = updated
+        if movedTaskIDs.isEmpty {
+            scheduleSave()
+            return true
+        }
         for move in crossedMoves {
             synchronizeTaskMove(
                 move.taskID,
@@ -1978,6 +1995,7 @@ final class AppModel {
         let crossedTaskIDs = Set(crossedMoves.map(\.taskID))
         synchronizeTasks(movedTaskIDs.sorted().filter { !crossedTaskIDs.contains($0) })
         refreshNotifications(requestPermission: false)
+        return true
     }
 
     /// Bulk Taskify-event counterpart to `deleteTasks`, matching the PWA selection bar. A bulk
