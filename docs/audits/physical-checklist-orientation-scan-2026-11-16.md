@@ -55,3 +55,8 @@ candidate row sets from completion timestamps, runs Vision OCR on the scanned ti
 uses normalized title similarity plus row proximity to rank the candidates. OCR is an alignment
 signal, not the sole identity source: the marked circle still comes from the versioned print
 geometry and the user reviews the detected task before it is applied.
+
+The marked rows receive a second, stronger OCR check. A shifted candidate can contain several
+false-positive circle readings even when its page-wide title score is respectable; scoring the
+detected rows specifically selects the layout where the colored circle actually aligns with the
+printed task title.

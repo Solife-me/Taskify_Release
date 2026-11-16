@@ -127,7 +127,8 @@ public enum PhysicalChecklistScanEngine {
     public static func alignmentScore(
         image: PhysicalChecklistGrayImage,
         job: PhysicalChecklistJob,
-        lines: [PhysicalChecklistOCRLine]
+        lines: [PhysicalChecklistOCRLine],
+        restrictToItemIDs: Set<String> = []
     ) -> Double {
         guard !lines.isEmpty else { return 0 }
         var best = 0.0
@@ -136,7 +137,12 @@ public enum PhysicalChecklistScanEngine {
             scopedJob.paper = paper
             let layout = PhysicalChecklistLayout.build(job: scopedJob)
             guard let context = buildContext(image: image, layout: layout) else { continue }
-            best = max(best, rowTitleAlignment(context: context, layout: layout, lines: lines))
+            best = max(best, rowTitleAlignment(
+                context: context,
+                layout: layout,
+                lines: lines,
+                restrictToItemIDs: restrictToItemIDs
+            ))
         }
         return best
     }
@@ -144,7 +150,8 @@ public enum PhysicalChecklistScanEngine {
     private static func rowTitleAlignment(
         context: ScanContext,
         layout: PhysicalChecklistLayout,
-        lines: [PhysicalChecklistOCRLine]
+        lines: [PhysicalChecklistOCRLine],
+        restrictToItemIDs: Set<String>
     ) -> Double {
         let paper = layout.paper.sizeMM
         var total = 0.0
@@ -152,6 +159,7 @@ public enum PhysicalChecklistScanEngine {
         for page in layout.pages {
             for row in page.rows {
                 guard case let .item(item) = row.kind, let center = row.circleCenterMM else { continue }
+                if !restrictToItemIDs.isEmpty, !restrictToItemIDs.contains(item.id) { continue }
                 rows += 1
                 let point = applyHomography(Point(x: center.x, y: center.y), matrix: context.matrix)
                 let normalizedX = point.x / Double(context.image.width)

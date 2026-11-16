@@ -1188,8 +1188,8 @@ struct PhysicalChecklistSheet: View {
                             return (job: fallbackJob, score: titleScore)
                         }
                         .sorted { $0.score > $1.score }
-                        var recognizedWithoutMarks: (job: PhysicalChecklistJob, result: PhysicalChecklistScanResult)?
-                        let candidateLimit = ocrLines.isEmpty ? rankedFallbacks.count : min(6, rankedFallbacks.count)
+                        var bestFallback: (job: PhysicalChecklistJob, result: PhysicalChecklistScanResult, rank: Double)?
+                        let candidateLimit = ocrLines.isEmpty ? rankedFallbacks.count : min(8, rankedFallbacks.count)
                         for candidate in rankedFallbacks.prefix(candidateLimit) {
                             let fallbackJob = candidate.job
                             let fallbackResult = PhysicalChecklistScanAnalyzer.scan(
@@ -1198,18 +1198,27 @@ struct PhysicalChecklistSheet: View {
                                 requiresMatchingJobCode: false
                             )
                             guard fallbackResult.recognizedPages > 0 else { continue }
-                            if !fallbackResult.detectedIDs.isEmpty {
-                                matchedJob = fallbackJob
-                                result = fallbackResult
-                                break
-                            }
-                            if recognizedWithoutMarks == nil {
-                                recognizedWithoutMarks = (fallbackJob, fallbackResult)
+                            let detectedIDs = Set(fallbackResult.detectedIDs)
+                            let markedTitleScore = detectedIDs.isEmpty
+                                ? 0
+                                : grayImages.first.map {
+                                    PhysicalChecklistScanEngine.alignmentScore(
+                                        image: $0,
+                                        job: fallbackJob,
+                                        lines: ocrLines,
+                                        restrictToItemIDs: detectedIDs
+                                    )
+                                } ?? 0
+                            let markBonus = detectedIDs.isEmpty ? 0 : 0.5
+                            let excessMarkPenalty = Double(max(0, detectedIDs.count - 1)) * 0.08
+                            let rank = markedTitleScore * 5 + candidate.score + markBonus - excessMarkPenalty
+                            if bestFallback == nil || rank > bestFallback!.rank {
+                                bestFallback = (fallbackJob, fallbackResult, rank)
                             }
                         }
-                        if matchedJob == nil, let recognizedWithoutMarks {
-                            matchedJob = recognizedWithoutMarks.job
-                            result = recognizedWithoutMarks.result
+                        if let bestFallback {
+                            matchedJob = bestFallback.job
+                            result = bestFallback.result
                         }
                     }
                     if result.mismatchedJobs > 0 {

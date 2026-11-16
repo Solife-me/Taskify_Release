@@ -166,9 +166,22 @@ private enum TestChecklistMark {
         job: currentWithPostPrintCompletion,
         lines: lines
     )
+    let markedRowScore = PhysicalChecklistScanEngine.alignmentScore(
+        image: image,
+        job: currentWithPostPrintCompletion,
+        lines: lines,
+        restrictToItemIDs: ["marked"]
+    )
+    let shiftedMarkedRowScore = PhysicalChecklistScanEngine.alignmentScore(
+        image: image,
+        job: currentAppJob,
+        lines: lines,
+        restrictToItemIDs: ["marked"]
+    )
 
     #expect(completionAwareScore > openOnlyScore)
     #expect(completionAwareScore > 0.8)
+    #expect(markedRowScore > shiftedMarkedRowScore)
 }
 
 private func renderChecklistPhoto(
