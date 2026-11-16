@@ -212,6 +212,23 @@ public struct PhysicalChecklistScanMatch: Sendable {
     }
 }
 
+/// One OCR text line in top-left normalized image coordinates.
+public struct PhysicalChecklistOCRLine: Sendable {
+    public var text: String
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+
+    public init(text: String, x: Double, y: Double, width: Double, height: Double) {
+        self.text = text
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+}
+
 /// Reads photographed checklist pages: the paper, orientation and corner markers are worked out
 /// from the sheet itself, then the print code proves it belongs to this job and the page bits name
 /// the page. Every paper and orientation is tried because a sheet can be printed on one paper size
@@ -225,7 +242,8 @@ public enum PhysicalChecklistScanAnalyzer {
 
     public static func scan(
         images: [PhysicalChecklistGrayImage],
-        job: PhysicalChecklistJob
+        job: PhysicalChecklistJob,
+        requiresMatchingJobCode: Bool = true
     ) -> PhysicalChecklistScanResult {
         var detected = Set<String>()
         var recognized = Set<Int>()
@@ -240,7 +258,11 @@ public enum PhysicalChecklistScanAnalyzer {
                 for paper in paperOrder(startingWith: job.paper) {
                     var scopedJob = job
                     scopedJob.paper = paper
-                    let result = PhysicalChecklistScanEngine.scan(images: [candidate], job: scopedJob)
+                    let result = PhysicalChecklistScanEngine.scan(
+                        images: [candidate],
+                        job: scopedJob,
+                        requiresMatchingJobCode: requiresMatchingJobCode
+                    )
                     if result.recognizedPages > 0 {
                         recognized.formUnion(0..<result.recognizedPages)
                         detected.formUnion(result.detectedIDs)

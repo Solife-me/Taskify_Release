@@ -236,6 +236,20 @@ private func withBackground(_ page: PhysicalChecklistGrayImage, margin: Double =
     #expect(match.result.recognizedPages == 1)
 }
 
+@Test func scanCanUseBoardOrderWhenThePrintBelongsToAnotherIdentity() {
+    let printed = makeJob(paper: .a6, id: "printed-by-other-identity")
+    let fallback = makeJob(paper: .a6, id: "local-board-fallback")
+    let result = PhysicalChecklistScanAnalyzer.scan(
+        images: [renderChecklist(job: printed, filledIDs: ["b"])],
+        job: fallback,
+        requiresMatchingJobCode: false
+    )
+
+    #expect(result.detectedIDs == ["b"])
+    #expect(result.recognizedPages == 1)
+    #expect(result.mismatchedJobs == 0)
+}
+
 @Test func grayImageConversionKeepsCameraRowsInTopLeftOrder() throws {
     let width = 8
     let height = 8

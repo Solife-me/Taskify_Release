@@ -126,6 +126,51 @@ private enum TestChecklistMark {
     #expect(result.detectedIDs == ["task-4"])
 }
 
+@Test func ocrAlignmentPrefersThePrintedRowsAfterAnAppCompletion() {
+    let originalItems = [
+        PhysicalChecklistItem(id: "before-print", title: "Completed before printing"),
+        PhysicalChecklistItem(id: "after-print", title: "Completed after printing"),
+        PhysicalChecklistItem(id: "marked", title: "Marked on paper"),
+    ]
+    let printedJob = PhysicalChecklistJob(
+        id: "printed-row-set",
+        ownerID: "board",
+        title: "Shared board",
+        paper: .a6,
+        items: [originalItems[1], originalItems[2]]
+    )
+    let currentAppJob = PhysicalChecklistJob(
+        id: "current-app-order",
+        ownerID: "board",
+        title: "Shared board",
+        paper: .a6,
+        items: [originalItems[2]]
+    )
+    let currentWithPostPrintCompletion = PhysicalChecklistJob(
+        id: "completion-aware-order",
+        ownerID: "board",
+        title: "Shared board",
+        paper: .a6,
+        items: [originalItems[1], originalItems[2]]
+    )
+    let image = renderChecklistPhoto(job: printedJob, marks: ["marked": .check])
+    let lines = ocrLines(for: printedJob)
+
+    let openOnlyScore = PhysicalChecklistScanEngine.alignmentScore(
+        image: image,
+        job: currentAppJob,
+        lines: lines
+    )
+    let completionAwareScore = PhysicalChecklistScanEngine.alignmentScore(
+        image: image,
+        job: currentWithPostPrintCompletion,
+        lines: lines
+    )
+
+    #expect(completionAwareScore > openOnlyScore)
+    #expect(completionAwareScore > 0.8)
+}
+
 private func renderChecklistPhoto(
     job: PhysicalChecklistJob,
     marks: [String: TestChecklistMark],
@@ -254,6 +299,31 @@ private func renderChecklistPhoto(
         }
     }
     return PhysicalChecklistGrayImage(pixels: pixels, width: width, height: height)
+}
+
+private func ocrLines(for job: PhysicalChecklistJob) -> [PhysicalChecklistOCRLine] {
+    let layout = PhysicalChecklistLayout.build(job: job)
+    let width = 980.0
+    let height = 1280.0
+    let originX = 72.0
+    let originY = 62.0
+    let scaleX = 7.55
+    let scaleY = 7.45
+    let shear = 0.22
+    return layout.pages.flatMap(\.rows).compactMap { row in
+        guard case let .item(item) = row.kind, let circle = row.circleCenterMM else { return nil }
+        let pageX = circle.x + layout.circleSizeMM / 2 + 2.4
+        let pageY = row.yMM + row.titleBandMM / 2
+        let pixelX = originX + shear * pageY + pageX * scaleX
+        let pixelY = originY + pageY * scaleY
+        return PhysicalChecklistOCRLine(
+            text: item.title,
+            x: pixelX / width,
+            y: (pixelY - 5) / height,
+            width: 180 / width,
+            height: 10 / height
+        )
+    }
 }
 
 private func pointInRect(

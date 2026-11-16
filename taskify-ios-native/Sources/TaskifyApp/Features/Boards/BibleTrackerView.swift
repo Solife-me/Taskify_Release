@@ -1,6 +1,7 @@
 import SwiftUI
 import TaskifyCore
 import UIKit
+import Vision
 import VisionKit
 
 private enum BibleTrackerDateFormatting {
@@ -957,6 +958,7 @@ struct PhysicalChecklistSheet: View {
     @State private var scanMessage: String?
     @State private var scanJob: PhysicalChecklistJob?
     @State private var scanCandidates: [PhysicalChecklistJob] = []
+    @State private var scanFallbackJobs: [PhysicalChecklistJob] = []
     @State private var preparingPhotos = false
 
     let onApply: ([String]) -> Void
@@ -964,6 +966,7 @@ struct PhysicalChecklistSheet: View {
     init(
         job: PhysicalChecklistJob,
         startWithScanner: Bool = false,
+        fallbackScanJobs: [PhysicalChecklistJob] = [],
         onApply: @escaping ([String]) -> Void
     ) {
         _job = State(initialValue: job)
@@ -975,8 +978,9 @@ struct PhysicalChecklistSheet: View {
         _preparingPhotos = State(
             initialValue: job.items.contains { !$0.photoSources.isEmpty && $0.photos.isEmpty }
         )
-        _scanJob = State(initialValue: startWithScanner ? candidates.first : nil)
+        _scanJob = State(initialValue: startWithScanner ? (candidates.first ?? fallbackScanJobs.first ?? job) : nil)
         _scanCandidates = State(initialValue: startWithScanner ? candidates : [])
+        _scanFallbackJobs = State(initialValue: startWithScanner ? fallbackScanJobs : [])
         self.onApply = onApply
     }
 
@@ -1006,8 +1010,6 @@ struct PhysicalChecklistSheet: View {
         var result = related
         if let storedJob, !result.contains(where: { $0.id == storedJob.id }) {
             result.insert(storedJob, at: 0)
-        } else if !result.contains(where: { $0.id == job.id }) {
-            result.append(job)
         }
         return result
     }
@@ -1167,24 +1169,64 @@ struct PhysicalChecklistSheet: View {
         .fullScreenCover(isPresented: $showingScanner) {
             PhysicalChecklistDocumentScanner { images in
                 showingScanner = false
-                guard !scanCandidates.isEmpty else { return }
+                guard !scanCandidates.isEmpty || !scanFallbackJobs.isEmpty else { return }
                 let grayImages = images.compactMap(physicalChecklistGrayImage)
-                let match = PhysicalChecklistScanAnalyzer.match(images: grayImages, jobs: scanCandidates)
-                let result = match.result
-                if result.mismatchedJobs > 0 {
-                    scanMessage = "This sheet belongs to a different print or board. Reprint the current checklist before scanning."
-                } else if result.unreadablePageIDs > 0 {
-                    scanMessage = "The page number could not be read. Keep the complete header visible and scan that page again."
-                } else if result.recognizedPages == 0 {
-                    scanMessage = "No Taskify checklist page was recognized. Keep the whole page visible and try again in even light."
-                } else {
-                    guard let matchedJob = match.job else { return }
-                    scanJob = matchedJob
-                    scanReview.merge(detectedIDs: result.detectedIDs, items: matchedJob.items)
-                    if result.detectedIDs.isEmpty {
-                        scanMessage = "The page was recognized, but no newly marked circles were found."
+                Task { @MainActor in
+                    let ocrLines = await physicalChecklistOCRLines(images.first)
+                    let match = PhysicalChecklistScanAnalyzer.match(images: grayImages, jobs: scanCandidates)
+                    var matchedJob = match.job
+                    var result = match.result
+                    if matchedJob == nil {
+                        let rankedFallbacks = scanFallbackJobs.map { fallbackJob in
+                            let titleScore = grayImages.first.map {
+                                PhysicalChecklistScanEngine.alignmentScore(
+                                    image: $0,
+                                    job: fallbackJob,
+                                    lines: ocrLines
+                                )
+                            } ?? 0
+                            return (job: fallbackJob, score: titleScore)
+                        }
+                        .sorted { $0.score > $1.score }
+                        var recognizedWithoutMarks: (job: PhysicalChecklistJob, result: PhysicalChecklistScanResult)?
+                        let candidateLimit = ocrLines.isEmpty ? rankedFallbacks.count : min(6, rankedFallbacks.count)
+                        for candidate in rankedFallbacks.prefix(candidateLimit) {
+                            let fallbackJob = candidate.job
+                            let fallbackResult = PhysicalChecklistScanAnalyzer.scan(
+                                images: grayImages,
+                                job: fallbackJob,
+                                requiresMatchingJobCode: false
+                            )
+                            guard fallbackResult.recognizedPages > 0 else { continue }
+                            if !fallbackResult.detectedIDs.isEmpty {
+                                matchedJob = fallbackJob
+                                result = fallbackResult
+                                break
+                            }
+                            if recognizedWithoutMarks == nil {
+                                recognizedWithoutMarks = (fallbackJob, fallbackResult)
+                            }
+                        }
+                        if matchedJob == nil, let recognizedWithoutMarks {
+                            matchedJob = recognizedWithoutMarks.job
+                            result = recognizedWithoutMarks.result
+                        }
+                    }
+                    if result.mismatchedJobs > 0 {
+                        scanMessage = "This sheet belongs to a different print or board. Reprint the current checklist before scanning."
+                    } else if result.unreadablePageIDs > 0 {
+                        scanMessage = "The page number could not be read. Keep the complete header visible and scan that page again."
+                    } else if result.recognizedPages == 0 {
+                        scanMessage = "No Taskify checklist page was recognized. Keep the whole page visible and try again in even light."
                     } else {
-                        scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
+                        guard let matchedJob else { return }
+                        scanJob = matchedJob
+                        scanReview.merge(detectedIDs: result.detectedIDs, items: matchedJob.items)
+                        if result.detectedIDs.isEmpty {
+                            scanMessage = "The page was recognized, but no newly marked circles were found."
+                        } else {
+                            scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
+                        }
                     }
                 }
             }
@@ -1632,4 +1674,41 @@ private func physicalChecklistGrayImage(_ source: UIImage) -> PhysicalChecklistG
     }
     guard let cgImage = normalized.cgImage else { return nil }
     return PhysicalChecklistGrayImage.from(cgImage: cgImage, targetWidth: targetWidth)
+}
+
+private func physicalChecklistOCRLines(_ source: UIImage?) async -> [PhysicalChecklistOCRLine] {
+    guard let source, let cgImage = source.cgImage else { return [] }
+    let orientation: CGImagePropertyOrientation
+    switch source.imageOrientation {
+    case .up: orientation = .up
+    case .down: orientation = .down
+    case .left: orientation = .left
+    case .right: orientation = .right
+    case .upMirrored: orientation = .upMirrored
+    case .downMirrored: orientation = .downMirrored
+    case .leftMirrored: orientation = .leftMirrored
+    case .rightMirrored: orientation = .rightMirrored
+    @unknown default: orientation = .up
+    }
+
+    return await Task.detached(priority: .userInitiated) {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.minimumTextHeight = 0.006
+        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
+        try? handler.perform([request])
+        return (request.results ?? []).compactMap { observation -> PhysicalChecklistOCRLine? in
+            guard let candidate = observation.topCandidates(1).first,
+                  candidate.confidence >= 0.25 else { return nil }
+            let box = observation.boundingBox
+            return PhysicalChecklistOCRLine(
+                text: candidate.string,
+                x: box.minX,
+                y: 1 - box.maxY,
+                width: box.width,
+                height: box.height
+            )
+        }
+    }.value
 }

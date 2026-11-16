@@ -42,3 +42,16 @@ falling back to a newly generated native print ID. Owner lookup is now case-inse
 scanner tries equivalent cached print jobs with the same board title, using the encoded print code
 to select the correct task mapping. This covers PWA boards that sync with differently-cased or
 client-local owner keys.
+
+The PWA and iOS clients may also be signed in with different identities while sharing the same
+board. Encrypted account-backup print manifests are identity-scoped, so the iOS client cannot
+receive that manifest. When no matching manifest exists, the scanner now reconstructs the printed
+v4 board order from the shared board's tasks and due/note detail lines, scans without requiring the
+foreign identity's print code, and sends the detected task through the normal verification screen
+before applying it.
+
+Tasks can also be completed in the app after the sheet is printed. The fallback therefore builds
+candidate row sets from completion timestamps, runs Vision OCR on the scanned title column, and
+uses normalized title similarity plus row proximity to rank the candidates. OCR is an alignment
+signal, not the sole identity source: the marked circle still comes from the versioned print
+geometry and the user reviews the detected task before it is applied.

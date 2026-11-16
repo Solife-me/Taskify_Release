@@ -45,7 +45,8 @@ public enum PhysicalChecklistScanEngine {
 
     public static func scan(
         images: [PhysicalChecklistGrayImage],
-        job: PhysicalChecklistJob
+        job: PhysicalChecklistJob,
+        requiresMatchingJobCode: Bool = true
     ) -> PhysicalChecklistScanResult {
         var detected = Set<String>()
         var recognized = Set<Int>()
@@ -66,7 +67,7 @@ public enum PhysicalChecklistScanEngine {
                 guard markerMedian <= maximumMarkerLuma,
                       backgroundMedian - markerMedian >= minimumMarkerContrast else { continue }
 
-                if !jobCodeMatches(
+                if requiresMatchingJobCode, !jobCodeMatches(
                     context: context,
                     layout: layout,
                     jobID: job.id,
@@ -118,6 +119,81 @@ public enum PhysicalChecklistScanEngine {
             mismatchedJobs: mismatchedJobs,
             unreadablePageIDs: unreadablePageIDs
         )
+    }
+
+    /// Scores how well a candidate job's row titles line up with OCR text on the photographed
+    /// page. This lets a shared-board fallback choose between layouts whose row sets changed after
+    /// printing, without trusting OCR as the sole source of task identity.
+    public static func alignmentScore(
+        image: PhysicalChecklistGrayImage,
+        job: PhysicalChecklistJob,
+        lines: [PhysicalChecklistOCRLine]
+    ) -> Double {
+        guard !lines.isEmpty else { return 0 }
+        var best = 0.0
+        for paper in [job.paper] + PhysicalChecklistPaper.allCases.filter({ $0 != job.paper }) {
+            var scopedJob = job
+            scopedJob.paper = paper
+            let layout = PhysicalChecklistLayout.build(job: scopedJob)
+            guard let context = buildContext(image: image, layout: layout) else { continue }
+            best = max(best, rowTitleAlignment(context: context, layout: layout, lines: lines))
+        }
+        return best
+    }
+
+    private static func rowTitleAlignment(
+        context: ScanContext,
+        layout: PhysicalChecklistLayout,
+        lines: [PhysicalChecklistOCRLine]
+    ) -> Double {
+        let paper = layout.paper.sizeMM
+        var total = 0.0
+        var rows = 0
+        for page in layout.pages {
+            for row in page.rows {
+                guard case let .item(item) = row.kind, let center = row.circleCenterMM else { continue }
+                rows += 1
+                let point = applyHomography(Point(x: center.x, y: center.y), matrix: context.matrix)
+                let normalizedX = point.x / Double(context.image.width)
+                let normalizedY = point.y / Double(context.image.height)
+                let tolerance = max(0.012, row.heightMM / paper.height * 0.62)
+                let nearby = lines.filter { line in
+                    let lineCenterY = line.y + line.height / 2
+                    return abs(lineCenterY - normalizedY) <= tolerance
+                        && line.x + line.width >= normalizedX + 0.008
+                        && line.x <= 0.82
+                }
+                total += nearby.map { titleMatchScore(item.title, $0.text) }.max() ?? 0
+            }
+        }
+        return rows == 0 ? 0 : total / Double(rows)
+    }
+
+    private static func titleMatchScore(_ expected: String, _ observed: String) -> Double {
+        let expectedText = normalizedTitle(expected)
+        let observedText = normalizedTitle(observed)
+        guard !expectedText.isEmpty, !observedText.isEmpty else { return 0 }
+        if expectedText == observedText { return 1 }
+        if observedText.contains(expectedText) || expectedText.contains(observedText) {
+            let ratio = Double(min(expectedText.count, observedText.count))
+                / Double(max(expectedText.count, observedText.count))
+            return 0.72 + ratio * 0.26
+        }
+        let expectedTokens = Set(expectedText.split(separator: " ").map(String.init))
+        let observedTokens = Set(observedText.split(separator: " ").map(String.init))
+        guard !expectedTokens.isEmpty, !observedTokens.isEmpty else { return 0 }
+        let overlap = expectedTokens.intersection(observedTokens).count
+        return Double(overlap) * 2 / Double(expectedTokens.count + observedTokens.count)
+    }
+
+    private static func normalizedTitle(_ value: String) -> String {
+        value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .unicodeScalars
+            .map { CharacterSet.alphanumerics.contains($0) ? Character(String($0)) : " " }
+            .reduce(into: "") { $0.append($1) }
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 
     // MARK: - Page alignment
