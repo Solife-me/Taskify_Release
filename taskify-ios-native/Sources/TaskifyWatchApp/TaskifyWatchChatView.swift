@@ -728,8 +728,8 @@ private struct TaskifyWatchConversationView: View {
         }
         .onChange(of: botProjection.menusByListingMessageID) {
             guard let action = loadingCatalog,
-                  let slug = action.providerSlug,
                   let menu = botProjection.menusByListingMessageID[action.menuId] else { return }
+            let slug = action.providerSlug
             if menu.catalogs[slug.lowercased()] != nil {
                 loadingCatalog = nil
             } else if let failure = menu.failure, failure.action == action {
