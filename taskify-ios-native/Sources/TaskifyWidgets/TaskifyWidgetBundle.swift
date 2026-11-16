@@ -812,34 +812,45 @@ struct BoardWidgetView: View {
     @Environment(\.widgetFamily) private var family
     let entry: BoardWidgetEntry
 
-    private var maximumRows: Int { family == .systemSmall ? 2 : 3 }
-    private var visibleItems: [TaskifyWidgetTask] {
-        Array((entry.data?.items ?? []).prefix(maximumRows))
+    private var compact: Bool { family == .systemSmall }
+    private var presentation: TaskifyBoardWidgetPresentation {
+        guard let data = entry.data else {
+            return TaskifyBoardWidgetPresentation(
+                data: TaskifyBoardWidgetData(
+                    board: TaskifyWidgetBoard(id: "", name: "Board", openTaskCount: 0),
+                    scopeName: "",
+                    destinationColumnID: nil,
+                    tasks: []
+                ),
+                size: compact ? .compact : .wide
+            )
+        }
+        return TaskifyBoardWidgetPresentation(data: data, size: compact ? .compact : .wide)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
+        VStack(alignment: .leading, spacing: compact ? 3 : 5) {
+            HStack(alignment: .firstTextBaseline, spacing: compact ? 3 : 5) {
                 Text(entry.data?.board.name ?? "Board")
-                    .font((family == .systemSmall ? Font.caption2 : .caption).weight(.bold))
+                    .font(.system(size: compact ? 10 : 12, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
-                Text("\(entry.data?.itemCount ?? 0)")
-                    .font(.caption2)
+                Text("\(presentation.itemCount)")
+                    .font(.system(size: compact ? 9 : 10, weight: .medium))
                     .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
+                Spacer(minLength: 2)
                 Link(destination: quickAddURL) {
-                    Image(systemName: "plus")
-                        .font(.caption.weight(.semibold))
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: compact ? 14 : 16, weight: .semibold))
                         .foregroundStyle(.tint)
-                        .frame(width: 28, height: 28)
-                        .background(.primary.opacity(0.13), in: Circle())
-                        .contentShape(Circle())
+                        .frame(width: compact ? 16 : 18, height: compact ? 16 : 18)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Add task to \(entry.data?.board.name ?? "board")")
             }
+            .frame(minHeight: compact ? 16 : 18)
 
-            if visibleItems.isEmpty {
+            if presentation.rows.isEmpty {
                 Spacer(minLength: 0)
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle.fill")
@@ -852,10 +863,10 @@ struct BoardWidgetView: View {
                 Spacer(minLength: 0)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
-                        BoardWidgetItemRow(item: item, referenceDate: entry.date)
-                        if index < visibleItems.count - 1 {
-                            Divider().padding(.leading, 29)
+                    ForEach(Array(presentation.rows.enumerated()), id: \.element.id) { index, item in
+                        BoardWidgetItemRow(item: item, referenceDate: entry.date, compact: compact)
+                        if index < presentation.rows.count - 1 {
+                            Divider().padding(.leading, compact ? 17 : 24)
                         }
                     }
                 }
@@ -877,40 +888,49 @@ struct BoardWidgetView: View {
 private struct BoardWidgetItemRow: View {
     let item: TaskifyWidgetTask
     let referenceDate: Date
+    let compact: Bool
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: compact ? 3 : 4) {
             if item.kind.isCompletable {
                 Button(intent: CompleteTaskIntent(taskID: item.id)) {
                     Image(systemName: item.kind.symbolName)
-                        .font(.caption.weight(.semibold))
+                        .font(.system(size: compact ? 9 : 11, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
+                        .frame(width: compact ? 14 : 20, height: compact ? 17 : 21)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             } else {
                 Image(systemName: item.kind.symbolName)
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: compact ? 9 : 11, weight: .semibold))
                     .foregroundStyle(.tint)
-                    .frame(width: 24, height: 24)
+                    .frame(width: compact ? 14 : 20, height: compact ? 17 : 21)
             }
 
             Link(destination: destination) {
-                HStack(spacing: 5) {
+                HStack(spacing: compact ? 3 : 5) {
                     Text(item.title)
-                        .font(.caption.weight(item.kind == .event ? .semibold : .medium))
+                        .font(.system(
+                            size: compact ? 10 : 11,
+                            weight: item.kind == .event ? .semibold : .medium
+                        ))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     Spacer(minLength: 3)
                     if let dueLabel {
                         Text(dueLabel)
-                            .font(.caption2)
+                            .font(.system(size: compact ? 8 : 9))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
-                .frame(maxWidth: .infinity, minHeight: 27, alignment: .leading)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: compact ? 17 : 21,
+                    alignment: .leading
+                )
                 .contentShape(Rectangle())
             }
         }

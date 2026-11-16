@@ -445,6 +445,35 @@ final class TaskifyWidgetDataTests: XCTestCase {
         XCTAssertTrue(data?.items.first?.isAllDay == true)
     }
 
+    func testBoardWidgetPresentationShowsMoreRowsWhileKeepingTheFullCount() {
+        let tasks = (1...6).map { index in
+            TaskifyWidgetTask(
+                id: "\(index)",
+                title: "Task \(index)",
+                boardID: "board",
+                boardName: "Work",
+                dueDate: at(Double(index))
+            )
+        }
+        let data = TaskifyBoardWidgetData(
+            board: TaskifyWidgetBoard(id: "board", name: "Work", openTaskCount: 6),
+            scopeName: "All",
+            destinationColumnID: "todo",
+            itemCount: 6,
+            tasks: tasks
+        )
+
+        let compact = TaskifyBoardWidgetPresentation(data: data, size: .compact)
+        XCTAssertEqual(compact.rows.map(\.title), ["Task 1", "Task 2", "Task 3", "Task 4"])
+        XCTAssertEqual(compact.itemCount, 6)
+        XCTAssertEqual(compact.hiddenItemCount, 2)
+
+        let wide = TaskifyBoardWidgetPresentation(data: data, size: .wide)
+        XCTAssertEqual(wide.rows.map(\.title), ["Task 1", "Task 2", "Task 3", "Task 4", "Task 5"])
+        XCTAssertEqual(wide.itemCount, 6)
+        XCTAssertEqual(wide.hiddenItemCount, 1)
+    }
+
     // MARK: - Kinds
 
     func testTasksAreMarkedAsTasksAndAreCompletable() {

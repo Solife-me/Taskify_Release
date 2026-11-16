@@ -101,6 +101,34 @@ public struct TaskifyBoardWidgetData: Equatable, Sendable {
     }
 }
 
+/// The two supported Board widget widths use different row limits because the compact widget has
+/// less horizontal room for task titles, while both share the same vertical budget.
+public enum TaskifyBoardWidgetSize: Equatable, Sendable {
+    case compact
+    case wide
+
+    fileprivate var visibleItemLimit: Int {
+        switch self {
+        case .compact: 4
+        case .wide: 5
+        }
+    }
+}
+
+/// The exact rows a Board widget should render. The full item count remains available for the
+/// header even when some rows do not fit.
+public struct TaskifyBoardWidgetPresentation: Equatable, Sendable {
+    public let rows: [TaskifyWidgetTask]
+    public let itemCount: Int
+
+    public var hiddenItemCount: Int { max(0, itemCount - rows.count) }
+
+    public init(data: TaskifyBoardWidgetData, size: TaskifyBoardWidgetSize) {
+        rows = Array(data.items.prefix(size.visibleItemLimit))
+        itemCount = data.itemCount
+    }
+}
+
 /// Everything the widgets render, derived from a `TaskifySnapshot`.
 ///
 /// Kept deliberately small and free of app types: a widget process decodes this, draws it, and
