@@ -105,11 +105,33 @@ private enum TestChecklistMark {
     #expect(result.detectedIDs == ["task-3"])
 }
 
+@Test func physicalChecklistScannerAcceptsFadedPrinterInk() {
+    let items = (0..<6).map { PhysicalChecklistItem(id: "task-\($0)", title: "Task \($0)") }
+    let job = PhysicalChecklistJob(
+        id: "faded-ink-regression",
+        ownerID: "board",
+        title: "Personal schedule",
+        paper: .a6,
+        items: items
+    )
+    let image = renderChecklistPhoto(
+        job: job,
+        marks: ["task-4": .check],
+        fadedInk: true
+    )
+
+    let result = PhysicalChecklistScanEngine.scan(images: [image], job: job)
+
+    #expect(result.recognizedPages == 1)
+    #expect(result.detectedIDs == ["task-4"])
+}
+
 private func renderChecklistPhoto(
     job: PhysicalChecklistJob,
     marks: [String: TestChecklistMark],
     deepLowerRightShadow: Bool = false,
-    circleOffsetXMM: Double = 0
+    circleOffsetXMM: Double = 0,
+    fadedInk: Bool = false
 ) -> PhysicalChecklistGrayImage {
     let layout = PhysicalChecklistLayout.build(job: job)
     let paper = job.paper.sizeMM
@@ -120,8 +142,8 @@ private func renderChecklistPhoto(
     let scaleX = 7.55
     let scaleY = 7.45
     let shear = 0.22
-    let ink: UInt8 = 24
-    let paperLuma: UInt8 = 236
+    let ink: UInt8 = fadedInk ? 158 : 24
+    let paperLuma: UInt8 = fadedInk ? 250 : 236
     let tableLuma: UInt8 = 68
     var pixels = [UInt8](repeating: tableLuma, count: width * height)
     let markerRects = layout.markerRectsMM()

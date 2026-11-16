@@ -38,7 +38,9 @@ public enum PhysicalChecklistScanEngine {
         let matrix: [Double]
     }
 
-    private static let maximumMarkerLuma = 145.0
+    // Document-scanner cleanup and toner fading can leave a valid marker around 170 luma even
+    // against a near-white page. The contrast and print-code checks still reject ordinary text.
+    private static let maximumMarkerLuma = 210.0
     private static let minimumMarkerContrast = 32.0
 
     public static func scan(
@@ -453,7 +455,7 @@ public enum PhysicalChecklistScanEngine {
         guard sampled > 0 else { return false }
         let darkFraction = Double(darkPoints.count) / Double(sampled)
         if darkFraction >= 0.18 { return true }
-        guard darkPoints.count >= 4 else { return false }
+        guard darkPoints.count >= 10 else { return false }
         let xSpan = darkPoints.map(\.x).max()! - darkPoints.map(\.x).min()!
         let ySpan = darkPoints.map(\.y).max()! - darkPoints.map(\.y).min()!
         return darkFraction >= 0.045 && xSpan >= radius * 0.55 && ySpan >= radius * 0.45

@@ -25,3 +25,13 @@ circles can sit about a millimetre off the native grid, causing blank rings to l
 - Regression tests cover grayscale row orientation and a shifted, checked circle.
 
 The supplied v4 photograph now recognizes one page and exactly the one marked task.
+
+## Follow-up
+
+A second supplied scan had already been cropped and cleaned by the iOS document scanner, but its
+valid registration markers averaged about 167 luma against a 253-luma page. The engine's absolute
+145-luma marker ceiling rejected that sheet before reading its valid print code. The ceiling now
+allows faded toner up to 210 luma while retaining the separate marker-contrast and print-code
+checks. Blank lower-page noise could also satisfy the old four-pixel check/X span rule, so stroke
+detection now requires at least ten dark samples. The second scan recognizes one page and only the
+marked task.
