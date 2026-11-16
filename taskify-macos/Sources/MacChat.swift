@@ -180,7 +180,7 @@ struct MacChatView: View {
 private struct MacChatPresentation {
     let timeline: [MacChatTimelineItem]
     let messagesByID: [String: NostrDirectMessage]
-    let hermesSessionsByListingMessageID: [String: HermesSessionListing]
+    let hermes: HermesBotUiProjection
 }
 
 /// Conversation history is independent of composer/search/send state. Cache the expensive merge,
@@ -330,7 +330,7 @@ private struct MacConversation: View {
         return MacChatPresentation(
             timeline: timeline,
             messagesByID: messagesByID,
-            hermesSessionsByListingMessageID: hermesProjection.sessionsByListingMessageID
+            hermes: hermesProjection
         )
     }
     var body: some View {
@@ -380,12 +380,8 @@ private struct MacConversation: View {
                                         if case .message(let message) = item { return stacks.stacks[message.id] }
                                         return nil
                                     }(),
-                                    sessionListing: {
-                                        if case .message(let message) = item {
-                                            return presentation.hermesSessionsByListingMessageID[message.id]
-                                        }
-                                        return nil
-                                    }(),
+                                    hermes: presentation.hermes,
+                                    botActionsEnabled: !model.isDirectMessagePeerBlocked(peer),
                                     parent: { id in presentation.messagesByID[id] },
                                     reactions: { message in model.directMessageReactions(for: message) },
                                     reply: { composerProxy.reply(to: $0) },
@@ -674,15 +670,49 @@ private struct MacChatComposer: View {
 
     private var isGroup: Bool { model.groupConversation(id: peer) != nil }
     private var isAudioComposerActive: Bool { audioRecorder.isRecording || recordedAudio != nil }
+    @State private var commandMenuOverride: Bool?
+
+    private var botCommands: [BotCommand]? {
+        guard !isGroup, !model.isDirectMessagePeerBlocked(peer), peer != model.identityPublicKey else { return nil }
+        return model.botCommands(publicKey: peer)
+    }
+
+    private var commandQuery: String? {
+        guard composer.hasPrefix("/"), !composer.dropFirst().contains(where: \.isWhitespace) else { return nil }
+        return composer.dropFirst().lowercased()
+    }
+
     private var visibleBotCommands: [BotCommand]? {
-        guard !isGroup,
-              composer.hasPrefix("/"),
-              let commands = model.botCommands(publicKey: peer),
-              !commands.isEmpty else { return nil }
-        let query = String(composer.dropFirst()).lowercased()
-        let matched = commands.filter { $0.name.hasPrefix(query) }
+        guard let botCommands, !botCommands.isEmpty else { return nil }
+        if let commandMenuOverride { return commandMenuOverride ? botCommands : nil }
+        guard let query = commandQuery else { return nil }
+        let matched = botCommands.filter { $0.name.hasPrefix(query) }
         return matched.isEmpty ? nil : matched
     }
+
+    private func chooseCommand(_ command: BotCommand) {
+        guard !sending, !attachments.importing, !model.isDirectMessagePeerBlocked(peer) else { return }
+        let text = "/\(command.name)"
+        commandMenuOverride = false
+        if command.requiresArguments == true {
+            composer = text + " "
+            return
+        }
+        let draft = commandQuery == nil ? nil : composer
+        sending = true
+        error = nil
+        proxy.onSendStarted?()
+        sendTask = Task {
+            defer { sending = false; sendTask = nil }
+            do {
+                try await model.sendDirectMessage(to: peer, content: text, optimisticLocalEcho: true)
+                if let draft, composer == draft { composer = "" }
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
     private var canSend: Bool {
         !sending && !attachments.importing &&
             (!composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.files.isEmpty) &&
@@ -705,7 +735,7 @@ private struct MacChatComposer: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(commands) { command in
-                            Button { composer = "/\(command.name) " } label: {
+                            Button { chooseCommand(command) } label: {
                                 HStack {
                                     Text("/\(command.name)")
                                         .font(.subheadline.weight(.semibold))
@@ -721,6 +751,8 @@ private struct MacChatComposer: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .disabled(sending || attachments.importing ||
+                                (command.requiresArguments == true && !composer.isEmpty && commandQuery == nil))
                         }
                     }
                 }
@@ -732,6 +764,15 @@ private struct MacChatComposer: View {
                 audioComposer
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
+                    if let botCommands, !botCommands.isEmpty {
+                        Button {
+                            commandMenuOverride = visibleBotCommands == nil
+                        } label: {
+                            Image(systemName: "list.bullet")
+                        }
+                        .help("Commands")
+                        .accessibilityLabel("Commands")
+                    }
                     Button { attachments.chooseFiles() } label: { Image(systemName: "paperclip") }
                         .disabled(sending || attachments.importing)
                     PasteButton(payloadType: MacAttachmentTransferPayload.self) { payloads in
@@ -753,6 +794,7 @@ private struct MacChatComposer: View {
                             text: $composer,
                             onSubmit: { if canSend { send() } }
                         )
+                        .onChange(of: composer) { _, _ in commandMenuOverride = nil }
                     }
                     .overlay(alignment: .trailing) {
                         if composer.isEmpty, attachments.files.isEmpty {
@@ -1089,7 +1131,8 @@ private struct MacChatTimelineRow: View {
     let item: MacChatTimelineItem
     let peer: String
     var photoStack: [NostrDirectMessage]? = nil
-    var sessionListing: HermesSessionListing? = nil
+    let hermes: HermesBotUiProjection
+    let botActionsEnabled: Bool
     var parent: (String) -> NostrDirectMessage?
     var reactions: (NostrDirectMessage) -> [NostrDirectMessageReaction]
     var reply: (NostrDirectMessage) -> Void
@@ -1099,10 +1142,12 @@ private struct MacChatTimelineRow: View {
     var body: some View {
         switch item {
         case .message(let message):
-            if let sessionListing {
-                HStack(alignment: .top, spacing: 0) {
-                    MacHermesSessionPicker(peerPublicKey: peer, listing: sessionListing)
-                    Spacer(minLength: 60)
+            if botActionsEnabled, let menu = hermes.menusByListingMessageID[message.id] {
+                aligned(incoming: true) { MacHermesModelPicker(peer: peer, menu: menu) }
+            } else if botActionsEnabled, let listing = hermes.sessionsByListingMessageID[message.id] {
+                aligned(incoming: true) {
+                    MacHermesSessionPicker(peerPublicKey: peer, listing: listing,
+                        menuID: message.botMenuKind == .sessions ? message.id : nil)
                 }
             } else {
                 MacMessageRow(
@@ -1141,6 +1186,7 @@ private struct MacHermesSessionPicker: View {
     @Environment(AppModel.self) private var model
     let peerPublicKey: String
     let listing: HermesSessionListing
+    let menuID: String?
     @State private var resumingSessionID: String?
     @State private var sentSessionID: String?
     @State private var actionError: String?
@@ -1247,20 +1293,156 @@ private struct MacHermesSessionPicker: View {
     }
 
     private func resume(_ session: HermesSession) {
-        guard resumingSessionID == nil else { return }
+        guard resumingSessionID == nil, !model.isDirectMessagePeerBlocked(peerPublicKey) else { return }
         resumingSessionID = session.sessionId
         sentSessionID = nil
         actionError = nil
         Task { @MainActor in
             defer { resumingSessionID = nil }
             do {
-                try await model.sendDirectMessage(
-                    to: peerPublicKey,
-                    content: HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
-                )
+                let command = try HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
+                if let menuID {
+                    let action = TaskifyBotUiAction(kind: .sessionResume, menuId: menuID, sessionId: session.sessionId)
+                    try await model.sendBotUiCommand(to: peerPublicKey, content: command,
+                                                     action: action, bindToListing: true)
+                } else {
+                    try await model.sendDirectMessage(to: peerPublicKey, content: command)
+                }
                 sentSessionID = session.sessionId
             } catch {
                 actionError = error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct MacHermesModelPicker: View {
+    @Environment(AppModel.self) private var model
+    let peer: String
+    let menu: HermesModelMenuProjection
+    @State private var providerSlug: String?
+    @State private var switching: String?
+    @State private var loadingCatalog: String?
+    @State private var error: String?
+
+    private var provider: HermesModelProvider? {
+        menu.listing.providers.first(where: { $0.slug == providerSlug })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Model configuration", systemImage: "gearshape").font(.subheadline.bold())
+            if let current = menu.selectedModel?.modelId ?? menu.listing.currentModel {
+                Text(current).font(.caption).foregroundStyle(.secondary)
+            }
+            if let provider {
+                let catalog = menu.catalogs[provider.slug.lowercased()]
+                let models = catalog?.models ?? provider.previewModels
+                Button("All providers") { providerSlug = nil }
+                if catalog == nil, models.count < provider.totalModels {
+                    HStack {
+                        Button("Load all models") { loadCatalog(provider) }
+                            .disabled(loadingCatalog != nil || switching != nil)
+                        if loadingCatalog == provider.slug { ProgressView().controlSize(.small) }
+                    }
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(models, id: \.self) { id in
+                            Button {
+                                switchModel(id, provider: provider)
+                            } label: {
+                                HStack {
+                                    Text(id).lineLimit(1)
+                                    Spacer()
+                                    if switching == id { ProgressView().controlSize(.small) }
+                                }
+                            }
+                            .accessibilityLabel("Switch to \(id)")
+                            .disabled(switching != nil || loadingCatalog != nil)
+                        }
+                    }
+                }
+                .frame(height: min(CGFloat(models.count) * 26, 240))
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(menu.listing.providers, id: \.slug) { item in
+                            Button(item.name) { providerSlug = item.slug }
+                        }
+                    }
+                }
+                .frame(height: min(CGFloat(menu.listing.providers.count) * 26, 240))
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+        .padding(12)
+        .frame(maxWidth: 540, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 15))
+        .onChange(of: menu.selectedModel) { _, selection in
+            if let selection, selection.modelId == switching { switching = nil; providerSlug = nil }
+        }
+        .onChange(of: menu.catalogs) { _, catalogs in
+            if let slug = loadingCatalog, catalogs[slug.lowercased()] != nil { loadingCatalog = nil }
+        }
+        .onChange(of: menu.failure) { _, failure in
+            guard let failure else { return }
+            if failure.action.kind == .modelSelect, failure.action.modelId == switching {
+                switching = nil
+                error = failure.responseContent
+            } else if failure.action.kind == .catalogRequest, failure.action.providerSlug == loadingCatalog {
+                loadingCatalog = nil
+                error = failure.responseContent
+            }
+        }
+        .task(id: loadingCatalog) {
+            guard let slug = loadingCatalog else { return }
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled, loadingCatalog == slug else { return }
+            loadingCatalog = nil
+            error = "Hermes hasn’t returned the model list."
+        }
+        .task(id: switching) {
+            guard let request = switching else { return }
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled, switching == request else { return }
+            switching = nil
+            error = "Hermes hasn’t confirmed this model change."
+        }
+    }
+
+    private func loadCatalog(_ provider: HermesModelProvider) {
+        guard loadingCatalog == nil, switching == nil, !model.isDirectMessagePeerBlocked(peer) else { return }
+        loadingCatalog = provider.slug
+        error = nil
+        Task {
+            do {
+                let action = TaskifyBotUiAction(kind: .catalogRequest, menuId: menu.menuId,
+                                                providerSlug: provider.slug)
+                let command = try TaskifyBotUiContract.catalogRequestPrompt(providerSlug: provider.slug)
+                try await model.sendBotUiCommand(to: peer, content: command, action: action,
+                                                 bindToListing: menu.bindsActionsToListing)
+            } catch {
+                loadingCatalog = nil
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func switchModel(_ id: String, provider: HermesModelProvider) {
+        guard switching == nil, !model.isDirectMessagePeerBlocked(peer) else { return }
+        switching = id
+        error = nil
+        Task {
+            do {
+                let action = TaskifyBotUiAction(kind: .modelSelect, menuId: menu.menuId,
+                                                providerSlug: provider.slug, modelId: id)
+                let command = try TaskifyBotUiContract.modelSwitchCommand(providerSlug: provider.slug, modelId: id)
+                try await model.sendBotUiCommand(to: peer, content: command, action: action,
+                                                 bindToListing: menu.bindsActionsToListing)
+            } catch {
+                switching = nil
+                self.error = error.localizedDescription
             }
         }
     }

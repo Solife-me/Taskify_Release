@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import OSLog
 import Security
+import TaskifyCore
 import TaskifyWatchShared
 import UserNotifications
 import WatchConnectivity
@@ -480,12 +481,40 @@ final class TaskifyWatchAppModel: NSObject {
         return TaskifyWatchChatWakeResult(receivedData: receivedData, shouldNotify: shouldNotify, failed: !succeeded)
     }
 
+    private let botCommandsCache = BotCommandsCache()
+
+    func discoverBotCommands(peer: String) async -> [BotCommand]? {
+        guard chatContext != nil, peer != chatIdentityPublicKey,
+              !chatSnapshot.blockedPublicKeys.contains(peer) else { return nil }
+        let cached = botCommandsCache.commands(for: peer)
+        guard botCommandsCache.shouldRefresh(publicKey: peer),
+              WCSession.isSupported() else { return cached }
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return cached }
+
+        let commands: [BotCommand]? = await withCheckedContinuation { continuation in
+            session.sendMessage([TaskifyWatchTransfer.botCommandsPeerKey: peer]) { response in
+                guard response[TaskifyWatchTransfer.botCommandsPeerKey] as? String == peer,
+                      let data = response[TaskifyWatchTransfer.botCommandsDataKey] as? Data else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: try? JSONDecoder().decode([BotCommand].self, from: data))
+            } errorHandler: { _ in
+                continuation.resume(returning: nil)
+            }
+        }
+        if let commands { botCommandsCache.save(commands, for: peer) }
+        return commands ?? cached
+    }
+
     @discardableResult
     func sendChat(
         _ text: String,
         memberPublicKeys: [String],
         subject: String? = nil,
         replyToRumorID: String? = nil,
+        botActionTag: [String]? = nil,
         reactionToRumorID: String? = nil
     ) async -> Bool {
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -513,6 +542,7 @@ final class TaskifyWatchAppModel: NSObject {
                 memberPublicKeys: memberPublicKeys,
                 subject: subject,
                 replyToRumorID: replyToRumorID,
+                botActionTag: botActionTag,
                 reactionToRumorID: reactionToRumorID,
                 privateKey: privateKey
             )

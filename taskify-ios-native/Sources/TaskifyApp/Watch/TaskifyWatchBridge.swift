@@ -600,6 +600,26 @@ extension TaskifyWatchBridge: WCSessionDelegate {
             }
             return
         }
+        if let requestedPeer = message[TaskifyWatchTransfer.botCommandsPeerKey] as? String,
+           let peer = NostrPublicKey.parse(requestedPeer)?.hexString {
+            Task { @MainActor [weak self] in
+                guard let model = self?.model else {
+                    replyHandler([:])
+                    return
+                }
+                await model.refreshBotCommands(publicKey: peer)
+                guard let commands = model.botCommands(publicKey: peer),
+                      let data = try? JSONEncoder().encode(commands) else {
+                    replyHandler([:])
+                    return
+                }
+                replyHandler([
+                    TaskifyWatchTransfer.botCommandsPeerKey: peer,
+                    TaskifyWatchTransfer.botCommandsDataKey: data,
+                ])
+            }
+            return
+        }
         if TaskifyWatchTransfer.isChatDirectoryRequest(message) {
             Task { @MainActor [weak self] in
                 guard let self, let model = self.model else {

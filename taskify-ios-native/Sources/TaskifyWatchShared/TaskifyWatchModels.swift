@@ -788,6 +788,8 @@ public enum TaskifyWatchTransfer {
     public static let chatReadConversationIDKey = "taskify.watch.chat-read-conversation.v1"
     public static let chatReadThroughKey = "taskify.watch.chat-read-through.v1"
     public static let chatDirectoryRequestKey = "taskify.watch.chat-directory-request.v1"
+    public static let botCommandsPeerKey = "taskify.watch.bot-commands-peer.v1"
+    public static let botCommandsDataKey = "taskify.watch.bot-commands-data.v1"
 
     public static var setupNavigationRequest: [String: Any] {
         [setupNavigationRequestKey: true]

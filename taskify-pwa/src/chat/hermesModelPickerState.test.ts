@@ -80,6 +80,27 @@ describe("Hermes model picker projection", () => {
     });
   });
 
+  test("matches a bound catalog response by rumor ID despite unrelated replies and reversed timestamps", () => {
+    const actionId = "c".repeat(64);
+    const listing = message({ rumorEventId: menuId, botMenuKind: "model", content: LISTING });
+    const request = message({
+      isIncoming: false,
+      createdAt: 30,
+      rumorEventId: actionId,
+      replyToEventId: menuId,
+      botUiAction: { kind: "catalog-request", menuId, providerSlug: "custom:local" },
+    });
+    const unrelated = message({ createdAt: 20, content: CATALOG });
+    const response = message({ createdAt: 25, replyToEventId: actionId, content: CATALOG });
+
+    const projection = projectHermesBotUi([listing, request, unrelated, response]);
+    const menu = projection.menusByListingEventId.get(listing.eventId);
+    expect(projection.hiddenEventIds.has(unrelated.eventId)).toBe(false);
+    expect(projection.hiddenEventIds.has(response.eventId)).toBe(true);
+    expect(menu?.catalogs.get("custom:local")?.models).toEqual(["lfm3-audio:latest", "deepseek-v4.1-flash:cloud"]);
+    expect(menu?.pendingAction).toBeNull();
+  });
+
   test("keeps an unrecognized response visible and exposes an inline failure", () => {
     const listing = message({ eventId: menuId, content: LISTING, preview: LISTING });
     const action = { kind: "catalog-request" as const, menuId, providerSlug: "nous" };

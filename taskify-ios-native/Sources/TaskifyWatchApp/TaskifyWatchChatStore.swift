@@ -866,6 +866,7 @@ actor TaskifyWatchChatCoordinator {
         memberPublicKeys: [String],
         subject: String? = nil,
         replyToRumorID: String? = nil,
+        botActionTag: [String]? = nil,
         reactionToRumorID: String? = nil,
         attachment: TaskifyWatchChatAttachment? = nil,
         privateKey: Data
@@ -885,6 +886,7 @@ actor TaskifyWatchChatCoordinator {
             memberPublicKeys: members,
             subject: subject,
             replyToRumorID: replyToRumorID,
+            botActionTag: botActionTag,
             reactionToRumorID: reactionToRumorID,
             attachment: attachment,
             kind: attachment != nil

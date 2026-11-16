@@ -594,6 +594,7 @@ public struct TaskifyWatchChatMessage: Identifiable, Codable, Equatable, Sendabl
     public let createdAt: Int
     public let kind: TaskifyWatchChatMessageKind
     public let replyToRumorID: String?
+    public let botTags: [[String]]?
     public let reactionTargetRumorID: String?
     public let attachment: TaskifyWatchChatAttachment?
     public var deliveryState: TaskifyWatchChatDeliveryState?
@@ -609,6 +610,7 @@ public struct TaskifyWatchChatMessage: Identifiable, Codable, Equatable, Sendabl
         createdAt: Int,
         kind: TaskifyWatchChatMessageKind,
         replyToRumorID: String? = nil,
+        botTags: [[String]]? = nil,
         reactionTargetRumorID: String? = nil,
         attachment: TaskifyWatchChatAttachment? = nil,
         deliveryState: TaskifyWatchChatDeliveryState? = nil,
@@ -623,6 +625,7 @@ public struct TaskifyWatchChatMessage: Identifiable, Codable, Equatable, Sendabl
         self.createdAt = createdAt
         self.kind = kind
         self.replyToRumorID = replyToRumorID?.lowercased()
+        self.botTags = botTags
         self.reactionTargetRumorID = reactionTargetRumorID?.lowercased()
         self.attachment = attachment
         self.deliveryState = deliveryState

@@ -118,6 +118,7 @@ export type WalletDmMessage = {
   replyToEventId?: string; // "e" tag from inner kind-14 rumor
   /** Taskify-generated Hermes menu command; hidden from the visible thread. */
   botUiAction?: TaskifyBotUiAction;
+  botMenuKind?: "model" | "sessions";
 };
 
 export type WalletDmThread = {
@@ -390,6 +391,10 @@ function normalizeBotUiAction(value: unknown): TaskifyBotUiAction | null {
   const row = value as Record<string, unknown>;
   const kind = row.kind;
   const menuId = typeof row.menuId === "string" ? row.menuId : "";
+  if (kind === "session-resume" && /^[A-Za-z0-9_-]{1,64}$/.test(menuId)
+      && typeof row.sessionId === "string" && /^\d{8}_\d{6}_[0-9A-Fa-f]{8}$/.test(row.sessionId)) {
+    return { kind, menuId, sessionId: row.sessionId };
+  }
   const providerSlug = typeof row.providerSlug === "string" ? row.providerSlug : "";
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(menuId) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(providerSlug)) return null;
   if (kind === "catalog-request") return { kind, menuId, providerSlug };
@@ -436,6 +441,8 @@ function readDmCache(): WalletDmMessage[] {
           ...(typeof entry.senderPubkey === "string" ? { senderPubkey: entry.senderPubkey.toLowerCase() } : {}),
           ...(typeof entry.replyToEventId === "string" && entry.replyToEventId ? { replyToEventId: entry.replyToEventId } : {}),
           ...(botUiAction ? { botUiAction } : {}),
+          ...(entry.botMenuKind === "model" || entry.botMenuKind === "sessions"
+            ? { botMenuKind: entry.botMenuKind } : {}),
         };
       })
       .sort((a, b) => a.createdAt - b.createdAt);

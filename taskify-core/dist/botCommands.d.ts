@@ -14,6 +14,7 @@ export declare const BOT_COMMANDS_MAX_COUNT = 100;
 export type BotCommand = {
     name: string;
     description: string;
+    requiresArguments?: true;
 };
 /** The fields of a Nostr event the parser reads. */
 export type BotCommandsEventLike = {

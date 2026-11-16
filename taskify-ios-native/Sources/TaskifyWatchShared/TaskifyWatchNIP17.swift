@@ -121,6 +121,7 @@ public enum TaskifyWatchNIP17 {
         memberPublicKeys: [String],
         subject: String? = nil,
         replyToRumorID: String? = nil,
+        botActionTag: [String]? = nil,
         reactionToRumorID: String? = nil,
         attachment: TaskifyWatchChatAttachment? = nil,
         kind: Int = textKind,
@@ -144,6 +145,12 @@ public enum TaskifyWatchNIP17 {
         }
         if let reply = replyToRumorID?.lowercased(), isEventID(reply) {
             tags.append(["e", reply, "", "reply"])
+        }
+        if let botActionTag {
+            guard recipients.count == 1, kind == textKind, botActionTag.first == "taskify-bot-ui" else {
+                throw TaskifyWatchNIP17Error.invalidRumor
+            }
+            tags.append(botActionTag)
         }
         if kind == reactionKind {
             guard let target = reactionToRumorID?.lowercased(), isEventID(target) else {
@@ -354,6 +361,8 @@ public enum TaskifyWatchNIP17 {
             messageKind = .unsupportedMessage
             content = "Open this message on iPhone"
         }
+        let botTags = recipients.count == 1 && rumor.kind == textKind
+            ? rumor.tags.filter { $0.first == "taskify-bot-ui" || $0.first == "taskify-bot-menu" } : []
         return TaskifyWatchChatMessage(
             rumorID: rumor.id,
             wrapID: decrypted.wrapEventID,
@@ -364,6 +373,7 @@ public enum TaskifyWatchNIP17 {
             createdAt: rumor.createdAt,
             kind: messageKind,
             replyToRumorID: reply,
+            botTags: botTags.isEmpty ? nil : botTags,
             reactionTargetRumorID: reactionTarget,
             attachment: attachment,
             deliveryState: rumor.publicKey.lowercased() == identity ? .sent : nil

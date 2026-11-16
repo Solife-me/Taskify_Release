@@ -686,19 +686,23 @@ persistBlockedPeers,
   // the localStorage cache so the "/" menu is instantly available, then
   // refreshed in the background. The published list itself is the signal
   // that the peer is a bot (docs/reference/bot-command-lists.md).
-  const [activeBotCommands, setActiveBotCommands] = useState<BotCommand[] | null>(null);
+  const [botCommandCatalog, setBotCommandCatalog] = useState<{
+    peer: string;
+    commands: BotCommand[];
+  } | null>(null);
+  const activeBotPeer = !activeThread?.groupId ? activeThread?.peerPubkey?.toLowerCase() : undefined;
+  const activeBotCommands = botCommandCatalog?.peer === activeBotPeer ? botCommandCatalog?.commands ?? null : null;
   const activeBotCommandsPeerRef = useRef<string | null>(null);
   const botCommandsFetchingRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const peerHex = activeThread && !activeThread.groupId && activeThread.peerPubkey
-      ? activeThread.peerPubkey.toLowerCase()
-      : null;
+    const peerHex = activeBotPeer ?? null;
     activeBotCommandsPeerRef.current = peerHex;
     if (!open || !isChatPage || chatView !== "conversation" || !peerHex) {
-      setActiveBotCommands(null);
+      setBotCommandCatalog(null);
       return;
     }
-    setActiveBotCommands(loadCachedBotCommands(peerHex));
+    const cached = loadCachedBotCommands(peerHex);
+    setBotCommandCatalog(cached ? { peer: peerHex, commands: cached } : null);
     if (!shouldRefreshCachedBotCommands(peerHex)) return;
     if (botCommandsFetchingRef.current.has(peerHex)) return;
     botCommandsFetchingRef.current.add(peerHex);
@@ -709,7 +713,9 @@ persistBlockedPeers,
         const { commands } = await fetchBotCommands(pool, relays, peerHex);
         if (commands.length) {
           saveCachedBotCommands(peerHex, commands);
-          if (activeBotCommandsPeerRef.current === peerHex) setActiveBotCommands(commands);
+          if (activeBotCommandsPeerRef.current === peerHex) {
+            setBotCommandCatalog({ peer: peerHex, commands });
+          }
         }
       } catch {
         // Offline or unreachable — cached commands (if any) still stand.
@@ -717,7 +723,7 @@ persistBlockedPeers,
         botCommandsFetchingRef.current.delete(peerHex);
       }
     })();
-  }, [activeThread, chatView, defaultNostrRelays, ensureNostrPool, isChatPage, open, resolveNip17Relays]);
+  }, [activeBotPeer, chatView, defaultNostrRelays, ensureNostrPool, isChatPage, open, resolveNip17Relays]);
   useEffect(() => {
     if (!scrollToMessageId || chatView !== "conversation") return;
     scrollToMessageIdRef.current = scrollToMessageId;

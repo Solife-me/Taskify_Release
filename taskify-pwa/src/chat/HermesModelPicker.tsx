@@ -21,6 +21,7 @@ export type HermesModelPickerProps = {
     peerPubkey: string,
     content: string,
     action: TaskifyBotUiAction,
+    bind?: boolean,
   ) => Promise<void>;
 };
 
@@ -91,7 +92,7 @@ export function HermesModelPicker({ peerPubkey, projection, sendBotUiCommand }: 
         menuId,
         providerSlug,
         modelId,
-      });
+      }, ...(projection.bindsActionsToListing ? [true] as const : []));
     } catch (error) {
       if (activeSwitch.current !== request) return;
       activeSwitch.current = null;

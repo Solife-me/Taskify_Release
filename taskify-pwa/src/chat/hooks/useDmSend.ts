@@ -139,8 +139,10 @@ export function useDmSend({
     ],
   );
   const sendBotUiCommand = useCallback(
-    async (peerPubkey: string, content: string, action: TaskifyBotUiAction): Promise<void> => {
-      await sendDirectTextMessage(peerPubkey, content, [buildTaskifyBotUiActionTag(action)]);
+    async (peerPubkey: string, content: string, action: TaskifyBotUiAction, bind = false): Promise<void> => {
+      const tags = [buildTaskifyBotUiActionTag(action)];
+      if (bind) tags.push(["e", action.menuId]);
+      await sendDirectTextMessage(peerPubkey, content, tags);
     },
     [sendDirectTextMessage],
   );
