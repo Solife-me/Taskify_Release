@@ -6,10 +6,12 @@ public struct BotCommand: Codable, Equatable, Sendable, Identifiable {
     public var id: String { name }
     public let name: String
     public let description: String
+    public let requiresArguments: Bool?
 
-    public init(name: String, description: String) {
+    public init(name: String, description: String, requiresArguments: Bool? = nil) {
         self.name = name
         self.description = description
+        self.requiresArguments = requiresArguments
     }
 }
 
@@ -67,7 +69,10 @@ public enum BotCommandsContract {
             let description = tag.count > 2
                 ? String(normalizeDescription(tag[2]).prefix(maxDescriptionLength))
                 : ""
-            commands.append(BotCommand(name: name, description: description))
+            commands.append(BotCommand(
+                name: name, description: description,
+                requiresArguments: tag.count > 3 && tag[3] == "requires-arguments" ? true : nil
+            ))
             if commands.count >= maxCommandCount { break }
         }
         return commands.isEmpty ? nil : commands
@@ -87,11 +92,13 @@ public enum BotCommandsContract {
             guard isNameValid(command.name) else { continue }
             let name = command.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
             guard seen.insert(name).inserted else { continue }
-            commandTags.append([
+            var tag = [
                 "command",
                 name,
                 String(normalizeDescription(command.description).prefix(maxDescriptionLength))
-            ])
+            ]
+            if command.requiresArguments == true { tag.append("requires-arguments") }
+            commandTags.append(tag)
         }
         guard !commandTags.isEmpty else {
             throw NostrEventError.invalidEvent

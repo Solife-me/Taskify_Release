@@ -343,6 +343,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
     /// Encrypted Taskify metadata for a generated Hermes menu command. Internal commands are
     /// hidden from the visible timeline, but retained so every device can reconstruct the menu.
     public var botUiAction: TaskifyBotUiAction?
+    public var botMenuKind: TaskifyBotMenuKind?
     /// Local delivery state for messages authored by this account. Older snapshots omit this
     /// field and incoming messages leave it nil.
     public var deliveryState: NostrDirectMessageDeliveryState?
@@ -361,6 +362,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         groupID: String? = nil,
         groupMemberPublicKeys: [String]? = nil,
         botUiAction: TaskifyBotUiAction? = nil,
+        botMenuKind: TaskifyBotMenuKind? = nil,
         deliveryState: NostrDirectMessageDeliveryState? = nil
     ) {
         self.rumorEventID = rumorEventID.lowercased()
@@ -376,6 +378,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         self.groupID = groupID?.lowercased()
         self.groupMemberPublicKeys = groupMemberPublicKeys?.map { $0.lowercased() }.sorted().nilIfEmpty
         self.botUiAction = botUiAction
+        self.botMenuKind = botMenuKind
         self.deliveryState = isIncoming ? nil : deliveryState
     }
 
@@ -436,6 +439,8 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
             groupID: group?.groupID,
             groupMemberPublicKeys: group?.memberPublicKeys,
             botUiAction: group == nil ? TaskifyBotUiContract.action(from: rumor.tags) : nil,
+            botMenuKind: incoming && group == nil && attachment == nil
+                ? TaskifyBotMenuKind.from(tags: rumor.tags) : nil,
             deliveryState: incoming ? nil : .sent
         )
     }

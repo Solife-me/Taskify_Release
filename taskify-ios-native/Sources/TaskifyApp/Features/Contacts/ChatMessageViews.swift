@@ -1856,6 +1856,7 @@ struct HermesSessionPickerChatView: View {
     @Environment(AppModel.self) private var model
     let peerPublicKey: String
     let listing: HermesSessionListing
+    let actionMenuID: String?
 
     @State private var resumingSessionID: String?
     @State private var sentSessionID: String?
@@ -1957,7 +1958,7 @@ struct HermesSessionPickerChatView: View {
         .disabled(resumingSessionID != nil)
         .opacity(resumingSessionID == nil || resumingSessionID == session.sessionId ? 1 : 0.46)
         .accessibilityLabel("Resume session: \(session.title)")
-        .accessibilityValue(session.isCurrent ? "Current" : "")
+        .accessibilityValue(sentSessionID == session.sessionId ? "Sent" : (session.isCurrent ? "Current" : ""))
     }
 
     private func resume(_ session: HermesSession) {
@@ -1967,10 +1968,19 @@ struct HermesSessionPickerChatView: View {
         actionError = nil
         Task { @MainActor in
             do {
-                try await model.sendDirectMessage(
-                    to: peerPublicKey,
-                    content: HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
-                )
+                let command = try HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
+                if let actionMenuID {
+                    try await model.sendBotUiCommand(
+                        to: peerPublicKey,
+                        content: command,
+                        action: TaskifyBotUiAction(
+                            kind: .sessionResume, menuId: actionMenuID, sessionId: session.sessionId
+                        ),
+                        bindToListing: true
+                    )
+                } else {
+                    try await model.sendDirectMessage(to: peerPublicKey, content: command)
+                }
                 sentSessionID = session.sessionId
             } catch {
                 actionError = error.localizedDescription
@@ -2402,7 +2412,8 @@ struct HermesModelPickerChatView: View {
                         menuId: projection.menuId,
                         providerSlug: provider.slug,
                         modelId: modelID
-                    )
+                    ),
+                    bindToListing: projection.bindsActionsToListing
                 )
             } catch {
                 guard switchRequest?.id == request.id else { return }

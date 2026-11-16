@@ -5527,6 +5527,7 @@ final class AppModel {
                 [
                     BotCommand(name: "model", description: "Configure the Hermes model"),
                     BotCommand(name: "status", description: "Show session status"),
+                    BotCommand(name: "queue", description: "Queue a prompt", requiresArguments: true),
                 ],
                 for: peerPublicKey
             )
@@ -5579,7 +5580,9 @@ final class AppModel {
                 Resume: `/resume <session id>` or `/resume <number>` from `/resume`.
                 """,
                 createdAt: fixtureStart + fixtureMessageCount + 2,
-                isIncoming: true
+                isIncoming: true,
+                botMenuKind: ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_HERMES_BOUND_SESSIONS"] == "1"
+                    ? .sessions : nil
             ))
             snapshot.directMessages = messages
         }

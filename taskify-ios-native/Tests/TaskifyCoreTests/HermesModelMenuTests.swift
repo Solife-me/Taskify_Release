@@ -248,6 +248,47 @@ extension HermesModelMenuTests {
         XCTAssertEqual(decoded.botUiAction, action)
     }
 
+    func testBoundModelConfirmationMustReplyToTheAction() throws {
+        let listingTag = ["taskify-bot-menu", "v1", "model"]
+        var listing = message(id: Self.menuID, content: Self.listingText, incoming: true, createdAt: 1)
+        listing.botMenuKind = TaskifyBotMenuKind.from(tags: [listingTag])
+        XCTAssertEqual(listing.botMenuKind, .model)
+        XCTAssertNil(TaskifyBotMenuKind.from(tags: [listingTag, listingTag]))
+        let action = TaskifyBotUiAction(
+            kind: .modelSelect, menuId: listing.id, providerSlug: "nous", modelId: "anthropic/claude-opus-5.5"
+        )
+        var request = message(
+            id: String(repeating: "d", count: 64), content: "/model anthropic/claude-opus-5.5 --provider nous",
+            incoming: false, createdAt: 2, action: action
+        )
+        request.replyToEventID = listing.id
+        let unrelated = message(id: "unrelated", content: "Model switched to `anthropic/claude-opus-5.5`",
+                                incoming: true, createdAt: 3)
+        var confirmed = message(id: "confirmed", content: unrelated.content, incoming: true, createdAt: 4)
+        confirmed.replyToEventID = request.id
+        let projection = HermesModelPickerProjection.project(messages: [listing, request, unrelated, confirmed], enabled: true)
+        XCTAssertFalse(projection.hiddenMessageIDs.contains(unrelated.id))
+        XCTAssertTrue(projection.hiddenMessageIDs.contains(confirmed.id))
+        XCTAssertEqual(projection.menusByListingMessageID[listing.id]?.selectedModel?.modelId, action.modelId)
+    }
+
+    func testBoundSessionActionStaysHiddenInConversationsWithoutAModelMenu() throws {
+        var listing = message(
+            id: Self.menuID,
+            content: "**Named Sessions**\n1. **Audit** — `20261109_013330_790ece03`",
+            incoming: true, createdAt: 1
+        )
+        listing.botMenuKind = .sessions
+        let action = TaskifyBotUiAction(kind: .sessionResume, menuId: listing.id, sessionId: "20261109_013330_790ece03")
+        XCTAssertEqual(TaskifyBotUiContract.action(from: [try TaskifyBotUiContract.tag(for: action)]), action)
+        var request = message(id: "request", content: "/resume 20261109_013330_790ece03",
+                              incoming: false, createdAt: 2, action: action)
+        request.replyToEventID = listing.id
+        let response = message(id: "response", content: "Resumed session Audit.", incoming: true, createdAt: 3)
+        let projection = HermesModelPickerProjection.project(messages: [listing, request, response], enabled: true)
+        XCTAssertEqual(projection.hiddenMessageIDs, [request.id])
+    }
+
     func testCatalogPromptAndSwitchCommandMatchTheTestedHermesFlow() throws {
         let prompt = try TaskifyBotUiContract.catalogRequestPrompt(providerSlug: "custom:local")
         XCTAssertTrue(prompt.contains("provider slug `custom:local`"))

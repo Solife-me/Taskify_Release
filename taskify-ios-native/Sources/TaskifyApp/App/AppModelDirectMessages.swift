@@ -70,7 +70,8 @@ extension AppModel {
     func sendBotUiCommand(
         to recipientValue: String,
         content: String,
-        action: TaskifyBotUiAction
+        action: TaskifyBotUiAction,
+        bindToListing: Bool = false
     ) async throws {
         guard snapshot.groupConversation(id: recipientValue) == nil else {
             throw NostrDirectMessageError.invalidGroup
@@ -79,6 +80,7 @@ extension AppModel {
         try await sendDirectMessage(
             to: recipientValue,
             content: content,
+            replyToEventID: bindToListing ? action.menuId : nil,
             additionalTags: [tag]
         )
 #if DEBUG

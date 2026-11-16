@@ -114,3 +114,57 @@ extension ChatRenderUITests {
         )
     }
 }
+
+
+extension ChatRenderUITests {
+    func testCommandMenuSendsOnTapAndOpensRequiredArgumentsInComposer() {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_INITIAL_TAB"] = "chat"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_HERMES_MENU"] = "1"
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"].firstMatch
+        XCTAssertTrue(contact.waitForExistence(timeout: 15))
+        contact.tap()
+        let commands = app.buttons["Commands"]
+        XCTAssertTrue(commands.waitForExistence(timeout: 5))
+        commands.tap()
+        let status = app.buttons["Send command status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        status.tap()
+        XCTAssertTrue(app.staticTexts["/status"].firstMatch.waitForExistence(timeout: 5))
+
+        let composer = app.textViews.firstMatch
+        composer.tap()
+        composer.typeText("/qu")
+        let queue = app.buttons["Insert command queue"]
+        XCTAssertTrue(queue.waitForExistence(timeout: 5))
+        queue.tap()
+        XCTAssertEqual(composer.value as? String, "/queue ")
+        XCTAssertFalse(app.staticTexts["/queue"].exists)
+    }
+
+    func testBoundSessionButtonKeepsTheActionOutOfChat() {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_INITIAL_TAB"] = "chat"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_HERMES_SESSIONS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_HERMES_BOUND_SESSIONS"] = "1"
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"].firstMatch
+        XCTAssertTrue(contact.waitForExistence(timeout: 15))
+        contact.tap()
+        let session = app.buttons["Resume session: Write comprehensive audit plan paper"]
+        XCTAssertTrue(session.waitForExistence(timeout: 10))
+        session.tap()
+        let sent = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Sent"), object: session)
+        XCTAssertEqual(XCTWaiter.wait(for: [sent], timeout: 5), .completed)
+        XCTAssertFalse(app.staticTexts["/resume 20261109_013330_790ece03"].exists)
+    }
+}

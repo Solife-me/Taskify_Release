@@ -122,6 +122,7 @@ struct BotCommandsTests {
             BotCommand(name: "Start", description: "Begin setup"),
             BotCommand(name: "start", description: "duplicate dropped"),
             BotCommand(name: "help", description: "Show what I can do"),
+            BotCommand(name: "queue", description: "Queue a prompt", requiresArguments: true),
         ]
         let event = try BotCommandsContract.event(
             commands: commands,
@@ -133,8 +134,9 @@ struct BotCommandsTests {
         #expect(event.firstTagValue(named: "d") == BotCommandsContract.eventDTag)
 
         let decoded = try #require(decode(event))
-        #expect(decoded.map(\.name) == ["start", "help"])
-        #expect(decoded.map(\.description) == ["Begin setup", "Show what I can do"])
+        #expect(decoded.map(\.name) == ["start", "help", "queue"])
+        #expect(decoded.map(\.description) == ["Begin setup", "Show what I can do", "Queue a prompt"])
+        #expect(decoded.map(\.requiresArguments) == [nil, nil, true])
     }
 
     @Test("builder throws when no valid commands remain")

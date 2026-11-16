@@ -1,8 +1,6 @@
 import Foundation
 
-/// Taskify's native adapter for Hermes's text-only `/model` and `/sessions` experiences.
-/// Hermes cannot emit Taskify UI metadata, so only values recognized in its known response shapes
-/// become buttons. The shared fixture in `taskify-core/fixtures/hermes-bot-menu-vectors.json`
+/// Parses the readable Hermes `/model` and `/sessions` replies used by the inline cards. The shared fixture in `taskify-core/fixtures/hermes-bot-menu-vectors.json`
 /// keeps this parser aligned with the PWA parser.
 public struct HermesModelProvider: Codable, Equatable, Sendable {
     public var name: String
@@ -361,23 +359,41 @@ public struct TaskifyBotUiAction: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Equatable, Sendable {
         case catalogRequest = "catalog-request"
         case modelSelect = "model-select"
+        case sessionResume = "session-resume"
     }
 
     public var kind: Kind
     public var menuId: String
     public var providerSlug: String
     public var modelId: String?
+    public var sessionId: String?
 
-    public init(kind: Kind, menuId: String, providerSlug: String, modelId: String? = nil) {
+    public init(
+        kind: Kind, menuId: String, providerSlug: String = "",
+        modelId: String? = nil, sessionId: String? = nil
+    ) {
         self.kind = kind
         self.menuId = menuId
         self.providerSlug = providerSlug
         self.modelId = modelId
+        self.sessionId = sessionId
     }
 }
 
 public enum TaskifyBotUiError: Error {
     case invalidAction
+}
+
+public enum TaskifyBotMenuKind: String, Codable, Sendable {
+    case model
+    case sessions
+
+    public static func from(tags: [[String]]) -> Self? {
+        let markers = tags.filter { $0.first == "taskify-bot-menu" }
+        guard markers.count == 1, let marker = markers.first,
+              marker.count == 3, marker[1] == TaskifyBotUiContract.version else { return nil }
+        return Self(rawValue: marker[2])
+    }
 }
 
 public enum TaskifyBotUiContract {
@@ -386,27 +402,38 @@ public enum TaskifyBotUiContract {
     private static let menuPattern = #"^[A-Za-z0-9_-]{1,64}$"#
 
     public static func tag(for action: TaskifyBotUiAction) throws -> [String] {
-        guard action.menuId.range(of: menuPattern, options: .regularExpression) != nil,
-              HermesModelMenuParser.isValidProviderSlug(action.providerSlug) else {
+        guard action.menuId.range(of: menuPattern, options: .regularExpression) != nil else {
             throw TaskifyBotUiError.invalidAction
         }
+        let prefix = [tagName, version, action.kind.rawValue, action.menuId]
         switch action.kind {
         case .catalogRequest:
-            return [tagName, version, action.kind.rawValue, action.menuId, action.providerSlug]
-        case .modelSelect:
-            guard let modelId = action.modelId,
-                  HermesModelMenuParser.isValidModelId(modelId) else {
+            guard HermesModelMenuParser.isValidProviderSlug(action.providerSlug) else {
                 throw TaskifyBotUiError.invalidAction
             }
-            return [tagName, version, action.kind.rawValue, action.menuId, action.providerSlug, modelId]
+            return prefix + [action.providerSlug]
+        case .modelSelect:
+            guard HermesModelMenuParser.isValidProviderSlug(action.providerSlug),
+                  let modelId = action.modelId, HermesModelMenuParser.isValidModelId(modelId) else {
+                throw TaskifyBotUiError.invalidAction
+            }
+            return prefix + [action.providerSlug, modelId]
+        case .sessionResume:
+            guard let sessionId = action.sessionId, HermesSessionMenuParser.isValidSessionId(sessionId) else {
+                throw TaskifyBotUiError.invalidAction
+            }
+            return prefix + [sessionId]
         }
     }
 
     public static func action(from tags: [[String]]) -> TaskifyBotUiAction? {
         for tag in tags where tag.count >= 5 && tag[0] == tagName && tag[1] == version {
             guard tag[3].range(of: menuPattern, options: .regularExpression) != nil,
-                  HermesModelMenuParser.isValidProviderSlug(tag[4]) else { continue }
-            guard let kind = TaskifyBotUiAction.Kind(rawValue: tag[2]) else { continue }
+                  let kind = TaskifyBotUiAction.Kind(rawValue: tag[2]) else { continue }
+            if kind == .sessionResume, tag.count == 5, HermesSessionMenuParser.isValidSessionId(tag[4]) {
+                return TaskifyBotUiAction(kind: kind, menuId: tag[3], sessionId: tag[4])
+            }
+            guard HermesModelMenuParser.isValidProviderSlug(tag[4]) else { continue }
             if kind == .catalogRequest, tag.count == 5 {
                 return TaskifyBotUiAction(kind: kind, menuId: tag[3], providerSlug: tag[4])
             }
@@ -471,6 +498,7 @@ public struct HermesModelMenuProjection: Equatable, Sendable {
     public var listing: HermesModelListing
     public var catalogs: [String: HermesProviderCatalog]
     public var selectedModel: HermesSelectedModel?
+    public var bindsActionsToListing: Bool
     public var pendingAction: TaskifyBotUiAction?
     public var failure: HermesBotUiFailure?
 
@@ -480,6 +508,7 @@ public struct HermesModelMenuProjection: Equatable, Sendable {
         listing: HermesModelListing,
         catalogs: [String: HermesProviderCatalog] = [:],
         selectedModel: HermesSelectedModel? = nil,
+        bindsActionsToListing: Bool = false,
         pendingAction: TaskifyBotUiAction? = nil,
         failure: HermesBotUiFailure? = nil
     ) {
@@ -488,6 +517,7 @@ public struct HermesModelMenuProjection: Equatable, Sendable {
         self.listing = listing
         self.catalogs = catalogs
         self.selectedModel = selectedModel
+        self.bindsActionsToListing = bindsActionsToListing
         self.pendingAction = pendingAction
         self.failure = failure
     }
@@ -526,11 +556,13 @@ public enum HermesModelPickerProjection {
         var sessionsByListingMessageID: [String: HermesSessionListing] = [:]
         var menusByMenuID: [String: HermesModelMenuProjection] = [:]
         for message in ordered where message.isIncoming && message.groupID == nil && message.attachment == nil {
-            if let sessions = HermesSessionMenuParser.parseListing(message.content) {
+            if message.botMenuKind != .model,
+               let sessions = HermesSessionMenuParser.parseListing(message.content) {
                 sessionsByListingMessageID[message.rumorEventID] = sessions
                 continue
             }
-            guard let listing = HermesModelMenuParser.parseListing(message.content) else { continue }
+            guard message.botMenuKind != .sessions,
+                  let listing = HermesModelMenuParser.parseListing(message.content) else { continue }
             let menuId = message.rumorEventID
             guard menuId.range(of: #"^[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil else {
                 continue
@@ -538,36 +570,43 @@ public enum HermesModelPickerProjection {
             let menu = HermesModelMenuProjection(
                 listingEventId: message.rumorEventID,
                 menuId: menuId,
-                listing: listing
+                listing: listing,
+                bindsActionsToListing: message.botMenuKind == .model
             )
             menusByListingMessageID[message.rumorEventID] = menu
             menusByMenuID[menuId] = menu
         }
-        guard !menusByMenuID.isEmpty else {
-            return HermesBotUiProjection(
-                hiddenMessageIDs: hidden,
-                menusByListingMessageID: menusByListingMessageID,
-                sessionsByListingMessageID: sessionsByListingMessageID
-            )
-        }
-
         var pending: TaskifyBotUiAction?
+        var boundActions: [String: TaskifyBotUiAction] = [:]
         for message in ordered {
             if !message.isIncoming, let action = message.botUiAction {
+                if action.kind == .sessionResume {
+                    if message.replyToEventID == action.menuId,
+                       let sessionId = action.sessionId,
+                       message.content == (try? HermesSessionMenuParser.resumeCommand(sessionId: sessionId)) {
+                        hidden.insert(message.rumorEventID)
+                    }
+                    continue
+                }
                 hidden.insert(message.rumorEventID)
                 guard var menu = menusByMenuID[action.menuId] else { continue }
                 menu.pendingAction = action
                 menu.failure = nil
                 menusByMenuID[action.menuId] = menu
                 menusByListingMessageID[menu.listingEventId] = menu
-                pending = action
+                if menu.bindsActionsToListing {
+                    if message.replyToEventID == action.menuId {
+                        boundActions[message.rumorEventID] = action
+                    }
+                } else {
+                    pending = action
+                }
                 continue
             }
-            guard message.isIncoming, let action = pending else { continue }
-            guard var menu = menusByMenuID[action.menuId] else {
-                pending = nil
-                continue
-            }
+            guard message.isIncoming else { continue }
+            let bound = message.replyToEventID.flatMap { boundActions.removeValue(forKey: $0) }
+            guard let action = bound ?? pending, var menu = menusByMenuID[action.menuId] else { continue }
+            if bound == nil { pending = nil }
 
             if action.kind == .catalogRequest {
                 if let catalog = HermesModelMenuParser.parseProviderCatalog(
@@ -580,7 +619,6 @@ public enum HermesModelPickerProjection {
                     menu.failure = nil
                     menusByMenuID[action.menuId] = menu
                     menusByListingMessageID[menu.listingEventId] = menu
-                    pending = nil
                     continue
                 }
             } else if let expectedModel = action.modelId,
@@ -597,7 +635,6 @@ public enum HermesModelPickerProjection {
                 menu.failure = nil
                 menusByMenuID[action.menuId] = menu
                 menusByListingMessageID[menu.listingEventId] = menu
-                pending = nil
                 continue
             }
 
@@ -609,7 +646,6 @@ public enum HermesModelPickerProjection {
             )
             menusByMenuID[action.menuId] = menu
             menusByListingMessageID[menu.listingEventId] = menu
-            pending = nil
         }
 
         return HermesBotUiProjection(
