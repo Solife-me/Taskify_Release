@@ -126,62 +126,75 @@ private enum TestChecklistMark {
     #expect(result.detectedIDs == ["task-4"])
 }
 
-@Test func ocrAlignmentPrefersThePrintedRowsAfterAnAppCompletion() {
-    let originalItems = [
-        PhysicalChecklistItem(id: "before-print", title: "Completed before printing"),
-        PhysicalChecklistItem(id: "after-print", title: "Completed after printing"),
-        PhysicalChecklistItem(id: "marked", title: "Marked on paper"),
-    ]
-    let printedJob = PhysicalChecklistJob(
-        id: "printed-row-set",
-        ownerID: "board",
+@Test func sharedBoardScannerReadsTheCircleBesideEachPrintedTitle() {
+    let marked = PhysicalChecklistItem(id: "marked", title: "Marked on paper", section: "Mon")
+    let blank = PhysicalChecklistItem(id: "blank", title: "Leave this task open", section: "Wed")
+    var completed = PhysicalChecklistItem(id: "completed", title: "Completed in app", section: "Mon")
+    var printed = PhysicalChecklistJob(
+        id: "other-identity-print",
+        ownerID: "shared-board",
         title: "Shared board",
         paper: .a6,
-        items: [originalItems[1], originalItems[2]]
+        items: [completed, marked, blank],
+        layoutVersion: BoardPrintContract.modernVersion
     )
-    let currentAppJob = PhysicalChecklistJob(
-        id: "current-app-order",
-        ownerID: "board",
-        title: "Shared board",
-        paper: .a6,
-        items: [originalItems[2]]
-    )
-    let currentWithPostPrintCompletion = PhysicalChecklistJob(
-        id: "completion-aware-order",
-        ownerID: "board",
-        title: "Shared board",
-        paper: .a6,
-        items: [originalItems[1], originalItems[2]]
-    )
-    let image = renderChecklistPhoto(job: printedJob, marks: ["marked": .check])
-    let lines = ocrLines(for: printedJob)
-
-    let openOnlyScore = PhysicalChecklistScanEngine.alignmentScore(
-        image: image,
-        job: currentAppJob,
-        lines: lines
-    )
-    let completionAwareScore = PhysicalChecklistScanEngine.alignmentScore(
-        image: image,
-        job: currentWithPostPrintCompletion,
-        lines: lines
-    )
-    let markedRowScore = PhysicalChecklistScanEngine.alignmentScore(
-        image: image,
-        job: currentWithPostPrintCompletion,
-        lines: lines,
-        restrictToItemIDs: ["marked"]
-    )
-    let shiftedMarkedRowScore = PhysicalChecklistScanEngine.alignmentScore(
-        image: image,
-        job: currentAppJob,
-        lines: lines,
-        restrictToItemIDs: ["marked"]
+    printed.items[0].note = "An extra line changes where the next row lands."
+    let deleted = PhysicalChecklistItem(id: "deleted", title: "Removed after printing", section: "Mon")
+    printed.items.insert(deleted, at: 1)
+    let image = renderChecklistPhoto(
+        job: printed,
+        marks: ["marked": .check, "completed": .filled, "deleted": .x],
+        circleOffsetXMM: 1.2,
+        fadedInk: true
     )
 
-    #expect(completionAwareScore > openOnlyScore)
-    #expect(completionAwareScore > 0.8)
-    #expect(markedRowScore > shiftedMarkedRowScore)
+    completed.filled = true
+    let added = PhysicalChecklistItem(id: "added", title: "Added after printing", section: "Mon")
+    var catalog = printed
+    catalog.id = "scan-from-second-identity"
+    catalog.items = [blank, added, completed, marked]
+    catalog.paper = .letter
+    let lines = ocrLines(for: printed)
+
+    let result = PhysicalChecklistScanEngine.scanBoardPage(image: image, lines: lines, catalog: catalog)
+    #expect(result.recognizedPages == 1)
+    #expect(result.detectedIDs == ["completed", "marked"])
+
+    var review = PhysicalChecklistScanReview()
+    review.merge(detectedIDs: result.detectedIDs, items: catalog.items)
+    #expect(review.applyableIDs(from: catalog.items) == ["marked"])
+
+    catalog.title = "Different board"
+    let wrongBoard = PhysicalChecklistScanEngine.scanBoardPage(image: image, lines: lines, catalog: catalog)
+    #expect(wrongBoard.recognizedPages == 0)
+    #expect(wrongBoard.detectedIDs.isEmpty)
+}
+
+@Test func sharedBoardScannerSkipsAmbiguousTitlesAndFadedEmptyRings() {
+    let printed = PhysicalChecklistJob(
+        ownerID: "shared-board",
+        title: "Shared board",
+        paper: .a6,
+        items: [
+            PhysicalChecklistItem(id: "repeated-1", title: "Call supplier", section: "Mon"),
+            PhysicalChecklistItem(id: "repeated-2", title: "Call supplier", section: "Wed"),
+            PhysicalChecklistItem(id: "blank", title: "Leave open", section: "Wed"),
+            PhysicalChecklistItem(id: "marked", title: "Send weekly report and slides", section: "Wed"),
+        ]
+    )
+    let image = renderChecklistPhoto(
+        job: printed,
+        marks: ["repeated-1": .filled, "marked": .x],
+        fadedInk: true
+    )
+    var lines = ocrLines(for: printed)
+    if let marked = lines.firstIndex(where: { $0.text == "Send weekly report and slides" }) {
+        lines[marked].text = "Send weekly report and slldes"
+    }
+    let result = PhysicalChecklistScanEngine.scanBoardPage(image: image, lines: lines, catalog: printed)
+
+    #expect(result.recognizedPages == 1)
+    #expect(result.detectedIDs == ["marked"])
 }
 
 private func renderChecklistPhoto(
@@ -323,7 +336,7 @@ private func ocrLines(for job: PhysicalChecklistJob) -> [PhysicalChecklistOCRLin
     let scaleX = 7.55
     let scaleY = 7.45
     let shear = 0.22
-    return layout.pages.flatMap(\.rows).compactMap { row in
+    let items: [PhysicalChecklistOCRLine] = layout.pages.flatMap(\.rows).compactMap { row in
         guard case let .item(item) = row.kind, let circle = row.circleCenterMM else { return nil }
         let pageX = circle.x + layout.circleSizeMM / 2 + 2.4
         let pageY = row.yMM + row.titleBandMM / 2
@@ -337,6 +350,15 @@ private func ocrLines(for job: PhysicalChecklistJob) -> [PhysicalChecklistOCRLin
             height: 10 / height
         )
     }
+    let headerY = layout.headerTopMM + 1.5
+    let header = PhysicalChecklistOCRLine(
+        text: job.title + " print",
+        x: (originX + shear * headerY + PhysicalChecklistLayout.marginMM * scaleX) / width,
+        y: (originY + headerY * scaleY - 5) / height,
+        width: 180 / width,
+        height: 10 / height
+    )
+    return [header] + items
 }
 
 private func pointInRect(

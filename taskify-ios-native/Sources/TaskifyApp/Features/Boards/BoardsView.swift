@@ -28,7 +28,7 @@ struct BoardsView: View {
     @State private var showingVoiceDictation = false
     @State private var detailedTaskDraft: TaskItem?
     @State private var physicalChecklistJob: PhysicalChecklistJob?
-    @State private var physicalChecklistScanFallbacks: [PhysicalChecklistJob] = []
+    @State private var physicalChecklistScanCatalog: PhysicalChecklistJob?
     @State private var physicalChecklistStartsScanning = false
     @State private var boardPrintRequest: BoardPrintRequest?
     @State private var pendingBoardPrintJob: PhysicalChecklistJob?
@@ -143,11 +143,12 @@ struct BoardsView: View {
         }
         .sheet(item: $physicalChecklistJob, onDismiss: {
             physicalChecklistStartsScanning = false
+            physicalChecklistScanCatalog = nil
         }) { job in
             PhysicalChecklistSheet(
                 job: job,
                 startWithScanner: physicalChecklistStartsScanning,
-                fallbackScanJobs: physicalChecklistScanFallbacks
+                scanCatalog: physicalChecklistScanCatalog
             ) { scannedIDs in
                 model.completeTasks(scannedIDs)
             }
@@ -630,14 +631,14 @@ struct BoardsView: View {
     private func openPrintedChecklistScanner() {
         guard let board = model.selectedBoard, board.kind != .bible else { return }
         let ownerID = "board:\(board.effectiveNostrBoardID)"
-        let fallbackJobs = makeBoardScanFallbackJobs(for: board)
-        let launchJob = PhysicalChecklistJobStore.load(ownerID: ownerID)
-            ?? fallbackJobs.first
-        guard let launchJob else {
-            model.errorMessage = "There is no printed checklist to scan yet. Add a task, then print a checklist first."
+        let items = makeBoardPrintChoices(for: board).flatMap(\.items)
+        let catalog = PhysicalChecklistJob(ownerID: ownerID, title: board.name, items: items)
+        guard !items.isEmpty else {
+            model.errorMessage = "Add a task to this board before scanning a checklist."
             return
         }
-        physicalChecklistScanFallbacks = fallbackJobs
+        let launchJob = PhysicalChecklistJobStore.load(ownerID: ownerID) ?? catalog
+        physicalChecklistScanCatalog = catalog
         physicalChecklistStartsScanning = true
         physicalChecklistJob = launchJob
     }
@@ -740,73 +741,6 @@ struct BoardsView: View {
             items: items,
             layoutVersion: options.layoutVersion
         )
-    }
-
-    /// Shared boards can be printed from another identity, whose encrypted print manifest is not
-    /// available here. Recreate the PWA v4 row order and detail lines from this device's copy of
-    /// the shared board, then let the scanner read the sheet without requiring the foreign print
-    /// ID. The review screen still requires confirmation before any task is completed.
-    private func makeBoardScanFallbackJobs(for board: Board) -> [PhysicalChecklistJob] {
-        let options = PhysicalChecklistPrintOptions(
-            includeCompleted: true,
-            includeNotes: true,
-            includeDue: true
-        )
-        let items = makeBoardPrintChoices(for: board, options: options)
-            .flatMap(\.items)
-            .map { item in
-                var scanItem = item
-                let detail = [item.dueText, item.note]
-                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                    .joined(separator: " · ")
-                scanItem.detail = detail.isEmpty ? nil : detail
-                scanItem.dueText = nil
-                scanItem.note = nil
-                scanItem.noteLineCount = 0
-                scanItem.subtasks = []
-                scanItem.photoCount = 0
-                return scanItem
-            }
-        guard !items.isEmpty else { return [] }
-
-        let cutoff = Calendar.current.date(byAdding: .day, value: -14, to: Date()) ?? .distantPast
-        let completionTimes = Array(Set(items.compactMap { item -> TimeInterval? in
-            guard item.filled,
-                  let completedAt = model.task(withID: item.id)?.completedAt,
-                  completedAt >= cutoff else { return nil }
-            return completedAt.timeIntervalSince1970.rounded(.down)
-        }))
-        .sorted(by: >)
-        .prefix(8)
-        let thresholds = [Date.distantFuture]
-            + completionTimes.map { Date(timeIntervalSince1970: $0) }
-            + [Date.distantPast]
-        var jobs: [PhysicalChecklistJob] = []
-        var seen = Set<String>()
-
-        for threshold in thresholds {
-            let selected = items.filter { item in
-                guard item.filled else { return true }
-                guard let completedAt = model.task(withID: item.id)?.completedAt else { return false }
-                return completedAt >= threshold
-            }
-            guard !selected.isEmpty else { continue }
-            let variants: [[PhysicalChecklistItem]] = selected.contains(where: { ($0.detail ?? "").isEmpty == false })
-                ? [selected, selected.map { item in var plain = item; plain.detail = nil; return plain }]
-                : [selected]
-            for variant in variants {
-                let signature = variant.map { "\($0.id):\($0.detail ?? "")" }.joined(separator: "|")
-                guard seen.insert(signature).inserted else { continue }
-                jobs.append(PhysicalChecklistJob(
-                    ownerID: "board:\(board.effectiveNostrBoardID)",
-                    title: board.name,
-                    items: variant,
-                    layoutVersion: BoardPrintContract.detailVersion
-                ))
-            }
-        }
-        return jobs
     }
 
     private func printDueText(for task: TaskItem) -> String? {

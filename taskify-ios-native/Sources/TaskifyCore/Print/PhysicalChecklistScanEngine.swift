@@ -30,6 +30,8 @@ public enum PhysicalChecklistScanEngine {
         var topRight: Point
         var bottomRight: Point
         var bottomLeft: Point
+
+        var corners: [Point] { [topLeft, topRight, bottomRight, bottomLeft] }
     }
 
     private struct ScanContext {
@@ -121,79 +123,119 @@ public enum PhysicalChecklistScanEngine {
         )
     }
 
-    /// Scores how well a candidate job's row titles line up with OCR text on the photographed
-    /// page. This lets a shared-board fallback choose between layouts whose row sets changed after
-    /// printing, without trusting OCR as the sole source of task identity.
-    public static func alignmentScore(
+    /// Unknown print manifests are common when the printing and scanning devices use different
+    /// identities. Pair a circle with the OCR line on that physical row before resolving its ID.
+    public static func scanBoardPage(
         image: PhysicalChecklistGrayImage,
-        job: PhysicalChecklistJob,
         lines: [PhysicalChecklistOCRLine],
-        restrictToItemIDs: Set<String> = []
-    ) -> Double {
-        guard !lines.isEmpty else { return 0 }
-        var best = 0.0
-        for paper in [job.paper] + PhysicalChecklistPaper.allCases.filter({ $0 != job.paper }) {
-            var scopedJob = job
-            scopedJob.paper = paper
-            let layout = PhysicalChecklistLayout.build(job: scopedJob)
-            guard let context = buildContext(image: image, layout: layout) else { continue }
-            best = max(best, rowTitleAlignment(
-                context: context,
-                layout: layout,
-                lines: lines,
-                restrictToItemIDs: restrictToItemIDs
-            ))
-        }
-        return best
-    }
+        catalog: PhysicalChecklistJob
+    ) -> PhysicalChecklistScanResult {
+        let defaultLayout = PhysicalChecklistLayout.build(job: catalog)
+        let ignored = PhysicalChecklistScanResult(
+            detectedIDs: [], recognizedPages: 0, mismatchedJobs: 0, unreadablePageIDs: 0
+        )
+        guard !lines.isEmpty, image.width > 0, image.height > 0,
+              image.pixels.count == image.width * image.height,
+              let markers = detectMarkers(image: image, layout: defaultLayout) else { return ignored }
 
-    private static func rowTitleAlignment(
-        context: ScanContext,
-        layout: PhysicalChecklistLayout,
-        lines: [PhysicalChecklistOCRLine],
-        restrictToItemIDs: Set<String>
-    ) -> Double {
-        let paper = layout.paper.sizeMM
-        var total = 0.0
-        var rows = 0
-        for page in layout.pages {
-            for row in page.rows {
-                guard case let .item(item) = row.kind, let center = row.circleCenterMM else { continue }
-                if !restrictToItemIDs.isEmpty, !restrictToItemIDs.contains(item.id) { continue }
-                rows += 1
-                let point = applyHomography(Point(x: center.x, y: center.y), matrix: context.matrix)
-                let normalizedX = point.x / Double(context.image.width)
-                let normalizedY = point.y / Double(context.image.height)
-                let tolerance = max(0.012, row.heightMM / paper.height * 0.62)
-                let nearby = lines.filter { line in
-                    let lineCenterY = line.y + line.height / 2
-                    return abs(lineCenterY - normalizedY) <= tolerance
-                        && line.x + line.width >= normalizedX + 0.008
-                        && line.x <= 0.82
-                }
-                total += nearby.map { titleMatchScore(item.title, $0.text) }.max() ?? 0
+        let boardTitle = normalizedTitle(catalog.title)
+        let titles = catalog.items.map { ($0.id, normalizedTitle($0.title)) }
+        let readLines = lines.map { ($0, normalizedTitle($0.text)) }
+        var best: (quality: Double, ids: [String])?
+        for paper in PhysicalChecklistPaper.allCases {
+            var pageJob = catalog
+            pageJob.items = []
+            pageJob.paper = paper
+            let layout = PhysicalChecklistLayout.build(job: pageJob)
+            guard let context = buildContext(image: image, layout: layout, markers: markers),
+                  let inverse = solveHomography(
+                    source: markers.corners,
+                    target: markerCenters(layout: layout)
+                  ) else { continue }
+            let headerMatches = readLines.contains { line, title in
+                guard title == boardTitle || title == "\(boardTitle) print" else { return false }
+                let point = lineStart(line, image: image, inverse: inverse)
+                return abs(point.x - PhysicalChecklistLayout.marginMM) <= 4
+                    && (layout.headerTopMM - 3..<layout.contentTopMM).contains(point.y)
             }
+            guard headerMatches else { continue }
+
+            let pageBackground = samplePageBackground(context: context, layout: layout)
+            let markerMedian = sampleMarkerMedian(context: context, layout: layout)
+            guard markerMedian <= maximumMarkerLuma,
+                  pageBackground - markerMedian >= minimumMarkerContrast else { continue }
+
+            let margin = PhysicalChecklistLayout.marginMM + (paper == .a6 ? BoardPrintContract.a6BindingMarginMM : 0)
+            let circleSize = layout.circleSizeMM
+            let circleX = margin + circleSize / 2
+            let titleX = margin + circleSize + BoardPrintContract.circleTextGapMM
+            var rows: [String: [(center: Point, marked: Bool)]] = [:]
+            var quality = 0.0
+            for (line, title) in readLines {
+                let point = lineStart(line, image: image, inverse: inverse)
+                guard (layout.contentTopMM - 2..<paper.sizeMM.height - margin).contains(point.y),
+                      (margin - 2...titleX + 5).contains(point.x) else { continue }
+                // OCR can include a circle in the text box and read it as a leading O.
+                let normalized = point.x < titleX - 2 && (title.hasPrefix("o ") || title.hasPrefix("0 "))
+                    ? String(title.dropFirst(2)) : title
+                guard let id = uniqueTaskID(for: normalized, titles: titles) else { continue }
+
+                let expectedCenter = Point(x: circleX, y: point.y)
+                guard let circle = locateCircle(
+                    context: context,
+                    expectedCenter: expectedCenter,
+                    circleSizeMM: circleSize,
+                    minimumContrast: max(9, (pageBackground - markerMedian) * 0.085),
+                    searchSteps: 4
+                ) else { continue }
+
+                // Box fitting is independent of ink in the center. Pick the paper geometry
+                // supported by the printed circles, including empty ones.
+                quality += circle.score
+                let marked = circleHasInteriorInk(context: context, circle: circle, markerMedian: markerMedian)
+                rows[id, default: []].append((circle.center, marked))
+            }
+            guard !rows.isEmpty, quality > (best?.quality ?? 0) else { continue }
+            let ids = rows.compactMap { id, matches -> String? in
+                guard let first = matches.first,
+                      matches.allSatisfy({ distance(first.center, $0.center) < circleSize / 2 }),
+                      matches.contains(where: \.marked) else { return nil }
+                return id
+            }
+            best = (quality, ids.sorted())
         }
-        return rows == 0 ? 0 : total / Double(rows)
+        guard let best else { return ignored }
+        return PhysicalChecklistScanResult(
+            detectedIDs: best.ids, recognizedPages: 1, mismatchedJobs: 0, unreadablePageIDs: 0
+        )
     }
 
-    /// Similarity between a candidate task title and an OCR line, after case, punctuation and
-    /// diacritic normalization. Shared with fallback row reconstruction in the app target.
-    public static func titleMatchScore(_ expected: String, _ observed: String) -> Double {
-        let expectedText = normalizedTitle(expected)
-        let observedText = normalizedTitle(observed)
-        guard !expectedText.isEmpty, !observedText.isEmpty else { return 0 }
-        if expectedText == observedText { return 1 }
-        if observedText.contains(expectedText) || expectedText.contains(observedText) {
-            let ratio = Double(min(expectedText.count, observedText.count))
-                / Double(max(expectedText.count, observedText.count))
-            return 0.72 + ratio * 0.26
-        }
-        let expectedTokens = Set(expectedText.split(separator: " ").map(String.init))
-        let observedTokens = Set(observedText.split(separator: " ").map(String.init))
-        guard !expectedTokens.isEmpty, !observedTokens.isEmpty else { return 0 }
-        let overlap = expectedTokens.intersection(observedTokens).count
-        return Double(overlap) * 2 / Double(expectedTokens.count + observedTokens.count)
+    private static func lineStart(
+        _ line: PhysicalChecklistOCRLine,
+        image: PhysicalChecklistGrayImage,
+        inverse: [Double]
+    ) -> Point {
+        applyHomography(Point(
+            x: line.x * Double(image.width),
+            y: (line.y + line.height / 2) * Double(image.height)
+        ), matrix: inverse)
+    }
+
+    private static func uniqueTaskID(for observed: String, titles: [(String, String)]) -> String? {
+        let exact = titles.filter { !$0.1.isEmpty && $0.1 == observed }
+        if !exact.isEmpty { return exact.count == 1 ? exact[0].0 : nil }
+
+        let observedWords = Set(observed.split(separator: " "))
+        guard observedWords.count >= 3 else { return nil }
+        let ranked = titles.map { id, title in
+            let words = Set(title.split(separator: " "))
+            let matched = words.intersection(observedWords).count
+            let similarity = Double(matched * 2) / Double(words.count + observedWords.count)
+            return (id: id, score: matched >= 3 ? similarity : 0)
+        }.sorted { $0.score > $1.score }
+        guard let best = ranked.first, best.score >= 0.75,
+              best.score - (ranked.dropFirst().first?.score ?? 0) >= 0.12 else { return nil }
+        return best.id
     }
 
     private static func normalizedTitle(_ value: String) -> String {
@@ -215,18 +257,25 @@ public enum PhysicalChecklistScanEngine {
         guard image.width > 0, image.height > 0,
               image.pixels.count == image.width * image.height,
               let markers = detectMarkers(image: image, layout: layout) else { return nil }
-        let paper = layout.paper.sizeMM
-        let markerRects = layout.markerRectsMM()
-        let markerCenters = markerRects.map {
+        return buildContext(image: image, layout: layout, markers: markers)
+    }
+
+    private static func buildContext(
+        image: PhysicalChecklistGrayImage,
+        layout: PhysicalChecklistLayout,
+        markers: MarkerSet
+    ) -> ScanContext? {
+        guard let matrix = solveHomography(source: markerCenters(layout: layout), target: markers.corners)
+        else { return nil }
+        return ScanContext(image: image, matrix: matrix)
+    }
+
+    private static func markerCenters(layout: PhysicalChecklistLayout) -> [Point] {
+        let rects = layout.markerRectsMM()
+        // A homography walks the corners clockwise.
+        return [rects[0], rects[1], rects[3], rects[2]].map {
             Point(x: $0.x + $0.width / 2, y: $0.y + $0.height / 2)
         }
-        // `markerRectsMM` is TL, TR, BL, BR; a homography must walk the corners clockwise.
-        let source = [markerCenters[0], markerCenters[1], markerCenters[3], markerCenters[2]]
-        let target = [markers.topLeft, markers.topRight, markers.bottomRight, markers.bottomLeft]
-        guard source.count == 4,
-              paper.width > 0, paper.height > 0,
-              let matrix = solveHomography(source: source, target: target) else { return nil }
-        return ScanContext(image: image, matrix: matrix)
     }
 
     private static func detectMarkers(
@@ -497,117 +546,112 @@ public enum PhysicalChecklistScanEngine {
         backgroundMedian: Double,
         markerMedian: Double
     ) -> Bool {
-        let backgroundOffsets = [
-            Point(x: -max(2, circleSizeMM * 0.8), y: 0),
-            Point(x: 0, y: -max(2.5, BoardPrintContract.rowHeightMM * 0.45)),
-            Point(x: 0, y: max(2.5, BoardPrintContract.rowHeightMM * 0.45)),
-        ]
-        let localBackground = median(backgroundOffsets.map { offset in
-            samplePage(
-                context: context,
-                point: Point(x: center.x + offset.x, y: center.y + offset.y),
-                radiusMM: 0.55
-            )
-        })
-        let paper = median([localBackground, backgroundMedian, (localBackground + backgroundMedian) / 2])
-        let darkThreshold = paper - max(18, (paper - markerMedian) * 0.24)
-        let locatedCenter = locateCircleCenter(
+        let circle = locateCircle(
             context: context,
             expectedCenter: center,
             circleSizeMM: circleSizeMM,
-            paper: paper,
-            markerMedian: markerMedian
-        )
-        let radius = circleSizeMM * 0.32 // excludes the preprinted ring, even with modest blur
-        let divisions = 10
-        var darkPoints: [Point] = []
-        var sampled = 0
-
-        for row in 0...divisions {
-            for column in 0...divisions {
-                let dx = (Double(column) / Double(divisions) * 2 - 1) * radius
-                let dy = (Double(row) / Double(divisions) * 2 - 1) * radius
-                guard hypot(dx, dy) <= radius else { continue }
-                sampled += 1
-                let value = samplePage(
-                    context: context,
-                    point: Point(x: locatedCenter.x + dx, y: locatedCenter.y + dy),
-                    radiusMM: 0.10
-                )
-                if value < darkThreshold { darkPoints.append(Point(x: dx, y: dy)) }
-            }
-        }
-
-        guard sampled > 0 else { return false }
-        let darkFraction = Double(darkPoints.count) / Double(sampled)
-        if darkFraction >= 0.18 { return true }
-        guard darkPoints.count >= 10 else { return false }
-        let xSpan = darkPoints.map(\.x).max()! - darkPoints.map(\.x).min()!
-        let ySpan = darkPoints.map(\.y).max()! - darkPoints.map(\.y).min()!
-        return darkFraction >= 0.045 && xSpan >= radius * 0.55 && ySpan >= radius * 0.45
+            minimumContrast: max(9, (backgroundMedian - markerMedian) * 0.085),
+            searchSteps: 3
+        ) ?? LocatedCircle(center: center, radius: circleSizeMM / 2, background: backgroundMedian, score: 0)
+        return circleHasInteriorInk(context: context, circle: circle, markerMedian: markerMedian)
     }
 
-    /// Browser printing can shift a row's checkbox by a millimetre relative to the registration
-    /// grid. Recenter on the printed outline before reading its interior so that displacement does
-    /// not look like a filled circle.
-    private static func locateCircleCenter(
+    /// Fits the circle from changes in brightness around its perimeter. Looking for the same
+    /// edge in opposing directions keeps a dark arc from an empty ring out of the sampled core.
+    private struct LocatedCircle {
+        var center: Point
+        var radius: Double
+        var background: Double
+        var score: Double
+    }
+
+    private static let circleDirections = (0..<16).map { index in
+        let angle = Double(index) * .pi / 8
+        return Point(x: cos(angle), y: sin(angle))
+    }
+
+    private static func locateCircle(
         context: ScanContext,
         expectedCenter: Point,
         circleSizeMM: Double,
-        paper: Double,
-        markerMedian: Double
-    ) -> Point {
-        var best = expectedCenter
-        var bestScore = -1.0
-        for ix in -3...3 {
-            for iy in -3...3 {
-                let candidate = Point(
-                    x: expectedCenter.x + Double(ix) * 0.5,
-                    y: expectedCenter.y + Double(iy) * 0.5
+        minimumContrast: Double,
+        searchSteps: Int
+    ) -> LocatedCircle? {
+        var best: LocatedCircle?
+        for dx in -searchSteps...searchSteps {
+            for dy in -searchSteps...searchSteps {
+                let center = Point(
+                    x: expectedCenter.x + Double(dx) * 0.5,
+                    y: expectedCenter.y + Double(dy) * 0.5
                 )
-                let score = circleOutlineScore(
-                    context: context,
-                    center: candidate,
-                    circleSizeMM: circleSizeMM,
-                    paper: paper,
-                    markerMedian: markerMedian
-                )
-                if score > bestScore {
-                    best = candidate
-                    bestScore = score
+                for scale in [0.9, 1.0, 1.1] {
+                    let radius = circleSizeMM / 2 * scale
+                    let outside = circleDirections.map {
+                        circleSample(context: context, center: center, direction: $0, offset: radius * 1.38)
+                    }
+                    let contrast = zip(circleDirections, outside).map { direction, paper in
+                        let edge = min(
+                            circleSample(context: context, center: center, direction: direction, offset: radius * 0.88),
+                            circleSample(context: context, center: center, direction: direction, offset: radius)
+                        )
+                        return paper - edge
+                    }
+                    let oppositeEdges = (0..<8).map { min(contrast[$0], contrast[$0 + 8]) }
+                    let supported = oppositeEdges.filter { $0 >= minimumContrast }
+                    guard supported.count >= 5 else { continue }
+
+                    let score = Double(supported.count) + supported.reduce(0) { sum, contrast in
+                        sum + min(contrast / minimumContrast, 5) / 12
+                    } - hypot(Double(dx), Double(dy)) * 0.06
+                    if score > (best?.score ?? 0) {
+                        best = LocatedCircle(center: center, radius: radius, background: median(outside), score: score)
+                    }
                 }
             }
         }
-        return bestScore >= 0.12 ? best : expectedCenter
+        return best
     }
 
-    private static func circleOutlineScore(
+    private static func circleSample(
         context: ScanContext,
         center: Point,
-        circleSizeMM: Double,
-        paper: Double,
-        markerMedian: Double
+        direction: Point,
+        offset: Double
     ) -> Double {
-        let darkThreshold = paper - max(20, (paper - markerMedian) * 0.15)
+        samplePage(
+            context: context,
+            point: Point(x: center.x + direction.x * offset, y: center.y + direction.y * offset),
+            radiusMM: 0
+        )
+    }
+
+    private static func circleHasInteriorInk(
+        context: ScanContext,
+        circle: LocatedCircle,
+        markerMedian: Double
+    ) -> Bool {
+        let threshold = circle.background - max(16, (circle.background - markerMedian) * 0.20)
+        let radius = circle.radius * 0.62
+        let divisions = 5
         var dark = 0
+        var darkCore = 0
         var sampled = 0
-        for factor in [0.36, 0.45, 0.54, 0.62] {
-            let radius = circleSizeMM * factor
-            for index in 0..<16 {
-                let angle = Double(index) / 16 * 2 * Double.pi
-                let value = samplePage(
-                    context: context,
-                    point: Point(
-                        x: center.x + cos(angle) * radius,
-                        y: center.y + sin(angle) * radius
-                    ),
-                    radiusMM: 0.08
-                )
+
+        for row in -divisions...divisions {
+            for column in -divisions...divisions {
+                guard row * row + column * column <= divisions * divisions else { continue }
                 sampled += 1
-                if value < darkThreshold { dark += 1 }
+                let point = Point(
+                    x: circle.center.x + radius * Double(column) / Double(divisions),
+                    y: circle.center.y + radius * Double(row) / Double(divisions)
+                )
+                if samplePage(context: context, point: point, radiusMM: 0) < threshold {
+                    dark += 1
+                    if row * row + column * column <= 9 { darkCore += 1 }
+                }
             }
         }
-        return sampled == 0 ? 0 : Double(dark) / Double(sampled)
+        return darkCore >= 4 && Double(dark) / Double(sampled) >= 0.15
     }
 
     // MARK: - Sampling and math
@@ -618,6 +662,21 @@ public enum PhysicalChecklistScanEngine {
         radiusMM: Double
     ) -> Double {
         let imagePoint = applyHomography(point, matrix: context.matrix)
+        if radiusMM == 0 {
+            let x = min(max(imagePoint.x, 0), Double(context.image.width - 1))
+            let y = min(max(imagePoint.y, 0), Double(context.image.height - 1))
+            let left = Int(x)
+            let top = Int(y)
+            let right = min(left + 1, context.image.width - 1)
+            let bottom = min(top + 1, context.image.height - 1)
+            let fx = x - Double(left)
+            let fy = y - Double(top)
+            let upper = Double(context.image.pixels[top * context.image.width + left]) * (1 - fx)
+                + Double(context.image.pixels[top * context.image.width + right]) * fx
+            let lower = Double(context.image.pixels[bottom * context.image.width + left]) * (1 - fx)
+                + Double(context.image.pixels[bottom * context.image.width + right]) * fx
+            return upper * (1 - fy) + lower * fy
+        }
         let right = applyHomography(Point(x: point.x + radiusMM, y: point.y), matrix: context.matrix)
         let down = applyHomography(Point(x: point.x, y: point.y + radiusMM), matrix: context.matrix)
         let radius = max(1, min(distance(imagePoint, right), distance(imagePoint, down)))
