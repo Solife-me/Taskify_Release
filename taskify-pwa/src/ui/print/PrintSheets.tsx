@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useToast } from "../../context/ToastContext";
-import { tasksForBoardPrintScope, type BoardPrintJob, type BoardPrintListChoice, type BoardPrintOptions, type BoardPrintScope } from "../../components/BoardPrintLayout";
+import { tasksForBoardPrintScope, type BoardPrintJob, type BoardPrintListChoice, type BoardPrintOptions, type BoardPrintScope, type BoardPrintTask } from "../../components/BoardPrintLayout";
 import { BoardPrintChooser } from "../../components/BoardPrintChooser";
 import { BoardPrintPreview } from "../../components/BoardPrintSheet";
 import { BoardScanPanel } from "../../components/BoardScanSheet";
@@ -30,6 +30,9 @@ export type PrintSheetsProps = {
   boardPrintOptions: BoardPrintOptions;
   boardPrintPortal: HTMLDivElement | null;
   boardScanOpen: boolean;
+  boardScanBoardId: string | null;
+  boardScanJob: BoardPrintJob | null;
+  boardScanCatalog: BoardPrintTask[];
   handleApplyBibleScan: (scanProgress: BibleTrackerProgress) => void;
   handleApplyBoardScan: (taskIds: string[]) => void;
   handleContinueBoardPrint: (scope: BoardPrintScope, options: BoardPrintOptions) => void;
@@ -58,6 +61,9 @@ export function PrintSheets({
   boardPrintOptions,
   boardPrintPortal,
   boardScanOpen,
+  boardScanBoardId,
+  boardScanJob,
+  boardScanCatalog,
   handleApplyBibleScan,
   handleApplyBoardScan,
   handleContinueBoardPrint,
@@ -244,9 +250,20 @@ export function PrintSheets({
         </Modal>
       )}
 
-      {boardScanOpen && scopedBoardPrintJob && (
-        <Modal onClose={() => setBoardScanOpen(false)} title={`Scan ${scopedBoardPrintJob.boardName || "board"}`}>
-          <BoardScanPanel job={scopedBoardPrintJob} onApply={handleApplyBoardScan} />
+      {boardScanOpen && boardScanBoardId && (
+        <Modal onClose={() => setBoardScanOpen(false)} title={`Scan ${boardPrintBoardName}`}>
+          {boardScanCatalog.length ? (
+            <BoardScanPanel
+              key={boardScanBoardId}
+              job={boardScanJob && {
+                ...boardScanJob,
+                tasks: tasksForBoardPrintScope(boardScanJob.tasks, boardScanJob.scope),
+              }}
+              boardName={boardPrintBoardName}
+              catalog={boardScanCatalog}
+              onApply={handleApplyBoardScan}
+            />
+          ) : <p className="text-sm text-secondary">There are no tasks on this board to match.</p>}
         </Modal>
       )}
     </>

@@ -46,6 +46,13 @@ export default defineConfig({
     manifest: true,
     rolldownOptions: {
       output: {
+        assetFileNames(asset) {
+          if (asset.names.includes("eng.traineddata.gz")) return "assets/ocr-[hash]/eng.traineddata.gz";
+          if (asset.originalFileNames.some((name) => name.endsWith("/tesseract.js/dist/worker.min.js"))) {
+            return "assets/ocr-worker-[hash].js";
+          }
+          return "assets/[name]-[hash][extname]";
+        },
         // Named vendor chunks, claimed highest priority first. A group also takes its modules'
         // dependencies, so shared foundations (React, the Nostr SDK) must be claimed before the
         // optional libraries that depend on them; otherwise React landed in the QR chunk and

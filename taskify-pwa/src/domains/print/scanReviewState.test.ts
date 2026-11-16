@@ -1,27 +1,14 @@
 import { expect, test } from "vitest";
-import { applyableScanIds, defaultSelectedScanIds, mergeBoardScanReview } from "./scanReviewState";
+import { applyableScanIds, defaultSelectedScanIds, reviewTasksForScan } from "./scanReviewState";
 
-const first = [
-  { id: "a", title: "A" },
-  { id: "already", title: "Already", completed: true },
-];
-const second = [
-  { id: "a", title: "A" },
-  { id: "b", title: "B" },
-];
+test("uses the live tasks when rendering and applying scanned marks", () => {
+  const ids = ["open", "already", "deleted"];
+  const open = { id: "open", title: "Current title" };
+  const already = { id: "already", title: "Already done", completed: true };
+  const catalog = new Map([open, already].map((task) => [task.id, task]));
+  const reviewed = reviewTasksForScan(ids, catalog);
 
-test("additional scanned pages merge into one deduplicated review", () => {
-  expect(mergeBoardScanReview(first, second)).toEqual([
-    first[0],
-    first[1],
-    { id: "b", title: "B" },
-  ]);
-});
-
-test("already-completed tasks are visible but never selected or applied by default", () => {
-  const merged = mergeBoardScanReview(first, second);
-  const selected = defaultSelectedScanIds(merged);
-  expect([...selected]).toEqual(["a", "b"]);
-  expect(applyableScanIds(merged, selected)).toEqual(["a", "b"]);
-  expect(applyableScanIds(merged, new Set(["already"]))).toEqual([]);
+  expect(reviewed).toEqual([open, already]);
+  expect([...defaultSelectedScanIds(reviewed)]).toEqual(["open"]);
+  expect(applyableScanIds(reviewed, new Set(ids))).toEqual(["open"]);
 });

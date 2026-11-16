@@ -2841,23 +2841,23 @@ export default function App() {
     });
   }, [rememberBoardPrintJob]);
 
+  const boardScanCatalog = useMemo(() => boardScanOpen ? buildBoardPrintTasks({
+    ...DEFAULT_BOARD_PRINT_OPTIONS,
+    includeCompleted: true,
+    includeUpcoming: true,
+  }) : [], [boardScanOpen, buildBoardPrintTasks]);
+
   const handleOpenBoardScan = useCallback(() => {
     if (!currentBoard) return;
-    const job = boardPrintJobs[currentBoard.id];
-    if (!job || job.tasks.length === 0) {
-      showToast("Print this board before scanning.", 2500);
-      return;
-    }
-    setBoardPrintJob(job);
     setBoardScanOpen(true);
-  }, [boardPrintJobs, currentBoard, showToast]);
+  }, [currentBoard]);
 
   function handleApplyBoardScan(taskIds: string[]) {
     if (!taskIds.length) {
       showToast("No tasks detected in the scan.", 2500);
       return;
     }
-    const taskLookup = new Map(tasks.map((task) => [task.id, task] as const));
+    const taskLookup = new Map(tasksForBoard.map((task) => [task.id, task] as const));
     let completedCount = 0;
     let ignoredCount = 0;
     const uniqueIds = Array.from(new Set(taskIds));
@@ -6431,6 +6431,9 @@ export default function App() {
             boardPrintOptions={boardPrintOptions}
             boardPrintPortal={boardPrintPortal}
             boardScanOpen={boardScanOpen}
+            boardScanBoardId={currentBoard?.id ?? null}
+            boardScanJob={currentBoard ? boardPrintJobs[currentBoard.id] ?? null : null}
+            boardScanCatalog={boardScanCatalog}
             closeAddBoard={closeAddBoard}
             createBoardFromName={createBoardFromName}
             deleteCalendarEvent={deleteCalendarEvent}

@@ -1,14 +1,10 @@
 import type { BoardPrintTask } from "../../components/BoardPrintLayout";
 
-export function mergeBoardScanReview(
-  current: BoardPrintTask[],
-  detected: BoardPrintTask[],
-): BoardPrintTask[] {
-  const byId = new Map(current.map((task) => [task.id, task]));
-  for (const task of detected) {
-    if (!byId.has(task.id)) byId.set(task.id, task);
-  }
-  return Array.from(byId.values());
+export function reviewTasksForScan(ids: string[], catalog: ReadonlyMap<string, BoardPrintTask>): BoardPrintTask[] {
+  return ids.flatMap((id) => {
+    const task = catalog.get(id);
+    return task ? [task] : [];
+  });
 }
 
 export function defaultSelectedScanIds(tasks: BoardPrintTask[]): Set<string> {
