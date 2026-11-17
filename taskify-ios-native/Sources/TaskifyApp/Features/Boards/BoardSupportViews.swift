@@ -1352,11 +1352,14 @@ struct BoardPrintSetup: View {
     }
 
     @Environment(AppModel.self) private var model
-    @AppStorage(TaskPresentationSettings.completedTabKey)
-    private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var scope = Scope.board
     @State private var selectedListIDs: Set<String>
-    @State private var options = PhysicalChecklistPrintOptions.default
+    @State private var options = PhysicalChecklistPrintOptions(
+        includeUpcoming: true,
+        includeNotes: true,
+        includeDue: true,
+        includeSubtasks: true
+    )
     @State private var paper = PhysicalChecklistPaper.letter
     @State private var moreOptions = false
     @State private var preparedOutput: PreparedOutput?
@@ -1374,7 +1377,7 @@ struct BoardPrintSetup: View {
         self.choices = choices
         self.makeJob = makeJob
         _selectedListIDs = State(initialValue: Set(choices.filter { choice in
-            choice.items.contains { !$0.filled && !$0.upcoming }
+            choice.items.contains { !$0.filled }
         }.map(\.id)))
     }
 
@@ -1484,7 +1487,6 @@ struct BoardPrintSetup: View {
 
             BoardChecklistScanHelp()
         }
-        .onAppear { options.includeCompleted = completedTabEnabled }
         .task(id: output) {
             guard let output else { return }
             await prepare(output)

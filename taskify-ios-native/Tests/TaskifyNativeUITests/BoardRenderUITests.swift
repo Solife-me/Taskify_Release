@@ -68,6 +68,17 @@ final class BoardRenderUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS %@", "+ → Scan List")
         ).firstMatch.exists)
 
+        let moreOptions = app.buttons["More options"]
+        XCTAssertTrue(moreOptions.exists)
+        moreOptions.tap()
+        for name in ["Upcoming tasks", "Notes", "Due date and time", "Subtasks"] {
+            XCTAssertEqual(app.switches[name].value as? String, "1", "\(name) should default to on")
+        }
+        for name in ["Completed tasks", "Photos"] {
+            XCTAssertEqual(app.switches[name].value as? String, "0", "\(name) should default to off")
+        }
+        moreOptions.tap()
+
         printChecklist.tap()
         let printerPicker = app.descendants(matching: .any).matching(
             NSPredicate(format: "label == %@ OR label BEGINSWITH %@", "Printer", "Printer,")
