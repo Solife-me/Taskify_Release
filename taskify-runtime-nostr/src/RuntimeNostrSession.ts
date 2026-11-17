@@ -442,13 +442,13 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
       if (this.shuttingDown) return;
       this.relayHealth.markSuccess(relay.url);
       this.authManager.reset(relay.url);
-      this.drainOutbox("relay:connect");
+      this.drainOutbox("relay:connect", relay.url);
       this.logDebugSummary();
     });
     this.ndk.pool.on("relay:ready", (relay: NDKRelay) => {
       if (this.shuttingDown) return;
       this.relayHealth.markSuccess(relay.url);
-      this.drainOutbox("relay:ready");
+      this.drainOutbox("relay:ready", relay.url);
     });
     this.ndk.pool.on("relay:disconnect", (relay: NDKRelay) => {
       if (this.shuttingDown) return;
@@ -460,15 +460,15 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
       if (this.shuttingDown) return;
       this.authManager.markAuthed(relay);
       this.relayHealth.markSuccess(relay.url);
-      this.drainOutbox("relay:authed");
+      this.drainOutbox("relay:authed", relay.url);
     });
   }
 
-  private drainOutbox(reason: string): void {
+  private drainOutbox(reason: string, relayUrl: string): void {
     // Relay lifecycle events can arrive in quick succession (connect, ready,
     // auth). Respect each row's persisted retry deadline so those events do not
     // bypass backoff and hammer a relay that just returned a partial result.
-    void this.publisher.drainOutbox().catch((err) => {
+    void this.publisher.drainOutbox({ relayUrl }).catch((err) => {
       if (this.isDev) console.error("[nostr] outbox drain failed", reason, err);
     });
   }

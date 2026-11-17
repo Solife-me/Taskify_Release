@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type NDK from "@nostr-dev-kit/ndk";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
-import { generateSecretKey, type EventTemplate } from "nostr-tools";
+import { finalizeEvent, generateSecretKey, type EventTemplate } from "nostr-tools";
 import {
+  createNostrOutboxMutation,
   PublishCoordinator,
   RelayPublishBudget,
   type NostrOutboxMutation,
@@ -100,6 +101,50 @@ test("a rate-limited relay is backed off while other relays keep receiving", asy
   }
 });
 
+test("rate-limiting a retry pauses its relay without delaying or replaying healthy copies", async () => {
+  const strict = "wss://strict.example";
+  const healthy = "wss://healthy.example";
+  const store = new MemoryOutboxStore();
+  const budget = new RelayPublishBudget({ firstPartyRelays: [healthy], rateLimitBackoffMs: 60_000 });
+  const publisher = coordinator(store, budget);
+  const original = NDKEvent.prototype.publish;
+  const signer = generateSecretKey();
+  const calls: string[] = [];
+  for (const index of [1, 2]) {
+    await store.put(createNostrOutboxMutation({
+      id: String(index), relayUrls: [strict, healthy], nowMs: index,
+      event: finalizeEvent(note(String(index)), signer),
+    }));
+  }
+
+  NDKEvent.prototype.publish = async function (set?: { relayUrls?: string[] }) {
+    const [target] = set?.relayUrls ?? [];
+    calls.push(`${this.content}:${target}`);
+    if (target === strict) {
+      const errors = new Map([[relay(strict), new Error("rate-limited: slow down")]]);
+      throw Object.assign(new Error("rejected"), { errors, publishedToRelays: new Set() });
+    }
+    return new Set([relay(target)]) as never;
+  };
+
+  try {
+    await publisher.drainOutbox();
+    assert.deepEqual(calls.filter(call => call.endsWith(strict)), [`1:${strict}`]);
+    assert.deepEqual(calls.filter(call => call.endsWith(healthy)), [`1:${healthy}`, `2:${healthy}`]);
+    for (const row of store.rows.values()) {
+      assert.deepEqual(row.ackedRelays, [healthy]);
+      assert.deepEqual(row.pendingRelays, [strict]);
+    }
+    assert.equal(store.rows.get("1")?.relayRetries?.[strict]?.attempts, 0);
+    assert.ok((store.rows.get("1")?.relayRetries?.[strict]?.nextAttemptAt ?? 0) > Date.now() + 50_000);
+    await publisher.drainOutbox({ force: true });
+    assert.equal(calls.length, 3);
+  } finally {
+    NDKEvent.prototype.publish = original;
+    await publisher.shutdown();
+  }
+});
+
 test("a refused event stays queued but is held back from the refusing relay", async () => {
   const store = new MemoryOutboxStore();
   const publisher = coordinator(store, new RelayPublishBudget());
@@ -164,7 +209,7 @@ test("a publish no relay accepts, with no rate limiting involved, still reports 
 
 test("a transient failure on the relays tried now doesn't fail a write still paced for others", async () => {
   const store = new MemoryOutboxStore();
-  const budget = new RelayPublishBudget({ burst: 1, refillIntervalMs: 60_000, refillJitterMs: 0 });
+  const budget = new RelayPublishBudget({ burst: 1, refillIntervalMs: 90_000, refillJitterMs: 0, firstPartyRelays: ["wss://flaky"] });
   budget.take(["wss://paced"], Date.now());
   const publisher = coordinator(store, budget);
   const original = NDKEvent.prototype.publish;
@@ -183,7 +228,7 @@ test("a transient failure on the relays tried now doesn't fail a write still pac
     assert.deepEqual(row.pendingRelays, ["wss://flaky", "wss://paced"]);
     // The flaky relay counts as a failed attempt; the row is due no later than the paced relay.
     assert.equal(row.attempts, 1);
-    assert.ok((row.nextAttemptAt || 0) <= Date.now() + 61_000);
+    assert.ok((row.relayRetries?.["wss://flaky"]?.nextAttemptAt ?? 0) < (row.relayRetries?.["wss://paced"]?.nextAttemptAt ?? 0));
   } finally {
     NDKEvent.prototype.publish = original;
     publisher.shutdown();

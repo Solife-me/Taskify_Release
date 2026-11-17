@@ -333,3 +333,11 @@ reported crash cause; these transport regressions do not replace that verificati
   and explicit requirements share a variant at the highest confirmed floor, a saved variant
   survives reopening the outbox, and the Watch learns explicit gateway refusals.
 - The [Hermes plugin](../../integrations/hermes/README.md) and its regression tests live in the Taskify repo. The plugin retains its own manifest version and standalone ZIP. Plugin tests cover command argument tags, binding actions to encrypted replies, approval, delivery retries, and attachment cleanup.
+
+
+### Independent relay retries
+
+- The PWA and CLI retry each relay's queued writes in order and keep its retry deadline
+  separate from other relays. An acknowledgement on one relay is saved while the other
+  relays continue. The existing per-relay pacing and rate-limit cooldowns still apply,
+  and PoW relays can share a signed variant of the same event.

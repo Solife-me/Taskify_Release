@@ -14,6 +14,8 @@ export type NostrOutboxPublishPayload = {
 /** When a relay that refused an event outright may be offered it again. */
 export type OutboxRelayRejection = { count: number; retryAfter: number };
 
+export type OutboxRelayRetry = { attempts: number; nextAttemptAt: number | null };
+
 export type NostrOutboxMutation = {
   id: string;
   kind: NostrOutboxMutationKind;
@@ -25,6 +27,8 @@ export type NostrOutboxMutation = {
   pendingRelays: string[];
   nextAttemptAt: number | null;
   updatedAt: number;
+  /** Retry state for individually drained relays. Older rows use the mutation-level fields. */
+  relayRetries?: Record<string, OutboxRelayRetry>;
   /**
    * Relays that refused this event outright (blocked/restricted/invalid). The event stays queued
    * for them, since it may be the only copy, but each is held back until its retry time instead
@@ -120,6 +124,7 @@ export function createNostrOutboxMutation(args: {
     pendingRelays,
     nextAttemptAt: args.nextAttemptAt ?? null,
     updatedAt: nowMs,
+    ...(sameEvent && existing?.relayRetries ? { relayRetries: existing.relayRetries } : {}),
     ...(sameEvent && existing?.relayRejections ? { relayRejections: existing.relayRejections } : {}),
     isRepublish: args.isRepublish ?? false,
   };
@@ -180,17 +185,33 @@ export function narrowRepublishedMutations(
       ...row,
       payload: { ...row.payload, relayUrls: narrowed },
       pendingRelays,
+      relayRetries: row.relayRetries
+        ? Object.fromEntries(Object.entries(row.relayRetries).filter(([relay]) => pendingRelays.includes(relay)))
+        : undefined,
       ...(relayRejections ? { relayRejections } : {}),
     });
   }
   return { updated, completedIds };
 }
 
+export function pendingOutboxRelays(mutation: NostrOutboxMutation): string[] {
+  const relays = mutation.pendingRelays.length ? mutation.pendingRelays : mutation.payload.relayUrls;
+  const acked = new Set(normalizeRelayUrls(mutation.ackedRelays));
+  return normalizeRelayUrls(relays).filter(relay => !acked.has(relay));
+}
+
+export function outboxRelayRetry(mutation: NostrOutboxMutation, relay: string): OutboxRelayRetry {
+  return mutation.relayRetries?.[relay] ?? { attempts: mutation.attempts, nextAttemptAt: mutation.nextAttemptAt };
+}
+
+export function outboxRelayRetryAt(mutation: NostrOutboxMutation, relay: string, force = false): number {
+  const due = force ? 0 : outboxRelayRetry(mutation, relay).nextAttemptAt ?? 0;
+  return Math.max(due, mutation.relayRejections?.[relay]?.retryAfter ?? 0);
+}
+
 /** The relays to send to now: still pending, and not held back after refusing the event. */
 export function pendingRelayUrlsForMutation(mutation: NostrOutboxMutation, nowMs = Date.now()): string[] {
-  const pending = normalizeRelayUrls(mutation.pendingRelays);
-  const relays = pending.length ? pending : normalizeRelayUrls(mutation.payload.relayUrls);
-  return relays.filter((relay) => !((mutation.relayRejections?.[relay]?.retryAfter ?? 0) > nowMs));
+  return pendingOutboxRelays(mutation).filter((relay) => !((mutation.relayRejections?.[relay]?.retryAfter ?? 0) > nowMs));
 }
 
 export function mergeOutboxRelayAcks(mutation: NostrOutboxMutation, ackedRelays: string[], nowMs = Date.now()): NostrOutboxMutation | null {

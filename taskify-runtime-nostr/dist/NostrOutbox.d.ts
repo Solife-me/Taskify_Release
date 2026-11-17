@@ -12,6 +12,10 @@ export type OutboxRelayRejection = {
     count: number;
     retryAfter: number;
 };
+export type OutboxRelayRetry = {
+    attempts: number;
+    nextAttemptAt: number | null;
+};
 export type NostrOutboxMutation = {
     id: string;
     kind: NostrOutboxMutationKind;
@@ -23,6 +27,8 @@ export type NostrOutboxMutation = {
     pendingRelays: string[];
     nextAttemptAt: number | null;
     updatedAt: number;
+    /** Retry state for individually drained relays. Older rows use the mutation-level fields. */
+    relayRetries?: Record<string, OutboxRelayRetry>;
     /**
      * Relays that refused this event outright (blocked/restricted/invalid). The event stays queued
      * for them, since it may be the only copy, but each is held back until its retry time instead
@@ -77,6 +83,9 @@ export declare function narrowRepublishedMutations(rows: NostrOutboxMutation[], 
     updated: NostrOutboxMutation[];
     completedIds: string[];
 };
+export declare function pendingOutboxRelays(mutation: NostrOutboxMutation): string[];
+export declare function outboxRelayRetry(mutation: NostrOutboxMutation, relay: string): OutboxRelayRetry;
+export declare function outboxRelayRetryAt(mutation: NostrOutboxMutation, relay: string, force?: boolean): number;
 /** The relays to send to now: still pending, and not held back after refusing the event. */
 export declare function pendingRelayUrlsForMutation(mutation: NostrOutboxMutation, nowMs?: number): string[];
 export declare function mergeOutboxRelayAcks(mutation: NostrOutboxMutation, ackedRelays: string[], nowMs?: number): NostrOutboxMutation | null;
