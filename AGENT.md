@@ -35,6 +35,7 @@ Taskify_Release/
 ├── taskify-cli/          # CLI consuming shared core/runtime packages
 │   └── src/commands/    # Command groups and shared command context; index.ts composes groups
 │
+├── integrations/hermes/  # Hermes Agent platform plugin for Taskify chat
 ├── worker/               # Cloudflare Worker (backend)
 │   ├── src/
 │   │   └── index.ts      # Worker entry: push notifications, reminders, cron, backups
@@ -83,6 +84,7 @@ Taskify is a **privacy-first, local-first task manager** with Nostr-based sync a
 | **Native iOS app** | SwiftUI, TaskifyCore | Native task/chat/wallet client, NIP-17 inbox, local notification classification |
 | **Native macOS app** | SwiftUI/AppKit, shared native services | Desktop boards, agenda, chat and settings (no wallet; it does not link `TaskifyWallet`); see taskify-macos/README.md for parity gaps |
 | **Taskify Push Relay** | Node.js, Nostr, APNs, Web Push, StartOS | Encrypted kind-1059 retention, opaque-token APNs rich-preview delivery, and generic Web Push chat alerts for the PWA |
+| **Hermes chat integration** | Python, Hermes Agent, NIP-17 | Publishes command menus and dispatches encrypted chat with role and delivery policy |
 | **Nostr relay network** | NDK, nostr-tools | Decentralized event transport and persistence |
 
 ### Data Flow
@@ -339,6 +341,7 @@ is public and contains both architectures before changing the StartOS image pin.
 | `taskify-ios-native/Tests/TaskifyCoreTests/OutboxDeliveryRecoveryTests.swift`, `RelayRejectionBackoffTests.swift` | Queued delivery a relay will not take as it stands | Changes still waiting only on relays no longer configured are completed once another relay has them; ordinary writes skip slow NIP-11 lookups; PoW targets share one durable variant, using and remembering advertised or explicit refusal floors; no-op repair passes stop; chat acknowledges the first acceptance and retains per-relay ordered replicas |
 | `taskify-ios-native/Tests/TaskifyCoreTests/CryptoSyncTests.swift` | Native relay sync | Keeps inbox subscriptions on the account's advertised inbox relays while allowing outbound-only relay connections |
 | `taskify-ios-native/Tests/TaskifyCoreTests/TaskPublishPlannerTests.swift`, `MultiAttachmentBatchTests.swift`, `RelayOutboxLatencyTests.swift`, `Tests/TaskifyNativeUITests/ChatComposerUITests.swift` | Native task queueing and chat delivery | Task and board events survive an outbox reload before relay negotiation; optimistic messages keep their final rumor ID and stay queued through sender-copy echoes and refusals; the iPhone composer shows Sending while waiting for simulated acceptance |
+| `integrations/hermes/tests/` | Hermes plugin | Command metadata, picker action binding, authorization, delivery retries, and attachment handling. Run with the Hermes gateway test environment. |
 | `taskify-pwa/src/chat/HermesModelPicker.test.tsx`, `taskify-ios-native/Tests/TaskifyNativeUITests/ChatRenderUITests.swift` | Stock Hermes model picker | Browse the stock provider previews without sending catalog prompts, switch via the normal slash command, and retry when Hermes does not confirm |
 | `taskify-ios-native/Tests/TaskifyCoreTests/DMPushNotificationPolicyTests.swift` | Native DM push privacy | Local-only message/payment classification and per-category settings |
 | `taskify-ios-native/Tests/TaskifyWatchChatRuntimeTests/TaskifyWatchIndependentClientTests.swift` | Independent Watch task transport privacy | A failed self-hosted gateway never sends signed task reads or writes to Taskify's Worker; Taskify's own gateway retains the temporary compatibility fallback |

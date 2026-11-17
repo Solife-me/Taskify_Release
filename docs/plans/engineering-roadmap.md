@@ -326,5 +326,4 @@ reported crash cause; these transport regressions do not replace that verificati
 - Regression coverage checks that ordinary relays accept the original before mining, advertised
   and explicit requirements share a variant at the highest confirmed floor, a saved variant
   survives reopening the outbox, and the Watch learns explicit gateway refusals.
-- The iOS and PWA Hermes pickers use only the stock model previews and counts. Model switches
-  still use the standard `/model` command, and a missing confirmation releases the controls.
+- The [Hermes plugin](../../integrations/hermes/README.md) and its regression tests live in the Taskify repo. The plugin retains its own manifest version and standalone ZIP. Plugin tests cover command argument tags, binding actions to encrypted replies, approval, delivery retries, and attachment cleanup.

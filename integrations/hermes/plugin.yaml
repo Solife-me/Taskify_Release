@@ -1,0 +1,55 @@
+name: nostr-dm-platform
+label: Nostr DM
+kind: platform
+version: 0.1.2
+description: >
+  NIP-17 Nostr DM adapter for Hermes Agent. Subscribes to kind-1059
+  gift wraps addressed to the bot key over Nostr relays, decrypts
+  (NIP-44/NIP-59), dispatches to the agent, and replies with a fresh
+  gift wrap. Sends follow the NIP-17 relay-discovery rule (kind-10050
+  inbox list, NIP-65 fallback) with configurable fallback relays —
+  Taskify-compatible end to end.
+author: Nathan (via Hermes Agent)
+python_dependencies:
+  # Termux/Android split: no nostr-sdk release ships Android wheels, and the
+  # universal lock resolves that platform too — pinning it there makes the whole
+  # workspace unsolvable and PM evicts this plugin on every update.
+  - "nostr-sdk>=0.44.8,<0.45; sys_platform != 'android'"
+requires_env:
+  - name: NOSTR_DM_NSEC
+    description: "Bot Nostr private key (nsec or hex) used for NIP-17 DMs"
+    prompt: "Nostr private key (nsec...)"
+    password: true
+  - name: NOSTR_DM_OWNER_NPUB
+    description: "Your personal Nostr public key (npub or hex). The bot only grants owner access to this key."
+    prompt: "Owner Nostr public key"
+    password: false
+optional_env:
+  - name: NOSTR_DM_RELAYS
+    description: "Comma-separated fallback relays (wss://...)"
+    prompt: "Fallback relays (comma-separated wss URLs)"
+    password: false
+  - name: NOSTR_DM_PEER_RELAYS
+    description: "Additional trusted wss relays that peer inbox lists may select"
+    password: false
+  - name: NOSTR_DM_ATTACHMENT_ORIGINS
+    description: "Additional approved HTTPS origins for downloading attachments"
+    password: false
+  - name: NOSTR_DM_OWNER_ATTACHMENT_MAX_MIB
+    description: "Maximum incoming attachment size in MiB for the explicit owner (default 512)"
+    password: false
+  - name: NOSTR_DM_OWNER_PRIVATE_ATTACHMENT_ORIGINS
+    description: "Comma-separated HTTPS origins on private networks that only the owner can use"
+    password: false
+  - name: NOSTR_DM_HOME_CHANNEL
+    description: "chat_id used for cron/notification delivery (sender npub/hex)"
+    prompt: "Home channel = your npub (or empty to disable nostr delivery)"
+    password: false
+  - name: NOSTR_DM_HOME_CHANNEL_NAME
+    description: "Display name for the home channel"
+    prompt: "Home channel label (or empty)"
+    password: false
+  - name: NOSTR_DM_ROLES
+    description: "Per-user roles as npub=role pairs, comma-separated (family|friend). Persisted to nostr_roles.json via /role DM commands; this env var is only read at plugin setup."
+    prompt: "Role assignments family/friend (npub=family,... or empty)"
+    password: false
