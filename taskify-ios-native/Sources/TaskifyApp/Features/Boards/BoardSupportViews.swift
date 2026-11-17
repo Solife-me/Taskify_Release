@@ -864,6 +864,7 @@ struct FloatingQuickAddBar: View {
     let onSubmit: () -> Void
     let onAddButton: () -> Void
     let onVoice: () -> Void
+    let onScan: () -> Void
 
     var body: some View {
         HStack(spacing: 9) {
@@ -881,44 +882,37 @@ struct FloatingQuickAddBar: View {
                     fallbackFill: Color.black.opacity(0.32)
                 )
 
-            // Hidden while typing: the add button is the action you want in that moment, and two
-            // circular buttons plus a shrinking field gets cramped on narrow screens.
             if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button(action: onVoice) {
-                    Image(systemName: "mic.fill")
-                        .scaledFont(size: 17, weight: .semibold)
-                        .frame(width: 48, height: 48)
-                        .contentShape(Circle())
-                        .foregroundStyle(.white)
-                        .taskifyGlassControl(
-                            in: Circle(),
-                            fallbackFill: Color.black.opacity(0.32)
-                        )
+                Menu {
+                    Button("Add Task", systemImage: "plus", action: onAddButton)
+                    Button("Dictate", systemImage: "mic", action: onVoice)
+                    Button("Scan List", systemImage: "document.viewfinder", action: onScan)
+                } label: {
+                    addIcon
+                }
+                .menuStyle(.borderlessButton)
+                .accessibilityLabel("Add task options")
+            } else {
+                Button(action: onAddButton) {
+                    addIcon
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Add tasks by voice")
-                .transition(.scale.combined(with: .opacity))
+                .accessibilityLabel("Add task to \(destinationName) and close keyboard")
             }
-
-            Button(action: onAddButton) {
-                Image(systemName: "plus")
-                    .scaledFont(size: 19, weight: .bold)
-                    .frame(width: 48, height: 48)
-                    .contentShape(Circle())
-                    .foregroundStyle(.white)
-                    .taskifyGlassControl(
-                        in: Circle(),
-                        tint: TaskifyTheme.accent.opacity(0.72),
-                        fallbackFill: TaskifyTheme.accent
-                    )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(
-                draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "Add task details to \(destinationName)"
-                    : "Add task to \(destinationName) and close keyboard"
-            )
         }
+    }
+
+    private var addIcon: some View {
+        Image(systemName: "plus")
+            .scaledFont(size: 19, weight: .bold)
+            .frame(width: 48, height: 48)
+            .contentShape(Circle())
+            .foregroundStyle(.white)
+            .taskifyGlassControl(
+                in: Circle(),
+                tint: TaskifyTheme.accent.opacity(0.72),
+                fallbackFill: TaskifyTheme.accent
+            )
     }
 }
 

@@ -123,6 +123,13 @@ struct BoardsView: View {
                     onVoice: {
                         quickTaskFieldIsFocused = false
                         showingVoiceDictation = true
+                    },
+                    onScan: {
+                        dismissQuickTaskKeyboard()
+                        TaskifyListScanRouter.shared.open(
+                            boardID: quickAddDestination.boardID,
+                            columnID: quickAddDestination.columnID
+                        )
                     }
                 )
                 .frame(maxWidth: 720)

@@ -38,6 +38,8 @@ struct RootTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var watchBridge = TaskifyWatchBridge.shared
     @State private var notificationNavigationRouter = TaskNotificationNavigationRouter.shared
+    @State private var listScanRouter = TaskifyListScanRouter.shared
+    @State private var listScanRequest: TaskifyListScanRequest?
     @State private var selectedTab: AppTab
     @State private var hasPresentedInitialContent = false
     /// Set by a quick-add deep link; BoardsView clears it once it has focused its field.
@@ -106,6 +108,16 @@ struct RootTabView: View {
                         .presentationDragIndicator(.visible)
                 }
             }
+            .sheet(item: $listScanRequest) { request in
+                TaskifyListScanSheet(request: request)
+                    .environment(model)
+            }
+            .onChange(of: listScanRouter.request?.id, initial: true) { _, _ in
+                presentRequestedListScan()
+            }
+            .onChange(of: model.isLoading) { _, _ in
+                presentRequestedListScan()
+            }
             // The Control Center button leaves its request in shared defaults rather than opening
             // a URL, so it has to be picked up on launch as well as on every return to the front.
             .onAppear {
@@ -131,6 +143,13 @@ struct RootTabView: View {
                 guard destination != nil else { return }
                 routePendingNotificationDestination()
             }
+    }
+
+    private func presentRequestedListScan() {
+        guard !model.isLoading, let request = listScanRouter.request else { return }
+        listScanRouter.request = nil
+        selectedTab = .boards
+        listScanRequest = request
     }
 
     private func consumeQuickAddRequest() {

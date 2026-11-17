@@ -1670,7 +1670,7 @@ private struct PhysicalChecklistDocumentScanner: UIViewControllerRepresentable {
     }
 }
 
-private struct PhysicalChecklistCapturedPage: Sendable {
+struct PhysicalChecklistCapturedPage: Sendable {
     let image: CGImage
     let orientation: CGImagePropertyOrientation
 
@@ -1706,24 +1706,59 @@ private struct PhysicalChecklistCapturedPage: Sendable {
     }
 
     func readText() -> [PhysicalChecklistOCRLine] {
+        Self.readObservations(in: image, orientation: orientation, correctLanguage: false)
+            .compactMap(Self.textLine)
+    }
+
+    func readHandwriting(using context: CIContext) -> [PhysicalChecklistOCRLine] {
+        let observations = Self.readObservations(in: image, orientation: orientation, correctLanguage: true)
+        let oriented = CIImage(cgImage: image).oriented(orientation)
+        let aspect = oriented.extent.height / oriented.extent.width
+        let angles = observations.compactMap { line -> Double? in
+            let width = line.topRight.x - line.topLeft.x
+            guard width > 0.06 else { return nil }
+            return atan2((line.topLeft.y - line.topRight.y) * aspect, width)
+        }.sorted()
+        let original = observations.compactMap(Self.textLine)
+        guard angles.count >= 2 else { return original }
+        let angle = angles[angles.count / 2]
+        guard (0.05...0.44).contains(abs(angle)) else { return original }
+
+        // For a tilted notebook, overlapping lines can become one OCR observation. A
+        // rotation from the observed baselines lets Vision read the lines individually.
+        let leveled = oriented.transformed(by: CGAffineTransform(rotationAngle: angle))
+        guard let leveledImage = context.createCGImage(leveled, from: leveled.extent) else { return original }
+        let corrected = Self.readObservations(in: leveledImage, orientation: .up, correctLanguage: true)
+            .compactMap(Self.textLine)
+        return corrected.count >= original.count ? corrected : original
+    }
+
+    private static func readObservations(
+        in image: CGImage,
+        orientation: CGImagePropertyOrientation,
+        correctLanguage: Bool
+    ) -> [VNRecognizedTextObservation] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
+        request.usesLanguageCorrection = correctLanguage
         request.minimumTextHeight = 0.004
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
         try? handler.perform([request])
-        return (request.results ?? []).compactMap { observation -> PhysicalChecklistOCRLine? in
-            guard let candidate = observation.topCandidates(1).first,
-                  candidate.confidence >= 0.25 else { return nil }
-            let box = observation.boundingBox
-            return PhysicalChecklistOCRLine(
-                text: candidate.string,
-                x: box.minX,
-                y: 1 - box.maxY,
-                width: box.width,
-                height: box.height
-            )
-        }
+        return request.results ?? []
+    }
+
+    private static func textLine(_ observation: VNRecognizedTextObservation) -> PhysicalChecklistOCRLine? {
+        guard let candidate = observation.topCandidates(1).first,
+              candidate.confidence >= 0.25 else { return nil }
+        let box = observation.boundingBox
+        return PhysicalChecklistOCRLine(
+            text: candidate.string,
+            x: box.minX,
+            y: 1 - box.maxY,
+            width: box.width,
+            height: box.height,
+            confidence: Double(candidate.confidence)
+        )
     }
 }
 

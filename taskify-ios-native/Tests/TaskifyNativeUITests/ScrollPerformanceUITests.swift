@@ -245,7 +245,35 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertFalse(app.keyboards.element.waitForExistence(timeout: 1))
     }
 
-    func testEmptyQuickAddPlusOpensTheFullNewTaskEditor() throws {
+    private func openNewTaskEditor(_ app: XCUIApplication) {
+        let menu = app.buttons["Add task options"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        menu.tap()
+        let addTask = app.buttons["Add Task"]
+        XCTAssertTrue(addTask.waitForExistence(timeout: 5))
+        addTask.tap()
+    }
+
+    func testQuickAddMenuOpensListScanner() {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+        app.buttons["Boards"].tap()
+
+        let menu = app.buttons["Add task options"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        menu.tap()
+        XCTAssertTrue(app.buttons["Add Task"].exists)
+        XCTAssertTrue(app.buttons["Dictate"].exists)
+        app.buttons["Scan List"].tap()
+        XCTAssertTrue(app.navigationBars["Scan List"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Choose Photo"].exists)
+        app.buttons["Close"].tap()
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+    }
+
+    func testEmptyQuickAddMenuOpensTheFullNewTaskEditor() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
@@ -253,12 +281,7 @@ final class ScrollPerformanceUITests: XCTestCase {
 
         app.buttons["Boards"].tap()
 
-        let addDetailsButton = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
-        ).firstMatch
-        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
-        XCTAssertTrue(addDetailsButton.isEnabled, "The plus button should work with an empty title")
-        addDetailsButton.tap()
+        openNewTaskEditor(app)
 
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
         let titleField = app.textFields["Title"]
@@ -271,8 +294,7 @@ final class ScrollPerformanceUITests: XCTestCase {
             "Cancelling the unsaved full editor must not leave a placeholder task"
         )
 
-        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 3))
-        addDetailsButton.tap()
+        openNewTaskEditor(app)
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
         XCTAssertTrue(titleField.waitForExistence(timeout: 2))
         if !app.keyboards.element.exists { titleField.tap() }
@@ -289,11 +311,7 @@ final class ScrollPerformanceUITests: XCTestCase {
         app.launch()
 
         app.buttons["Boards"].tap()
-        let addDetailsButton = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
-        ).firstMatch
-        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
-        addDetailsButton.tap()
+        openNewTaskEditor(app)
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
 
         let notes = app.buttons["task-editor-notes"]
@@ -329,11 +347,7 @@ final class ScrollPerformanceUITests: XCTestCase {
         app.launch()
 
         app.buttons["Boards"].tap()
-        let addDetailsButton = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
-        ).firstMatch
-        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
-        addDetailsButton.tap()
+        openNewTaskEditor(app)
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
         let titleField = app.textFields["Title"]
         XCTAssertTrue(titleField.waitForExistence(timeout: 2))
@@ -383,11 +397,7 @@ final class ScrollPerformanceUITests: XCTestCase {
         app.launch()
 
         app.buttons["Boards"].tap()
-        let addDetailsButton = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
-        ).firstMatch
-        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
-        addDetailsButton.tap()
+        openNewTaskEditor(app)
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.keyboards.element.waitForExistence(timeout: 3))
 
@@ -412,11 +422,7 @@ final class ScrollPerformanceUITests: XCTestCase {
         app.launch()
 
         app.buttons["Boards"].tap()
-        let addDetailsButton = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
-        ).firstMatch
-        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
-        addDetailsButton.tap()
+        openNewTaskEditor(app)
         let titleField = app.textFields["Title"]
         XCTAssertTrue(titleField.waitForExistence(timeout: 5))
         if !app.keyboards.element.exists { titleField.tap() }
@@ -460,11 +466,7 @@ final class ScrollPerformanceUITests: XCTestCase {
         app.launch()
 
         app.buttons["Boards"].tap()
-        let addDetailsButton = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
-        ).firstMatch
-        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
-        addDetailsButton.tap()
+        openNewTaskEditor(app)
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
 
         // The full editor intentionally focuses the title. Dismiss its keyboard so the compact
@@ -1269,11 +1271,7 @@ extension ScrollPerformanceUITests {
         app.launch()
 
         app.buttons["Boards"].tap()
-        let addDetailsButton = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH[c] %@", "Add task details to")
-        ).firstMatch
-        XCTAssertTrue(addDetailsButton.waitForExistence(timeout: 10))
-        addDetailsButton.tap()
+        openNewTaskEditor(app)
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
 
         app.buttons["task-editor-notes"].tap()
