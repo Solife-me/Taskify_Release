@@ -15,7 +15,7 @@ import { startMockRelay, type MockRelay } from "./helpers/mockRelay.ts";
 
 const accountKey = bytesToHex(generateSecretKey());
 
-function session(relay: MockRelay, options: { accountKeyHex?: string | null; relayInfoCache?: RelayInfoCache } = {}) {
+function session(relay: MockRelay, options: { accountKeyHex?: string | null; relayInfoCache?: RelayInfoCache; onMine?: () => void } = {}) {
   const relayInfoCache = options.relayInfoCache ?? new RelayInfoCache();
   const runtime = new RuntimeNostrSession<undefined>([relay.url], {
     relayInfoCache,
@@ -26,6 +26,7 @@ function session(relay: MockRelay, options: { accountKeyHex?: string | null; rel
     }),
     createWalletClient: () => undefined,
     authTimeoutMs: 3_000,
+    proofOfWork: { onMine: options.onMine },
     enableOutboxModel: false,
   });
   return { runtime, relayInfoCache };
@@ -145,6 +146,34 @@ test("NIP-42: without an account key, a throwaway key answers the challenge", as
   });
 });
 
+test("NIP-13: ordinary relays receive the original and strict relays share the hardest proof", async () => {
+  await withRelay({}, async (ordinary) => {
+    await withRelay({ powDifficulty: 8, advertisePow: true }, async (advertised) => {
+      await withRelay({ powDifficulty: 10 }, async (unadvertised) => {
+        let acceptedBeforeMining = false;
+        const { runtime } = session(ordinary, { onMine: () => {
+          acceptedBeforeMining = ordinary.events.length === 1;
+        } });
+        const urls = [ordinary.url, advertised.url, unadvertised.url];
+        try {
+          await runtime.init(urls);
+          const event = taskEvent(runtime, "task-split");
+          await runtime.publishSigned(event, NDKPrivateKeySigner.generate(), urls);
+          assert.equal(acceptedBeforeMining, true);
+          assert.equal(ordinary.received.length, 1);
+          assert.equal(committedProofOfWorkDifficulty(ordinary.events[0].tags), 0);
+          assert.equal(ordinary.events[0].id, event.id);
+          assert.equal(advertised.events[0].id, unadvertised.events[0].id);
+          assert.equal(committedProofOfWorkDifficulty(advertised.events[0].tags), 10);
+          assert.equal(advertised.events[0].created_at, ordinary.events[0].created_at);
+        } finally {
+          await runtime.shutdown();
+        }
+      });
+    });
+  });
+});
+
 test("NIP-13: an advertised difficulty is mined before the first send", async () => {
   await withRelay({ powDifficulty: 10, advertisePow: true }, async (relay) => {
     const { runtime } = session(relay);
@@ -172,9 +201,9 @@ test("NIP-13: an unadvertised difficulty is learned from the pow: rejection and 
       await runtime.publishSigned(event, NDKPrivateKeySigner.generate(), [relay.url]);
       assert.equal(relay.received.length, 2);
       assert.equal(relay.events.length, 1);
-      assert.equal(relay.events[0].id, event.id, "the caller's event is the stored copy");
-      assert.ok(event.created_at! > firstCreatedAt, "the re-mined replaceable copy supersedes the first");
-      assert.ok(countLeadingZeroBits(event.id) >= 9);
+      assert.notEqual(relay.events[0].id, event.id);
+      assert.equal(relay.events[0].created_at, firstCreatedAt, "the two wire copies keep the same timestamp");
+      assert.ok(countLeadingZeroBits(relay.events[0].id) >= 9);
       assert.equal(relayInfoCache.learnedProofOfWork(relay.url), 9);
 
       // The next write is mined up front.

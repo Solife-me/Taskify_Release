@@ -356,3 +356,11 @@ test("the Watch publish route accepts a version-2 request once and refuses its r
   const replay = await worker.fetch(new Request(url, { method: "POST", headers, body }), env);
   assert.equal(replay.status, 401);
 });
+
+test("Watch task history restricts each page to one board and forwards inclusive bounds", () => {
+  const filter = { authors: ["a".repeat(64)], "#b": ["b".repeat(64)], since: 50, until: 75, limit: 100 };
+  assert.deepEqual(watchNostrBridgeTestHooks.normalizedHistoryFilter(filter), { ...filter, kinds: [30300, 30301] });
+  assert.equal(watchNostrBridgeTestHooks.normalizedHistoryFilter({ ...filter, until: 49 }), null);
+  assert.equal(watchNostrBridgeTestHooks.normalizedHistoryFilter({ ...filter, authors: [...filter.authors, "c".repeat(64)] }), null);
+  assert.equal(watchNostrBridgeTestHooks.normalizedHistoryFilter({ ...filter, "#b": [] }), null);
+});

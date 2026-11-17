@@ -1,3 +1,4 @@
+import AppIntents
 import CoreSpotlight
 import Foundation
 import TaskifyCore
@@ -43,6 +44,9 @@ actor TaskifySpotlightIndexer {
         activeAccountID = normalized
         indexed = [:]
         try? await index.deleteSearchableItems(withDomainIdentifiers: [Self.domain])
+        if #available(iOS 18.0, macOS 15.0, *) {
+            try? await index.deleteAppEntities(ofType: TaskifyShortcutTaskEntity.self)
+        }
         saveState(StoredState(accountID: normalized, fingerprints: [:]))
     }
 
@@ -66,10 +70,23 @@ actor TaskifySpotlightIndexer {
         }
         do {
             if !changes.removals.isEmpty {
-                try await index.deleteSearchableItems(withIdentifiers: changes.removals)
+                if #available(iOS 18.0, macOS 15.0, *) {
+                    try await index.deleteAppEntities(
+                        identifiedBy: changes.removals,
+                        ofType: TaskifyShortcutTaskEntity.self
+                    )
+                } else {
+                    try await index.deleteSearchableItems(withIdentifiers: changes.removals)
+                }
             }
             if !changes.upserts.isEmpty {
-                try await index.indexSearchableItems(changes.upserts.map(Self.searchableItem))
+                if #available(iOS 18.0, macOS 15.0, *) {
+                    try await index.indexAppEntities(
+                        changes.upserts.map { TaskifyShortcutTaskEntity(spotlightItem: $0) }
+                    )
+                } else {
+                    try await index.indexSearchableItems(changes.upserts.map(Self.searchableItem))
+                }
             }
             indexed = changes.fingerprints
             saveState(changes.fingerprints)

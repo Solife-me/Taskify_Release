@@ -1,3 +1,5 @@
+import type { BotCommand } from "taskify-core";
+import type { EventSigner } from "taskify-runtime-nostr";
 import React from "react";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import {
@@ -122,6 +124,49 @@ export function ChatConversationView() {
     upsertContact,
     visiblePendingMessages,
   } = useChatRuntime();
+
+  const peer = activeThread?.peerPubkey;
+  const blocked = !!peer && dmBlockedPeersRef.current.has(peer);
+  const commands = activeThread?.groupId || blocked ? null : activeBotCommands;
+  const [menuOverride, setMenuOverride] = React.useState<boolean | null>(null);
+  const [commandBusy, setCommandBusy] = React.useState(false);
+  const [commandError, setCommandError] = React.useState<string | null>(null);
+  const activePeer = React.useRef(peer);
+  activePeer.current = peer;
+  React.useEffect(() => {
+    setMenuOverride(null);
+    setCommandError(null);
+  }, [peer, chatCompose]);
+  const query = /^\/[^\s]*$/.test(chatCompose) ? chatCompose.slice(1).toLowerCase() : null;
+  const shownCommands = menuOverride === true ? commands
+    : menuOverride === false || query === null ? null
+    : commands?.filter((command) => command.name.startsWith(query));
+
+  async function chooseCommand(command: BotCommand) {
+    if (!peer || blocked || commandBusy) return;
+    const content = `/${command.name}`;
+    setMenuOverride(false);
+    if (command.requiresArguments) {
+      setChatCompose(content + " ");
+      chatComposeInputRef.current?.focus();
+      return;
+    }
+    const capturedDraft = chatCompose;
+    setCommandBusy(true);
+    setCommandError(null);
+    try {
+      await sendDirectTextMessage(peer, content);
+      if (activePeer.current === peer && query !== null) {
+        setChatCompose((current) => current === capturedDraft ? "" : current);
+      }
+    } catch (error) {
+      if (activePeer.current === peer) {
+        setCommandError(error instanceof Error ? error.message : "Could not send the command.");
+      }
+    } finally {
+      setCommandBusy(false);
+    }
+  }
 
   const hermesBotUi = React.useMemo(
     () => projectHermesBotUi(
@@ -577,7 +622,7 @@ export function ChatConversationView() {
                               )}
                               {msg.attachment?.type === "text" && (() => {
                                 const hermesMenu = hermesBotUi.menusByListingEventId.get(msg.eventId);
-                                if (hermesMenu) {
+                                if (hermesMenu && !blocked) {
                                   return (
                                     <HermesModelPicker
                                       peerPubkey={activeThread.peerPubkey}
@@ -587,11 +632,13 @@ export function ChatConversationView() {
                                   );
                                 }
                                 const hermesSessions = hermesBotUi.sessionsByListingEventId.get(msg.eventId);
-                                if (hermesSessions) {
+                                if (hermesSessions && !blocked) {
                                   return (
                                     <HermesSessionPicker
                                       peerPubkey={activeThread.peerPubkey}
                                       listing={hermesSessions}
+                                      menuId={msg.botMenuKind === "sessions" ? msg.rumorEventId : undefined}
+                                      sendBotUiCommand={sendBotUiCommand}
                                       sendDirectTextMessage={sendDirectTextMessage}
                                     />
                                   );
@@ -786,34 +833,24 @@ export function ChatConversationView() {
                 </div>
               ) : (
                 <div className="chat-compose-stack">
-                  {!activeThread.groupId && activeBotCommands && chatCompose.startsWith("/") && (() => {
-                    const query = chatCompose.slice(1).toLowerCase();
-                    const matched = activeBotCommands.filter((command) => command.name.startsWith(query));
-                    if (!matched.length) return null;
-                    return (
-                      <div className="chat-command-menu" role="listbox" aria-label="Bot commands">
-                        {matched.map((command) => (
-                          <button
-                            key={command.name}
-                            type="button"
-                            className="chat-command-menu__item pressable"
-                            role="option"
-                            aria-selected={false}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => {
-                              setChatCompose(`/${command.name} `);
-                              chatComposeInputRef.current?.focus();
-                            }}
-                          >
-                            <span className="chat-command-menu__name">/{command.name}</span>
-                            {command.description && (
-                              <span className="chat-command-menu__description">{command.description}</span>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })()}
+                  {shownCommands && shownCommands.length > 0 && (
+                    <div className="chat-command-menu" id="chat-command-menu" role="group" aria-label="Bot commands">
+                      {shownCommands.map((command) => (
+                        <button
+                          key={command.name}
+                          type="button"
+                          className="chat-command-menu__item pressable"
+                          disabled={commandBusy || (!!command.requiresArguments && !!chatCompose && query === null)}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => void chooseCommand(command)}
+                        >
+                          <span className="chat-command-menu__name">/{command.name}</span>
+                          {command.description && <span className="chat-command-menu__description">{command.description}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {commandError && <div className="chat-command-error" role="alert">{commandError}</div>}
                   {replyToMessage && (
                     <div className="chat-reply-banner">
                       <div className="chat-reply-banner__bar" />
@@ -881,6 +918,21 @@ export function ChatConversationView() {
                         <span className="chat-compose__attach-line chat-compose__attach-line--vertical" />
                       </span>
                     </button>
+                    {commands && (
+                      <button
+                        type="button"
+                        className="chat-compose__attach pressable"
+                        aria-label="Commands"
+                        aria-expanded={Boolean(shownCommands?.length)}
+                        aria-controls={shownCommands?.length ? "chat-command-menu" : undefined}
+                        onClick={() => setMenuOverride(!shownCommands?.length)}
+                        title="Commands"
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                          <path d="M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1" />
+                        </svg>
+                      </button>
+                    )}
                     <input
                       ref={chatComposeInputRef}
                       className="chat-compose__input"
@@ -928,7 +980,7 @@ export function ChatConversationView() {
                               const publishRelays = Array.from(allRelays);
                               if (!publishRelays.length) return;
                               const pool = ensureNostrPool();
-                              const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                              const publish = (event: NostrEvent, signer: EventSigner) => safePublish(pool, publishRelays, event, signer);
                               const extraTags: string[][] = [];
                               if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
                               if (capturedReply) {
@@ -997,7 +1049,7 @@ export function ChatConversationView() {
                             const publishRelays = Array.from(allRelays);
                             if (!publishRelays.length) return;
                             const pool = ensureNostrPool();
-                            const publish = (event: NostrEvent) => safePublish(pool, publishRelays, event);
+                            const publish = (event: NostrEvent, signer: EventSigner) => safePublish(pool, publishRelays, event, signer);
                             const extraTags: string[][] = [];
                             if (isGroup && groupMeta?.name) extraTags.push(["subject", groupMeta.name]);
                             if (capturedReply) {

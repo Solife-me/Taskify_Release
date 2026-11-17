@@ -2,7 +2,9 @@ import Foundation
 import Observation
 import OSLog
 import Security
+import TaskifyCore
 import TaskifyWatchShared
+import UserNotifications
 import WatchConnectivity
 import WidgetKit
 
@@ -128,14 +130,29 @@ enum TaskifyWatchShortcutTaskError: LocalizedError {
     case notSetUp
     case noBoard
     case noTime
+    case taskUnavailable
 
     var errorDescription: String? {
         switch self {
         case .notSetUp: "Open Taskify on your iPhone to set up this Apple Watch."
         case .noBoard: "Add a board in Taskify first."
         case .noTime: "Say when to be reminded."
+        case .taskUnavailable: "That task is no longer available on this Apple Watch."
         }
     }
+}
+
+enum TaskifyWatchShortcutSyncState: Equatable {
+    case syncingThroughPhone
+    case syncedDirectly
+    case savedForLater
+}
+
+struct TaskifyWatchShortcutSubmission: Equatable {
+    let commandID: String
+    let boardName: String
+    let itemCount: Int
+    let syncState: TaskifyWatchShortcutSyncState
 }
 
 enum TaskifyWatchShortcutSendError: LocalizedError {
@@ -191,6 +208,10 @@ final class TaskifyWatchAppModel: NSObject {
     @ObservationIgnored private let chatCoordinator: TaskifyWatchChatCoordinator
     @ObservationIgnored private let independentClient = TaskifyWatchIndependentClient()
     @ObservationIgnored private var pendingCommands: [TaskifyWatchCommand] = []
+    private var taskAccountPublicKey: String? { independentProfile?.publicKeyHex ?? snapshot.accountPublicKey }
+    private var activePendingCommands: [TaskifyWatchCommand] {
+        pendingCommands.filter { $0.matchesAccount(taskAccountPublicKey) }
+    }
     @ObservationIgnored private var immediateCommandIDs: Set<String> = []
     @ObservationIgnored private var directSyncCommandIDs: Set<String> = []
     @ObservationIgnored private var chatOutboxRetryTask: Task<Void, Never>?
@@ -460,12 +481,40 @@ final class TaskifyWatchAppModel: NSObject {
         return TaskifyWatchChatWakeResult(receivedData: receivedData, shouldNotify: shouldNotify, failed: !succeeded)
     }
 
+    private let botCommandsCache = BotCommandsCache()
+
+    func discoverBotCommands(peer: String) async -> [BotCommand]? {
+        guard chatContext != nil, peer != chatIdentityPublicKey,
+              !chatSnapshot.blockedPublicKeys.contains(peer) else { return nil }
+        let cached = botCommandsCache.commands(for: peer)
+        guard botCommandsCache.shouldRefresh(publicKey: peer),
+              WCSession.isSupported() else { return cached }
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return cached }
+
+        let commands: [BotCommand]? = await withCheckedContinuation { continuation in
+            session.sendMessage([TaskifyWatchTransfer.botCommandsPeerKey: peer]) { response in
+                guard response[TaskifyWatchTransfer.botCommandsPeerKey] as? String == peer,
+                      let data = response[TaskifyWatchTransfer.botCommandsDataKey] as? Data else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: try? JSONDecoder().decode([BotCommand].self, from: data))
+            } errorHandler: { _ in
+                continuation.resume(returning: nil)
+            }
+        }
+        if let commands { botCommandsCache.save(commands, for: peer) }
+        return commands ?? cached
+    }
+
     @discardableResult
     func sendChat(
         _ text: String,
         memberPublicKeys: [String],
         subject: String? = nil,
         replyToRumorID: String? = nil,
+        botActionTag: [String]? = nil,
         reactionToRumorID: String? = nil
     ) async -> Bool {
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -493,6 +542,7 @@ final class TaskifyWatchAppModel: NSObject {
                 memberPublicKeys: memberPublicKeys,
                 subject: subject,
                 replyToRumorID: replyToRumorID,
+                botActionTag: botActionTag,
                 reactionToRumorID: reactionToRumorID,
                 privateKey: privateKey
             )
@@ -935,7 +985,7 @@ final class TaskifyWatchAppModel: NSObject {
     }
 
     func taskWithPendingEdits(_ task: TaskifyWatchTask) -> TaskifyWatchTask {
-        pendingCommands.reduce(task) { result, command in
+        activePendingCommands.reduce(task) { result, command in
             guard command.taskID == task.id else { return result }
             if let edit = command.edit { return result.applying(edit) }
             if let subtaskID = command.subtaskID, let completed = command.subtaskCompleted {
@@ -949,7 +999,7 @@ final class TaskifyWatchAppModel: NSObject {
     func editTask(_ taskID: String, edit: TaskifyWatchTaskEdit) -> Bool {
         guard snapshot.tasks.contains(where: { $0.id == taskID }),
               !edit.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        let command = TaskifyWatchCommand(kind: .editTask, taskID: taskID, edit: edit)
+        let command = TaskifyWatchCommand(kind: .editTask, taskID: taskID, edit: edit, accountPublicKey: taskAccountPublicKey)
         pendingCommands.append(command)
         // Reassign the observed snapshot so queued edits immediately refresh detail views.
         replaceSnapshot(tasks: snapshot.tasks.map { $0.id == taskID ? $0.applying(edit) : $0 }, generatedAt: Date())
@@ -964,7 +1014,7 @@ final class TaskifyWatchAppModel: NSObject {
               !pendingCompletionIDs.contains(taskID) else { return }
         let command = TaskifyWatchCommand(
             kind: .setSubtaskCompletion, taskID: taskID,
-            subtaskID: subtaskID, subtaskCompleted: completed
+            subtaskID: subtaskID, subtaskCompleted: completed, accountPublicKey: taskAccountPublicKey
         )
         pendingCommands.append(command)
         persistPendingCommands()
@@ -977,7 +1027,7 @@ final class TaskifyWatchAppModel: NSObject {
     func completeTask(_ taskID: String) {
         guard snapshot.tasks.contains(where: { $0.id == taskID }),
               !pendingCompletionIDs.contains(taskID) else { return }
-        let command = TaskifyWatchCommand(kind: .completeTask, taskID: taskID)
+        let command = TaskifyWatchCommand(kind: .completeTask, taskID: taskID, accountPublicKey: taskAccountPublicKey)
         pendingCommands.append(command)
         pendingCompletionIDs.insert(taskID)
         persistPendingCommands()
@@ -997,7 +1047,8 @@ final class TaskifyWatchAppModel: NSObject {
             kind: usingTaskifyVoice ? .processVoiceTranscript : .createTask,
             title: usingTaskifyVoice ? nil : value,
             boardID: boardID,
-            transcript: usingTaskifyVoice ? value : nil
+            transcript: usingTaskifyVoice ? value : nil,
+            accountPublicKey: taskAccountPublicKey
         )
         pendingCommands.append(command)
         persistPendingCommands()
@@ -1084,7 +1135,8 @@ final class TaskifyWatchAppModel: NSObject {
         let command = TaskifyWatchCommand(
             kind: .createVoiceTasks,
             boardID: boardID,
-            voiceTasks: tasks
+            voiceTasks: tasks,
+            accountPublicKey: taskAccountPublicKey
         )
         pendingCommands.append(command)
         persistPendingCommands()
@@ -1094,10 +1146,84 @@ final class TaskifyWatchAppModel: NSObject {
         return true
     }
 
+    /// Siri mutations use the same durable command queue as the Watch UI, but keep the intent
+    /// alive for an independent publish when the paired iPhone is unavailable. That matters on a
+    /// cellular Watch: a fire-and-forget task can be suspended as soon as Siri finishes speaking.
+    func addTasksFromShortcut(
+        titles: [String],
+        boardID requestedBoardID: String?
+    ) async throws -> TaskifyWatchShortcutSubmission {
+        guard isProvisioned else { throw TaskifyWatchShortcutTaskError.notSetUp }
+        guard let boardID = requestedBoardID ?? quickAddBoardID,
+              let board = snapshot.boards.first(where: { $0.id == boardID }) else {
+            throw TaskifyWatchShortcutTaskError.noBoard
+        }
+        let drafts = titles.compactMap { raw -> TaskifyWatchVoiceDraft? in
+            let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return title.isEmpty ? nil : TaskifyWatchVoiceDraft(title: title)
+        }
+        guard !drafts.isEmpty else { throw TaskifyWatchShortcutTaskError.taskUnavailable }
+        let command = TaskifyWatchCommand(
+            kind: .createVoiceTasks,
+            boardID: board.id,
+            voiceTasks: drafts,
+            accountPublicKey: taskAccountPublicKey
+        )
+        pendingCommands.append(command)
+        persistPendingCommands()
+        statusMessage = drafts.count == 1 ? "Adding task…" : "Adding \(drafts.count) tasks…"
+        let syncState = await deliverShortcutCommand(command)
+        return TaskifyWatchShortcutSubmission(
+            commandID: command.id,
+            boardName: board.name,
+            itemCount: drafts.count,
+            syncState: syncState
+        )
+    }
+
+    func completeTaskFromShortcut(_ taskID: String) async throws -> TaskifyWatchShortcutSubmission {
+        guard isProvisioned else { throw TaskifyWatchShortcutTaskError.notSetUp }
+        guard let task = snapshot.tasks.first(where: { $0.id == taskID }),
+              !pendingCompletionIDs.contains(taskID) else {
+            throw TaskifyWatchShortcutTaskError.taskUnavailable
+        }
+        let command = TaskifyWatchCommand(kind: .completeTask, taskID: taskID, accountPublicKey: taskAccountPublicKey)
+        pendingCommands.append(command)
+        pendingCompletionIDs.insert(taskID)
+        persistPendingCommands()
+        persistWidgetSnapshot()
+        let syncState = await deliverShortcutCommand(command)
+        return TaskifyWatchShortcutSubmission(
+            commandID: command.id,
+            boardName: task.boardName,
+            itemCount: 1,
+            syncState: syncState
+        )
+    }
+
+    private func deliverShortcutCommand(
+        _ command: TaskifyWatchCommand
+    ) async -> TaskifyWatchShortcutSyncState {
+        let phoneIsReachable = WCSession.isSupported()
+            && WCSession.default.activationState == .activated
+            && WCSession.default.isReachable
+        deliver(command)
+        if phoneIsReachable { return .syncingThroughPhone }
+
+        guard independentProfile != nil,
+              directSyncCommandIDs.insert(command.id).inserted else {
+            return .savedForLater
+        }
+        defer { directSyncCommandIDs.remove(command.id) }
+        return await publishDirectly(command) ? .syncedDirectly : .savedForLater
+    }
+
     /// Siri's Remind Me on the Watch. The reminder travels as a one-task dictation would: to the
     /// iPhone, which saves it and schedules the notification, or straight to the relays when the
     /// iPhone is out of reach. Returns the name of the board it was added to.
-    func addReminderFromShortcut(_ phrase: TaskifyReminderPhrase) throws -> String {
+    func addReminderFromShortcut(
+        _ phrase: TaskifyReminderPhrase
+    ) async throws -> TaskifyWatchShortcutSubmission {
         guard isProvisioned else { throw TaskifyWatchShortcutTaskError.notSetUp }
         guard let boardID = quickAddBoardID else { throw TaskifyWatchShortcutTaskError.noBoard }
         guard let dueDate = phrase.dueDate else { throw TaskifyWatchShortcutTaskError.noTime }
@@ -1117,8 +1243,25 @@ final class TaskifyWatchAppModel: NSObject {
             dueISO: dueISO,
             reminderMinutesBeforeDue: [0]
         )
-        guard addVoiceTasks([draft], boardID: boardID) else { throw TaskifyWatchShortcutTaskError.noBoard }
-        return boardName(for: boardID)
+        guard let board = snapshot.boards.first(where: { $0.id == boardID }) else {
+            throw TaskifyWatchShortcutTaskError.noBoard
+        }
+        let command = TaskifyWatchCommand(
+            kind: .createVoiceTasks,
+            boardID: boardID,
+            voiceTasks: [draft],
+            accountPublicKey: taskAccountPublicKey
+        )
+        pendingCommands.append(command)
+        persistPendingCommands()
+        statusMessage = "Adding reminder…"
+        let syncState = await deliverShortcutCommand(command)
+        return TaskifyWatchShortcutSubmission(
+            commandID: command.id,
+            boardName: board.name,
+            itemCount: 1,
+            syncState: syncState
+        )
     }
 
     /// Refreshes encrypted Taskify task records through the Watch HTTPS transport. This works
@@ -1163,22 +1306,34 @@ final class TaskifyWatchAppModel: NSObject {
               let profile = independentProfile,
               !directSyncCommandIDs.contains("_refresh"),
               let privateKey = try? identityStore.load() else { return }
+        let accountRevision = chatAccountRevision
+        let phoneRevision = phoneSnapshotApplicationRevision
         directSyncCommandIDs.insert("_refresh")
         defer { directSyncCommandIDs.remove("_refresh") }
 
         do {
-            let events = try await independentClient.fetchTasks(
+            let result = try await independentClient.recoverTaskHistory(
                 boards: snapshot.boards,
                 gatewayBaseURL: chatContext?.pushRelayHTTPSURL,
                 profile: profile,
-                privateKey: privateKey
+                privateKey: privateKey,
+                previous: snapshot.taskHistory ?? [:]
             )
-            await mergeRelayEvents(events)
-            statusMessage = pendingCommands.isEmpty ? "Independent sync up to date" : "Watch changes waiting for iPhone"
+            guard accountRevision == chatAccountRevision, phoneRevision == phoneSnapshotApplicationRevision,
+                  await mergeRelayEvents(result.events, history: result.cursors) else { return }
+            if !activePendingCommands.isEmpty {
+                statusMessage = "Watch changes waiting for iPhone"
+            } else if result.completed {
+                statusMessage = "Independent sync up to date"
+            } else {
+                statusMessage = result.receivedPage
+                    ? "Older task history will continue syncing."
+                    : "Showing saved tasks — relay refresh will retry."
+            }
         } catch {
             // Cached tasks and the phone transport remain fully usable when the independent
             // service or every configured relay is temporarily unavailable.
-            if pendingCommands.isEmpty {
+            if accountRevision == chatAccountRevision, activePendingCommands.isEmpty {
                 statusMessage = "Showing saved tasks — relay refresh will retry."
             }
         }
@@ -1199,34 +1354,35 @@ final class TaskifyWatchAppModel: NSObject {
         }
     }
 
-    private func publishDirectly(_ command: TaskifyWatchCommand) async {
-        guard let profile = independentProfile,
+    @discardableResult
+    private func publishDirectly(_ command: TaskifyWatchCommand) async -> Bool {
+        guard let profile = independentProfile, command.matchesAccount(profile.publicKeyHex),
               let privateKey = try? identityStore.load(),
               let mutations = try? directMutations(for: command),
-              !mutations.isEmpty else { return }
+              !mutations.isEmpty else { return false }
 
+        let accountRevision = chatAccountRevision
+        let gatewayBaseURL = chatContext?.pushRelayHTTPSURL
         var published: [TaskifyWatchDirectMutation] = []
         for original in mutations {
             do {
-                let event = try await TaskifyWatchNostrCrypto.prepareBoardEvent(original.event,
-                    boardID: original.boardNostrID, relayURLs: original.relayURLs)
-                let mutation = TaskifyWatchDirectMutation(event: event, task: original.task,
-                    relayURLs: original.relayURLs, boardNostrID: original.boardNostrID)
-                try await independentClient.publish(
-                    mutation.event,
-                    relayURLs: mutation.relayURLs,
-                    boardID: mutation.boardNostrID,
-                    gatewayBaseURL: chatContext?.pushRelayHTTPSURL,
+                guard accountRevision == chatAccountRevision else { return false }
+                let event = try await independentClient.publish(
+                    original.event,
+                    relayURLs: original.relayURLs,
+                    boardID: original.boardNostrID,
+                    gatewayBaseURL: gatewayBaseURL,
                     profile: profile,
                     privateKey: privateKey
                 )
-                published.append(mutation)
+                published.append(TaskifyWatchDirectMutation(event: event, task: original.task,
+                    relayURLs: original.relayURLs, boardNostrID: original.boardNostrID))
             } catch {
                 // Keep the idempotent command in the durable phone queue. A later direct retry or
                 // iPhone reconciliation can safely publish the same stable task identifier.
             }
         }
-        guard !published.isEmpty else { return }
+        guard accountRevision == chatAccountRevision, !published.isEmpty else { return false }
         applyDirectMutations(published)
         if published.count == mutations.count {
             statusMessage = command.kind == .completeTask
@@ -1235,6 +1391,7 @@ final class TaskifyWatchAppModel: NSObject {
         } else {
             statusMessage = "Some Watch changes synced; the rest are safely queued."
         }
+        return published.count == mutations.count
     }
 
     private func directMutations(
@@ -1439,8 +1596,15 @@ final class TaskifyWatchAppModel: NSObject {
         replaceSnapshot(tasks: tasks, generatedAt: Date())
     }
 
-    private func mergeRelayEvents(_ events: [TaskifyWatchNostrEvent]) async {
-        var boards = snapshot.boards
+    private func mergeRelayEvents(
+        _ events: [TaskifyWatchNostrEvent],
+        history: [String: TaskifyWatchTaskHistoryCursor]
+    ) async -> Bool {
+        let original = snapshot
+        let accountRevision = chatAccountRevision
+        let phoneRevision = phoneSnapshotApplicationRevision
+        var boards = original.boards
+        var savedVersions = original.taskRelayVersions ?? [:]
         let boardPairs: [(String, TaskifyWatchBoard)] = boards.compactMap { board in
             guard let boardID = board.nostrBoardID,
                   let author = try? TaskifyWatchNostrCrypto.boardPublicKeyHex(for: boardID) else {
@@ -1464,11 +1628,15 @@ final class TaskifyWatchAppModel: NSObject {
             }
         for (author, event) in latestBoardEvents {
             guard let current = boardByAuthor[author],
-                  event.createdAt > (current.nostrUpdatedAt ?? 0),
+                  event.createdAt >= (current.nostrUpdatedAt ?? 0),
                   let updated = Self.decodeRelayBoard(event, existing: current),
                   let index = boards.firstIndex(where: { $0.id == current.id }) else { continue }
+            let key = "board|" + author
+            let version = TaskifyWatchRelayVersion(event)
+            if let saved = savedVersions[key], !version.wins(over: saved) { continue }
             boards[index] = updated
             boardByAuthor[author] = updated
+            savedVersions[key] = version
         }
 
         var latestByTaskID: [String: (TaskifyWatchNostrEvent, TaskifyWatchBoard)] = [:]
@@ -1489,54 +1657,54 @@ final class TaskifyWatchAppModel: NSObject {
             uniquingKeysWith: { first, _ in first }
         )
         var removedTaskIDs = Set<String>()
+        var removalVersions: [String: TaskifyWatchRelayVersion] = [:]
 
-        // A fresh fetch carries an event for every task on the relay, so the decode below runs
-        // one decryption per unique task. Do that CPU work off the main actor and apply the
-        // results here; everything it touches is a Sendable value.
+        // Remember completed/deleted versions even when the task is absent from the visible
+        // snapshot. Older pages can arrive on a later foreground or from a different replica.
         let decodeInputs: [(String, TaskifyWatchNostrEvent, TaskifyWatchBoard, TaskifyWatchTask?)] = latestByTaskID
             .compactMap { taskID, pair in
-                guard let existingIndex = taskIndexByID[taskID] else {
-                    return (taskID, pair.0, pair.1, nil)
+                let (event, board) = pair
+                let existing = taskIndexByID[taskID].map { tasks[$0] }
+                let version = TaskifyWatchRelayVersion(event)
+                if (existing?.nostrUpdatedAt ?? 0) > version.createdAt { return nil }
+                let key = Self.taskVersionKey(boardID: board.id, taskID: taskID)
+                if let saved = savedVersions[key], saved.wins(over: version) { return nil }
+                if version.removed == true {
+                    if existing?.boardID == board.id { removedTaskIDs.insert(taskID) }
+                    removalVersions[key] = version
+                    return nil
                 }
-                if (tasks[existingIndex].nostrUpdatedAt ?? 0) > pair.0.createdAt { return nil }
-                return (taskID, pair.0, pair.1, tasks[existingIndex])
+                return (taskID, event, board, existing)
             }
-        let decodedTasks = await Task.detached(priority: .userInitiated) { [decodeInputs] () -> [String: TaskifyWatchTask] in
-            var decoded: [String: TaskifyWatchTask] = [:]
-            decoded.reserveCapacity(decodeInputs.count)
-            for (taskID, event, board, existing) in decodeInputs {
-                let status = event.firstTagValue(named: "status")
-                if status == "done" || status == "deleted" { continue }
-                guard let task = Self.decodeRelayTask(event, board: board, existing: existing) else {
-                    continue
-                }
-                decoded[taskID] = task
+        let decodedTasks = await Task.detached(priority: .userInitiated) { [decodeInputs] in
+            decodeInputs.compactMap { _, event, board, existing -> (TaskifyWatchTask, TaskifyWatchRelayVersion)? in
+                guard let task = Self.decodeRelayTask(event, board: board, existing: existing) else { return nil }
+                return (task, TaskifyWatchRelayVersion(event))
             }
-            return decoded
         }.value
 
-        for (taskID, decoded) in decodedTasks {
-            if let index = taskIndexByID[taskID] {
-                tasks[index] = decoded
+        // A paired snapshot, account change, or local Watch mutation can arrive during decoding.
+        guard accountRevision == chatAccountRevision, phoneRevision == phoneSnapshotApplicationRevision,
+              snapshot == original else { return false }
+        for (task, version) in decodedTasks {
+            savedVersions[Self.taskVersionKey(boardID: task.boardID, taskID: task.id)] = version
+            if let index = taskIndexByID[task.id] {
+                tasks[index] = task
             } else {
-                taskIndexByID[taskID] = tasks.count
-                tasks.append(decoded)
+                taskIndexByID[task.id] = tasks.count
+                tasks.append(task)
             }
         }
-        for (taskID, pair) in latestByTaskID {
-            let status = pair.0.firstTagValue(named: "status")
-            guard status == "done" || status == "deleted" else { continue }
-            // Mirror the staleness gate the upsert path uses: a tombstone older than the stored
-            // task does not remove it.
-            if let existingIndex = taskIndexByID[taskID],
-               (tasks[existingIndex].nostrUpdatedAt ?? 0) <= pair.0.createdAt {
-                removedTaskIDs.insert(taskID)
-            }
-        }
+        savedVersions.merge(removalVersions) { _, current in current }
         if !removedTaskIDs.isEmpty {
             tasks.removeAll { removedTaskIDs.contains($0.id) }
         }
-        replaceSnapshot(tasks: tasks, boards: boards, generatedAt: Date())
+        replaceSnapshot(tasks: tasks, boards: boards, generatedAt: Date(), history: history, versions: savedVersions)
+        return true
+    }
+
+    private static func taskVersionKey(boardID: String, taskID: String) -> String {
+        "task|" + boardID + "|" + taskID
     }
 
     private nonisolated static func decodeRelayBoard(
@@ -1620,7 +1788,9 @@ final class TaskifyWatchAppModel: NSObject {
     private func replaceSnapshot(
         tasks: [TaskifyWatchTask],
         boards sourceBoards: [TaskifyWatchBoard]? = nil,
-        generatedAt: Date
+        generatedAt: Date,
+        history: [String: TaskifyWatchTaskHistoryCursor]? = nil,
+        versions: [String: TaskifyWatchRelayVersion]? = nil
     ) {
         // One counting pass instead of a full task scan per board.
         var openCounts: [String: Int] = [:]
@@ -1640,15 +1810,20 @@ final class TaskifyWatchAppModel: NSObject {
                 nostrUpdatedAt: board.nostrUpdatedAt
             )
         }
-        snapshot = TaskifyWatchSnapshot(
+        var updated = TaskifyWatchSnapshot(
             tasks: tasks,
             boards: boards,
             selectedBoardID: snapshot.selectedBoardID,
             generatedAt: generatedAt,
             acknowledgedCommandIDs: snapshot.acknowledgedCommandIDs,
             chatProjection: snapshot.chatProjection,
-            accent: snapshot.accent
+            accent: snapshot.accent,
+            accountPublicKey: taskAccountPublicKey,
+            tasksTruncated: snapshot.tasksTruncated
         )
+        updated.taskHistory = history ?? snapshot.taskHistory
+        updated.taskRelayVersions = versions ?? snapshot.taskRelayVersions
+        snapshot = updated
         persistSnapshot()
     }
 
@@ -1726,23 +1901,26 @@ final class TaskifyWatchAppModel: NSObject {
     }
 
     private func retryPendingCommands() {
-        for command in pendingCommands {
+        for command in activePendingCommands {
             deliver(command)
             beginDirectSync(command)
         }
     }
 
     private func deliver(_ command: TaskifyWatchCommand) {
-        guard WCSession.isSupported() else { return }
+        guard command.matchesAccount(taskAccountPublicKey), WCSession.isSupported() else { return }
         let session = WCSession.default
         guard session.activationState == .activated,
               let data = try? TaskifyWatchTransfer.encode(command) else { return }
 
         if session.isReachable, immediateCommandIDs.insert(command.id).inserted {
+            let accountRevision = chatAccountRevision
             session.sendMessageData(data) { [weak self] replyData in
                 Task { @MainActor in
                     guard let self else { return }
                     self.immediateCommandIDs.remove(command.id)
+                    guard accountRevision == self.chatAccountRevision,
+                          command.matchesAccount(self.taskAccountPublicKey) else { return }
                     guard let receipt = try? TaskifyWatchTransfer.decodeCommandReceipt(replyData),
                           receipt.commandID == command.id else {
                         self.queueBackgroundDelivery(command, data: data)
@@ -1756,6 +1934,8 @@ final class TaskifyWatchAppModel: NSObject {
                 Task { @MainActor in
                     guard let self else { return }
                     self.immediateCommandIDs.remove(command.id)
+                    guard accountRevision == self.chatAccountRevision,
+                          command.matchesAccount(self.taskAccountPublicKey) else { return }
                     self.queueBackgroundDelivery(command, data: data)
                     self.beginDirectSync(command)
                 }
@@ -1791,9 +1971,12 @@ final class TaskifyWatchAppModel: NSObject {
     private func finish(commandID: String) {
         let completedKind = pendingCommands.first(where: { $0.id == commandID })?.kind
         pendingCommands.removeAll { $0.id == commandID }
+        UNUserNotificationCenter.current().removePendingNotificationRequests(
+            withIdentifiers: [TaskifyWatchReminderNotification.identifier(commandID: commandID)]
+        )
         refreshPendingCompletionIDs()
         persistPendingCommands()
-        if pendingCommands.isEmpty {
+        if activePendingCommands.isEmpty {
             statusMessage = (completedKind == .editTask || completedKind == .setSubtaskCompletion) ? "Task updated" : (completedKind == .completeTask ? "Tasks are up to date" : "Task added")
         } else {
             statusMessage = "Waiting to sync Watch changes"
@@ -1802,7 +1985,10 @@ final class TaskifyWatchAppModel: NSObject {
 
     private func acceptProvisioning(_ data: Data) throws -> Data {
         let payload = try TaskifyWatchTransfer.decodeProvisioningPayload(data)
-        let previousPublicKey = independentProfile?.publicKeyHex.lowercased()
+        let previousPublicKey = taskAccountPublicKey?.lowercased()
+        guard payload.snapshot.matchesAccount(payload.publicKeyHex) else {
+            throw TaskifyWatchIndependentError.invalidResponse
+        }
         let isAccountReplacement = previousPublicKey != nil
             && previousPublicKey != payload.publicKeyHex.lowercased()
         // Reject a malformed/mismatched envelope before it can replace the device-only key.
@@ -1817,6 +2003,13 @@ final class TaskifyWatchAppModel: NSObject {
         chatAccountRevision += 1
         let provisioningRevision = chatAccountRevision
         if isAccountReplacement {
+            bindLegacyCommands(to: previousPublicKey)
+            if WCSession.isSupported() {
+                for transfer in WCSession.default.outstandingUserInfoTransfers
+                    where transfer.userInfo[TaskifyWatchTransfer.commandDataKey] != nil {
+                    transfer.cancel()
+                }
+            }
             chatOutboxRetryTask?.cancel()
             chatOutboxRetryTask = nil
             latestPhoneSnapshotGeneratedAt = .distantPast
@@ -1892,6 +2085,7 @@ final class TaskifyWatchAppModel: NSObject {
                 self.chatStatusMessage = "Open Taskify on iPhone to finish chat setup"
             }
         }
+        if isAccountReplacement { snapshot = TaskifyWatchSnapshot() }
         isProvisioned = true
         sessionSetupTransfers().forEach { $0.cancel() }
         apply(snapshot: payload.snapshot)
@@ -1914,25 +2108,57 @@ final class TaskifyWatchAppModel: NSObject {
         // permanently stale until an even newer phone mutation occurs. Compare only against the
         // last phone projection instead, which still prevents delayed WatchConnectivity payloads
         // from rolling back a newer phone projection.
+        if let profile = independentProfile, !received.matchesAccount(profile.publicKeyHex) { return }
         guard received.generatedAt >= latestPhoneSnapshotGeneratedAt else { return }
+        if let previousAccount = taskAccountPublicKey, !received.matchesAccount(previousAccount) {
+            bindLegacyCommands(to: previousAccount)
+        }
         latestPhoneSnapshotGeneratedAt = received.generatedAt
         phoneSnapshotApplicationRevision += 1
         let applicationRevision = phoneSnapshotApplicationRevision
-        snapshot = received
+        var projectionSnapshot = received
+        if received.matchesAccount(snapshot.accountPublicKey ?? independentProfile?.publicKeyHex) {
+            let versions = snapshot.taskRelayVersions ?? [:]
+            projectionSnapshot.taskRelayVersions = versions
+            projectionSnapshot.taskHistory = snapshot.taskHistory
+            projectionSnapshot.tasks.removeAll { task in
+                let version = versions[Self.taskVersionKey(boardID: task.boardID, taskID: task.id)]
+                return version?.removed == true && (version?.createdAt ?? 0) >= (task.nostrUpdatedAt ?? 0)
+            }
+            if received.tasksTruncated == true {
+                let phoneIDs = Set(received.tasks.map(\.id))
+                let retainedBoards = Set(received.boards.map(\.id))
+                let completedIDs = Set(pendingCommands.compactMap {
+                    $0.kind == .completeTask && (received.acknowledgedCommandIDs ?? []).contains($0.id) ? $0.taskID : nil
+                })
+                projectionSnapshot.tasks.append(contentsOf: snapshot.tasks.filter {
+                    retainedBoards.contains($0.boardID) && !phoneIDs.contains($0.id) && !completedIDs.contains($0.id)
+                        && versions[Self.taskVersionKey(boardID: $0.boardID, taskID: $0.id)]?.removed == false
+                })
+            } else if !snapshot.tasks.isEmpty {
+                let kept = Set(projectionSnapshot.tasks.map(\.id))
+                // The phone can replace an independently discovered task projection, including
+                // one from an older build that never said its snapshot was truncated.
+                if snapshot.tasks.contains(where: { !kept.contains($0.id) && versions[Self.taskVersionKey(boardID: $0.boardID, taskID: $0.id)]?.removed == false }) {
+                    projectionSnapshot.taskHistory = nil
+                }
+            }
+        }
+        snapshot = projectionSnapshot
         if let projection = received.chatProjection {
             applyChatProjection(projection, applicationRevision: applicationRevision)
         }
         let acknowledged = Set(received.acknowledgedCommandIDs ?? [])
         if !acknowledged.isEmpty {
             let acknowledgedKinds = Set(
-                pendingCommands.lazy
+                activePendingCommands.lazy
                     .filter { acknowledged.contains($0.id) }
                     .map(\.kind)
             )
-            pendingCommands.removeAll { acknowledged.contains($0.id) }
-            refreshPendingCompletionIDs()
+            let activeAccount = taskAccountPublicKey
+            pendingCommands.removeAll { $0.matchesAccount(activeAccount) && acknowledged.contains($0.id) }
             persistPendingCommands()
-            if pendingCommands.isEmpty {
+            if activePendingCommands.isEmpty {
                 statusMessage = acknowledgedKinds.contains(.createTask) ||
                     acknowledgedKinds.contains(.createVoiceTasks) ||
                     acknowledgedKinds.contains(.processVoiceTranscript)
@@ -1940,6 +2166,7 @@ final class TaskifyWatchAppModel: NSObject {
                     : "Tasks are up to date"
             }
         }
+        refreshPendingCompletionIDs()
         persistSnapshot()
     }
 
@@ -2029,6 +2256,7 @@ final class TaskifyWatchAppModel: NSObject {
     private func loadCachedSnapshot() {
         guard let data = try? Data(contentsOf: cacheURL),
               let cached = try? TaskifyWatchTransfer.decodeSnapshot(data) else { return }
+        if let profile = independentProfile, !cached.matchesAccount(profile.publicKeyHex) { return }
         snapshot = cached
         persistWidgetSnapshot()
     }
@@ -2038,12 +2266,21 @@ final class TaskifyWatchAppModel: NSObject {
               let cached = try? JSONDecoder().decode([TaskifyWatchCommand].self, from: data) else { return }
         let oldestRetainedDate = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         pendingCommands = cached.filter { $0.createdAt >= oldestRetainedDate }
+        bindLegacyCommands(to: taskAccountPublicKey, persist: false)
         refreshPendingCompletionIDs()
         persistPendingCommands()
     }
 
+    private func bindLegacyCommands(to accountPublicKey: String?, persist: Bool = true) {
+        guard let accountPublicKey else { return }
+        let unbound = pendingCommands.indices.filter { pendingCommands[$0].accountPublicKey == nil }
+        guard !unbound.isEmpty else { return }
+        for index in unbound { pendingCommands[index].accountPublicKey = accountPublicKey }
+        if persist { persistPendingCommands() }
+    }
+
     private func refreshPendingCompletionIDs() {
-        pendingCompletionIDs = Set(pendingCommands.compactMap { command in
+        pendingCompletionIDs = Set(activePendingCommands.compactMap { command in
             command.kind == .completeTask ? command.taskID : nil
         })
         persistWidgetSnapshot()
@@ -2140,6 +2377,8 @@ final class TaskifyWatchAppModel: NSObject {
         )
         guard TaskifyWatchWidgetCache.saveIfChanged(widgetSnapshot) else { return }
         reloadComplicationTimelines()
+        // Task completion entities and "What's Due" suggestions are sourced from this cache.
+        TaskifyWatchShortcuts.updateAppShortcutParameters()
     }
 
     private func reloadComplicationTimelines() {

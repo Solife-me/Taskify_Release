@@ -1,88 +1,32 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { buildBoardPrintLayout, type BoardPrintJob, type BoardPrintLayout, type BoardPrintTask } from "./BoardPrintLayout";
-import { scanPage, type ScanMark, type ScanMarkGeometry } from "../domains/print/scanEngine";
-import { scanPhotoFromCanvas } from "../domains/print/scanCanvas";
-import { applyableScanIds, defaultSelectedScanIds, mergeBoardScanReview } from "../domains/print/scanReviewState";
-
-type ScanAnalysis = {
-  taskIds: string[];
-  filledCount: number;
-  threshold: number;
-  backgroundMedian: number;
-  pageIndex: number;
-};
-
-const PRINT_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
-
-function formatPrintDate(iso: string): string {
-  try {
-    return PRINT_DATE_FORMATTER.format(new Date(iso));
-  } catch {
-    return iso;
-  }
-}
-
-/** A board sheet's marks are the task circles; the paper is sampled beside and between rows. */
-function boardMarkGeometry(layout: BoardPrintLayout): ScanMarkGeometry {
-  const circleSizeMm = layout.circle.sizeMm;
-  const backgroundOffsetX = Math.max(circleSizeMm * 0.8, 2);
-  // A detailed sheet prints text under the title band, so sample closer above and below the
-  // circle to stay on paper beside the row rather than on its own detail lines.
-  const backgroundOffsetY = layout.version === "v4"
-    ? Math.min(2.4, circleSizeMm * 0.6)
-    : Math.max(layout.rows.heightMm * 0.45, circleSizeMm * 0.6);
-  return {
-    sampleRadiusMm: Math.max(0.55, circleSizeMm * 0.16),
-    innerOffsetMm: circleSizeMm * 0.25,
-    backgroundOffsets: [
-      { x: -backgroundOffsetX, y: 0 },
-      { x: -backgroundOffsetX, y: -backgroundOffsetY },
-      { x: -backgroundOffsetX, y: backgroundOffsetY },
-      { x: 0, y: -backgroundOffsetY },
-      { x: 0, y: backgroundOffsetY },
-    ],
-    backgroundRadiusMm: Math.max(0.7, circleSizeMm * 0.25),
-  };
-}
-
-export function boardScanMarks(layout: BoardPrintLayout, pageIndex: number): ScanMark<string>[] {
-  const size = layout.circle.sizeMm;
-  return layout.pages[pageIndex].rows.flatMap((row) =>
-    row.kind === "task" ? [{ key: row.taskId, centerMm: { x: row.circleX + size / 2, y: row.circleY + size / 2 } }] : [],
-  );
-}
-
-function analyzeScanCanvas(
-  canvas: HTMLCanvasElement,
-  layout: BoardPrintLayout,
-  pageSelection: number | "auto",
-): ScanAnalysis {
-  const result = scanPage(scanPhotoFromCanvas(canvas), layout, {
-    pageSelection,
-    pageCount: layout.pages.length,
-    marksOnPage: (pageIndex) => boardScanMarks(layout, pageIndex),
-    geometry: boardMarkGeometry(layout),
-  });
-  return { taskIds: result.filled, filledCount: result.filledCount, threshold: result.threshold, backgroundMedian: result.backgroundMedian, pageIndex: result.pageIndex };
-}
+import { BOARD_PRINT_MODERN_LAYOUT_VERSION, buildBoardPrintLayout, type BoardPrintJob, type BoardPrintTask } from "./BoardPrintLayout";
+import { identifyBoardScan } from "../domains/print/boardScan";
+import { captureScanPhoto, loadScanPhoto, SCAN_CAMERA_CONSTRAINTS, scanPhotoFromCanvas } from "../domains/print/scanCanvas";
+import { applyableScanIds, defaultSelectedScanIds, reviewTasksForScan } from "../domains/print/scanReviewState";
 
 export function BoardScanPanel({
   job,
+  boardName,
+  catalog,
   onApply,
 }: {
-  job: BoardPrintJob;
+  job: BoardPrintJob | null;
+  boardName: string;
+  catalog: BoardPrintTask[];
   onApply: (taskIds: string[]) => void;
 }) {
   const layout = useMemo(
-    () => buildBoardPrintLayout(job.tasks, { layoutVersion: job.layoutVersion, paperSize: job.paperSize, jobId: job.id }),
-    [job.id, job.layoutVersion, job.paperSize, job.tasks],
+    () => job ? buildBoardPrintLayout(job.tasks, {
+      layoutVersion: job.layoutVersion, paperSize: job.paperSize, jobId: job.id,
+    }) : null,
+    [job],
   );
-  const printedDate = useMemo(() => formatPrintDate(job.printedAtISO), [job.printedAtISO]);
-  const taskLookup = useMemo(
-    () => new Map(job.tasks.map((task) => [task.id, task])),
-    [job.tasks],
+  const ocrLayout = useMemo(
+    () => buildBoardPrintLayout([], { paperSize: job?.paperSize ?? "letter", layoutVersion: BOARD_PRINT_MODERN_LAYOUT_VERSION }),
+    [job?.paperSize],
   );
+  const taskLookup = useMemo(() => new Map(catalog.map((task) => [task.id, task])), [catalog]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [pageSelection, setPageSelection] = useState<"auto" | number>("auto");
@@ -91,9 +35,9 @@ export function BoardScanPanel({
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
-  const [scanResult, setScanResult] = useState<ScanAnalysis | null>(null);
+  const [scanResult, setScanResult] = useState<ReturnType<typeof identifyBoardScan> | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [reviewTasks, setReviewTasks] = useState<BoardPrintTask[]>([]);
+  const [reviewIds, setReviewIds] = useState<string[]>([]);
   const [selectedReviewIds, setSelectedReviewIds] = useState<Set<string>>(() => new Set());
 
   const stopCamera = useCallback(() => {
@@ -118,11 +62,7 @@ export function BoardScanPanel({
       setCameraError(null);
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
+          video: SCAN_CAMERA_CONSTRAINTS,
         });
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
@@ -162,118 +102,64 @@ export function BoardScanPanel({
     setCameraActive(true);
   }, [pageSelection]);
 
-  useEffect(() => {
-    setReviewTasks([]);
-    setSelectedReviewIds(new Set());
-  }, [job.id]);
-
   useEffect(() => () => stopCamera(), [stopCamera]);
 
-  const captureVideoFrame = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return null;
-    const width = video.videoWidth || 0;
-    const height = video.videoHeight || 0;
-    if (!width || !height) return null;
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(video, 0, 0, width, height);
-    return canvas;
-  }, []);
+  const analyzeCanvas = useCallback(async (canvas: HTMLCanvasElement) => {
+    const photo = scanPhotoFromCanvas(canvas);
+    const { readChecklistText } = await import("../domains/print/scanOcr");
+    const lines = await readChecklistText(photo, ocrLayout);
+    const result = identifyBoardScan(photo, lines, catalog, boardName, job, layout, pageSelection);
+    if (pageSelection === "auto") {
+      setDetectedPageIndex(result.pageIndex);
+    } else {
+      setDetectedPageIndex(null);
+    }
+    setScanResult(result);
+    const detectedTasks = reviewTasksForScan(result.taskIds, taskLookup);
+    setReviewIds((current) => [...new Set([...current, ...result.taskIds])]);
+    setSelectedReviewIds((current) => {
+      const next = new Set(current);
+      defaultSelectedScanIds(detectedTasks).forEach((id) => {
+        if (!reviewIds.includes(id)) next.add(id);
+      });
+      return next;
+    });
+    setPreviewUrl(canvas.toDataURL("image/jpeg", 0.85));
+    return result;
+  }, [boardName, catalog, job, layout, ocrLayout, pageSelection, reviewIds, taskLookup]);
 
-  const analyzeCanvas = useCallback(
-    async (
-      canvas: HTMLCanvasElement,
-      options?: {
-        reportErrors?: boolean;
-        setPreview?: boolean;
+  const scanCapture = useCallback(async (getCanvas: () => Promise<HTMLCanvasElement>) => {
+    setScanBusy(true);
+    setScanError(null);
+    setScanResult(null);
+    try {
+      const result = await analyzeCanvas(await getCanvas());
+      if (result) {
+        setCameraError(null);
+        setCameraActive(false);
       }
-    ) => {
-      const reportErrors = options?.reportErrors !== false;
-      const shouldSetPreview = options?.setPreview !== false;
-      try {
-        setScanBusy(true);
-        if (reportErrors) setScanError(null);
-        const result = analyzeScanCanvas(canvas, layout, pageSelection);
-        if (pageSelection === "auto") {
-          setDetectedPageIndex(result.pageIndex);
-        } else {
-          setDetectedPageIndex(null);
-        }
-        setScanResult(result);
-        const detectedTasks = result.taskIds
-          .map((id) => taskLookup.get(id))
-          .filter((task): task is BoardPrintTask => !!task);
-        setReviewTasks((current) => mergeBoardScanReview(current, detectedTasks));
-        setSelectedReviewIds((current) => {
-          const next = new Set(current);
-          defaultSelectedScanIds(detectedTasks).forEach((id) => next.add(id));
-          return next;
-        });
-        if (shouldSetPreview) {
-          setPreviewUrl(canvas.toDataURL("image/jpeg", 0.85));
-        }
-        return result;
-      } catch (err) {
-        if (reportErrors) {
-          const message = err instanceof Error ? err.message : "Scan failed.";
-          setScanError(message);
-          setScanResult(null);
-        }
-        return null;
-      } finally {
-        setScanBusy(false);
-      }
-    },
-    [layout, pageSelection, taskLookup]
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : "Unable to read the photo.");
+    } finally {
+      setScanBusy(false);
+    }
+  }, [analyzeCanvas]);
+
+  const handleCapture = useCallback(
+    () => scanCapture(() => captureScanPhoto(videoRef.current, streamRef.current)),
+    [scanCapture],
   );
 
-  const handleCapture = useCallback(async () => {
-    const canvas = captureVideoFrame();
-    if (!canvas) {
-      setScanError("Camera is not ready yet.");
-      return;
-    }
-    const result = await analyzeCanvas(canvas, { reportErrors: true, setPreview: true });
-    if (result) {
-      setCameraActive(false);
-    }
-  }, [analyzeCanvas, captureVideoFrame]);
+  const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) void scanCapture(() => loadScanPhoto(file));
+  }, [scanCapture]);
 
-  const handleFileChange = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      event.target.value = "";
-      if (!file) return;
-      const url = URL.createObjectURL(file);
-      try {
-        const img = new Image();
-        await new Promise<void>((resolve, reject) => {
-          img.onload = () => resolve();
-          img.onerror = () => reject(new Error("Unable to read the image."));
-          img.src = url;
-        });
-        const canvas = document.createElement("canvas");
-        canvas.width = img.naturalWidth || img.width;
-        canvas.height = img.naturalHeight || img.height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) throw new Error("Unable to read the image.");
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        await analyzeCanvas(canvas, { reportErrors: true, setPreview: true });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unable to read the image.";
-        setScanError(message);
-        setScanResult(null);
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    },
-    [analyzeCanvas]
+  const reviewTasks = useMemo(
+    () => reviewTasksForScan(reviewIds, taskLookup),
+    [reviewIds, taskLookup],
   );
-
   const selectableReviewIds = useMemo(
     () => defaultSelectedScanIds(reviewTasks),
     [reviewTasks],
@@ -298,54 +184,47 @@ export function BoardScanPanel({
     onApply(selectedApplyableIds);
   }, [onApply, selectedApplyableIds]);
 
-  if (!job.tasks.length) {
-    return (
-      <div className="board-scan-panel">
-        <div className="text-sm text-secondary">This print has no tasks to scan.</div>
-      </div>
-    );
-  }
-
   const showGuides = cameraActive;
 
   return (
     <div className="board-scan-panel">
-      <div className="board-scan-meta text-xs text-secondary">
-        Using print from {printedDate} for {job.boardName || "board"}.
-      </div>
-      <div className="board-scan-detect">
-        <div className="text-xs font-semibold text-primary">Page detection</div>
-        <div className="board-scan-toggle" role="group" aria-label="Page detection">
-          <button
-            type="button"
-            className="board-scan-toggle__option pressable"
-            data-active={pageSelection === "auto"}
-            aria-pressed={pageSelection === "auto"}
-            onClick={() => setPageSelection("auto")}
-          >
-            Auto
-          </button>
-          {Array.from({ length: layout.page.count }, (_, index) => (
+      {layout && layout.page.count > 1 && (
+        <div className="board-scan-detect">
+          <div className="text-xs font-semibold text-primary">Page detection</div>
+          <div className="board-scan-toggle" role="group" aria-label="Page detection">
             <button
-              key={index}
               type="button"
               className="board-scan-toggle__option pressable"
-              data-active={pageSelection === index}
-              aria-pressed={pageSelection === index}
-              onClick={() => setPageSelection(index)}
+              data-active={pageSelection === "auto"}
+              aria-pressed={pageSelection === "auto"}
+              disabled={scanBusy}
+              onClick={() => setPageSelection("auto")}
             >
-              Page {index + 1}
+              Auto
             </button>
-          ))}
-        </div>
-        {pageSelection === "auto" && (
-          <div className="board-scan-status text-xs text-secondary">
-            {detectedPageIndex != null
-              ? `Auto detected: Page ${detectedPageIndex + 1}.`
-              : "Auto detect is ready. Hold the full page in view."}
+            {Array.from({ length: layout.page.count }, (_, index) => (
+              <button
+                key={index}
+                type="button"
+                className="board-scan-toggle__option pressable"
+                data-active={pageSelection === index}
+                aria-pressed={pageSelection === index}
+                disabled={scanBusy}
+                onClick={() => setPageSelection(index)}
+              >
+                Page {index + 1}
+              </button>
+            ))}
           </div>
-        )}
-      </div>
+          {pageSelection === "auto" && (
+            <div className="board-scan-status text-xs text-secondary">
+              {detectedPageIndex != null
+                ? `Auto detected: Page ${detectedPageIndex + 1}.`
+                : "Auto detect is ready. Hold the full page in view."}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="wallet-scanner">
         <div className={`wallet-scanner__viewport${cameraError ? " wallet-scanner__viewport--error" : ""}`}>
@@ -378,9 +257,15 @@ export function BoardScanPanel({
             Capture
           </button>
         )}
+        {navigator.maxTouchPoints > 0 && (
+          <label className="ghost-button button-sm pressable board-scan-upload">
+            Take photo
+            <input type="file" accept="image/*" capture="environment" onChange={handleFileChange} disabled={scanBusy} />
+          </label>
+        )}
         <label className="ghost-button button-sm pressable board-scan-upload">
           Upload photo
-          <input type="file" accept="image/*" onChange={handleFileChange} />
+          <input type="file" accept="image/*" onChange={handleFileChange} disabled={scanBusy} />
         </label>
         {cameraError && !cameraActive && (
           <button
@@ -402,7 +287,8 @@ export function BoardScanPanel({
       {scanResult && (
         <div className="board-scan-results">
           <div className="text-sm font-medium text-primary">
-            Detected {scanResult.filledCount} filled mark{scanResult.filledCount === 1 ? "" : "s"} on page {scanResult.pageIndex + 1}
+            Detected {scanResult.taskIds.length} filled mark{scanResult.taskIds.length === 1 ? "" : "s"}
+            {scanResult.pageIndex != null ? ` on page ${scanResult.pageIndex + 1}` : ""}
           </div>
           <div className="text-xs text-secondary">
             {reviewTasks.length} unique task{reviewTasks.length === 1 ? "" : "s"} in this review. Select the changes to apply.

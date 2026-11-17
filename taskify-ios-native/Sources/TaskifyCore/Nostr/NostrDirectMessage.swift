@@ -343,6 +343,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
     /// Encrypted Taskify metadata for a generated Hermes menu command. Internal commands are
     /// hidden from the visible timeline, but retained so every device can reconstruct the menu.
     public var botUiAction: TaskifyBotUiAction?
+    public var botMenuKind: TaskifyBotMenuKind?
     /// Local delivery state for messages authored by this account. Older snapshots omit this
     /// field and incoming messages leave it nil.
     public var deliveryState: NostrDirectMessageDeliveryState?
@@ -361,6 +362,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         groupID: String? = nil,
         groupMemberPublicKeys: [String]? = nil,
         botUiAction: TaskifyBotUiAction? = nil,
+        botMenuKind: TaskifyBotMenuKind? = nil,
         deliveryState: NostrDirectMessageDeliveryState? = nil
     ) {
         self.rumorEventID = rumorEventID.lowercased()
@@ -376,6 +378,7 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
         self.groupID = groupID?.lowercased()
         self.groupMemberPublicKeys = groupMemberPublicKeys?.map { $0.lowercased() }.sorted().nilIfEmpty
         self.botUiAction = botUiAction
+        self.botMenuKind = botMenuKind
         self.deliveryState = isIncoming ? nil : deliveryState
     }
 
@@ -436,6 +439,8 @@ public struct NostrDirectMessage: Identifiable, Codable, Equatable, Sendable {
             groupID: group?.groupID,
             groupMemberPublicKeys: group?.memberPublicKeys,
             botUiAction: group == nil ? TaskifyBotUiContract.action(from: rumor.tags) : nil,
+            botMenuKind: incoming && group == nil && attachment == nil
+                ? TaskifyBotMenuKind.from(tags: rumor.tags) : nil,
             deliveryState: incoming ? nil : .sent
         )
     }
@@ -1138,11 +1143,14 @@ public extension TaskifySnapshot {
         if let existingIndex = values.firstIndex(where: {
             $0.rumorEventID == message.rumorEventID
         }) {
-            guard !values[existingIndex].isIncoming,
-                  !message.isIncoming,
-                  values[existingIndex].deliveryState != .sent,
-                  message.deliveryState == .sent else { return false }
-            values[existingIndex].deliveryState = .sent
+            let existing = values[existingIndex]
+            // A sender-copy echo proves that the sender's inbox stored the wrap. Only the
+            // outbox can confirm that a recipient relay accepted the outgoing message.
+            guard !existing.isIncoming, !message.isIncoming,
+                  existing.wrapEventID == existing.rumorEventID,
+                  message.wrapEventID != message.rumorEventID else { return false }
+            values[existingIndex].wrapEventID = message.wrapEventID
+            values[existingIndex].relayURLs = message.relayURLs
             directMessages = values
             return true
         }
@@ -1222,16 +1230,11 @@ public extension TaskifySnapshot {
         through timestamp: Int? = nil
     ) -> Bool {
         guard let peer = Self.normalizedConversationID(peerPublicKey) else { return false }
-        let newestIncoming = (directMessages ?? [])
+        let newestIncoming = (directMessages ?? []).lazy
             .filter { $0.peerPublicKey == peer && $0.isIncoming }
             .map(\.createdAt)
             .max() ?? 0
-        let target = max(timestamp ?? newestIncoming, newestIncoming)
-        guard target > (directMessageReadAt?[peer] ?? 0) else { return false }
-        var states = directMessageReadAt ?? [:]
-        states[peer] = target
-        directMessageReadAt = states
-        return true
+        return advanceDirectMessageRead(peerPublicKey: peer, through: max(timestamp ?? 0, newestIncoming))
     }
 
     /// Merges a read position observed on the paired Watch without treating messages the Watch
@@ -1243,13 +1246,16 @@ public extension TaskifySnapshot {
         through timestamp: Int,
         now: Int = Int(Date().timeIntervalSince1970)
     ) -> Bool {
-        guard let peer = Self.normalizedConversationID(peerPublicKey), timestamp > 0 else {
-            return false
-        }
-        let target = min(timestamp, now + 5 * 60)
-        guard target > (directMessageReadAt?[peer] ?? 0) else { return false }
+        return advanceDirectMessageRead(peerPublicKey: peerPublicKey, through: min(timestamp, now + 5 * 60))
+    }
+
+    /// Advances to a message already found in the local conversation.
+    @discardableResult
+    mutating func advanceDirectMessageRead(peerPublicKey: String, through timestamp: Int) -> Bool {
+        guard let peer = Self.normalizedConversationID(peerPublicKey),
+              timestamp > (directMessageReadAt?[peer] ?? 0) else { return false }
         var states = directMessageReadAt ?? [:]
-        states[peer] = target
+        states[peer] = timestamp
         directMessageReadAt = states
         return true
     }

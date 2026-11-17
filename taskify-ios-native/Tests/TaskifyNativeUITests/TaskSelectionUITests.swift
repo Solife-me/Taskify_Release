@@ -1,13 +1,43 @@
 import XCTest
 
-/// Runtime verification for Boards multi-select, ported from the PWA's selection bar
-/// (`useSelectionMode` / `SelectionOverlays.tsx`): enter selection mode, select tasks, then bulk
-/// Delete. "Move" and "Complete" reuse existing, already-tested single-task AppModel methods
-/// (`moveTask`/`toggleCompletion`) looped over the selection, so this focuses on the part that's
-/// actually new: the selection UI state machine and the bulk-delete wiring.
+/// Runtime verification for Boards multi-select and its bulk actions.
 final class TaskSelectionUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
+    }
+
+    func testDraggingSelectedTasksReordersThemTogether() throws {
+        let app = launchWithListBoard()
+        let quickAdd = app.textFields.matching(NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")).firstMatch
+        XCTAssertTrue(quickAdd.waitForExistence(timeout: 5))
+        quickAdd.tap()
+        quickAdd.typeText("Drag test A\n")
+        quickAdd.typeText("Drag test B\n")
+
+        let titles = ["Move me", "Drag test A", "Drag test B"]
+        for title in titles {
+            XCTAssertTrue(app.buttons["Edit \(title)"].waitForExistence(timeout: 5))
+        }
+        try enterSelectionMode(app)
+        let ordered = titles.sorted {
+            app.buttons["Select \($0)"].frame.midY < app.buttons["Select \($1)"].frame.midY
+        }
+        app.buttons["Select \(ordered[0])"].tap()
+        app.buttons["Select \(ordered[2])"].tap()
+        XCTAssertTrue(app.staticTexts["2 selected"].waitForExistence(timeout: 5))
+
+        app.buttons["Deselect \(ordered[2])"].press(
+            forDuration: 0.8,
+            thenDragTo: app.buttons["Select \(ordered[1])"]
+        )
+
+        XCTAssertTrue(app.staticTexts["2 selected"].waitForNonExistence(timeout: 5))
+        let first = app.buttons["Edit \(ordered[0])"]
+        let second = app.buttons["Edit \(ordered[2])"]
+        let anchor = app.buttons["Edit \(ordered[1])"]
+        XCTAssertTrue(first.exists && second.exists && anchor.exists)
+        XCTAssertLessThan(first.frame.midY, second.frame.midY)
+        XCTAssertLessThan(second.frame.midY, anchor.frame.midY)
     }
 
     func testSelectTasksThenBulkDelete() throws {

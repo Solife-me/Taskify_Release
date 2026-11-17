@@ -118,6 +118,19 @@ Current test count: 3 files. Target: expand to cover 6+ domains.
 
 ---
 
+## Beta Nostr Task Sync Coverage (2026-11-14)
+
+Regression coverage exercises capped relay replay on the CLI and shared native engine,
+tombstone version ordering on PWA reload and live merge, CLI refresh and compound-board
+merges, and Watch account labels through snapshot trimming and command encoding.
+See the [Beta sync audit](../audits/nostr-task-sync-beta-2026-11-14.md) for remaining release checks.
+
+## Week Board Drag Coverage (2026-11-17)
+
+PWA task-command and native snapshot tests cover forward weekday drops and time of
+day preservation. PWA tests also cover overdue tasks, same-column reorders, and a
+task whose scheduled timezone places its due instant on a different weekday.
+
 ## Native Board Performance Coverage (2026-09-12)
 
 `SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,
@@ -279,3 +292,44 @@ reported crash cause; these transport regressions do not replace that verificati
   fallback only until pre-gateway builds have expired and the Worker bridge is removed.
 - PWA NWC sessions are isolated by client identity and reused across RPCs, with
   idle shutdown and explicit cleanup on disconnect; relay metadata is shared.
+
+
+### iOS task queueing and chat responsiveness (November 2026)
+
+- Task edits and shared-task imports sign and persist their board and task events before relay
+  discovery or proof-of-work mining. The sync engine handles proof of work per relay after
+  queueing. Pending task stamps still survive an interruption before the durable write.
+- Opening an unread conversation reuses the list's message cache. Updating its read marker
+  leaves the timeline presentation in cache. Adding a shared task updates the inbox and task
+  snapshot together and schedules the assignment reply separately.
+- The composer inserts the canonical outgoing bubble before relay discovery and wraps messages
+  off the main actor. Sender copies and recipient copies have separate acknowledgements, and
+  the durable outbox retains an ordinary event and a separate proof-of-work variant under
+  one record. A message stays Sending until a recipient relay accepts a copy. Attachment uploads still happen before their chat bubbles
+  appear so a failed upload can be retried from the composer.
+- Coverage includes offline outbox persistence, optimistic rumor reconciliation, first-relay
+  acceptance, and the iPhone composer with simulated delayed acceptance.
+
+
+### On-device relay and Hermes follow-up (November 2026)
+
+- The iOS build 202 CPU report matched the archive’s symbols and pointed to repeated relay
+  proof-of-work mining. The repair pass schedules a flush only after it changes the outbox.
+  Concurrent sends and repair passes share one job for each event, and a single background
+  worker runs those jobs.
+- Native outbox publication sends the original event to ordinary relays without waiting for
+  relay metadata. Relays with a verified floor share a variant at the highest known target.
+  Acknowledgements map either wire ID to the same durable entry. A relay’s explicit `pow:`
+  refusals are remembered alongside advertised NIP-11 values.
+- NIP-17 encrypts one gift wrap per recipient. The local outbox protects its retry signing key
+  with the sender’s identity and reuses the same ciphertext for the mined variant. Chat shows
+  Sent after the first recipient acceptance while outstanding relay copies remain queued.
+- The PWA and CLI share relay-specific delivery for board, task, and calendar writes and
+  share messages. Browser callers can continue after their first acknowledgement while the
+  durable queue completes the strict-relay copies. The Watch applies the same routing through
+  its gateway for independent task writes, chat and the inbox relay preference. Mac uses the
+  native iPhone sync engine.
+- Regression coverage checks that ordinary relays accept the original before mining, advertised
+  and explicit requirements share a variant at the highest confirmed floor, a saved variant
+  survives reopening the outbox, and the Watch learns explicit gateway refusals.
+- The [Hermes plugin](../../integrations/hermes/README.md) and its regression tests live in the Taskify repo. The plugin retains its own manifest version and standalone ZIP. Plugin tests cover command argument tags, binding actions to encrypted replies, approval, delivery retries, and attachment cleanup.

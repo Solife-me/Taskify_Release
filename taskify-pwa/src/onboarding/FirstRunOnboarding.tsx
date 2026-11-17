@@ -4,9 +4,9 @@ type OnboardingPage = "home" | "existing";
 
 type FirstRunOnboardingProps = {
   /** Makes an account key on this device and finishes first run. False if it could not. */
-  onStart: () => boolean;
+  onStart: () => Promise<boolean>;
   /** Signs in with an nsec or hex key and finishes first run. False if the key is invalid. */
-  onUseExistingKey: (value: string) => boolean;
+  onUseExistingKey: (value: string) => Promise<boolean>;
   onRestoreFromBackupFile: (file: File) => Promise<void>;
 };
 
@@ -23,18 +23,31 @@ export function FirstRunOnboarding({ onStart, onUseExistingKey, onRestoreFromBac
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
 
-  const handleStart = () => {
-    setStartError(onStart() ? null : "Taskify couldn't set up your account. Try again.");
+  const [signInBusy, setSignInBusy] = useState(false);
+  const handleStart = async () => {
+    setSignInBusy(true);
+    try {
+      setStartError(await onStart() ? null : "Taskify couldn't set up your account. Try again.");
+    } finally {
+      setSignInBusy(false);
+    }
   };
 
-  const handleUseExistingKey = (event: React.FormEvent) => {
+  const handleUseExistingKey = async (event: React.FormEvent) => {
     event.preventDefault();
     const trimmed = existingKeyInput.trim();
     if (!trimmed) {
       setSignInError("Paste your nsec first.");
       return;
     }
-    setSignInError(onUseExistingKey(trimmed) ? null : "That doesn't look like a valid nsec or 64-character secret key.");
+    setSignInBusy(true);
+    try {
+      setSignInError(await onUseExistingKey(trimmed) ? null : "That doesn't look like a valid nsec or 64-character secret key.");
+    } catch (error) {
+      setSignInError(error instanceof Error ? error.message : "Unable to switch accounts.");
+    } finally {
+      setSignInBusy(false);
+    }
   };
 
   const handleRestoreFromBackupFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -58,7 +71,7 @@ export function FirstRunOnboarding({ onStart, onUseExistingKey, onRestoreFromBac
         <p className="text-primary">
           Plan your week, keep lists and share boards. Your tasks stay private and sync across your devices.
         </p>
-        <button type="button" className="accent-button pressable w-full justify-center" onClick={handleStart}>
+        <button type="button" className="accent-button pressable w-full justify-center" onClick={() => { void handleStart(); }} disabled={signInBusy}>
           Start using Taskify
         </button>
         {startError && <div className="text-xs text-rose-400">{startError}</div>}
@@ -75,7 +88,7 @@ export function FirstRunOnboarding({ onStart, onUseExistingKey, onRestoreFromBac
 
   return (
     <div className="space-y-4 text-sm text-secondary">
-      <form className="space-y-2 rounded-xl border border-surface bg-surface-muted p-3" onSubmit={handleUseExistingKey}>
+      <form className="space-y-2 rounded-xl border border-surface bg-surface-muted p-3" onSubmit={(event) => { void handleUseExistingKey(event); }}>
         <label className="block text-sm font-medium text-primary" htmlFor="onboarding-nsec">
           Sign in with your key
         </label>
@@ -90,7 +103,7 @@ export function FirstRunOnboarding({ onStart, onUseExistingKey, onRestoreFromBac
           onChange={(event) => setExistingKeyInput(event.target.value)}
         />
         {signInError && <div className="text-xs text-rose-400">{signInError}</div>}
-        <button type="submit" className="accent-button button-sm pressable">
+        <button type="submit" className="accent-button button-sm pressable" disabled={signInBusy}>
           Sign in
         </button>
       </form>

@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// A scanned checklist page as brightness values, one byte per pixel, row by row.
 public struct PhysicalChecklistGrayImage: Sendable {
@@ -10,6 +11,38 @@ public struct PhysicalChecklistGrayImage: Sendable {
         self.pixels = pixels
         self.width = width
         self.height = height
+    }
+
+    /// Renders a camera image into the scanner's top-left-origin grayscale buffer.
+    ///
+    /// `CGContext` bitmap storage starts at the image's lower edge. Drawing directly into the
+    /// buffer gives the scanner display-order rows; flipping the context here would turn the sheet
+    /// upside down and make none of the four printed markers line up.
+    public static func from(cgImage: CGImage, targetWidth: Int = 900) -> Self? {
+        guard targetWidth > 0, cgImage.width > 0, cgImage.height > 0 else { return nil }
+        let targetHeight = max(
+            1,
+            Int((Double(targetWidth) * Double(cgImage.height) / Double(cgImage.width)).rounded())
+        )
+        var pixels = [UInt8](repeating: 255, count: targetWidth * targetHeight)
+        let rendered = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: targetWidth,
+                height: targetHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: targetWidth,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            context.interpolationQuality = .high
+            context.draw(
+                cgImage,
+                in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight)
+            )
+            return true
+        }
+        return rendered ? Self(pixels: pixels, width: targetWidth, height: targetHeight) : nil
     }
 
     /// The mean brightness in a circle at a point given as a fraction of the image, with a radius
@@ -169,6 +202,33 @@ public struct PhysicalChecklistScanResult: Sendable {
     }
 }
 
+public struct PhysicalChecklistScanMatch: Sendable {
+    public var job: PhysicalChecklistJob?
+    public var result: PhysicalChecklistScanResult
+
+    public init(job: PhysicalChecklistJob?, result: PhysicalChecklistScanResult) {
+        self.job = job
+        self.result = result
+    }
+}
+
+/// One OCR text line in top-left normalized image coordinates.
+public struct PhysicalChecklistOCRLine: Sendable {
+    public var text: String
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+
+    public init(text: String, x: Double, y: Double, width: Double, height: Double) {
+        self.text = text
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+}
+
 /// Reads photographed checklist pages: the paper, orientation and corner markers are worked out
 /// from the sheet itself, then the print code proves it belongs to this job and the page bits name
 /// the page. Every paper and orientation is tried because a sheet can be printed on one paper size
@@ -178,34 +238,51 @@ public enum PhysicalChecklistScanAnalyzer {
         case ignored
         case mismatchedJob
         case unreadablePageID
-        case recognized(pageIndex: Int, detectedIDs: [String])
     }
-
-    private static let markerThreshold = 185.0
-    private static let bitThreshold = 170.0
-    private static let fillThreshold = 168.0
 
     public static func scan(
         images: [PhysicalChecklistGrayImage],
-        job: PhysicalChecklistJob
+        job: PhysicalChecklistJob,
+        requiresMatchingJobCode: Bool = true
     ) -> PhysicalChecklistScanResult {
-        let expectedJobCode = BoardPrintContract.jobCode(jobID: job.id)
         var detected = Set<String>()
         var recognized = Set<Int>()
         var mismatchedJobs = 0
         var unreadablePageIDs = 0
 
         for image in images {
-            switch analyze(image: image, job: job, expectedJobCode: expectedJobCode) {
-            case .ignored:
-                continue
-            case .mismatchedJob:
-                mismatchedJobs += 1
-            case .unreadablePageID:
-                unreadablePageIDs += 1
-            case let .recognized(pageIndex, detectedIDs):
-                recognized.insert(pageIndex)
-                detected.formUnion(detectedIDs)
+            var candidate = image
+            var fallback = Outcome.ignored
+            var recognizedImage = false
+            for _ in 0..<4 {
+                for paper in paperOrder(startingWith: job.paper) {
+                    var scopedJob = job
+                    scopedJob.paper = paper
+                    let result = PhysicalChecklistScanEngine.scan(
+                        images: [candidate],
+                        job: scopedJob,
+                        requiresMatchingJobCode: requiresMatchingJobCode
+                    )
+                    if result.recognizedPages > 0 {
+                        recognized.formUnion(0..<result.recognizedPages)
+                        detected.formUnion(result.detectedIDs)
+                        recognizedImage = true
+                        break
+                    }
+                    if result.unreadablePageIDs > 0 {
+                        fallback = .unreadablePageID
+                    } else if result.mismatchedJobs > 0, fallback == .ignored {
+                        fallback = .mismatchedJob
+                    }
+                }
+                if recognizedImage { break }
+                candidate = candidate.rotatedClockwise()
+            }
+            guard !recognizedImage else { continue }
+            switch fallback {
+            case .mismatchedJob: mismatchedJobs += 1
+            case .unreadablePageID: unreadablePageIDs += 1
+            case .ignored: break
             }
         }
 
@@ -217,117 +294,42 @@ public enum PhysicalChecklistScanAnalyzer {
         )
     }
 
-    private static func analyze(
-        image: PhysicalChecklistGrayImage,
-        job: PhysicalChecklistJob,
-        expectedJobCode: Int
-    ) -> Outcome {
-        var candidate = image
-        var sawPlausibleSheet = false
-        for _ in 0..<4 {
-            let page = candidate.croppedToPage()
-            for paper in paperOrder(startingWith: job.paper) {
-                let layout = layout(job: job, paper: paper)
-                guard markersPresent(page, layout: layout) else { continue }
-                sawPlausibleSheet = true
-                let observedCode = readJobCode(page, layout: layout, jobID: job.id)
-                if observedCode == expectedJobCode {
-                    return readPage(page, layout: layout)
-                }
+    /// Tries every compatible print manifest and lets the page's encoded print job select the
+    /// correct mapping. PWA boards can arrive under a local owner key or a different UUID casing;
+    /// the job code remains the authority on which cached manifest belongs to this sheet.
+    public static func match(
+        images: [PhysicalChecklistGrayImage],
+        jobs: [PhysicalChecklistJob]
+    ) -> PhysicalChecklistScanMatch {
+        var mismatchedJobs = 0
+        var unreadablePageIDs = 0
+        for job in jobs {
+            let result = scan(images: images, job: job)
+            if result.recognizedPages > 0 {
+                return PhysicalChecklistScanMatch(job: job, result: result)
             }
-            candidate = candidate.rotatedClockwise()
+            mismatchedJobs = max(mismatchedJobs, result.mismatchedJobs)
+            unreadablePageIDs = max(unreadablePageIDs, result.unreadablePageIDs)
         }
-        return sawPlausibleSheet ? .mismatchedJob : .ignored
+        return PhysicalChecklistScanMatch(
+            job: nil,
+            result: PhysicalChecklistScanResult(
+                detectedIDs: [],
+                recognizedPages: 0,
+                mismatchedJobs: mismatchedJobs,
+                unreadablePageIDs: unreadablePageIDs
+            )
+        )
     }
 
     private static func paperOrder(startingWith paper: PhysicalChecklistPaper) -> [PhysicalChecklistPaper] {
         [paper] + PhysicalChecklistPaper.allCases.filter { $0 != paper }
     }
 
-    private static func layout(job: PhysicalChecklistJob, paper: PhysicalChecklistPaper) -> PhysicalChecklistLayout {
-        var scoped = job
-        scoped.paper = paper
-        return PhysicalChecklistLayout.build(job: scoped)
-    }
-
-    private static func markersPresent(
-        _ image: PhysicalChecklistGrayImage,
-        layout: PhysicalChecklistLayout
-    ) -> Bool {
-        let size = layout.paper.sizeMM
-        let darkCount = layout.markerRectsMM().filter { rect in
-            markerDarkness(image, rect: rect, paper: size) < markerThreshold
-        }.count
-        return darkCount >= 3
-    }
-
-    /// The darkest sample across a marker's inner area. A finder marker can be light in its exact
-    /// centre (the PWA draws one that way) or only at its edge (the native one); a small grid finds
-    /// the dark frame either way, and also tolerates a marker a millimetre off its expected spot.
-    private static func markerDarkness(
-        _ image: PhysicalChecklistGrayImage,
-        rect: (x: Double, y: Double, width: Double, height: Double),
-        paper: (width: Double, height: Double)
-    ) -> Double {
-        var darkest = 255.0
-        for fx in [-0.3, 0.0, 0.3] {
-            for fy in [-0.3, 0.0, 0.3] {
-                let x = (rect.x + rect.width * (0.5 + fx)) / paper.width
-                let y = (rect.y + rect.height * (0.5 + fy)) / paper.height
-                darkest = min(darkest, image.mean(x: x, y: y, radius: 0.003))
-            }
-        }
-        return darkest
-    }
-
-    private static func readJobCode(
-        _ image: PhysicalChecklistGrayImage,
-        layout: PhysicalChecklistLayout,
-        jobID: String
-    ) -> Int {
-        let size = layout.paper.sizeMM
-        var code = 0
-        for (bit, center) in layout.jobCodeBitCentersMM(jobID: jobID).enumerated() {
-            let value = image.mean(x: center.x / size.width, y: center.y / size.height, radius: 0.0018)
-            if value < bitThreshold { code |= 1 << bit }
-        }
-        return code
-    }
-
-    private static func readPage(_ image: PhysicalChecklistGrayImage, layout: PhysicalChecklistLayout) -> Outcome {
-        guard layout.pages.count > 1 else {
-            return .recognized(pageIndex: 0, detectedIDs: filledItemIDs(image, layout: layout, pageIndex: 0))
-        }
-
-        let size = layout.paper.sizeMM
-        var encodedPage = 0
-        for (bit, center) in layout.pageIDBitCentersMM().enumerated() {
-            let value = image.mean(x: center.x / size.width, y: center.y / size.height, radius: 0.0025)
-            if value < bitThreshold { encodedPage |= 1 << bit }
-        }
-        let pageIndex = encodedPage - 1
-        guard layout.pages.indices.contains(pageIndex) else { return .unreadablePageID }
-        return .recognized(pageIndex: pageIndex, detectedIDs: filledItemIDs(image, layout: layout, pageIndex: pageIndex))
-    }
-
-    private static func filledItemIDs(
-        _ image: PhysicalChecklistGrayImage,
-        layout: PhysicalChecklistLayout,
-        pageIndex: Int
-    ) -> [String] {
-        let size = layout.paper.sizeMM
-        var detected: [String] = []
-        for row in layout.pages[pageIndex].rows {
-            guard case let .item(item) = row.kind, let center = row.circleCenterMM else { continue }
-            let darkness = image.mean(
-                x: center.x / size.width,
-                y: center.y / size.height,
-                radius: max(0.0015, layout.circleSizeMM / size.width * 0.12)
-            )
-            if darkness < fillThreshold {
-                detected.append(item.id)
-            }
-        }
-        return detected
+    /// A photographed bit can read wrong. Accept up to two bit differences, matching the PWA
+    /// scanner, instead of rejecting an otherwise matching sheet.
+    static func jobCodeMatches(_ observed: Int, _ expected: Int) -> Bool {
+        let differences = (observed ^ expected).nonzeroBitCount
+        return differences <= max(1, BoardPrintContract.jobCodeBits / 5)
     }
 }

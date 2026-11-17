@@ -31,6 +31,11 @@ test('pow: rejections yield the target difficulty they name', async () => {
   assert.equal(parseProofOfWorkRejection('blocked: difficulty 30'), null);
   assert.equal(parseProofOfWorkRejection(undefined), null);
 });
+test('standalone clients do not retry an unsupported pow target', async () => {
+  const { recordRelayProofOfWorkRejection } = await import('../dist/RelayAccess.js');
+  assert.equal(recordRelayProofOfWorkRejection('wss://relay.example', 'pow: required difficulty 20'), 20);
+  assert.equal(recordRelayProofOfWorkRejection('wss://relay.example', 'pow: required difficulty 33'), null);
+});
 test('mining verifies against the NIP-01 hash for non-ASCII content and a custom hasher', async () => {
   const { createHash } = await import('node:crypto');
   const key = generateSecretKey();

@@ -57,6 +57,12 @@ export type TaskifyBotUiAction = {
     menuId: string;
     providerSlug: string;
     modelId: string;
+} | {
+    kind: "session-resume";
+    menuId: string;
+    sessionId: string;
 };
+export type TaskifyBotMenuKind = "model" | "sessions";
+export declare function parseTaskifyBotMenuKind(tags: unknown[]): TaskifyBotMenuKind | null;
 export declare function buildTaskifyBotUiActionTag(action: TaskifyBotUiAction): string[];
 export declare function parseTaskifyBotUiAction(tags: unknown[] | null | undefined): TaskifyBotUiAction | null;

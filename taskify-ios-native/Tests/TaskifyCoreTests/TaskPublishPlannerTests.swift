@@ -10,6 +10,28 @@ final class TaskPublishPlannerTests: XCTestCase {
         return snapshot
     }
 
+    func testTaskAndBoardAreDurablyQueuedBeforeRelayNegotiation() async throws {
+        var state = snapshot()
+        let stamps = TaskPublishPlanner.stamp(&state, taskIDs: ["t1"], now: 1_000)
+        let board = try XCTUnwrap(stamps.first?.board)
+        let requests = try TaskPublishPlanner.publishRequests(
+            stamps: stamps,
+            boardPublishes: [(board, 1_001)]
+        )
+        XCTAssertEqual(requests.map(\.taskID), ["_board", "t1"])
+        XCTAssertTrue(requests.allSatisfy { !$0.event.tags.contains { $0.first == "nonce" } })
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("outbox.json")
+        let engine = TaskSyncEngine(outbox: NostrOutboxStore(fileURL: fileURL), networkingEnabled: false)
+        try await engine.enqueueForPublish(requests)
+        let restored = await NostrOutboxStore(fileURL: fileURL).allEntries()
+        XCTAssertEqual(Set(restored.map(\.event.id)), Set(requests.map(\.event.id)))
+        XCTAssertEqual(restored.first { $0.taskID == "t1" }?.event.createdAt, 1_000)
+        await engine.stop()
+    }
+
     func testAnEditInterruptedBeforeQueueingIsPublishedAfterRelaunch() throws {
         var saved = snapshot()
         saved.tasks[0].title = "Write the report"

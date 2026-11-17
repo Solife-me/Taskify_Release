@@ -72,6 +72,52 @@ final class TaskifyAddTaskIntentTests: XCTestCase {
         XCTAssertEqual(destination.columnID, "col")
     }
 
+    func testStableBoardAndColumnIDsResolveTheExactSection() throws {
+        let list = Board(
+            id: "work-board",
+            name: "Work",
+            kind: .list,
+            columns: [
+                BoardColumn(id: "later", name: "Later", order: 1),
+                BoardColumn(id: "now", name: "Now", order: 0),
+            ]
+        )
+        let snapshot = TaskifySnapshot(boards: [list], tasks: [], selectedBoardID: list.id)
+
+        let destination = try XCTUnwrap(TaskifyAddTaskDestination.resolve(
+            in: snapshot,
+            requestedBoardID: list.id,
+            requestedColumnID: "later",
+            now: fixedNow
+        ))
+
+        XCTAssertEqual(destination.boardID, list.id)
+        XCTAssertEqual(destination.columnID, "later")
+    }
+
+    func testStableBoardIDRejectsAColumnFromAnotherBoard() {
+        let work = Board(
+            id: "work",
+            name: "Work",
+            kind: .list,
+            columns: [BoardColumn(id: "work-column", name: "To Do", order: 0)]
+        )
+        let home = Board(
+            id: "home",
+            name: "Home",
+            kind: .list,
+            columns: [BoardColumn(id: "home-column", name: "To Do", order: 0)]
+        )
+        let snapshot = TaskifySnapshot(boards: [work, home], tasks: [], selectedBoardID: work.id)
+
+        XCTAssertNil(TaskifyAddTaskDestination.resolve(
+            in: snapshot,
+            requestedBoardID: work.id,
+            requestedColumnID: "home-column",
+            now: fixedNow
+        ))
+    }
+
     func testRequestedBoardNameFallsBackToSelectedBoardWhenNoMatchExists() throws {
         let selected = Board.week(id: "week-1", name: "Week")
         let snapshot = TaskifySnapshot(boards: [selected], tasks: [], selectedBoardID: selected.id)
@@ -238,6 +284,44 @@ final class TaskifyAddTaskIntentTests: XCTestCase {
         XCTAssertEqual(created.displayBoard.id, list.id)
     }
 
+    func testExternalAddTaskUsesStableSectionIDsInsteadOfDuplicateNames() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = Board(
+            id: "first-work",
+            name: "Work",
+            kind: .list,
+            columns: [BoardColumn(id: "first-todo", name: "To Do", order: 0)]
+        )
+        let second = Board(
+            id: "second-work",
+            name: "Work",
+            kind: .list,
+            columns: [
+                BoardColumn(id: "second-todo", name: "To Do", order: 0),
+                BoardColumn(id: "second-later", name: "Later", order: 1),
+            ]
+        )
+        try await store.save(TaskifySnapshot(
+            boards: [first, second],
+            tasks: [],
+            selectedBoardID: first.id
+        ))
+
+        let created = try await TaskifyExternalActions.addTask(
+            title: "Review proposal",
+            requestedBoardName: second.name,
+            requestedBoardID: second.id,
+            requestedColumnID: "second-later",
+            store: store,
+            publisher: .disabled,
+            now: fixedNow
+        )
+
+        XCTAssertEqual(created.task.boardID, second.id)
+        XCTAssertEqual(created.task.columnID, "second-later")
+    }
+
     func testExternalAddTaskParsesNaturalTitleAndPresentsItsCompoundParent() async throws {
         let (store, directory) = try temporaryStore()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -386,5 +470,206 @@ final class TaskifyAddTaskIntentTests: XCTestCase {
 
         XCTAssertEqual(request.title, "buy milk")
         XCTAssertNil(request.requestedBoardName)
+    }
+
+    func testSpokenBatchSplitsAListAndUsesOneNamedBoard() {
+        let request = TaskifySpokenTaskBatchParser.parse(
+            "Add standup, planning and retrospective to my Work Tasks board in Taskify",
+            visibleBoardNames: ["Personal Schedule", "Work Tasks"]
+        )
+
+        XCTAssertEqual(request.titles, ["standup", "planning", "retrospective"])
+        XCTAssertEqual(request.requestedBoardName, "Work Tasks")
+    }
+
+    func testSpokenBatchKeepsAQuotedConjunctionInOneTitle() {
+        let request = TaskifySpokenTaskBatchParser.parse(
+            "Add “Research and Development meeting” and staff meeting to Taskify",
+            visibleBoardNames: ["Work"]
+        )
+
+        XCTAssertEqual(request.titles, ["Research and Development meeting", "staff meeting"])
+    }
+
+    func testSpokenBatchCleansNumberedAndCommandPrefixes() {
+        let request = TaskifySpokenTaskBatchParser.parse(
+            "These tasks: first add team sync; second create customer review; finally make retrospective",
+            visibleBoardNames: []
+        )
+
+        XCTAssertEqual(request.titles, ["team sync", "customer review", "retrospective"])
+    }
+
+    func testSpokenBatchReportsItemsBeyondTheSafeLimit() {
+        let spoken = (1...22).map { "task \($0)" }.joined(separator: ", ")
+
+        let request = TaskifySpokenTaskBatchParser.parse(spoken, visibleBoardNames: [])
+
+        XCTAssertEqual(request.titles.count, TaskifySpokenTaskBatchParser.maximumTaskCount)
+        XCTAssertEqual(request.omittedCount, 2)
+    }
+
+    func testExternalBatchAddsEveryTaskWithOneDestination() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let personal = Board.week(id: "personal", name: "Personal Schedule")
+        let work = Board(
+            id: "work",
+            name: "Work Tasks",
+            kind: .list,
+            columns: [BoardColumn(id: "todo", name: "To Do", order: 0)]
+        )
+        try await store.save(TaskifySnapshot(
+            boards: [personal, work],
+            tasks: [],
+            selectedBoardID: personal.id
+        ))
+
+        let created = try await TaskifyExternalActions.addTasks(
+            spokenRequest: "Add standup, planning and retrospective to my Work Tasks board",
+            requestedBoardName: nil,
+            store: store,
+            settings: TaskifyDeviceTaskSettings(newTaskPosition: .top),
+            publisher: .disabled,
+            now: fixedNow
+        )
+
+        XCTAssertEqual(created.map(\.task.title), ["standup", "planning", "retrospective"])
+        XCTAssertEqual(Set(created.map(\.task.boardID)), [work.id])
+        XCTAssertEqual(Set(created.map(\.displayBoard.name)), ["Work Tasks"])
+        let saved = try await store.load(areas: [.tasks])
+        let batch = saved.tasks.filter { $0.boardID == work.id }
+        XCTAssertEqual(batch.count, 3)
+        XCTAssertTrue(batch.allSatisfy { $0.publishPending == true })
+        XCTAssertEqual(
+            batch.sorted { $0.order < $1.order }.map(\.title),
+            ["standup", "planning", "retrospective"]
+        )
+    }
+
+    func testExternalBatchRejectsOverflowWithoutSavingAnyTasks() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let board = Board(
+            name: "Work",
+            kind: .list,
+            columns: [BoardColumn(id: "todo", name: "To Do", order: 0)]
+        )
+        try await store.save(TaskifySnapshot(boards: [board], tasks: [], selectedBoardID: board.id))
+        let spoken = (1...21).map { "task \($0)" }.joined(separator: ", ")
+
+        do {
+            _ = try await TaskifyExternalActions.addTasks(
+                spokenRequest: spoken,
+                requestedBoardName: nil,
+                store: store,
+                publisher: .disabled,
+                now: fixedNow
+            )
+            XCTFail("Expected the oversized request to be rejected")
+        } catch {
+            XCTAssertEqual(error as? TaskifyExternalAddTaskError, .tooManyTasks)
+        }
+
+        let saved = try await store.load(areas: [.tasks])
+        XCTAssertTrue(saved.tasks.isEmpty)
+    }
+
+    func testExternalDeleteTasksDeletesAllTargetsAndMarksThemForPublication() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let board = Board(
+            id: "work",
+            name: "Work",
+            kind: .list,
+            columns: [BoardColumn(id: "todo", name: "To Do", order: 0)]
+        )
+        let first = TaskItem(id: "first", boardID: board.id, title: "First", columnID: "todo")
+        let second = TaskItem(id: "second", boardID: board.id, title: "Second", columnID: "todo")
+        try await store.save(TaskifySnapshot(
+            boards: [board],
+            tasks: [first, second],
+            selectedBoardID: board.id
+        ))
+
+        let count = try await TaskifyExternalActions.deleteTasks(
+            [first.id, second.id, first.id],
+            store: store,
+            publisher: .disabled,
+            preserveAttachmentReferences: true,
+            now: fixedNow
+        )
+
+        XCTAssertEqual(count, 2)
+        let saved = try await store.load(areas: [.tasks])
+        XCTAssertTrue(saved.tasks.allSatisfy(\.isDeleted))
+        XCTAssertTrue(saved.tasks.allSatisfy { $0.publishPending == true })
+    }
+
+    func testExternalReminderSchemaCreatesListAndSectionWithDurableHandoff() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await store.save(.empty)
+
+        let board = try await TaskifyExternalActions.createListBoard(
+            name: "  Launch Plan  ",
+            store: store,
+            now: fixedNow
+        )
+        defer { TaskifyExternalBoardMutationStore.removePending([board.id]) }
+        let created = try await TaskifyExternalActions.createListSection(
+            name: "  Waiting  ",
+            boardID: board.id,
+            store: store
+        )
+
+        XCTAssertEqual(board.name, "Launch Plan")
+        XCTAssertEqual(created.column.name, "Waiting")
+        XCTAssertTrue(TaskifyExternalBoardMutationStore.pendingIDs().contains(board.id))
+        let saved = try await store.load(areas: [.tasks])
+        XCTAssertEqual(saved.boards.first(where: { $0.id == board.id })?.columns.map(\.name), ["Items", "Waiting"])
+    }
+
+    func testExternalCalendarSchemaCreatesEventWithDurableHandoff() async throws {
+        let (store, directory) = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let board = Board(
+            id: "meetings",
+            name: "Meetings",
+            kind: .list,
+            columns: [BoardColumn(id: "upcoming", name: "Upcoming", order: 0)]
+        )
+        try await store.save(TaskifySnapshot(boards: [board], tasks: [], selectedBoardID: board.id))
+        let end = fixedNow.addingTimeInterval(30 * 60)
+
+        let created = try await TaskifyExternalActions.createCalendarEvent(
+            title: "  Teams planning  ",
+            startDate: fixedNow,
+            endDate: end,
+            isAllDay: false,
+            boardID: board.id,
+            details: "Agenda",
+            location: "Microsoft Teams",
+            store: store
+        )
+        defer { TaskifyExternalCalendarMutationStore.removePending([created.event.id]) }
+
+        XCTAssertEqual(created.event.title, "Teams planning")
+        XCTAssertEqual(created.event.boardID, board.id)
+        XCTAssertEqual(created.event.columnID, "upcoming")
+        XCTAssertEqual(
+            try XCTUnwrap(created.event.startDate).timeIntervalSince1970,
+            fixedNow.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(created.event.endDate).timeIntervalSince1970,
+            end.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(created.event.locations, ["Microsoft Teams"])
+        XCTAssertTrue(TaskifyExternalCalendarMutationStore.pendingIDs().contains(created.event.id))
+        let saved = try await store.readTaskifyEventsWrittenElsewhere()
+        XCTAssertEqual(saved.first(where: { $0.id == created.event.id }), created.event)
     }
 }

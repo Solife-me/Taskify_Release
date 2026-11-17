@@ -131,12 +131,18 @@ public struct NostrEvent: Codable, Equatable, Hashable, Sendable {
         tags: [[String]],
         content: String
     ) throws -> String {
-        let canonical: [Any] = [0, publicKey.lowercased(), createdAt, kind, tags, content]
-        guard JSONSerialization.isValidJSONObject(canonical) else { throw NostrEventError.invalidEvent }
-        let data = try JSONSerialization.data(
-            withJSONObject: canonical,
-            options: [.withoutEscapingSlashes]
-        )
-        return Data(SHA256.hash(data: data)).hexString
+        // Mining calls this once per nonce (about 2^difficulty times). JSONSerialization creates
+        // autoreleased Foundation objects, and a detached task's pool does not drain inside that
+        // loop, so a launch-time re-mine could accumulate enough to abort on a failed allocation.
+        // Drain per call: the returned string is Swift-owned and survives the pool.
+        try autoreleasepool {
+            let canonical: [Any] = [0, publicKey.lowercased(), createdAt, kind, tags, content]
+            guard JSONSerialization.isValidJSONObject(canonical) else { throw NostrEventError.invalidEvent }
+            let data = try JSONSerialization.data(
+                withJSONObject: canonical,
+                options: [.withoutEscapingSlashes]
+            )
+            return Data(SHA256.hash(data: data)).hexString
+        }
     }
 }

@@ -75,16 +75,36 @@ public actor JSONTaskStore {
     }
 
     public func load(areas: Set<TaskifyStoreArea> = Set(TaskifyStoreArea.allCases)) throws -> TaskifySnapshot {
-        try loadWithRepairStatus(areas: areas).snapshot
+        try loadWithRepairStatus(areas: areas, materializeAttachments: true).snapshot
+    }
+
+    /// Loads a snapshot that will be changed and saved without reading large attachment files
+    /// into memory. Existing attachment values remain `taskify-file:` references and survive a
+    /// later `save`; callers must not present or publish those reference values themselves.
+    ///
+    /// App Intents use this path because adding a title does not inspect existing photos or
+    /// documents. A normal `load(areas:)` could otherwise materialize hundreds of megabytes in
+    /// Siri's short-lived process and cause iOS to terminate Taskify for memory pressure.
+    public func loadPreservingAttachmentReferences(
+        areas: Set<TaskifyStoreArea> = Set(TaskifyStoreArea.allCases)
+    ) throws -> TaskifySnapshot {
+        try loadWithRepairStatus(areas: areas, materializeAttachments: false).snapshot
     }
 
     /// Loads `areas`; the others come back empty and are not written by later saves.
     public func loadWithRepairStatus(
         areas: Set<TaskifyStoreArea> = Set(TaskifyStoreArea.allCases)
     ) throws -> LoadResult {
+        try loadWithRepairStatus(areas: areas, materializeAttachments: true)
+    }
+
+    private func loadWithRepairStatus(
+        areas requestedAreas: Set<TaskifyStoreArea>,
+        materializeAttachments: Bool
+    ) throws -> LoadResult {
         var loaded: TaskifySnapshotAreas
         // The legacy file holds every area, so a load of it covers them all.
-        var areas = areas
+        var areas = requestedAreas
         if isSplit {
             loaded = TaskifySnapshotAreas(.empty)
             let decoder = JSONDecoder()
@@ -96,7 +116,9 @@ public actor JSONTaskStore {
                 case .inbox: loaded.inbox = try decoder.decode(TaskifyInboxArea.self, from: data)
                 }
             }
-            loaded.mapAttachmentValues { attachments.inline($0) }
+            if materializeAttachments {
+                loaded.mapAttachmentValues { attachments.inline($0) }
+            }
         } else if let data = FileManager.default.contents(atPath: legacyURL.path) {
             loaded = TaskifySnapshotAreas(try JSONDecoder().decode(TaskifySnapshot.self, from: data))
             areas = Set(TaskifyStoreArea.allCases)
@@ -151,6 +173,30 @@ public actor JSONTaskStore {
         }
         guard let data = FileManager.default.contents(atPath: legacyURL.path) else { return [] }
         return try JSONDecoder().decode(TaskifySnapshot.self, from: data).tasks
+    }
+
+    /// Boards on disk for importing a list/section created by an App Intent while the app is
+    /// already alive. The pending-board handoff identifies the exact records to merge, so normal
+    /// in-app edits are never replaced wholesale.
+    public func readBoardsWrittenElsewhere() throws -> [Board] {
+        if isSplit {
+            guard let data = FileManager.default.contents(atPath: areaURL(.tasks).path) else { return [] }
+            return try JSONDecoder().decode(TaskifyTasksArea.self, from: data).boards
+        }
+        guard let data = FileManager.default.contents(atPath: legacyURL.path) else { return [] }
+        return try JSONDecoder().decode(TaskifySnapshot.self, from: data).boards
+    }
+
+    /// Taskify calendar events on disk for importing the exact records an App Intent created.
+    /// The pending-event handoff only identifies new metadata-only records, so file-backed
+    /// attachments do not need to be materialized in the app-intent or merge path.
+    public func readTaskifyEventsWrittenElsewhere() throws -> [TaskifyEvent] {
+        if isSplit {
+            guard let data = FileManager.default.contents(atPath: areaURL(.tasks).path) else { return [] }
+            return try JSONDecoder().decode(TaskifyTasksArea.self, from: data).taskifyEvents ?? []
+        }
+        guard let data = FileManager.default.contents(atPath: legacyURL.path) else { return [] }
+        return try JSONDecoder().decode(TaskifySnapshot.self, from: data).taskifyEvents ?? []
     }
 
     /// Writes the areas that changed since this store last read or wrote them, and returns them.

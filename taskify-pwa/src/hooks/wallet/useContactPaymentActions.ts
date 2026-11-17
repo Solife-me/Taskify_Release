@@ -1,4 +1,5 @@
 // @ts-nocheck
+import type { EventSigner } from "taskify-runtime-nostr";
 import { useCallback } from "react";
 import { nip19, nip44 } from "nostr-tools";
 import {
@@ -141,7 +142,7 @@ export function useContactPaymentActions({
   readNostrIdentity: () => { identity: any; reason?: string };
   resolveNip17Relays: (recipientHex: string, relays: string[]) => Promise<string[]>;
   ensureNostrPool: () => any;
-  safePublish: (pool: any, relays: string[], event: any) => Promise<void>;
+  safePublish: (pool: any, relays: string[], event: any, signer?: EventSigner) => Promise<void>;
   publishNip17Giftwraps: (opts: any) => Promise<void>;
   defaultNostrRelays: string[];
 }) {
@@ -433,7 +434,7 @@ export function useContactPaymentActions({
           throw new Error("No relays available for NIP-17 inbox");
         }
         const pool = ensureNostrPool();
-        const publish = (event: any) => safePublish(pool, publishRelays, event);
+        const publish = (event: any, signer: EventSigner) => safePublish(pool, publishRelays, event, signer);
         await publishNip17Giftwraps({
           relays: publishRelays,
           content: dmPlain,

@@ -189,6 +189,7 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             let source = model.snapshot
             let calendar = model.watchDataCalendar
             let accent = TaskifyTheme.watchAccent
+            let accountPublicKey = model.identityPublicKey
             let watchSnapshot = await Task.detached(priority: .utility) {
                 let taskSnapshot = source.watchData(calendar: calendar)
                 return TaskifyWatchSnapshot(
@@ -198,10 +199,12 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                     selectedBoardID: taskSnapshot.selectedBoardID,
                     generatedAt: taskSnapshot.generatedAt,
                     acknowledgedCommandIDs: taskSnapshot.acknowledgedCommandIDs,
-                    accent: accent
+                    accent: accent,
+                    accountPublicKey: accountPublicKey.isEmpty ? nil : accountPublicKey,
+                    tasksTruncated: taskSnapshot.tasksTruncated
                 )
             }.value
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.model === model, model.identityPublicKey == accountPublicKey else { return }
             self.sendSnapshot(watchSnapshot)
         }
     }
@@ -237,6 +240,8 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     @MainActor
     private func accept(_ command: TaskifyWatchCommand) async throws -> TaskifyWatchCommandReceipt {
         guard let model else { throw TaskifyWatchBridgeError.modelUnavailable }
+        let accountPublicKey = model.identityPublicKey
+        guard command.matchesAccount(accountPublicKey) else { throw TaskifyWatchBridgeError.receiptMismatch }
 
         if acknowledgedCommandIDs().contains(command.id) {
             return TaskifyWatchCommandReceipt(
@@ -343,6 +348,9 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
                 boardID: boardID,
                 using: model
             )
+            guard self.model === model, model.identityPublicKey == accountPublicKey else {
+                throw TaskifyWatchBridgeError.receiptMismatch
+            }
             guard model.addTasksFromVoice(
                 finalTasks,
                 defaultBoardID: boardID,
@@ -450,7 +458,9 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
             generatedAt: snapshot.generatedAt,
             acknowledgedCommandIDs: acknowledgedCommandIDs(),
             chatProjection: snapshot.chatProjection,
-            accent: snapshot.accent
+            accent: snapshot.accent,
+            accountPublicKey: snapshot.accountPublicKey,
+            tasksTruncated: snapshot.tasksTruncated
         )
     }
 
@@ -587,6 +597,26 @@ extension TaskifyWatchBridge: WCSessionDelegate {
                     through: readUpdate.timestamp
                 )
                 replyHandler([:])
+            }
+            return
+        }
+        if let requestedPeer = message[TaskifyWatchTransfer.botCommandsPeerKey] as? String,
+           let peer = NostrPublicKey.parse(requestedPeer)?.hexString {
+            Task { @MainActor [weak self] in
+                guard let model = self?.model else {
+                    replyHandler([:])
+                    return
+                }
+                await model.refreshBotCommands(publicKey: peer)
+                guard let commands = model.botCommands(publicKey: peer),
+                      let data = try? JSONEncoder().encode(commands) else {
+                    replyHandler([:])
+                    return
+                }
+                replyHandler([
+                    TaskifyWatchTransfer.botCommandsPeerKey: peer,
+                    TaskifyWatchTransfer.botCommandsDataKey: data,
+                ])
             }
             return
         }

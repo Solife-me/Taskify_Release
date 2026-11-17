@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { nip04, nip44 } from "nostr-tools";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { nip17MessageRecipients, openNip17GiftWrap } from "taskify-core";
-import { nip17Crypto } from "taskify-runtime-nostr";
+import { nip17Crypto, type EventSigner } from "taskify-runtime-nostr";
 import { LocalKeySigner } from "../../identity/signer";
 import { normalizeNostrPubkey } from "../../lib/nostr";
 import { idbKeyValue } from "../../storage/idbKeyValue";
@@ -103,8 +103,8 @@ export function useNostrSession({
   }, []);
 
   const safePublish = useCallback(
-    async (pool: SessionPool, relays: string[], event: NostrEvent) => {
-      const result = pool.publish(relays, event);
+    async (pool: SessionPool, relays: string[], event: NostrEvent, signer?: EventSigner) => {
+      const result = pool.publish(relays, event, { proofOfWorkSigner: signer });
       try {
         await Promise.resolve(result);
       } catch (err) {

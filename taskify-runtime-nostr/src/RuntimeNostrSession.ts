@@ -1,10 +1,10 @@
 import NDK, { NDKEvent, NDKRelaySet, NDKRelayStatus, type NDKFilter, type NDKRelay, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { finalizeEvent, verifyEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
-import { applyProofOfWork, countLeadingZeroBits, mineEventTemplate, mineEventTemplateFor, type ProofOfWorkHashFactory, type ProofOfWorkOptions } from "./ProofOfWork.js";
+import { applyProofOfWork, mineEventTemplate, mineEventTemplateFor, type ProofOfWorkHashFactory, type ProofOfWorkOptions } from "./ProofOfWork.js";
 import { createRelayAuthPolicy, type RelayAuthOutcome } from "./RelayAuth.js";
 import { CursorStore } from "./CursorStore.js";
 import { SubscriptionManager, type ManagedSubscription, type SubscribeOptions } from "./SubscriptionManager.js";
-import { PublishCoordinator, type PublishOptions, type PublishResult } from "./PublishCoordinator.js";
+import { PublishCoordinator, type PublishCoordinatorOptions, type PublishOptions, type PublishResult } from "./PublishCoordinator.js";
 import type { RelayPublishBudget } from "./RelayPublishBudget.js";
 import { BoardKeyManager } from "./boardKeys.js";
 import { EventCache } from "./EventCache.js";
@@ -75,6 +75,8 @@ export type RuntimeNostrSessionDeps<TWalletClient> = {
     resolveRelaySet: (relayUrls?: string[]) => Promise<NDKRelaySet | undefined>;
   }) => TWalletClient;
   outboxStore?: NostrOutboxStore;
+  returnOnFirstAcknowledgement?: boolean;
+  recoverProofOfWorkSigner?: PublishCoordinatorOptions["recoverProofOfWorkSigner"];
   /** Shared per-relay publish pacing. Short-lived clients may supply a persisted budget. */
   publishBudget?: RelayPublishBudget | false;
   isDev?: boolean;
@@ -130,7 +132,11 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     const relayResolver = this.buildRelaySet.bind(this);
     this.publisher = new PublishCoordinator(this.ndk, relayResolver, this.cache, {
       outboxStore: deps.outboxStore,
+      recoverProofOfWorkSigner: deps.recoverProofOfWorkSigner,
+      returnOnFirstAcknowledgement: deps.returnOnFirstAcknowledgement,
       publishBudget: deps.publishBudget,
+      knownProofOfWorkDifficulty: (relay) => this.knownProofOfWorkDifficulty([relay]),
+      onMine: this.proofOfWork.onMine,
       resolveProofOfWorkDifficulty: this.resolveProofOfWorkDifficulty.bind(this),
       proofOfWork: this.miningOptions(),
       onProofOfWorkRequired: (relayUrl, difficulty) => {
@@ -261,6 +267,10 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
   private async resolveProofOfWorkDifficulty(relayUrls: string[]): Promise<number> {
     const relays = normalizeRelayUrls(relayUrls);
     await Promise.all(relays.map((relay) => this.fetchRelayInfo(relay)));
+    return this.knownProofOfWorkDifficulty(relays);
+  }
+
+  private knownProofOfWorkDifficulty(relays: string[]): number {
     const required = this.relayInfoCache.getLimits(relays).minPowDifficulty ?? 0;
     const floor = Number.isInteger(this.proofOfWork.minDifficulty) ? Math.max(0, this.proofOfWork.minDifficulty!) : 0;
     return Math.max(required, floor);
@@ -331,13 +341,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     };
   }
 
-  /**
-   * Signs (mining NIP-13 proof of work where relays ask for it) and publishes an event. When a
-   * relay refuses it for too little work and names its target, the event is mined again to that
-   * target and resent once: replaceable events go to every relay with a newer timestamp so the
-   * stronger copy wins everywhere; other events go only to the relays that refused them.
-   * `event` is updated in place to the copy that was last published.
-   */
+  /** Signs the original in place. Relay-specific proof of work keeps the same timestamp. */
   async publishSigned(
     event: NDKEvent,
     signer: NDKSigner,
@@ -345,30 +349,7 @@ export class RuntimeNostrSession<TWalletClient = unknown> {
     options?: Omit<PublishOptions, "relayUrls" | "signer">,
   ): Promise<PublishResult> {
     this.assertOpen("publishSigned");
-    const relays = normalizeRelayUrls(relayUrls);
-    await this.prepareNDKEvent(event, signer, relays);
-    let result: PublishResult | undefined;
-    let failure: unknown = null;
-    try {
-      result = await this.publishRaw(event.rawEvent() as NostrEvent, { ...options, relayUrls: relays });
-    } catch (error) {
-      failure = error;
-    }
-    const achieved = /^[0-9a-f]{64}$/i.test(event.id || "") ? countLeadingZeroBits(event.id) : 0;
-    const shortfall = relays.filter((relay) => (this.relayInfoCache.getLimits([relay]).minPowDifficulty ?? 0) > achieved);
-    if (!shortfall.length) {
-      if (failure) throw failure;
-      return result!;
-    }
-
-    const replaceable = event.isReplaceable();
-    const targets = replaceable ? relays : shortfall;
-    event.tags = event.tags.filter((tag) => tag[0] !== "nonce");
-    event.sig = undefined;
-    event.id = "";
-    if (replaceable) event.created_at = Math.max(Math.floor(Date.now() / 1000), (event.created_at ?? 0) + 1);
-    await this.prepareNDKEvent(event, signer, targets);
-    return this.publishRaw(event.rawEvent() as NostrEvent, { ...options, relayUrls: targets, skipIfIdentical: false });
+    return this.publisher.publish(event, { ...options, signer, relayUrls });
   }
 
   createEvent(event?: NostrEvent): NDKEvent {

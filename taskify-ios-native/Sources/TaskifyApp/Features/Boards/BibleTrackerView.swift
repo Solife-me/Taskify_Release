@@ -1,6 +1,8 @@
+import CoreImage
 import SwiftUI
 import TaskifyCore
 import UIKit
+import Vision
 import VisionKit
 
 private enum BibleTrackerDateFormatting {
@@ -951,30 +953,72 @@ struct PhysicalChecklistSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var job: PhysicalChecklistJob
-    @State private var showingScanner = false
+    private enum CaptureMode: String, Identifiable {
+        case document, photo
+
+        var id: String { rawValue }
+    }
+
+    @State private var captureMode: CaptureMode?
+    @State private var analyzingScan = false
     @State private var sharePayload: PhysicalChecklistSharePayload?
     @State private var scanReview = PhysicalChecklistScanReview()
     @State private var scanMessage: String?
     @State private var scanJob: PhysicalChecklistJob?
     @State private var preparingPhotos = false
 
+    private let scanCandidates: [PhysicalChecklistJob]
+    private let scanCatalog: PhysicalChecklistJob?
     let onApply: ([String]) -> Void
 
     init(
         job: PhysicalChecklistJob,
         startWithScanner: Bool = false,
+        scanCatalog: PhysicalChecklistJob? = nil,
         onApply: @escaping ([String]) -> Void
     ) {
         _job = State(initialValue: job)
         let storedJob = PhysicalChecklistJobStore.load(ownerID: job.ownerID)
-        _showingScanner = State(
-            initialValue: startWithScanner && VNDocumentCameraViewController.isSupported
-        )
+        let candidates = Self.scanCandidates(for: job, storedJob: storedJob)
+        let initialMode: CaptureMode? = VNDocumentCameraViewController.isSupported
+            ? .document : (UIImagePickerController.isSourceTypeAvailable(.camera) ? .photo : nil)
+        _captureMode = State(initialValue: startWithScanner ? initialMode : nil)
         _preparingPhotos = State(
             initialValue: job.items.contains { !$0.photoSources.isEmpty && $0.photos.isEmpty }
         )
-        _scanJob = State(initialValue: startWithScanner ? (storedJob ?? job) : nil)
+        scanCandidates = startWithScanner ? candidates : []
+        self.scanCatalog = scanCatalog
         self.onApply = onApply
+    }
+
+    private static func scanCandidates(
+        for job: PhysicalChecklistJob,
+        storedJob: PhysicalChecklistJob?
+    ) -> [PhysicalChecklistJob] {
+        let ownerID = job.ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let boardTitle = job.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let related = PhysicalChecklistJobStore.loadAll().values.filter { candidate in
+            let candidateOwner = candidate.ownerID
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let candidateTitle = candidate.title
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return candidateOwner == ownerID
+                || candidateTitle == boardTitle
+                || candidateTitle.hasPrefix("\(boardTitle) –")
+        }
+        .sorted { lhs, rhs in
+            let lhsExact = lhs.ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == ownerID
+            let rhsExact = rhs.ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == ownerID
+            if lhsExact != rhsExact { return lhsExact }
+            return lhs.createdAt > rhs.createdAt
+        }
+        var result = related
+        if let storedJob, !result.contains(where: { $0.id == storedJob.id }) {
+            result.insert(storedJob, at: 0)
+        }
+        return result
     }
 
     private var reviewedItems: [PhysicalChecklistItem] {
@@ -994,7 +1038,7 @@ struct PhysicalChecklistSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Physical checklist", systemImage: "checklist")
                             .font(.headline)
-                        Text("Print the checklist, fill its circles with a dark pen, then scan it here. Scans stay on this device.")
+                        Text("Print the checklist, mark its circles with a fill, check, or X, then scan it here. Scans stay on this device.")
                             .font(.subheadline)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                     }
@@ -1033,6 +1077,27 @@ struct PhysicalChecklistSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(TaskifyTheme.secondaryText)
                         }
+                    }
+
+                    if scanCatalog != nil {
+                        HStack {
+                            if VNDocumentCameraViewController.isSupported {
+                                Button("Scan checklist", systemImage: "document.viewfinder") {
+                                    captureMode = .document
+                                }
+                            }
+                            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                                Button("Take photo", systemImage: "camera") {
+                                    captureMode = .photo
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(analyzingScan)
+                    }
+
+                    if analyzingScan {
+                        ProgressView("Reading checklist…")
                     }
 
                     if let scanMessage {
@@ -1129,28 +1194,49 @@ struct PhysicalChecklistSheet: View {
         .sheet(item: $sharePayload) { payload in
             PhysicalChecklistActivityView(items: [payload.url])
         }
-        .fullScreenCover(isPresented: $showingScanner) {
-            PhysicalChecklistDocumentScanner { images in
-                showingScanner = false
-                guard let scanJob else { return }
-                let grayImages = images.compactMap(physicalChecklistGrayImage)
-                let result = PhysicalChecklistScanAnalyzer.scan(images: grayImages, job: scanJob)
-                if result.mismatchedJobs > 0 {
-                    scanMessage = "This sheet belongs to a different print or board. Reprint the current checklist before scanning."
-                } else if result.unreadablePageIDs > 0 {
-                    scanMessage = "The page number could not be read. Keep the complete header visible and scan that page again."
-                } else if result.recognizedPages == 0 {
-                    scanMessage = "No Taskify checklist page was recognized. Keep the whole page visible and try again in even light."
-                } else {
-                    scanReview.merge(detectedIDs: result.detectedIDs, items: scanJob.items)
-                    if result.detectedIDs.isEmpty {
-                        scanMessage = "The page was recognized, but no newly filled circles were found."
-                    } else {
-                        scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
-                    }
+        .fullScreenCover(item: $captureMode) { mode in
+            Group {
+                switch mode {
+                case .document:
+                    PhysicalChecklistDocumentScanner(onFinish: readScan)
+                case .photo:
+                    TaskAttachmentCameraPicker(
+                        onCapture: { readScan([$0]) },
+                        onCancel: { captureMode = nil }
+                    )
                 }
             }
             .ignoresSafeArea()
+        }
+    }
+
+    private func readScan(_ images: [UIImage]) {
+        captureMode = nil
+        guard let catalog = scanCatalog else { return }
+        let pages = images.compactMap(PhysicalChecklistCapturedPage.init)
+        guard !pages.isEmpty else { return }
+        let candidates = scanCandidates
+
+        analyzingScan = true
+        scanReview = PhysicalChecklistScanReview()
+        scanMessage = nil
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                scanPhysicalChecklistPages(pages, catalog: catalog, manifests: candidates)
+            }.value
+            analyzingScan = false
+            guard result.recognizedPages > 0 else {
+                scanMessage = "No checklist for this board could be read. Keep the whole page visible, including its title and all four corners, and try again in even light."
+                return
+            }
+
+            scanJob = catalog
+            scanReview.merge(detectedIDs: result.detectedIDs, items: catalog.items)
+            if result.detectedIDs.isEmpty {
+                scanMessage = "No marked circles could be matched to tasks on this board."
+            } else {
+                scanMessage = "Found \(result.detectedIDs.count) completed mark\(result.detectedIDs.count == 1 ? "" : "s") on \(result.recognizedPages) page\(result.recognizedPages == 1 ? "" : "s")."
+            }
         }
     }
 
@@ -1191,6 +1277,7 @@ struct PhysicalChecklistSheet: View {
     }
 
     private func pdfURL() throws -> URL {
+        prepareNoteLayout()
         let data = PhysicalChecklistPDFRenderer.render(job: job)
         let safeTitle = job.title.replacingOccurrences(of: "/", with: "-")
         let url = FileManager.default.temporaryDirectory
@@ -1198,6 +1285,40 @@ struct PhysicalChecklistSheet: View {
         try data.write(to: url, options: .atomic)
         model.recordPhysicalChecklistJob(job)
         return url
+    }
+
+    /// Notes wrap below the title, so their line count depends on the chosen paper. Measure them
+    /// for the sheet about to print; the saved job keeps the counts the scanner needs.
+    private func prepareNoteLayout() {
+        var updated = job
+        let widthMM = noteTextWidthMM(for: updated.paper)
+        let font = UIFont(name: "Helvetica", size: 5.8) ?? UIFont.systemFont(ofSize: 5.8)
+        for index in updated.items.indices {
+            guard let note = updated.items[index].note, !note.isEmpty else { continue }
+            // Measure a little narrower so the browser's Helvetica wrapping also fits the row.
+            updated.items[index].noteLineCount = noteLineCount(note, widthMM: widthMM * 0.98, font: font)
+        }
+        job = updated
+    }
+
+    private func noteTextWidthMM(for paper: PhysicalChecklistPaper) -> Double {
+        let size = paper.sizeMM
+        let left = PhysicalChecklistLayout.marginMM
+            + (paper == .a6 ? BoardPrintContract.a6BindingMarginMM : 0)
+        let columnWidth = size.width - left - PhysicalChecklistLayout.marginMM
+        return max(1, columnWidth - PhysicalChecklistLayout.circleSizeMM - 2.4)
+    }
+
+    private func noteLineCount(_ note: String, widthMM: Double, font: UIFont) -> Int {
+        let width = max(1, widthMM * 72.0 / 25.4)
+        let bounds = (note as NSString).boundingRect(
+            with: CGSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        )
+        let lineHeight = max(1, font.ascender - font.descender + font.leading)
+        return max(1, Int((bounds.height / lineHeight).rounded(.up)))
     }
 
     private func reviewSelectionIcon(for item: PhysicalChecklistItem) -> String {
@@ -1293,7 +1414,7 @@ private enum PhysicalChecklistPDFRenderer {
                 .foregroundColor: UIColor.black,
             ]
         )
-        let subtitle = "Fill circles with a dark pen • Page \(page.index + 1) of \(layout.pages.count) • Print \(layout.layoutVersion)"
+        let subtitle = "Page \(page.index + 1) of \(layout.pages.count) • Layout \(layout.layoutVersion) • Print \(job.id.prefix(8).uppercased())"
         (subtitle as NSString).draw(
             in: rectMM(PhysicalChecklistLayout.marginMM, layout.headerTopMM + 7, size.width * 0.72, 5),
             withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.darkGray]
@@ -1354,13 +1475,36 @@ private enum PhysicalChecklistPDFRenderer {
                 let textX = center.x + side / 2 + (jobTextGap(for: layout))
                 let textWidth = max(1, row.xMM + row.widthMM - textX)
                 let titleHeight = 4.6
+                let titleFont = UIFont.systemFont(ofSize: layout.circleSizeMM < 4 ? 6.4 : 8.2)
+                let dueFont = UIFont.systemFont(ofSize: 6.6, weight: .semibold)
+                let dueWidthMM = (item.dueText.map {
+                    ($0 as NSString).size(withAttributes: [.font: dueFont]).width / pointsPerMM
+                } ?? 0)
+                let titleWidth = dueWidthMM > 0 ? max(1, textWidth - dueWidthMM - 2) : textWidth
                 (item.title as NSString).draw(
-                    in: rectMM(textX, row.yMM + (row.titleBandMM - titleHeight) / 2, textWidth, titleHeight),
+                    in: rectMM(textX, row.yMM + (row.titleBandMM - titleHeight) / 2, titleWidth, titleHeight),
                     withAttributes: [
-                        .font: UIFont.systemFont(ofSize: layout.circleSizeMM < 4 ? 6.4 : 8.2),
+                        .font: titleFont,
                         .foregroundColor: UIColor.black,
                     ]
                 )
+                if dueWidthMM > 0, let dueText = item.dueText {
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.alignment = .right
+                    (dueText as NSString).draw(
+                        in: rectMM(
+                            row.xMM + row.widthMM - dueWidthMM - 1,
+                            row.yMM + (row.titleBandMM - titleHeight) / 2,
+                            dueWidthMM + 1,
+                            titleHeight
+                        ),
+                        withAttributes: [
+                            .font: dueFont,
+                            .foregroundColor: UIColor(white: 0.2, alpha: 0.85),
+                            .paragraphStyle: paragraph,
+                        ]
+                    )
+                }
                 if layout.detailed {
                     drawDetailedContent(item: item, row: row, textX: textX, textWidth: textWidth)
                 }
@@ -1374,11 +1518,25 @@ private enum PhysicalChecklistPDFRenderer {
         textX: Double,
         textWidth: Double
     ) {
-        let font = UIFont.systemFont(ofSize: 5.8)
+        let font = UIFont(name: "Helvetica", size: 5.8) ?? UIFont.systemFont(ofSize: 5.8)
         let mutedColor = UIColor(white: 0.25, alpha: 0.72)
         var cursorY = row.yMM + row.titleBandMM
 
-        if let detail = item.detail, !detail.isEmpty {
+        if let note = item.note, !note.isEmpty {
+            let lines = max(1, item.noteLineCount)
+            let height = Double(lines) * PhysicalChecklistLayout.noteLineMM
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byWordWrapping
+            (note as NSString).draw(
+                in: rectMM(textX, cursorY, textWidth, height),
+                withAttributes: [
+                    .font: font,
+                    .foregroundColor: mutedColor,
+                    .paragraphStyle: paragraph,
+                ]
+            )
+            cursorY += height
+        } else if let detail = item.detail, !detail.isEmpty {
             (detail as NSString).draw(
                 in: rectMM(textX, cursorY + 0.7, textWidth, 3.0),
                 withAttributes: [.font: font, .foregroundColor: mutedColor]
@@ -1512,33 +1670,97 @@ private struct PhysicalChecklistDocumentScanner: UIViewControllerRepresentable {
     }
 }
 
-private func physicalChecklistGrayImage(_ source: UIImage) -> PhysicalChecklistGrayImage? {
-    let targetWidth = 900
-    let aspect = max(source.size.height / max(source.size.width, 1), 0.2)
-    let targetHeight = max(1, Int(Double(targetWidth) * aspect))
-    let renderer = UIGraphicsImageRenderer(size: CGSize(width: targetWidth, height: targetHeight))
-    let normalized = renderer.image { _ in
-        source.draw(in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+private struct PhysicalChecklistCapturedPage: Sendable {
+    let image: CGImage
+    let orientation: CGImagePropertyOrientation
+
+    init?(_ source: UIImage) {
+        guard let image = source.cgImage else { return nil }
+        self.image = image
+        switch source.imageOrientation {
+        case .up: orientation = .up
+        case .down: orientation = .down
+        case .left: orientation = .left
+        case .right: orientation = .right
+        case .upMirrored: orientation = .upMirrored
+        case .downMirrored: orientation = .downMirrored
+        case .leftMirrored: orientation = .leftMirrored
+        case .rightMirrored: orientation = .rightMirrored
+        @unknown default: orientation = .up
+        }
     }
-    guard let cgImage = normalized.cgImage else { return nil }
-    var pixels = [UInt8](repeating: 255, count: targetWidth * targetHeight)
-    let rendered = pixels.withUnsafeMutableBytes { buffer -> Bool in
-        guard let context = CGContext(
-            data: buffer.baseAddress,
-            width: targetWidth,
-            height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: targetWidth,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return false }
-        context.interpolationQuality = .high
-        // Bitmap contexts use a bottom-left origin while the checklist layout and UIKit use
-        // top-left coordinates. Normalize once here so every marker/row sample maps directly.
-        context.translateBy(x: 0, y: CGFloat(targetHeight))
-        context.scaleBy(x: 1, y: -1)
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-        return true
+
+    func grayImage(using context: CIContext) -> PhysicalChecklistGrayImage? {
+        let cgImage: CGImage
+        if orientation == .up {
+            cgImage = image
+        } else {
+            let oriented = CIImage(cgImage: image).oriented(orientation)
+            guard let rotated = context.createCGImage(oriented, from: oriented.extent) else { return nil }
+            cgImage = rotated
+        }
+        // Use the original pixels for OCR; bound the grayscale work for high-resolution photos.
+        let maximumEdge = 3200.0
+        let scale = min(1, maximumEdge / Double(max(cgImage.width, cgImage.height)))
+        return PhysicalChecklistGrayImage.from(cgImage: cgImage, targetWidth: max(1, Int(Double(cgImage.width) * scale)))
     }
-    return rendered ? PhysicalChecklistGrayImage(pixels: pixels, width: targetWidth, height: targetHeight) : nil
+
+    func readText() -> [PhysicalChecklistOCRLine] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.minimumTextHeight = 0.004
+        let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
+        try? handler.perform([request])
+        return (request.results ?? []).compactMap { observation -> PhysicalChecklistOCRLine? in
+            guard let candidate = observation.topCandidates(1).first,
+                  candidate.confidence >= 0.25 else { return nil }
+            let box = observation.boundingBox
+            return PhysicalChecklistOCRLine(
+                text: candidate.string,
+                x: box.minX,
+                y: 1 - box.maxY,
+                width: box.width,
+                height: box.height
+            )
+        }
+    }
+}
+
+private func scanPhysicalChecklistPages(
+    _ pages: [PhysicalChecklistCapturedPage],
+    catalog: PhysicalChecklistJob,
+    manifests: [PhysicalChecklistJob]
+) -> PhysicalChecklistScanResult {
+    let context = CIContext()
+    let liveIDs = Set(catalog.items.map(\.id))
+    var detected = Set<String>()
+    var recognizedPages = 0
+
+    for page in pages {
+        guard let image = page.grayImage(using: context) else { continue }
+        let lines = page.readText()
+        // A readable printed ID allows older task titles from a saved manifest to match,
+        // even if a task was renamed after printing. The circle still comes from the image.
+        let headerTokens = Set(lines.filter { $0.y < 0.20 }.flatMap { line in
+            line.text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        })
+        let matchingManifests = manifests.filter {
+            $0.id.count >= 8 && headerTokens.contains(String($0.id.prefix(8)).lowercased())
+        }
+        var pageCatalog = catalog
+        if matchingManifests.count == 1, let manifest = matchingManifests.first {
+            pageCatalog.title = manifest.title
+            pageCatalog.items = manifest.items
+        }
+        let result = PhysicalChecklistScanEngine.scanBoardPage(image: image, lines: lines, catalog: pageCatalog)
+        recognizedPages += result.recognizedPages
+        detected.formUnion(result.detectedIDs.filter { liveIDs.contains($0) })
+    }
+    return PhysicalChecklistScanResult(
+        detectedIDs: detected.sorted(),
+        recognizedPages: recognizedPages,
+        mismatchedJobs: 0,
+        unreadablePageIDs: 0
+    )
 }

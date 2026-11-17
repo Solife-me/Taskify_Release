@@ -1,7 +1,7 @@
 import type { NDKEvent, NDKSigner } from "@nostr-dev-kit/ndk";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { getEventHash, getPublicKey, type EventTemplate } from "nostr-tools";
+import { finalizeEvent, getEventHash, getPublicKey, verifyEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
 
 export class NostrProofOfWorkError extends Error {
   constructor(message: string) {
@@ -61,9 +61,10 @@ export function committedProofOfWorkDifficulty(tags: string[][]): number {
 export function parseProofOfWorkRejection(message: string | null | undefined): number | null {
   const text = (message || "").trim().toLowerCase();
   if (!text.startsWith("pow:")) return null;
-  const numbers = (text.match(/\d+/g) || []).map(Number).filter(n => Number.isInteger(n) && n > 0);
-  if (!numbers.length) return null;
-  return Math.max(...numbers);
+  const target = text.match(/\b(?:less\s+than|below|at\s+least|required|requires?|expected|minimum|target)(?:\s+(?:of|is|required|minimum|difficulty|bits?))*\s*[:=]?\s*(\d+)\b/)?.[1];
+  const numbers = text.match(/\d+/g) ?? [];
+  const difficulty = Number(target ?? (numbers.length === 1 ? numbers[0] : NaN));
+  return Number.isSafeInteger(difficulty) && difficulty > 0 ? difficulty : null;
 }
 
 const defaultHashFactory: ProofOfWorkHashFactory = (prefix, suffix) => {
@@ -150,6 +151,44 @@ export async function mineEventTemplateFor(
   options?: ProofOfWorkOptions,
 ): Promise<EventTemplate> {
   return mine(template, pubkey, difficulty, options);
+}
+
+export type EventSigner = {
+  pubkey: string;
+  sign: (template: EventTemplate) => Promise<NostrEvent>;
+  /** Sender-encrypted recovery material for one-time signing keys. */
+  sealedKey?: string;
+};
+
+export function localEventSigner(secretKey: Uint8Array): EventSigner {
+  return { pubkey: getPublicKey(secretKey), sign: async template => finalizeEvent(template, secretKey) };
+}
+
+export function satisfiesProofOfWork(event: NostrEvent, difficulty: number): boolean {
+  return countLeadingZeroBits(event.id) >= difficulty && committedProofOfWorkDifficulty(event.tags) >= difficulty;
+}
+
+let miningTail: Promise<unknown> = Promise.resolve();
+
+/** Derives a second signed event with the same author, timestamp and payload. */
+export async function signProofOfWorkVariant(
+  event: NostrEvent,
+  difficulty: number,
+  signer: EventSigner,
+  options?: ProofOfWorkOptions,
+): Promise<NostrEvent> {
+  if (signer.pubkey !== event.pubkey) throw new NostrProofOfWorkError("The event author must sign its proof-of-work variant.");
+  const mining = miningTail.then(() => mineEventTemplateFor({
+    kind: event.kind, created_at: event.created_at, tags: event.tags, content: event.content,
+  }, event.pubkey, difficulty, options));
+  miningTail = mining.catch(() => undefined);
+  const mined = await mining;
+  const signed = await signer.sign(mined);
+  if (signed.id !== getEventHash({ ...mined, pubkey: event.pubkey }) || signed.pubkey !== event.pubkey ||
+      signed.id !== getEventHash(signed) || !verifyEvent(signed)) {
+    throw new NostrProofOfWorkError("The signer changed the proof-of-work event or returned an invalid signature.");
+  }
+  return signed;
 }
 
 /** Signed events are immutable: callers must prepare proof of work before signing. */

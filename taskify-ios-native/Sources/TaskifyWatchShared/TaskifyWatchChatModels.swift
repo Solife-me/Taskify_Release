@@ -594,6 +594,7 @@ public struct TaskifyWatchChatMessage: Identifiable, Codable, Equatable, Sendabl
     public let createdAt: Int
     public let kind: TaskifyWatchChatMessageKind
     public let replyToRumorID: String?
+    public let botTags: [[String]]?
     public let reactionTargetRumorID: String?
     public let attachment: TaskifyWatchChatAttachment?
     public var deliveryState: TaskifyWatchChatDeliveryState?
@@ -609,6 +610,7 @@ public struct TaskifyWatchChatMessage: Identifiable, Codable, Equatable, Sendabl
         createdAt: Int,
         kind: TaskifyWatchChatMessageKind,
         replyToRumorID: String? = nil,
+        botTags: [[String]]? = nil,
         reactionTargetRumorID: String? = nil,
         attachment: TaskifyWatchChatAttachment? = nil,
         deliveryState: TaskifyWatchChatDeliveryState? = nil,
@@ -623,6 +625,7 @@ public struct TaskifyWatchChatMessage: Identifiable, Codable, Equatable, Sendabl
         self.createdAt = createdAt
         self.kind = kind
         self.replyToRumorID = replyToRumorID?.lowercased()
+        self.botTags = botTags
         self.reactionTargetRumorID = reactionTargetRumorID?.lowercased()
         self.attachment = attachment
         self.deliveryState = deliveryState
@@ -691,7 +694,8 @@ public struct TaskifyWatchOutboxWrap: Identifiable, Codable, Equatable, Sendable
     public var id: String { event.id }
     public let recipientPublicKey: String
     public var event: TaskifyWatchNostrEvent
-    public var proofOfWorkPrepared: Bool? = false
+    public var proofOfWorkEvent: TaskifyWatchNostrEvent?
+    public var sealedSigningKey: String?
     public var routingDecision: TaskifyWatchRelayDecision
     public var acknowledgements: [TaskifyWatchRelayAcknowledgement]
     public var attempts: Int
@@ -705,10 +709,12 @@ public struct TaskifyWatchOutboxWrap: Identifiable, Codable, Equatable, Sendable
         acknowledgements: [TaskifyWatchRelayAcknowledgement]? = nil,
         attempts: Int = 0,
         nextAttemptAt: Date = Date(),
-        lastSubmissionError: String? = nil
+        lastSubmissionError: String? = nil,
+        sealedSigningKey: String? = nil
     ) {
         self.recipientPublicKey = recipientPublicKey.lowercased()
         self.event = event
+        self.sealedSigningKey = sealedSigningKey
         self.routingDecision = routingDecision
         self.acknowledgements = acknowledgements ?? routingDecision.relayURLs.map {
             TaskifyWatchRelayAcknowledgement(relayURL: $0)

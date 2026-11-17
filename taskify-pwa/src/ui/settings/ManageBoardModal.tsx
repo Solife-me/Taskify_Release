@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { prepareRelayEvent } from "../../nostr/prepareRelayEvent";
+import { localEventSigner } from "taskify-runtime-nostr";
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Modal } from "../Modal";
 import { useToast } from "../../context/ToastContext";
@@ -183,17 +183,18 @@ export function ManageBoardModal({
         setStaleCleanupMessage("No stale events found.");
         return;
       }
+      const signer = localEventSigner(boardKeys.sk);
       const chunkSize = 50;
       for (let i = 0; i < staleIds.length; i += chunkSize) {
         const chunk = staleIds.slice(i, i + chunkSize);
         const tags = chunk.map((id) => ["e", id] as string[]);
-        const ev = await prepareRelayEvent({
+        const ev = await signer.sign({
           kind: 5,
           tags,
           content: "Clean up stale Taskify board events",
           created_at: Math.floor(Date.now() / 1000),
-        }, boardKeys.sk, relayList);
-        await pool.publishEvent(relayList, ev as unknown as NostrEvent);
+        });
+        await pool.publishEvent(relayList, ev, { proofOfWorkSigner: signer });
       }
       const skipped = uniqueEvents.size - authored.length;
       const base = `Requested deletion for ${staleIds.length} stale event${staleIds.length === 1 ? "" : "s"}.`;

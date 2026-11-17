@@ -2,6 +2,7 @@ import { TOTAL_BIBLE_CHAPTERS, type BibleTrackerState } from "../domains/scriptu
 import { buildBiblePrintLayout } from "../components/BibleTrackerPrintLayout";
 import {
   BOARD_PRINT_DETAIL_LINE_MM,
+  BOARD_PRINT_NOTE_LINE_MM,
   BOARD_PRINT_PHOTO_SIZE_MM,
   BOARD_PRINT_SUBTASK_LINE_MM,
   buildBoardPrintLayout,
@@ -164,6 +165,64 @@ async function canvasToJpegBytes(canvas: HTMLCanvasElement): Promise<Uint8Array>
   });
   const buffer = await blob.arrayBuffer();
   return new Uint8Array(buffer);
+}
+
+function drawWrappedPrintText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  top: number,
+  maxWidth: number,
+  lineHeight: number,
+  maxLines: number,
+): void {
+  let lineIndex = 0;
+  const drawLine = (line: string): boolean => {
+    if (lineIndex >= maxLines) return false;
+    ctx.fillText(line, x, top + lineHeight * (lineIndex + 0.5));
+    lineIndex += 1;
+    return true;
+  };
+
+  const paragraphs = text.replace(/\r\n?/g, "\n").split("\n");
+  for (const paragraph of paragraphs) {
+    if (!paragraph.trim()) {
+      if (!drawLine("")) return;
+      continue;
+    }
+    const words = paragraph.split(/\s+/);
+    let current = "";
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (ctx.measureText(candidate).width <= maxWidth) {
+        current = candidate;
+        continue;
+      }
+      if (current) {
+        if (!drawLine(current)) return;
+        current = "";
+      }
+      let rest = word;
+      while (ctx.measureText(rest).width > maxWidth && rest.length > 1) {
+        let low = 1;
+        let high = rest.length;
+        let fit = 1;
+        while (low <= high) {
+          const mid = Math.ceil((low + high) / 2);
+          if (ctx.measureText(rest.slice(0, mid)).width <= maxWidth) {
+            fit = mid;
+            low = mid + 1;
+          } else {
+            high = mid - 1;
+          }
+        }
+        if (!drawLine(rest.slice(0, fit))) return;
+        rest = rest.slice(fit);
+      }
+      current = rest;
+    }
+    if (!drawLine(current)) return;
+  }
 }
 
 function ellipsize(ctx: CanvasRenderingContext2D, value: string, maxWidthPx: number): string {
@@ -508,6 +567,7 @@ function renderBoardPrintPageImage(options: {
   const titleFontPx = ptToPx(8);
   const labelFontPx = ptToPx(7);
   const detailFontPx = ptToPx(5.8);
+  const dueFontPx = ptToPx(6.6);
 
   page.rows.forEach((row) => {
     if (row.kind === "header") {
@@ -557,8 +617,15 @@ function renderBoardPrintPageImage(options: {
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
 
+    let dueWidthPx = 0;
+    if (row.dueText) {
+      ctx.font = `600 ${dueFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+      dueWidthPx = ctx.measureText(row.dueText).width;
+    }
+    const titleMaxWidthPx = dueWidthPx > 0 ? maxWidthPx - dueWidthPx - ptToPx(2) : maxWidthPx;
+
     let cursorX = textX;
-    let remainingWidth = maxWidthPx;
+    let remainingWidth = titleMaxWidthPx;
     if (!hasGroupHeaders && row.label) {
       ctx.fillStyle = "rgba(16, 24, 40, 0.55)";
       ctx.font = `600 ${labelFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
@@ -567,13 +634,21 @@ function renderBoardPrintPageImage(options: {
       ctx.fillText(fittedLabel, cursorX, titleY);
       const labelWidth = ctx.measureText(fittedLabel).width;
       cursorX += labelWidth;
-      remainingWidth = Math.max(0, maxWidthPx - (cursorX - textX));
+      remainingWidth = Math.max(0, titleMaxWidthPx - (cursorX - textX));
     }
 
     ctx.fillStyle = "#101828";
     ctx.font = `500 ${titleFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
     const fittedTitle = ellipsize(ctx, row.title, remainingWidth);
     ctx.fillText(fittedTitle, cursorX, titleY);
+
+    if (row.dueText) {
+      ctx.textAlign = "right";
+      ctx.fillStyle = "rgba(16, 24, 40, 0.82)";
+      ctx.font = `600 ${dueFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+      ctx.fillText(row.dueText, textX + maxWidthPx, titleY);
+      ctx.textAlign = "left";
+    }
 
     ctx.fillStyle = "rgba(16, 24, 40, 0.62)";
     ctx.font = `500 ${detailFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
@@ -582,7 +657,14 @@ function renderBoardPrintPageImage(options: {
     }
 
     let cursorY = mmToPx(row.y + row.titleBandMm);
-    if (row.detailBelow && row.detail) {
+    if (row.note) {
+      const lines = Math.max(1, row.noteLineCount ?? 1);
+      const lineHeight = mmToPx(BOARD_PRINT_NOTE_LINE_MM);
+      ctx.fillStyle = "rgba(16, 24, 40, 0.72)";
+      ctx.font = `400 ${detailFontPx}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+      drawWrappedPrintText(ctx, row.note, textX, cursorY, maxWidthPx, lineHeight, lines);
+      cursorY += lines * lineHeight;
+    } else if (row.detailBelow && row.detail) {
       const lineHeight = mmToPx(BOARD_PRINT_DETAIL_LINE_MM);
       ctx.fillText(ellipsize(ctx, row.detail, maxWidthPx), textX, cursorY + lineHeight / 2);
       cursorY += lineHeight;

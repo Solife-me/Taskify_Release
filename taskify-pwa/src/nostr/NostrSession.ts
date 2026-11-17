@@ -1,5 +1,9 @@
 import {
   RuntimeNostrSession,
+  boardTagHash,
+  deriveBoardKeyPair,
+  localEventSigner,
+  type NostrOutboxPublishPayload,
   type ManagedSubscription,
   type SubscribeOptions,
   type PublishResult,
@@ -11,6 +15,28 @@ import { RelayHealthTracker } from "./RelayHealth";
 import { RelayAuthManager } from "./RelayAuth";
 import { WalletNostrClient } from "./WalletNostrClient";
 import { nostrOutboxStore } from "./NostrOutboxStore";
+
+import { hexToBytes } from "@noble/hashes/utils.js";
+import { currentIdentity } from "../identity/identity";
+import { boardsStore } from "../state/appStores";
+
+async function recoverProofOfWorkSigner({ event, proofOfWorkSealedKey }: NostrOutboxPublishPayload) {
+  const identity = currentIdentity();
+  if (identity?.pubkey === event.pubkey) return identity.signer;
+  if (identity && proofOfWorkSealedKey) {
+    const secret = await identity.signer.nip44Decrypt(identity.pubkey, proofOfWorkSealedKey);
+    const signer = localEventSigner(hexToBytes(secret));
+    if (signer.pubkey === event.pubkey) return signer;
+  }
+  const boardTag = event.tags.find(tag => tag[0] === "b")?.[1];
+  for (const board of boardsStore().get()) {
+    const id = board.nostr?.boardId;
+    if (!id || (boardTag && boardTagHash(id) !== boardTag)) continue;
+    const keys = deriveBoardKeyPair(id);
+    if (keys.pk === event.pubkey) return localEventSigner(keys.sk);
+  }
+  return undefined;
+}
 
 type PwaRuntimeSession = RuntimeNostrSession<WalletNostrClient>;
 export type NostrPublishOptions = NonNullable<Parameters<PwaRuntimeSession["publish"]>[1]>;
@@ -37,6 +63,8 @@ export class NostrSession {
         get: (relayUrl) => relayInfoCache.get(relayUrl),
         getAgeMs: (relayUrl) => relayInfoCache.getAgeMs(relayUrl),
         getLimits: (relayUrls) => relayInfoCache.getLimits(relayUrls),
+        recordProofOfWorkRequirement: (relayUrl, difficulty) =>
+          relayInfoCache.recordProofOfWorkRequirement(relayUrl, difficulty),
       };
       const relayHealthAdapter: RelayHealthLike = {
         canAttempt: (relayUrl) => relayHealth.canAttempt(relayUrl),
@@ -58,6 +86,8 @@ export class NostrSession {
         createAuthManager: (ndk) => new RelayAuthManager(ndk),
         createWalletClient: ({ publisher, subscriptions }) => new WalletNostrClient(publisher, subscriptions),
         outboxStore: nostrOutboxStore,
+        recoverProofOfWorkSigner,
+        returnOnFirstAcknowledgement: true,
         isDev: Boolean((import.meta as any)?.env?.DEV),
       });
       this.installBrowserDrainHooks();

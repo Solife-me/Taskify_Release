@@ -378,63 +378,20 @@ struct UsHolidayCard: View {
 
 struct UpcomingTaskList: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.taskifyOverPhoto) private var overPhoto
     let tasks: [TaskItem]
-    let boardGrouping: UpcomingBoardGrouping
-
-    private var sections: [UpcomingBoardSection] {
-        var seen = Set<String>()
-        let boardIDs = tasks.compactMap { task in
-            seen.insert(task.boardID).inserted ? task.boardID : nil
-        }
-        return boardIDs.map { boardID in
-            UpcomingBoardSection(
-                boardID: boardID,
-                tasks: tasks.filter { $0.boardID == boardID }
-            )
-        }
-    }
 
     var body: some View {
         // The checkbox lives in TaskCardView; without this its press feedback (and the
         // touch-down completion) waits out the enclosing scroll view's touch delay.
         ImmediateScrollTouchDelivery().frame(width: 0, height: 0)
-        if boardGrouping == .grouped {
-            ForEach(sections) { section in
-                Text(model.board(withID: section.boardID)?.name ?? "Board")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(TaskifyTheme.accent)
-                    .textCase(.uppercase)
-                    .tracking(0.7)
-                    .taskifyLegibilityShadow(overPhoto)
-                    .padding(.top, 2)
-
-                ForEach(section.tasks) { task in
-                    TaskCardView(task: task, context: model.cardContext(for: task)).equatable()
-                }
-            }
-        } else {
-            ForEach(tasks) { task in
-                VStack(alignment: .leading, spacing: 4) {
-                    // This label has no card under it at all — it sits on the wallpaper. Tertiary
-                    // grey is legible on the standard gradient and invisible on a bright sky, so
-                    // step it up one level rather than darkening what is behind it.
-                    Text(model.board(withID: task.boardID)?.name ?? "Board")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(overPhoto ? TaskifyTheme.secondaryText : TaskifyTheme.tertiaryText)
-                        .taskifyLegibilityShadow(overPhoto)
-                        .padding(.leading, 10)
-                    TaskCardView(task: task, context: model.cardContext(for: task)).equatable()
-                }
-            }
+        ForEach(tasks) { task in
+            TaskCardView(
+                task: task,
+                context: model.cardContext(for: task, includesBoardName: true)
+            )
+            .equatable()
         }
     }
-}
-
-struct UpcomingBoardSection: Identifiable {
-    let boardID: String
-    let tasks: [TaskItem]
-    var id: String { boardID }
 }
 
 struct NotificationReminderContextMenu: ViewModifier {

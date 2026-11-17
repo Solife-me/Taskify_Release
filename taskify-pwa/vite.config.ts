@@ -2,9 +2,25 @@ import { defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import { injectBuiltServiceWorker } from "./scripts/service-worker-build.mjs";
+
+function serviceWorkerBuild() {
+  let outDir = "";
+  return {
+    name: "taskify-service-worker-build",
+    apply: "build" as const,
+    configResolved(config: { root: string; build: { outDir: string } }) {
+      outDir = resolve(config.root, config.build.outDir);
+    },
+    async closeBundle() {
+      await injectBuiltServiceWorker(outDir);
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [tailwindcss(), react()],
+  plugins: [tailwindcss(), react(), serviceWorkerBuild()],
   resolve: {
     preserveSymlinks: true,
     dedupe: ["@nostr-dev-kit/ndk", "nostr-tools", "tseep"],
@@ -30,6 +46,13 @@ export default defineConfig({
     manifest: true,
     rolldownOptions: {
       output: {
+        assetFileNames(asset) {
+          if (asset.names.includes("eng.traineddata.gz")) return "assets/ocr-[hash]/eng.traineddata.gz";
+          if (asset.originalFileNames.some((name) => name.endsWith("/tesseract.js/dist/worker.min.js"))) {
+            return "assets/ocr-worker-[hash].js";
+          }
+          return "assets/[name]-[hash][extname]";
+        },
         // Named vendor chunks, claimed highest priority first. A group also takes its modules'
         // dependencies, so shared foundations (React, the Nostr SDK) must be claimed before the
         // optional libraries that depend on them; otherwise React landed in the QR chunk and

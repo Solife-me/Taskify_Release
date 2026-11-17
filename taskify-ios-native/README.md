@@ -62,7 +62,8 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - PWA-style board-scoped Upcoming timelines for week, list, and compound boards, with future tasks and Taskify events grouped by day and multi-day all-day events repeated across each future date
 - PWA-compatible Saturday, Sunday, or Monday week starts across board ordering, quick-add dates, task moves, and current-week visibility, with later tasks kept in Upcoming until their week is active even when legacy payloads lack `hiddenUntilISO`
 - PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, next-instance generation on completion, and series/date deduplication that prevents an incomplete legacy copy from reviving a completed occurrence
-- Multiple relative reminders, exact custom reminder times, and local iOS notification scheduling
+- Multiple relative reminders, exact custom reminder times, local Apple notification scheduling,
+  and expanded task actions for background completion or a device-local 15-minute snooze
 - PWA-familiar Upcoming list/calendar views with one-tap switching, native monthly task-day dots, search, add flow, persisted sorting, board grouping, and board filters
 - Opt-in Apple Calendar integration in both Upcoming views with native full-access permission handling, event-day dots, dated list sections, calendar colors, search, and live EventKit refreshes
 - Taskify event scheduling compatible with the PWA, including per-event time zones, reminder metadata and local notifications, native event cards inside week/list/compound board columns, mixed task-and-event bulk selection/move/delete, board/list placement with replay-safe cross-board moves, contact-based attendee selection, stable per-attendee invite tokens, encrypted outbound invitations, authenticated organizer-side RSVP summaries with latest-response reconciliation, and lossless recurrence/series preservation across native edits
@@ -248,11 +249,12 @@ and retries recheck the deadline before sending. Other relays retain their indep
 The existing exponential retry and repeated-closure escalation remain in effect.
 
 A relay can enforce proof of work in a write policy without advertising `min_pow_difficulty`
-in its NIP-11 document (nos.lol is one). The sync engine now reads the difficulty named in the
-relay's `pow:` refusal, mines the queued change to that floor, and remembers it for a week so
-later events — including NIP-17 gift wraps, which are signed with an ephemeral key this client
-does not keep — are mined before they are offered. Without that, every event was signed too
-weak, refused, and held back, which is what made the queue grow against that relay.
+in its NIP-11 document. The sync engine reads the difficulty named in the relay's `pow:` refusal,
+mines the queued change to that floor, and remembers it for a week so later events are prepared
+correctly. Chat gift wraps are routed independently: ordinary relays receive their durable copy
+immediately, while advertised or learned PoW relays receive a separately wrapped and mined copy.
+Taskify does not invent a relay-specific floor when neither NIP-11 nor an explicit refusal reports
+one; the November 14, 2026 audit found that nos.lol was accepting stored traffic without NIP-13.
 
 `RelayRetryBackoffTests` covers a stalled consumer, ordered recovery, cancellation, and
 termination. `RelayOutboxLatencyTests` covers the rate-limited subscription/publish pause

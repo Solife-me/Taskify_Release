@@ -696,15 +696,18 @@ actor TaskifyWatchChatCoordinator {
     /// Wall-clock budget for a bootstrap pull. Injectable so tests can exercise the bound
     /// without waiting 20 real seconds.
     private let bootstrapWallClockSeconds: TimeInterval
+    private let relayRequirements: TaskifyRelayRequirements
 
     init(
         fileURL: URL,
         session: URLSession = .shared,
-        bootstrapWallClockSeconds: TimeInterval = 20
+        bootstrapWallClockSeconds: TimeInterval = 20,
+        relayRequirements: TaskifyRelayRequirements = .shared
     ) {
         store = TaskifyWatchChatStore(fileURL: fileURL)
         self.session = session
         self.bootstrapWallClockSeconds = bootstrapWallClockSeconds
+        self.relayRequirements = relayRequirements
     }
 
     func configure(_ context: TaskifyWatchChatProvisioningContext) async throws -> TaskifyWatchChatSnapshot {
@@ -863,6 +866,7 @@ actor TaskifyWatchChatCoordinator {
         memberPublicKeys: [String],
         subject: String? = nil,
         replyToRumorID: String? = nil,
+        botActionTag: [String]? = nil,
         reactionToRumorID: String? = nil,
         attachment: TaskifyWatchChatAttachment? = nil,
         privateKey: Data
@@ -882,13 +886,15 @@ actor TaskifyWatchChatCoordinator {
             memberPublicKeys: members,
             subject: subject,
             replyToRumorID: replyToRumorID,
+            botActionTag: botActionTag,
             reactionToRumorID: reactionToRumorID,
             attachment: attachment,
             kind: attachment != nil
                 ? TaskifyWatchNIP17.attachmentKind
                 : (reactionToRumorID == nil
                     ? TaskifyWatchNIP17.textKind
-                    : TaskifyWatchNIP17.reactionKind)
+                    : TaskifyWatchNIP17.reactionKind),
+            retainSigningKey: true
         )
         // Persist the complete encrypted envelope set before doing any network discovery. A
         // Watch app can be suspended moments after text input closes; resolving every member
@@ -898,7 +904,8 @@ actor TaskifyWatchChatCoordinator {
             TaskifyWatchOutboxWrap(
                 recipientPublicKey: wrap.recipientPublicKey,
                 event: wrap.event,
-                routingDecision: TaskifyWatchRelayDecision(status: .indeterminate)
+                routingDecision: TaskifyWatchRelayDecision(status: .indeterminate),
+                sealedSigningKey: wrap.sealedSigningKey
             )
         }
         let conversationID = members.count > 2
@@ -989,35 +996,24 @@ actor TaskifyWatchChatCoordinator {
         let publishTargets = Array(TaskifyWatchRelayRouting.normalizedRelayURLs(
             [pushRelay] + context.discoveryRelayURLs + current.relayURLs
         ).prefix(TaskifyWatchRelayRouting.maximumRelayCount))
-        let preference = try await TaskifyRelayProofOfWork.prepare(relays: publishTargets) {
-            try TaskifyWatchNostrCrypto.inboxPreferenceEvent(
-            privateKey: privateKey,
-            relayURLs: inboxRelays
-        )
-        }
-        let response = try await gateway.publishInboxPreference(
-            event: preference,
-            relayURLs: publishTargets,
-            privateKey: privateKey
-        )
-        var accepted = response.accepted
-        for result in response.results where result.status == "auth-required" {
-            guard let session = result.session, let challenge = result.challenge else { continue }
-            if let authorization = try? await gateway.authorize(
-                sessionID: session,
-                relayURL: result.relay,
-                challenge: challenge,
-                privateKey: privateKey
-            ), authorization.result.status == "accepted" {
-                accepted += 1
+        let preference = try TaskifyWatchNostrCrypto.inboxPreferenceEvent(privateKey: privateKey, relayURLs: inboxRelays)
+        var plan = await TaskifyWatchPublishPlan(relays: publishTargets, requirements: relayRequirements)
+        let delivered = try await plan.deliver(preference, prepare: { difficulty in
+            try await TaskifyRelayProofOfWork.prepare(difficulty: difficulty) {
+                try TaskifyWatchNostrCrypto.inboxPreferenceEvent(privateKey: privateKey,
+                    relayURLs: inboxRelays, createdAt: preference.createdAt)
             }
-        }
-        guard accepted > 0 else { throw TaskifyWatchChatCoordinatorError.routingUnavailable }
+        }, submit: { event, relays in
+            let response = try await gateway.publishInboxPreference(event: event, relayURLs: relays, privateKey: privateKey)
+            let authorized = await authorizePendingRelays(results: response.results, gateway: gateway, privateKey: privateKey)
+            return response.results + authorized.map(\.result)
+        })
+        guard let delivered else { throw TaskifyWatchChatCoordinatorError.routingUnavailable }
         let prepared = TaskifyWatchChatProvisioningContext(
             contacts: context.contacts,
             threadSummaries: context.threadSummaries ?? [],
             discoveryRelayURLs: context.discoveryRelayURLs,
-            accountInboxPreferenceEvent: preference,
+            accountInboxPreferenceEvent: delivered,
             pushRelayHTTPSURL: context.pushRelayHTTPSURL,
             pushRelayWSSURL: context.pushRelayWSSURL,
             fileServerURL: context.fileServerURL,
@@ -1269,42 +1265,42 @@ actor TaskifyWatchChatCoordinator {
                     .map(\.relayURL)
                 guard !unfinished.isEmpty else { continue }
                 do {
-                    if wrap.proofOfWorkPrepared != true {
-                        let difficulty = await TaskifyRelayRequirements.shared.difficulty(for: wrap.routingDecision.relayURLs)
-                        if difficulty > TaskifyRelayProofOfWork.leadingZeroBits(wrap.event.id)
-                            || difficulty > (Int(wrap.event.tags.first(where: { $0.first == "nonce" })?.last ?? "0") ?? 0) {
-                            // Never replace a wrap whose earlier submission may have succeeded.
-                            guard wrap.proofOfWorkPrepared == false || wrap.attempts == 0,
-                                  !wrap.isDelivered,
-                                  let senderCopy = entry.wraps.first(where: { $0.recipientPublicKey == entry.senderPublicKey }) else {
-                                throw TaskifyProofOfWorkError.unsupportedDifficulty
-                            }
-                            let rumor = try TaskifyWatchNIP17.unwrap(senderCopy.event, recipientPrivateKey: privateKey).rumor
-                            let relays = wrap.routingDecision.relayURLs
-                            wrap.event = try await TaskifyWatchNIP17.prepareWrap(rumor: rumor, senderPrivateKey: privateKey,
-                                recipientPublicKeyHex: wrap.recipientPublicKey, relayURLs: relays)
-                        }
-                        wrap.proofOfWorkPrepared = true
-                        entry.wraps[wrapIndex] = wrap
-                        // The prepared ID becomes durable before any network submission.
-                        try await store.replaceOutboxEntries([entry])
-                    }
-                    let response = try await gateway.submit(
-                        event: wrap.event,
-                        relayURLs: unfinished,
-                        privateKey: privateKey
-                    )
+                    var plan = await TaskifyWatchPublishPlan(relays: unfinished, requirements: relayRequirements)
                     wrap.lastSubmissionError = nil
-                    for result in response.results {
-                        apply(result: result, to: &wrap)
+                    if !plan.ordinary.isEmpty {
+                        let results = try await submitWrap(wrap.event, relays: plan.ordinary,
+                            gateway: gateway, privateKey: privateKey, wrap: &wrap)
+                        await plan.learn(results: results, event: wrap.event)
+                        await plan.refreshUnaccepted(acceptedRelays(wrap))
                     }
-                    let authorizations = await authorizePendingRelays(
-                        results: response.results,
-                        gateway: gateway,
-                        privateKey: privateKey
-                    )
-                    for authorization in authorizations {
-                        apply(result: authorization.result, to: &wrap)
+                    var strict = plan.strict(excluding: acceptedRelays(wrap))
+                    for _ in 0..<2 where strict.difficulty > 0 {
+                        if TaskifyRelayProofOfWork.satisfies(id: wrap.event.id, tags: wrap.event.tags,
+                                                           difficulty: strict.difficulty) {
+                            wrap.proofOfWorkEvent = wrap.event
+                        } else if wrap.proofOfWorkEvent.map({
+                            TaskifyRelayProofOfWork.satisfies(id: $0.id, tags: $0.tags, difficulty: strict.difficulty)
+                        }) != true {
+                            if let key = wrap.sealedSigningKey {
+                                wrap.proofOfWorkEvent = try await TaskifyWatchNIP17.prepareVariant(wrap.event,
+                                    sealedSigningKey: key, senderPrivateKey: privateKey, difficulty: strict.difficulty)
+                            } else if let senderCopy = entry.wraps.first(where: { $0.recipientPublicKey == entry.senderPublicKey }) {
+                                // Older outbox entries only have the sender's copy of the rumor.
+                                let rumor = try TaskifyWatchNIP17.unwrap(senderCopy.event, recipientPrivateKey: privateKey).rumor
+                                wrap.proofOfWorkEvent = try await TaskifyWatchNIP17.prepareWrap(rumor: rumor,
+                                    senderPrivateKey: privateKey, recipientPublicKeyHex: wrap.recipientPublicKey,
+                                    difficulty: strict.difficulty)
+                            }
+                        }
+                        guard let variant = wrap.proofOfWorkEvent else { break }
+                        entry.wraps[wrapIndex] = wrap
+                        try await store.replaceOutboxEntries([entry])
+                        let results = try await submitWrap(variant, relays: strict.relays,
+                            gateway: gateway, privateKey: privateKey, wrap: &wrap)
+                        await plan.learn(results: results, event: variant)
+                        let next = plan.strict(excluding: acceptedRelays(wrap))
+                        guard next.difficulty > strict.difficulty else { break }
+                        strict = next
                     }
                 } catch {
                     // The immutable outbox entry remains the source of truth for a later
@@ -1324,6 +1320,21 @@ actor TaskifyWatchChatCoordinator {
                 updatedEntries.append(entry)
             }
         }
+    }
+
+    private func acceptedRelays(_ wrap: TaskifyWatchOutboxWrap) -> Set<String> {
+        Set(wrap.acknowledgements.filter { $0.state == .accepted }.map(\.relayURL))
+    }
+
+    private func submitWrap(
+        _ event: TaskifyWatchNostrEvent, relays: [String], gateway: TaskifyWatchChatGatewayClient,
+        privateKey: Data, wrap: inout TaskifyWatchOutboxWrap
+    ) async throws -> [TaskifyWatchGatewayRelayResult] {
+        let response = try await gateway.submit(event: event, relayURLs: relays, privateKey: privateKey)
+        let authorized = await authorizePendingRelays(results: response.results, gateway: gateway, privateKey: privateKey)
+        let results = response.results + authorized.map(\.result)
+        for result in results { apply(result: result, to: &wrap) }
+        return results
     }
 
     /// Answers every auth-required relay from one submit concurrently. Gateway AUTH

@@ -249,6 +249,9 @@ public final class SnapshotLookupCache {
         if let cachedDirectMessageThreads { return cachedDirectMessageThreads }
         let threads = snapshot.activeDirectMessageThreads()
         cachedDirectMessageThreads = threads
+        for thread in threads {
+            messagesByPeer[thread.peerPublicKey] = thread.messages
+        }
         return threads
     }
 

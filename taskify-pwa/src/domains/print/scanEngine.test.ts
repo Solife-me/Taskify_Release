@@ -6,9 +6,9 @@
 import { describe, expect, test } from "vitest";
 import { buildBoardPrintLayout, type BoardPrintLayout } from "../../components/BoardPrintLayout";
 import { buildBiblePrintLayout } from "../../components/BibleTrackerPrintLayout";
-import { boardScanMarks } from "../../components/BoardScanSheet";
+import { boardScanMarks, identifyBoardScan } from "./boardScan";
 import { bibleScanMarks } from "../../components/BibleTrackerScanSheet";
-import { applyHomography, scanPage, solveHomography, type ScanLayout, type ScanMarkGeometry, type ScanPhoto, type ScanPoint } from "./scanEngine";
+import { applyHomography, scanPage, solveHomography, type ScanLayout, type ScanPhoto, type ScanPoint } from "./scanEngine";
 
 const INK = 30;
 const PAPER = 235;
@@ -17,7 +17,8 @@ const TABLE = 70;
 type Shape =
   | { kind: "rect"; x: number; y: number; size: number; hollow?: number }
   | { kind: "ring"; cx: number; cy: number; r: number; filled: boolean }
-  | { kind: "box"; x: number; y: number; size: number; filled: boolean };
+  | { kind: "box"; x: number; y: number; size: number; filled: boolean }
+  | { kind: "stroke"; x1: number; y1: number; x2: number; y2: number; width: number };
 
 /** Where the page's corners land in the photo, clockwise from top left. */
 type Placement = [ScanPoint, ScanPoint, ScanPoint, ScanPoint];
@@ -52,13 +53,24 @@ function photograph(layout: ScanLayout, shapes: Shape[], placement: Placement, s
       const d = Math.hypot(p.x - shape.cx, p.y - shape.cy);
       return shape.filled ? d <= shape.r * 0.9 : d <= shape.r && d >= shape.r - 0.3;
     }
+    if (shape.kind === "stroke") {
+      const dx = shape.x2 - shape.x1;
+      const dy = shape.y2 - shape.y1;
+      const lengthSquared = dx * dx + dy * dy;
+      const raw = lengthSquared ? ((p.x - shape.x1) * dx + (p.y - shape.y1) * dy) / lengthSquared : 0;
+      const t = Math.min(1, Math.max(0, raw));
+      return Math.hypot(p.x - (shape.x1 + t * dx), p.y - (shape.y1 + t * dy)) <= shape.width / 2;
+    }
     const within = p.x >= shape.x && p.y >= shape.y && p.x <= shape.x + shape.size && p.y <= shape.y + shape.size;
     if (!within || shape.filled) return within;
     return p.x < shape.x + 0.3 || p.y < shape.y + 0.3 || p.x > shape.x + shape.size - 0.3 || p.y > shape.y + shape.size - 0.3;
   };
   for (const shape of shapes) {
-    const [x0, y0, x1, y1] =
-      shape.kind === "ring" ? [shape.cx - shape.r, shape.cy - shape.r, shape.cx + shape.r, shape.cy + shape.r] : [shape.x, shape.y, shape.x + shape.size, shape.y + shape.size];
+    const [x0, y0, x1, y1] = shape.kind === "ring"
+      ? [shape.cx - shape.r, shape.cy - shape.r, shape.cx + shape.r, shape.cy + shape.r]
+      : shape.kind === "stroke"
+        ? [Math.min(shape.x1, shape.x2) - shape.width, Math.min(shape.y1, shape.y2) - shape.width, Math.max(shape.x1, shape.x2) + shape.width, Math.max(shape.y1, shape.y2) + shape.width]
+        : [shape.x, shape.y, shape.x + shape.size, shape.y + shape.size];
     const corners = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }].map((c) => applyHomography(c, toImage));
     const minX = Math.max(0, Math.floor(Math.min(...corners.map((c) => c.x))));
     const maxX = Math.min(size.width - 1, Math.ceil(Math.max(...corners.map((c) => c.x))));
@@ -97,19 +109,6 @@ function boardSheet(layout: BoardPrintLayout, pageIndex: number, filled: Set<str
   ];
 }
 
-function boardGeometry(layout: BoardPrintLayout): ScanMarkGeometry {
-  // As BoardScanSheet samples a task circle.
-  const c = layout.circle.sizeMm;
-  const ox = Math.max(c * 0.8, 2);
-  const oy = Math.max(layout.rows.heightMm * 0.45, c * 0.6);
-  return {
-    sampleRadiusMm: Math.max(0.55, c * 0.16),
-    innerOffsetMm: c * 0.25,
-    backgroundOffsets: [{ x: -ox, y: 0 }, { x: -ox, y: -oy }, { x: -ox, y: oy }, { x: 0, y: -oy }, { x: 0, y: oy }],
-    backgroundRadiusMm: Math.max(0.7, c * 0.25),
-  };
-}
-
 const tasks = Array.from({ length: 12 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}` }));
 const board = buildBoardPrintLayout(tasks, { jobId: "scan-test-job" });
 const scanBoard = (photo: ScanPhoto, pageSelection: number | "auto" = "auto") =>
@@ -117,7 +116,7 @@ const scanBoard = (photo: ScanPhoto, pageSelection: number | "auto" = "auto") =>
     pageSelection,
     pageCount: board.pages.length,
     marksOnPage: (pageIndex) => boardScanMarks(board, pageIndex),
-    geometry: boardGeometry(board),
+    geometry: { shape: "circle", sizeMm: board.circle.sizeMm },
   });
 
 const upright: Placement = [{ x: 60, y: 50 }, { x: 840, y: 50 }, { x: 840, y: 1060 }, { x: 60, y: 1060 }];
@@ -141,13 +140,83 @@ describe("scanning a board sheet", () => {
         pageSelection: "auto",
         pageCount: otherBoard.pages.length,
         marksOnPage: (pageIndex) => boardScanMarks(otherBoard, pageIndex),
-        geometry: boardGeometry(otherBoard),
+        geometry: { shape: "circle", sizeMm: otherBoard.circle.sizeMm },
       },
     )).toThrow(/different print|different board/i);
   });
 
+  test("pairs centered ink with printed titles after a shared board changes", () => {
+    const printedTasks = [
+      { id: "open", title: "Leave this task open", label: "Mon" },
+      { id: "completed", title: "Completed since printing", label: "Mon" },
+      { id: "removed", title: "Removed after printing", label: "Mon", note: "A long note", noteLineCount: 3 },
+      { id: "marked", title: "Send weekly report and slides", label: "Wed" },
+      { id: "duplicate-1", title: "Call supplier", label: "Wed" },
+      { id: "duplicate-2", title: "Call supplier", label: "Thu" },
+    ];
+    const printed = buildBoardPrintLayout(printedTasks, { jobId: "foreign-print", layoutVersion: "v5" });
+    const shapes = boardSheet(printed, 0, new Set(["completed", "removed", "marked", "duplicate-1"]))
+      .map((shape) => shape.kind === "ring" ? { ...shape, cx: shape.cx + 1.1 } : shape);
+    const photo = photograph(printed, shapes, upright);
+    const transform = solveHomography([
+      { x: 0, y: 0 }, { x: printed.page.widthMm, y: 0 },
+      { x: printed.page.widthMm, y: printed.page.heightMm }, { x: 0, y: printed.page.heightMm },
+    ], upright)!;
+    const rowLines = printed.pages[0].rows.flatMap((row) => row.kind === "task" ? [{
+      text: row.taskId === "marked" ? "Send weekly report and slldes" : row.title,
+      start: applyHomography({ x: row.textX, y: row.y + row.titleBandMm / 2 + 0.4 }, transform),
+    }] : []);
+    const lines = [{
+      text: "Work Tasks print",
+      start: applyHomography({ x: printed.header.leftMm, y: printed.header.topMm + 2 }, transform),
+    }, ...rowLines];
+    const catalog = [
+      { id: "added", title: "Added after printing" },
+      ...printedTasks.filter((task) => task.id !== "removed").reverse()
+        .map((task) => ({ ...task, completed: task.id === "completed" })),
+    ];
+
+    expect(identifyBoardScan(photo, lines, catalog, "Work Tasks", null, null, "auto").taskIds.sort())
+      .toEqual(["completed", "marked"]);
+    expect(() => identifyBoardScan(photo, lines, catalog, "Another board", null, null, "auto"))
+      .toThrow(/match this checklist to the board/i);
+  });
+
+  test("uses saved duplicate rows only when the full printed identifier is readable", () => {
+    const job = {
+      id: "7baf9a62-5288-4332-b359-d368a564746c", boardId: "work", boardName: "Work Tasks",
+      printedAtISO: "2026-11-16T00:00:00Z", paperSize: "letter" as const, layoutVersion: "v5",
+      tasks: [{ id: "a", title: "Call supplier" }, { id: "b", title: "Call supplier" }],
+    };
+    const saved = buildBoardPrintLayout(job.tasks, { jobId: job.id, layoutVersion: job.layoutVersion });
+    const photo = photograph(saved, boardSheet(saved, 0, new Set(["b"])), upright);
+    const line = { text: "Print 7BAF9A62", start: { x: 145, y: 138 } };
+    expect(identifyBoardScan(photo, [line], job.tasks, "Work Tasks", job, saved, "auto").taskIds)
+      .toEqual(["b"]);
+    expect(() => identifyBoardScan(photo, [{ ...line, text: "Print 7BAF9A61" }],
+      job.tasks, "Work Tasks", job, saved, "auto")).toThrow(/match this checklist to the board/i);
+  });
+
+  test("fits displaced circles without counting the dark rims", () => {
+    const shapes = boardSheet(board, 0, new Set(["t6"])).map((shape) =>
+      shape.kind === "ring" ? { ...shape, cx: shape.cx + 1.1 } : shape,
+    );
+    const result = scanBoard(photograph(board, shapes, upright, { width: 900, height: 1200 }));
+    expect(result.filled).toEqual(["t6"]);
+  });
+
   test("a blank sheet reads as nothing filled", () => {
     expect(scanBoard(photograph(board, boardSheet(board, 0, new Set()), upright)).filled).toEqual([]);
+  });
+
+  test("a check mark counts without treating empty circle outlines as complete", () => {
+    const target = boardScanMarks(board, 0)[1].centerMm;
+    const shapes = [
+      ...boardSheet(board, 0, new Set()),
+      { kind: "stroke" as const, x1: target.x - 1.1, y1: target.y, x2: target.x - 0.25, y2: target.y + 0.8, width: 0.55 },
+      { kind: "stroke" as const, x1: target.x - 0.25, y1: target.y + 0.8, x2: target.x + 1.15, y2: target.y - 0.8, width: 0.55 },
+    ];
+    expect(scanBoard(photograph(board, shapes, upright)).filled).toEqual(["t1"]);
   });
 
   test("a photo taken upside down is turned the right way by the finder markers", () => {
@@ -177,7 +246,7 @@ describe("scanning a board sheet", () => {
       pageSelection: "auto",
       pageCount: multi.pages.length,
       marksOnPage: (pageIndex) => boardScanMarks(multi, pageIndex),
-      geometry: boardGeometry(multi),
+      geometry: { shape: "circle", sizeMm: multi.circle.sizeMm },
     })).toThrow(/page number/i);
   });
 });
@@ -192,21 +261,11 @@ describe("scanning the Bible tracker", () => {
       ...printedFrame(layout, 0),
       ...marks.map((m): Shape => ({ kind: "box", x: m.centerMm.x - size / 2, y: m.centerMm.y - size / 2, size, filled: chosen.has(`${m.key.bookId}:${m.key.chapter}`) })),
     ];
-    const gap = layout.boxes.gapMm;
-    const offset = size * 0.5 + gap * 0.55;
     const result = scanPage(photograph(layout, shapes, upright), layout, {
       pageSelection: 0,
       pageCount: layout.pages.length,
       marksOnPage: (pageIndex) => bibleScanMarks(layout, pageIndex),
-      geometry: {
-        sampleRadiusMm: Math.max(0.55, size * 0.14),
-        innerOffsetMm: size * 0.23,
-        backgroundOffsets: [
-          { x: offset, y: 0 }, { x: -offset, y: 0 }, { x: 0, y: offset }, { x: 0, y: -offset },
-          { x: offset, y: offset }, { x: -offset, y: offset }, { x: offset, y: -offset }, { x: -offset, y: -offset },
-        ],
-        backgroundRadiusMm: Math.max(0.7, gap * 0.55),
-      },
+      geometry: { shape: "square", sizeMm: size },
     });
     expect(result.filled.map((k) => `${k.bookId}:${k.chapter}`).sort()).toEqual([...chosen].sort());
   });

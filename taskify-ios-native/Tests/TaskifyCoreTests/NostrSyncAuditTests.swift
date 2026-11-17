@@ -103,6 +103,33 @@ final class NostrSyncAuditTests: XCTestCase {
         XCTAssertNil(resumed.since, "A partial newest-first replay is not a completed history checkpoint")
     }
 
+    func testColdBoardHistoryRecoversTasksOmittedFromTheLiveSubscription() async throws {
+        let board = Board(id: "audit-board", name: "Audit", relayURLs: [relayURL])
+        let (engine, relay) = await setupEngine(board: board)
+        let subscription = await relay.lastBoardFilter()
+        let sub = try XCTUnwrap(subscription)
+        let events = try (0..<7).map { index in
+            try TaskEventCodec.taskEvent(
+                task: TaskItem(id: "task-\(index)", boardID: board.id, title: "Task"),
+                board: board, createdAt: 1_700_000_000 - index / 2
+            )
+        }
+        await relay.seedTaskHistory(events)
+        let delivered = expectation(description: "all retained task versions are delivered")
+        let listener = Task {
+            var seen: Set<String> = []
+            for await update in engine.updates() {
+                if case .batch(let tasks, _) = update { seen.formUnion(tasks.map { $0.task.id }) }
+                if case .task(let record) = update { seen.insert(record.task.id) }
+                if seen.count == events.count { delivered.fulfill(); return }
+            }
+        }
+        defer { listener.cancel() }
+        await engine.handle(.event(subscriptionID: sub.id, event: events[0]), from: relayURL)
+        await engine.handle(.endOfStoredEvents(subscriptionID: sub.id), from: relayURL)
+        await fulfillment(of: [delivered], timeout: 2)
+    }
+
     func testMissingEOSEDoesNotHoldBoardUpdatesIndefinitely() async throws {
         let board = Board(id: "audit-board", name: "Audit", relayURLs: [relayURL])
         let (engine, relay) = await setupEngine(board: board)
@@ -168,6 +195,8 @@ private actor AuditRelayTransport: TaskSyncRelayTransport {
     private var boardFilters: [(id: String, since: Int?)] = []
     private var inboxFilters: [(id: String, since: Int)] = []
     private var requestFilters: [NostrRelayFilter] = []
+    private var taskHistory: [NostrEvent] = []
+    func seedTaskHistory(_ events: [NostrEvent]) { taskHistory = events }
     private(set) var authCount = 0
     nonisolated func messages() -> AsyncStream<NostrRelayMessage> { stream.stream }
     func connect() {}
@@ -183,6 +212,16 @@ private actor AuditRelayTransport: TaskSyncRelayTransport {
     func authenticate(_ event: NostrEvent) { authCount += 1 }
     func request(id: String, filter: NostrRelayFilter) async throws {
         requestFilters.append(filter)
+        let matches = taskHistory.filter {
+            filter.kinds.contains($0.kind) &&
+                $0.createdAt >= (filter.since ?? 0) && $0.createdAt <= (filter.until ?? Int.max)
+        }.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.id < $1.id
+        }
+        for event in matches.prefix(3) {
+            stream.continuation.yield(.event(subscriptionID: id, event: event))
+        }
         stream.continuation.yield(.endOfStoredEvents(subscriptionID: id))
     }
 }

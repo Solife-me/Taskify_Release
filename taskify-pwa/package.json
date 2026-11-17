@@ -25,6 +25,7 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@scure/bip39": "^2.4.0",
     "@tanstack/react-virtual": "^3.14.13",
+    "@tesseract.js-data/eng": "1.0.0",
     "bech32": "^2.0.0",
     "buffer": "^6.0.3",
     "dompurify": "^3.4.17",
@@ -44,6 +45,7 @@
     "stream-browserify": "^3.0.0",
     "taskify-core": "file:../taskify-core",
     "taskify-runtime-nostr": "file:../taskify-runtime-nostr",
+    "tesseract.js": "7.0.0",
     "util": "^0.12.5"
   },
   "devDependencies": {

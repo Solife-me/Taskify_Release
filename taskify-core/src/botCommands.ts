@@ -15,6 +15,7 @@ export const BOT_COMMANDS_MAX_COUNT = 100;
 export type BotCommand = {
   name: string;
   description: string;
+  requiresArguments?: true;
 };
 
 /** The fields of a Nostr event the parser reads. */
@@ -52,7 +53,9 @@ export function parseBotCommands(event: BotCommandsEventLike | null | undefined)
     const name = typeof tag[1] === "string" ? tag[1].trim().toLowerCase() : "";
     if (!BOT_COMMAND_NAME_PATTERN.test(name) || seen.has(name)) continue;
     seen.add(name);
-    commands.push({ name, description: normalizeDescription(tag[2]) });
+    commands.push({ name, description: normalizeDescription(tag[2]),
+      ...(tag[3] === "requires-arguments" ? { requiresArguments: true as const } : {}),
+    });
     if (commands.length >= BOT_COMMANDS_MAX_COUNT) break;
   }
   return commands.length ? commands : null;
@@ -94,7 +97,7 @@ export function validateBotCommandsDraft(commands: unknown): BotCommand[] {
         );
       }
     }
-    return { name, description };
+    return { name, description, ...(entry.requiresArguments === true ? { requiresArguments: true as const } : {}) };
   });
 }
 
@@ -102,7 +105,7 @@ export function validateBotCommandsDraft(commands: unknown): BotCommand[] {
 export function buildBotCommandsTags(commands: BotCommand[], client?: string): string[][] {
   return [
     ["d", BOT_COMMANDS_D_TAG],
-    ...commands.map((command) => ["command", command.name, command.description]),
+    ...commands.map((command) => ["command", command.name, command.description, ...(command.requiresArguments ? ["requires-arguments"] : [])]),
     ["alt", `Taskify bot commands (${commands.length})`],
     ...(client ? [["client", client]] : []),
   ];

@@ -2176,6 +2176,11 @@ public enum NIP17GiftWrapError: LocalizedError {
     }
 }
 
+public struct NIP17OutboxGiftWrap: Sendable {
+    public let event: NostrEvent
+    public let encryptedProofOfWorkKey: String
+}
+
 public struct NIP17GiftWrapPair: Equatable, Sendable {
     public let rumor: NIP17Rumor
     public let recipientWrap: NostrEvent
@@ -2357,6 +2362,22 @@ public enum NIP17GiftWrap {
             kind: wrapKind,
             tags: [["p", recipientHex]],
             content: wrapContent
+        )
+    }
+
+    public static func encryptOutboxKey(_ ephemeral: NostrIdentity, sender: NostrIdentity) throws -> String {
+        try NIP44V2.encrypt(ephemeral.privateKey, privateKey: sender.privateKey, publicKey: sender.publicKey)
+    }
+
+    /// The retry key stays in the local outbox encrypted to the sender. Only the recipient's
+    /// gift wrap is published, with the original ciphertext reused for a higher-work variant.
+    public static func wrapForOutbox(
+        rumor: NIP17Rumor, sender: NostrIdentity, recipientPublicKey: Data
+    ) throws -> NIP17OutboxGiftWrap {
+        let ephemeral = try NostrIdentity.generate()
+        return try NIP17OutboxGiftWrap(
+            event: wrap(rumor: rumor, sender: sender, recipientPublicKey: recipientPublicKey, ephemeralIdentity: ephemeral),
+            encryptedProofOfWorkKey: encryptOutboxKey(ephemeral, sender: sender)
         )
     }
 
@@ -3381,7 +3402,7 @@ public extension TaskifySnapshot {
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
         let nextOrder = (
-            tasks
+            tasks.lazy
                 .filter { $0.boardID == board.id && $0.columnID == columnID && !$0.isDeleted }
                 .map(\.order)
                 .max() ?? -1

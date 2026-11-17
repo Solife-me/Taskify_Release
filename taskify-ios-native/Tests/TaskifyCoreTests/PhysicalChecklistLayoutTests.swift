@@ -91,3 +91,40 @@ import Testing
         #expect(row.yMM + row.heightMM <= bottom + 0.001)
     }
 }
+
+@Test func detailedLayoutReservesWrappedNoteLines() {
+    let item = PhysicalChecklistItem(
+        id: "1", title: "One", section: "Today",
+        dueText: "Nov 8, 2026",
+        note: String(repeating: "A long note. ", count: 40),
+        noteLineCount: 4
+    )
+    let layout = PhysicalChecklistLayout.build(job: .init(
+        ownerID: "board", title: "Board", items: [item],
+        layoutVersion: BoardPrintContract.modernVersion
+    ))
+    let row = layout.pages[0].rows.first { r in
+        guard case let .item(p) = r.kind else { return false }
+        return p.id == "1"
+    }
+    #expect((row?.heightMM ?? 0) == PhysicalChecklistLayout.rowHeightMM + 4 * PhysicalChecklistLayout.noteLineMM + 1)
+}
+
+@Test func contentStaysClearOfTheBottomMarkers() {
+    let items = (0..<80).map { index in
+        PhysicalChecklistItem(id: "task-\(index)", title: "Task \(index)", section: "Section")
+    }
+    for version in [BoardPrintContract.modernVersion] {
+        let layout = PhysicalChecklistLayout.build(job: .init(
+            ownerID: "board", title: "Board", paper: .a6, items: items,
+            layoutVersion: version
+        ))
+        let bottom = layout.paper.sizeMM.height
+            - PhysicalChecklistLayout.marginMM
+            - PhysicalChecklistLayout.markerSizeMM
+            - BoardPrintContract.markerGapMM
+        for row in layout.pages.flatMap(\.rows) {
+            #expect(row.yMM + row.heightMM <= bottom + 0.001)
+        }
+    }
+}

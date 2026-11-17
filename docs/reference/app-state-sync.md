@@ -15,6 +15,15 @@ Every record is a kind-30078 replaceable event authored by the user, tagged
 own key. Relays keep only the latest event per d-tag, so relay storage stays at three events per
 account.
 
+## Browser account storage
+
+Each PWA document is bound to the local store for the Nostr identity it loaded at startup.
+On upgrade, the existing identity keeps the legacy local data in place. A browser that had no
+identity assigns its existing local data to the first account activated on that browser. Other
+accounts get their own databases and preference namespaces. Switching accounts flushes pending
+local writes before reloading. A backup for another account is staged for that account and imports
+records missing from its store. Returning to a previous account restores its saved local state.
+
 ## Merge rules
 
 The rules live in `taskify-core/src/appStateSync.ts` (PWA) and

@@ -235,7 +235,8 @@ export const TASKIFY_BOT_UI_VERSION = "v1";
 
 export type TaskifyBotUiAction =
   | { kind: "catalog-request"; menuId: string; providerSlug: string }
-  | { kind: "model-select"; menuId: string; providerSlug: string; modelId: string };
+  | { kind: "model-select"; menuId: string; providerSlug: string; modelId: string }
+  | { kind: "session-resume"; menuId: string; sessionId: string };
 
 const MENU_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -243,8 +244,20 @@ function validMenuId(value: unknown): value is string {
   return typeof value === "string" && MENU_ID_PATTERN.test(value);
 }
 
+export type TaskifyBotMenuKind = "model" | "sessions";
+
+export function parseTaskifyBotMenuKind(tags: unknown[]): TaskifyBotMenuKind | null {
+  const markers = tags.filter((tag): tag is unknown[] => Array.isArray(tag) && tag[0] === "taskify-bot-menu");
+  const tag = markers[0];
+  if (markers.length !== 1 || tag.length !== 3 || tag[1] !== TASKIFY_BOT_UI_VERSION) return null;
+  return tag[2] === "model" || tag[2] === "sessions" ? tag[2] : null;
+}
+
 export function buildTaskifyBotUiActionTag(action: TaskifyBotUiAction): string[] {
-  if (!validMenuId(action.menuId) || !isValidHermesProviderSlug(action.providerSlug)) {
+  if (action.kind === "session-resume" && validMenuId(action.menuId) && isValidHermesSessionId(action.sessionId)) {
+    return [TASKIFY_BOT_UI_TAG, TASKIFY_BOT_UI_VERSION, action.kind, action.menuId, action.sessionId.trim()];
+  }
+  if (action.kind === "session-resume" || !validMenuId(action.menuId) || !isValidHermesProviderSlug(action.providerSlug)) {
     throw new Error("Invalid Taskify bot UI action.");
   }
   if (action.kind === "catalog-request") {
@@ -267,6 +280,10 @@ export function parseTaskifyBotUiAction(tags: unknown[] | null | undefined): Tas
     if (!Array.isArray(tag) || tag[0] !== TASKIFY_BOT_UI_TAG || tag[1] !== TASKIFY_BOT_UI_VERSION) continue;
     const kind = tag[2];
     const menuId = tag[3];
+    if (kind === "session-resume" && tag.length === 5 && validMenuId(menuId)
+        && typeof tag[4] === "string" && isValidHermesSessionId(tag[4])) {
+      return { kind, menuId, sessionId: tag[4].trim() };
+    }
     const providerSlug = typeof tag[4] === "string" ? tag[4].trim() : "";
     if (!validMenuId(menuId) || !isValidHermesProviderSlug(providerSlug)) continue;
     if (kind === "catalog-request" && tag.length === 5) {

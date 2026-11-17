@@ -59,10 +59,12 @@ public struct TaskifyWatchNIP17Rumor: Codable, Equatable, Sendable {
 public struct TaskifyWatchNIP17RecipientWrap: Equatable, Sendable {
     public let recipientPublicKey: String
     public let event: TaskifyWatchNostrEvent
+    public let sealedSigningKey: String?
 
-    public init(recipientPublicKey: String, event: TaskifyWatchNostrEvent) {
+    public init(recipientPublicKey: String, event: TaskifyWatchNostrEvent, sealedSigningKey: String? = nil) {
         self.recipientPublicKey = recipientPublicKey.lowercased()
         self.event = event
+        self.sealedSigningKey = sealedSigningKey
     }
 }
 
@@ -119,10 +121,12 @@ public enum TaskifyWatchNIP17 {
         memberPublicKeys: [String],
         subject: String? = nil,
         replyToRumorID: String? = nil,
+        botActionTag: [String]? = nil,
         reactionToRumorID: String? = nil,
         attachment: TaskifyWatchChatAttachment? = nil,
         kind: Int = textKind,
-        createdAt: Int = Int(Date().timeIntervalSince1970)
+        createdAt: Int = Int(Date().timeIntervalSince1970),
+        retainSigningKey: Bool = false
     ) throws -> TaskifyWatchNIP17EnvelopeSet {
         let sender = try TaskifyWatchNostrCrypto.publicKeyHex(for: senderPrivateKey)
         var members = Array(Set(memberPublicKeys.map { $0.lowercased() })).sorted()
@@ -141,6 +145,12 @@ public enum TaskifyWatchNIP17 {
         }
         if let reply = replyToRumorID?.lowercased(), isEventID(reply) {
             tags.append(["e", reply, "", "reply"])
+        }
+        if let botActionTag {
+            guard recipients.count == 1, kind == textKind, botActionTag.first == "taskify-bot-ui" else {
+                throw TaskifyWatchNIP17Error.invalidRumor
+            }
+            tags.append(botActionTag)
         }
         if kind == reactionKind {
             guard let target = reactionToRumorID?.lowercased(), isEventID(target) else {
@@ -173,29 +183,49 @@ public enum TaskifyWatchNIP17 {
             content: content
         )
         var wraps: [TaskifyWatchNIP17RecipientWrap] = []
+        guard let senderData = Data(taskifyChatHex: sender) else { throw TaskifyWatchNIP17Error.invalidMembers }
         for recipient in recipients + [sender] {
             guard let recipientData = Data(taskifyChatHex: recipient) else {
                 throw TaskifyWatchNIP17Error.invalidMembers
             }
+            let ephemeral = try TaskifyWatchNostrCrypto.randomPrivateKey()
+            let sealedKey = retainSigningKey
+                ? try TaskifyWatchNIP44V2.encrypt(ephemeral, privateKey: senderPrivateKey, publicKey: senderData) : nil
             wraps.append(TaskifyWatchNIP17RecipientWrap(
                 recipientPublicKey: recipient,
                 event: try wrap(
                     rumor: rumor,
                     senderPrivateKey: senderPrivateKey,
-                    recipientPublicKey: recipientData
-                )
+                    recipientPublicKey: recipientData,
+                    ephemeralPrivateKey: ephemeral
+                ),
+                sealedSigningKey: sealedKey
             ))
         }
         return TaskifyWatchNIP17EnvelopeSet(rumor: rumor, wraps: wraps)
     }
 
     public static func prepareWrap(rumor: TaskifyWatchNIP17Rumor, senderPrivateKey: Data,
-        recipientPublicKeyHex: String, relayURLs: [String]) async throws -> TaskifyWatchNostrEvent {
+        recipientPublicKeyHex: String, difficulty: Int) async throws -> TaskifyWatchNostrEvent {
         guard let recipient = Data(taskifyChatHex: recipientPublicKeyHex), recipient.count == 32 else {
             throw TaskifyWatchNIP17Error.invalidWrap
         }
-        return try await TaskifyRelayProofOfWork.prepare(relays: relayURLs) {
+        return try await TaskifyRelayProofOfWork.prepare(difficulty: difficulty) {
             try wrap(rumor: rumor, senderPrivateKey: senderPrivateKey, recipientPublicKey: recipient)
+        }
+    }
+
+    public static func prepareVariant(_ event: TaskifyWatchNostrEvent, sealedSigningKey: String,
+        senderPrivateKey: Data, difficulty: Int) async throws -> TaskifyWatchNostrEvent {
+        let sender = try TaskifyWatchNostrCrypto.publicKeyHex(for: senderPrivateKey)
+        guard let senderData = Data(taskifyChatHex: sender) else { throw TaskifyWatchNIP17Error.invalidWrap }
+        let key = try TaskifyWatchNIP44V2.decrypt(sealedSigningKey, privateKey: senderPrivateKey, publicKey: senderData)
+        guard event.publicKey == (try TaskifyWatchNostrCrypto.publicKeyHex(for: key)) else {
+            throw TaskifyWatchNIP17Error.invalidWrap
+        }
+        return try await TaskifyRelayProofOfWork.prepare(difficulty: difficulty) {
+            try TaskifyWatchNostrCrypto.signedEvent(privateKey: key, createdAt: event.createdAt, kind: event.kind,
+                tags: event.tags, content: event.content)
         }
     }
 
@@ -331,6 +361,8 @@ public enum TaskifyWatchNIP17 {
             messageKind = .unsupportedMessage
             content = "Open this message on iPhone"
         }
+        let botTags = recipients.count == 1 && rumor.kind == textKind
+            ? rumor.tags.filter { $0.first == "taskify-bot-ui" || $0.first == "taskify-bot-menu" } : []
         return TaskifyWatchChatMessage(
             rumorID: rumor.id,
             wrapID: decrypted.wrapEventID,
@@ -341,6 +373,7 @@ public enum TaskifyWatchNIP17 {
             createdAt: rumor.createdAt,
             kind: messageKind,
             replyToRumorID: reply,
+            botTags: botTags.isEmpty ? nil : botTags,
             reactionTargetRumorID: reactionTarget,
             attachment: attachment,
             deliveryState: rumor.publicKey.lowercased() == identity ? .sent : nil

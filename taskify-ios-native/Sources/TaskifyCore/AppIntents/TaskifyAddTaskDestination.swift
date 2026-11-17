@@ -95,6 +95,51 @@ public struct TaskifyAddTaskDestination {
         return addable.compactMap(destination(for:)).first
     }
 
+    /// Resolves a schema entity by its stable identifiers. Names are presentation only and can be
+    /// duplicated or renamed; Siri's structured list/section parameters must never be routed by
+    /// a fuzzy name match. A list section is accepted only when it belongs to the requested board.
+    public static func resolve(
+        in snapshot: TaskifySnapshot,
+        requestedBoardID: String,
+        requestedColumnID: String? = nil,
+        now: Date = Date()
+    ) -> TaskifyAddTaskDestination? {
+        guard let board = namedBoards(in: snapshot).first(where: { $0.id == requestedBoardID }) else {
+            return nil
+        }
+        switch board.kind {
+        case .week:
+            let weekday = WeekdayColumn.containing(now)
+            return TaskifyAddTaskDestination(
+                boardID: board.id,
+                boardName: board.name,
+                columnID: weekday.rawValue,
+                dueDate: WeekDateResolver.date(for: weekday, inWeekContaining: now)
+            )
+        case .list:
+            let orderedColumns = board.columns.sorted {
+                if $0.order != $1.order { return $0.order < $1.order }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            let column = requestedColumnID.flatMap { requested in
+                orderedColumns.first(where: { $0.id == requested })
+            } ?? (requestedColumnID == nil ? orderedColumns.first : nil)
+            guard let column else { return nil }
+            return TaskifyAddTaskDestination(
+                boardID: board.id,
+                boardName: board.name,
+                columnID: column.id,
+                dueDate: nil
+            )
+        case .compound:
+            guard requestedColumnID == nil,
+                  let child = snapshot.compoundChildBoards(for: board.id).first else { return nil }
+            return resolve(in: snapshot, requestedBoardID: child.id, now: now)
+        case .bible:
+            return nil
+        }
+    }
+
     /// The visible board a person named or sees for a task stored on `storageBoard`.
     public static func displayBoard(
         for storageBoard: Board,
@@ -118,6 +163,21 @@ public struct TaskifyAddTaskDestination {
             return parent
         }
         return storageBoard
+    }
+
+    /// Stable-ID counterpart used by App Schema entities. It avoids displaying or routing to the
+    /// wrong board when two boards share a name.
+    public static func displayBoard(
+        for storageBoard: Board,
+        requestedBoardID: String?,
+        in snapshot: TaskifySnapshot
+    ) -> Board {
+        if let requestedBoardID,
+           let requestedBoard = namedBoards(in: snapshot).first(where: { $0.id == requestedBoardID }),
+           represents(storageBoard: storageBoard, visibleBoard: requestedBoard, in: snapshot) {
+            return requestedBoard
+        }
+        return displayBoard(for: storageBoard, requestedBoardName: nil, in: snapshot)
     }
 
     private static func matchingNamedBoard(named name: String, in snapshot: TaskifySnapshot) -> Board? {

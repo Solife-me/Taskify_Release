@@ -25,8 +25,8 @@ export function NostrSection({
   defaultRelays: string[];
   setDefaultRelays: (rls: string[]) => void;
   pubkeyHex: string;
-  onGenerateKey: () => void;
-  onSetKey: (hex: string) => void;
+  onGenerateKey: () => Promise<void>;
+  onSetKey: (hex: string) => Promise<void>;
   showAdvanced: boolean;
   setShowAdvanced: (fn: (prev: boolean) => boolean) => void;
   onResyncBoardHistory: () => void;
@@ -34,6 +34,20 @@ export function NostrSection({
   embedded?: boolean;
 }) {
   const [customSk, setCustomSk] = useState("");
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
+  const changeKey = async (change: () => Promise<void>) => {
+    setSwitching(true);
+    setSwitchError(null);
+    try {
+      await change();
+      setCustomSk("");
+    } catch (error) {
+      setSwitchError(error instanceof Error ? error.message : "Unable to switch accounts.");
+    } finally {
+      setSwitching(false);
+    }
+  };
   const keyBackup = useKeyBackupState();
   const keyUnsaved = !!keyBackup.createdHereAt && !keyBackup.savedAt;
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -124,15 +138,16 @@ export function NostrSection({
             <div className="flex gap-2 items-center">
               <input value={customSk} onChange={e=>setCustomSk(e.target.value)}
                      className="pill-input flex-1" placeholder="nsec or hex"/>
-              <button className="ghost-button button-sm pressable" onClick={()=>{onSetKey(customSk); setCustomSk('');}}>Use</button>
+              <button className="ghost-button button-sm pressable" disabled={switching} onClick={() => { void changeKey(() => onSetKey(customSk)); }}>Use</button>
             </div>
             <div className="flex gap-2">
-              <button className="ghost-button button-sm pressable" onClick={onGenerateKey}>Generate new key</button>
+              <button className="ghost-button button-sm pressable" disabled={switching} onClick={() => { void changeKey(onGenerateKey); }}>Generate new key</button>
               <button
                 className="ghost-button button-sm pressable"
                 onClick={() => { void copyNsec(); }}
               >Copy private key (nsec)</button>
             </div>
+            {switchError && <p className="text-xs text-rose-400">{switchError}</p>}
           </div>
 
           {/* Default relays */}

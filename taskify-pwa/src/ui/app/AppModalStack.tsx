@@ -17,9 +17,9 @@ type AppModalStackProps = PrintSheetsProps & {
   deleteCalendarEvent: (id: string, options?: any) => void;
   deleteTask: (id: string, options?: any) => void;
   handleDownloadDocument: (doc: TaskDocument) => void;
-  handleOnboardingStart: () => boolean;
+  handleOnboardingStart: () => Promise<boolean>;
   handleOnboardingRestoreFromBackupFile: (file: File) => Promise<void>;
-  handleOnboardingUseExistingKey: (value: string) => boolean;
+  handleOnboardingUseExistingKey: (value: string) => Promise<boolean>;
   joinSharedBoard: (nostrId: string, name?: string, relayCsv?: string) => void;
   previewDocument: TaskDocument | null;
   previewDocumentBoardId: string | undefined;

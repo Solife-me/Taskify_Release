@@ -321,7 +321,7 @@ extension AppModel {
             return
         }
         do {
-            let event = try await TaskifyRelayProofOfWork.prepare(relays: relays, operation: eventBuilder)
+            let event = try await TaskifyRelayProofOfWork.prepare(difficulty: 0, operation: eventBuilder)
             guard isAccountActive, identityPublicKey == identity.publicKeyHex else { return }
             await syncEngine.configure(
                 boards: snapshot.boardsForSync,
@@ -329,12 +329,12 @@ extension AppModel {
                 inboxPublicKey: identity.publicKeyHex,
                 inboxRelayURLs: effectiveNIP17InboxRelayURLs
             )
-            try await syncEngine.publish(
-                event,
+            try await syncEngine.enqueueForPublish([TaskSyncRelayPublishRequest(
+                event: event,
                 relayURLs: relays,
                 outboxScope: Self.appStateOutboxScope,
                 recordID: dTag
-            )
+            )])
             guard isAccountActive, identityPublicKey == identity.publicKeyHex else { return }
             commit(event)
             saveAppStateLedger()

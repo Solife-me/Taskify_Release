@@ -43,7 +43,9 @@ export function parseBotCommands(event) {
         if (!BOT_COMMAND_NAME_PATTERN.test(name) || seen.has(name))
             continue;
         seen.add(name);
-        commands.push({ name, description: normalizeDescription(tag[2]) });
+        commands.push({ name, description: normalizeDescription(tag[2]),
+            ...(tag[3] === "requires-arguments" ? { requiresArguments: true } : {}),
+        });
         if (commands.length >= BOT_COMMANDS_MAX_COUNT)
             break;
     }
@@ -85,14 +87,14 @@ export function validateBotCommandsDraft(commands) {
                 throw new BotCommandsValidationError(`Command "${name}" contains a Nostr key or identifier — the published list must not contain user data (see docs/reference/bot-command-lists.md).`);
             }
         }
-        return { name, description };
+        return { name, description, ...(entry.requiresArguments === true ? { requiresArguments: true } : {}) };
     });
 }
 /** Tags for a bot commands event; `client` is optional and ignored by readers. */
 export function buildBotCommandsTags(commands, client) {
     return [
         ["d", BOT_COMMANDS_D_TAG],
-        ...commands.map((command) => ["command", command.name, command.description]),
+        ...commands.map((command) => ["command", command.name, command.description, ...(command.requiresArguments ? ["requires-arguments"] : [])]),
         ["alt", `Taskify bot commands (${commands.length})`],
         ...(client ? [["client", client]] : []),
     ];

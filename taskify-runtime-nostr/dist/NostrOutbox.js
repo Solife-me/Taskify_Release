@@ -45,6 +45,8 @@ export function createNostrOutboxMutation(args) {
         kind: "nostr.publish",
         payload: {
             event: cloneNostrEvent(args.event),
+            proofOfWorkEvent: sameEvent ? existing.payload.proofOfWorkEvent : undefined,
+            proofOfWorkSealedKey: args.proofOfWorkSealedKey ?? (sameEvent ? existing.payload.proofOfWorkSealedKey : undefined),
             relayUrls,
             replaceableKey: args.replaceableKey ?? null,
         },

@@ -106,12 +106,12 @@ public enum TaskifyWatchNostrCrypto {
     }
 
     public static func prepareBoardEvent(_ event: TaskifyWatchNostrEvent, boardID: String,
-        relayURLs: [String]) async throws -> TaskifyWatchNostrEvent {
+        difficulty: Int) async throws -> TaskifyWatchNostrEvent {
         guard event.publicKey == (try boardPublicKeyHex(for: boardID)), verify(event) else {
             throw TaskifyWatchNostrCryptoError.invalidEvent
         }
-        return try await TaskifyRelayProofOfWork.prepare(relays: relayURLs) {
-            guard TaskifyRelayProofOfWork.difficulty > 0 else { return event }
+        if TaskifyRelayProofOfWork.satisfies(id: event.id, tags: event.tags, difficulty: difficulty) { return event }
+        return try await TaskifyRelayProofOfWork.prepare(difficulty: difficulty) {
             return try signedEvent(privateKey: boardPrivateKey(for: boardID), createdAt: event.createdAt,
                 kind: event.kind, tags: event.tags, content: event.content)
         }

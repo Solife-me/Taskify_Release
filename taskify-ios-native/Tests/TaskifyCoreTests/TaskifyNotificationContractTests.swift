@@ -86,6 +86,20 @@ final class TaskifyNotificationContractTests: XCTestCase {
         XCTAssertEqual(action, .completeTask(accountID: accountID, taskID: "task-123"))
     }
 
+    func testSnoozeActionReadsTheStableTaskIdentifier() {
+        let accountID = String(repeating: "cd", count: 32)
+        let action = TaskifyNotificationContract.action(
+            for: TaskifyNotificationContract.snoozeTaskActionIdentifier,
+            userInfo: [
+                TaskifyNotificationContract.accountIDKey: accountID,
+                TaskifyNotificationContract.taskIDKey: "task-456",
+                TaskifyNotificationContract.boardIDKey: "board-789",
+            ]
+        )
+
+        XCTAssertEqual(action, .snoozeTask(accountID: accountID, taskID: "task-456"))
+    }
+
     func testCompleteActionRejectsMissingOrBlankTaskIdentifiers() {
         XCTAssertNil(TaskifyNotificationContract.action(
             for: TaskifyNotificationContract.completeTaskActionIdentifier,
@@ -98,6 +112,21 @@ final class TaskifyNotificationContractTests: XCTestCase {
         XCTAssertNil(TaskifyNotificationContract.action(
             for: TaskifyNotificationContract.completeTaskActionIdentifier,
             userInfo: [TaskifyNotificationContract.taskIDKey: "   "]
+        ))
+    }
+
+    func testSnoozeActionRejectsMissingOrBlankTaskIdentifiers() {
+        let accountID = String(repeating: "cd", count: 32)
+        XCTAssertNil(TaskifyNotificationContract.action(
+            for: TaskifyNotificationContract.snoozeTaskActionIdentifier,
+            userInfo: [TaskifyNotificationContract.accountIDKey: accountID]
+        ))
+        XCTAssertNil(TaskifyNotificationContract.action(
+            for: TaskifyNotificationContract.snoozeTaskActionIdentifier,
+            userInfo: [
+                TaskifyNotificationContract.accountIDKey: accountID,
+                TaskifyNotificationContract.taskIDKey: "  ",
+            ]
         ))
     }
 

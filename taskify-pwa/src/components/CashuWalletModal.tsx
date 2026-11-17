@@ -3,6 +3,7 @@
 // (wallet state, mint management, send/receive flows, payment requests, NWC,
 // nostr DM redemption, lightning, swaps) into src/hooks/wallet/ and split
 // sub-views into smaller components to reduce this file's size.
+import type { EventSigner } from "taskify-runtime-nostr";
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PaymentRequestTransportType,
@@ -3182,11 +3183,12 @@ export default function CashuWalletModal({
             const publishWithTimeout = async (
               signedEvent: Record<string, unknown>,
               relayTargets: string[] = uniqueRelays,
+              signer?: EventSigner,
             ) => {
               const pool = ensureNostrPool();
               let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
               try {
-                const publishPromise = safePublish(pool, relayTargets, signedEvent);
+                const publishPromise = safePublish(pool, relayTargets, signedEvent, signer);
                 const timeoutPromise = new Promise<never>((_, reject) => {
                   timeoutHandle = setTimeout(
                     () => reject(new Error("Timed out sending payment via nostr")),
@@ -3225,7 +3227,7 @@ export default function CashuWalletModal({
             if (!publishRelays.length) {
               throw new Error("No relays available for NIP-17 inbox");
             }
-            const publish = (event: NostrEvent) => publishWithTimeout(event, publishRelays);
+            const publish = (event: NostrEvent, signer: EventSigner) => publishWithTimeout(event, publishRelays, signer);
             await publishNip17Giftwraps({
               relays: publishRelays,
               content: JSON.stringify(payload),

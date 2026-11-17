@@ -95,6 +95,21 @@ describe("BoardSyncLedger", () => {
     expect(storage.saved).toBe("{}");
   });
 
+  it("keeps the winning deletion's signed version across reloads", async () => {
+    const storage = memoryStorage();
+    const winningId = "1".repeat(64);
+    const staleId = "f".repeat(64);
+    const ledger = new BoardSyncLedger(storage);
+    ledger.recordTombstone("b", "t", 100);
+    ledger.recordTombstone("b", "t", 100, winningId);
+    ledger.recordTombstone("b", "t", 100, staleId);
+    await Promise.resolve();
+
+    const reloaded = new BoardSyncLedger(storage);
+    expect(reloaded.acceptTaskEvent("b", "t", 100, staleId)).toBe(false);
+    expect(reloaded.acceptTaskEvent("b", "t", 100, "0".repeat(64))).toBe(true);
+  });
+
   it("coalesces a burst of deletions into one save and trims old ones", async () => {
     const storage = memoryStorage();
     const save = vi.spyOn(storage, "save");

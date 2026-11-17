@@ -3,12 +3,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { BIBLE_BOOKS, type BibleTrackerProgress, type BibleTrackerState } from "../domains/scripture/bibleTrackerModel";
 import { buildBiblePrintLayout, type BiblePrintLayout, type BiblePrintLayoutVersion } from "./BibleTrackerPrintLayout";
 import { PRINT_PAPER_OPTIONS, type PrintPaperSize } from "./printPaper";
-import { scanPage, type ScanMark, type ScanMarkGeometry } from "../domains/print/scanEngine";
-import { scanPhotoFromCanvas } from "../domains/print/scanCanvas";
+import { scanPage, type ScanMark } from "../domains/print/scanEngine";
+import { captureScanPhoto, loadScanPhoto, SCAN_CAMERA_CONSTRAINTS, scanPhotoFromCanvas } from "../domains/print/scanCanvas";
 
 type ScanAnalysis = {
   progress: BibleTrackerProgress;
   filledCount: number;
+  markAlignment: number;
   threshold: number;
   backgroundMedian: number;
   pageIndex: number;
@@ -40,28 +41,6 @@ function formatChapterRanges(chapters: number[]): string {
   )).join(", ");
 }
 
-/** The tracker's marks are the chapter boxes; the paper is sampled in the gaps around each. */
-function bibleMarkGeometry(layout: BiblePrintLayout): ScanMarkGeometry {
-  const boxSizeMm = layout.boxes.sizeMm;
-  const gapMm = layout.boxes.gapMm;
-  const offset = boxSizeMm * 0.5 + gapMm * 0.55;
-  return {
-    sampleRadiusMm: Math.max(0.55, boxSizeMm * 0.14),
-    innerOffsetMm: boxSizeMm * 0.23,
-    backgroundOffsets: [
-      { x: offset, y: 0 },
-      { x: -offset, y: 0 },
-      { x: 0, y: offset },
-      { x: 0, y: -offset },
-      { x: offset, y: offset },
-      { x: -offset, y: offset },
-      { x: offset, y: -offset },
-      { x: -offset, y: -offset },
-    ],
-    backgroundRadiusMm: Math.max(0.7, gapMm * 0.55),
-  };
-}
-
 export function bibleScanMarks(layout: BiblePrintLayout, pageIndex: number): ScanMark<ChapterKey>[] {
   const size = layout.boxes.sizeMm;
   return layout.pages[pageIndex].boxes.map((box) => ({
@@ -71,15 +50,15 @@ export function bibleScanMarks(layout: BiblePrintLayout, pageIndex: number): Sca
 }
 
 function analyzeScanCanvas(
-  canvas: HTMLCanvasElement,
+  photo: ReturnType<typeof scanPhotoFromCanvas>,
   layout: BiblePrintLayout,
   pageSelection: number | "auto",
 ): ScanAnalysis {
-  const result = scanPage(scanPhotoFromCanvas(canvas), layout, {
+  const result = scanPage(photo, layout, {
     pageSelection,
     pageCount: layout.pages.length,
     marksOnPage: (pageIndex) => bibleScanMarks(layout, pageIndex),
-    geometry: bibleMarkGeometry(layout),
+    geometry: { shape: "square", sizeMm: layout.boxes.sizeMm },
   });
   const progress: BibleTrackerProgress = {};
   for (const { bookId, chapter } of result.filled) {
@@ -89,6 +68,7 @@ function analyzeScanCanvas(
   return {
     progress,
     filledCount: result.filledCount,
+    markAlignment: result.markAlignment,
     threshold: result.threshold,
     backgroundMedian: result.backgroundMedian,
     pageIndex: result.pageIndex,
@@ -102,12 +82,13 @@ function analyzeScanCanvasAcrossLayouts(
   layouts: BiblePrintLayout[],
   pageSelection: number | "auto",
 ): ScanAnalysis {
+  const photo = scanPhotoFromCanvas(canvas);
   const analyses: ScanAnalysis[] = [];
   const errors: unknown[] = [];
   for (const layout of layouts) {
     if (pageSelection !== "auto" && pageSelection >= layout.page.count) continue;
     try {
-      analyses.push(analyzeScanCanvas(canvas, layout, pageSelection));
+      analyses.push(analyzeScanCanvas(photo, layout, pageSelection));
     } catch (err) {
       errors.push(err);
     }
@@ -120,8 +101,7 @@ function analyzeScanCanvasAcrossLayouts(
   return analyses.reduce((best, next) => {
     if (next.pageIdDetected && !best.pageIdDetected) return next;
     if (!next.pageIdDetected && best.pageIdDetected) return best;
-    if (next.filledCount > best.filledCount) return next;
-    if (next.filledCount < best.filledCount) return best;
+    if (next.markAlignment !== best.markAlignment) return next.markAlignment > best.markAlignment ? next : best;
     if (next.layoutVersion === "v3" && best.layoutVersion !== "v3") return next;
     return best;
   });
@@ -181,11 +161,7 @@ export function BibleTrackerScanPanel({
       setCameraError(null);
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
+          video: SCAN_CAMERA_CONSTRAINTS,
         });
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
@@ -227,101 +203,45 @@ export function BibleTrackerScanPanel({
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
-  const captureVideoFrame = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return null;
-    const width = video.videoWidth || 0;
-    const height = video.videoHeight || 0;
-    if (!width || !height) return null;
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(video, 0, 0, width, height);
-    return canvas;
-  }, []);
+  const analyzeCanvas = useCallback(async (canvas: HTMLCanvasElement) => {
+    const result = analyzeScanCanvasAcrossLayouts(canvas, layouts, pageSelection);
+    if (pageSelection === "auto") {
+      setDetectedPageIndex(result.pageIndex);
+    } else {
+      setDetectedPageIndex(null);
+    }
+    setScanResult(result);
+    setPreviewUrl(canvas.toDataURL("image/jpeg", 0.85));
+    return result;
+  }, [layouts, pageSelection]);
 
-  const analyzeCanvas = useCallback(
-    async (
-      canvas: HTMLCanvasElement,
-      options?: {
-        reportErrors?: boolean;
-        setPreview?: boolean;
+  const scanCapture = useCallback(async (getCanvas: () => Promise<HTMLCanvasElement>) => {
+    setScanBusy(true);
+    setScanError(null);
+    setScanResult(null);
+    try {
+      const result = await analyzeCanvas(await getCanvas());
+      if (result) {
+        setCameraError(null);
+        setCameraActive(false);
       }
-    ) => {
-      const reportErrors = options?.reportErrors !== false;
-      const shouldSetPreview = options?.setPreview !== false;
-      try {
-        setScanBusy(true);
-        if (reportErrors) setScanError(null);
-        const result = analyzeScanCanvasAcrossLayouts(canvas, layouts, pageSelection);
-        if (pageSelection === "auto") {
-          setDetectedPageIndex(result.pageIndex);
-        } else {
-          setDetectedPageIndex(null);
-        }
-        setScanResult(result);
-        if (shouldSetPreview) {
-          setPreviewUrl(canvas.toDataURL("image/jpeg", 0.85));
-        }
-        return result;
-      } catch (err) {
-        if (reportErrors) {
-          const message = err instanceof Error ? err.message : "Scan failed.";
-          setScanError(message);
-          setScanResult(null);
-        }
-        return null;
-      } finally {
-        setScanBusy(false);
-      }
-    },
-    [layouts, pageSelection]
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : "Unable to read the photo.");
+    } finally {
+      setScanBusy(false);
+    }
+  }, [analyzeCanvas]);
+
+  const handleCapture = useCallback(
+    () => scanCapture(() => captureScanPhoto(videoRef.current, streamRef.current)),
+    [scanCapture],
   );
 
-  const handleCapture = useCallback(async () => {
-    const canvas = captureVideoFrame();
-    if (!canvas) {
-      setScanError("Camera is not ready yet.");
-      return;
-    }
-    const result = await analyzeCanvas(canvas, { reportErrors: true, setPreview: true });
-    if (result) {
-      setCameraActive(false);
-    }
-  }, [analyzeCanvas, captureVideoFrame]);
-
-  const handleFileChange = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      event.target.value = "";
-      if (!file) return;
-      const url = URL.createObjectURL(file);
-      try {
-        const img = new Image();
-        await new Promise<void>((resolve, reject) => {
-          img.onload = () => resolve();
-          img.onerror = () => reject(new Error("Unable to read the image."));
-          img.src = url;
-        });
-        const canvas = document.createElement("canvas");
-        canvas.width = img.naturalWidth || img.width;
-        canvas.height = img.naturalHeight || img.height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) throw new Error("Unable to read the image.");
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        await analyzeCanvas(canvas, { reportErrors: true, setPreview: true });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unable to read the image.";
-        setScanError(message);
-        setScanResult(null);
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    },
-    [analyzeCanvas]
-  );
+  const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) void scanCapture(() => loadScanPhoto(file));
+  }, [scanCapture]);
 
   const newChaptersByBook = useMemo(() => {
     if (!scanResult) return [];
@@ -358,6 +278,7 @@ export function BibleTrackerScanPanel({
             value={paperSize}
             onChange={(event) => onPaperSizeChange(event.target.value as PrintPaperSize)}
             aria-label="Paper size"
+            disabled={scanBusy}
           >
             {PRINT_PAPER_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -375,6 +296,7 @@ export function BibleTrackerScanPanel({
             className="bible-scan-toggle__option pressable"
             data-active={pageSelection === "auto"}
             aria-pressed={pageSelection === "auto"}
+            disabled={scanBusy}
             onClick={() => setPageSelection("auto")}
           >
             Auto
@@ -386,6 +308,7 @@ export function BibleTrackerScanPanel({
               className="bible-scan-toggle__option pressable"
               data-active={pageSelection === index}
               aria-pressed={pageSelection === index}
+              disabled={scanBusy}
               onClick={() => setPageSelection(index)}
             >
               Page {index + 1}
@@ -432,9 +355,15 @@ export function BibleTrackerScanPanel({
             Capture
           </button>
         )}
+        {navigator.maxTouchPoints > 0 && (
+          <label className="ghost-button button-sm pressable bible-scan-upload">
+            Take photo
+            <input type="file" accept="image/*" capture="environment" onChange={handleFileChange} disabled={scanBusy} />
+          </label>
+        )}
         <label className="ghost-button button-sm pressable bible-scan-upload">
           Upload photo
-          <input type="file" accept="image/*" onChange={handleFileChange} />
+          <input type="file" accept="image/*" onChange={handleFileChange} disabled={scanBusy} />
         </label>
         {cameraError && !cameraActive && (
           <button
@@ -486,7 +415,7 @@ export function BibleTrackerScanPanel({
               type="button"
               className="accent-button button-sm pressable"
               onClick={handleApply}
-              disabled={scanBusy}
+              disabled={scanBusy || newChapters === 0}
             >
               Add to tracker
             </button>

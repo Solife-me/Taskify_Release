@@ -1,5 +1,5 @@
-import { type NDKEvent } from "@nostr-dev-kit/ndk";
-import { boardTagHash, deriveBoardKeyPair } from "taskify-runtime-nostr";
+import { type NDKEvent, type NDKFilter } from "@nostr-dev-kit/ndk";
+import { boardTagHash, deriveBoardKeyPair, normalizeRelayUrls, recoverRelayHistory } from "taskify-runtime-nostr";
 import { nextEventCreatedAt, readTagValue, resolveIdentifierReference } from "taskify-core";
 import type { BoardEntry } from "../config.js";
 import type { AgentTaskCreateInput, AgentTaskPatchInput, AgentTaskStatus } from "../shared/agentRuntime.js";
@@ -7,7 +7,7 @@ import { MAX_CONCURRENT_BOARD_FETCHES, mapWithConcurrency } from "../shared/conc
 import { compareReplaceableEvents, pickLatestParsedEvent, pickLatestParsedEventsByKey } from "../shared/latestEvent.js";
 import { nextRecurringTaskPayload } from "../shared/recurringCompletion.js";
 import type { Recurrence, TaskAssignee } from "../shared/taskTypes.js";
-import { incrementalSyncSince } from "../taskCache.js";
+import { incrementalSyncSince, type TaskCache } from "../taskCache.js";
 import { decryptContent, encryptContent, getUserPubkeyHex, resolveBoardEntry, type DecryptedPayload, type RuntimeContext } from "./context.js";
 import {
   cacheToRecord,
@@ -33,29 +33,42 @@ export type ListTasksOptions = {
 export function createTaskRepository(context: RuntimeContext) {
   const { config, session, ensureConnected, boardRelays, taskCache, clock, randomUUID, isoNow } = context;
 
-  async function fetchBoardEvents(boardId: string, taskId?: string, since?: number): Promise<Set<NDKEvent>> {
-    const bTag = boardTagHash(boardId);
-    const boardPubkey = deriveBoardKeyPair(boardId).pk;
-    const filter: Record<string, unknown> = {
+  function taskFilter(boardId: string): NDKFilter {
+    return {
       kinds: [30301],
-      authors: [boardPubkey],
-      "#b": [bTag],
-      // An unbounded cold query is required to build a complete local baseline.
-      // Relays already paginate/cap responses according to their own policies; an
-      // additional client-side limit silently omitted older active tasks.
-      ...(since !== undefined ? { since } : {}),
+      authors: [deriveBoardKeyPair(boardId).pk],
+      "#b": [boardTagHash(boardId)],
     };
-    if (taskId) filter["#d"] = [taskId];
+  }
 
-    const isCursor = since !== undefined && !taskId;
+  async function fetchBoardEvents(boardId: string, taskId: string): Promise<Set<NDKEvent>> {
     const events = await session.fetchEvents(
-      [filter as never],
+      [{ ...taskFilter(boardId), "#d": [taskId] }],
       boardRelays(boardId),
-      taskId ? 8_000 : isCursor ? 5_000 : 12_000,
-      isCursor ? 150 : 200,
-      taskId ? 2_000 : isCursor ? 1_000 : 3_000,
+      8_000,
+      200,
+      2_000,
     );
     return new Set(events.map((event) => session.createEvent(event)));
+  }
+
+  async function recoverBoardTasks(boardId: string, since?: number, relays = normalizeRelayUrls(boardRelays(boardId))) {
+    const events = new Map<string, NDKEvent>();
+    const filter = {
+      ...taskFilter(boardId),
+      ...(since === undefined ? {} : { since }),
+      until: Math.floor(Date.now() / 1000) + 300,
+    };
+    const results = await Promise.allSettled(relays.map((relay) =>
+      recoverRelayHistory(session, filter, relay, async (event) => {
+        if (!events.has(event.id)) events.set(event.id, session.createEvent(event));
+      }, { timeoutMs: since === undefined ? 12_000 : 5_000 }),
+    ));
+    const failedRelays = relays.filter((_, index) => results[index].status === "rejected");
+    if (failedRelays.length) {
+      process.stderr.write(`⚠ Task history incomplete for board ${boardId} on ${failedRelays.join(", ")}\n`);
+    }
+    return { events: events.values(), completed: relays.length > 0 && failedRelays.length === 0 };
   }
 
   // Resolve from the local full-state cache first, then fall back to relay tags.
@@ -68,7 +81,7 @@ export function createTaskRepository(context: RuntimeContext) {
     const cached = resolveIdentifierReference(cachedTasks, exact);
     if (cached) return cached.id;
 
-    const allEvents = await fetchBoardEvents(boardId);
+    const { events: allEvents } = await recoverBoardTasks(boardId);
     const entries = Array.from(allEvents)
       .map((event) => ({ id: readTagValue(event.tags, "d") ?? "" }))
       .filter((entry) => entry.id);
@@ -104,6 +117,57 @@ export function createTaskRepository(context: RuntimeContext) {
     return event;
   }
 
+  async function readBoardTasks(
+    cache: TaskCache,
+    board: Pick<BoardEntry, "id" | "name">,
+    { refresh, noCache }: Pick<ListTasksOptions, "refresh" | "noCache">,
+  ): Promise<FullTaskRecord[]> {
+    const boardCache = cache.boards[board.id];
+
+    const relays = normalizeRelayUrls(boardRelays(board.id));
+    const relayKey = JSON.stringify(relays);
+    // Rebuild baselines written by older clients or established against a different relay set.
+    const since = boardCache?.historyRelayKey === relayKey
+      ? incrementalSyncSince(boardCache, { refresh, noCache })
+      : undefined;
+    const { events, completed } = await recoverBoardTasks(board.id, since, relays);
+    const latestIncoming = await pickLatestParsedEventsByKey(
+      events,
+      (event) => readTagValue(event.tags, "d"),
+      (event) => parseDecryptedEvent(event, board.id, board.name),
+    );
+
+    const baseline = noCache ? undefined : boardCache;
+    const byId = new Map<string, FullTaskRecord>();
+    for (const task of baseline?.tasks ?? []) byId.set(task.id, cacheToRecord(task, board.name));
+    let maxCreatedAt = baseline?.lastSyncAt ?? 0;
+    for (const { parsed: record, event } of latestIncoming.values()) {
+      maxCreatedAt = Math.max(maxCreatedAt, event.created_at ?? 0);
+      const existing = byId.get(record.id);
+      if (!existing || compareReplaceableEvents(
+        { created_at: record.createdAt, id: record.nostrEventId },
+        { created_at: existing.createdAt, id: existing.nostrEventId },
+      ) > 0) {
+        byId.set(record.id, record);
+      }
+    }
+    const mergedRecords = Array.from(byId.values());
+
+    // An interrupted relay response can be newest-first. Keep the previous checkpoint so
+    // the next read can still reach the older records it missed.
+    const lastSyncAt = completed ? maxCreatedAt : baseline?.lastSyncAt;
+    const historyRelayKey = completed ? relayKey : baseline?.historyRelayKey;
+    if (!noCache || completed) {
+      cache.boards[board.id] = {
+        tasks: mergedRecords.map(recordToCache),
+        fetchedAt: completed ? clock() : (baseline?.fetchedAt ?? 0),
+        ...(lastSyncAt ? { lastSyncAt } : {}),
+        ...(historyRelayKey ? { historyRelayKey } : {}),
+      };
+    }
+    return mergedRecords;
+  }
+
   const repository = {
     async listTasks({ boardId, status, columnId, refresh, noCache }: ListTasksOptions): Promise<FullTaskRecord[]> {
       const boards: BoardEntry[] = [];
@@ -122,130 +186,41 @@ export function createTaskRepository(context: RuntimeContext) {
 
       const cache = taskCache.read();
       const records: FullTaskRecord[] = [];
+      const boardReads = new Map<string, Promise<FullTaskRecord[]>>();
+      await ensureConnected();
+
+      function read(board: Pick<BoardEntry, "id" | "name">): Promise<FullTaskRecord[]> {
+        const pending = boardReads.get(board.id);
+        if (pending) return pending;
+        const lookup = readBoardTasks(cache, board, { refresh, noCache });
+        boardReads.set(board.id, lookup);
+        return lookup;
+      }
+
+      function matchesListing(record: FullTaskRecord): boolean {
+        return !record.deleted
+          && (columnId === undefined || record.column === columnId)
+          && (status === "any" || record.completed === (status === "done"));
+      }
 
       for (const board of boards) {
-        // Compound board: aggregate tasks from children
-        if (board.kind === "compound") {
-          await ensureConnected();
-          const childIds = board.children ?? [];
-          const seen = new Set<string>();
-          const childResults = await mapWithConcurrency(childIds, MAX_CONCURRENT_BOARD_FETCHES, async (childId) => {
-            const childEntry = resolveBoardEntry(config, childId) ?? { id: childId, name: childId };
-            const childEvents = await fetchBoardEvents(childId);
-            const latest = await pickLatestParsedEventsByKey(
-              childEvents,
-              (event) => readTagValue(event.tags, "d"),
-              (event) => parseDecryptedEvent(event, childId, (childEntry as BoardEntry).name ?? childId),
-            );
-            return { childId, latest };
-          });
-          for (const { childId, latest } of childResults) {
-            for (const { parsed: record } of latest.values()) {
-              if (seen.has(record.id)) continue;
-              seen.add(record.id);
-              record.sourceBoardId = childId;
-              if (record.deleted) continue;
-              if (status === "open" && record.completed) continue;
-              if (status === "done" && !record.completed) continue;
-              if (columnId !== undefined && record.column !== columnId) continue;
-              records.push(record);
-            }
+        if (board.kind !== "compound") {
+          for (const record of await read(board)) {
+            if (matchesListing(record)) records.push(record);
           }
           continue;
         }
-
-        const boardCache = cache.boards[board.id];
-
-        // Cursor-based incremental fetch:
-        // - If we have a prior sync cursor, fetch only events since then (- 5 min buffer for clock skew).
-        // - First run or --no-cache: fetch the complete relay history without a date cutoff.
-        // - If cursor is set but cache is empty (e.g. cleared), fall back to cold fetch.
-        await ensureConnected();
-        const since = incrementalSyncSince(boardCache, { refresh, noCache });
-        const hasCursor = since !== undefined;
-
-        const events = await fetchBoardEvents(board.id, undefined, since);
-        const latestIncoming = await pickLatestParsedEventsByKey(
-          events,
-          (event) => readTagValue(event.tags, "d"),
-          (event) => parseDecryptedEvent(event, board.id, board.name),
-        );
-        const incomingRecords = Array.from(latestIncoming.values(), ({ parsed }) => parsed);
-        let maxCreatedAt = hasCursor ? (boardCache?.lastSyncAt ?? 0) : 0;
-        for (const { event } of latestIncoming.values()) {
-          if (event.created_at && event.created_at > maxCreatedAt) {
-            maxCreatedAt = event.created_at;
+        const seen = new Set<string>();
+        const childResults = await mapWithConcurrency(board.children ?? [], MAX_CONCURRENT_BOARD_FETCHES, async (childId) => {
+          const child = resolveBoardEntry(config, childId) ?? { id: childId, name: childId };
+          return { childId, tasks: await read(child) };
+        });
+        for (const { childId, tasks } of childResults) {
+          for (const record of tasks) {
+            if (seen.has(record.id)) continue;
+            seen.add(record.id);
+            if (matchesListing(record)) records.push({ ...record, sourceBoardId: childId });
           }
-        }
-
-        // Merge: latest created_at per task ID wins.
-        // Start from cached tasks, overlay incoming (which are newer by since filter).
-        let mergedRecords: FullTaskRecord[];
-        if (hasCursor && boardCache) {
-          // Incremental: merge incoming over the existing cache
-          const byId = new Map<string, FullTaskRecord>();
-          for (const t of boardCache.tasks) byId.set(t.id, cacheToRecord(t, board.name));
-          // If the latest incoming version is deleted, keep it in the merge map so it
-          // suppresses older cached open/done versions. Filtering happens later.
-          for (const r of incomingRecords) {
-            const existing = byId.get(r.id);
-            if (!existing || compareReplaceableEvents(
-              { created_at: r.createdAt, id: r.nostrEventId },
-              { created_at: existing.createdAt, id: existing.nostrEventId },
-            ) > 0) {
-              byId.set(r.id, r);
-            }
-          }
-          mergedRecords = Array.from(byId.values());
-        } else {
-          // Cold fetch: the per-id latest incoming revisions are the full state.
-          mergedRecords = incomingRecords;
-        }
-
-        // A3/A2: guard against caching an empty result when previous data exists
-        if (mergedRecords.length === 0 && boardCache && !noCache) {
-          const cacheAgeMs = clock() - boardCache.fetchedAt;
-          const TEN_MIN_MS = 10 * 60 * 1000;
-          if (cacheAgeMs <= TEN_MIN_MS) {
-            // A3: cache ≤ 10 min old — silently fall back
-            for (const t of boardCache.tasks) {
-              const rec = cacheToRecord(t, board.name);
-              if (rec.deleted) continue;
-              if (status === "open" && rec.completed) continue;
-              if (status === "done" && !rec.completed) continue;
-              if (columnId !== undefined && rec.column !== columnId) continue;
-              records.push(rec);
-            }
-            continue;
-          } else if (boardCache.tasks.length > 0) {
-            // A2: stale cache has tasks — warn and keep
-            process.stderr.write("⚠ Relay returned 0 tasks — keeping cached results\n");
-            for (const t of boardCache.tasks) {
-              const rec = cacheToRecord(t, board.name);
-              if (rec.deleted) continue;
-              if (status === "open" && rec.completed) continue;
-              if (status === "done" && !rec.completed) continue;
-              if (columnId !== undefined && rec.column !== columnId) continue;
-              records.push(rec);
-            }
-            continue;
-          }
-        }
-
-        // Write merged state to cache, advancing the sync cursor.
-        cache.boards[board.id] = {
-          tasks: mergedRecords.map(recordToCache),
-          fetchedAt: clock(),
-          ...(maxCreatedAt > 0 ? { lastSyncAt: maxCreatedAt } : {}),
-        };
-
-        // Filter for the caller
-        for (const record of mergedRecords) {
-          if (record.deleted) continue;
-          if (columnId !== undefined && record.column !== columnId) continue;
-          if (status === "open" && record.completed) continue;
-          if (status === "done" && !record.completed) continue;
-          records.push(record);
         }
       }
 
@@ -630,7 +605,7 @@ export function createTaskRepository(context: RuntimeContext) {
       if (entry.clearCompletedDisabled === true) {
         throw new Error("Clear completed is disabled on this board.");
       }
-      const events = await fetchBoardEvents(entry.id);
+      const { events } = await recoverBoardTasks(entry.id);
       const latestByTask = await pickLatestParsedEventsByKey(
         events,
         (event) => readTagValue(event.tags, "d"),

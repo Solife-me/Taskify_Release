@@ -1,8 +1,10 @@
 # Bot Command Lists (NIP-51)
 
-Taskify chat supports Telegram-style bot commands. A bot (any automated peer — typically your AI agent running [taskify-cli](../../taskify-cli/README.md) with its own Nostr key) publishes a NIP-51 list advertising the commands it accepts. Taskify clients (PWA and iOS) fetch this list, mark the peer as a bot, and show the commands in a filterable menu when the user types `/` in the composer — exactly like Telegram.
+Taskify chat supports Telegram-style bot commands. A bot (any automated peer — typically your AI agent running [taskify-cli](../../taskify-cli/README.md) with its own Nostr key) publishes a NIP-51 list advertising the commands it accepts. Taskify clients fetch this list, mark the peer as a bot, and show the commands in a filterable menu when the user types `/` in the composer — exactly like Telegram.
 
 The list itself is the bot signal: there is no separate registration or profile flag. If a peer has published a valid commands list, it is a bot.
+
+The [Hermes integration](../../integrations/hermes/README.md) ships as a standalone plugin with its own version and installation instructions.
 
 ## Wire contract
 
@@ -20,10 +22,12 @@ One tag per command:
 
 ```
 ["command", "<name>", "<description>"]
+["command", "<name>", "<description>", "requires-arguments"]
 ```
 
 - `name`: **bare, no leading slash**, `^[a-z0-9_]{1,32}$` (1–32 lowercase letters, digits, underscores). The client renders and inserts it as `/name`.
 - `description`: one line, ≤ 100 characters (longer values are truncated by readers).
+- `requires-arguments` is optional. It asks clients to collect arguments before sending.
 - At most **100** commands; duplicate names are dropped on read (first occurrence wins).
 - Include an `alt` tag for display in generic Nostr clients: `["alt", "Taskify bot commands (N)"]`.
 - A `client` tag is optional and ignored on read: `["client", "your-bot-name"]`.
@@ -74,12 +78,16 @@ When a 1:1 conversation opens, the client:
 2. fetches `{kinds: [30078], authors: <peer>, "#d": ["taskify-bot-commands"]}` from the peer's kind-10050 inbox relays and the discovery relays in the background;
 3. recognizes the peer as a bot only if the event is kind 30078, has the exact d-tag, is signed by the peer, and contains at least one valid `command` tag. Any other NIP-51 list (`Chat-Friends`, app backups, etc.) is never mistaken for a commands list.
 
-Typing `/` at the start of the composer then shows the menu, filtered as you type; tapping a command inserts `/name ` into the draft.
+Use the Commands button or type `/` to filter by prefix. Selecting a command sends it
+immediately when it needs no arguments. Commands marked `requires-arguments` open
+argument entry.
 
-Recognized Hermes `/model` and `/sessions` responses also render interactive cards in verified bot
-conversations. Session buttons retain the title and current marker from Hermes's `Named Sessions`
-response and send the ordinary visible NIP-17 message `/resume <session id>`. No custom event tag or
-Hermes-side integration is required; unrecognized response text remains a normal readable message.
+Hermes `/model` and `/sessions` replies render interactive pickers in verified bot
+conversations. Hermes can mark a listing inside the encrypted NIP-17 message.
+The picker then sends an action with an `e` tag that references the original
+listing's rumor ID. Hermes checks the sender and the options in that listing
+before dispatching the command. Clients can also read legacy listings as text
+and use ordinary slash commands.
 
 The native iOS client revalidates the list whenever the conversation opens or returns to the foreground, even if its persisted cache is fresh. Cached commands stay available while the request runs or if the relays cannot be reached. Passive contact lookups retain a 24-hour cache interval.
 

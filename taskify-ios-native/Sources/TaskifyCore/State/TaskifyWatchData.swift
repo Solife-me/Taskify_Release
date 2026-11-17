@@ -87,7 +87,8 @@ public extension TaskifySnapshot {
             tasks: watchTasks,
             boards: watchBoards,
             selectedBoardID: boardByID[selectedBoardID] == nil ? visibleBoards.first?.id : selectedBoardID,
-            generatedAt: now
+            generatedAt: now,
+            tasksTruncated: eligibleTasks.count > boundedTasks.count
         )
     }
 }

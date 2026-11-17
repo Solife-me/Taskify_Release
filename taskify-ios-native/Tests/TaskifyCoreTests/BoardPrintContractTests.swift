@@ -42,9 +42,28 @@ private let boardPrintVectorsURL = URL(fileURLWithPath: #filePath)
 @Test func boardPrintContractKeepsSafeLegacyVersionsReadable() {
     #expect(BoardPrintContract.isSupportedVersion("v3"))
     #expect(BoardPrintContract.isSupportedVersion("v4"))
+    #expect(BoardPrintContract.isSupportedVersion("v5"))
     #expect(BoardPrintContract.isSupportedVersion("v2"))
     #expect(BoardPrintContract.isSupportedVersion("v1"))
-    #expect(!BoardPrintContract.isSupportedVersion("v5"))
+    #expect(!BoardPrintContract.isSupportedVersion("v6"))
+}
+
+@Test func printJobStoreMatchesOwnerIDsCaseInsensitively() {
+    let suiteName = "taskify-print-job-store-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let job = PhysicalChecklistJob(
+        id: "case-insensitive-print",
+        ownerID: "board:ABCDEF",
+        title: "Work",
+        items: [PhysicalChecklistItem(id: "task", title: "Task")]
+    )
+
+    PhysicalChecklistJobStore.save(job, defaults: defaults)
+
+    #expect(PhysicalChecklistJobStore.load(ownerID: "board:abcdef", defaults: defaults) == job)
+    #expect(PhysicalChecklistJobStore.load(ownerID: " BOARD:AbCdEf ", defaults: defaults) == job)
 }
 
 @Test func encryptedPrintManifestUsesCrossClientKeysAndNewestOwnerWins() throws {

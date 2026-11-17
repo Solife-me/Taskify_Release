@@ -3,14 +3,10 @@ import { beforeEach, describe, expect, test } from "vitest";
 import type { TaskifyBotUiAction } from "taskify-core";
 import type { WalletDmMessage } from "./hooks/useDmState";
 import {
-  HERMES_CATALOG_CACHE_TTL_MS,
   buildHermesModelSwitchCommand,
   buildHermesProviderCatalogPrompt,
-  isHermesCatalogCacheFresh,
-  loadHermesCatalogCache,
   pageSlice,
   projectHermesBotUi,
-  saveHermesCatalogCache,
 } from "./hermesModelPickerState";
 
 const LISTING = `Current: \`deepseek-v4.1-flash:cloud\` on custom:local
@@ -84,6 +80,27 @@ describe("Hermes model picker projection", () => {
     });
   });
 
+  test("matches a bound catalog response by rumor ID despite unrelated replies and reversed timestamps", () => {
+    const actionId = "c".repeat(64);
+    const listing = message({ rumorEventId: menuId, botMenuKind: "model", content: LISTING });
+    const request = message({
+      isIncoming: false,
+      createdAt: 30,
+      rumorEventId: actionId,
+      replyToEventId: menuId,
+      botUiAction: { kind: "catalog-request", menuId, providerSlug: "custom:local" },
+    });
+    const unrelated = message({ createdAt: 20, content: CATALOG });
+    const response = message({ createdAt: 25, replyToEventId: actionId, content: CATALOG });
+
+    const projection = projectHermesBotUi([listing, request, unrelated, response]);
+    const menu = projection.menusByListingEventId.get(listing.eventId);
+    expect(projection.hiddenEventIds.has(unrelated.eventId)).toBe(false);
+    expect(projection.hiddenEventIds.has(response.eventId)).toBe(true);
+    expect(menu?.catalogs.get("custom:local")?.models).toEqual(["lfm3-audio:latest", "deepseek-v4.1-flash:cloud"]);
+    expect(menu?.pendingAction).toBeNull();
+  });
+
   test("keeps an unrecognized response visible and exposes an inline failure", () => {
     const listing = message({ eventId: menuId, content: LISTING, preview: LISTING });
     const action = { kind: "catalog-request" as const, menuId, providerSlug: "nous" };
@@ -127,18 +144,7 @@ describe("Hermes model picker helpers", () => {
       .toBe("/model deepseek-v4.1-flash:cloud --provider custom:local");
   });
 
-  test("scopes cached catalogs to the menu listing and expires them after ten minutes", () => {
-    const catalog = {
-      providerName: "local",
-      providerSlug: "custom:local",
-      models: ["lfm3-audio:latest", "deepseek-v4.1-flash:cloud"],
-    };
-    const saved = saveHermesCatalogCache("bot", "listing-1", catalog, 1_000);
-    expect(loadHermesCatalogCache("bot", "custom:local")).toEqual(saved);
-    expect(isHermesCatalogCacheFresh(saved, 1_001, "listing-2")).toBe(false);
-    expect(isHermesCatalogCacheFresh(saved, 1_000 + HERMES_CATALOG_CACHE_TTL_MS - 1)).toBe(true);
-    expect(isHermesCatalogCacheFresh(saved, 1_000 + HERMES_CATALOG_CACHE_TTL_MS)).toBe(false);
-  });
+
 
   test("paginates models at eight per page", () => {
     expect(pageSlice(Array.from({ length: 13 }, (_, index) => index), 1, 8)).toEqual([8, 9, 10, 11, 12]);

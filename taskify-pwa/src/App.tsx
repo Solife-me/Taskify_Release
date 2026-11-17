@@ -58,12 +58,12 @@ import { type BiblePrintMeta } from "./components/BibleTrackerPrintSheet";
 import {
   BOARD_PRINT_PHOTO_MAX,
   boardPrintLayoutVersionFor,
-  composeBoardPrintDetail,
   DEFAULT_BOARD_PRINT_OPTIONS,
   formatBoardPrintDateKey,
   formatBoardPrintDue,
   isTaskPrintable,
   tasksForBoardPrintScope,
+  withBoardPrintNoteLines,
   type BoardPrintJob,
   type BoardPrintListChoice,
   type BoardPrintOptions,
@@ -968,7 +968,7 @@ export default function App() {
   );
   const ledger = ledgerRef.current;
   const recordTaskTombstone = useCallback(
-    (bTag: string, taskId: string, at: number) => ledger.recordTombstone(bTag, taskId, at),
+    (bTag: string, taskId: string, at: number, eventId: string) => ledger.recordTombstone(bTag, taskId, at, eventId),
     [ledger],
   );
   const clearTaskTombstone = useCallback(
@@ -2576,19 +2576,21 @@ export default function App() {
       if (!options.includeUpcoming && !isVisibleNow(task)) return false;
       return includeId(task.id);
     });
-    const taskDetail = (task: Task) => composeBoardPrintDetail(
+    const taskDue = (task: Task) => (
       options.includeDue
         ? formatBoardPrintDue(task.dueISO, { includeTime: !!task.dueTimeEnabled, timeZone: task.dueTimeZone })
-        : undefined,
-      options.includeNotes ? task.note : undefined,
+        : undefined
     );
-    const eventDetail = (ev: CalendarEvent) => composeBoardPrintDetail(
+    const taskNote = (task: Task) => (options.includeNotes ? task.note : undefined);
+    const eventDue = (ev: CalendarEvent) => (
       options.includeDue
         ? ev.kind === "date"
           ? formatBoardPrintDateKey(ev.startDate)
           : formatBoardPrintDue(ev.startISO, { includeTime: true, timeZone: ev.startTzid })
-        : undefined,
-      options.includeNotes ? ev.description ?? ev.summary : undefined,
+        : undefined
+    );
+    const eventNote = (ev: CalendarEvent) => (
+      options.includeNotes ? ev.description ?? ev.summary : undefined
     );
     const taskExtras = (task: Task) => ({
       ...(options.includeSubtasks && task.subtasks?.length
@@ -2624,13 +2626,15 @@ export default function App() {
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         dayTasks.forEach((task) => {
-          const detail = taskDetail(task);
-          output.push({ id: task.id, title: titleForTask(task), label, listId, completed: task.completed, ...(detail ? { detail } : {}), ...taskExtras(task) });
+          const dueText = taskDue(task);
+          const note = taskNote(task);
+          output.push({ id: task.id, title: titleForTask(task), label, listId, completed: task.completed, ...(dueText ? { dueText } : {}), ...(note ? { note } : {}), ...taskExtras(task) });
         });
         const dayEvents = (calendarByDay.get(day) ?? []).filter((ev) => includeId(ev.id));
         dayEvents.forEach((ev) => {
-          const detail = eventDetail(ev);
-          output.push({ id: ev.id, title: titleForEvent(ev), label, listId, ...(detail ? { detail } : {}), ...eventExtras(ev) });
+          const dueText = eventDue(ev);
+          const note = eventNote(ev);
+          output.push({ id: ev.id, title: titleForEvent(ev), label, listId, ...(dueText ? { dueText } : {}), ...(note ? { note } : {}), ...eventExtras(ev) });
         });
       });
       return output;
@@ -2659,27 +2663,31 @@ export default function App() {
           .slice()
           .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
         taskBucket.forEach((task) => {
-          const detail = taskDetail(task);
-          output.push({ id: task.id, title: titleForTask(task), label: col.name, listId: col.id, completed: task.completed, ...(detail ? { detail } : {}), ...taskExtras(task) });
+          const dueText = taskDue(task);
+          const note = taskNote(task);
+          output.push({ id: task.id, title: titleForTask(task), label: col.name, listId: col.id, completed: task.completed, ...(dueText ? { dueText } : {}), ...(note ? { note } : {}), ...taskExtras(task) });
         });
         const eventBucket = (calendarItemsByColumn.get(col.id) ?? []).filter((ev) => includeId(ev.id));
         eventBucket.forEach((ev) => {
-          const detail = eventDetail(ev);
-          output.push({ id: ev.id, title: titleForEvent(ev), label: col.name, listId: col.id, ...(detail ? { detail } : {}), ...eventExtras(ev) });
+          const dueText = eventDue(ev);
+          const note = eventNote(ev);
+          output.push({ id: ev.id, title: titleForEvent(ev), label: col.name, listId: col.id, ...(dueText ? { dueText } : {}), ...(note ? { note } : {}), ...eventExtras(ev) });
         });
       });
       return output;
     }
 
     const tasksOutput = visibleTasks.map((task) => {
-      const detail = taskDetail(task);
-      return { id: task.id, title: titleForTask(task), completed: task.completed, ...(detail ? { detail } : {}), ...taskExtras(task) };
+      const dueText = taskDue(task);
+      const note = taskNote(task);
+      return { id: task.id, title: titleForTask(task), completed: task.completed, ...(dueText ? { dueText } : {}), ...(note ? { note } : {}), ...taskExtras(task) };
     });
     const eventsOutput = calendarEventsForBoard
       .filter((ev) => includeId(ev.id))
       .map((ev) => {
-        const detail = eventDetail(ev);
-        return { id: ev.id, title: titleForEvent(ev), ...(detail ? { detail } : {}), ...eventExtras(ev) };
+        const dueText = eventDue(ev);
+        const note = eventNote(ev);
+        return { id: ev.id, title: titleForEvent(ev), ...(dueText ? { dueText } : {}), ...(note ? { note } : {}), ...eventExtras(ev) };
       });
     return [...tasksOutput, ...eventsOutput];
   }, [calendarByDay, calendarEventsForBoard, calendarItemsByColumn, currentBoard, listColumns, listColumnSources, settings.weekStart, tasksForBoard]);
@@ -2723,7 +2731,8 @@ export default function App() {
       return;
     }
     setBoardPrintChooserOpen(false);
-    let tasks = built;
+    const paperSize = boardPrintJob?.paperSize ?? "letter";
+    let tasks = options.includeNotes ? withBoardPrintNoteLines(built, paperSize) : built;
     if (options.includePhotos) {
       showToast("Preparing photo thumbnails for print…", 2200);
       const photoResult = await resolvePrintTaskPhotos(built);
@@ -2739,7 +2748,7 @@ export default function App() {
       boardName: scope.kind === "lists" ? `${currentBoard.name || "Board"} – Lists` : currentBoard.name || "Board",
       printedAtISO: new Date().toISOString(),
       layoutVersion: boardPrintLayoutVersionFor(options),
-      paperSize: boardPrintJob?.paperSize ?? "letter",
+      paperSize,
       scope,
       tasks,
     };
@@ -2793,7 +2802,8 @@ export default function App() {
       return;
     }
     closeShareBoard();
-    let tasks = built;
+    const paperSize = boardPrintJob?.paperSize ?? "letter";
+    let tasks = options.includeNotes ? withBoardPrintNoteLines(built, paperSize) : built;
     if (options.includePhotos) {
       showToast("Preparing photo thumbnails for print…", 2200);
       const photoResult = await resolvePrintTaskPhotos(built);
@@ -2809,7 +2819,7 @@ export default function App() {
       boardName: `${currentBoard.name || "Board"} – Selected`,
       printedAtISO: new Date().toISOString(),
       layoutVersion: boardPrintLayoutVersionFor(options),
-      paperSize: boardPrintJob?.paperSize ?? "letter",
+      paperSize,
       scope: { kind: "selection" },
       tasks,
     };
@@ -2821,29 +2831,33 @@ export default function App() {
   const handleBoardPaperSizeChange = useCallback((paperSize: PrintPaperSize) => {
     setBoardPrintJob((prev) => {
       if (!prev || prev.paperSize === paperSize) return prev;
-      const next = { ...prev, paperSize };
+      const next = {
+        ...prev,
+        paperSize,
+        tasks: prev.tasks.some((task) => task.note) ? withBoardPrintNoteLines(prev.tasks, paperSize) : prev.tasks,
+      };
       rememberBoardPrintJob(next);
       return next;
     });
   }, [rememberBoardPrintJob]);
 
+  const boardScanCatalog = useMemo(() => boardScanOpen ? buildBoardPrintTasks({
+    ...DEFAULT_BOARD_PRINT_OPTIONS,
+    includeCompleted: true,
+    includeUpcoming: true,
+  }) : [], [boardScanOpen, buildBoardPrintTasks]);
+
   const handleOpenBoardScan = useCallback(() => {
     if (!currentBoard) return;
-    const job = boardPrintJobs[currentBoard.id];
-    if (!job || job.tasks.length === 0) {
-      showToast("Print this board before scanning.", 2500);
-      return;
-    }
-    setBoardPrintJob(job);
     setBoardScanOpen(true);
-  }, [boardPrintJobs, currentBoard, showToast]);
+  }, [currentBoard]);
 
   function handleApplyBoardScan(taskIds: string[]) {
     if (!taskIds.length) {
       showToast("No tasks detected in the scan.", 2500);
       return;
     }
-    const taskLookup = new Map(tasks.map((task) => [task.id, task] as const));
+    const taskLookup = new Map(tasksForBoard.map((task) => [task.id, task] as const));
     let completedCount = 0;
     let ignoredCount = 0;
     const uniqueIds = Array.from(new Set(taskIds));
@@ -3614,7 +3628,8 @@ export default function App() {
     // Remembered like a local deletion: the task leaves the list, so without this full-week
     // generation recreated an occurrence another device deleted and republished it, open, to
     // every device.
-    if (status === "deleted") recordTaskTombstone(bTag, taskId, ev.created_at);
+    if (status === "deleted") recordTaskTombstone(bTag, taskId, ev.created_at, ev.id);
+    else clearTaskTombstone(bTag, taskId);
 
     const update: IncomingTaskUpdate = status === "deleted"
       ? { deleted: true, at: ev.created_at, eventId: ev.id }
@@ -3651,7 +3666,7 @@ export default function App() {
       );
       return next === prev ? prev : dedupeRecurringInstances(next);
     });
-  }, [recordRecurringSeriesCutoff, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
+  }, [clearTaskTombstone, recordRecurringSeriesCutoff, recordTaskTombstone, sanitizeRecurringTasks, setTasks, settings.newTaskPosition, tagValue]);
 
   /**
    * Full-week mode: adds this week's occurrences of frequent series to `arr` and publishes them.
@@ -6416,6 +6431,9 @@ export default function App() {
             boardPrintOptions={boardPrintOptions}
             boardPrintPortal={boardPrintPortal}
             boardScanOpen={boardScanOpen}
+            boardScanBoardId={currentBoard?.id ?? null}
+            boardScanJob={currentBoard ? boardPrintJobs[currentBoard.id] ?? null : null}
+            boardScanCatalog={boardScanCatalog}
             closeAddBoard={closeAddBoard}
             createBoardFromName={createBoardFromName}
             deleteCalendarEvent={deleteCalendarEvent}

@@ -330,7 +330,7 @@ describe("planMoveTask", () => {
   const ctx = {
     now: NOW,
     actorPubkey: ACTOR,
-    settings: { weekStart: 0 as const, streaksEnabled: true },
+    settings: { streaksEnabled: true },
     currentBoard: lists,
     listColumnSources: sources,
   };
@@ -365,6 +365,29 @@ describe("planMoveTask", () => {
     expect(plan.tasks[0]).toMatchObject({ boardId: "b2", columnId: "x1", order: 0 });
     expect(plan.publishDeleted.map((t) => t.boardId)).toEqual(["b1"]);
     expect(plan.publish.map((t) => t.boardId)).toEqual(["b2"]);
+  });
+
+  it.each(["2026-10-16T00:30:00.000Z", "2026-10-17T00:30:00.000Z"])(
+    "drops a late Friday task on the following Monday with its original time (now %s)",
+    (now) => {
+      const timed = task({ id: "a", dueISO: "2026-10-17T02:30:00.000Z", dueTimeEnabled: true, dueTimeZone: "America/Chicago" });
+      const plan = planMoveTask([timed], "a", { type: "day", day: 1 }, undefined, { ...ctx, now: new Date(now) })!;
+      expect(plan.tasks[0].dueISO).toBe("2026-10-20T02:30:00.000Z");
+    },
+  );
+
+  it("schedules an overdue task on the next upcoming target weekday", () => {
+    const overdue = task({ id: "a", dueISO: new Date(2026, 9, 2).toISOString(), dueTimeZone: undefined });
+    const plan = planMoveTask(
+      [overdue], "a", { type: "day", day: 1 }, undefined, { ...ctx, now: new Date(2026, 9, 15, 12) },
+    )!;
+    expect(plan.tasks[0].dueISO).toBe(new Date(2026, 9, 19).toISOString());
+  });
+
+  it("keeps the due date when reordering within the same weekday", () => {
+    const overdue = task({ id: "a", dueISO: "2026-10-03T02:30:30.000Z", dueTimeEnabled: true });
+    const plan = planMoveTask([overdue], "a", { type: "day", day: 5 }, undefined, ctx)!;
+    expect(plan.tasks[0].dueISO).toBe(overdue.dueISO);
   });
 
   it("keeps the time of day when dropped on another weekday", () => {

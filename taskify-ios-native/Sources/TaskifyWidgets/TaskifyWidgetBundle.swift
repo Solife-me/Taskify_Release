@@ -355,6 +355,22 @@ private struct CalendarTaskWidgetRow: View {
     let item: TaskifyWidgetTask
     let compact: Bool
     let dense: Bool
+    let destinationOverride: URL?
+    let timingOverride: String?
+
+    init(
+        item: TaskifyWidgetTask,
+        compact: Bool,
+        dense: Bool,
+        destinationOverride: URL? = nil,
+        timingOverride: String? = nil
+    ) {
+        self.item = item
+        self.compact = compact
+        self.dense = dense
+        self.destinationOverride = destinationOverride
+        self.timingOverride = timingOverride
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: dense ? 2 : (compact ? 5 : 7)) {
@@ -377,14 +393,14 @@ private struct CalendarTaskWidgetRow: View {
             }
 
             // Only the text opens the task, so it can't swallow the checkbox's taps.
-            Link(destination: destination) {
+            Link(destination: destinationOverride ?? defaultDestination) {
                 HStack(alignment: .center, spacing: 5) {
                     Text(item.title)
                         .font((dense ? Font.system(size: 8.5) : (compact ? Font.caption : .subheadline)).weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 3)
-                    if let timing = timingLabel {
+                    if let timing = timingOverride ?? timingLabel {
                         Text(timing)
                             .font(dense ? .system(size: 8) : .caption2)
                             .foregroundStyle(.secondary)
@@ -401,7 +417,7 @@ private struct CalendarTaskWidgetRow: View {
         .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: dense ? 5.5 : (compact ? 8 : 10), style: .continuous))
     }
 
-    private var destination: URL {
+    private var defaultDestination: URL {
         guard item.kind == .task else { return TaskifyWidgetLink.upcoming.url }
         return TaskifyWidgetLink.task(id: item.id, boardID: item.boardID).url
     }
@@ -417,9 +433,25 @@ private struct CalendarEventWidgetRow: View {
     let item: TaskifyWidgetTask
     let compact: Bool
     let dense: Bool
+    let destinationOverride: URL?
+    let timingOverride: String?
+
+    init(
+        item: TaskifyWidgetTask,
+        compact: Bool,
+        dense: Bool,
+        destinationOverride: URL? = nil,
+        timingOverride: String? = nil
+    ) {
+        self.item = item
+        self.compact = compact
+        self.dense = dense
+        self.destinationOverride = destinationOverride
+        self.timingOverride = timingOverride
+    }
 
     var body: some View {
-        Link(destination: TaskifyWidgetLink.upcoming.url) {
+        Link(destination: destinationOverride ?? TaskifyWidgetLink.upcoming.url) {
             HStack(alignment: .center, spacing: dense ? 2 : (compact ? 5 : 7)) {
                 Capsule()
                     .fill(Color.accentColor)
@@ -446,7 +478,12 @@ private struct CalendarEventWidgetRow: View {
 
     @ViewBuilder
     private var eventTiming: some View {
-        if item.isAllDay {
+        if let timingOverride {
+            Text(timingOverride)
+                .font(dense ? .system(size: 8) : .caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } else if item.isAllDay {
             Text("all-day")
                 .font(dense ? .system(size: 8) : .caption2)
                 .foregroundStyle(.secondary)
@@ -812,54 +849,74 @@ struct BoardWidgetView: View {
     @Environment(\.widgetFamily) private var family
     let entry: BoardWidgetEntry
 
-    private var maximumRows: Int { family == .systemSmall ? 2 : 3 }
-    private var visibleItems: [TaskifyWidgetTask] {
-        Array((entry.data?.items ?? []).prefix(maximumRows))
+    private var compact: Bool { family == .systemSmall }
+    private var presentation: TaskifyBoardWidgetPresentation {
+        guard let data = entry.data else {
+            return TaskifyBoardWidgetPresentation(
+                data: TaskifyBoardWidgetData(
+                    board: TaskifyWidgetBoard(id: "", name: "Board", openTaskCount: 0),
+                    scopeName: "",
+                    destinationColumnID: nil,
+                    tasks: []
+                ),
+                size: compact ? .compact : .wide
+            )
+        }
+        return TaskifyBoardWidgetPresentation(data: data, size: compact ? .compact : .wide)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(entry.data?.board.name ?? "Board")
-                    .font((family == .systemSmall ? Font.caption2 : .caption).weight(.bold))
+        VStack(alignment: .leading, spacing: compact ? 2 : 1) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text((entry.data?.board.name ?? "Board").uppercased())
+                    .font(.system(size: compact ? 9 : 10, weight: .bold))
+                    .tracking(0.35)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
-                Text("\(entry.data?.itemCount ?? 0)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
+                Spacer(minLength: 2)
+                if presentation.hiddenItemCount > 0 {
+                    Text("+\(presentation.hiddenItemCount)")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
                 Link(destination: quickAddURL) {
-                    Image(systemName: "plus")
-                        .font(.caption.weight(.semibold))
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: compact ? 12 : 14, weight: .semibold))
                         .foregroundStyle(.tint)
-                        .frame(width: 28, height: 28)
-                        .background(.primary.opacity(0.13), in: Circle())
-                        .contentShape(Circle())
+                        .frame(width: compact ? 14 : 16, height: compact ? 14 : 16)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Add task to \(entry.data?.board.name ?? "board")")
             }
 
-            if visibleItems.isEmpty {
+            if presentation.rows.isEmpty {
                 Spacer(minLength: 0)
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Nothing in \(entry.data?.scopeName.lowercased() ?? "this view")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                HStack {
+                    Spacer()
+                    VStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.green)
+                        Text("Nothing in \(entry.data?.scopeName.lowercased() ?? "this view")")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                    Spacer()
                 }
                 Spacer(minLength: 0)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
-                        BoardWidgetItemRow(item: item, referenceDate: entry.date)
-                        if index < visibleItems.count - 1 {
-                            Divider().padding(.leading, 29)
-                        }
+                VStack(alignment: .leading, spacing: compact ? 2 : 1) {
+                    ForEach(presentation.rows) { item in
+                        BoardWidgetScheduleRow(
+                            item: item,
+                            referenceDate: entry.date,
+                            compact: compact
+                        )
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -874,53 +931,36 @@ struct BoardWidgetView: View {
     }
 }
 
-private struct BoardWidgetItemRow: View {
+private struct BoardWidgetScheduleRow: View {
     let item: TaskifyWidgetTask
     let referenceDate: Date
+    let compact: Bool
 
     var body: some View {
-        HStack(spacing: 5) {
-            if item.kind.isCompletable {
-                Button(intent: CompleteTaskIntent(taskID: item.id)) {
-                    Image(systemName: item.kind.symbolName)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            } else {
-                Image(systemName: item.kind.symbolName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tint)
-                    .frame(width: 24, height: 24)
-            }
-
-            Link(destination: destination) {
-                HStack(spacing: 5) {
-                    Text(item.title)
-                        .font(.caption.weight(item.kind == .event ? .semibold : .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 3)
-                    if let dueLabel {
-                        Text(dueLabel)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, minHeight: 27, alignment: .leading)
-                .contentShape(Rectangle())
-            }
+        if item.kind == .event || item.kind == .calendar {
+            CalendarEventWidgetRow(
+                item: item,
+                compact: compact,
+                dense: true,
+                destinationOverride: destination,
+                timingOverride: dueLabel
+            )
+        } else {
+            CalendarTaskWidgetRow(
+                item: item,
+                compact: compact,
+                dense: true,
+                destinationOverride: destination,
+                timingOverride: dueLabel
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var dueLabel: String? {
         guard let dueDate = item.dueDate else { return nil }
+        if item.isAllDay { return "all-day" }
         if Calendar.current.isDate(dueDate, inSameDayAs: referenceDate) {
-            return item.isAllDay ? "Today" : dueDate.formatted(date: .omitted, time: .shortened)
+            return dueDate.formatted(date: .omitted, time: .shortened)
         }
         return dueDate.formatted(.dateTime.month(.abbreviated).day())
     }

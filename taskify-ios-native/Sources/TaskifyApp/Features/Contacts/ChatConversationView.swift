@@ -495,6 +495,7 @@ struct DirectMessageConversationView: View {
         model.botCommands(publicKey: peerPublicKey) ?? []
     }
     @State private var botCommandMenuHeight: CGFloat = 0
+    @State private var botCommandMenuOverride: Bool?
     let peerPublicKey: String
     let initialTimelineItemID: String?
     var onClose: (() -> Void)? = nil
@@ -578,6 +579,7 @@ struct DirectMessageConversationView: View {
     private func makePresentation() -> ChatConversationPresentation {
         let buildStart = CACurrentMediaTime()
         defer { TaskifyPerfMonitor.shared.recordChatTimelineBuild(seconds: CACurrentMediaTime() - buildStart) }
+        let messages = messages
         let sharedTasks = sharedTasks
         let sharedContacts = sharedContacts
         let calendarInvites = calendarInvites
@@ -600,14 +602,19 @@ struct DirectMessageConversationView: View {
         // `created_at` has one-second precision. Keep the order established by the message store
         // for ties; an event-ID tiebreaker is effectively random and can flip a just-sent message
         // behind the response that followed it.
-        let timeline = items.enumerated()
-            .sorted {
-                if $0.element.timestamp != $1.element.timestamp {
-                    return $0.element.timestamp < $1.element.timestamp
+        let timeline: [ChatTimelineItem]
+        if zip(items, items.dropFirst()).allSatisfy({ $0.0.timestamp <= $0.1.timestamp }) {
+            timeline = items
+        } else {
+            timeline = items.enumerated()
+                .sorted {
+                    if $0.element.timestamp != $1.element.timestamp {
+                        return $0.element.timestamp < $1.element.timestamp
+                    }
+                    return $0.offset < $1.offset
                 }
-                return $0.offset < $1.offset
-            }
-            .map(\.element)
+                .map(\.element)
+        }
         var values: [(Date, String)] = sharedTasks.map { ($0.receivedAt, $0.sender.displayName) }
         values += sharedContacts.compactMap {
             $0.isIncoming ? ($0.receivedAt, $0.sender.displayName) : nil
@@ -885,8 +892,7 @@ struct DirectMessageConversationView: View {
                 proxy.scrollTo(latestID, anchor: .bottom)
             }
             .onChange(of: sentMessageScrollRequest) { _, _ in
-                // Sending from history is explicit navigation. Wait until the send succeeds
-                // and the draft clears; arrivals need no competing imperative animation.
+                // When an outgoing row appears, return the composer to the newest message.
                 if !followsLatestMessage || isScrolledAwayFromBottom {
                     markReadAndScroll(proxy: proxy, animated: false)
                 }
@@ -1283,7 +1289,8 @@ struct DirectMessageConversationView: View {
                     HStack(alignment: .top, spacing: 0) {
                         HermesSessionPickerChatView(
                             peerPublicKey: peerPublicKey,
-                            listing: sessions
+                            listing: sessions,
+                            actionMenuID: message.botMenuKind == .sessions ? message.rumorEventID : nil
                         )
                         Spacer(minLength: 30)
                     }
@@ -1580,18 +1587,50 @@ struct DirectMessageConversationView: View {
             !isSending && !isSendingAttachment
     }
 
-    /// Commands matching the typed "/" prefix, shown in the Telegram-style
-    /// menu. Hidden once the draft stops matching (e.g. after inserting
-    /// "/name " the trailing space matches nothing).
+    private var offersBotCommands: Bool {
+        group == nil && !isSelfConversation && !isSearchingConversation && !isBlocked && !botCommands.isEmpty
+    }
+
+    private var botCommandQuery: String? {
+        guard draft.hasPrefix("/"),
+              !draft.dropFirst().contains(where: \.isWhitespace) else { return nil }
+        return draft.dropFirst().lowercased()
+    }
+
     private var visibleBotCommands: [BotCommand]? {
-        guard group == nil,
-              !isSelfConversation,
-              !isSearchingConversation,
-              draft.hasPrefix("/"),
-              !botCommands.isEmpty else { return nil }
-        let query = String(draft.dropFirst()).lowercased()
+        guard offersBotCommands else { return nil }
+        if let botCommandMenuOverride { return botCommandMenuOverride ? botCommands : nil }
+        guard let query = botCommandQuery else { return nil }
         let matched = botCommands.filter { $0.name.hasPrefix(query) }
         return matched.isEmpty ? nil : matched
+    }
+
+    private func chooseBotCommand(_ command: BotCommand) {
+        guard !isSending, !isSendingAttachment else { return }
+        let text = "/\(command.name)"
+        botCommandMenuOverride = false
+        if command.requiresArguments == true {
+            draft = text + " "
+            composerFocused = true
+            return
+        }
+
+        let previousDraft = draft
+        let replacesQuery = botCommandQuery != nil
+        isSending = true
+        Task {
+            defer { isSending = false }
+            do {
+                try await model.sendDirectMessage(to: peerPublicKey, content: text, onLocalEcho: {
+                    if replacesQuery && draft == previousDraft { draft = "" }
+                    sentMessageScrollRequest += 1
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                })
+            } catch {
+                model.errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+        }
     }
 
     private func botCommandMenu(_ commands: [BotCommand]) -> some View {
@@ -1599,7 +1638,7 @@ struct DirectMessageConversationView: View {
             VStack(spacing: 0) {
                 ForEach(commands) { command in
                     Button {
-                        draft = "/\(command.name) "
+                        chooseBotCommand(command)
                     } label: {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text("/\(command.name)")
@@ -1617,7 +1656,9 @@ struct DirectMessageConversationView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Insert command \(command.name)")
+                    .disabled(isSending || isSendingAttachment ||
+                        (command.requiresArguments == true && !draft.isEmpty && botCommandQuery == nil))
+                    .accessibilityLabel("\(command.requiresArguments == true ? "Insert" : "Send") command \(command.name)")
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -1817,6 +1858,20 @@ struct DirectMessageConversationView: View {
                 .disabled(isSending || isSendingAttachment)
                 .accessibilityLabel(isSendingAttachment ? "Preparing attachment" : "Add attachment")
 
+                if offersBotCommands {
+                    Button {
+                        botCommandMenuOverride = visibleBotCommands == nil
+                    } label: {
+                        Image(systemName: "list.bullet")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 42, height: 42)
+                            .taskifyGlassControl(in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Commands")
+                    .accessibilityAddTraits(visibleBotCommands == nil ? [] : .isSelected)
+                }
+
                 VStack(alignment: .leading, spacing: 8) {
                     if !attachmentDrafts.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -1877,6 +1932,7 @@ struct DirectMessageConversationView: View {
                                 maximumHeight: composerTextBudget,
                                 onEditingChanged: { isComposerEditing = $0 }
                             )
+                            .onChange(of: draft) { _, _ in botCommandMenuOverride = nil }
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                                 composerTextHeight = height
                             }
@@ -2202,16 +2258,21 @@ struct DirectMessageConversationView: View {
                     guard account == model.identityPublicKey else { throw NostrDirectMessageError.identityUnavailable }
                     attachmentProgress = .sendingMessage
                     try await model.sendDirectMessageAttachments(to: peerPublicKey, attachments: uploaded,
-                        replyToEventID: capturedReply?.rumorEventID, comment: content)
+                        replyToEventID: capturedReply?.rumorEventID, comment: content,
+                        onLocalEcho: { sentMessageScrollRequest += 1 })
+                    attachmentDrafts.removeAll()
+                    draft = ""
+                    replyingTo = nil
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 } else {
                     try await model.sendDirectMessage(to: peerPublicKey, content: content,
-                        replyToEventID: capturedReply?.rumorEventID)
+                        replyToEventID: capturedReply?.rumorEventID, onLocalEcho: {
+                            draft = ""
+                            replyingTo = nil
+                            sentMessageScrollRequest += 1
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        })
                 }
-                attachmentDrafts.removeAll()
-                draft = ""
-                replyingTo = nil
-                sentMessageScrollRequest += 1
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } catch {
                 if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
                     if !capturedAttachments.isEmpty {

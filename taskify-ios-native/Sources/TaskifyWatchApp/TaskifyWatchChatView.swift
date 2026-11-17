@@ -1,5 +1,6 @@
 import CoreGraphics
 import SwiftUI
+import TaskifyCore
 import TaskifyWatchShared
 import WatchKit
 
@@ -468,6 +469,20 @@ private struct TaskifyWatchMessageAction: Identifiable {
     var id: String { message.rumorID }
 }
 
+private enum WatchBotSheet: Identifiable {
+    case commands
+    case model(String)
+    case sessions(String)
+
+    var id: String {
+        switch self {
+        case .commands: "commands"
+        case .model(let id): "model-" + id
+        case .sessions(let id): "sessions-" + id
+        }
+    }
+}
+
 private struct TaskifyWatchConversationView: View {
     @Environment(TaskifyWatchAppModel.self) private var model
     let conversationID: String
@@ -480,6 +495,34 @@ private struct TaskifyWatchConversationView: View {
     @State private var isSending = false
     @State private var audioRecorder = TaskifyWatchAudioRecorder()
     @State private var audioError: String?
+    @State private var botCommands: [BotCommand] = []
+    @State private var botSheet: WatchBotSheet?
+    @State private var commandPrefix = ""
+    @State private var commandError: String?
+    @State private var loadingCatalog: TaskifyBotUiAction?
+
+    private var botActionsEnabled: Bool {
+        groupID == nil && !botCommands.isEmpty &&
+            !model.chatSnapshot.blockedPublicKeys.contains(conversationID)
+    }
+
+    private func projectBotMessages(_ messages: [TaskifyWatchChatMessage]) -> HermesBotUiProjection {
+        guard groupID == nil, !botCommands.isEmpty else { return HermesBotUiProjection() }
+        let identity = model.chatIdentityPublicKey
+        return HermesModelPickerProjection.project(messages: messages.compactMap { message in
+            guard message.kind == .text else { return nil }
+            let tags = message.botTags ?? []
+            return NostrDirectMessage(
+                rumorEventID: message.rumorID, wrapEventID: message.wrapID,
+                peerPublicKey: conversationID, senderPublicKey: message.senderPublicKey,
+                content: message.content, createdAt: message.createdAt,
+                isIncoming: message.senderPublicKey != identity,
+                replyToEventID: message.replyToRumorID,
+                botUiAction: TaskifyBotUiContract.action(from: tags),
+                botMenuKind: TaskifyBotMenuKind.from(tags: tags)
+            )
+        }, enabled: true)
+    }
 
     private var bottomAnchorID: String { "chat-bottom-\(conversationID)" }
     private var composerClearance: CGFloat {
@@ -514,7 +557,9 @@ private struct TaskifyWatchConversationView: View {
         // Build grouping, reaction, sender, and day metadata once per snapshot. The prior view
         // rebuilt the complete reaction dictionary and repeatedly filtered/sorted all messages
         // for every visible row, which became quadratic while scrolling longer threads.
-        let timeline = timelineItems
+        let messages = model.chatMessages(conversationID: conversationID)
+        let botProjection = projectBotMessages(messages)
+        let timeline = timelineItems(messages, hiding: botProjection.hiddenMessageIDs)
         let lastSentMessageID = timeline.last {
             $0.isOutgoing && $0.message.deliveryState == .sent
         }?.id
@@ -540,6 +585,24 @@ private struct TaskifyWatchConversationView: View {
                                             .padding(.top, 7)
                                             .padding(.bottom, 3)
                                     }
+                                    if botActionsEnabled, let menu = botProjection.menusByListingMessageID[item.id] {
+                                        Button {
+                                            botSheet = .model(item.id)
+                                        } label: {
+                                            VStack(alignment: .leading) {
+                                                Label("Models", systemImage: "gearshape")
+                                                if let current = menu.selectedModel?.modelId ?? menu.listing.currentModel {
+                                                    Text(current).font(.caption2).lineLimit(1)
+                                                }
+                                            }
+                                        }
+                                    } else if botActionsEnabled, botProjection.sessionsByListingMessageID[item.id] != nil {
+                                        Button {
+                                            botSheet = .sessions(item.id)
+                                        } label: {
+                                            Label("Named sessions", systemImage: "rectangle.stack")
+                                        }
+                                    } else {
                                     TaskifyWatchChatMessageRow(
                                         message: item.message,
                                         isOutgoing: item.isOutgoing,
@@ -572,6 +635,7 @@ private struct TaskifyWatchConversationView: View {
                                     )
                                     .padding(.top, item.groupedWithPrevious ? 1 : 3)
                                     .padding(.bottom, item.groupedWithNext ? 1 : 3)
+                                    }
                                 }
                                 // Keep visible text at full opacity and size even when a long
                                 // message extends past the viewport. The system handles edge effects.
@@ -655,6 +719,31 @@ private struct TaskifyWatchConversationView: View {
                 onReply: { replyTarget = action.message }
             )
         }
+        .task(id: conversationID) {
+            guard groupID == nil else { return }
+            botCommands = await model.discoverBotCommands(peer: conversationID) ?? []
+        }
+        .sheet(item: $botSheet) { sheet in
+            NavigationStack { botSheetContent(sheet, projection: botProjection, messages: messages) }
+        }
+        .onChange(of: botProjection.menusByListingMessageID) {
+            guard let action = loadingCatalog,
+                  let menu = botProjection.menusByListingMessageID[action.menuId] else { return }
+            let slug = action.providerSlug
+            if menu.catalogs[slug.lowercased()] != nil {
+                loadingCatalog = nil
+            } else if let failure = menu.failure, failure.action == action {
+                commandError = failure.responseContent
+                loadingCatalog = nil
+            }
+        }
+        .task(id: loadingCatalog?.providerSlug) {
+            guard loadingCatalog != nil else { return }
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled, loadingCatalog != nil else { return }
+            loadingCatalog = nil
+            commandError = "Hermes hasn’t returned the model list."
+        }
         .onDisappear { audioRecorder.cancel() }
     }
 
@@ -711,10 +800,22 @@ private struct TaskifyWatchConversationView: View {
                         .contentShape(Capsule())
                         .modifier(TaskifyWatchComposerGlass())
                     } onSubmit: { value in
-                        send(value)
+                        submitComposer(value)
                     }
                     .buttonStyle(.plain)
                     .disabled(isSending || !model.isChatConfigured)
+
+                    if botActionsEnabled {
+                        Button {
+                            commandPrefix = ""
+                            botSheet = .commands
+                        } label: {
+                            Image(systemName: "list.bullet")
+                        }
+                        .buttonStyle(TaskifyWatchComposerCircleButtonStyle(symbolColor: model.taskifyAccentColor))
+                        .accessibilityLabel("Commands")
+                        .disabled(isSending)
+                    }
 
                     Button { startAudioRecording() } label: {
                         Image(systemName: "mic.fill")
@@ -726,6 +827,9 @@ private struct TaskifyWatchConversationView: View {
                     .accessibilityLabel("Record audio message")
                 }
                 .padding(.horizontal, 7)
+            }
+            if let commandError {
+                Text(commandError).font(.caption2).foregroundStyle(.red).lineLimit(2)
             }
             if let audioError {
                 Text(audioError).font(.caption2).foregroundStyle(.red).lineLimit(2)
@@ -745,10 +849,10 @@ private struct TaskifyWatchConversationView: View {
         )
     }
 
-    private var timelineItems: [TaskifyWatchChatTimelineItem] {
+    private func timelineItems(_ allMessages: [TaskifyWatchChatMessage], hiding hidden: Set<String>)
+        -> [TaskifyWatchChatTimelineItem] {
         _ = model.viewClock
-        let allMessages = model.chatMessages(conversationID: conversationID)
-        let messages = allMessages.filter { $0.kind != .reaction }
+        let messages = allMessages.filter { $0.kind != .reaction && !hidden.contains($0.id) }
         let identity = model.chatIdentityPublicKey ?? ""
         let contacts = model.chatSnapshot.contacts.reduce(
             into: [String: TaskifyWatchContact]()
@@ -832,6 +936,132 @@ private struct TaskifyWatchConversationView: View {
     private func senderName(_ publicKey: String) -> String {
         if publicKey == model.chatIdentityPublicKey { return "You" }
         return model.chatContact(publicKey: publicKey)?.displayName ?? "Unknown sender"
+    }
+
+    private func submitComposer(_ value: String) {
+        if botActionsEnabled, value.hasPrefix("/"), !value.dropFirst().contains(where: \.isWhitespace) {
+            let prefix = String(value.dropFirst()).lowercased()
+            let matches = botCommands.filter { $0.name.hasPrefix(prefix) }
+            if !matches.isEmpty && !matches.contains(where: { $0.name == prefix && $0.requiresArguments != true }) {
+                commandPrefix = prefix
+                botSheet = .commands
+                return
+            }
+        }
+        send(value)
+    }
+
+    @ViewBuilder
+    private func botSheetContent(_ sheet: WatchBotSheet, projection: HermesBotUiProjection,
+                                 messages: [TaskifyWatchChatMessage]) -> some View {
+        switch sheet {
+        case .commands:
+            List(botCommands.filter { $0.name.hasPrefix(commandPrefix) }) { command in
+                if command.requiresArguments == true {
+                    TextFieldLink(prompt: Text("Arguments")) {
+                        Text("/" + command.name)
+                    } onSubmit: { args in
+                        let input = args.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !input.isEmpty { sendBotCommand("/" + command.name + " " + input) }
+                    }
+                    .accessibilityHint(command.description)
+                } else {
+                    Button {
+                        sendBotCommand("/" + command.name)
+                    } label: {
+                        VStack(alignment: .leading) {
+                            Text("/" + command.name)
+                            Text(command.description).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Commands")
+        case .model(let id):
+            if let menu = projection.menusByListingMessageID[id] {
+                List(menu.listing.providers, id: \.slug) { provider in
+                    NavigationLink(provider.name) {
+                        let catalog = menu.catalogs[provider.slug.lowercased()]
+                        List {
+                            if catalog == nil, provider.previewModels.count < provider.totalModels {
+                                Button("Load all models") {
+                                    guard let text = try? TaskifyBotUiContract.catalogRequestPrompt(
+                                        providerSlug: provider.slug
+                                    ) else { return }
+                                    sendBotCommand(text, action: TaskifyBotUiAction(
+                                        kind: .catalogRequest, menuId: menu.menuId, providerSlug: provider.slug
+                                    ), bind: menu.bindsActionsToListing)
+                                }
+                                .disabled(loadingCatalog != nil || isSending)
+                                if loadingCatalog?.providerSlug == provider.slug { ProgressView() }
+                            }
+                            if let commandError {
+                                Text(commandError).font(.caption2).foregroundStyle(.red)
+                            }
+                            ForEach(catalog?.models ?? provider.previewModels, id: \.self) { modelID in
+                                Button(modelID) {
+                                    guard let text = try? TaskifyBotUiContract.modelSwitchCommand(
+                                        providerSlug: provider.slug, modelId: modelID
+                                    ) else { return }
+                                    sendBotCommand(text, action: TaskifyBotUiAction(
+                                        kind: .modelSelect, menuId: menu.menuId,
+                                        providerSlug: provider.slug, modelId: modelID
+                                    ), bind: menu.bindsActionsToListing)
+                                }
+                                .disabled(loadingCatalog != nil || isSending)
+                            }
+                        }
+                        .navigationTitle(provider.name)
+                    }
+                }
+                .navigationTitle("Models")
+            }
+        case .sessions(let id):
+            if let listing = projection.sessionsByListingMessageID[id] {
+                let bound = messages.first(where: { $0.id == id }).map {
+                    TaskifyBotMenuKind.from(tags: $0.botTags ?? []) == .sessions
+                } ?? false
+                List(listing.sessions, id: \.sessionId) { session in
+                    Button(session.title) {
+                        guard let text = try? HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
+                        else { return }
+                        let action = bound ? TaskifyBotUiAction(
+                            kind: .sessionResume, menuId: id, sessionId: session.sessionId
+                        ) : nil
+                        sendBotCommand(text, action: action, bind: bound)
+                    }
+                }
+                .navigationTitle("Sessions")
+            }
+        }
+    }
+
+    private func sendBotCommand(_ text: String, action: TaskifyBotUiAction? = nil, bind: Bool = false) {
+        guard botActionsEnabled, !isSending else { return }
+        let tag: [String]?
+        do {
+            tag = try action.map(TaskifyBotUiContract.tag(for:))
+        } catch {
+            commandError = error.localizedDescription
+            return
+        }
+        isSending = true
+        commandError = nil
+        if action?.kind == .catalogRequest {
+            loadingCatalog = action
+        } else {
+            botSheet = nil
+        }
+        Task { @MainActor in
+            let sent = await model.sendChat(text, memberPublicKeys: memberPublicKeys,
+                                            replyToRumorID: bind ? action?.menuId : nil, botActionTag: tag)
+            isSending = false
+            if !sent {
+                if action?.kind == .catalogRequest { loadingCatalog = nil }
+                commandError = "Could not send the command."
+            }
+            WKInterfaceDevice.current().play(sent ? .click : .failure)
+        }
     }
 
     private func send(_ value: String) {

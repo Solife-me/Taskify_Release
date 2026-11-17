@@ -33,17 +33,12 @@ export type ScanLayout = {
 /** A mark that can be filled in, at its center on the page. */
 export type ScanMark<K> = { key: K; centerMm: ScanPoint };
 
-/** Where to sample a mark (inside it) and the paper around it, in mm. */
-export type ScanMarkGeometry = {
-  sampleRadiusMm: number;
-  innerOffsetMm: number;
-  backgroundOffsets: ScanPoint[];
-  backgroundRadiusMm: number;
-};
+export type ScanMarkGeometry = { shape: "circle" | "square"; sizeMm: number };
 
 export type ScanResult<K> = {
   filled: K[];
   filledCount: number;
+  markAlignment: number;
   threshold: number;
   backgroundMedian: number;
   pageIndex: number;
@@ -62,12 +57,9 @@ type ScanContext = {
   height: number;
 };
 
-const MIN_PAGE_BACKGROUND_LUMA = 130;
-const MAX_MARKER_LUMA = 110;
-const MIN_MARKER_CONTRAST = 40;
-const FINDER_CONTRAST_THRESHOLD = 40;
-const MIN_FILL_CONTRAST = 28;
-const MIN_DARK_SAMPLES = 2;
+const MAX_MARKER_LUMA = 210;
+const MIN_MARKER_CONTRAST = 32;
+const FINDER_CONTRAST_THRESHOLD = 32;
 
 function computeOtsuThreshold(values: Uint8ClampedArray): number {
   const histogram = new Array(256).fill(0);
@@ -116,7 +108,7 @@ function detectMarkers(reduced: LumaImage, scale: number, layout: ScanLayout): M
   const { luma, width: targetWidth, height: targetHeight } = reduced;
   if (!targetWidth || !targetHeight) return null;
   const pixelCount = targetWidth * targetHeight;
-  const threshold = computeOtsuThreshold(luma);
+  const threshold = Math.min(210, computeOtsuThreshold(luma) + 8);
   const sampleLuma = (x: number, y: number, radius = 1) => {
     const ix = Math.round(x);
     const iy = Math.round(y);
@@ -139,7 +131,7 @@ function detectMarkers(reduced: LumaImage, scale: number, layout: ScanLayout): M
     if (luma[i] < threshold) mask[i] = 1;
   }
 
-  const minArea = Math.max(12, Math.floor(pixelCount * 0.00015));
+  const minArea = Math.max(12, Math.floor(pixelCount * 0.00004));
   const maxArea = Math.floor(pixelCount * 0.02);
   const visited = new Uint8Array(pixelCount);
   const components: Array<{
@@ -223,7 +215,18 @@ function detectMarkers(reduced: LumaImage, scale: number, layout: ScanLayout): M
         sampleLuma(cx, topY, 1),
         sampleLuma(cx, bottomY, 1),
       ]);
-      const finderScore = centerLuma - edgeLuma;
+      const finderInset = Math.min(width, height) * 0.15;
+      const middleLuma = computeMedian([
+        sampleLuma(cx - finderInset, cy, 0), sampleLuma(cx + finderInset, cy, 0),
+        sampleLuma(cx, cy - finderInset, 0), sampleLuma(cx, cy + finderInset, 0),
+      ]);
+      const outer = Math.min(width, height) * 0.44;
+      const outerLuma = computeMedian([
+        sampleLuma(cx - outer, cy, 0), sampleLuma(cx + outer, cy, 0),
+        sampleLuma(cx, cy - outer, 0), sampleLuma(cx, cy + outer, 0),
+      ]);
+      const hollowFinder = centerLuma - edgeLuma > FINDER_CONTRAST_THRESHOLD && centerLuma > threshold;
+      const centeredFinder = middleLuma - Math.max(centerLuma, outerLuma) > FINDER_CONTRAST_THRESHOLD;
       return {
         ...component,
         width,
@@ -234,8 +237,7 @@ function detectMarkers(reduced: LumaImage, scale: number, layout: ScanLayout): M
         cy,
         centerLuma,
         edgeLuma,
-        finderScore,
-        isFinder: finderScore > FINDER_CONTRAST_THRESHOLD && centerLuma > threshold,
+        isFinder: hollowFinder || centeredFinder,
       };
     })
     .filter((component) => component.aspect > 0.6 && component.aspect < 1.4 && component.fill > 0.5)
@@ -637,6 +639,86 @@ function buildScanContext(photo: ScanPhoto, layout: ScanLayout): ScanContext {
   return { luma: full.luma, matrix, width: full.width, height: full.height };
 }
 
+type LocatedMark = { center: ScanPoint; radius: number; background: number; score: number };
+const directions = Array.from({ length: 16 }, (_, index) => {
+  const angle = index * Math.PI / 8;
+  return { x: Math.cos(angle), y: Math.sin(angle) };
+});
+
+function samplePoint(context: ScanContext, point: ScanPoint): number {
+  const { x, y } = applyHomography(point, context.matrix);
+  return sampleLuma(context.luma, context.width, context.height, x, y);
+}
+
+function locateMark(
+  context: ScanContext,
+  expected: ScanPoint,
+  geometry: ScanMarkGeometry,
+  minimumContrast: number,
+  searchSteps: number,
+): LocatedMark | undefined {
+  const perimeter = geometry.shape === "circle" ? directions : squareDirections;
+  let best: LocatedMark | undefined;
+  for (let dx = -searchSteps; dx <= searchSteps; dx += 1) {
+    for (let dy = -searchSteps; dy <= searchSteps; dy += 1) {
+      const center = { x: expected.x + dx * 0.5, y: expected.y + dy * 0.5 };
+      for (const scale of geometry.shape === "circle" ? [0.9, 1, 1.1] : [1]) {
+        const radius = geometry.sizeMm * scale / 2;
+        const outside: number[] = [];
+        const contrast = perimeter.map(({ x, y }) => {
+          const sample = (factor: number) => samplePoint(context, {
+            x: center.x + x * radius * factor,
+            y: center.y + y * radius * factor,
+          });
+          const paper = sample(geometry.shape === "circle" ? 1.38 : 1.20);
+          outside.push(paper);
+          return paper - Math.min(sample(0.88), sample(1));
+        });
+        const supported = contrast.slice(0, 8)
+          .map((edge, index) => Math.min(edge, contrast[index + 8]))
+          .filter((edge) => edge >= minimumContrast);
+        if (supported.length < 5) continue;
+        // Count shared edges first. A single dark arc or adjacent text cannot establish a center.
+        const score = supported.length + supported.reduce(
+          (sum, edge) => sum + Math.min(edge / minimumContrast, 5) / 12, 0,
+        ) - Math.hypot(dx, dy) * 0.06;
+        if (!best || score > best.score) {
+          best = { center, radius, background: computeMedian(outside), score };
+        }
+      }
+    }
+  }
+  return best;
+}
+
+const squareDirections = directions.map(({ x, y }) => {
+  const edge = Math.max(Math.abs(x), Math.abs(y));
+  return { x: x / edge, y: y / edge };
+});
+
+function hasInteriorInk(context: ScanContext, mark: LocatedMark, markerMedian: number): boolean {
+  const threshold = mark.background - Math.max(16, (mark.background - markerMedian) * 0.2);
+  const radius = mark.radius * 0.62;
+  let dark = 0;
+  let darkCore = 0;
+  let sampled = 0;
+  for (let row = -5; row <= 5; row += 1) {
+    for (let column = -5; column <= 5; column += 1) {
+      const distanceSquared = row * row + column * column;
+      if (distanceSquared > 25) continue;
+      sampled += 1;
+      const value = samplePoint(context, {
+        x: mark.center.x + radius * column / 5,
+        y: mark.center.y + radius * row / 5,
+      });
+      if (value >= threshold) continue;
+      dark += 1;
+      if (distanceSquared <= 9) darkCore += 1;
+    }
+  }
+  return darkCore >= 4 && dark / sampled >= 0.15;
+}
+
 function analyzeMarks<K>(
   context: ScanContext,
   marks: ScanMark<K>[],
@@ -645,83 +727,21 @@ function analyzeMarks<K>(
   backgroundMedian: number,
   markerMedian: number,
 ): ScanResult<K> {
+  const minimumContrast = Math.max(9, (backgroundMedian - markerMedian) * 0.085);
+  const searchSteps = geometry.shape === "circle" ? 3 : 1;
   const filled: K[] = [];
-  let filledCount = 0;
-  const { sampleRadiusMm, innerOffsetMm, backgroundOffsets, backgroundRadiusMm } = geometry;
-  const innerOffsets = [-innerOffsetMm, 0, innerOffsetMm];
-  const sampleOffsets: ScanPoint[] = [];
-  for (const dx of innerOffsets) {
-    for (const dy of innerOffsets) {
-      sampleOffsets.push({ x: dx, y: dy });
-    }
-  }
-  const globalContrast = Math.max(1, backgroundMedian - markerMedian);
-  const normalizedThreshold = 0.2 + Math.min(0.12, globalContrast / 900);
-  const contrastThreshold = Math.max(12, Math.min(MIN_FILL_CONTRAST, globalContrast * 0.25));
-  const requiredDarkSamples = Math.max(MIN_DARK_SAMPLES, Math.round(sampleOffsets.length * 0.35));
-  const strongSampleCount = Math.max(2, Math.round(sampleOffsets.length * 0.2));
-  const strongNormalizedThreshold = Math.min(0.65, normalizedThreshold + 0.12);
-  const strongContrastThreshold = contrastThreshold + 6;
-
+  let alignedMarks = 0;
   for (const mark of marks) {
-    const centerPage = mark.centerMm;
-    const brightnessSamples = sampleOffsets.map((offset) =>
-      samplePageBrightness(
-        context,
-        { x: centerPage.x + offset.x, y: centerPage.y + offset.y },
-        sampleRadiusMm,
-      ),
-    );
-    const localBackground = computeMedian(
-      backgroundOffsets.map((offset) =>
-        samplePageBrightness(
-          context,
-          { x: centerPage.x + offset.x, y: centerPage.y + offset.y },
-          backgroundRadiusMm,
-        ),
-      ),
-    );
-    const blendedBackground = computeMedian([
-      localBackground,
-      backgroundMedian,
-      (localBackground + backgroundMedian) / 2,
-    ]);
-    const contrastRange = Math.max(12, blendedBackground - markerMedian);
-
-    const brightnessMedian = computeMedian(brightnessSamples);
-    const contrastMedian = Math.max(0, blendedBackground - brightnessMedian);
-    const normalizedMedian = contrastMedian / contrastRange;
-
-    let darkSamples = 0;
-    let strongSamples = 0;
-    let maxNormalized = 0;
-    let maxContrast = 0;
-    for (const value of brightnessSamples) {
-      const contrast = Math.max(0, blendedBackground - value);
-      if (contrast > maxContrast) maxContrast = contrast;
-      const normalized = contrast / contrastRange;
-      if (normalized >= normalizedThreshold) darkSamples += 1;
-      if (normalized >= strongNormalizedThreshold) strongSamples += 1;
-      if (normalized > maxNormalized) maxNormalized = normalized;
-    }
-
-    const isFilled =
-      (normalizedMedian >= normalizedThreshold &&
-        contrastMedian >= contrastThreshold &&
-        darkSamples >= requiredDarkSamples) ||
-      (maxNormalized >= strongNormalizedThreshold &&
-        maxContrast >= strongContrastThreshold &&
-        strongSamples >= strongSampleCount);
-
-    if (!isFilled) continue;
-    filledCount += 1;
-    filled.push(mark.key);
+    const outline = locateMark(context, mark.centerMm, geometry, minimumContrast, searchSteps);
+    if (!outline) continue;
+    alignedMarks += 1;
+    if (hasInteriorInk(context, outline, markerMedian)) filled.push(mark.key);
   }
-
   return {
     filled,
-    filledCount,
-    threshold: normalizedThreshold,
+    filledCount: filled.length,
+    markAlignment: marks.length ? alignedMarks / marks.length : 0,
+    threshold: minimumContrast,
     backgroundMedian,
     pageIndex,
     pageIdDetected: false,
@@ -730,10 +750,90 @@ function analyzeMarks<K>(
   };
 }
 
+export type ScanTextLine = { text: string; start: ScanPoint };
+
+function pageMeasurement(photo: ScanPhoto, layout: ScanLayout) {
+  const context = buildScanContext(photo, layout);
+  const markerMedian = sampleMarkerMedian(context, layout);
+  const backgroundMedian = samplePageBackground(context, layout);
+  if (markerMedian > MAX_MARKER_LUMA || backgroundMedian - markerMedian < MIN_MARKER_CONTRAST) {
+    throw new Error("Alignment markers not detected. Keep the full page visible and well lit.");
+  }
+  return { context, markerMedian, backgroundMedian };
+}
+
+/** Straighten and orient the page for OCR, retaining the transform to the original photo. */
+export function rectifyScanForText(photo: ScanPhoto, layout: ScanLayout) {
+  const { context } = pageMeasurement(photo, layout);
+  const { widthMm, heightMm } = layout.page;
+  const scale = Math.max(6, Math.min(10, Math.min(photo.full.width, photo.full.height) / widthMm));
+  const width = Math.round(widthMm * scale);
+  const height = Math.round(heightMm * scale);
+  const luma = new Uint8ClampedArray(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      luma[y * width + x] = samplePoint(context, { x: x / scale, y: y / scale });
+    }
+  }
+  return {
+    image: { luma, width, height },
+    scale,
+    toPhoto: ({ x, y }: ScanPoint) => applyHomography({ x: x / scale, y: y / scale }, context.matrix),
+  };
+}
+
+/** Read marks at OCR line locations. Expected row order and spacing come from the photograph. */
+export function scanTextAnchoredCircles<K>(
+  photo: ScanPhoto,
+  layout: ScanLayout,
+  lines: ScanTextLine[],
+  column: { leftMm: number; topMm: number; bottomMm: number; sizeMm: number; gapMm: number },
+  identify: (lines: ScanTextLine[]) => ((text: string) => K | undefined) | undefined,
+) {
+  let measured: ReturnType<typeof pageMeasurement>;
+  try {
+    measured = pageMeasurement(photo, layout);
+  } catch {
+    return null;
+  }
+  const { context, markerMedian, backgroundMedian } = measured;
+  const source = [{ x: 0, y: 0 }, { x: layout.page.widthMm, y: 0 },
+    { x: layout.page.widthMm, y: layout.page.heightMm }, { x: 0, y: layout.page.heightMm }];
+  const inverse = solveHomography(source.map((point) => applyHomography(point, context.matrix)), source);
+  if (!inverse) return null;
+  const pageLines = lines.map(({ text, start }) => ({ text, start: applyHomography(start, inverse) }));
+  const resolve = identify(pageLines);
+  if (!resolve) return null;
+
+  const titleX = column.leftMm + column.sizeMm + column.gapMm;
+  const minimumContrast = Math.max(9, (backgroundMedian - markerMedian) * 0.085);
+  const found: Array<{ id: K; center: ScanPoint; marked: boolean }> = [];
+  let quality = 0;
+  for (const { text, start } of pageLines) {
+    if (start.y < column.topMm || start.y >= column.bottomMm ||
+      start.x < column.leftMm - 2 || start.x > titleX + 5) continue;
+    const center = { x: column.leftMm + column.sizeMm / 2, y: start.y };
+    const title = start.x < titleX - 2 ? text.replace(/^\s*[o0◯○•]\s+/iu, "") : text;
+    const id = resolve(title);
+    if (id === undefined) continue;
+    const outline = locateMark(context, center, { shape: "circle", sizeMm: column.sizeMm }, minimumContrast, 4);
+    if (!outline) continue;
+    quality += outline.score;
+    found.push({ id, center: outline.center, marked: hasInteriorInk(context, outline, markerMedian) });
+  }
+  if (!found.length) return null;
+  const filled = found.filter((candidate) => candidate.marked && found.every((other) => {
+    const sameCircle = Math.hypot(
+      other.center.x - candidate.center.x, other.center.y - candidate.center.y,
+    ) < column.sizeMm / 2;
+    return (other.id === candidate.id) === sameCircle;
+  })).map(({ id }) => id);
+  return { filled: [...new Set(filled)], quality };
+}
+
 /**
  * Reads one photographed page. `pageSelection` "auto" identifies the page by its page-id marks,
- * or else takes the page with the most filled marks. Throws with a message for the user when the
- * page cannot be read.
+ * or the user selects the printed page number. Throws when the page cannot be read.
  */
 export function scanPage<K>(
   photo: ScanPhoto,
@@ -745,16 +845,7 @@ export function scanPage<K>(
     geometry: ScanMarkGeometry;
   },
 ): ScanResult<K> {
-  const context = buildScanContext(photo, layout);
-  const markerMedian = sampleMarkerMedian(context, layout);
-  if (markerMedian > MAX_MARKER_LUMA) {
-    throw new Error("Alignment markers not detected. Keep the four corner markers visible.");
-  }
-  const backgroundMedian = samplePageBackground(context, layout);
-  const contrast = backgroundMedian - markerMedian;
-  if (backgroundMedian < MIN_PAGE_BACKGROUND_LUMA && contrast < MIN_MARKER_CONTRAST) {
-    throw new Error("Page background not detected. Keep the full page visible and well lit.");
-  }
+  const { context, markerMedian, backgroundMedian } = pageMeasurement(photo, layout);
   const jobCode = readJobCode(context, layout, backgroundMedian, markerMedian);
   if (layout.jobCode && !jobCode.detected) {
     throw new Error("Print code not detected. Make sure the full page is visible.");
@@ -767,9 +858,13 @@ export function scanPage<K>(
     jobCodeDetected: jobCode.detected,
     jobCodeMatches: jobCode.matches,
   });
-  if (options.pageSelection !== "auto") return analyze(options.pageSelection);
-
   const pageIdIndex = detectPageIdIndex(context, layout, backgroundMedian, markerMedian);
+  if (options.pageSelection !== "auto") {
+    if (pageIdIndex != null && pageIdIndex !== options.pageSelection) {
+      throw new Error(`This is page ${pageIdIndex + 1}. Select that page or use Auto.`);
+    }
+    return { ...analyze(options.pageSelection), pageIdDetected: pageIdIndex != null };
+  }
   if (pageIdIndex != null) return { ...analyze(pageIdIndex), pageIdDetected: true };
   if (options.pageCount === 1) return analyze(0);
   throw new Error("Page number not detected. Select the printed page number and scan again.");

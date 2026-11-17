@@ -12,15 +12,12 @@ import {
 } from "taskify-core";
 import { sanitizeRemote } from "./displaySafe.js";
 import {
-  countLeadingZeroBits,
   classifyRelayRejection,
   inboxReadRelays,
   newNip17WrapKey,
   nip17Crypto,
   nip17KeyParty,
-  mineEventTemplate,
-  recordRelayProofOfWorkRejection,
-  relayProofOfWorkDifficulty,
+  publishWithRelayProofOfWork,
   takeWhenPublishSlotIsAvailable,
   type RelayPublishBudget,
 } from "taskify-runtime-nostr";
@@ -72,56 +69,52 @@ async function publishWrap(
   relays: string[],
   template: Parameters<typeof finalizeEvent>[0],
   wrapKey: Uint8Array,
-  difficulty: number,
   onauth: ReturnType<typeof authSigner>,
   publishBudget: RelayPublishBudget,
 ): Promise<void> {
-  const send = async (targets: string[], target: number) => {
-    const settings = cliProofOfWorkSettings();
-    if (target > 0) settings.onMine?.(target, targets);
-    const event = finalizeEvent(await mineEventTemplate(template, wrapKey, target, miningOptions()), wrapKey);
-    try {
-      const results = await Promise.allSettled(pool.publish(targets, event, { onauth, maxWait: 10_000 }));
-      results.forEach((result, index) => {
-        if (result.status === "fulfilled") {
-          publishBudget.recordAccepted(targets[index], Date.now());
-          return;
-        }
-        const kind = classifyRelayRejection(reasonText(result.reason));
-        if (kind === "rate-limited") publishBudget.recordRateLimited(targets[index], Date.now());
-        else if (kind === "banned") publishBudget.recordBanned(targets[index], Date.now());
-      });
-      return { event, results };
-    } finally {
-      const releasedAt = Date.now();
-      for (const relay of targets) publishBudget.release(relay, releasedAt);
-    }
-  };
-  const firstSelection = publishBudget.take(relays, Date.now());
-  if (!firstSelection.ready.length) {
-    const wait = firstSelection.deferredUntil == null ? "later" : new Date(firstSelection.deferredUntil).toISOString();
-    throw new Error(`All target relays are being paced; the next publish slot is ${wait}.`);
+  const original = finalizeEvent(template, wrapKey);
+  const sign = async (candidate: Parameters<typeof finalizeEvent>[0]) => finalizeEvent(candidate, wrapKey);
+  const attempted = new Set<string>();
+  const errors: string[] = [];
+  try {
+    await publishWithRelayProofOfWork(original, relays, { pubkey: original.pubkey, sign }, async (event, urls) => {
+      const selection = urls.some(relay => attempted.has(relay))
+        ? await takeWhenPublishSlotIsAvailable(publishBudget, urls)
+        : publishBudget.take(urls, Date.now());
+      const targets = selection.ready;
+      if (!targets.length) {
+        const wait = selection.deferredUntil == null ? "later" : new Date(selection.deferredUntil).toISOString();
+        throw new Error(`All target relays are being paced; the next publish slot is ${wait}.`);
+      }
+      targets.forEach(relay => attempted.add(relay));
+      try {
+        const results = await Promise.allSettled(pool.publish(targets, event, { onauth, maxWait: 10_000 }));
+        const accepted: string[] = [];
+        const rejections = new Map<string, string>();
+        results.forEach((result, index) => {
+          const relay = targets[index];
+          if (result.status === "fulfilled") {
+            accepted.push(relay);
+            publishBudget.recordAccepted(relay, Date.now());
+            return;
+          }
+          const reason = reasonText(result.reason);
+          rejections.set(relay, reason);
+          errors.push(`${relay}: ${reason}`);
+          const kind = classifyRelayRejection(reason);
+          if (kind === "rate-limited") publishBudget.recordRateLimited(relay, Date.now());
+          else if (kind === "banned") publishBudget.recordBanned(relay, Date.now());
+        });
+        return { accepted, rejections };
+      } finally {
+        const releasedAt = Date.now();
+        for (const relay of targets) publishBudget.release(relay, releasedAt);
+      }
+    }, { ...cliProofOfWorkSettings(), ...miningOptions() });
+  } catch (error) {
+    if (!errors.length) throw error;
+    throw new Error(`No relay accepted the message. ${errors.join("; ")}`, { cause: error });
   }
-  const firstTargets = firstSelection.ready;
-  const first = await send(firstTargets, difficulty);
-  const failures = first.results.flatMap((result, index) =>
-    result.status === "rejected" ? [`${firstTargets[index]}: ${reasonText(result.reason)}`] : []);
-  const achieved = countLeadingZeroBits(first.event.id);
-  const retry = new Map<string, number>();
-  first.results.forEach((result, index) => {
-    if (result.status !== "rejected") return;
-    const required = recordRelayProofOfWorkRejection(firstTargets[index], reasonText(result.reason));
-    if (required != null && required > achieved) retry.set(firstTargets[index], required);
-  });
-  let accepted = first.results.some((result) => result.status === "fulfilled");
-  if (retry.size) {
-    const retryTargets = (await takeWhenPublishSlotIsAvailable(publishBudget, Array.from(retry.keys()))).ready;
-    if (retryTargets.length) {
-      const second = await send(retryTargets, Math.max(...retryTargets.map((relay) => retry.get(relay) ?? 0)));
-      if (second.results.some((result) => result.status === "fulfilled")) accepted = true;
-    }
-  }
-  if (!accepted) throw new Error(`No relay accepted the message. ${failures.join("; ")}`);
 }
 
 /** `fallback` plus the relays in the recipient's newest signed inbox list (kind 10050). */
@@ -150,7 +143,6 @@ export async function sendShareEnvelopeNip17(input: {
   const recipient = input.recipientPubkeyHex.toLowerCase();
   // NIP-17: deliver to the recipient's signed inbox relays as well as our own.
   const relays = await recipientInboxRelays(recipient, ownRelays);
-  const difficulty = await relayProofOfWorkDifficulty(relays);
   const now = Date.now() / 1000;
   // taskify-core's NIP-17 rules, shared with the apps (fixtures/nip17-vectors.json).
   const rumor = createNip17Rumor(
@@ -169,7 +161,7 @@ export async function sendShareEnvelopeNip17(input: {
   const publishBudget = createCliRelayPublishBudget();
   try {
     for (const { template, wrapKey } of wrapped) {
-      await publishWrap(pool, relays, template, wrapKey, difficulty, authSigner(senderSecret), publishBudget);
+      await publishWrap(pool, relays, template, wrapKey, authSigner(senderSecret), publishBudget);
     }
   } finally {
     pool.close(relays);

@@ -1,3 +1,4 @@
+import type { TaskifyBotUiAction } from "taskify-core";
 import { useState } from "react";
 import {
   buildHermesSessionResumeCommand,
@@ -7,6 +8,8 @@ import {
 export type HermesSessionPickerProps = {
   peerPubkey: string;
   listing: HermesSessionListing;
+  menuId?: string;
+  sendBotUiCommand?: (peer: string, text: string, action: TaskifyBotUiAction, bind: boolean) => Promise<void>;
   sendDirectTextMessage: (peerPubkey: string, content: string) => Promise<void>;
 };
 
@@ -14,6 +17,8 @@ export function HermesSessionPicker({
   peerPubkey,
   listing,
   sendDirectTextMessage,
+  menuId,
+  sendBotUiCommand,
 }: HermesSessionPickerProps) {
   const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
   const [sentSessionId, setSentSessionId] = useState<string | null>(null);
@@ -25,7 +30,12 @@ export function HermesSessionPicker({
     setSentSessionId(null);
     setActionError(null);
     try {
-      await sendDirectTextMessage(peerPubkey, buildHermesSessionResumeCommand(sessionId));
+      const text = buildHermesSessionResumeCommand(sessionId);
+      if (menuId && sendBotUiCommand) {
+        await sendBotUiCommand(peerPubkey, text, { kind: "session-resume", menuId, sessionId }, true);
+      } else {
+        await sendDirectTextMessage(peerPubkey, text);
+      }
       setSentSessionId(sessionId);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not resume the session.");

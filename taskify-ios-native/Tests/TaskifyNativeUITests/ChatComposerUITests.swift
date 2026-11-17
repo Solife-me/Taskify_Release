@@ -9,6 +9,38 @@ final class ChatComposerUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testOutgoingBubbleAppearsWhileWaitingForRelayAcceptance() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_INITIAL_TAB"] = "chat"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_FIXTURE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_CHAT_DELAY_ACCEPTANCE"] = "1"
+        app.launch()
+
+        let contact = app.staticTexts["UI Test Contact"].firstMatch
+        XCTAssertTrue(contact.waitForExistence(timeout: 15))
+        contact.tap()
+        let composer = app.textViews.firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        let text = "Bubble awaiting first relay"
+        composer.typeText(text)
+        app.buttons["Send message"].tap()
+
+        XCTAssertTrue(app.staticTexts[text].firstMatch.waitForExistence(timeout: 2))
+        let sending = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label IN %@", ["Sending…", "Message Sending…"])
+        ).firstMatch
+        XCTAssertTrue(sending.waitForExistence(timeout: 2))
+
+        let sent = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label IN %@", ["Sent", "Message Sent"])
+        ).firstMatch
+        XCTAssertTrue(sending.waitForNonExistence(timeout: 8))
+        XCTAssertTrue(sent.exists)
+    }
+
     func testIPadConversationStaysBesideListAndPreservesDraftOnRotation() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"

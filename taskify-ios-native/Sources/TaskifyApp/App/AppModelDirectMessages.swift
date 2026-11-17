@@ -16,25 +16,38 @@ extension AppModel {
         content: String,
         replyToEventID: String? = nil,
         additionalTags: [[String]] = [],
-        optimisticLocalEcho: Bool = false
+        optimisticLocalEcho: Bool = false,
+        onLocalEcho: (() -> Void)? = nil
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw NostrDirectMessageError.emptyMessage }
 #if DEBUG
         if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_FIXTURE"] == "1",
            ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] == "1" {
-            // Exercise local insertion before composer clearing without publishing test data.
-            let eventID = UUID().uuidString
+            // Exercise composer rendering and simulated relay acceptance without publishing test data.
+            let eventID = UUID().uuidString.lowercased()
+            let delayAcceptance = ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_DELAY_ACCEPTANCE"] == "1"
             if snapshot.ingestDirectMessage(NostrDirectMessage(
                 rumorEventID: eventID, wrapEventID: eventID,
                 peerPublicKey: recipientValue, senderPublicKey: identityPublicKey,
                 content: text, createdAt: currentDirectMessageTimestamp(), isIncoming: false,
                 replyToEventID: replyToEventID,
-                botUiAction: TaskifyBotUiContract.action(from: additionalTags)
+                botUiAction: TaskifyBotUiContract.action(from: additionalTags),
+                deliveryState: delayAcceptance ? .queued : .sent
             )) {
                 scheduleSave()
             }
-            await Task.yield()
+            onLocalEcho?()
+            if delayAcceptance {
+                let accountID = identityPublicKey
+                Task {
+                    try await Task.sleep(for: .seconds(5))
+                    guard accountID == identityPublicKey else { return }
+                    if snapshot.setDirectMessageDeliveryState(rumorEventID: eventID, state: .sent) {
+                        scheduleSave()
+                    }
+                }
+            }
             return
         }
 #endif
@@ -47,7 +60,8 @@ extension AppModel {
             )],
             replyToEventID: replyToEventID,
             attachmentComment: nil,
-            optimisticLocalEcho: optimisticLocalEcho
+            optimisticLocalEcho: optimisticLocalEcho,
+            onLocalEcho: onLocalEcho
         )
     }
 
@@ -56,7 +70,8 @@ extension AppModel {
     func sendBotUiCommand(
         to recipientValue: String,
         content: String,
-        action: TaskifyBotUiAction
+        action: TaskifyBotUiAction,
+        bindToListing: Bool = false
     ) async throws {
         guard snapshot.groupConversation(id: recipientValue) == nil else {
             throw NostrDirectMessageError.invalidGroup
@@ -65,49 +80,20 @@ extension AppModel {
         try await sendDirectMessage(
             to: recipientValue,
             content: content,
+            replyToEventID: bindToListing ? action.menuId : nil,
             additionalTags: [tag]
         )
 #if DEBUG
         if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_HERMES_MENU"] == "1",
            ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_CHAT_LOCAL_SENDS"] == "1" {
-            let responseText: String
-            switch action.kind {
-            case .catalogRequest:
-                let models: [String]
-                switch action.providerSlug {
-                case "nous":
-                    models = [
-                        "anthropic/claude-fable-5.1", "anthropic/claude-fable-5",
-                        "anthropic/claude-opus-5.5", "anthropic/claude-opus-5",
-                        "anthropic/claude-opus-4.8", "anthropic/claude-sonnet-5.5",
-                        "openai/gpt-6-astra", "google/gemini-4-argon",
-                        "x-ai/grok-4.7", "deepseek/deepseek-v4-pro",
-                        "qwen/qwen3.8-max-0902", "moonshotai/kimi-k3",
-                        "z-ai/glm-5.3",
-                    ]
-                default:
-                    models = [
-                        "lfm3-audio:latest", "lfm3-omni:latest",
-                        "phonon:40m-multilingual", "phonon:latest", "bonsai-2:27b",
-                        "beam:cloud", "minimax-m3.1-flash:cloud",
-                        "deepseek-v4.1-flash:cloud", "glm-5.3-flash:cloud",
-                        "ornith-1.5:35b", "kimi-k3:cloud", "gemma4:26b-mlx",
-                        "nomic-embed-text-v2-moe:latest",
-                    ]
-                }
-                let payload = try JSONSerialization.data(withJSONObject: [
-                    "provider": action.providerSlug,
-                    "models": models,
-                ])
-                responseText = String(decoding: payload, as: UTF8.self)
-            case .modelSelect:
-                responseText = """
-                Model switched to `\(action.modelId ?? "")`
-                Provider: \(action.providerSlug)
-                Context: 1,048,576 tokens
-                _(session only — add --global to persist)_
-                """
-            }
+            guard action.kind == .modelSelect,
+                  ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_HERMES_NO_CONFIRMATION"] != "1" else { return }
+            let responseText = """
+            Model switched to `\(action.modelId ?? "")`
+            Provider: \(action.providerSlug)
+            Context: 1,048,576 tokens
+            _(session only — add --global to persist)_
+            """
             let responseID = UUID().uuidString
             if snapshot.ingestDirectMessage(NostrDirectMessage(
                 rumorEventID: responseID,
@@ -131,7 +117,8 @@ extension AppModel {
         attachments: [NostrDirectMessageAttachment],
         replyToEventID: String? = nil,
         comment: String? = nil,
-        optimisticLocalEcho: Bool = false
+        optimisticLocalEcho: Bool = false,
+        onLocalEcho: (() -> Void)? = nil
     ) async throws {
         guard !attachments.isEmpty,
               attachments.count <= NostrDirectMessageAttachment.maximumBatchCount else {
@@ -153,7 +140,7 @@ extension AppModel {
                     scheduleSave()
                 }
             }
-            await Task.yield()
+            onLocalEcho?()
             return
         }
 #endif
@@ -183,7 +170,8 @@ extension AppModel {
             drafts: drafts,
             replyToEventID: replyToEventID,
             attachmentComment: comment,
-            optimisticLocalEcho: optimisticLocalEcho
+            optimisticLocalEcho: optimisticLocalEcho,
+            onLocalEcho: onLocalEcho
         )
     }
 
@@ -192,7 +180,8 @@ extension AppModel {
         drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
         attachmentComment: String?,
-        optimisticLocalEcho: Bool
+        optimisticLocalEcho: Bool,
+        onLocalEcho: (() -> Void)?
     ) async throws {
         guard !drafts.isEmpty else { throw NostrDirectMessageError.emptyMessage }
         if let group = snapshot.groupConversation(id: recipientValue) {
@@ -204,7 +193,8 @@ extension AppModel {
                 drafts: drafts,
                 replyToEventID: replyToEventID,
                 attachmentComment: attachmentComment,
-                optimisticLocalEcho: optimisticLocalEcho
+                optimisticLocalEcho: optimisticLocalEcho,
+                onLocalEcho: onLocalEcho
             )
             return
         }
@@ -246,13 +236,14 @@ extension AppModel {
                 content: draft.content
             )
         }
-        let optimisticMessages = try optimisticLocalEcho
+        let optimisticMessages = try (optimisticLocalEcho || onLocalEcho != nil)
             ? ingestOptimisticDirectMessages(
                 rumors: rumors,
                 attachmentComment: attachmentComment,
                 identity: identity
             )
             : []
+        onLocalEcho?()
         do {
             let fallbackRelays = directMessageDiscoveryRelayURLs(recipientPublicKey: recipientHex)
             guard !fallbackRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
@@ -272,32 +263,19 @@ extension AppModel {
                 deliveryPlan.recipientRelayURLs.count,
                 fallbackRelays.count
             )
-            let cryptoStartedAt = ProcessInfo.processInfo.systemUptime
-            let batch = try await TaskifyRelayProofOfWork.prepare(
-                relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
-            ) {
-                var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
-                routes[recipientHex] = deliveryPlan.recipientRelayURLs
-                return try NIP17OutgoingMessageBatch(
-                    rumors: rumors,
-                    attachmentComment: attachmentComment,
-                    identity: identity,
-                    relayURLsByRecipient: routes
-                )
-            }
-            os_signpost(
-                .event,
-                log: Self.dmPerformanceLog,
-                name: "DM Gift Wrap",
-                signpostID: sendSignpostID,
-                "duration_ms=%.1f",
-                (ProcessInfo.processInfo.systemUptime - cryptoStartedAt) * 1_000
+            let enqueueStartedAt = ProcessInfo.processInfo.systemUptime
+            var routes = [identity.publicKeyHex: deliveryPlan.senderRelayURLs]
+            routes[recipientHex] = deliveryPlan.recipientRelayURLs
+            try await enqueueRoutedDirectMessageBatch(
+                rumors: rumors,
+                attachmentComment: attachmentComment,
+                identity: identity,
+                relayURLsByRecipient: routes,
+                isGroup: false
             )
             let allDeliveryRelays = TaskifyRelayURL.normalizedList(
                 deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs
             )
-            let enqueueStartedAt = ProcessInfo.processInfo.systemUptime
-            try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: false)
             let queuedCount = await syncEngine.pendingPublishCount()
             os_signpost(
                 .event,
@@ -358,7 +336,7 @@ extension AppModel {
         ) else { throw NostrDirectMessageError.noRelays }
 
         let createdAt = nextNostrTimestamp()
-        let wrapped = try await TaskifyRelayProofOfWork.prepare(relays: deliveryPlan.senderRelayURLs + deliveryPlan.recipientRelayURLs) {
+        let wrapped = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
             let rumor = try NIP17Rumor(
                 publicKey: identity.publicKeyHex,
                 createdAt: createdAt,
@@ -370,14 +348,14 @@ extension AppModel {
                 ],
                 content: value
             )
-            let recipientWrap = try NIP17GiftWrap.wrap(
+            let recipientWrap = try NIP17GiftWrap.wrapForOutbox(
                 rumor: rumor,
                 sender: identity,
                 recipientPublicKey: recipientPublicKey
             )
             let senderWrap = isSelfMessage
                 ? recipientWrap
-                : try NIP17GiftWrap.wrap(
+                : try NIP17GiftWrap.wrapForOutbox(
                     rumor: rumor,
                     sender: identity,
                     recipientPublicKey: identity.publicKey
@@ -387,7 +365,7 @@ extension AppModel {
         let rumor = wrapped.0
         let recipientWrap = wrapped.1
         let senderWrap = wrapped.2
-        let decrypted = NIP17DecryptedRumor(wrapEventID: senderWrap.id, rumor: rumor)
+        let decrypted = NIP17DecryptedRumor(wrapEventID: senderWrap.event.id, rumor: rumor)
         guard let localReaction = NostrDirectMessageReaction(
             decrypted: decrypted,
             identityPublicKey: identity.publicKeyHex
@@ -399,21 +377,23 @@ extension AppModel {
         )
         let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
         var requests = [TaskSyncRelayPublishRequest(
-            event: recipientWrap,
+            event: recipientWrap.event,
             relayURLs: deliveryPlan.recipientRelayURLs,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):reaction:recipient",
-            acknowledgementPolicy: .anyRelay,
-            expiresAt: expiresAt
+            acknowledgementPolicy: .firstRelay,
+            expiresAt: expiresAt,
+            encryptedProofOfWorkKey: recipientWrap.encryptedProofOfWorkKey
         )]
         if !isSelfMessage {
             requests.append(TaskSyncRelayPublishRequest(
-                event: senderWrap,
+                event: senderWrap.event,
                 relayURLs: deliveryPlan.senderRelayURLs,
                 outboxScope: Self.directMessagesOutboxScope,
                 recordID: "\(rumor.id):reaction:sender",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
+                acknowledgementPolicy: .firstRelay,
+                expiresAt: expiresAt,
+                encryptedProofOfWorkKey: senderWrap.encryptedProofOfWorkKey
             ))
         }
         try await syncEngine.enqueueForPublish(requests)
@@ -433,7 +413,8 @@ extension AppModel {
         drafts: [DirectMessageRumorDraft],
         replyToEventID: String?,
         attachmentComment: String?,
-        optimisticLocalEcho: Bool
+        optimisticLocalEcho: Bool,
+        onLocalEcho: (() -> Void)?
     ) async throws {
         let identity = try outboundIdentity()
         guard group.memberPublicKeys.contains(identity.publicKeyHex),
@@ -455,13 +436,14 @@ extension AppModel {
                 content: draft.content
             )
         }
-        let optimisticMessages = try optimisticLocalEcho
+        let optimisticMessages = try (optimisticLocalEcho || onLocalEcho != nil)
             ? ingestOptimisticDirectMessages(
                 rumors: rumors,
                 attachmentComment: attachmentComment,
                 identity: identity
             )
             : []
+        onLocalEcho?()
         do {
             let relayMap = await groupDeliveryRelays(group: group, identity: identity)
             let recipientRelays = relayMap.values.flatMap { $0 }
@@ -474,18 +456,16 @@ extension AppModel {
                   !recipientRelays.isEmpty,
                   !senderRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
 
-            let batch = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
-                var routes = relayMap
-                routes[identity.publicKeyHex] = senderRelays
-                return try NIP17OutgoingMessageBatch(
-                    rumors: rumors,
-                    attachmentComment: attachmentComment,
-                    identity: identity,
-                    relayURLsByRecipient: routes
-                )
-            }
+            var routes = relayMap
+            routes[identity.publicKeyHex] = senderRelays
+            try await enqueueRoutedDirectMessageBatch(
+                rumors: rumors,
+                attachmentComment: attachmentComment,
+                identity: identity,
+                relayURLsByRecipient: routes,
+                isGroup: true
+            )
             let allRelays = TaskifyRelayURL.normalizedList(senderRelays + recipientRelays)
-            try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: true)
             let boards = snapshot.boardsForSync
             Task { [syncEngine] in
                 await syncEngine.configure(
@@ -511,23 +491,36 @@ extension AppModel {
             attachmentComment: attachmentComment,
             identity: identity
         )
-        var changed = false
-        for message in messages {
-            changed = snapshot.ingestDirectMessage(message) || changed
-        }
-        if changed { scheduleSave() }
+        ingestLocalDirectMessages(messages)
         return messages
     }
 
-    private func markOptimisticDirectMessagesFailed(_ messages: [NostrDirectMessage]) {
+    private func ingestLocalDirectMessages(_ messages: [NostrDirectMessage]) {
+        var updated = snapshot
         var changed = false
         for message in messages {
-            changed = snapshot.setDirectMessageDeliveryState(
+            changed = updated.ingestDirectMessage(message) || changed
+        }
+        if changed {
+            snapshot = updated
+            scheduleSave()
+        }
+    }
+
+    private func markOptimisticDirectMessagesFailed(_ messages: [NostrDirectMessage]) {
+        guard messages.first?.senderPublicKey == identityPublicKey else { return }
+        var updated = snapshot
+        var changed = false
+        for message in messages {
+            changed = updated.setDirectMessageDeliveryState(
                 rumorEventID: message.rumorEventID,
                 state: .failed
             ) || changed
         }
-        if changed { scheduleSave() }
+        if changed {
+            snapshot = updated
+            scheduleSave()
+        }
     }
 
     private func enqueueDirectMessageBatch(
@@ -536,9 +529,7 @@ extension AppModel {
         isGroup: Bool
     ) async throws {
         guard identityPublicKey == identity.publicKeyHex else { throw NostrDirectMessageError.identityUnavailable }
-        for message in batch.localMessages {
-            if snapshot.ingestDirectMessage(message) { scheduleSave() }
-        }
+        ingestLocalDirectMessages(batch.localMessages)
         let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
         let isSelfMessage = !isGroup && batch.localMessages.first?.peerPublicKey == identity.publicKeyHex
         let requests = batch.deliveries.map { delivery in
@@ -551,21 +542,40 @@ extension AppModel {
                 relayURLs: delivery.relayURLs,
                 outboxScope: Self.directMessagesOutboxScope,
                 recordID: "\(delivery.rumorEventID):\(suffix)",
-                acknowledgementPolicy: .anyRelay,
+                acknowledgementPolicy: .firstRelay,
                 expiresAt: expiresAt,
-                dependsOnEventID: delivery.dependsOnEventID
+                dependsOnEventID: delivery.dependsOnEventID,
+                encryptedProofOfWorkKey: delivery.encryptedProofOfWorkKey
             )
         }
         do {
             try await syncEngine.enqueueForPublish(requests)
         } catch {
-            for message in batch.localMessages {
-                if snapshot.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .failed) {
-                    scheduleSave()
-                }
-            }
+            markOptimisticDirectMessagesFailed(batch.localMessages)
             throw error
         }
+    }
+
+    /// Gift wraps are encrypted once per recipient. The durable outbox keeps the wrap
+    /// and its encrypted signing key so it can add proof of work if a relay requires it.
+    private func enqueueRoutedDirectMessageBatch(
+        rumors: [NIP17Rumor],
+        attachmentComment: String?,
+        identity: NostrIdentity,
+        relayURLsByRecipient: [String: [String]],
+        isGroup: Bool
+    ) async throws {
+        let batch = try await Task.detached(priority: .userInitiated) {
+            try NIP17OutgoingMessageBatch(
+                rumors: rumors,
+                attachmentComment: attachmentComment,
+                identity: identity,
+                relayURLsByRecipient: relayURLsByRecipient,
+                allowProofOfWorkRetry: true
+            )
+        }.value
+        try Task.checkCancellation()
+        try await enqueueDirectMessageBatch(batch, identity: identity, isGroup: isGroup)
     }
 
     private func publishGroupReaction(
@@ -605,8 +615,8 @@ extension AppModel {
                   !relays.isEmpty else { return nil }
             return (member, publicKey, relays)
         }
-        let wrapped = try await TaskifyRelayProofOfWork.prepare(relays: senderRelays + recipientRelays) {
-            let selfWrap = try NIP17GiftWrap.wrap(
+        let wrapped = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
+            let selfWrap = try NIP17GiftWrap.wrapForOutbox(
                 rumor: rumor,
                 sender: identity,
                 recipientPublicKey: identity.publicKey
@@ -614,7 +624,7 @@ extension AppModel {
             let deliveries = try recipientPlans.map { member, publicKey, relays in
                 GroupGiftWrapDelivery(
                     memberPublicKey: member,
-                    event: try NIP17GiftWrap.wrap(
+                    wrap: try NIP17GiftWrap.wrapForOutbox(
                         rumor: rumor,
                         sender: identity,
                         recipientPublicKey: publicKey
@@ -626,7 +636,7 @@ extension AppModel {
         }
         let selfWrap = wrapped.0
         guard let localReaction = NostrDirectMessageReaction(
-            decrypted: NIP17DecryptedRumor(wrapEventID: selfWrap.id, rumor: rumor),
+            decrypted: NIP17DecryptedRumor(wrapEventID: selfWrap.event.id, rumor: rumor),
             identityPublicKey: identity.publicKeyHex
         ) else { throw NostrDirectMessageError.invalidGroup }
         if snapshot.ingestDirectMessageReaction(localReaction) { scheduleSave() }
@@ -634,21 +644,23 @@ extension AppModel {
         let expiresAt = Date().addingTimeInterval(48 * 60 * 60)
         var requests = wrapped.1.map { delivery in
             TaskSyncRelayPublishRequest(
-                event: delivery.event,
+                event: delivery.wrap.event,
                 relayURLs: delivery.relayURLs,
                 outboxScope: Self.directMessagesOutboxScope,
                 recordID: "\(rumor.id):group-reaction:\(delivery.memberPublicKey)",
-                acknowledgementPolicy: .anyRelay,
-                expiresAt: expiresAt
+                acknowledgementPolicy: .firstRelay,
+                expiresAt: expiresAt,
+                encryptedProofOfWorkKey: delivery.wrap.encryptedProofOfWorkKey
             )
         }
         requests.append(TaskSyncRelayPublishRequest(
-            event: selfWrap,
+            event: selfWrap.event,
             relayURLs: senderRelays,
             outboxScope: Self.directMessagesOutboxScope,
             recordID: "\(rumor.id):group-reaction:sender",
-            acknowledgementPolicy: .anyRelay,
-            expiresAt: expiresAt
+            acknowledgementPolicy: .firstRelay,
+            expiresAt: expiresAt,
+            encryptedProofOfWorkKey: selfWrap.encryptedProofOfWorkKey
         ))
         try await syncEngine.enqueueForPublish(requests)
 

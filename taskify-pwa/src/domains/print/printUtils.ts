@@ -28,11 +28,18 @@ export function normalizeBoardPrintJob(value: any): BoardPrintJob | null {
         const photoCount = typeof task.photoCount === "number" && task.photoCount > 0
           ? Math.min(3, Math.floor(task.photoCount))
           : 0;
+        const dueText = typeof task.dueText === "string" && task.dueText.trim() ? task.dueText.trim() : "";
+        const note = typeof task.note === "string" && task.note.trim() ? task.note : "";
+        const noteLineCount = note && typeof task.noteLineCount === "number" && task.noteLineCount > 0
+          ? Math.floor(task.noteLineCount)
+          : 0;
         return {
           id: taskId,
           title,
           ...(label ? { label } : {}),
           ...(detail ? { detail } : {}),
+          ...(dueText ? { dueText } : {}),
+          ...(note ? { note, ...(noteLineCount ? { noteLineCount } : {}) } : {}),
           ...(subtasks.length ? { subtasks } : {}),
           ...(photoCount ? { photoCount } : {}),
         };

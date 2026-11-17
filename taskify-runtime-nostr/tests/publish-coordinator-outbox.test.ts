@@ -280,7 +280,7 @@ test("PublishCoordinator mines the maximum NIP-13 difficulty required by target 
     {
       outboxStore: store,
       retryBaseMs: 60_000,
-      resolveProofOfWorkDifficulty: async () => 8,
+      knownProofOfWorkDifficulty: () => 8,
     },
   );
   const originalPublish = NDKEvent.prototype.publish;
@@ -301,7 +301,8 @@ test("PublishCoordinator mines the maximum NIP-13 difficulty required by target 
     const nonce = rawDuringPublish.tags.find((tag: string[]) => tag[0] === "nonce");
     assert.ok(nonce, "mined event must include a nonce tag");
     assert.equal(nonce[2], "8");
-    assert.ok(countLeadingZeroBits(result.event.id) >= 8);
+    assert.ok(countLeadingZeroBits(rawDuringPublish.id) >= 8);
+    assert.equal(result.event.tags.some((tag) => tag[0] === "nonce"), false);
   } finally {
     NDKEvent.prototype.publish = originalPublish;
     coordinator.shutdown();
@@ -317,7 +318,7 @@ test("PublishCoordinator rejects an already-signed event below the required diff
     {
       outboxStore: store,
       retryBaseMs: 60_000,
-      resolveProofOfWorkDifficulty: async () => 8,
+      knownProofOfWorkDifficulty: () => 8,
     },
   );
   const signed = new NDKEvent({} as any, {
@@ -329,9 +330,79 @@ test("PublishCoordinator rejects an already-signed event below the required diff
 
   await assert.rejects(
     coordinator.publish(signed, { relayUrls: ["wss://pow.example"] }),
-    /cannot add proof of work to an already-signed event/i,
+    /original signer is required/i,
   );
   coordinator.shutdown();
+});
+
+test("an ordinary acknowledgement can unblock the browser while strict relay delivery continues", async () => {
+  const ordinary = "wss://ordinary.example";
+  const strict = "wss://strict.example";
+  const store = new MemoryOutboxStore();
+  const coordinator = new PublishCoordinator({} as NDK, async urls => relaySet(urls ?? []) as never, undefined, {
+    outboxStore: store, publishBudget: false, knownProofOfWorkDifficulty: relay => relay === strict ? 8 : 0,
+    returnOnFirstAcknowledgement: true,
+  });
+  const originalPublish = NDKEvent.prototype.publish;
+  let releaseStrict!: () => void;
+  const holdStrict = new Promise<void>(resolve => { releaseStrict = resolve; });
+  NDKEvent.prototype.publish = async function (targets?: { relayUrls?: string[] }) {
+    const [url] = targets!.relayUrls!;
+    if (url === strict) await holdStrict;
+    return new Set([relay(url)]) as never;
+  };
+  try {
+    let acknowledged = false;
+    const pending = coordinator.publish(template, { relayUrls: [ordinary, strict], signer: generateSecretKey() })
+      .then(() => { acknowledged = true; });
+    try {
+      await waitFor(() => acknowledged);
+      const [row] = Array.from(store.rows.values());
+      assert.deepEqual(row.ackedRelays, [ordinary]);
+      assert.deepEqual(row.pendingRelays, [strict]);
+    } finally {
+      releaseStrict();
+      await pending;
+    }
+    await waitFor(() => store.rows.size === 0);
+  } finally {
+    NDKEvent.prototype.publish = originalPublish;
+    await coordinator.shutdown();
+  }
+});
+
+test("a mined copy survives a session restart and is retried without the signing key", async () => {
+  const ordinary = "wss://ordinary.example";
+  const strict = "wss://strict.example";
+  const store = new MemoryOutboxStore();
+  const makeCoordinator = () => new PublishCoordinator({} as NDK, async urls => relaySet(urls ?? []) as never, undefined, {
+    outboxStore: store, publishBudget: false, knownProofOfWorkDifficulty: relay => relay === strict ? 8 : 0,
+  });
+  const first = makeCoordinator();
+  const reopened = makeCoordinator();
+  const originalPublish = NDKEvent.prototype.publish;
+  const calls: Array<{ target: string; id: string }> = [];
+  NDKEvent.prototype.publish = async function (targets?: { relayUrls?: string[] }) {
+    const [target] = targets!.relayUrls!;
+    calls.push({ target, id: this.id });
+    if (target === strict && calls.length === 2) throw new Error("offline");
+    return new Set([relay(target)]) as never;
+  };
+  try {
+    await first.publish(template, { relayUrls: [ordinary, strict], signer: generateSecretKey() });
+    await first.shutdown();
+    const [row] = Array.from(store.rows.values());
+    assert.equal(row.payload.proofOfWorkEvent?.id, calls[1].id);
+    assert.deepEqual(row.ackedRelays, [ordinary]);
+    await reopened.drainOutbox({ force: true });
+    assert.deepEqual(calls.map(call => call.target), [ordinary, strict, strict]);
+    assert.equal(calls[1].id, calls[2].id);
+    assert.equal(store.rows.size, 0);
+  } finally {
+    NDKEvent.prototype.publish = originalPublish;
+    await first.shutdown();
+    await reopened.shutdown();
+  }
 });
 
 function countLeadingZeroBits(hex: string): number {

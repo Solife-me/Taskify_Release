@@ -12,6 +12,43 @@ const BOARD = "board-lists-1";
 const seconds = (ms: number) => Math.floor(ms / 1000);
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 
+test("cold and compound-board listings recover tasks behind a relay's history cap", async () => {
+  const h = await runtimeHarness({ relay: { historyCap: 3 } });
+  try {
+    for (let index = 0; index < 9; index++) {
+      const id = `task-${index}`;
+      h.relay.events.push(await taskEvent(BOARD, {
+        id, status: "open", payload: { title: id }, createdAt: seconds(START) - Math.floor(index / 2),
+      }));
+    }
+    for (const boardId of [BOARD, "board-compound-1"]) {
+      const tasks = await h.runtime.listTasks({ boardId, status: "any" });
+      assert.equal(tasks.length, 9);
+    }
+  } finally {
+    await h.close();
+  }
+});
+
+test("refresh keeps a cached tombstone when a stale replica returns an older live task", async () => {
+  const h = await runtimeHarness();
+  try {
+    const old = await taskEvent(BOARD, {
+      id: "removed", status: "open", payload: { title: "Old" }, createdAt: seconds(START) - 1,
+    });
+    h.relay.events.push(await taskEvent(BOARD, {
+      id: "removed", status: "deleted", payload: { title: "Old" }, createdAt: seconds(START),
+    }));
+    assert.deepEqual(await h.runtime.listTasks({ boardId: BOARD, status: "any" }), []);
+    h.relay.events.splice(0, 1, old);
+    assert.deepEqual(await h.runtime.listTasks({ boardId: BOARD, status: "any", refresh: true }), []);
+    assert.deepEqual(await h.runtime.listTasks({ boardId: "board-compound-1", status: "any", refresh: true }), []);
+    assert.equal(h.cache().boards[BOARD].tasks[0]?.status, "deleted");
+  } finally {
+    await h.close();
+  }
+});
+
 test("creating a task publishes one board-signed event with its tags and encrypted payload", async () => {
   const h = await runtimeHarness();
   try {

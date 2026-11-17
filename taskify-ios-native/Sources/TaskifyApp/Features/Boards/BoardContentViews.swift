@@ -848,7 +848,9 @@ struct TaskCardView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Edit \(displayTitle)")
+                    .accessibilityLabel(context.boardName.map {
+                        "Edit \(displayTitle), \($0) board"
+                    } ?? "Edit \(displayTitle)")
 
                     if !displayNote.isEmpty {
                         Button {
@@ -881,10 +883,19 @@ struct TaskCardView: View {
                                 }
 
                                 if task.dueDateEnabled, let dueDate = task.dueDate {
-                                    Label {
-                                        Text(formattedDueDate(dueDate))
-                                    } icon: {
-                                        Image(systemName: task.dueTimeEnabled ? "clock" : "calendar")
+                                    HStack(spacing: 4) {
+                                        Label {
+                                            Text(formattedDueDate(dueDate))
+                                        } icon: {
+                                            Image(systemName: task.dueTimeEnabled ? "clock" : "calendar")
+                                        }
+                                        .layoutPriority(1)
+
+                                        if let boardName = context.boardName {
+                                            Text("· \(boardName)")
+                                                .lineLimit(1)
+                                                .truncationMode(.tail)
+                                        }
                                     }
                                     .font(.caption)
                                     .foregroundStyle(TaskifyTheme.secondaryText)
@@ -1069,7 +1080,9 @@ struct TaskCardView: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
         .modifier(TaskDragSourceModifier(
-            payload: (allowsDragging && !isSelectionMode) ? TaskDragPayload(taskID: task.id) : nil,
+            payload: allowsDragging && (!isSelectionMode || isSelected)
+                ? TaskDragPayload(taskID: task.id, selectedTaskIDs: isSelectionMode ? selection?.selectedTaskIDs : nil)
+                : nil,
             title: displayTitle
         ))
         .accessibilityAction(named: isSelectionMode ? "Toggle selection" : "Edit task") {
@@ -1323,13 +1336,17 @@ struct TaskCardContext: Equatable {
     var streak: Int?
     /// The board key attachments are encrypted with.
     var mediaBoardID: String
+    /// An optional board label shown beside the due date, used when cards from multiple boards mix.
+    var boardName: String?
 }
 
 extension AppModel {
-    func cardContext(for task: TaskItem) -> TaskCardContext {
-        TaskCardContext(
+    func cardContext(for task: TaskItem, includesBoardName: Bool = false) -> TaskCardContext {
+        let board = board(withID: task.boardID)
+        return TaskCardContext(
             streak: visibleStreak(for: task),
-            mediaBoardID: board(withID: task.boardID)?.effectiveNostrBoardID ?? task.boardID
+            mediaBoardID: board?.effectiveNostrBoardID ?? task.boardID,
+            boardName: includesBoardName ? (board?.name ?? "Board") : nil
         )
     }
 

@@ -38,6 +38,7 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 
 ## Audits and dated investigations
 
+- [Beta Nostr task sync audit](audits/nostr-task-sync-beta-2026-11-14.md)
 - [Full-stack audit report — October 2, 2026](audits/full-stack-audit-report-2026-10-02.md)
 - [Full-stack audit record — September 30 to October 2, 2026](audits/full-stack-audit-2026-09-30.md)
 - [Native board view performance — 2026-09-12](audits/native-board-performance-2026-09-12.md)

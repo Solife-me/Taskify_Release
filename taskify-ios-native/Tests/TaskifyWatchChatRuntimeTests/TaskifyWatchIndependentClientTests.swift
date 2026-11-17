@@ -1,16 +1,24 @@
 import Foundation
 import XCTest
-import TaskifyWatchShared
+@testable import TaskifyWatchShared
 @testable import TaskifyWatchChatRuntime
 
 private final class WatchIndependentTransport: URLProtocol {
     private static let lock = NSLock()
     private static var capturedURLs: [URL] = []
+    private static var responder: ((URLRequest) -> Data)?
 
     static func reset() {
         lock.lock()
         defer { lock.unlock() }
         capturedURLs = []
+        responder = nil
+    }
+
+    static func respond(_ response: @escaping (URLRequest) -> Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        responder = response
     }
 
     static var urls: [URL] {
@@ -27,12 +35,13 @@ private final class WatchIndependentTransport: URLProtocol {
         let url = request.url!
         Self.lock.lock()
         Self.capturedURLs.append(url)
+        let responder = Self.responder
         Self.lock.unlock()
 
         let isWorker = url.host == "taskify.solife.me"
-        let status = isWorker ? 200 : 503
+        let status = isWorker || responder != nil ? 200 : 503
         let workerBody = url.path.hasSuffix("/publish") ? #"{"accepted":1}"# : #"{"events":[]}"#
-        let data = Data(isWorker ? workerBody.utf8 : #"{"error":"offline"}"#.utf8)
+        let data = responder?(request) ?? Data(isWorker ? workerBody.utf8 : #"{"error":"offline"}"#.utf8)
         client?.urlProtocol(self, didReceive: HTTPURLResponse(
             url: url, statusCode: status, httpVersion: nil, headerFields: nil
         )!, cacheStoragePolicy: .notAllowed)
@@ -75,6 +84,63 @@ final class TaskifyWatchIndependentClientTests: XCTestCase {
         WatchIndependentTransport.reset()
     }
 
+    func testHistoryResumesCappedPagesAndRecoversOlderTasksFromEveryBoard() async throws {
+        struct Page: Encodable {
+            let historyPage = true
+            let refreshed = true
+            let events: [TaskifyWatchNostrEvent]
+        }
+        let boardIDs = ["first-board-private-key", "second-board-private-key"]
+        let boards = boardIDs.map { TaskifyWatchBoard(id: $0, name: $0, openTaskCount: 0, nostrBoardID: $0) }
+        let stamp = Int(Date().timeIntervalSince1970)
+        var fixtures: [String: [TaskifyWatchNostrEvent]] = [:]
+        for boardID in boardIDs {
+            let author = try TaskifyWatchNostrCrypto.boardPublicKeyHex(for: boardID)
+            fixtures[author] = try (0..<7).map { number in
+                try TaskifyWatchNostrCrypto.taskEvent(
+                    taskID: "\(boardID)-\(number)", boardID: boardID, columnTag: "", status: "open",
+                    payload: Data("{}".utf8), createdAt: stamp - 30 - number / 2
+                )
+            }
+        }
+        WatchIndependentTransport.respond { request in
+            let body = request.httpBody ?? {
+                guard let stream = request.httpBodyStream else { return Data() }
+                stream.open()
+                defer { stream.close() }
+                var data = Data()
+                var buffer = [UInt8](repeating: 0, count: 4_096)
+                while stream.hasBytesAvailable {
+                    let read = stream.read(&buffer, maxLength: buffer.count)
+                    if read <= 0 { break }
+                    data.append(buffer, count: read)
+                }
+                return data
+            }()
+            let object = try! JSONSerialization.jsonObject(with: body) as! [String: Any]
+            let filter = object["filter"] as! [String: Any]
+            let author = (filter["authors"] as! [String])[0]
+            let until = filter["until"] as! Int
+            let events = (fixtures[author] ?? []).filter { $0.createdAt <= until && $0.createdAt >= (filter["since"] as! Int) }
+            return try! JSONEncoder().encode(Page(events: Array(events.prefix(3))))
+        }
+        let client = TaskifyWatchIndependentClient(session: session())
+        let profile = TaskifyWatchIndependentProfile(
+            publicKeyHex: try TaskifyWatchNostrCrypto.publicKeyHex(for: privateKey),
+            publicKeyNpub: "npub-test", relayURLs: []
+        )
+        let started = try await client.recoverTaskHistory(
+            boards: boards, gatewayBaseURL: nil, profile: profile, privateKey: privateKey, pageBudget: 3
+        )
+        XCTAssertFalse(started.completed)
+        XCTAssertEqual(Set(started.events.map(\.publicKey)).count, 2)
+        let continued = try await client.recoverTaskHistory(
+            boards: boards, gatewayBaseURL: nil, profile: profile, privateKey: privateKey, previous: started.cursors
+        )
+        XCTAssertTrue(continued.completed)
+        XCTAssertEqual(Set((started.events + continued.events).map(\.id)), Set(fixtures.values.flatMap { $0.map(\.id) }))
+    }
+
     func testSelfHostedGatewayFailureNeverFallsBackToTaskifyWorker() async throws {
         let client = TaskifyWatchIndependentClient(session: session())
 
@@ -111,6 +177,30 @@ final class TaskifyWatchIndependentClientTests: XCTestCase {
             "https://push.solife.me/v1/watch/tasks/query",
             "https://taskify.solife.me/api/watch/nostr/query",
         ])
+    }
+
+    func testDirectTaskRetriesOnlyTheRelayThatNamesAProofOfWorkFloor() async throws {
+        let requirements = TaskifyRelayRequirements(learnedURL: nil)
+        let client = TaskifyWatchIndependentClient(session: session(), requirements: requirements)
+        let event = try TaskifyWatchNostrCrypto.taskEvent(
+            taskID: "task", boardID: "private-board-secret", columnTag: "",
+            status: "open", payload: Data("{}".utf8), createdAt: 1_793_000_000
+        )
+        WatchIndependentTransport.respond { _ in
+            let reply = WatchIndependentTransport.urls.count == 1
+                ? #"{"accepted":1,"results":[{"relay":"wss://push.solife.me","status":"accepted"},{"relay":"wss://relay.solife.me","status":"rejected","message":"pow: difficulty 0 is less than 10"}]}"#
+                : #"{"accepted":1,"results":[{"relay":"wss://relay.solife.me","status":"accepted"}]}"#
+            return Data(reply.utf8)
+        }
+
+        try await client.publish(
+            event, relayURLs: ["wss://push.solife.me", "wss://relay.solife.me", "wss://unrelated.example"],
+            boardID: "private-board-secret", gatewayBaseURL: URL(string: "https://relay.example")!,
+            profile: profile(), privateKey: privateKey
+        )
+        XCTAssertEqual(WatchIndependentTransport.urls.count, 2)
+        let learned = await requirements.knownDifficulty(for: "wss://relay.solife.me")
+        XCTAssertEqual(learned, 10)
     }
 
     func testSelfHostedPublishFailureNeverFallsBackToTaskifyWorker() async throws {

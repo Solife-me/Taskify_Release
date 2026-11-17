@@ -50,6 +50,24 @@ test("writes are signed by the account and accepted by the relay", async () => {
   }
 });
 
+test("one-off publishers leave ordinary copies unmined and retry named refusals separately", async () => {
+  const ordinary = await startMockRelay();
+  const strict = await startMockRelay({ powDifficulty: 10 });
+  try {
+    const relays = [ordinary.url, strict.url];
+    const secretKeyHex = bytesToHex(generateSecretKey());
+    const result = await withStandaloneSession({ relays, secretKeyHex }, (session) =>
+      session.publish({ kind: 30078, content: "settings", tags: [["d", "proof"]] }));
+    assert.equal(ordinary.received.length, 1);
+    assert.equal(ordinary.events[0].id, result.event.id);
+    assert.equal(ordinary.events[0].tags.some((tag) => tag[0] === "nonce"), false);
+    assert.equal(strict.events[0].created_at, result.event.created_at);
+    assert.equal(strict.events[0].tags.find((tag) => tag[0] === "nonce")?.[2], "10");
+  } finally {
+    await Promise.all([ordinary.close(), strict.close()]);
+  }
+});
+
 test("one-off publishers honor a shared relay budget across sessions", async () => {
   const relay = await startMockRelay();
   try {

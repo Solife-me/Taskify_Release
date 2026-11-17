@@ -54,17 +54,22 @@ function raiseVersion(clock: VersionClock, boardTag: string, id: string, version
   return next;
 }
 
-function parseTombstones(raw: string | null): Clock {
-  const out: Clock = new Map();
+function parseTombstones(raw: string | null): VersionClock {
+  const out: VersionClock = new Map();
   if (!raw) return out;
   try {
     const parsed = JSON.parse(raw) as Record<string, Record<string, unknown>>;
     if (!parsed || typeof parsed !== "object") return out;
     for (const [boardTag, entries] of Object.entries(parsed)) {
       if (!entries || typeof entries !== "object") continue;
-      const map = new Map<string, number>();
-      for (const [taskId, at] of Object.entries(entries)) {
-        if (typeof at === "number" && at > 0) map.set(taskId, at);
+      const map = new Map<string, EventVersion>();
+      for (const [taskId, value] of Object.entries(entries)) {
+        // Older installations saved only the timestamp.
+        const entry = typeof value === "number" ? { createdAt: value } : value as Partial<EventVersion> | null;
+        const at = entry?.createdAt;
+        if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) continue;
+        const id = entry?.id;
+        map.set(taskId, typeof id === "string" && id ? { createdAt: at, id } : { createdAt: at });
       }
       if (map.size) out.set(boardTag, map);
     }
@@ -80,7 +85,7 @@ export class BoardSyncLedger {
   private readonly events: Clock = new Map();
   private readonly pendingTasks = new Set<string>();
   private readonly pendingEvents = new Set<string>();
-  private readonly tombstones: Clock;
+  private readonly tombstones: VersionClock;
   private persistScheduled = false;
   private readonly storage: TombstoneStorage;
   private readonly tombstonesPerBoard: number;
@@ -91,7 +96,7 @@ export class BoardSyncLedger {
     this.tombstones = parseTombstones(storage.load());
     // A deleted task's clock starts at its deletion, so older versions are rejected after a reload.
     for (const [boardTag, entries] of this.tombstones) {
-      for (const [taskId, at] of entries) raiseVersion(this.tasks, boardTag, taskId, { createdAt: at });
+      for (const [taskId, version] of entries) raiseVersion(this.tasks, boardTag, taskId, version);
     }
   }
 
@@ -218,20 +223,24 @@ export class BoardSyncLedger {
   }
 
   /** Remembers a deletion across reloads (newest kept); saved once per tick. */
-  recordTombstone(boardTag: string, taskId: string, at: number): void {
+  recordTombstone(boardTag: string, taskId: string, at: number, id?: string): void {
     if (!boardTag || !taskId || !Number.isFinite(at) || at <= 0) return;
+    const version = { createdAt: at, id };
+    if (compareEventVersions(version, this.taskVersion(boardTag, taskId)) < 0) return;
     let entries = this.tombstones.get(boardTag);
     if (!entries) {
       entries = new Map();
       this.tombstones.set(boardTag, entries);
     }
-    if ((entries.get(taskId) ?? 0) >= at) return;
-    entries.set(taskId, at);
+    const previous = entries.get(taskId);
+    if (previous && compareEventVersions(version, previous) <= 0) return;
+    entries.set(taskId, version);
+    raiseVersion(this.tasks, boardTag, taskId, version);
     // Trimmed in steps: deletions from other devices arrive by the thousand on a first sync.
     if (entries.size > this.tombstonesPerBoard + 100) {
       this.tombstones.set(
         boardTag,
-        new Map([...entries].sort((a, b) => b[1] - a[1]).slice(0, this.tombstonesPerBoard)),
+        new Map([...entries].sort((a, b) => compareEventVersions(b[1], a[1])).slice(0, this.tombstonesPerBoard)),
       );
     }
     this.schedulePersist();
@@ -255,9 +264,12 @@ export class BoardSyncLedger {
   }
 
   private persist(): void {
-    const out: Record<string, Record<string, number>> = {};
+    const out: Record<string, Record<string, number | EventVersion>> = {};
     for (const [boardTag, entries] of this.tombstones) {
-      if (entries.size) out[boardTag] = Object.fromEntries(entries);
+      if (entries.size) {
+        out[boardTag] = Object.fromEntries(Array.from(entries, ([id, version]) =>
+          [id, version.id ? version : version.createdAt]));
+      }
     }
     try {
       this.storage.save(JSON.stringify(out));

@@ -11,6 +11,8 @@ import {
   LS_BACKGROUND_IMAGE,
 } from "../storageKeys";
 import { LS_NOSTR_RELAYS, TASKIFY_NOSTR_KEY_UPDATED_EVENT } from "../../nostrKeys";
+import { accountStorageNeedsSwitch } from "../../storage/accountStorage";
+import { LocalKeySigner } from "../../identity/signer";
 import { adoptLocalSecretKey } from "../../identity/identity";
 import { markKeyBroughtByUser } from "../../onboarding/keyBackup";
 import {
@@ -18,6 +20,7 @@ import {
   boardEntityStore,
   calendarEventEntityStore,
   externalCalendarEventEntityStore,
+  type EntityStore,
 } from "../../storage/entityStore";
 import { LS_LIGHTNING_CONTACTS, LS_BTC_USD_PRICE_CACHE, LS_CONTACTS_SYNC_META } from "../../localStorageKeys";
 // Wallet storage loads only when a backup carries wallet data (the wallet is phasing out).
@@ -88,25 +91,35 @@ function normalizeCashuProofStore(raw: unknown, normalizeMintUrl: (url: string) 
 }
 
 /** Writes a backup into storage. Resolves once a wallet seed it carries is restored too. */
-export async function applyBackupDataToStorage(data: Partial<TaskifyBackupPayload>): Promise<void> {
+export async function applyBackupDataToStorage(
+  data: Partial<TaskifyBackupPayload>,
+  { mergeEntities = false }: { mergeEntities?: boolean } = {},
+): Promise<"restored" | "switching"> {
   if (!data || typeof data !== "object") {
     throw new Error("Invalid backup data");
   }
-  // Wholesale-replace each per-entity v3 store; the legacy blobs are
-  // deprecated post-migration. Caller must `flush()` each store before
-  // reloading the page so writes are durable.
-  if ("tasks" in data && Array.isArray(data.tasks)) {
-    taskEntityStore.replaceAll(data.tasks as { id: string }[]);
+  const secretKey = typeof data.nostrSk === "string" && data.nostrSk ? data.nostrSk : null;
+  if (secretKey && accountStorageNeedsSwitch(new LocalKeySigner(secretKey).pubkey)) {
+    const { nostrSk: _key, ...backup } = data;
+    await adoptLocalSecretKey(secretKey, { backup });
+    return "switching";
   }
-  if ("calendarEvents" in data && Array.isArray(data.calendarEvents)) {
-    calendarEventEntityStore.replaceAll(data.calendarEvents as { id: string }[]);
-  }
-  if ("externalCalendarEvents" in data && Array.isArray(data.externalCalendarEvents)) {
-    externalCalendarEventEntityStore.replaceAll(data.externalCalendarEvents as { id: string }[]);
-  }
-  if ("boards" in data && Array.isArray(data.boards)) {
-    boardEntityStore.replaceAll(data.boards as { id: string }[]);
-  }
+  const restoreEntities = (store: EntityStore<{ id: string }>, rows: unknown) => {
+    if (!Array.isArray(rows)) return;
+    if (!mergeEntities) {
+      store.replaceAll(rows);
+      return;
+    }
+    const merged = new Map(store.getAll().map(row => [row.id, row]));
+    for (const row of rows) {
+      if (row && typeof row.id === "string" && !merged.has(row.id)) merged.set(row.id, row);
+    }
+    store.syncWith([...merged.values()]);
+  };
+  restoreEntities(taskEntityStore, data.tasks);
+  restoreEntities(calendarEventEntityStore, data.calendarEvents);
+  restoreEntities(externalCalendarEventEntityStore, data.externalCalendarEvents);
+  restoreEntities(boardEntityStore, data.boards);
   if ("settings" in data && data.settings !== undefined) {
     // Extract backgroundImage from settings and store separately in IndexedDB
     const settingsToStore = { ...(data.settings as Record<string, unknown>) };
@@ -134,8 +147,8 @@ export async function applyBackupDataToStorage(data: Partial<TaskifyBackupPayloa
   if ("contactsSyncMeta" in data && data.contactsSyncMeta !== undefined) {
     idbKeyValue.setItem(TASKIFY_STORE_NOSTR, LS_CONTACTS_SYNC_META, JSON.stringify(data.contactsSyncMeta));
   }
-  if (typeof data.nostrSk === "string" && data.nostrSk) {
-    adoptLocalSecretKey(data.nostrSk).catch((err) => console.warn("Backup has an unreadable Nostr key", err));
+  if (secretKey) {
+    await adoptLocalSecretKey(secretKey);
     // The backup file holds the key, so the user has a copy.
     markKeyBroughtByUser();
     notifyNostrKeyUpdated();
@@ -179,6 +192,7 @@ export async function applyBackupDataToStorage(data: Partial<TaskifyBackupPayloa
       await restoreWalletSeedFromBackup(cashuData.walletSeed as WalletSeedBackupPayload);
     }
   }
+  return "restored";
 }
 
 export function readWalletConversionsEnabled(fallback?: boolean): boolean {

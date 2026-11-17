@@ -35,6 +35,7 @@ import { SupportSection } from "./SupportSection";
 import { StorageSection } from "./StorageSection";
 import { SettingsAccordion } from "./SettingsAccordion";
 import { ManageBoardModal } from "./ManageBoardModal";
+import { InstallAppSettingsGroup } from "./InstallAppSettingsGroup";
 
 
 export function SettingsModal({
@@ -82,8 +83,8 @@ export function SettingsModal({
   defaultRelays: string[];
   setDefaultRelays: (rls: string[]) => void;
   pubkeyHex: string;
-  onGenerateKey: () => void;
-  onSetKey: (hex: string) => void;
+  onGenerateKey: () => Promise<void>;
+  onSetKey: (hex: string) => Promise<void>;
   onShareBoard: (boardId: string, relaysCsv?: string) => void;
   onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
   onRegenerateBoardId: (boardId: string) => void;
@@ -337,6 +338,8 @@ export function SettingsModal({
       >
         <BackupSection embedded onReloadNeeded={onReloadNeeded} />
       </SettingsAccordion>
+
+      <InstallAppSettingsGroup />
 
       <SettingsAccordion
         title="Support development"

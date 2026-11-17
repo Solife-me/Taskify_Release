@@ -47,8 +47,15 @@ public struct PhysicalChecklistItem: Codable, Equatable, Identifiable, Sendable 
     public var title: String
     public var section: String?
     public var filled: Bool
-    /// The compact line under the title: due date/time and/or the start of the note.
+    /// Legacy compact line under the title (due and/or note), kept for sheets printed before
+    /// the date moved onto the title row and notes began wrapping.
     public var detail: String?
+    /// The due date/time, printed at the end of the title row.
+    public var dueText: String?
+    /// The full note, printed wrapped below the title.
+    public var note: String?
+    /// Wrapped note lines reserved in the row. Prepared for the chosen paper before printing.
+    public var noteLineCount: Int
     public var subtasks: [PhysicalChecklistSubtask]
     /// How many photo thumbnails the detailed row reserves space for.
     public var photoCount: Int
@@ -67,6 +74,9 @@ public struct PhysicalChecklistItem: Codable, Equatable, Identifiable, Sendable 
         section: String? = nil,
         filled: Bool = false,
         detail: String? = nil,
+        dueText: String? = nil,
+        note: String? = nil,
+        noteLineCount: Int = 0,
         subtasks: [PhysicalChecklistSubtask] = [],
         photoCount: Int = 0
     ) {
@@ -75,12 +85,15 @@ public struct PhysicalChecklistItem: Codable, Equatable, Identifiable, Sendable 
         self.section = section
         self.filled = filled
         self.detail = detail
+        self.dueText = dueText
+        self.note = note
+        self.noteLineCount = noteLineCount
         self.subtasks = subtasks
         self.photoCount = photoCount
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, section, filled, detail, subtasks, photoCount
+        case id, title, section, filled, detail, dueText, note, noteLineCount, subtasks, photoCount
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,6 +103,9 @@ public struct PhysicalChecklistItem: Codable, Equatable, Identifiable, Sendable 
         section = try container.decodeIfPresent(String.self, forKey: .section)
         filled = try container.decodeIfPresent(Bool.self, forKey: .filled) ?? false
         detail = try container.decodeIfPresent(String.self, forKey: .detail)
+        dueText = try container.decodeIfPresent(String.self, forKey: .dueText)
+        note = try container.decodeIfPresent(String.self, forKey: .note)
+        noteLineCount = try container.decodeIfPresent(Int.self, forKey: .noteLineCount) ?? 0
         subtasks = try container.decodeIfPresent([PhysicalChecklistSubtask].self, forKey: .subtasks) ?? []
         photoCount = try container.decodeIfPresent(Int.self, forKey: .photoCount) ?? 0
     }
@@ -101,6 +117,9 @@ public struct PhysicalChecklistItem: Codable, Equatable, Identifiable, Sendable 
         try container.encodeIfPresent(section, forKey: .section)
         try container.encode(filled, forKey: .filled)
         try container.encodeIfPresent(detail, forKey: .detail)
+        try container.encodeIfPresent(dueText, forKey: .dueText)
+        try container.encodeIfPresent(note, forKey: .note)
+        if noteLineCount > 0 { try container.encode(noteLineCount, forKey: .noteLineCount) }
         if !subtasks.isEmpty { try container.encode(subtasks, forKey: .subtasks) }
         if photoCount > 0 { try container.encode(photoCount, forKey: .photoCount) }
     }
@@ -133,11 +152,9 @@ public struct PhysicalChecklistPrintOptions: Equatable, Sendable {
 
     public static let `default` = PhysicalChecklistPrintOptions()
 
-    public var isDetailed: Bool { includeSubtasks || includePhotos }
-
-    public var layoutVersion: String {
-        isDetailed ? BoardPrintContract.detailVersion : BoardPrintContract.version
-    }
+    /// New prints always use the modern geometry, which keeps content clear of the bottom
+    /// markers. v3/v4 stay readable only for sheets printed earlier.
+    public var layoutVersion: String { BoardPrintContract.modernVersion }
 }
 
 public struct PhysicalChecklistJob: Codable, Equatable, Identifiable, Sendable {
@@ -231,13 +248,14 @@ public struct NostrPrintJobManifest: Codable, Equatable, Sendable {
     ) -> [NostrPrintJobManifest] {
         var newest: [String: NostrPrintJobManifest] = [:]
         for manifest in remote + local where manifest.version == 1 && !manifest.ownerID.isEmpty {
-            guard let current = newest[manifest.ownerID] else {
-                newest[manifest.ownerID] = manifest
+            let ownerKey = manifest.ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let current = newest[ownerKey] else {
+                newest[ownerKey] = manifest
                 continue
             }
             if manifest.createdAt > current.createdAt
                 || (manifest.createdAt == current.createdAt && manifest.id > current.id) {
-                newest[manifest.ownerID] = manifest
+                newest[ownerKey] = manifest
             }
         }
         return Array(newest.values)
@@ -256,7 +274,7 @@ public enum PhysicalChecklistJobStore {
 
     public static func save(_ job: PhysicalChecklistJob, defaults: UserDefaults = .standard) {
         var jobs = loadAll(defaults: defaults)
-        jobs[job.ownerID] = job
+        jobs[ownerKey(job.ownerID)] = job
         persist(jobs, defaults: defaults)
     }
 
@@ -264,7 +282,7 @@ public enum PhysicalChecklistJobStore {
         ownerID: String,
         defaults: UserDefaults = .standard
     ) -> PhysicalChecklistJob? {
-        loadAll(defaults: defaults)[ownerID]
+        loadAll(defaults: defaults)[ownerKey(ownerID)]
     }
 
     public static func loadAll(defaults: UserDefaults = .standard) -> [String: PhysicalChecklistJob] {
@@ -272,7 +290,13 @@ public enum PhysicalChecklistJobStore {
               let jobs = try? JSONDecoder().decode([String: PhysicalChecklistJob].self, from: data) else {
             return [:]
         }
-        return jobs
+        var normalized: [String: PhysicalChecklistJob] = [:]
+        for job in jobs.values {
+            let key = ownerKey(job.ownerID)
+            if let current = normalized[key], current.createdAt > job.createdAt { continue }
+            normalized[key] = job
+        }
+        return normalized
     }
 
     public static func merge(
@@ -282,10 +306,15 @@ public enum PhysicalChecklistJobStore {
         var jobs = loadAll(defaults: defaults)
         for manifest in manifests {
             guard let job = manifest.job else { continue }
-            if let current = jobs[job.ownerID], current.createdAt > job.createdAt { continue }
-            jobs[job.ownerID] = job
+            let key = ownerKey(job.ownerID)
+            if let current = jobs[key], current.createdAt > job.createdAt { continue }
+            jobs[key] = job
         }
         persist(jobs, defaults: defaults)
+    }
+
+    private static func ownerKey(_ ownerID: String) -> String {
+        ownerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func persist(
@@ -336,6 +365,7 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
     public static let pageIDGapMM = BoardPrintContract.pageIDMarkerGapMM
 
     public static let detailLineMM = 3.4
+    public static let noteLineMM = 3.0
     public static let subtaskLineMM = 3.6
     public static let subtaskMax = 6
     public static let photoSizeMM = 13.0
@@ -343,6 +373,7 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
     private static let photoBlockMM = photoSizeMM + 2
 
     public var layoutVersion: String
+    public var modern: Bool
     public var detailed: Bool
     public var paper: PhysicalChecklistPaper
     public var pages: [PhysicalChecklistPage]
@@ -355,9 +386,16 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
         let leftMargin = marginMM + (job.paper == .a6 ? 4 : 0)
         let headerTop = marginMM + markerSizeMM + BoardPrintContract.markerGapMM
         let contentTop = headerTop + BoardPrintContract.headerHeightMM + BoardPrintContract.headerGapMM
-        let contentHeight = size.height - marginMM - contentTop
         let compact = job.format == .bibleChapters
-        let detailed = !compact && job.effectiveLayoutVersion == BoardPrintContract.detailVersion
+        let modern = !compact && job.effectiveLayoutVersion == BoardPrintContract.modernVersion
+        // Keep the last row clear of the bottom alignment markers: content that overlaps them
+        // hides the square a scan aligns to (a trailing section header used to sit on top of it).
+        let contentBottom = modern
+            ? size.height - marginMM - markerSizeMM - BoardPrintContract.markerGapMM
+            : size.height - marginMM
+        let contentHeight = max(rowHeightMM, contentBottom - contentTop)
+        let detailed = !compact &&
+            (job.effectiveLayoutVersion == BoardPrintContract.detailVersion || modern)
         let rowHeight = compact ? 5.5 : rowHeightMM
         let circleSize = compact ? 3.4 : circleSizeMM
         let columnCount = compact ? (job.paper == .a6 ? 2 : 3) : 1
@@ -386,9 +424,12 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
                 !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }.count
             let subtaskLines = min(subtaskCount, subtaskMax) + (subtaskCount > subtaskMax ? 1 : 0)
-            let hasDetail = !(item.detail ?? "").isEmpty
+            let legacyDetail = !modern && !(item.detail ?? "").isEmpty
+            let note = modern ? (item.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            let noteLines = note.isEmpty ? 0 : max(1, item.noteLineCount)
             let extra =
-                (hasDetail ? detailLineMM : 0) +
+                (legacyDetail ? detailLineMM : 0) +
+                Double(noteLines) * noteLineMM +
                 Double(subtaskLines) * subtaskLineMM +
                 (item.photoCount > 0 ? photoBlockMM : 0)
             return rowHeight + extra + (extra > 0 ? 1 : 0)
@@ -461,6 +502,7 @@ public struct PhysicalChecklistLayout: Equatable, Sendable {
 
         return Self(
             layoutVersion: job.effectiveLayoutVersion,
+            modern: modern,
             detailed: detailed,
             paper: job.paper,
             pages: pages,

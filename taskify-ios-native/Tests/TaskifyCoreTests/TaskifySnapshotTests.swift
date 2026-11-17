@@ -526,10 +526,10 @@ final class TaskifySnapshotTests: XCTestCase {
     func testDraggingTaskAcrossWeekdaysPreservesTimeAndReorders() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
-        let sunday = try XCTUnwrap(calendar.date(from: DateComponents(
+        let friday = try XCTUnwrap(calendar.date(from: DateComponents(
             year: 2026,
             month: 7,
-            day: 19,
+            day: 17,
             hour: 14,
             minute: 30
         )))
@@ -554,10 +554,10 @@ final class TaskifySnapshotTests: XCTestCase {
             newTaskPosition: .bottom
         ))
         let moved = try XCTUnwrap(snapshot.addTask(
-            title: "Move from Sunday",
+            title: "Move from Friday",
             boardID: "week-default",
-            columnID: WeekdayColumn.sunday.rawValue,
-            dueDate: sunday,
+            columnID: WeekdayColumn.friday.rawValue,
+            dueDate: friday,
             newTaskPosition: .bottom
         ))
         let movedIndex = try XCTUnwrap(snapshot.tasks.firstIndex(where: { $0.id == moved.id }))
@@ -571,7 +571,8 @@ final class TaskifySnapshotTests: XCTestCase {
             columnID: WeekdayColumn.monday.rawValue,
             beforeTaskID: last.id,
             editorPublicKey: "editor",
-            calendar: calendar
+            calendar: calendar,
+            now: friday
         ))
 
         XCTAssertFalse(result.crossedBoards)

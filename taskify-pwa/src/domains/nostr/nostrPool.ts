@@ -1,3 +1,4 @@
+import type { EventSigner } from "taskify-runtime-nostr";
 import { NostrSession } from "../../nostr/NostrSession";
 import { SessionPool } from "../../nostr/SessionPool";
 import { kvStorage } from "../../storage/kvStorage";
@@ -35,7 +36,7 @@ export type NostrPool = {
     opts?: { onevent?: (ev: NostrEvent) => void; oneose?: (relay?: string) => void; closeOnEose?: boolean },
   ) => { close: (...args: any[]) => void };
   publish: (relays: string[], event: NostrUnsignedEvent) => Promise<void>;
-  publishEvent: (relays: string[], event: NostrEvent, options?: { republish?: boolean }) => Promise<unknown>;
+  publishEvent: (relays: string[], event: NostrEvent, options?: { republish?: boolean; proofOfWorkSigner?: EventSigner }) => Promise<unknown>;
   list?: (relays: string[], filters: any[]) => Promise<NostrEvent[]>;
   get?: (relays: string[], filter: any) => Promise<NostrEvent | null>;
 };

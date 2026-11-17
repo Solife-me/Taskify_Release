@@ -382,6 +382,13 @@ struct MacTaskCard: View {
     let task: TaskItem
     var selected = false
     @Environment(AppModel.self) private var model
+    @EnvironmentObject private var runtime: MacRuntime
+
+    private var visibleSubtasks: [TaskSubtask] {
+        let subtasks = task.subtasks ?? []
+        return runtime.hideCompletedSubtasks ? subtasks.filter { !$0.completed } : subtasks
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Button { model.toggleCompletion(task.id) } label: {
@@ -399,6 +406,30 @@ struct MacTaskCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier(task.id)
                 if !task.note.isEmpty { Text(TaskNoteMarkdown.previewText(task.note)).font(.caption).foregroundStyle(.secondary).lineLimit(5) }
+                let subtasks = visibleSubtasks
+                if !subtasks.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(subtasks) { subtask in
+                            Button {
+                                model.toggleSubtaskCompletion(taskID: task.id, subtaskID: subtask.id)
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Image(systemName: subtask.completed ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(subtask.completed ? Color.accentColor : Color.secondary)
+                                        .accessibilityHidden(true)
+                                    Text(subtask.title)
+                                        .strikethrough(subtask.completed)
+                                        .foregroundStyle(subtask.completed ? .secondary : .primary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel(subtask.title)
+                            .accessibilityValue(subtask.completed ? "Complete" : "Incomplete")
+                        }
+                    }.font(.caption)
+                }
                 HStack(spacing: 9) {
                     if let date = task.dueDate, task.dueDateEnabled {
                         Label(date.formatted(.dateTime.month(.abbreviated).day()), systemImage: "calendar")

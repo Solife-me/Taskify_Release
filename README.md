@@ -52,6 +52,7 @@ Taskify_Release/
 ├── taskify-core/              # Shared pure domain contracts/normalizers/utilities
 ├── taskify-runtime-nostr/     # Shared Nostr runtime transport/orchestration modules
 ├── taskify-cli/               # CLI surface built on shared core/runtime packages
+├── integrations/hermes/      # Hermes Agent Nostr DM plugin
 │
 ├── worker/                    # Cloudflare Worker (push, reminders, backups, static assets)
 │   ├── src/index.ts           # Worker routing entry; handlers live alongside it
@@ -79,6 +80,7 @@ There is no monorepo build tool. Each JavaScript package has its own manifest an
 - Nostr layer: `src/nostr/NostrSession.ts`
 - Wallet layer: `src/wallet/CashuManager.ts`
 - Agent operations: `src/agent/agentDispatcher.ts` + `docs/reference/agent-mode.md`
+- Hermes chat integration: [installation, tests, and packaging](integrations/hermes/README.md)
 - Backend: `worker/src/index.ts`
 
 ---

@@ -14,7 +14,12 @@ export const TASKIFY_STORE_NOSTR = "nostr";
 export const TASKIFY_STORE_TASKS = "tasks";
 export const TASKIFY_STORE_MUTATIONS = "mutations";
 
-let dbPromise: Promise<IDBDatabase> | null = null;
+let accountDatabaseName = TASKIFY_DB_NAME;
+const databases = new Map<string, Promise<IDBDatabase>>();
+
+export function selectTaskifyAccountDatabase(databaseName: string): void {
+  accountDatabaseName = databaseName;
+}
 
 const REQUIRED_STORES = [
   TASKIFY_STORE_WALLET,
@@ -61,7 +66,7 @@ function hasRequiredStores(db: IDBDatabase): boolean {
 function attachVersionChangeHandler(db: IDBDatabase): IDBDatabase {
   db.onversionchange = () => {
     db.close();
-    dbPromise = null;
+    databases.delete(db.name);
   };
   return db;
 }
@@ -75,11 +80,11 @@ function isVersionError(error: unknown): boolean {
   );
 }
 
-async function openTaskifyDb(): Promise<IDBDatabase> {
+async function openTaskifyDb(name: string): Promise<IDBDatabase> {
   try {
     return await ensureRequiredStoresAvailable(
       await idbStorage.openDatabase({
-        name: TASKIFY_DB_NAME,
+        name,
         version: TASKIFY_DB_VERSION,
         upgrade: ensureTaskifyStores,
       }),
@@ -88,7 +93,7 @@ async function openTaskifyDb(): Promise<IDBDatabase> {
     if (!isVersionError(error)) throw error;
   }
 
-  const existing = await idbStorage.openDatabase({ name: TASKIFY_DB_NAME });
+  const existing = await idbStorage.openDatabase({ name });
   return await ensureRequiredStoresAvailable(existing);
 }
 
@@ -101,19 +106,29 @@ async function ensureRequiredStoresAvailable(db: IDBDatabase): Promise<IDBDataba
   db.close();
   return attachVersionChangeHandler(
     await idbStorage.openDatabase({
-      name: TASKIFY_DB_NAME,
+      name: db.name,
       version: nextVersion,
       upgrade: ensureTaskifyStores,
     }),
   );
 }
 
-export async function getTaskifyDb(): Promise<IDBDatabase> {
-  if (!dbPromise) {
-    dbPromise = openTaskifyDb().catch((error) => {
-      dbPromise = null;
-      throw error;
-    });
-  }
-  return await dbPromise;
+export function getTaskifyDbByName(name: string): Promise<IDBDatabase> {
+  const existing = databases.get(name);
+  if (existing) return existing;
+  const opened = openTaskifyDb(name).catch((error) => {
+    databases.delete(name);
+    throw error;
+  });
+  databases.set(name, opened);
+  return opened;
+}
+
+export function getTaskifyDb(): Promise<IDBDatabase> {
+  return getTaskifyDbByName(accountDatabaseName);
+}
+
+/** The legacy database also holds the browser wrapping key, independent of the active account. */
+export function getDeviceTaskifyDb(): Promise<IDBDatabase> {
+  return getTaskifyDbByName(TASKIFY_DB_NAME);
 }

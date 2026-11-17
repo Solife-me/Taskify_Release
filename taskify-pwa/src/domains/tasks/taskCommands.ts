@@ -5,6 +5,7 @@
  */
 import {
   SCRIPTURE_MEMORY_SERIES_ID,
+  addDaysToDateKey,
   isoForWeekdayLocal,
   isListLikeBoard,
   buildNextRecurringTask,
@@ -14,6 +15,7 @@ import {
   isAssignedSharedTask,
   isFrequentRecurrence,
   tasksInSameSeries,
+  weekdayOfDateKey,
   type Weekday,
 } from "taskify-core";
 import type { ScriptureMemoryState } from "../scripture/scriptureTypes";
@@ -624,7 +626,7 @@ export function planMoveTask(
   target: MoveTarget,
   beforeId: string | undefined,
   ctx: TaskEditContext & {
-    settings: Pick<Settings, "weekStart" | "streaksEnabled">;
+    settings: Pick<Settings, "streaksEnabled">;
     currentBoard: Board | undefined;
     listColumnSources: ReadonlyMap<string, { boardId: string; columnId: string }>;
   },
@@ -642,10 +644,18 @@ export function planMoveTask(
   if (target.type === "day") {
     moved.column = "day";
     moved.columnId = undefined;
-    moved.dueISO = isoForWeekdayLocal(target.day, {
-      base: Number.isNaN(prevDue.getTime()) ? undefined : prevDue,
-      weekStart: ctx.settings.weekStart,
-    });
+    const today = isoDatePart(ctx.now.toISOString(), timeZone);
+    const dueDay = task.dueDateEnabled !== false && !Number.isNaN(prevDue.getTime())
+      ? isoDatePart(task.dueISO, timeZone)
+      : undefined;
+    if (!dueDay || weekdayOfDateKey(dueDay) !== target.day) {
+      const anchor = dueDay && dueDay > today ? dueDay : today;
+      const anchorWeekday = weekdayOfDateKey(anchor);
+      if (anchorWeekday === null) return null;
+      const targetDay = addDaysToDateKey(anchor, (target.day - anchorWeekday + 7) % 7);
+      if (targetDay === null) return null;
+      moved.dueISO = isoFromDateTime(targetDay, originalTime, timeZone);
+    }
     moved.dueDateEnabled = true;
   } else {
     if (!isListLikeBoard(ctx.currentBoard)) return null;
@@ -654,10 +664,9 @@ export function planMoveTask(
     moved.column = undefined;
     moved.columnId = source.columnId;
     moved.boardId = source.boardId;
-  }
-  if (originalTime) {
-    const withTime = isoFromDateTime(isoDatePart(moved.dueISO), originalTime, timeZone);
-    if (withTime) moved.dueISO = withTime;
+    if (originalTime) {
+      moved.dueISO = isoFromDateTime(isoDatePart(moved.dueISO), originalTime, timeZone);
+    }
   }
   if (
     ctx.settings.streaksEnabled &&

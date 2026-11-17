@@ -106,6 +106,11 @@ final class RelayRejectionBackoffTests: XCTestCase {
             28
         )
         XCTAssertEqual(
+            TaskifyProofOfWorkRejection.difficulty(fromMessage: "pow: kind 1059 requires difficulty 10"),
+            10,
+            "An event kind is not the relay's proof-of-work floor"
+        )
+        XCTAssertEqual(
             TaskifyProofOfWorkRejection.difficulty(fromMessage: "pow: insufficient proof of work"),
             nil,
             "No stated target: fall back to the relay's advertised requirement"
@@ -116,9 +121,27 @@ final class RelayRejectionBackoffTests: XCTestCase {
         )
     }
 
-    func testNosLolUsesItsUnadvertisedProofOfWorkFloor() {
-        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "wss://nos.lol"), 20)
-        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "WSS://NOS.LOL/"), 20)
-        XCTAssertEqual(TaskifyRelayRequirements.builtInDifficulty(for: "wss://relay.example"), 0)
+    func testRelayDifficultyComesFromMetadataOrAnExplicitRefusal() async {
+        let requirements = TaskifyRelayRequirements(learnedURL: nil) { request in
+            let url = try XCTUnwrap(request.url)
+            let info = url.host == "relay.solife.me" ? #"{"limitation":{"min_pow_difficulty":10}}"# : "{}"
+            let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+            return (Data(info.utf8), response)
+        }
+
+        let advertised = await requirements.difficulty(for: ["wss://relay.solife.me", "wss://nos.lol"])
+        XCTAssertEqual(advertised, 10)
+        let unadvertised = await requirements.difficulty(for: ["wss://nos.lol"])
+        XCTAssertEqual(unadvertised, 0)
+        await requirements.record(difficulty: 12, for: "wss://nos.lol")
+        let learned = await requirements.difficulty(for: ["wss://nos.lol"])
+        XCTAssertEqual(learned, 12)
+    }
+
+    func testUnsupportedAdvertisedProofOfWorkDoesNotBlockOtherRelays() {
+        XCTAssertEqual(TaskifyRelayRequirements.supportedAdvertisedDifficulty(nil), 0)
+        XCTAssertEqual(TaskifyRelayRequirements.supportedAdvertisedDifficulty(["min_pow_difficulty": 20]), 20)
+        XCTAssertEqual(TaskifyRelayRequirements.supportedAdvertisedDifficulty(["min_pow_difficulty": 20.2]), 21)
+        XCTAssertEqual(TaskifyRelayRequirements.supportedAdvertisedDifficulty(["min_pow_difficulty": 33]), 0)
     }
 }

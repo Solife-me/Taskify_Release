@@ -1856,6 +1856,7 @@ struct HermesSessionPickerChatView: View {
     @Environment(AppModel.self) private var model
     let peerPublicKey: String
     let listing: HermesSessionListing
+    let actionMenuID: String?
 
     @State private var resumingSessionID: String?
     @State private var sentSessionID: String?
@@ -1957,7 +1958,7 @@ struct HermesSessionPickerChatView: View {
         .disabled(resumingSessionID != nil)
         .opacity(resumingSessionID == nil || resumingSessionID == session.sessionId ? 1 : 0.46)
         .accessibilityLabel("Resume session: \(session.title)")
-        .accessibilityValue(session.isCurrent ? "Current" : "")
+        .accessibilityValue(sentSessionID == session.sessionId ? "Sent" : (session.isCurrent ? "Current" : ""))
     }
 
     private func resume(_ session: HermesSession) {
@@ -1967,10 +1968,19 @@ struct HermesSessionPickerChatView: View {
         actionError = nil
         Task { @MainActor in
             do {
-                try await model.sendDirectMessage(
-                    to: peerPublicKey,
-                    content: HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
-                )
+                let command = try HermesSessionMenuParser.resumeCommand(sessionId: session.sessionId)
+                if let actionMenuID {
+                    try await model.sendBotUiCommand(
+                        to: peerPublicKey,
+                        content: command,
+                        action: TaskifyBotUiAction(
+                            kind: .sessionResume, menuId: actionMenuID, sessionId: session.sessionId
+                        ),
+                        bindToListing: true
+                    )
+                } else {
+                    try await model.sendDirectMessage(to: peerPublicKey, content: command)
+                }
                 sentSessionID = session.sessionId
             } catch {
                 actionError = error.localizedDescription
@@ -1981,65 +1991,6 @@ struct HermesSessionPickerChatView: View {
 }
 
 // MARK: - Hermes model picker
-
-private struct HermesModelCatalogCacheEntry: Codable, Equatable {
-    let providerSlug: String
-    let providerName: String?
-    let models: [String]
-    let listingID: String
-    let fetchedAt: TimeInterval
-
-    func isFresh(for currentListingID: String) -> Bool {
-        let age = Date().timeIntervalSince1970 - fetchedAt
-        return listingID == currentListingID && age >= 0 && age < 10 * 60
-    }
-}
-
-@MainActor
-private final class HermesModelCatalogCache {
-    static let shared = HermesModelCatalogCache()
-
-    private let defaults: UserDefaults
-    private let storageKey = "taskify_hermes_model_catalog_cache_v1"
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    private func key(peer: String, provider: String) -> String {
-        "\(peer.lowercased())|\(provider.lowercased())"
-    }
-
-    private func loadMap() -> [String: HermesModelCatalogCacheEntry] {
-        guard let data = defaults.data(forKey: storageKey),
-              let map = try? JSONDecoder().decode([String: HermesModelCatalogCacheEntry].self, from: data) else {
-            return [:]
-        }
-        return map
-    }
-
-    func load(peer: String, listingID: String, provider: String) -> HermesModelCatalogCacheEntry? {
-        let entry = loadMap()[key(peer: peer, provider: provider)]
-        guard let entry,
-              entry.providerSlug.caseInsensitiveCompare(provider) == .orderedSame,
-              entry.models.allSatisfy(HermesModelMenuParser.isValidModelId) else { return nil }
-        return entry
-    }
-
-    func save(peer: String, listingID: String, catalog: HermesProviderCatalog) {
-        var map = loadMap()
-        map[key(peer: peer, provider: catalog.providerSlug)] =
-            HermesModelCatalogCacheEntry(
-                providerSlug: catalog.providerSlug,
-                providerName: catalog.providerName,
-                models: catalog.models,
-                listingID: listingID,
-                fetchedAt: Date().timeIntervalSince1970
-            )
-        guard let data = try? JSONEncoder().encode(map) else { return }
-        defaults.set(data, forKey: storageKey)
-    }
-}
 
 private enum HermesModelPickerPage: Equatable {
     case overview
@@ -2058,9 +2009,12 @@ struct HermesModelPickerChatView: View {
     @State private var page: HermesModelPickerPage = .overview
     @State private var providerPage = 0
     @State private var modelPage = 0
-    @State private var cachedCatalogs: [String: HermesModelCatalogCacheEntry] = [:]
-    @State private var loadingProvider: String?
-    @State private var switchingModel: String?
+    @State private var switchRequest: ModelSwitchRequest?
+
+    private struct ModelSwitchRequest {
+        let id = UUID()
+        let modelID: String
+    }
     @State private var actionError: String?
 
     private let columns = [
@@ -2095,9 +2049,7 @@ struct HermesModelPickerChatView: View {
             ?? providers.first { $0.slug == currentProviderSlug }?.name
             ?? currentProviderSlug
     }
-    private var requestInFlight: Bool {
-        projection.pendingAction != nil || loadingProvider != nil || switchingModel != nil
-    }
+    private var requestInFlight: Bool { switchRequest != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2121,29 +2073,24 @@ struct HermesModelPickerChatView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(TaskifyTheme.border.opacity(0.8), lineWidth: 1)
         )
-        .onAppear(perform: hydrateCachedCatalogs)
-        .onChange(of: projection.catalogs) { _, catalogs in
-            persist(catalogs)
-        }
         .onChange(of: projection.selectedModel) { _, selected in
             guard selected != nil else { return }
             page = .overview
-            switchingModel = nil
+            switchRequest = nil
             actionError = nil
         }
-        .onChange(of: projection.pendingAction) { _, action in
-            guard let action else { return }
-            if action.kind == .catalogRequest {
-                loadingProvider = action.providerSlug
-            } else {
-                switchingModel = action.modelId
-            }
-        }
         .onChange(of: projection.failure) { _, failure in
-            guard failure != nil else { return }
-            loadingProvider = nil
-            switchingModel = nil
-            actionError = "Hermes replied in an unexpected format. The raw response is shown below."
+            guard let failure, failure.action.kind == .modelSelect,
+                  failure.action.modelId == switchRequest?.modelID else { return }
+            switchRequest = nil
+            actionError = "Hermes replied in an unexpected format. Its response is shown in the chat."
+        }
+        .task(id: switchRequest?.id) {
+            guard let request = switchRequest else { return }
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled, switchRequest?.id == request.id else { return }
+            switchRequest = nil
+            actionError = "Hermes hasn’t confirmed the switch. Tap the model to retry."
         }
     }
 
@@ -2218,7 +2165,8 @@ struct HermesModelPickerChatView: View {
     }
 
     private func modelButton(_ modelID: String, provider: HermesModelProvider) -> some View {
-        Button {
+        let isCurrent = currentProviderSlug == provider.slug && currentModel == modelID
+        return Button {
             switchModel(provider: provider, modelID: modelID)
         } label: {
             HStack(spacing: 5) {
@@ -2227,7 +2175,7 @@ struct HermesModelPickerChatView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
-                if switchingModel == modelID {
+                if switchRequest?.modelID == modelID {
                     ProgressView().controlSize(.mini)
                 }
             }
@@ -2244,7 +2192,7 @@ struct HermesModelPickerChatView: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(requestInFlight)
+        .disabled(requestInFlight || isCurrent)
         .accessibilityLabel("Switch to \(modelID)")
     }
 
@@ -2293,20 +2241,12 @@ struct HermesModelPickerChatView: View {
     }
 
     private func modelPicker(_ provider: HermesModelProvider) -> some View {
-        let liveCatalog = projection.catalogs[provider.slug]
-        let cacheEntry = cachedCatalogs[provider.slug]
-            ?? HermesModelCatalogCache.shared.load(
-                peer: peerPublicKey,
-                listingID: projection.listingEventId,
-                provider: provider.slug
-            )
-        let models = liveCatalog?.models ?? cacheEntry?.models ?? []
+        let models = provider.previewModels
         let pageCount = max(1, Int(ceil(Double(models.count) / Double(HermesModelMenuParser.modelPageSize))))
         let safePage = min(max(modelPage, 0), pageCount - 1)
         let start = min(models.count, safePage * HermesModelMenuParser.modelPageSize)
         let end = min(models.count, start + HermesModelMenuParser.modelPageSize)
         let rows = Array(models[start..<end])
-        let isLoading = loadingProvider == provider.slug
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -2323,7 +2263,7 @@ struct HermesModelPickerChatView: View {
                         .lineLimit(1)
                     Text(
                         models.isEmpty
-                            ? (isLoading ? "Loading…" : "No models loaded")
+                            ? "No model IDs listed"
                             : "\(start + 1)–\(end) of \(models.count)"
                     )
                     .font(.caption2)
@@ -2334,8 +2274,7 @@ struct HermesModelPickerChatView: View {
 
             if rows.isEmpty {
                 HStack(spacing: 8) {
-                    if isLoading { ProgressView().controlSize(.small) }
-                    Text(isLoading ? "Loading \(provider.name) models…" : "No models were returned for this provider.")
+                    Text("Hermes did not list model IDs for this provider.")
                         .font(.caption)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 }
@@ -2350,15 +2289,8 @@ struct HermesModelPickerChatView: View {
                 }
             }
 
-            if isLoading, !rows.isEmpty {
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.small)
-                    Text("Refreshing model list…")
-                }
-                .font(.caption2)
-                .foregroundStyle(TaskifyTheme.secondaryText)
-            } else if let cacheEntry, !cacheEntry.isFresh(for: projection.listingEventId), !isLoading {
-                Text("Cached list · refresh to check for new models")
+            if !models.isEmpty, models.count < provider.totalModels {
+                Text("Hermes listed \(models.count) of \(provider.totalModels) models.")
                     .font(.caption2)
                     .foregroundStyle(TaskifyTheme.secondaryText)
             }
@@ -2382,9 +2314,6 @@ struct HermesModelPickerChatView: View {
                     disabled: safePage >= pageCount - 1 || requestInFlight
                 ) {
                     modelPage = min(pageCount - 1, modelPage + 1)
-                }
-                pickerControl("Refresh", systemImage: "arrow.clockwise", disabled: requestInFlight) {
-                    requestCatalog(provider.slug)
                 }
                 pickerControl("Cancel", systemImage: "xmark") {
                     page = projection.selectedModel == nil ? .providers : .overview
@@ -2459,84 +2388,16 @@ struct HermesModelPickerChatView: View {
         .opacity(disabled ? 0.46 : 1)
     }
 
-    private func hydrateCachedCatalogs() {
-        var next = cachedCatalogs
-        for provider in providers {
-            if next[provider.slug] == nil,
-               let entry = HermesModelCatalogCache.shared.load(
-                   peer: peerPublicKey,
-                   listingID: projection.listingEventId,
-                   provider: provider.slug
-               ) {
-                next[provider.slug] = entry
-            }
-        }
-        cachedCatalogs = next
-    }
-
-    private func persist(_ catalogs: [String: HermesProviderCatalog]) {
-        guard !catalogs.isEmpty else { return }
-        var next = cachedCatalogs
-        for (slug, catalog) in catalogs {
-            HermesModelCatalogCache.shared.save(
-                peer: peerPublicKey,
-                listingID: projection.listingEventId,
-                catalog: catalog
-            )
-            next[slug] = HermesModelCatalogCacheEntry(
-                providerSlug: catalog.providerSlug,
-                providerName: catalog.providerName,
-                models: catalog.models,
-                listingID: projection.listingEventId,
-                fetchedAt: Date().timeIntervalSince1970
-            )
-        }
-        cachedCatalogs = next
-        loadingProvider = nil
-        actionError = nil
-    }
-
     private func openProvider(_ provider: HermesModelProvider) {
         page = .models(provider.slug)
         modelPage = 0
         actionError = nil
-        let liveCatalog = projection.catalogs[provider.slug]
-        let cached = HermesModelCatalogCache.shared.load(
-            peer: peerPublicKey,
-            listingID: projection.listingEventId,
-            provider: provider.slug
-        )
-        if let cached { cachedCatalogs[provider.slug] = cached }
-        if liveCatalog == nil, cached?.isFresh(for: projection.listingEventId) != true {
-            requestCatalog(provider.slug)
-        }
-    }
-
-    private func requestCatalog(_ providerSlug: String) {
-        guard projection.pendingAction == nil, loadingProvider == nil else { return }
-        loadingProvider = providerSlug
-        actionError = nil
-        Task { @MainActor in
-            do {
-                try await model.sendBotUiCommand(
-                    to: peerPublicKey,
-                    content: TaskifyBotUiContract.catalogRequestPrompt(providerSlug: providerSlug),
-                    action: TaskifyBotUiAction(
-                        kind: .catalogRequest,
-                        menuId: projection.menuId,
-                        providerSlug: providerSlug
-                    )
-                )
-            } catch {
-                loadingProvider = nil
-                actionError = error.localizedDescription
-            }
-        }
     }
 
     private func switchModel(provider: HermesModelProvider, modelID: String) {
-        guard projection.pendingAction == nil, switchingModel == nil else { return }
-        switchingModel = modelID
+        guard switchRequest == nil else { return }
+        let request = ModelSwitchRequest(modelID: modelID)
+        switchRequest = request
         actionError = nil
         Task { @MainActor in
             do {
@@ -2551,10 +2412,12 @@ struct HermesModelPickerChatView: View {
                         menuId: projection.menuId,
                         providerSlug: provider.slug,
                         modelId: modelID
-                    )
+                    ),
+                    bindToListing: projection.bindsActionsToListing
                 )
             } catch {
-                switchingModel = nil
+                guard switchRequest?.id == request.id else { return }
+                switchRequest = nil
                 actionError = error.localizedDescription
             }
         }

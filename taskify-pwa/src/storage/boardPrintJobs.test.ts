@@ -74,7 +74,10 @@ test("a detailed print manifest keeps the geometry another client needs to scan 
     tasks: [{
       id: "task-1",
       title: "Detailed",
-      detail: "Sep 4, 2026 · note",
+      detail: "legacy line",
+      dueText: "Sep 4, 2026",
+      note: "line one\nline two",
+      noteLineCount: 2,
       subtasks: [{ title: "Buy stamps" }, { title: "Post", completed: true as const }],
       photos: ["data:image/jpeg;base64,AA"],
       photoCount: 1,
@@ -83,7 +86,10 @@ test("a detailed print manifest keeps the geometry another client needs to scan 
   const manifest = boardPrintJobManifest(job);
   expect(manifest.layoutVersion).toBe("v4");
   expect(manifest.items[0]).toMatchObject({
-    detail: "Sep 4, 2026 · note",
+    detail: "legacy line",
+    dueText: "Sep 4, 2026",
+    note: "line one\nline two",
+    noteLineCount: 2,
     subtasks: [{ title: "Buy stamps" }, { title: "Post", completed: true }],
     photoCount: 1,
   });
@@ -97,7 +103,10 @@ test("a detailed print manifest keeps the geometry another client needs to scan 
     layoutVersion: "v4",
     tasks: [{
       id: "task-1",
-      detail: "Sep 4, 2026 · note",
+      detail: "legacy line",
+      dueText: "Sep 4, 2026",
+      note: "line one\nline two",
+      noteLineCount: 2,
       subtasks: [{ title: "Buy stamps" }, { title: "Post", completed: true }],
       photoCount: 1,
     }],

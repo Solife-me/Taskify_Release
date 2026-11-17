@@ -56,7 +56,7 @@ type UseBoardSyncParams = {
   pool: BoardSyncNostrPool;
   getBoardRelays: (board: Board) => string[];
   /** Version clocks and in-flight publishes for every shared board. */
-  ledger: Pick<BoardSyncLedger, "taskAt" | "isTaskPending" | "isTaskEventCurrent">;
+  ledger: Pick<BoardSyncLedger, "taskAt" | "noteTask" | "isTaskPending" | "isTaskEventCurrent">;
   boardSyncCursorsRef: MutableRef<Record<string, number>>;
   relayBatchRef: MutableRef<Map<string, Map<string, Map<string, BoardSyncRelayBatchEntry>>>>;
   pendingRelaysByBoardRef: MutableRef<Map<string, Set<string>>>;
@@ -286,6 +286,19 @@ export function useBoardSync({
     } catch {
       parsed = [];
     }
+    // Start recovery with the signed versions already saved on this device. A relay replay can
+    // arrive before any task has been seen by the in-memory ledger, including stale deletions.
+    const tagsByLocalId = new Map<string, string>();
+    for (const board of boardsRef.current) {
+      if (board.nostr?.boardId) tagsByLocalId.set(board.id, boardTag(board.nostr.boardId));
+    }
+    for (const task of tasksRef.current) {
+      const tag = tagsByLocalId.get(task.boardId);
+      if (tag && typeof task._nostrAt === "number" && Number.isFinite(task._nostrAt)) {
+        ledger.noteTask(tag, task.id, task._nostrAt, task._nostrId);
+      }
+    }
+
     const forceFullHistorySync =
       fullHistorySyncNonce > 0 && fullHistorySyncNonce !== handledFullHistorySyncNonceRef.current;
     if (forceFullHistorySync) {
@@ -468,6 +481,7 @@ export function useBoardSync({
     applyBoardEvent,
     applyCalendarEvent,
     applyTaskEvent,
+    boardsRef,
     boardSyncCursorsRef,
     completedNostrInitialSyncRef,
     enqueueForBoard,
@@ -475,6 +489,7 @@ export function useBoardSync({
     markNostrBoardInitialSyncComplete,
     nostrBoardsKey,
     fullHistorySyncNonce,
+    ledger,
     resumeEpoch,
     pendingRelaysByBoardRef,
     pool,
@@ -482,6 +497,7 @@ export function useBoardSync({
     seenBoardTasksRef,
     setPendingNostrInitialSyncByBoardTag,
     tagValue,
+    tasksRef,
     verifyUnseenTasks,
   ]);
 }

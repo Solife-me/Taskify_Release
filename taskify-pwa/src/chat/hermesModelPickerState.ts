@@ -16,8 +16,6 @@ import type { WalletDmMessage } from "./hooks/useDmState";
 
 export { HERMES_MODEL_PAGE_SIZE, HERMES_PROVIDER_PAGE_SIZE };
 
-export const HERMES_CATALOG_CACHE_TTL_MS = 10 * 60 * 1000;
-
 export type HermesSelectedModel = {
   modelId: string;
   providerSlug: string;
@@ -27,6 +25,7 @@ export type HermesSelectedModel = {
 export type HermesMenuProjection = {
   listingEventId: string;
   menuId: string;
+  bindsActionsToListing?: boolean;
   listing: HermesModelListing;
   catalogs: Map<string, HermesProviderCatalog>;
   selectedModel: HermesSelectedModel | null;
@@ -62,10 +61,8 @@ function isPlainTextMessage(message: WalletDmMessage): boolean {
 /**
  * Reconstruct Hermes model menus and named-session listings from the encrypted message history.
  *
- * Taskify-generated commands carry an encrypted `taskify-bot-ui` tag. The next incoming bot
- * message is accepted as the response only when it parses as the exact shape requested by that
- * action. Matching commands and responses are hidden; malformed responses stay visible so users
- * retain a readable fallback.
+ * Updated bots link the response to the encrypted action's rumor ID. Older bots still use the
+ * next incoming message. Matching actions and responses are hidden; malformed responses stay visible.
  */
 export function projectHermesBotUi(messages: WalletDmMessage[], enabled = true): HermesBotUiProjection {
   if (!enabled) return EMPTY_PROJECTION;
@@ -78,18 +75,19 @@ export function projectHermesBotUi(messages: WalletDmMessage[], enabled = true):
 
   for (const message of ordered) {
     if (!message.isIncoming || message.groupId || !isPlainTextMessage(message)) continue;
-    const sessionListing = parseHermesSessionListing(message.content);
+    const sessionListing = message.botMenuKind !== "model" && parseHermesSessionListing(message.content);
     if (sessionListing) {
       sessionsByListingEventId.set(message.eventId, sessionListing);
       continue;
     }
-    const listing = parseHermesModelListing(message.content);
+    const listing = message.botMenuKind !== "sessions" && parseHermesModelListing(message.content);
     if (!listing) continue;
     const menuId = stableMenuId(message);
     if (!menuId) continue;
     const projection: HermesMenuProjection = {
       listingEventId: message.eventId,
       menuId,
+      bindsActionsToListing: message.botMenuKind === "model",
       listing,
       catalogs: new Map(),
       selectedModel: null,
@@ -100,62 +98,79 @@ export function projectHermesBotUi(messages: WalletDmMessage[], enabled = true):
     menusByMenuId.set(menuId, projection);
   }
 
-  if (!menusByMenuId.size) return { hiddenEventIds, menusByListingEventId, sessionsByListingEventId };
-
-  let pending: { action: TaskifyBotUiAction; responseEventId: string } | null = null;
+  type ModelAction = Exclude<TaskifyBotUiAction, { kind: "session-resume" }>;
+  const boundActions = new Map<string, ModelAction>();
   for (const message of ordered) {
-    if (!message.isIncoming && message.botUiAction) {
+    const action = message.botUiAction;
+    if (message.isIncoming || message.groupId || !action) continue;
+    if (action.kind === "session-resume") {
+      if (message.replyToEventId === action.menuId && message.content === `/resume ${action.sessionId}`) {
+        hiddenEventIds.add(message.eventId);
+      }
+    } else if (menusByMenuId.get(action.menuId)?.bindsActionsToListing && message.replyToEventId === action.menuId) {
+      const id = stableMenuId(message);
+      if (id) boundActions.set(id, action);
+    }
+  }
+
+  let legacyAction: ModelAction | null = null;
+  for (const message of ordered) {
+    if (message.groupId) continue;
+    if (!message.isIncoming) {
       const action = message.botUiAction;
-      hiddenEventIds.add(message.eventId);
+      if (!action || action.kind === "session-resume") continue;
       const menu = menusByMenuId.get(action.menuId);
       if (!menu) continue;
+      hiddenEventIds.add(message.eventId);
+      if (!menu.bindsActionsToListing) {
+        legacyAction = action;
+      } else {
+        const id = stableMenuId(message);
+        if (!id || !boundActions.has(id)) continue;
+      }
       menu.pendingAction = action;
       menu.failure = null;
-      pending = { action, responseEventId: message.eventId };
       continue;
     }
 
-    if (!message.isIncoming || !pending) continue;
-    const menu = menusByMenuId.get(pending.action.menuId);
-    if (!menu) {
-      pending = null;
-      continue;
-    }
-
-    if (pending.action.kind === "catalog-request") {
-      const catalog = parseHermesProviderCatalog(message.content, pending.action.providerSlug);
+    const bound = message.replyToEventId && boundActions.get(message.replyToEventId);
+    const action = bound || legacyAction;
+    if (!action) continue;
+    if (bound && message.replyToEventId) boundActions.delete(message.replyToEventId);
+    else legacyAction = null;
+    const menu = menusByMenuId.get(action.menuId);
+    if (!menu) continue;
+    if (action.kind === "catalog-request") {
+      const catalog = parseHermesProviderCatalog(message.content, action.providerSlug);
       if (catalog) {
         hiddenEventIds.add(message.eventId);
         menu.catalogs.set(catalog.providerSlug.toLowerCase(), catalog);
         menu.pendingAction = null;
         menu.failure = null;
-        pending = null;
         continue;
       }
     } else {
       const confirmation = parseHermesModelSwitchConfirmation(message.content);
-      if (confirmation && confirmation.modelId.toLowerCase() === pending.action.modelId.toLowerCase()) {
+      if (confirmation && confirmation.modelId.toLowerCase() === action.modelId.toLowerCase()) {
         hiddenEventIds.add(message.eventId);
-        const catalog = menu.catalogs.get(pending.action.providerSlug.toLowerCase());
+        const catalog = menu.catalogs.get(action.providerSlug.toLowerCase());
         menu.selectedModel = {
           modelId: confirmation.modelId,
-          providerSlug: pending.action.providerSlug,
-          providerName: confirmation.providerName || catalog?.providerName || pending.action.providerSlug,
+          providerSlug: action.providerSlug,
+          providerName: confirmation.providerName || catalog?.providerName || action.providerSlug,
         };
         menu.pendingAction = null;
         menu.failure = null;
-        pending = null;
         continue;
       }
     }
 
     menu.pendingAction = null;
     menu.failure = {
-      action: pending.action,
+      action: action,
       responseEventId: message.eventId,
       responseContent: message.content,
     };
-    pending = null;
   }
 
   return { hiddenEventIds, menusByListingEventId, sessionsByListingEventId };
@@ -182,95 +197,4 @@ export function pageSlice<T>(values: readonly T[], page: number, pageSize: numbe
   const count = pageCount(values.length, pageSize);
   const safePage = Math.max(0, Math.min(count - 1, Math.floor(page)));
   return values.slice(safePage * pageSize, safePage * pageSize + pageSize);
-}
-
-export type HermesCatalogCacheEntry = {
-  providerSlug: string;
-  providerName: string | null;
-  models: string[];
-  fetchedAt: number;
-  listingId: string;
-};
-
-export const LS_HERMES_MODEL_CATALOG_CACHE = "taskify_hermes_model_catalog_cache_v1";
-
-type CatalogCacheMap = Record<string, HermesCatalogCacheEntry>;
-
-function catalogCacheKey(peerPubkey: string, providerSlug: string): string {
-  return `${peerPubkey.trim().toLowerCase()}|${providerSlug.trim().toLowerCase()}`;
-}
-
-function loadCatalogCacheMap(): CatalogCacheMap {
-  try {
-    const raw = window.localStorage.getItem(LS_HERMES_MODEL_CATALOG_CACHE);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as CatalogCacheMap : {};
-  } catch {
-    return {};
-  }
-}
-
-function persistCatalogCacheMap(map: CatalogCacheMap): void {
-  try {
-    window.localStorage.setItem(LS_HERMES_MODEL_CATALOG_CACHE, JSON.stringify(map));
-  } catch {
-    // A full or unavailable cache only causes the picker to request a fresh catalog.
-  }
-}
-
-function isCacheEntry(value: unknown): value is HermesCatalogCacheEntry {
-  if (!value || typeof value !== "object") return false;
-  const entry = value as Partial<HermesCatalogCacheEntry>;
-  return (
-    typeof entry.providerSlug === "string" &&
-    isValidHermesProviderSlug(entry.providerSlug) &&
-    (entry.providerName === null || typeof entry.providerName === "string") &&
-    Array.isArray(entry.models) &&
-    entry.models.every(isValidHermesModelId) &&
-    typeof entry.fetchedAt === "number" &&
-    Number.isFinite(entry.fetchedAt) &&
-    typeof entry.listingId === "string"
-  );
-}
-
-/** Any listing's cached catalog, shown until refreshed; `isHermesCatalogCacheFresh` checks the listing. */
-export function loadHermesCatalogCache(
-  peerPubkey: string,
-  providerSlug: string,
-): HermesCatalogCacheEntry | null {
-  const key = catalogCacheKey(peerPubkey, providerSlug);
-  const entry = loadCatalogCacheMap()[key];
-  if (!isCacheEntry(entry)) return null;
-  if (entry.providerSlug.toLowerCase() !== providerSlug.toLowerCase()) return null;
-  return entry;
-}
-
-export function isHermesCatalogCacheFresh(
-  entry: HermesCatalogCacheEntry,
-  now = Date.now(),
-  currentListingId?: string,
-): boolean {
-  return (!currentListingId || entry.listingId === currentListingId)
-    && now - entry.fetchedAt >= 0
-    && now - entry.fetchedAt < HERMES_CATALOG_CACHE_TTL_MS;
-}
-
-export function saveHermesCatalogCache(
-  peerPubkey: string,
-  listingId: string,
-  catalog: HermesProviderCatalog,
-  fetchedAt = Date.now(),
-): HermesCatalogCacheEntry {
-  const entry: HermesCatalogCacheEntry = {
-    providerSlug: catalog.providerSlug,
-    providerName: catalog.providerName,
-    models: [...catalog.models],
-    fetchedAt,
-    listingId,
-  };
-  const map = loadCatalogCacheMap();
-  map[catalogCacheKey(peerPubkey, catalog.providerSlug)] = entry;
-  persistCatalogCacheMap(map);
-  return entry;
 }

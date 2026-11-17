@@ -13,6 +13,9 @@ extension UTType {
 
 struct TaskDragPayload: Codable, Hashable, Transferable {
     let taskID: String
+    var selectedTaskIDs: Set<String>? = nil
+
+    var taskCount: Int { selectedTaskIDs?.count ?? 1 }
 
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .taskifyTask)
@@ -33,6 +36,7 @@ struct BoardQuickAddDestination: Equatable {
 
 struct TaskDropTargetModifier: ViewModifier {
     @Environment(AppModel.self) private var model
+    @Environment(TaskSelectionController.self) private var selection: TaskSelectionController?
     let boardID: String
     let columnID: String
     let beforeTaskID: String?
@@ -43,6 +47,9 @@ struct TaskDropTargetModifier: ViewModifier {
         content
             .dropDestination(for: TaskDragPayload.self) { payloads, _ in
                 guard let payload = payloads.first else { return false }
+                if let selectedTaskIDs = payload.selectedTaskIDs, selectedTaskIDs.count > 1 {
+                    return moveSelection(selectedTaskIDs)
+                }
                 if beforeTaskID == payload.taskID { return true }
                 return model.moveTask(
                     payload.taskID,
@@ -74,6 +81,25 @@ struct TaskDropTargetModifier: ViewModifier {
                 }
             }
     }
+
+    private func moveSelection(_ taskIDs: Set<String>) -> Bool {
+        if let beforeTaskID, taskIDs.contains(beforeTaskID) { return true }
+
+        let orderedIDs = taskIDs.compactMap { model.task(withID: $0) }
+            .sorted {
+                ($0.boardID, $0.columnID ?? "", $0.order, $0.createdAt, $0.id) <
+                    ($1.boardID, $1.columnID ?? "", $1.order, $1.createdAt, $1.id)
+            }
+            .map(\.id)
+        guard model.moveTasks(
+            orderedIDs,
+            toBoardID: boardID,
+            columnID: columnID,
+            beforeTaskID: beforeTaskID
+        ) else { return false }
+        selection?.exit()
+        return true
+    }
 }
 
 struct TaskDragSourceModifier: ViewModifier {
@@ -85,7 +111,7 @@ struct TaskDragSourceModifier: ViewModifier {
         if let payload {
             content
                 .draggable(payload) {
-                    Label(title, systemImage: "rectangle.stack.fill")
+                    Label(payload.taskCount > 1 ? "\(payload.taskCount) tasks" : title, systemImage: "rectangle.stack.fill")
                         .scaledFont(size: 15, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .lineLimit(1)
@@ -98,7 +124,9 @@ struct TaskDragSourceModifier: ViewModifier {
                                 .stroke(TaskifyTheme.border, lineWidth: 1)
                         )
                 }
-                .accessibilityHint("Touch and hold, then drag to another list or day")
+                .accessibilityHint(payload.taskCount > 1
+                    ? "Touch and hold, then drag to move the selected tasks"
+                    : "Touch and hold, then drag to another list or day")
         } else {
             content
         }

@@ -103,6 +103,9 @@ export type NostrPrintJobManifest = {
         section?: string;
         filled?: boolean;
         detail?: string;
+        dueText?: string;
+        note?: string;
+        noteLineCount?: number;
         subtasks?: Array<{
             title: string;
             completed?: boolean;

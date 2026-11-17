@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Testing
 @testable import TaskifyCore
 
@@ -186,4 +187,83 @@ private func withBackground(_ page: PhysicalChecklistGrayImage, margin: Double =
     #expect(result.detectedIDs == ["b"])
     #expect(result.recognizedPages == 1)
     #expect(result.mismatchedJobs == 0)
+}
+
+@Test func scanReadsAModernSheetWithWrappedNotes() {
+    let job = PhysicalChecklistJob(
+        id: "modern-print",
+        ownerID: "board:test",
+        title: "Test",
+        paper: .a6,
+        items: [
+            PhysicalChecklistItem(
+                id: "a", title: "A", section: "Mon",
+                dueText: "Nov 8, 2026",
+                note: "A note that wraps across a couple of lines.",
+                noteLineCount: 2
+            ),
+            PhysicalChecklistItem(id: "b", title: "B", section: "Mon"),
+        ],
+        layoutVersion: BoardPrintContract.modernVersion
+    )
+    let result = PhysicalChecklistScanAnalyzer.scan(
+        images: [renderChecklist(job: job, filledIDs: ["b"])],
+        job: job
+    )
+
+    #expect(result.detectedIDs == ["b"])
+    #expect(result.recognizedPages == 1)
+    #expect(result.mismatchedJobs == 0)
+}
+
+@Test func scanToleratesAFewMisreadJobCodeBits() {
+    let expected = 0b1010_1010_10
+    #expect(PhysicalChecklistScanAnalyzer.jobCodeMatches(expected, expected))
+    #expect(PhysicalChecklistScanAnalyzer.jobCodeMatches(expected ^ 0b11, expected))
+    #expect(!PhysicalChecklistScanAnalyzer.jobCodeMatches(expected ^ 0b111, expected))
+}
+
+@Test func scanMatchSelectsThePrintJobWhoseCodeIsOnTheSheet() {
+    let expected = makeJob(paper: .a6, id: "matching-print")
+    let other = makeJob(paper: .a6, id: "other-print")
+    let match = PhysicalChecklistScanAnalyzer.match(
+        images: [renderChecklist(job: expected, filledIDs: ["b"])],
+        jobs: [other, expected]
+    )
+
+    #expect(match.job?.id == expected.id)
+    #expect(match.result.detectedIDs == ["b"])
+    #expect(match.result.recognizedPages == 1)
+}
+
+@Test func grayImageConversionKeepsCameraRowsInTopLeftOrder() throws {
+    let width = 8
+    let height = 8
+    var sourcePixels = [UInt8](repeating: 255, count: width * height)
+    for y in 0..<(height / 2) {
+        for x in 0..<width {
+            sourcePixels[y * width + x] = 0
+        }
+    }
+    let provider = try #require(CGDataProvider(data: Data(sourcePixels) as CFData))
+    let source = try #require(CGImage(
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bitsPerPixel: 8,
+        bytesPerRow: width,
+        space: CGColorSpaceCreateDeviceGray(),
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    ))
+
+    let converted = try #require(PhysicalChecklistGrayImage.from(cgImage: source, targetWidth: width))
+
+    #expect(converted.width == width)
+    #expect(converted.height == height)
+    #expect(converted.pixels.prefix(width).allSatisfy { $0 < 40 })
+    #expect(converted.pixels.suffix(width).allSatisfy { $0 > 215 })
 }
