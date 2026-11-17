@@ -22,13 +22,15 @@ private func listAndWeekSnapshot(listTaskDue: Date?) -> TaskifySnapshot {
     )
 }
 
-@Test func movingAListTaskOntoAWeekDayLandsInTheCurrentWeek() throws {
-    // Due far out on the list board; on the week board it belongs to the chosen day this week.
+@Test func movingAListTaskOntoAnEarlierWeekdayLandsOnTheUpcomingOccurrence() throws {
     var snapshot = listAndWeekSnapshot(listTaskDue: fixedNow.addingTimeInterval(90 * 86_400))
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
     let result = snapshot.moveTask(
         taskID: "task",
         toBoardID: "week-default",
         columnID: WeekdayColumn.monday.rawValue,
+        calendar: calendar,
         now: fixedNow
     )
     let move = try #require(result)
@@ -37,7 +39,7 @@ private func listAndWeekSnapshot(listTaskDue: Date?) -> TaskifySnapshot {
     #expect(moved.boardID == "week-default")
     #expect(moved.columnID == WeekdayColumn.monday.rawValue)
     #expect(moved.dueDateEnabled)
-    #expect(moved.dueDate == WeekDateResolver.date(for: .monday, inWeekContaining: fixedNow))
+    #expect(moved.dueDate == calendar.date(from: DateComponents(year: 2025, month: 10, day: 13)))
 }
 
 @Test func movingAnUndatedListTaskOntoAWeekDayGivesItThatDate() throws {

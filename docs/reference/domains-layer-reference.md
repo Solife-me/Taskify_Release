@@ -58,6 +58,9 @@ Why it matters:
 - Core task and board type system
 - Task create/update/list/filter/sort helpers
 - Board shape parsing (`week`, `lists`, `compound`, `bible`)
+- A drop onto another weekday on a week board uses the first occurrence on or after
+  both today and the task's current due day. The drop preserves the scheduled time
+  of day. Reordering within a weekday keeps the existing due date.
 - Settings read/write contract for task-related UX behavior
 - Contact metadata shaping used in assignment/editor context
 

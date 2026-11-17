@@ -125,6 +125,12 @@ tombstone version ordering on PWA reload and live merge, CLI refresh and compoun
 merges, and Watch account labels through snapshot trimming and command encoding.
 See the [Beta sync audit](../audits/nostr-task-sync-beta-2026-11-14.md) for remaining release checks.
 
+## Week Board Drag Coverage (2026-11-17)
+
+PWA task-command and native snapshot tests cover forward weekday drops and time of
+day preservation. PWA tests also cover overdue tasks, same-column reorders, and a
+task whose scheduled timezone places its due instant on a different weekday.
+
 ## Native Board Performance Coverage (2026-09-12)
 
 `SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,

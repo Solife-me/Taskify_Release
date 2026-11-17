@@ -1147,25 +1147,28 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
                 taskCalendar.timeZone = timeZone
             }
             let originalDueDate = movedTask.dueDate
-            // Within a week board the task keeps its week. Arriving from another board, its
-            // date belongs to that board's sense of time (a list task may be due months out),
-            // so it lands on the chosen day of the current week, where the board shows it.
-            let weekAnchor = sourceBoardID == targetBoardID ? (originalDueDate ?? now) : now
-            let targetDate = WeekDateResolver.date(
-                for: targetWeekday,
-                inWeekContaining: weekAnchor,
-                calendar: taskCalendar
-            )
-            if movedTask.dueTimeEnabled, let originalDueDate {
-                let time = taskCalendar.dateComponents([.hour, .minute, .second], from: originalDueDate)
-                movedTask.dueDate = taskCalendar.date(
-                    bySettingHour: time.hour ?? 0,
-                    minute: time.minute ?? 0,
-                    second: time.second ?? 0,
-                    of: targetDate
-                ) ?? targetDate
-            } else {
-                movedTask.dueDate = targetDate
+            let dueWeekday = originalDueDate.map { taskCalendar.component(.weekday, from: $0) }
+            let isReorder = sourceKey == targetKey && movedTask.dueDateEnabled
+                && dueWeekday == targetWeekday.calendarWeekday
+            if !isReorder {
+                let sameBoardDueDate = sourceBoardID == targetBoardID && movedTask.dueDateEnabled
+                    ? originalDueDate : nil
+                let anchor = taskCalendar.startOfDay(for: max(now, sameBoardDueDate ?? now))
+                let anchorWeekday = taskCalendar.component(.weekday, from: anchor)
+                let daysForward = (targetWeekday.calendarWeekday - anchorWeekday + 7) % 7
+                let targetDate = taskCalendar.date(byAdding: .day, value: daysForward, to: anchor) ?? anchor
+
+                if movedTask.dueTimeEnabled, let originalDueDate {
+                    let time = taskCalendar.dateComponents([.hour, .minute, .second], from: originalDueDate)
+                    movedTask.dueDate = taskCalendar.date(
+                        bySettingHour: time.hour ?? 0,
+                        minute: time.minute ?? 0,
+                        second: time.second ?? 0,
+                        of: targetDate
+                    ) ?? targetDate
+                } else {
+                    movedTask.dueDate = taskCalendar.startOfDay(for: targetDate)
+                }
             }
             movedTask.dueDateEnabled = true
         }
