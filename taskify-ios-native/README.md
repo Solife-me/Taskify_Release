@@ -63,7 +63,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - PWA-compatible Saturday, Sunday, or Monday week starts across board ordering, quick-add dates, task moves, and current-week visibility, with later tasks kept in Upcoming until their week is active even when legacy payloads lack `hiddenUntilISO`
 - PWA-compatible recurrence presets, custom intervals/weekdays, optional end dates, next-instance generation on completion, and series/date deduplication that prevents an incomplete legacy copy from reviving a completed occurrence
 - Multiple relative reminders, exact custom reminder times, local Apple notification scheduling,
-  and expanded task actions for background completion or a device-local 15-minute snooze
+  and expanded task actions for background completion or a device-local one-hour snooze
 - PWA-familiar Upcoming list/calendar views with one-tap switching, native monthly task-day dots, search, add flow, persisted sorting, board grouping, and board filters
 - Opt-in Apple Calendar integration in both Upcoming views with native full-access permission handling, event-day dots, dated list sections, calendar colors, search, and live EventKit refreshes
 - Taskify event scheduling compatible with the PWA, including per-event time zones, reminder metadata and local notifications, native event cards inside week/list/compound board columns, mixed task-and-event bulk selection/move/delete, board/list placement with replay-safe cross-board moves, contact-based attendee selection, stable per-attendee invite tokens, encrypted outbound invitations, authenticated organizer-side RSVP summaries with latest-response reconciliation, and lossless recurrence/series preservation across native edits

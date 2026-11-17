@@ -150,7 +150,7 @@ final class ReminderFromSiriAndWatchTests: XCTestCase {
             )
         )
         XCTAssertEqual(notification.identifier, "taskify.snooze.\(account).t1")
-        XCTAssertEqual(notification.fireDate, fixedNow.addingTimeInterval(15 * 60))
+        XCTAssertEqual(notification.fireDate, fixedNow.addingTimeInterval(60 * 60))
         XCTAssertEqual(notification.title, "Take out the trash")
         XCTAssertEqual(notification.body, "Still pending")
         XCTAssertEqual(notification.userInfo, [
