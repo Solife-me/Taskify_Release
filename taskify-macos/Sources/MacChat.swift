@@ -37,6 +37,8 @@ struct MacChatView: View {
     @State private var showArchived = false
     @State private var showContacts = false
     @State private var taskDropPeer: String?
+    @State private var preferredListWidth: CGFloat = 270
+    @GestureState private var listDividerOffset: CGFloat = 0
     private var peers: [String] {
         let values = model.directMessageThreads.map(\.peerPublicKey) + model.nostrContacts.map(\.publicKey)
         return Array(Set(values)).filter { peer in
@@ -51,32 +53,65 @@ struct MacChatView: View {
     var body: some View {
         GeometryReader { geometry in
             let compact = MacWorkspaceLayout.panePresentation(for: geometry.size.width) == .compact
-            if compact {
-                if let selection {
-                    conversation(peer: selection, compact: true)
-                } else {
-                    conversationList
-                }
-            } else {
-                HSplitView {
-                    conversationList
-                        .frame(minWidth: 220, idealWidth: 270, maxWidth: 320)
+            let listVisible = !compact || selection == nil
+            let detailVisible = !compact || selection != nil
+            let listWidth = compact && listVisible ? geometry.size.width : clampedListWidth(preferredListWidth + listDividerOffset)
+
+            // Keep the native outline view mounted when the workspace divider crosses the
+            // compact breakpoint. AppKit can ask it for cells as it ends live resize, even
+            // while SwiftUI is dismantling the old layout's view graph.
+            HStack(spacing: 0) {
+                conversationList
+                    .frame(width: listWidth)
+                    .frame(width: listVisible ? listWidth : 0, alignment: .leading)
+                    .clipped()
+                    .allowsHitTesting(listVisible)
+                    .accessibilityHidden(!listVisible)
+
+                if !compact { listDivider }
+
+                Group {
                     if let selection {
-                        conversation(peer: selection, compact: false)
-                            .frame(minWidth: 320)
-                    } else {
+                        conversation(peer: selection, compact: compact)
+                    } else if !compact {
                         ContentUnavailableView(
                             "Your Conversations",
                             systemImage: "bubble.left.and.bubble.right",
                             description: Text("Choose a conversation or start a new one.")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: detailVisible ? nil : 0)
             }
         }
         .sheet(isPresented: $showNew) { MacNewConversation { selection = $0 } }
         .sheet(isPresented: $showContacts) { MacContactsView() }
+    }
+
+    private var listDivider: some View {
+        Divider()
+            .padding(.horizontal, 2)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(coordinateSpace: .global)
+                    .updating($listDividerOffset) { value, offset, _ in offset = value.translation.width }
+                    .onEnded { value in
+                        preferredListWidth = clampedListWidth(preferredListWidth + value.translation.width)
+                    }
+            )
+            .accessibilityLabel("Conversation list width")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: preferredListWidth = clampedListWidth(preferredListWidth + 10)
+                case .decrement: preferredListWidth = clampedListWidth(preferredListWidth - 10)
+                @unknown default: break
+                }
+            }
+    }
+
+    private func clampedListWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, 220), 320)
     }
 
     private var conversationList: some View {

@@ -119,9 +119,11 @@ manifest in the same change; CI rejects a project that was not regenerated.
   state, archive/block controls and encrypted attachments. The selected
   conversation and its per-conversation drafts persist in `MacWorkspace`, so
   they survive leaving the Chat destination entirely (Boards, Inbox, …) and
-  coming back. A thread opens at its newest message with only the latest 100
-  timeline items loaded; reaching the top loads another 100 while preserving
-  the reader's position. Conversation search still covers the complete retained
+  coming back. When Chat shares the workspace with a board, dragging the
+  divider between narrow and wide layouts keeps the conversation list mounted
+  and preserves the open thread and draft. A thread opens at its newest
+  message with only the latest 100 timeline items loaded. Reaching the top loads
+  another 100 while preserving the reader's position. Conversation search still covers the complete retained
   history, and closing search keeps the matched older message in the loaded
   window. Drag-and-drop and
   clipboard paste (a `PasteButton`, since Cmd-V while the composer is focused

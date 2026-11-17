@@ -341,3 +341,9 @@ reported crash cause; these transport regressions do not replace that verificati
   separate from other relays. An acknowledgement on one relay is saved while the other
   relays continue. The existing per-relay pacing and rate-limit cooldowns still apply,
   and PoW relays can share a signed variant of the same event.
+
+
+### Mac board and Chat split view
+
+- The isolated Mac UI test crosses the compact breakpoint in both directions
+  and checks that the board, selected conversation, and unsent draft stay open.
