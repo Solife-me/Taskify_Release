@@ -328,7 +328,7 @@ struct TaskifyListScanSheet: View {
     private func read(_ images: [UIImage]) {
         let pages = images.compactMap(PhysicalChecklistCapturedPage.init)
         guard !analyzing, !pages.isEmpty else { return }
-        let manifests = Array(PhysicalChecklistJobStore.loadAll().values)
+        let manifests = Array(PhysicalChecklistJobStore.loadAll(defaults: model.accountDefaults).values)
         analyzing = true
         message = nil
         reviewMessage = nil

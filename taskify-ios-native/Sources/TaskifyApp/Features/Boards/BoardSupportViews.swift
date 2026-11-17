@@ -1316,7 +1316,16 @@ struct BoardPrintListChoice: Identifiable {
     let items: [PhysicalChecklistItem]
 }
 
-struct BoardPrintChooserSheet: View {
+struct BoardChecklistScanHelp: View {
+    var body: some View {
+        Text("Mark the circles for finished tasks. In Taskify, tap **+ → Scan List** and capture the whole page.")
+            .font(.footnote)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct BoardPrintSetup: View {
     private enum Scope: String, CaseIterable, Identifiable {
         case board = "Entire board"
         case lists = "Selected lists"
@@ -1324,30 +1333,49 @@ struct BoardPrintChooserSheet: View {
         var id: String { rawValue }
     }
 
-    let title: String
-    let choices: [BoardPrintListChoice]
-    let onContinue: (Set<String>?, PhysicalChecklistPrintOptions) -> Void
+    private enum Output: Hashable {
+        case print
+        case pdf
+    }
 
-    @Environment(\.dismiss) private var dismiss
+    private struct PreparedOutput {
+        let source: PhysicalChecklistJob
+        let job: PhysicalChecklistJob
+
+        // Printing and sharing the same setup should keep the same scannable print ID.
+        func matches(_ request: PhysicalChecklistJob) -> Bool {
+            var comparable = request
+            comparable.id = source.id
+            comparable.createdAt = source.createdAt
+            return comparable == source
+        }
+    }
+
+    @Environment(AppModel.self) private var model
     @AppStorage(TaskPresentationSettings.completedTabKey)
     private var completedTabEnabled = TaskPresentationSettings.completedTabDefault
     @State private var scope = Scope.board
     @State private var selectedListIDs: Set<String>
     @State private var options = PhysicalChecklistPrintOptions.default
+    @State private var paper = PhysicalChecklistPaper.letter
+    @State private var moreOptions = false
+    @State private var preparedOutput: PreparedOutput?
+    @State private var output: Output?
+    @State private var sharePayload: PhysicalChecklistSharePayload?
+    @State private var errorMessage: String?
+
+    let choices: [BoardPrintListChoice]
+    let makeJob: (Set<String>?, PhysicalChecklistPrintOptions) -> PhysicalChecklistJob?
 
     init(
-        title: String,
         choices: [BoardPrintListChoice],
-        onContinue: @escaping (Set<String>?, PhysicalChecklistPrintOptions) -> Void
+        makeJob: @escaping (Set<String>?, PhysicalChecklistPrintOptions) -> PhysicalChecklistJob?
     ) {
-        self.title = title
         self.choices = choices
-        self.onContinue = onContinue
-        _selectedListIDs = State(initialValue: Set(
-            choices.filter { choice in
-                choice.items.contains { !$0.filled && !$0.upcoming }
-            }.map(\.id)
-        ))
+        self.makeJob = makeJob
+        _selectedListIDs = State(initialValue: Set(choices.filter { choice in
+            choice.items.contains { !$0.filled && !$0.upcoming }
+        }.map(\.id)))
     }
 
     private func isPrintable(_ item: PhysicalChecklistItem) -> Bool {
@@ -1362,91 +1390,138 @@ struct BoardPrintChooserSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section("Print range") {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(spacing: 12) {
+                LabeledContent("Print range") {
                     Picker("Print range", selection: $scope) {
                         ForEach(Scope.allCases) { option in
                             Text(option.rawValue).tag(option)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
+                    .labelsHidden()
                 }
 
                 if scope == .lists {
-                    Section("Lists") {
-                        ForEach(choices) { choice in
-                            let count = choice.items.filter(isPrintable).count
-                            Button {
-                                if selectedListIDs.contains(choice.id) {
-                                    selectedListIDs.remove(choice.id)
-                                } else {
+                    ForEach(choices) { choice in
+                        let count = choice.items.filter(isPrintable).count
+                        Toggle(isOn: Binding(
+                            get: { selectedListIDs.contains(choice.id) },
+                            set: { isSelected in
+                                if isSelected {
                                     selectedListIDs.insert(choice.id)
+                                } else {
+                                    selectedListIDs.remove(choice.id)
                                 }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: selectedListIDs.contains(choice.id) ? "checkmark.square.fill" : "square")
-                                        .foregroundStyle(selectedListIDs.contains(choice.id) ? TaskifyTheme.accent : TaskifyTheme.secondaryText)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(choice.name)
-                                            .foregroundStyle(TaskifyTheme.primaryText)
-                                        Text("\(count) item\(count == 1 ? "" : "s")")
-                                            .font(.caption)
-                                            .foregroundStyle(TaskifyTheme.secondaryText)
-                                    }
-                                    Spacer()
-                                }
-                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
-                            .disabled(count == 0)
+                        )) {
+                            LabeledContent(choice.name) {
+                                Text("\(count)")
+                            }
+                        }
+                        .disabled(count == 0)
+                    }
+                }
+
+                LabeledContent("Paper size") {
+                    Picker("Paper size", selection: $paper) {
+                        ForEach(PhysicalChecklistPaper.allCases, id: \.self) { size in
+                            Text(size.displayName).tag(size)
                         }
                     }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
                 }
 
-                Section("Include") {
-                    Toggle("Upcoming tasks", isOn: $options.includeUpcoming)
-                    Toggle("Completed tasks", isOn: $options.includeCompleted)
-                }
-
-                Section("Details") {
-                    Toggle("Notes", isOn: $options.includeNotes)
-                    Toggle("Due date and time", isOn: $options.includeDue)
-                    Toggle("Subtasks", isOn: $options.includeSubtasks)
-                    Toggle("Photos", isOn: $options.includePhotos)
-                }
-
-                Section {
-                    Text("\(printableCount) item\(printableCount == 1 ? "" : "s") will print")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(TaskifyTheme.primaryText)
-                    if options.includeSubtasks || options.includePhotos {
-                        Text("Tasks with subtasks or photos print taller, so fewer fit on each page.")
-                            .font(.caption)
-                            .foregroundStyle(TaskifyTheme.secondaryText)
+                DisclosureGroup("More options", isExpanded: $moreOptions) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle("Upcoming tasks", isOn: $options.includeUpcoming)
+                        Toggle("Completed tasks", isOn: $options.includeCompleted)
+                        Toggle("Notes", isOn: $options.includeNotes)
+                        Toggle("Due date and time", isOn: $options.includeDue)
+                        Toggle("Subtasks", isOn: $options.includeSubtasks)
+                        Toggle("Photos", isOn: $options.includePhotos)
                     }
+                    .padding(.top, 10)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(TaskifyTheme.background.ignoresSafeArea())
-            .navigationTitle("Print \(title)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+            .padding(14)
+            .taskifyGlass(cornerRadius: 18)
+            .disabled(output != nil)
+
+            VStack(spacing: 8) {
+                Button {
+                    output = .print
+                } label: {
+                    Label("Print checklist", systemImage: "printer")
+                        .frame(maxWidth: .infinity, minHeight: 32)
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Continue") {
-                        onContinue(scope == .board ? nil : selectedListIDs, options)
-                        dismiss()
-                    }
-                    .disabled(printableCount == 0)
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    output = .pdf
+                } label: {
+                    Label("Share PDF", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity, minHeight: 28)
                 }
+                .buttonStyle(.bordered)
             }
+            .disabled(printableCount == 0 || output != nil)
+
+            if output != nil {
+                ProgressView("Preparing checklist…")
+                    .font(.footnote)
+            }
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.footnote)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            } else if printableCount == 0 {
+                Text("No tasks or events to print.")
+                    .font(.footnote)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            BoardChecklistScanHelp()
         }
-        .preferredColorScheme(.dark)
-        .onAppear {
-            options.includeCompleted = completedTabEnabled
+        .onAppear { options.includeCompleted = completedTabEnabled }
+        .task(id: output) {
+            guard let output else { return }
+            await prepare(output)
+        }
+        .sheet(item: $sharePayload) { payload in
+            PhysicalChecklistActivityView(items: [payload.url])
+        }
+    }
+
+    private func prepare(_ requestedOutput: Output) async {
+        errorMessage = nil
+        defer { output = nil }
+        guard var job = makeJob(scope == .board ? nil : selectedListIDs, options) else {
+            errorMessage = "No tasks or events to print."
+            return
+        }
+        job.paper = paper
+        let prepared: PhysicalChecklistJob
+        if let preparedOutput, preparedOutput.matches(job) {
+            prepared = preparedOutput.job
+        } else {
+            prepared = await PhysicalChecklistOutput.preparePhotos(for: job)
+            guard !Task.isCancelled else { return }
+            preparedOutput = PreparedOutput(source: job, job: prepared)
+        }
+        do {
+            let url = try PhysicalChecklistOutput.savePDF(for: prepared, model: model)
+            switch requestedOutput {
+            case .print:
+                if !PhysicalChecklistOutput.printPDF(at: url, title: prepared.title) {
+                    errorMessage = "Taskify couldn’t open print options. Try sharing the PDF."
+                }
+            case .pdf:
+                sharePayload = PhysicalChecklistSharePayload(url: url)
+            }
+        } catch {
+            errorMessage = "Taskify couldn’t create the checklist PDF."
         }
     }
 }
@@ -1455,8 +1530,8 @@ struct BoardShareSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
     let board: Board
-    let onPrint: () -> Void
-    let onScan: () -> Void
+    let printChoices: () -> [BoardPrintListChoice]
+    let makePrintJob: (Set<String>?, PhysicalChecklistPrintOptions) -> PhysicalChecklistJob?
 
     @State private var shareMode = ShareMode.board
     @State private var copied = false
@@ -1503,7 +1578,7 @@ struct BoardShareSheet: View {
                     .pickerStyle(.segmented)
 
                     if shareMode == .print {
-                        printModeContent
+                        BoardPrintSetup(choices: printChoices(), makeJob: makePrintJob)
                     } else {
                         VStack(spacing: 5) {
                             Label(
@@ -1655,47 +1730,6 @@ struct BoardShareSheet: View {
             }
         }
         .preferredColorScheme(.dark)
-    }
-
-    private var printModeContent: some View {
-        VStack(spacing: 18) {
-            VStack(spacing: 5) {
-                Label("Printable checklist", systemImage: "printer")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(TaskifyTheme.accent)
-                Text("Print open tasks and events as a paper checklist, or scan a printed sheet to mark tasks complete.")
-                    .font(.caption)
-                    .foregroundStyle(TaskifyTheme.secondaryText)
-                    .multilineTextAlignment(.center)
-            }
-
-            Image(systemName: "printer")
-                .scaledFont(size: 44, weight: .medium)
-                .foregroundStyle(TaskifyTheme.secondaryText)
-                .frame(width: 270, height: 200)
-                .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 22).stroke(TaskifyTheme.border, lineWidth: 1))
-
-            Button {
-                dismiss()
-                onPrint()
-            } label: {
-                Label("Print checklist", systemImage: "printer")
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-            }
-            .buttonStyle(.borderedProminent)
-
-            Button {
-                dismiss()
-                onScan()
-            } label: {
-                Label("Scan checklist", systemImage: "doc.viewfinder")
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-            }
-            .buttonStyle(.bordered)
-        }
     }
 
     private func copyBoardID() {
