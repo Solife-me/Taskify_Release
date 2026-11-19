@@ -50,6 +50,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - List-board creation, custom list columns, focus-aware quick task entry, free multi-column flick navigation, and proximity-accelerated edge scrolling while dragging tasks
 - Advanced list management with synced rename/reorder controls and guarded deletion that can preserve tasks by moving them to a neighboring list
 - Long-press task dragging and insertion feedback across weekly days and list columns, including synced reordering and cross-child movement within compound boards
+- Drag the handles in Settings → Boards & Lists to change the board switcher order on this device. With VoiceOver, swipe up or down on a handle to adjust the board's position.
 - Immediate task completion with native success haptics and concurrent PWA-style checkmarks flying to the completed control
 - Local task completion and PWA-style recurring deletion choices, with synced durable series
   cutoffs that prevent deleted future task/event occurrences from reappearing after relay replay

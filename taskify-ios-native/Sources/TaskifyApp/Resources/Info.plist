@@ -116,6 +116,16 @@
 			<key>UTTypeIdentifier</key>
 			<string>me.solife.taskify.task</string>
 		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Taskify Board Reorder</string>
+			<key>UTTypeIdentifier</key>
+			<string>me.solife.taskify.board-reorder</string>
+		</dict>
 	</array>
 	<key>TaskifyShareKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)solife.me.Taskify.share</string>

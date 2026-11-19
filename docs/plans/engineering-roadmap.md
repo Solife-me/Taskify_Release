@@ -131,6 +131,10 @@ PWA task-command and native snapshot tests cover forward weekday drops and time 
 day preservation. PWA tests also cover overdue tasks, same-column reorders, and a
 task whose scheduled timezone places its due instant on a different weekday.
 
+The iOS Settings board reorder test drags a board, relaunches the app, and checks
+the saved order in Settings and the board switcher. Snapshot coverage checks
+long-distance moves around archived, hidden, and Bible boards.
+
 ## Native Board Performance Coverage (2026-09-12)
 
 `SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,

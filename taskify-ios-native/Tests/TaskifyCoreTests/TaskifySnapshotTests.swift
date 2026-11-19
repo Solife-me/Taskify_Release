@@ -11,6 +11,33 @@ final class TaskifySnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.selectedBoard?.columns.count, 7)
     }
 
+    func testMovingBoardToAnotherPositionPreservesExcludedSlotsAndSelection() {
+        var snapshot = TaskifySnapshot.empty
+        let weekID = snapshot.selectedBoardID
+        snapshot.boards += [
+            Board(id: "archived", name: "Archived", archived: true),
+            Board(id: "list", name: "List", kind: .list),
+            Board(id: "bible", name: "Bible", kind: .bible),
+            Board(id: "hidden", name: "Hidden", hidden: true),
+            Board(id: "compound", name: "Compound", kind: .compound),
+        ]
+
+        XCTAssertTrue(snapshot.moveBoard(boardID: "compound", toPositionOf: weekID))
+        XCTAssertEqual(snapshot.boards.map(\.id), ["compound", "archived", weekID, "bible", "hidden", "list"])
+        XCTAssertTrue(snapshot.moveBoard(boardID: "compound", toPositionOf: "list"))
+        let originalOrder = [weekID, "archived", "list", "bible", "hidden", "compound"]
+        XCTAssertEqual(snapshot.boards.map(\.id), originalOrder)
+
+        XCTAssertFalse(snapshot.moveBoard(boardID: weekID, toPositionOf: weekID))
+        XCTAssertFalse(snapshot.moveBoard(boardID: "missing", toPositionOf: weekID))
+        for excludedID in ["archived", "bible", "hidden"] {
+            XCTAssertFalse(snapshot.moveBoard(boardID: weekID, toPositionOf: excludedID))
+            XCTAssertFalse(snapshot.moveBoard(boardID: excludedID, toPositionOf: weekID))
+        }
+        XCTAssertEqual(snapshot.boards.map(\.id), originalOrder)
+        XCTAssertEqual(snapshot.selectedBoardID, weekID)
+    }
+
     func testBoardRelayUpdatesNormalizeAndKeepAtLeastOneRelay() {
         var snapshot = TaskifySnapshot.empty
 

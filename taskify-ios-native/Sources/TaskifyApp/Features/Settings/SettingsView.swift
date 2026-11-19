@@ -1207,7 +1207,9 @@ struct SettingsView: View {
     }
 
     private var boardsCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let reorderableBoards = model.visibleBoards.filter { $0.kind != .bible }
+
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Image(systemName: "square.grid.2x2.fill")
                     .font(.title2)
@@ -1216,9 +1218,23 @@ struct SettingsView: View {
                     .font(.headline)
             }
 
-            ForEach(model.visibleBoards.filter { $0.kind != .bible }) { board in
+            if reorderableBoards.count > 1 {
+                Text("Drag the handles to change the board switcher order on this device.")
+                    .font(.caption)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
+            }
+
+            ForEach(Array(reorderableBoards.enumerated()), id: \.element.id) { index, board in
                 VStack(spacing: 7) {
                     HStack(spacing: 8) {
+                        if reorderableBoards.count > 1 {
+                            BoardReorderHandle(
+                                board: board,
+                                position: index + 1,
+                                boardCount: reorderableBoards.count
+                            )
+                        }
+
                         Button {
                             model.selectBoard(board.id)
                         } label: {
@@ -1297,6 +1313,7 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                     }
                 }
+                .modifier(BoardReorderDropTarget(boardID: board.id))
             }
 
             if !archivedBoards.isEmpty {
