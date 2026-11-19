@@ -33,6 +33,7 @@ enum AppTab: String, CaseIterable, Identifiable {
 }
 
 struct RootTabView: View {
+    private let requestLocalReset: () throws -> Void
     @Environment(AppModel.self) private var model
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
@@ -57,7 +58,8 @@ struct RootTabView: View {
     @AppStorage(TaskifyAppearanceSettings.revisionKey) private var appearanceRevision = ""
     @AppStorage(WalletPhaseOut.walletEnabledKey) private var walletEnabled = false
 
-    init() {
+    init(requestLocalReset: @escaping () throws -> Void) {
+        self.requestLocalReset = requestLocalReset
 #if DEBUG
         // Wallet UI tests run on fresh installs, which otherwise get no wallet. Written once: this
         // init runs on every parent update, and each write re-renders the @AppStorage readers,
@@ -452,7 +454,7 @@ struct RootTabView: View {
         case .chat:
             ContactsView()
         case .settings:
-            SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID)
+            SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID, requestLocalReset: requestLocalReset)
         }
     }
 
@@ -488,7 +490,7 @@ struct RootTabView: View {
             }
             .accessibilityValue(ChatTabIcon.accessibilityValue(unreadCount: chatUnreadCount))
             Tab(AppTab.settings.title, systemImage: AppTab.settings.icon, value: .settings) {
-                SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID)
+                SettingsView(watchSetupRequestID: $pendingWatchSetupRequestID, requestLocalReset: requestLocalReset)
                     .taskifyTabBackdrop(isActive: selectedTab == .settings)
             }
         }

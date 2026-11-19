@@ -1,3 +1,4 @@
+import CoreTransferable
 import SwiftUI
 import TaskifyCore
 import UIKit
@@ -55,6 +56,76 @@ struct AppearanceAccentSwatch: View {
     }
 }
 
+private struct BoardReorderPayload: Codable, Transferable {
+    let boardID: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: UTType(exportedAs: "me.solife.taskify.board-reorder"))
+            .visibility(.ownProcess)
+    }
+}
+
+struct BoardReorderHandle: View {
+    @Environment(AppModel.self) private var model
+    let board: Board
+    let position: Int
+    let boardCount: Int
+
+    var body: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.headline)
+            .foregroundStyle(TaskifyTheme.secondaryText)
+            .frame(width: 44, height: 58)
+            .contentShape(Rectangle())
+            .draggable(BoardReorderPayload(boardID: board.id)) {
+                Label(board.name, systemImage: "square.grid.2x2")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .padding(14)
+                    .taskifyGlass(cornerRadius: 16)
+            }
+            .accessibilityLabel("Reorder \(board.name)")
+            .accessibilityValue("Position \(position) of \(boardCount)")
+            .accessibilityHint("Touch and hold, then drag to reorder")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    model.moveBoard(boardID: board.id, direction: 1)
+                case .decrement:
+                    model.moveBoard(boardID: board.id, direction: -1)
+                @unknown default:
+                    break
+                }
+            }
+    }
+}
+
+struct BoardReorderDropTarget: ViewModifier {
+    @Environment(AppModel.self) private var model
+    @State private var isTargeted = false
+    let boardID: String
+
+    func body(content: Content) -> some View {
+        content
+            .dropDestination(for: BoardReorderPayload.self) { payloads, _ in
+                guard let payload = payloads.first else { return false }
+                if payload.boardID == boardID { return true }
+                return withAnimation(.easeInOut(duration: 0.2)) {
+                    model.moveBoard(boardID: payload.boardID, toPositionOf: boardID)
+                }
+            } isTargeted: { targeted in
+                isTargeted = targeted
+            }
+            .overlay {
+                if isTargeted {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(TaskifyTheme.accent, lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
 struct BoardManagerSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -84,7 +155,6 @@ struct BoardManagerSheet: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 18) {
                             nameCard(board)
-                            reorderCard(board)
                             detailsCard(board)
                             if board.kind != .bible {
                                 completionCard(board)
@@ -177,51 +247,6 @@ struct BoardManagerSheet: View {
             )
 
             Text("Name changes sync with collaborators on shared boards.")
-                .font(.caption)
-                .foregroundStyle(TaskifyTheme.secondaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .taskifyGlass(cornerRadius: 24)
-    }
-
-    private var reorderableBoardIDs: [String] {
-        model.visibleBoards.filter { $0.kind != .bible }.map(\.id)
-    }
-
-    private func reorderCard(_ board: Board) -> some View {
-        let position = reorderableBoardIDs.firstIndex(of: board.id)
-        let canMoveUp = (position ?? 0) > 0
-        let canMoveDown = position.map { $0 < reorderableBoardIDs.count - 1 } ?? false
-
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Order")
-                .font(.headline)
-
-            HStack(spacing: 10) {
-                Button {
-                    _ = model.moveBoard(boardID: boardID, direction: -1)
-                } label: {
-                    Label("Move Up", systemImage: "arrow.up")
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
-                }
-                .buttonStyle(.bordered)
-                .disabled(!canMoveUp)
-
-                Button {
-                    _ = model.moveBoard(boardID: boardID, direction: 1)
-                } label: {
-                    Label("Move Down", systemImage: "arrow.down")
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
-                }
-                .buttonStyle(.bordered)
-                .disabled(!canMoveDown)
-            }
-            .font(.subheadline.weight(.semibold))
-
-            Text("Changes where this board appears in the board switcher. Stays on this device only.")
                 .font(.caption)
                 .foregroundStyle(TaskifyTheme.secondaryText)
         }

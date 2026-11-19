@@ -570,12 +570,32 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
     @discardableResult
     public mutating func moveBoard(boardID: String, direction: Int) -> Bool {
         guard direction == -1 || direction == 1 else { return false }
-        let orderedIndices = boards.indices.filter { boards[$0].isVisible && boards[$0].kind != .bible }
+        let orderedIndices = reorderableBoardIndices
         guard let position = orderedIndices.firstIndex(where: { boards[$0].id == boardID }) else { return false }
         let targetPosition = position + direction
         guard orderedIndices.indices.contains(targetPosition) else { return false }
         boards.swapAt(orderedIndices[position], orderedIndices[targetPosition])
         return true
+    }
+
+    /// Moves the board to the target's position, shifting only the boards between them.
+    public mutating func moveBoard(boardID: String, toPositionOf targetBoardID: String) -> Bool {
+        let orderedIndices = reorderableBoardIndices
+        guard let source = orderedIndices.firstIndex(where: { boards[$0].id == boardID }),
+              let target = orderedIndices.firstIndex(where: { boards[$0].id == targetBoardID }),
+              source != target else { return false }
+
+        var reordered = orderedIndices.map { boards[$0] }
+        let board = reordered.remove(at: source)
+        reordered.insert(board, at: target)
+        for (index, board) in zip(orderedIndices, reordered) {
+            boards[index] = board
+        }
+        return true
+    }
+
+    private var reorderableBoardIndices: [Int] {
+        boards.indices.filter { boards[$0].isVisible && boards[$0].kind != .bible }
     }
 
     @discardableResult

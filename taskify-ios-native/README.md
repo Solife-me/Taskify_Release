@@ -50,6 +50,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - List-board creation, custom list columns, focus-aware quick task entry, free multi-column flick navigation, and proximity-accelerated edge scrolling while dragging tasks
 - Advanced list management with synced rename/reorder controls and guarded deletion that can preserve tasks by moving them to a neighboring list
 - Long-press task dragging and insertion feedback across weekly days and list columns, including synced reordering and cross-child movement within compound boards
+- Drag the handles in Settings → Boards & Lists to change the board switcher order on this device. With VoiceOver, swipe up or down on a handle to adjust the board's position.
 - Immediate task completion with native success haptics and concurrent PWA-style checkmarks flying to the completed control
 - Local task completion and PWA-style recurring deletion choices, with synced durable series
   cutoffs that prevent deleted future task/event occurrences from reappearing after relay replay
@@ -118,7 +119,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - Native Photos and Files attachment controls with PWA-compatible AES-GCM encryption, remote-first Originless uploads, and task-level removal
 - Cached native rich link cards generated from URLs in task titles and notes, with duplicate inline URLs suppressed in task-card presentation
 - Native live-board and independent template sharing with PWA-compatible QR payloads, board-ID copy, the iOS share sheet, camera scanning, review-before-join, automatic board-name/relay import, and complete task plus Taskify-event template snapshots
-- Shared-board task cards show the creator's Nostr profile photo or username initials, with the creator's name in the task editor. iOS recognizes boards shared or joined locally and existing boards with another contributor.
+- Shared-board task cards show the creator's Nostr profile photo, falling back to initials from their profile or saved nickname. The task editor shows the creator's name. iOS recognizes boards shared or joined locally and existing boards with another contributor.
 - The board share sheet can search the full synced Nostr contact directory or send to a pasted npub or public key.
 - Native multi-mint Cashu wallet with ecash and Lightning send/receive, persistent invoice recovery and notifications, detailed payment history, seed backup/transfer recovery, outgoing-token redemption tracking, NUT-16 animated QR support, NUT-18/NUT-26 Cashu payment requests in both directions, recoverable Lightning transfers between configured mints, and durable offline ecash/payment-request inboxes with automatic retry and spent-token cleanup
 - Core unit and interoperability tests for state, persistence, list movement, recurrence, reminder timing, PWA task/attachment/account-backup/share-envelope cryptography fixtures, NIP-17 gift wraps, signing, merge clocks, and outbox behavior
@@ -130,6 +131,15 @@ Nostr Cashu payment requests now work in both directions; advanced NWC, P2PK/con
 1. Open `TaskifyNative.xcodeproj` in Xcode 27 beta or newer.
 2. Select the `TaskifyNative` scheme.
 3. Run on an iOS 17.5 or newer simulator/device.
+
+### Start over on an iPhone or iPad
+
+In **Settings → Account & Data**, choose **Delete Local Account and Data** and confirm.
+Swipe Taskify away in the app switcher, then reopen it. Before starting sync or loading the
+workspace, Taskify clears this device’s Nostr identity, workspace, preferences, attachments,
+wallet keys and data, and scheduled alerts. The app then opens **Welcome to Taskify** with a
+fresh identity. Back up keys, funds, and any unsynced data before confirming. Existing copies on
+Nostr relays, exported backups, and other devices such as Apple Watch are separate.
 
 The `TaskifyWatch` watchOS 10 target is embedded in the iPhone app. To provision it, install the
 companion build on a paired, passcode-protected Watch, open Taskify on the Watch, then open Taskify

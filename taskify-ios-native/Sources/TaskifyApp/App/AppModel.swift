@@ -4160,6 +4160,12 @@ final class AppModel {
         return true
     }
 
+    func moveBoard(boardID: String, toPositionOf targetBoardID: String) -> Bool {
+        guard snapshot.moveBoard(boardID: boardID, toPositionOf: targetBoardID) else { return false }
+        scheduleSave()
+        return true
+    }
+
     @discardableResult
     func updateBoardRelayURLs(boardID: String, relayURLs: [String]) -> Bool {
         let normalizedRelays = TaskifyRelayURL.normalizedList(relayURLs)

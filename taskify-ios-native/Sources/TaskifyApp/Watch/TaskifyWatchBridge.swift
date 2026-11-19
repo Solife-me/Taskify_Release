@@ -63,6 +63,16 @@ final class TaskifyWatchBridge: NSObject, ObservableObject {
     }
 
     @MainActor
+    func suspendForLocalReset() {
+        model = nil
+        snapshotDeliveryTask?.cancel()
+        guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
+        let session = WCSession.default
+        for transfer in session.outstandingUserInfoTransfers { transfer.cancel() }
+        try? session.updateApplicationContext([:])
+    }
+
+    @MainActor
     func provision(using model: AppModel) {
         guard WCSession.isSupported() else {
             state = .unavailable("Apple Watch connectivity is unavailable on this device.")

@@ -479,30 +479,32 @@ final class BibleTrackerUITests: XCTestCase {
         XCTAssertTrue(createButton.waitForExistence(timeout: 5))
         createButton.tap()
 
-        // The new board's row should now exist in the Boards & Lists card.
-        let newBoardRow = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Reorder Test List")).firstMatch
-        XCTAssertTrue(newBoardRow.waitForExistence(timeout: 10))
-        attach(app, name: "reorder-01-board-created")
+        let weekHandle = app.descendants(matching: .any)["Reorder Week"]
+        let listHandle = app.descendants(matching: .any)["Reorder Reorder Test List"]
+        XCTAssertTrue(weekHandle.waitForExistence(timeout: 10))
+        XCTAssertTrue(listHandle.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(listHandle.frame.midY, weekHandle.frame.midY)
 
-        // Open its manager sheet via the ellipsis button.
-        let manageButton = app.buttons["Manage Reorder Test List"]
-        XCTAssertTrue(manageButton.waitForExistence(timeout: 5))
-        manageButton.tap()
+        listHandle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.6, thenDragTo: app.buttons["Manage Week"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+        XCTAssertTrue(listHandle.waitForExistence(timeout: 5))
+        XCTAssertLessThan(listHandle.frame.midY, weekHandle.frame.midY)
 
-        let moveUpButton = app.buttons["Move Up"]
-        XCTAssertTrue(moveUpButton.waitForExistence(timeout: 10))
-        attach(app, name: "reorder-02-manager-sheet")
-        XCTAssertTrue(moveUpButton.isEnabled)
-        moveUpButton.tap()
+        app.terminate()
+        app.launchEnvironment.removeValue(forKey: "TASKIFY_UI_TEST_FRESH_STORE")
+        app.launch()
+        openSettings(app, group: "Boards")
+        XCTAssertTrue(listHandle.waitForExistence(timeout: 10))
+        XCTAssertLessThan(listHandle.frame.midY, weekHandle.frame.midY)
 
-        app.buttons["Done"].tap()
-        attach(app, name: "reorder-03-after-move-up")
-
-        // Confirm via the board switcher on the Boards tab that ordering changed: "Reorder Test
-        // List" should now open before "Week" is reachable as a separate, still-present option.
         openTab(app, "Boards")
-        let switcher = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Reorder Test List")).firstMatch
+        let switcher = app.buttons["Reorder Test List"]
         XCTAssertTrue(switcher.waitForExistence(timeout: 10))
+        switcher.tap()
+        let listOption = app.buttons["Reorder Test List"].firstMatch
+        let weekOption = app.buttons["Week"]
+        XCTAssertTrue(weekOption.waitForExistence(timeout: 5))
+        XCTAssertLessThan(listOption.frame.midY, weekOption.frame.midY)
     }
 
     /// Assumes a fresh app install so the Week board's "today" column has exactly one task.

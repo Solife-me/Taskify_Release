@@ -28,6 +28,7 @@
 		796D1AE211EE8CD2720A10F9 /* Sources/TaskifyApp/App/NpubCashSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0009C830AAB8965BF019980 /* Sources/TaskifyApp/App/NpubCashSettings.swift */; };
 		9731A21014C92A8CB3F1A5EB /* FirstRunOnboardingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF2D5621648AA754EA642832 /* FirstRunOnboardingUITests.swift */; };
 		B00000000000000000000101 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000201 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift */; };
+		E1AFE0000000000000000001 /* TaskifyLocalReset.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1AFE0000000000000000002 /* TaskifyLocalReset.swift */; };
 		B00000000000000000000102 /* Sources/TaskifyApp/App/AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000202 /* Sources/TaskifyApp/App/AppModel.swift */; };
 		B00000000000000000000103 /* Sources/TaskifyApp/App/RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000203 /* Sources/TaskifyApp/App/RootTabView.swift */; };
 		B00000000000000000000104 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */; };
@@ -228,6 +229,7 @@
 		9C3FC3D0DAC095EE87D44D86 /* Sources/TaskifyApp/App/TaskOrderingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskOrderingSettings.swift; sourceTree = SOURCE_ROOT; };
 		A0009C830AAB8965BF019980 /* Sources/TaskifyApp/App/NpubCashSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/NpubCashSettings.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000201 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyNativeApp.swift; sourceTree = SOURCE_ROOT; };
+		E1AFE0000000000000000002 /* TaskifyLocalReset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/TaskifyLocalReset.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000202 /* Sources/TaskifyApp/App/AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/AppModel.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000203 /* Sources/TaskifyApp/App/RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/App/RootTabView.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000204 /* Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TaskifyApp/DesignSystem/TaskifyTheme.swift; sourceTree = SOURCE_ROOT; };
@@ -482,6 +484,7 @@
 			isa = PBXGroup;
 			children = (
 				B00000000000000000000201 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift */,
+				E1AFE0000000000000000002 /* TaskifyLocalReset.swift */,
 				B00000000000000000000202 /* Sources/TaskifyApp/App/AppModel.swift */,
 				B00000000000000000000225 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift */,
 				D5EA1D000000000000000001 /* Sources/TaskifyApp/App/TaskifyRemindMeIntent.swift */,
@@ -973,6 +976,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B00000000000000000000101 /* Sources/TaskifyApp/App/TaskifyNativeApp.swift in Sources */,
+				E1AFE0000000000000000001 /* TaskifyLocalReset.swift in Sources */,
 				B00000000000000000000102 /* Sources/TaskifyApp/App/AppModel.swift in Sources */,
 				B00000000000000000000124 /* Sources/TaskifyApp/App/TaskifyAddTaskIntent.swift in Sources */,
 				D5EA1D000000000000000002 /* Sources/TaskifyApp/App/TaskifyRemindMeIntent.swift in Sources */,
