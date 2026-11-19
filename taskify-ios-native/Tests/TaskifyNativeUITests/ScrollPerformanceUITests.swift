@@ -415,6 +415,59 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertEqual(noteText.value as? String, "Keyboard handoff")
     }
 
+    func testExistingTaskKeepsKeyboardOpenWhenAddingNoteAndSubtask() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
+        app.launch()
+        app.buttons["Boards"].tap()
+
+        let quickAdd = app.textFields.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")
+        ).firstMatch
+        XCTAssertTrue(quickAdd.waitForExistence(timeout: 5))
+        quickAdd.tap()
+        quickAdd.typeText("Keyboard editing test\n")
+        let task = app.buttons["Edit Keyboard editing test"]
+        XCTAssertTrue(task.waitForExistence(timeout: 5))
+        task.tap()
+
+        let editor = app.navigationBars["Edit Task"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        app.textFields["Title"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        app.buttons["task-editor-notes"].tap()
+        let note = app.textViews["task-note-editor-text"]
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        note.typeText("Remember the receipt")
+        XCTAssertEqual(note.value as? String, "Remember the receipt")
+        app.buttons["task-note-editor-done"].tap()
+
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        app.buttons["task-editor-subtasks"].tap()
+        app.buttons["Add subtask"].tap()
+        let subtask = app.textFields["Subtask"]
+        XCTAssertTrue(subtask.waitForExistence(timeout: 5))
+        subtask.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        subtask.typeText("File")
+        // Reposition the form a little to see more of the subtask rows above the keyboard.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.38))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.30))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "Scrolling up should keep the subtask keyboard open")
+        subtask.typeText(" the receipt")
+        XCTAssertEqual(subtask.value as? String, "File the receipt")
+        editor.buttons["Save"].tap()
+
+        XCTAssertTrue(app.buttons["Complete File the receipt"].waitForExistence(timeout: 5))
+        let savedNote = app.buttons["task-card-note"]
+        XCTAssertTrue(savedNote.waitForExistence(timeout: 5))
+        savedNote.tap()
+        XCTAssertTrue(app.staticTexts["Remember the receipt"].waitForExistence(timeout: 5))
+    }
+
     func testNoteViewerCopiesCodeOnTap() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
