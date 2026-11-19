@@ -82,7 +82,7 @@ public enum TaskifyWatchNostrCrypto {
     public static let taskCacheAccessKind = 27_236
 
     public static func publicKeyHex(for privateKey: Data) throws -> String {
-        Data(try schnorrPrivateKey(privateKey).xonly.bytes).taskifyHexString
+        try schnorrPrivateKey(privateKey).xonly.dataRepresentation.taskifyHexString
     }
 
     public static func randomPrivateKey() throws -> Data {
@@ -102,7 +102,7 @@ public enum TaskifyWatchNostrCrypto {
 
     public static func boardPublicKeyHex(for boardID: String) throws -> String {
         let key = try schnorrPrivateKey(boardPrivateKey(for: boardID))
-        return Data(key.xonly.bytes).taskifyHexString
+        return key.xonly.dataRepresentation.taskifyHexString
     }
 
     public static func prepareBoardEvent(_ event: TaskifyWatchNostrEvent, boardID: String,
@@ -224,11 +224,11 @@ public enum TaskifyWatchNostrCrypto {
         }
         let hash = CryptoKit.SHA256.hash(data: Data(text.utf8))
         let key = try schnorrPrivateKey(privateKey)
-        guard Data(key.xonly.bytes).taskifyHexString == normalizedPublicKey else {
+        guard key.xonly.dataRepresentation.taskifyHexString == normalizedPublicKey else {
             throw TaskifyWatchNostrCryptoError.invalidPrivateKey
         }
-        var message = Array(hash)
-        let signature = try key.signature(message: &message, auxiliaryRand: nil, strict: false)
+        let message = Array(hash)
+        let signature = try key.signature(message: message, auxiliaryRand: Data(repeating: 0, count: 32))
         return TaskifyWatchRequestAuthentication(
             publicKeyHex: normalizedPublicKey,
             timestamp: String(timestamp),
@@ -362,11 +362,11 @@ public enum TaskifyWatchNostrCrypto {
         let publicKeyData = Data(taskifyHex: event.publicKey),
         let signatureData = Data(taskifyHex: event.signature),
         let signature = try? P256K.Schnorr.SchnorrSignature(dataRepresentation: signatureData),
-        let publicKey = Optional(P256K.Schnorr.XonlyKey(dataRepresentation: publicKeyData)) else {
+        let publicKey = try? P256K.Schnorr.XonlyKey(dataRepresentation: publicKeyData) else {
             return false
         }
-        var message = [UInt8](idData)
-        return publicKey.isValid(signature, for: &message)
+        let message = [UInt8](idData)
+        return publicKey.isValid(signature, for: message)
     }
 
     private static func boardPrivateKey(for boardID: String) -> Data {
@@ -397,7 +397,7 @@ public enum TaskifyWatchNostrCrypto {
         content: String
     ) throws -> TaskifyWatchNostrEvent {
         let key = try schnorrPrivateKey(privateKey)
-        let publicKey = Data(key.xonly.bytes).taskifyHexString
+        let publicKey = key.xonly.dataRepresentation.taskifyHexString
         let tags = try kind == 13 || kind == 22_242 ? tags : TaskifyRelayProofOfWork.mineTags(tags) {
             try eventID(publicKey: publicKey, createdAt: createdAt, kind: kind, tags: $0, content: content)
         }
@@ -411,8 +411,8 @@ public enum TaskifyWatchNostrCrypto {
         guard let idData = Data(taskifyHex: id) else {
             throw TaskifyWatchNostrCryptoError.invalidEvent
         }
-        var message = [UInt8](idData)
-        let signature = try key.signature(message: &message, auxiliaryRand: nil, strict: false)
+        let message = [UInt8](idData)
+        let signature = try key.signature(message: message, auxiliaryRand: Data(repeating: 0, count: 32))
         return TaskifyWatchNostrEvent(
             id: id,
             publicKey: publicKey,

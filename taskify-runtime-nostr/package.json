@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "engines": {
-    "node": ">=22.23.4 <23"
+    "node": ">=22.23.5 <23"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,7 +24,7 @@
   "devDependencies": {
     "@noble/hashes": "^2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "nostr-tools": "^2.25.2",
+    "nostr-tools": "^2.26.1",
     "typescript": "^7.0.2"
   }
 }

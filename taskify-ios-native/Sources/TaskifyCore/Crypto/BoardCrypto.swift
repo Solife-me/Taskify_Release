@@ -30,7 +30,7 @@ public enum BoardCrypto {
         let privateKey = signingPrivateKey(for: boardID)
         do {
             let key = try P256K.Schnorr.PrivateKey(dataRepresentation: privateKey)
-            return Data(key.xonly.bytes)
+            return key.xonly.dataRepresentation
         } catch {
             throw BoardCryptoError.invalidPrivateKey
         }

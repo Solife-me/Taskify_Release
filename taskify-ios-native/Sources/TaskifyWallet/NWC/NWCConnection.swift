@@ -78,7 +78,7 @@ public struct NWCConnection: Equatable, Sendable {
         walletPublicKey = walletKey
         self.relays = relays
         clientSecretKey = secret
-        clientPublicKey = Data(key.xonly.bytes).hexString
+        clientPublicKey = key.xonly.dataRepresentation.hexString
         let lud16 = items.first(where: { $0.name == "lud16" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
         walletLightningAddress = (lud16?.isEmpty ?? true) ? nil : lud16?.lowercased()
         let name = items.first(where: { $0.name == "name" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22.23.4 <23"
+    "node": ">=22.23.5 <23"
   },
   "scripts": {
     "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test src/*.test.ts",
@@ -14,11 +14,11 @@
   "dependencies": {
     "@noble/curves": "^2.4.0",
     "link-preview-js": "^6.0.0",
-    "nostr-tools": "^2.25.2"
+    "nostr-tools": "^2.26.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261008.1",
-    "@types/node": "^26.6.4",
+    "@cloudflare/workers-types": "^5.20261117.1",
+    "@types/node": "^26.6.6",
     "typescript": "^7.0.2"
   }
 }

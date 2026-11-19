@@ -190,11 +190,11 @@ permits listening on `127.0.0.1`.
 Cloudflare account or login is needed. Build the PWA first (the Worker serves `taskify-pwa/dist`),
 and put secrets the routes need (such as `VAPID_PRIVATE_KEY`) in `.dev.vars`.
 ```sh
-npx wrangler@4.150.0 dev --local --test-scheduled
+npx wrangler@4.164.0 dev --local --test-scheduled
 # The every-minute cron does not fire locally; --test-scheduled lets you run it:
 curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"
 # What CI checks: the production configuration bundles and binds every rate limiter
-npx wrangler@4.150.0 deploy --dry-run --outdir /tmp/wrangler
+npx wrangler@4.164.0 deploy --dry-run --outdir /tmp/wrangler
 ```
 
 **Push relay image:** `push-relay/` is the application and `taskify-push-relay/` is only its

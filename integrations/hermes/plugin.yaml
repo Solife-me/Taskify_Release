@@ -14,7 +14,7 @@ python_dependencies:
   # Termux/Android split: no nostr-sdk release ships Android wheels, and the
   # universal lock resolves that platform too — pinning it there makes the whole
   # workspace unsolvable and PM evicts this plugin on every update.
-  - "nostr-sdk>=0.44.8,<0.45; sys_platform != 'android'"
+  - "nostr-sdk>=0.45.2,<0.46; sys_platform != 'android'"
 requires_env:
   - name: NOSTR_DM_NSEC
     description: "Bot Nostr private key (nsec or hex) used for NIP-17 DMs"

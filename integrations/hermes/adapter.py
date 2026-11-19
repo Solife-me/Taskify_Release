@@ -13,7 +13,7 @@ key in NOSTR_DM_OWNER_NPUB. Other senders need an explicit restricted role.
 Incoming: kind 1059 gift wraps -> unwrap -> rumor kind 14 (text),
 15 (file/media msg), 7 (reaction; e-tag = inner rumor id).
 Outgoing: rumor -> seal -> gift wrap per recipient (+ self-wrap), all
-through nostr-sdk 0.44.8 (pinned; see nip17-nostr-dm skill).
+through nostr-sdk 0.45.2 (pinned; see nip17-nostr-dm skill).
 """
 
 import asyncio
@@ -280,7 +280,7 @@ def _pk(hex_or_npub: str):
 
 
 def _normalize_pubkey_hex(v: str) -> str:
-    """npub or hex -> lowercase hex. PublicKey.parse() accepts both (0.44.8)."""
+    """npub or hex -> lowercase hex. PublicKey.parse() accepts both."""
     v = v.strip()
     if not v:
         return ""
@@ -299,7 +299,7 @@ def _private_state_dir(path):
 
 async def _build_recipient_wrap(signer, recipient_hex, rumor, relays):
     recipient = ns.PublicKey.parse(recipient_hex)
-    seal = await (await ns.EventBuilder.seal(signer, recipient, rumor)).sign(signer)
+    seal = await asyncio.to_thread(ns.nip59_make_seal, signer, recipient, rumor)
     difficulty = await asyncio.to_thread(_relay_pow_mod.nip11_min_pow, relays)
     return await _relay_pow_mod.pow_gift_wrap(ns, ns.Keys.generate(), recipient, seal, difficulty)
 
@@ -310,8 +310,12 @@ async def _publish_recipient_wrap(signer, recipient_hex, rumor, relays):
     return await _send_wrap(signer, wrap, relays)
 
 
+def _relay_client(signer):
+    return ns.ClientBuilder().authenticator(ns.SignerAuthenticator(signer)).build()
+
+
 async def _send_wrap(signer, wrap, relays):
-    client = ns.Client(signer)
+    client = _relay_client(signer)
     try:
         for relay in relays:
             try:
@@ -354,22 +358,8 @@ async def _attempt_queued_delivery(queue, signer, key, relays):
     return accepted
 
 
-class _Handler(ns.HandleNotification):
-    """Queues gift-wrap events; heavy work happens in the adapter task."""
-
-    def __init__(self, queue: asyncio.Queue, my_hex: str):
-        self._q = queue
-        self._me = my_hex
-
-    async def handle_msg(self, relay_url, msg) -> None:
-        return None
-
-    async def handle(self, relay_url, subscription_id, event) -> None:
-        try:
-            if event.kind().as_u16() == 1059:
-                self._q.put_nowait(("event", event))
-        except Exception:
-            pass
+def _private_msg_rumor(recipient, content):
+    return ns.EventBuilder(ns.Kind(14), content).tags([ns.Tag.parse(["p", recipient.to_hex()])])
 
 
 class NostrDmAdapter(BasePlatformAdapter):
@@ -530,7 +520,7 @@ class NostrDmAdapter(BasePlatformAdapter):
         try:
             self._keys = _keys_from_secret(self._secret)
             self._my_hex = self._keys.public_key().to_hex()
-            self._signer = ns.NostrSigner.keys(self._keys)
+            self._signer = self._keys
         except Exception as e:
             log.error("[nostr-dm] bad NOSTR_DM_NSEC: %s", e)
             return False
@@ -543,7 +533,7 @@ class NostrDmAdapter(BasePlatformAdapter):
         self._delivery_queue = await asyncio.to_thread(_outbox_for, self._my_hex)
         await asyncio.to_thread(self._expire_attachments)
         relays = list(dict.fromkeys(self._fallback_relays)) or DEFAULT_RELAYS
-        self._client = ns.Client(self._signer)
+        self._client = _relay_client(self._signer)
         for r in relays:
             try:
                 await self._client.add_relay(ns.RelayUrl.parse(r))
@@ -552,9 +542,9 @@ class NostrDmAdapter(BasePlatformAdapter):
         await self._client.connect()
         # subscribe to gift wraps addressed to me
         f = ns.Filter().kind(ns.Kind(1059)).pubkey(ns.PublicKey.parse(self._my_hex))
-        await self._client.subscribe(f)
-        self._notif_handler_cb = _Handler(self._queue, self._my_hex)
-        notif_task = asyncio.create_task(self._client.handle_notifications(self._notif_handler_cb))
+        notifications = self._client.notifications()
+        await self._client.subscribe(ns.ReqTarget.auto([f]))
+        notif_task = asyncio.create_task(self._receive_notifications(notifications))
         pump = asyncio.create_task(self._pump())
         self._tasks = [
             notif_task, pump, asyncio.create_task(self._publish_taskify_commands()),
@@ -605,7 +595,7 @@ class NostrDmAdapter(BasePlatformAdapter):
                 return
             relays = list(dict.fromkeys([*(await self._target_relays(self._my_hex)),
                                          *_taskify.DISCOVERY_RELAYS]))
-            client = ns.Client(self._signer)
+            client = _relay_client(self._signer)
             for relay in relays:
                 try:
                     await client.add_relay(ns.RelayUrl.parse(relay))
@@ -614,9 +604,10 @@ class NostrDmAdapter(BasePlatformAdapter):
             await client.connect()
             difficulty = await asyncio.to_thread(_relay_pow_mod.nip11_min_pow, relays)
             builder = ns.EventBuilder(ns.Kind(30078), "").tags([ns.Tag.parse(t) for t in tags])
+            unsigned = builder.finalize_unsigned(self._keys.public_key())
             if difficulty:
-                builder = builder.pow(difficulty)
-            event = await asyncio.to_thread(builder.sign_with_keys, self._keys)
+                unsigned = await asyncio.to_thread(unsigned.mine, ns.SingleThreadPow(), difficulty)
+            event = unsigned.sign(self._keys)
             result = await client.send_event(event)
             if not result.success:
                 log.warning("[nostr-dm] no relay accepted the Taskify command list")
@@ -655,13 +646,22 @@ class NostrDmAdapter(BasePlatformAdapter):
             except Exception:
                 log.exception("[nostr-dm] a message failed during dispatch")
 
+    async def _receive_notifications(self, notifications):
+        while (notification := await notifications.next()) is not None:
+            if isinstance(notification, ns.ClientNotification.SHUTDOWN):
+                return
+            if isinstance(notification, ns.ClientNotification.NEW_EVENT):
+                event = notification.event
+                if event.kind().as_u16() == 1059:
+                    self._queue.put_nowait(("event", event))
+
     async def _dispatch_wrap(self, ev) -> None:
         try:
-            ug = await ns.UnwrappedGift.from_gift_wrap(self._signer, ev)
+            ug = await asyncio.to_thread(ns.UnwrappedGift.from_gift_wrap, self._signer, ev)
         except Exception as e:
             log.warning("[nostr-dm] unwrap failed: %s", e)
             return
-        rumor = ug.rumor()
+        rumor = ug.rumor().ensure_id()
         sender = ug.sender().to_hex()
         rid = rumor.id().to_hex()
         # Atomically claim this rumor id — same DM published on N relays
@@ -676,16 +676,16 @@ class NostrDmAdapter(BasePlatformAdapter):
         content = rumor.content()
         e_tag_ids: List[str] = []
         try:
-            for tag in rumor.tags().to_vec():
-                vec = tag.as_vec()
+            for tag in rumor.tags():
+                vec = tag.to_vec()
                 if vec and vec[0] == "e" and len(vec) > 1:
                     e_tag_ids.append(vec[1])
         except Exception:
             pass
         subject = ""
         try:
-            for tag in rumor.tags().to_vec():
-                vec = tag.as_vec()
+            for tag in rumor.tags():
+                vec = tag.to_vec()
                 if vec and vec[0] == "subject" and len(vec) > 1:
                     subject = vec[1]
                     break
@@ -713,8 +713,8 @@ class NostrDmAdapter(BasePlatformAdapter):
         if _groups_mod is not None:
             try:
                 recipient_hexes: List[str] = []
-                for tag in rumor.tags().to_vec():
-                    vec = tag.as_vec()
+                for tag in rumor.tags():
+                    vec = tag.to_vec()
                     if vec and vec[0] == "p" and len(vec) > 1:
                         recipient_hexes.append(vec[1])
                 # 0xchat semantics: p-tags span ALL members (sender, other
@@ -740,7 +740,7 @@ class NostrDmAdapter(BasePlatformAdapter):
         actions = []
         if k == 14:
             actions = [
-                tag.as_vec() for tag in rumor.tags().to_vec() if tag.as_vec()[:1] == [_taskify.ACTION_TAG]
+                tag.to_vec() for tag in rumor.tags() if tag.to_vec()[:1] == [_taskify.ACTION_TAG]
             ]
             if actions:
                 action_error = self._taskify_menus.validate(sender, actions, e_tag_ids, content)
@@ -827,7 +827,7 @@ class NostrDmAdapter(BasePlatformAdapter):
         """Stream verified media to a private file before exposing it to Hermes."""
         path = None
         try:
-            tags = {tag[0]: tag[1] for tag in (t.as_vec() for t in rumor.tags().to_vec())
+            tags = {tag[0]: tag[1] for tag in (t.to_vec() for t in rumor.tags())
                     if len(tag) > 1}
             is_url = content.startswith(("https://", "http://"))
             url = content if is_url else tags.get("url", "")
@@ -1117,14 +1117,14 @@ class NostrDmAdapter(BasePlatformAdapter):
         timeout = timedelta(seconds=10)
         try:
             events = await probe.fetch_events(
-                ns.Filter().kind(ns.Kind(10050)).author(ns.PublicKey.parse(recipient_hex)).limit(1),
+                ns.ReqTarget.auto([ns.Filter().kind(ns.Kind(10050)).author(ns.PublicKey.parse(recipient_hex)).limit(1)]),
                 timeout,
             )
-            for ev in (events if isinstance(events, list) else events.to_vec()):
+            for ev in events:
                 if ev.author().to_hex() != recipient_hex or ev.kind().as_u16() != 10050 or not ev.verify():
                     continue
-                for tag in ev.tags().to_vec():
-                    vec = tag.as_vec()
+                for tag in ev.tags():
+                    vec = tag.to_vec()
                     if vec and vec[0] == "relay" and len(vec) > 1:
                         found.append(vec[1].strip())
                 break
@@ -1134,16 +1134,15 @@ class NostrDmAdapter(BasePlatformAdapter):
         if not found:
             try:
                 events = await probe.fetch_events(
-                    ns.Filter().kind(ns.Kind(10002)).author(ns.PublicKey.parse(recipient_hex)).limit(1),
+                    ns.ReqTarget.auto([ns.Filter().kind(ns.Kind(10002)).author(ns.PublicKey.parse(recipient_hex)).limit(1)]),
                     timeout,
                 )
-                evs = events if isinstance(events, list) else events.to_vec()
-                evs = sorted(evs, key=lambda e: e.created_at().as_secs(), reverse=True)
+                evs = sorted(events, key=lambda e: e.created_at().as_secs(), reverse=True)
                 for ev in evs:
                     if ev.author().to_hex() != recipient_hex or ev.kind().as_u16() != 10002 or not ev.verify():
                         continue
-                    for tag in ev.tags().to_vec():
-                        vec = tag.as_vec()
+                    for tag in ev.tags():
+                        vec = tag.to_vec()
                         if vec and vec[0] == "relay" and len(vec) > 1:
                             # NIP-65: relay/perm; perm optional. write/read both acceptable for DM delivery
                             url = vec[1].strip()
@@ -1203,10 +1202,10 @@ class NostrDmAdapter(BasePlatformAdapter):
             if (link_reply or picker or request_kind == "action") and reply_to and _taskify.RUMOR_ID.fullmatch(reply_to):
                 tags.append(ns.Tag.parse(["e", reply_to]))
             unsigned = (
-                ns.EventBuilder.private_msg_rumor(rp, text)
+                _private_msg_rumor(rp, text)
                 .tags(tags)
                 .custom_created_at(ns.Timestamp.from_secs(int(time.time())))
-                .build(ns.PublicKey.parse(sh))
+                .finalize_unsigned(ns.PublicKey.parse(sh)).ensure_id()
             )
             rumor_id = unsigned.id().to_hex()
             relays = await self._target_relays(rp_hex)
@@ -1293,13 +1292,13 @@ class NostrDmAdapter(BasePlatformAdapter):
         unsigned = (ns.EventBuilder(ns.Kind(24242), "Upload Blob")
                     .tags([ns.Tag.parse(t) for t in auth_tags])
                     .custom_created_at(ns.Timestamp.from_secs(int(time.time()))))
-        signed = await unsigned.sign(self._signer)
+        signed = unsigned.finalize(self._signer)
         auth_event = {
             "id": signed.id().to_hex(),
             "pubkey": self._my_hex,
             "created_at": signed.created_at().as_secs(),
             "kind": signed.kind().as_u16(),
-            "tags": [t.as_vec() for t in signed.tags().to_vec()],
+            "tags": [t.to_vec() for t in signed.tags()],
             "content": signed.content(),
             "sig": signed.signature(),
         }
@@ -1410,12 +1409,11 @@ class NostrDmAdapter(BasePlatformAdapter):
                 tag_list.append(["subject", subject])
             if reply_to:
                 tag_list.append(["e", reply_to])
-            # generic builder: private_msg_rumor() is hard-wired to kind 14 in
-            # nostr-sdk 0.44.8; kind-15 rumors need EventBuilder(Kind(15), ...)
+            # NIP-17 file rumors use kind 15 and carry the attachment metadata as tags.
             unsigned = (ns.EventBuilder(ns.Kind(15), url)
                         .tags([ns.Tag.parse(t) for t in tag_list])
                         .custom_created_at(ns.Timestamp.from_secs(int(time.time())))
-                        .build(ns.PublicKey.parse(self._my_hex)))
+                        .finalize_unsigned(ns.PublicKey.parse(self._my_hex)).ensure_id())
             rumor_id = unsigned.id().to_hex()
 
             recipients = [member for member in members if member != self._my_hex]
@@ -1496,19 +1494,17 @@ class NostrDmAdapter(BasePlatformAdapter):
             members = sorted(set(room["members"]) | {self._my_hex})
             sh = self._my_hex
             # build rumor tags: p-tags for ALL members (incl. self), e-tag, subject
-            # (private_msg_rumor produces kind-14; text_note would be kind-1,
+            # (kind 14 carries the private message; kind 1 is a public note,
             # which Taskify group UI ignores — root cause of the silent reply bug)
             tag_list: List[List[str]] = [[ "p", m] for m in members]
             if reply_to:
                 tag_list.append(["e", reply_to])
             if room.get("subject"):
                 tag_list.append(["subject", room["subject"]])
-            unsigned = (ns.EventBuilder
-                        .private_msg_rumor(ns.PublicKey.parse(members[0] if members[0] != sh else members[1] if len(members) > 1 else sh),
-                                           content[:MAX_MESSAGE_LENGTH])
+            unsigned = (ns.EventBuilder(ns.Kind(14), content[:MAX_MESSAGE_LENGTH])
                         .tags([ns.Tag.parse(t) for t in tag_list])
                         .custom_created_at(ns.Timestamp.from_secs(int(time.time())))
-                        .build(ns.PublicKey.parse(sh)))
+                        .finalize_unsigned(ns.PublicKey.parse(sh)).ensure_id())
             rumor_id = unsigned.id().to_hex()
             recipients = [member for member in members if member != sh]
             failure = await self._publish_multiple_recipients(unsigned, recipients)
@@ -1546,11 +1542,11 @@ def _standalone_send(pconfig=None, chat_id: str = "", message: str = "", **kwarg
         if not secret:
             return {"error": "NOSTR_DM_NSEC not set"}
         keys = _keys_from_secret(secret)
-        signer = ns.NostrSigner.keys(keys)
+        signer = keys
         rp = ns.PublicKey.parse(_normalize_pubkey_hex(chat_id))
-        unsigned = ns.EventBuilder.private_msg_rumor(rp, message[:MAX_MESSAGE_LENGTH]) \
+        unsigned = _private_msg_rumor(rp, message[:MAX_MESSAGE_LENGTH]) \
             .custom_created_at(ns.Timestamp.from_secs(int(time.time()))) \
-            .build(ns.PublicKey.parse(keys.public_key().to_hex()))
+            .finalize_unsigned(keys.public_key()).ensure_id()
         relays_env = _get_scoped_secret("NOSTR_DM_RELAYS") or ",".join(DEFAULT_RELAYS)
         relays = [r.strip() for r in relays_env.split(",") if r.strip()]
 
@@ -1597,7 +1593,7 @@ def register(ctx) -> None:
         adapter_factory=lambda cfg: NostrDmAdapter(cfg),
         check_fn=check_requirements,
         required_env=["NOSTR_DM_NSEC", "NOSTR_DM_OWNER_NPUB"],
-        install_hint="pip install 'nostr-sdk==0.44.8'",
+        install_hint="pip install 'nostr-sdk==0.45.2'",
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="NOSTR_DM_HOME_CHANNEL",
         allowed_users_env="NOSTR_DM_OWNER_NPUB",

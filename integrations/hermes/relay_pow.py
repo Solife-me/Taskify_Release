@@ -107,7 +107,7 @@ async def pow_gift_wrap(ns, ephemeral_keys, recipient, seal, difficulty: int):
     tags = await asyncio.to_thread(
         mine_nonce, epk.to_hex(), created, 1059, [["p", recipient.to_hex()]], content, difficulty
     )
-    return await (ns.EventBuilder(ns.Kind(1059), content) \
+    return (ns.EventBuilder(ns.Kind(1059), content) \
         .tags([ns.Tag.parse(t) for t in tags]) \
         .custom_created_at(ns.Timestamp.from_secs(created)) \
-        .build(epk).sign(ns.NostrSigner.keys(ephemeral_keys)))
+        .finalize(ephemeral_keys))

@@ -18,11 +18,11 @@ let package = Package(
         .package(url: "https://github.com/krzyzanowskim/CryptoSwift.git", exact: "1.10.0"),
         .package(
             url: "https://github.com/21-DOT-DEV/swift-secp256k1.git",
-            exact: "0.23.2"
+            exact: "0.25.1"
         ),
         .package(
             url: "https://github.com/cashubtc/cdk-swift.git",
-            exact: "0.18.1"
+            exact: "0.18.3"
         ),
         .package(
             url: "https://github.com/BlockchainCommons/URKit.git",

@@ -16,14 +16,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: "22.23.4"
+  NODE_VERSION: "22.23.5"
 
 jobs:
   macos:
     name: Native macOS
     runs-on: xcode-27
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Verify the generated Xcode project
         run: python3 taskify-macos/Scripts/generate-project.py --check
       - name: Test Mac presentation logic
@@ -58,7 +58,7 @@ jobs:
     name: Secret scan (full history)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - name: gitleaks
@@ -74,8 +74,8 @@ jobs:
       run:
         working-directory: worker
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       - run: npm ci
@@ -87,8 +87,8 @@ jobs:
     name: Worker deploy (dry run)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Build the PWA the Worker serves
@@ -98,7 +98,7 @@ jobs:
           npm run build
       # The production configuration, bundled exactly as a deploy would, without uploading.
       - name: Bundle the Worker with wrangler.toml
-        run: npx --yes wrangler@4.150.0 deploy --dry-run --outdir "$RUNNER_TEMP/wrangler" | tee "$RUNNER_TEMP/wrangler.log"
+        run: npx --yes wrangler@4.164.0 deploy --dry-run --outdir "$RUNNER_TEMP/wrangler" | tee "$RUNNER_TEMP/wrangler.log"
       # The Worker refuses (503) on a route whose limiter is not bound, so a missing one must not
       # reach production.
       - name: Every rate limiter the routes use is bound
@@ -114,8 +114,8 @@ jobs:
       run:
         working-directory: push-relay
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       - run: npm ci
@@ -133,8 +133,8 @@ jobs:
       run:
         working-directory: taskify-push-relay
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       - run: npm ci
@@ -146,8 +146,8 @@ jobs:
     name: taskify-core and taskify-runtime-nostr
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       - run: npm ci
@@ -168,8 +168,8 @@ jobs:
     name: CLI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       # The CLI links the shared libraries by path, so their dependencies must be installed.
@@ -188,8 +188,8 @@ jobs:
     name: PWA
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       - run: npm ci
