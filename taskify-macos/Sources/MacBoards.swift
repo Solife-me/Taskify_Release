@@ -3,6 +3,8 @@ import SwiftUI
 import TaskifyCore
 
 struct MacBoardView: View {
+    private static let boardContentVerticalPadding: CGFloat = 24
+
     let board: Board
     let search: String
     @Binding var selectedTaskID: String?
@@ -55,7 +57,11 @@ struct MacBoardView: View {
                                                        selectedTaskIDs: taskSelection.taskIDs,
                                                        select: selectTask,
                                                        clearSelection: clearTaskSelection,
-                                                       edit: edit)
+                                                       edit: edit,
+                                                       viewportHeight: max(
+                                                           0,
+                                                           geometry.size.height - (Self.boardContentVerticalPadding * 2)
+                                                       ))
                                             .id(MacWeekBoardScroll.scrollID(boardID: child.id, columnID: column.id))
                                             .background {
                                                 if let request = weekScrollRequest,
@@ -71,7 +77,7 @@ struct MacBoardView: View {
                                 }
                             }
                         }
-                        .padding(.vertical, 24)
+                        .padding(.vertical, Self.boardContentVerticalPadding)
                         .padding(.horizontal, horizontalContentPadding(viewportWidth: geometry.size.width))
                     }
                     .background(Color(nsColor: .underPageBackgroundColor))
@@ -272,6 +278,7 @@ private struct MacBoardColumn: View {
     let select: (String, MacTaskSelectionModifiers) -> Void
     let clearSelection: () -> Void
     var edit: (TaskItem) -> Void
+    let viewportHeight: CGFloat
     @Environment(AppModel.self) private var model
     @State private var title = ""
     @State private var targeted = false
@@ -288,72 +295,80 @@ private struct MacBoardColumn: View {
                 Text("\(tasks.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     .padding(.horizontal, 7).padding(.vertical, 3).background(.quaternary, in: Capsule())
             }.padding(.bottom, 4)
-            ForEach(model.boardEvents(boardID: board.id, columnID: column.id, weekday: WeekdayColumn(rawValue: column.id))) { event in
-                Button { editingEvent = event } label: {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label(event.title, systemImage: "calendar").font(.headline)
-                        if let date = event.startDate { Text(date.formatted(date: .abbreviated, time: event.isAllDay ? .omitted : .shortened)).font(.caption).foregroundStyle(.secondary) }
-                    }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-                }.buttonStyle(.plain)
-            }
-            LazyVStack(spacing: 10) {
-                ForEach(tasks) { task in
-                    MacTaskCard(task: task, selected: selectedTaskIDs.contains(task.id))
-                        .gesture(
-                            TapGesture().modifiers(.command).onEnded {
-                                select(task.id, .command)
-                            }
-                        )
-                        .gesture(
-                            TapGesture().modifiers(.shift).onEnded {
-                                select(task.id, .shift)
-                            }
-                        )
-                        .onTapGesture { select(task.id, []) }
-                        .onTapGesture(count: 2) { edit(task) }
-                        .draggable(task.id)
-                        .contextMenu {
-                            let actionIDs = selectedTaskIDs.contains(task.id) ? selectedTaskIDs : [task.id]
-                            let isMultiple = actionIDs.count > 1
-                            if !isMultiple { Button("Edit…") { edit(task) } }
-                            if isMultiple {
-                                Button("Complete Selected") {
-                                    model.completeTasks(actionIDs)
-                                    clearSelection()
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 10) {
+                    ForEach(model.boardEvents(boardID: board.id, columnID: column.id, weekday: WeekdayColumn(rawValue: column.id))) { event in
+                        Button { editingEvent = event } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Label(event.title, systemImage: "calendar").font(.headline)
+                                if let date = event.startDate { Text(date.formatted(date: .abbreviated, time: event.isAllDay ? .omitted : .shortened)).font(.caption).foregroundStyle(.secondary) }
+                            }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain)
+                    }
+                    ForEach(tasks) { task in
+                        MacTaskCard(task: task, selected: selectedTaskIDs.contains(task.id))
+                            .gesture(
+                                TapGesture().modifiers(.command).onEnded {
+                                    select(task.id, .command)
                                 }
-                            } else {
-                                Button(task.completed ? "Mark Incomplete" : "Complete") {
-                                    model.toggleCompletion(task.id)
+                            )
+                            .gesture(
+                                TapGesture().modifiers(.shift).onEnded {
+                                    select(task.id, .shift)
                                 }
-                            }
-                            if !isMultiple, let missed = model.missedOccurrenceCount(for: task.id) {
-                                Button(missed > 1 ? "Catch Up to Today (\(missed) Missed)" : "Catch Up to Today") {
-                                    model.catchUpRecurringTask(task.id)
+                            )
+                            .onTapGesture { select(task.id, []) }
+                            .onTapGesture(count: 2) { edit(task) }
+                            .draggable(task.id)
+                            .contextMenu {
+                                let actionIDs = selectedTaskIDs.contains(task.id) ? selectedTaskIDs : [task.id]
+                                let isMultiple = actionIDs.count > 1
+                                if !isMultiple { Button("Edit…") { edit(task) } }
+                                if isMultiple {
+                                    Button("Complete Selected") {
+                                        model.completeTasks(actionIDs)
+                                        clearSelection()
+                                    }
+                                } else {
+                                    Button(task.completed ? "Mark Incomplete" : "Complete") {
+                                        model.toggleCompletion(task.id)
+                                    }
                                 }
-                            }
-                            if !isMultiple { Button("Postpone One Day") { _ = model.postponeTask(task.id, byDays: 1) } }
-                            Menu(isMultiple ? "Move Selected to Board" : "Move to Board") {
-                                ForEach(model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }) { target in
-                                    Menu(target.name) {
-                                        ForEach(target.columns) { destination in
-                                            Button(destination.name) {
-                                                model.moveTasks(actionIDs, toBoardID: target.id, columnID: destination.id)
-                                                if isMultiple { clearSelection() }
+                                if !isMultiple, let missed = model.missedOccurrenceCount(for: task.id) {
+                                    Button(missed > 1 ? "Catch Up to Today (\(missed) Missed)" : "Catch Up to Today") {
+                                        model.catchUpRecurringTask(task.id)
+                                    }
+                                }
+                                if !isMultiple { Button("Postpone One Day") { _ = model.postponeTask(task.id, byDays: 1) } }
+                                Menu(isMultiple ? "Move Selected to Board" : "Move to Board") {
+                                    ForEach(model.visibleBoards.filter { $0.kind == .week || $0.kind == .list }) { target in
+                                        Menu(target.name) {
+                                            ForEach(target.columns) { destination in
+                                                Button(destination.name) {
+                                                    model.moveTasks(actionIDs, toBoardID: target.id, columnID: destination.id)
+                                                    if isMultiple { clearSelection() }
+                                                }
                                             }
                                         }
                                     }
                                 }
+                                Button(isMultiple ? "Delete Selected Tasks" : "Delete Task", role: .destructive) {
+                                    model.deleteTasks(actionIDs)
+                                    if isMultiple { clearSelection() }
+                                }
                             }
-                            Button(isMultiple ? "Delete Selected Tasks" : "Delete Task", role: .destructive) {
-                                model.deleteTasks(actionIDs)
-                                if isMultiple { clearSelection() }
-                            }
-                        }
+                    }
+                    if tasks.isEmpty {
+                        Text("A little breathing room.").font(.caption).foregroundStyle(.tertiary).padding(.vertical, 16)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             TextField("Add a task…", text: $title)
                 .textFieldStyle(.plain).padding(12)
                 .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityIdentifier("board-add-task-\(column.id)")
                 .onSubmit {
                     guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                     if board.kind == .week, let weekday = WeekdayColumn(rawValue: column.id) {
@@ -364,9 +379,8 @@ private struct MacBoardColumn: View {
                     }
                     title = ""
                 }
-            if tasks.isEmpty { Text("A little breathing room.").font(.caption).foregroundStyle(.tertiary).padding(.vertical, 16) }
         }
-        .padding(14).frame(width: 270, alignment: .topLeading)
+        .padding(14).frame(width: 270, height: viewportHeight, alignment: .topLeading)
         .background(targeted ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
         .sheet(item: $editingEvent) { MacEventEditor(event: $0, initialBoardID: board.id) }
         .dropDestination(for: String.self) { values, _ in

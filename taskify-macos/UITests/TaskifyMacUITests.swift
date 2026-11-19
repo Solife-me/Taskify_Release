@@ -171,6 +171,29 @@ final class TaskifyMacUITests: XCTestCase {
         assertTodayIsCentered(in: app)
     }
 
+    func testBoardComposerStaysVisibleWithLongTaskList() {
+        let app = launchInFreshWindow()
+
+        let board = app.staticTexts["UI Test Board"].firstMatch
+        XCTAssertTrue(board.waitForExistence(timeout: 10))
+        board.click()
+
+        let composer = app.textFields["board-add-task-ui-test-todo"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        for index in 0..<12 {
+            composer.typeText("Long list task \(index)")
+            composer.typeKey(.return, modifierFlags: [])
+        }
+
+        XCTAssertTrue(composer.isHittable)
+        XCTAssertLessThanOrEqual(
+            composer.frame.maxY,
+            app.windows.firstMatch.frame.maxY,
+            "The board composer should remain inside the visible window"
+        )
+    }
+
     private func assertTodayIsCentered(in app: XCUIApplication) {
         let scrollView = app.scrollViews["week-board-scroll"]
         XCTAssertTrue(scrollView.waitForExistence(timeout: 5))
