@@ -1542,6 +1542,7 @@ struct BoardShareSheet: View {
     @State private var isGeneratingTemplate = false
     @State private var requestedTemplate = false
     @State private var recipient = ""
+    @State private var selectedGroupID: String?
     @State private var choosingContact = false
     @State private var isSendingToContact = false
     @State private var sendErrorMessage: String?
@@ -1721,12 +1722,24 @@ struct BoardShareSheet: View {
             .navigationTitle("Share \(board.name)")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(isPresented: $choosingContact) {
-                BoardShareContactPicker(selectedPublicKey: selectedContact?.publicKey) { contact in
-                    recipient = contact.npub
-                    sendErrorMessage = nil
-                    sentToRecipientName = nil
-                    choosingContact = false
-                }
+                BoardShareRecipientPicker(
+                    selectedPublicKey: selectedContact?.publicKey,
+                    selectedGroupID: selectedGroup?.groupID,
+                    selectContact: { contact in
+                        selectedGroupID = nil
+                        recipient = contact.npub
+                        sendErrorMessage = nil
+                        sentToRecipientName = nil
+                        choosingContact = false
+                    },
+                    selectGroup: { group in
+                        recipient = ""
+                        selectedGroupID = group.groupID
+                        sendErrorMessage = nil
+                        sentToRecipientName = nil
+                        choosingContact = false
+                    }
+                )
             }
             .task { model.refreshContactsIfNeeded() }
             .onChange(of: shareMode) { _, mode in
@@ -1801,7 +1814,16 @@ struct BoardShareSheet: View {
         }
     }
 
-    private var recipientIsValid: Bool { NostrPublicKey.parse(recipient) != nil }
+    private var selectedGroup: NostrGroupConversation? {
+        selectedGroupID.flatMap { model.groupConversation(id: $0) }
+    }
+
+    private var recipientIsValid: Bool {
+        if let selectedGroup {
+            return !model.hasLeftDirectMessageGroup(selectedGroup.groupID)
+        }
+        return NostrPublicKey.parse(recipient) != nil
+    }
 
     private var selectedContact: NostrContact? {
         NostrPublicKey.parse(recipient).flatMap { model.nostrContact(publicKey: $0.hexString) }
@@ -1809,7 +1831,7 @@ struct BoardShareSheet: View {
 
     private var sendToContactCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Send to a contact")
+            Text("Send to a contact or group")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(TaskifyTheme.secondaryText)
 
@@ -1823,15 +1845,21 @@ struct BoardShareSheet: View {
                 .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(TaskifyTheme.border, lineWidth: 1))
                 .accessibilityIdentifier("board-share-recipient")
+                .onChange(of: recipient) { _, value in
+                    guard !value.isEmpty else { return }
+                    selectedGroupID = nil
+                    sendErrorMessage = nil
+                    sentToRecipientName = nil
+                }
 
             Button {
                 choosingContact = true
             } label: {
                 HStack(spacing: 8) {
-                    Label("Choose Contact", systemImage: "person.crop.circle")
+                    Label("Choose Contact or Group", systemImage: "person.2.fill")
                     Spacer()
-                    if let selectedContact {
-                        Text(selectedContact.displayName)
+                    if let selectedName {
+                        Text(selectedName)
                             .foregroundStyle(TaskifyTheme.secondaryText)
                             .lineLimit(1)
                     }
@@ -1842,8 +1870,8 @@ struct BoardShareSheet: View {
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .accessibilityLabel("Choose Contact")
-            .accessibilityValue(selectedContact?.displayName ?? "")
+            .accessibilityLabel("Choose Contact or Group")
+            .accessibilityValue(selectedName ?? "")
             .accessibilityIdentifier("board-share-choose-contact")
 
             if let sendErrorMessage {
@@ -1879,7 +1907,8 @@ struct BoardShareSheet: View {
         isSendingToContact = true
         sendErrorMessage = nil
         sentToRecipientName = nil
-        let recipientValue = recipient
+        let recipientValue = selectedGroupID ?? recipient
+        let recipientName = selectedName ?? "contact"
         let isLiveShare = shareMode == .board
         Task { @MainActor in
             do {
@@ -1890,10 +1919,9 @@ struct BoardShareSheet: View {
                     to: recipientValue
                 )
                 if isLiveShare { model.markBoardAsShared(boardID: activeShareBoard.effectiveNostrBoardID) }
-                sentToRecipientName = model.nostrContact(
-                    publicKey: NostrPublicKey.parse(recipientValue)?.hexString ?? ""
-                )?.displayName ?? "contact"
+                sentToRecipientName = recipientName
                 recipient = ""
+                selectedGroupID = nil
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             } catch {
                 sendErrorMessage = error.localizedDescription
@@ -1902,13 +1930,19 @@ struct BoardShareSheet: View {
             isSendingToContact = false
         }
     }
+
+    private var selectedName: String? {
+        selectedGroup?.displayName ?? selectedContact?.displayName
+    }
 }
 
-private struct BoardShareContactPicker: View {
+private struct BoardShareRecipientPicker: View {
     @Environment(AppModel.self) private var model
     @State private var query = ""
     let selectedPublicKey: String?
-    let select: (NostrContact) -> Void
+    let selectedGroupID: String?
+    let selectContact: (NostrContact) -> Void
+    let selectGroup: (NostrGroupConversation) -> Void
 
     private var contacts: [NostrContact] {
         if let key = NostrPublicKey.parse(query) {
@@ -1917,37 +1951,89 @@ private struct BoardShareContactPicker: View {
         return model.inboxSnapshot.shareContacts(matching: query)
     }
 
+    private var groups: [NostrGroupConversation] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.groupConversations.filter {
+            !model.hasLeftDirectMessageGroup($0.groupID) &&
+                (trimmed.isEmpty || $0.displayName.localizedCaseInsensitiveContains(trimmed))
+        }
+    }
+
     var body: some View {
         let contacts = contacts
-        List(contacts) { contact in
-            Button {
-                select(contact)
-            } label: {
-                HStack(spacing: 10) {
-                    NostrContactAvatar(contact: contact, size: 30)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(contact.displayName)
-                            .foregroundStyle(TaskifyTheme.primaryText)
-                        Text(contact.subtitle)
-                            .font(.caption)
-                            .foregroundStyle(TaskifyTheme.secondaryText)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    if contact.publicKey == selectedPublicKey {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(TaskifyTheme.accent)
-                            .accessibilityLabel("Selected")
+        let groups = groups
+        List {
+            if !groups.isEmpty {
+                Section("Group chats") {
+                    ForEach(groups) { group in
+                        Button {
+                            selectGroup(group)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "person.3.fill")
+                                    .foregroundStyle(TaskifyTheme.accent)
+                                    .frame(width: 30)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(group.displayName)
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                    Text("\(group.memberPublicKeys.count) members")
+                                        .font(.caption)
+                                        .foregroundStyle(TaskifyTheme.secondaryText)
+                                }
+                                Spacer()
+                                if group.groupID == selectedGroupID {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(TaskifyTheme.accent)
+                                        .accessibilityLabel("Selected")
+                                }
+                            }
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel(group.displayName)
+                        .accessibilityValue(
+                            group.groupID == selectedGroupID
+                                ? "\(group.memberPublicKeys.count) members, selected"
+                                : "\(group.memberPublicKeys.count) members"
+                        )
                     }
                 }
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
             }
-            .accessibilityLabel(contact.displayName)
-            .accessibilityValue(contact.publicKey == selectedPublicKey ? "\(contact.subtitle), selected" : contact.subtitle)
+
+            if !contacts.isEmpty {
+                Section("Contacts") {
+                    ForEach(contacts) { contact in
+                        Button {
+                            selectContact(contact)
+                        } label: {
+                            HStack(spacing: 10) {
+                                NostrContactAvatar(contact: contact, size: 30)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(contact.displayName)
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                    Text(contact.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(TaskifyTheme.secondaryText)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                if contact.publicKey == selectedPublicKey {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(TaskifyTheme.accent)
+                                        .accessibilityLabel("Selected")
+                                }
+                            }
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel(contact.displayName)
+                        .accessibilityValue(contact.publicKey == selectedPublicKey ? "\(contact.subtitle), selected" : contact.subtitle)
+                    }
+                }
+            }
         }
         .overlay {
-            if contacts.isEmpty {
+            if contacts.isEmpty, groups.isEmpty {
                 if model.isRefreshingContacts {
                     ProgressView("Syncing contacts…")
                 } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1957,8 +2043,8 @@ private struct BoardShareContactPicker: View {
                 }
             }
         }
-        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts")
-        .navigationTitle("Contacts")
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts or groups")
+        .navigationTitle("Choose Recipient")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             Button("Refresh Contacts", systemImage: "arrow.clockwise") { model.refreshContacts() }

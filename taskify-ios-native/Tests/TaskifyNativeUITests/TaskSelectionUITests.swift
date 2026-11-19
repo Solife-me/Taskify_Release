@@ -23,6 +23,24 @@ final class TaskSelectionUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Send"].isEnabled)
     }
 
+    func testBoardSharingCanSelectAGroupChat() {
+        let app = launchWithListBoard(sharingFixture: true)
+        app.buttons["board-share"].tap()
+        let chooseRecipient = app.buttons["board-share-choose-contact"]
+        for _ in 0..<5 where !chooseRecipient.isHittable { app.swipeUp() }
+        XCTAssertTrue(chooseRecipient.isHittable)
+        chooseRecipient.tap()
+
+        let group = app.buttons["Project Crew"]
+        XCTAssertTrue(group.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Group chats"].exists)
+        group.tap()
+
+        XCTAssertTrue(chooseRecipient.waitForExistence(timeout: 5))
+        XCTAssertEqual(chooseRecipient.value as? String, "Project Crew")
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+    }
+
     func testSharedTaskShowsOriginalCreatorInCardAndEditor() {
         let app = launchWithListBoard(sharingFixture: true)
         let task = app.buttons["Edit Shopping item"]
