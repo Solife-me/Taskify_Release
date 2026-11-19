@@ -40,6 +40,9 @@ function cloneMutation(mutation: NostrOutboxMutation): NostrOutboxMutation {
     },
     ackedRelays: [...mutation.ackedRelays],
     pendingRelays: [...mutation.pendingRelays],
+    relayRetries: mutation.relayRetries && Object.fromEntries(
+      Object.entries(mutation.relayRetries).map(([relay, retry]) => [relay, { ...retry }]),
+    ),
   };
 }
 

@@ -18,18 +18,19 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # policy.py resolves its state files from HERMES_HOME at import — point it at a
 # scratch home so nothing here touches the real nostr_roles.json / approvals.
 _HOME = tempfile.mkdtemp(prefix="nostr-policy-home-")
-os.environ["HERMES_HOME"] = _HOME
 
 NAME = "nostr_dm_policy_under_test"
 _SPEC = _ilu.spec_from_file_location(NAME, os.path.join(PLUGIN_DIR, "policy.py"))
 policy = _ilu.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(policy)
+with patch.dict(os.environ, {"HERMES_HOME": _HOME}):
+    _SPEC.loader.exec_module(policy)
 
 OWNER = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
 FAMILY = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"

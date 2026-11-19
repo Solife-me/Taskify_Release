@@ -27,7 +27,7 @@ class HardeningTests(unittest.IsolatedAsyncioTestCase):
         self.app = object.__new__(adapter.NostrDmAdapter)
         self.app._configured_owner = self.owner
         self.app._my_hex = self.bot.public_key().to_hex()
-        self.app._signer = ns.NostrSigner.keys(self.bot)
+        self.app._signer = self.bot
         self.app._roles = None
         self.app._fallback_relays = ["wss://relay.example"]
         self.app._peer_relays = []
@@ -42,7 +42,7 @@ class HardeningTests(unittest.IsolatedAsyncioTestCase):
         self.app._secret = self.bot.secret_key().to_hex()
         self.assertFalse(self.app._roles_authorized(self.peer))
         self.assertEqual(self.app.resolved_allowlist_user_ids(), set())
-        with patch.object(ns, "Client") as client, self.assertLogs(adapter.log, level="ERROR"):
+        with patch.object(adapter, "_relay_client") as client, self.assertLogs(adapter.log, level="ERROR"):
             self.assertFalse(await self.app.connect())
             client.assert_not_called()
 
@@ -110,12 +110,12 @@ class HardeningTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(policy._module_level_pre_tool_call("terminal"))
 
         self.app.handle_message = AsyncMock(side_effect=receive_command)
-        rumor = ns.EventBuilder.private_msg_rumor(
+        rumor = adapter._private_msg_rumor(
             self.bot.public_key(), "/sessions",
-        ).build(self.owner_keys.public_key())
+        ).finalize_unsigned(self.owner_keys.public_key()).ensure_id()
         with patch.object(adapter._relay_pow_mod, "nip11_min_pow", return_value=0):
             wrap = await adapter._build_recipient_wrap(
-                ns.NostrSigner.keys(self.owner_keys), self.app._my_hex, rumor, self.app._fallback_relays,
+                self.owner_keys, self.app._my_hex, rumor, self.app._fallback_relays,
             )
         await self.app._dispatch_wrap(wrap)
         self.app.handle_message.assert_awaited_once()
@@ -163,7 +163,7 @@ class HardeningTests(unittest.IsolatedAsyncioTestCase):
         event = ns.EventBuilder(ns.Kind(10050), "").tags([
             ns.Tag.parse(["relay", "wss://unknown.example"]),
             ns.Tag.parse(["relay", "wss://approved.example/inbox"]),
-        ]).sign_with_keys(keys)
+        ]).finalize(keys)
         self.app._peer_relays = ["wss://approved.example/inbox"]
         self.app._relays_client = SimpleNamespace(fetch_events=AsyncMock(return_value=[event]))
         self.app._inbox_relay_cache, self.app._inbox_cache_ts = {}, {}
@@ -174,7 +174,7 @@ class HardeningTests(unittest.IsolatedAsyncioTestCase):
         signer = self.app._signer
         wrap = SimpleNamespace(id=lambda: SimpleNamespace(to_hex=lambda: "wrap-id"))
         with patch.object(adapter, "_build_recipient_wrap", AsyncMock(return_value=wrap)), \
-             patch.object(ns, "Client") as factory:
+             patch.object(adapter, "_relay_client") as factory:
             client = factory.return_value
             client.add_relay, client.connect, client.shutdown = AsyncMock(), AsyncMock(), AsyncMock()
             client.send_event = AsyncMock(side_effect=[
@@ -192,7 +192,7 @@ class HardeningTests(unittest.IsolatedAsyncioTestCase):
         self.app._target_relays = AsyncMock(side_effect=[["wss://owner.example"], ["wss://peer.example"]])
         publish = AsyncMock(side_effect=["wrap-one", OSError("rejected")])
         with patch.object(adapter, "_send_wrap", publish), patch.object(adapter._relay_pow_mod, "nip11_min_pow", return_value=0):
-            rumor = ns.EventBuilder.private_msg_rumor(self.bot.public_key(), "test").build(self.bot.public_key())
+            rumor = adapter._private_msg_rumor(self.bot.public_key(), "test").finalize_unsigned(self.bot.public_key()).ensure_id()
             status = await self.app._publish_multiple_recipients(rumor, [self.owner, self.peer])
         self.assertIn("1 of 2", status)
         self.assertEqual([call.args[-1] for call in publish.await_args_list],

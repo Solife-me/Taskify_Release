@@ -6,10 +6,6 @@ import TaskifyCore
 import UIKit
 import UniformTypeIdentifiers
 
-private struct BoardPrintRequest: Identifiable {
-    let id = UUID()
-}
-
 struct BoardsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.taskifyShowsBoardRail) private var showsBoardRail
@@ -28,11 +24,6 @@ struct BoardsView: View {
     @State private var showingVoiceDictation = false
     @State private var detailedTaskDraft: TaskItem?
     @State private var physicalChecklistJob: PhysicalChecklistJob?
-    @State private var physicalChecklistScanCatalog: PhysicalChecklistJob?
-    @State private var physicalChecklistStartsScanning = false
-    @State private var boardPrintRequest: BoardPrintRequest?
-    @State private var pendingBoardPrintJob: PhysicalChecklistJob?
-    @State private var requestBoardPrintAfterShare = false
     /// Raised by a quick-add deep link from a widget or the Control Center button. Cleared as soon
     /// as the field takes focus so a later return to Boards doesn't pop the keyboard again.
     @Binding var focusQuickAdd: Bool
@@ -123,6 +114,13 @@ struct BoardsView: View {
                     onVoice: {
                         quickTaskFieldIsFocused = false
                         showingVoiceDictation = true
+                    },
+                    onScan: {
+                        dismissQuickTaskKeyboard()
+                        TaskifyListScanRouter.shared.open(
+                            boardID: quickAddDestination.boardID,
+                            columnID: quickAddDestination.columnID
+                        )
                     }
                 )
                 .frame(maxWidth: 720)
@@ -141,35 +139,9 @@ struct BoardsView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(item: $physicalChecklistJob, onDismiss: {
-            physicalChecklistStartsScanning = false
-            physicalChecklistScanCatalog = nil
-        }) { job in
-            PhysicalChecklistSheet(
-                job: job,
-                startWithScanner: physicalChecklistStartsScanning,
-                scanCatalog: physicalChecklistScanCatalog
-            ) { scannedIDs in
+        .sheet(item: $physicalChecklistJob) { job in
+            PhysicalChecklistSheet(job: job) { scannedIDs in
                 model.completeTasks(scannedIDs)
-            }
-        }
-        .sheet(item: $boardPrintRequest, onDismiss: {
-            if let job = pendingBoardPrintJob {
-                pendingBoardPrintJob = nil
-                physicalChecklistJob = job
-            }
-        }) { _ in
-            if let board = model.selectedBoard {
-                BoardPrintChooserSheet(
-                    title: board.name,
-                    choices: makeBoardPrintChoices(for: board)
-                ) { selectedListIDs, options in
-                    pendingBoardPrintJob = makeBoardPrintJob(
-                        for: board,
-                        selectedListIDs: selectedListIDs,
-                        options: options
-                    )
-                }
             }
         }
         .sheet(isPresented: $showingAddBoard) {
@@ -193,17 +165,15 @@ struct BoardsView: View {
         } message: {
             Text("Create another column on \(model.selectedBoard?.name ?? "this board").")
         }
-        .sheet(isPresented: $showingBoardShare, onDismiss: {
-            guard requestBoardPrintAfterShare else { return }
-            requestBoardPrintAfterShare = false
-            boardPrintRequest = BoardPrintRequest()
-        }) {
+        .sheet(isPresented: $showingBoardShare) {
             if let board = model.selectedBoard {
-                BoardShareSheet(board: board) {
-                    requestBoardPrintAfterShare = true
-                } onScan: {
-                    openPrintedChecklistScanner()
-                }
+                BoardShareSheet(
+                    board: board,
+                    printChoices: { makeBoardPrintChoices(for: board) },
+                    makePrintJob: { selectedListIDs, options in
+                        makeBoardPrintJob(for: board, selectedListIDs: selectedListIDs, options: options)
+                    }
+                )
             }
         }
         .sheet(isPresented: $showingSortOptions) {
@@ -528,6 +498,7 @@ struct BoardsView: View {
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .buttonStyle(.plain)
                         .accessibilityLabel("Share \(model.selectedBoard?.name ?? "board")")
+                        .accessibilityIdentifier("board-share")
 
                     }
                 }
@@ -626,21 +597,6 @@ struct BoardsView: View {
                 PhysicalChecklistItem(id: $0.task.id, title: $0.task.title, section: $0.section)
             }
         )
-    }
-
-    private func openPrintedChecklistScanner() {
-        guard let board = model.selectedBoard, board.kind != .bible else { return }
-        let ownerID = "board:\(board.effectiveNostrBoardID)"
-        let items = makeBoardPrintChoices(for: board).flatMap(\.items)
-        let catalog = PhysicalChecklistJob(ownerID: ownerID, title: board.name, items: items)
-        guard !items.isEmpty else {
-            model.errorMessage = "Add a task to this board before scanning a checklist."
-            return
-        }
-        let launchJob = PhysicalChecklistJobStore.load(ownerID: ownerID) ?? catalog
-        physicalChecklistScanCatalog = catalog
-        physicalChecklistStartsScanning = true
-        physicalChecklistJob = launchJob
     }
 
     /// Every task and event on the board, with the flags the chooser uses to count what its

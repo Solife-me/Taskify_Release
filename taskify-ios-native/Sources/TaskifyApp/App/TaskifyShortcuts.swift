@@ -102,6 +102,17 @@ struct TaskifyShortcuts: AppShortcutsProvider {
             shortTitle: "Due Today",
             systemImageName: "calendar"
         )
+        #if os(iOS)
+        AppShortcut(
+            intent: TaskifyScanListIntent(),
+            phrases: [
+                "Scan a list in \(.applicationName)",
+                "Scan a checklist in \(.applicationName)",
+            ],
+            shortTitle: "Scan List",
+            systemImageName: "document.viewfinder"
+        )
+        #endif
     }
 }
 #endif

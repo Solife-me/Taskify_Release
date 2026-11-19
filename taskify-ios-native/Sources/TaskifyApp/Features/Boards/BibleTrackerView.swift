@@ -1038,9 +1038,13 @@ struct PhysicalChecklistSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Physical checklist", systemImage: "checklist")
                             .font(.headline)
-                        Text("Print the checklist, mark its circles with a fill, check, or X, then scan it here. Scans stay on this device.")
-                            .font(.subheadline)
-                            .foregroundStyle(TaskifyTheme.secondaryText)
+                        if job.format == .taskList {
+                            BoardChecklistScanHelp()
+                        } else {
+                            Text("Print the checklist, then mark its circles with a fill, check, or X.")
+                                .font(.subheadline)
+                                .foregroundStyle(TaskifyTheme.secondaryText)
+                        }
                     }
                     .padding(16)
                     .taskifyGlass(cornerRadius: 20)
@@ -1243,16 +1247,56 @@ struct PhysicalChecklistSheet: View {
     /// Decrypts and shrinks each photo attachment into printable thumbnails, then updates the
     /// job so its tall rows match the photos that are actually drawn.
     private func preparePhotosIfNeeded() async {
-        guard job.items.contains(where: { !$0.photoSources.isEmpty && $0.photos.isEmpty }) else { return }
-        preparingPhotos = true
+        guard preparingPhotos else { return }
         defer { preparingPhotos = false }
+        job = await PhysicalChecklistOutput.preparePhotos(for: job)
+    }
 
+    private func reviewSelectionIcon(for item: PhysicalChecklistItem) -> String {
+        if item.filled {
+            return "checkmark.circle.fill"
+        }
+        return scanReview.selectedIDs.contains(item.id) ? "checkmark.square.fill" : "square"
+    }
+
+    private func printChecklist() {
+        do {
+            let url = try PhysicalChecklistOutput.savePDF(for: job, model: model)
+            if !PhysicalChecklistOutput.printPDF(at: url, title: job.title) {
+                scanMessage = "Taskify couldn’t open print options. Try sharing the PDF."
+            }
+        } catch {
+            scanMessage = "Taskify couldn’t create the checklist PDF."
+        }
+    }
+
+    private func shareChecklist() {
+        do {
+            let url = try PhysicalChecklistOutput.savePDF(for: job, model: model)
+            sharePayload = PhysicalChecklistSharePayload(url: url)
+        } catch {
+            scanMessage = "Taskify couldn’t create the checklist PDF."
+        }
+    }
+}
+
+struct PhysicalChecklistSharePayload: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+@MainActor
+enum PhysicalChecklistOutput {
+    static func preparePhotos(for job: PhysicalChecklistJob) async -> PhysicalChecklistJob {
+        guard job.items.contains(where: { !$0.photoSources.isEmpty && $0.photos.isEmpty }) else { return job }
         var updated = job
         for index in updated.items.indices {
+            guard !Task.isCancelled else { return job }
             let sources = Array(updated.items[index].photoSources.prefix(PhysicalChecklistLayout.photoMax))
             guard !sources.isEmpty, let boardID = updated.items[index].photoBoardID else { continue }
             var photos: [Data] = []
             for source in sources {
+                guard !Task.isCancelled else { return job }
                 do {
                     let data = try await TaskAttachmentDataLoader.load(
                         source: source,
@@ -1273,11 +1317,12 @@ struct PhysicalChecklistSheet: View {
             updated.items[index].photos = photos
             updated.items[index].photoCount = photos.count
         }
-        job = updated
+        return updated
     }
 
-    private func pdfURL() throws -> URL {
-        prepareNoteLayout()
+    static func savePDF(for job: PhysicalChecklistJob, model: AppModel) throws -> URL {
+        var job = job
+        measureNotes(in: &job)
         let data = PhysicalChecklistPDFRenderer.render(job: job)
         let safeTitle = job.title.replacingOccurrences(of: "/", with: "-")
         let url = FileManager.default.temporaryDirectory
@@ -1287,75 +1332,38 @@ struct PhysicalChecklistSheet: View {
         return url
     }
 
-    /// Notes wrap below the title, so their line count depends on the chosen paper. Measure them
-    /// for the sheet about to print; the saved job keeps the counts the scanner needs.
-    private func prepareNoteLayout() {
-        var updated = job
-        let widthMM = noteTextWidthMM(for: updated.paper)
-        let font = UIFont(name: "Helvetica", size: 5.8) ?? UIFont.systemFont(ofSize: 5.8)
-        for index in updated.items.indices {
-            guard let note = updated.items[index].note, !note.isEmpty else { continue }
-            // Measure a little narrower so the browser's Helvetica wrapping also fits the row.
-            updated.items[index].noteLineCount = noteLineCount(note, widthMM: widthMM * 0.98, font: font)
-        }
-        job = updated
-    }
-
-    private func noteTextWidthMM(for paper: PhysicalChecklistPaper) -> Double {
-        let size = paper.sizeMM
-        let left = PhysicalChecklistLayout.marginMM
-            + (paper == .a6 ? BoardPrintContract.a6BindingMarginMM : 0)
-        let columnWidth = size.width - left - PhysicalChecklistLayout.marginMM
-        return max(1, columnWidth - PhysicalChecklistLayout.circleSizeMM - 2.4)
-    }
-
-    private func noteLineCount(_ note: String, widthMM: Double, font: UIFont) -> Int {
-        let width = max(1, widthMM * 72.0 / 25.4)
-        let bounds = (note as NSString).boundingRect(
-            with: CGSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font],
-            context: nil
-        )
-        let lineHeight = max(1, font.ascender - font.descender + font.leading)
-        return max(1, Int((bounds.height / lineHeight).rounded(.up)))
-    }
-
-    private func reviewSelectionIcon(for item: PhysicalChecklistItem) -> String {
-        if item.filled {
-            return "checkmark.circle.fill"
-        }
-        return scanReview.selectedIDs.contains(item.id) ? "checkmark.square.fill" : "square"
-    }
-
-    private func printChecklist() {
-        guard let url = try? pdfURL() else {
-            scanMessage = "Taskify couldn't create the checklist PDF."
-            return
-        }
+    static func printPDF(at url: URL, title: String) -> Bool {
+        let info = UIPrintInfo(dictionary: nil)
+        info.jobName = title
+        info.outputType = .general
         let controller = UIPrintInteractionController.shared
-        controller.printInfo = {
-            let info = UIPrintInfo(dictionary: nil)
-            info.jobName = job.title
-            info.outputType = .general
-            return info
-        }()
+        controller.printInfo = info
         controller.printingItem = url
-        controller.present(animated: true)
+        return controller.present(animated: true)
     }
 
-    private func shareChecklist() {
-        guard let url = try? pdfURL() else {
-            scanMessage = "Taskify couldn't create the checklist PDF."
-            return
+    /// Save the note heights for the chosen paper so print and scan use the same layout.
+    private static func measureNotes(in job: inout PhysicalChecklistJob) {
+        let paperWidth = job.paper.sizeMM.width
+        let left = PhysicalChecklistLayout.marginMM
+            + (job.paper == .a6 ? BoardPrintContract.a6BindingMarginMM : 0)
+        let columnWidth = paperWidth - left - PhysicalChecklistLayout.marginMM
+        // Measure a little narrower so the browser's Helvetica wrapping also fits the row.
+        let noteWidthMM = max(1, columnWidth - PhysicalChecklistLayout.circleSizeMM - 2.4) * 0.98
+        let width = max(1, noteWidthMM * 72.0 / 25.4)
+        let font = UIFont(name: "Helvetica", size: 5.8) ?? UIFont.systemFont(ofSize: 5.8)
+        let lineHeight = max(1, font.ascender - font.descender + font.leading)
+        for index in job.items.indices {
+            guard let note = job.items[index].note, !note.isEmpty else { continue }
+            let bounds = (note as NSString).boundingRect(
+                with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font],
+                context: nil
+            )
+            job.items[index].noteLineCount = max(1, Int((bounds.height / lineHeight).rounded(.up)))
         }
-        sharePayload = PhysicalChecklistSharePayload(url: url)
     }
-}
-
-private struct PhysicalChecklistSharePayload: Identifiable {
-    let id = UUID()
-    let url: URL
 }
 
 private enum PhysicalChecklistPDFRenderer {
@@ -1619,7 +1627,7 @@ private enum PhysicalChecklistPDFRenderer {
     }
 }
 
-private struct PhysicalChecklistActivityView: UIViewControllerRepresentable {
+struct PhysicalChecklistActivityView: UIViewControllerRepresentable {
     let items: [Any]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
@@ -1670,7 +1678,7 @@ private struct PhysicalChecklistDocumentScanner: UIViewControllerRepresentable {
     }
 }
 
-private struct PhysicalChecklistCapturedPage: Sendable {
+struct PhysicalChecklistCapturedPage: Sendable {
     let image: CGImage
     let orientation: CGImagePropertyOrientation
 
@@ -1706,24 +1714,59 @@ private struct PhysicalChecklistCapturedPage: Sendable {
     }
 
     func readText() -> [PhysicalChecklistOCRLine] {
+        Self.readObservations(in: image, orientation: orientation, correctLanguage: false)
+            .compactMap(Self.textLine)
+    }
+
+    func readHandwriting(using context: CIContext) -> [PhysicalChecklistOCRLine] {
+        let observations = Self.readObservations(in: image, orientation: orientation, correctLanguage: true)
+        let oriented = CIImage(cgImage: image).oriented(orientation)
+        let aspect = oriented.extent.height / oriented.extent.width
+        let angles = observations.compactMap { line -> Double? in
+            let width = line.topRight.x - line.topLeft.x
+            guard width > 0.06 else { return nil }
+            return atan2((line.topLeft.y - line.topRight.y) * aspect, width)
+        }.sorted()
+        let original = observations.compactMap(Self.textLine)
+        guard angles.count >= 2 else { return original }
+        let angle = angles[angles.count / 2]
+        guard (0.05...0.44).contains(abs(angle)) else { return original }
+
+        // For a tilted notebook, overlapping lines can become one OCR observation. A
+        // rotation from the observed baselines lets Vision read the lines individually.
+        let leveled = oriented.transformed(by: CGAffineTransform(rotationAngle: angle))
+        guard let leveledImage = context.createCGImage(leveled, from: leveled.extent) else { return original }
+        let corrected = Self.readObservations(in: leveledImage, orientation: .up, correctLanguage: true)
+            .compactMap(Self.textLine)
+        return corrected.count >= original.count ? corrected : original
+    }
+
+    private static func readObservations(
+        in image: CGImage,
+        orientation: CGImagePropertyOrientation,
+        correctLanguage: Bool
+    ) -> [VNRecognizedTextObservation] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
+        request.usesLanguageCorrection = correctLanguage
         request.minimumTextHeight = 0.004
         let handler = VNImageRequestHandler(cgImage: image, orientation: orientation, options: [:])
         try? handler.perform([request])
-        return (request.results ?? []).compactMap { observation -> PhysicalChecklistOCRLine? in
-            guard let candidate = observation.topCandidates(1).first,
-                  candidate.confidence >= 0.25 else { return nil }
-            let box = observation.boundingBox
-            return PhysicalChecklistOCRLine(
-                text: candidate.string,
-                x: box.minX,
-                y: 1 - box.maxY,
-                width: box.width,
-                height: box.height
-            )
-        }
+        return request.results ?? []
+    }
+
+    private static func textLine(_ observation: VNRecognizedTextObservation) -> PhysicalChecklistOCRLine? {
+        guard let candidate = observation.topCandidates(1).first,
+              candidate.confidence >= 0.25 else { return nil }
+        let box = observation.boundingBox
+        return PhysicalChecklistOCRLine(
+            text: candidate.string,
+            x: box.minX,
+            y: 1 - box.maxY,
+            width: box.width,
+            height: box.height,
+            confidence: Double(candidate.confidence)
+        )
     }
 }
 

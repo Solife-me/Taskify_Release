@@ -89,6 +89,54 @@ final class TaskifyMacUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Wallet"].exists)
     }
 
+    private func launchInFreshWindow() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString, "-ApplePersistenceIgnoreState", "YES"]
+        app.launch()
+        if !app.windows.firstMatch.waitForExistence(timeout: 3) {
+            app.typeKey("n", modifierFlags: .command)
+        }
+        return app
+    }
+
+    func testBoardAndChatStayOpenWhenResizingSplitView() throws {
+        let app = launchInFreshWindow()
+
+        let board = app.staticTexts["UI Test Board"].firstMatch
+        XCTAssertTrue(board.waitForExistence(timeout: 10))
+        board.click()
+        let task = app.staticTexts["Open this task from a deep link"].firstMatch
+        XCTAssertTrue(task.waitForExistence(timeout: 5))
+
+        let splitMenu = app.descendants(matching: .any)["split-view-button"].firstMatch
+        XCTAssertTrue(splitMenu.waitForExistence(timeout: 5))
+        splitMenu.click()
+        app.menuItems["Chat"].firstMatch.click()
+
+        let chat = app.descendants(matching: .any)["split-workspace-chat"].firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 5))
+        let peer = app.staticTexts["Paste Test Contact"].firstMatch
+        XCTAssertTrue(peer.waitForExistence(timeout: 5))
+        peer.click()
+        let compactBack = app.buttons["Back to conversations"]
+        let composer = app.textViews["chat-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        composer.typeText("Keep this draft while resizing")
+
+        let divider = try XCTUnwrap(app.windows.firstMatch.splitters.allElementsBoundByIndex
+            .filter { $0.isHittable && abs($0.frame.midX - chat.frame.minX) < 16 }.first)
+        for (delta, compact) in [(-230.0, false), (290.0, true), (-230.0, false)] {
+            let center = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            center.click(forDuration: 0.1, thenDragTo: center.withOffset(CGVector(dx: delta, dy: 0)))
+            XCTAssertEqual(app.state, .runningForeground)
+            XCTAssertTrue(chat.exists)
+            XCTAssertTrue(task.exists)
+            XCTAssertEqual(compactBack.exists, compact, "The divider should cross the compact breakpoint")
+            XCTAssertEqual(composer.value as? String, "Keep this draft while resizing")
+        }
+    }
+
     func testSidebarSyncStatusOpensQueueInspector() {
         let app = XCUIApplication()
         app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
@@ -431,9 +479,7 @@ final class TaskifyMacUITests: XCTestCase {
     }
 
     func testChatComposerShiftReturnStartsANewLineAndReturnSends() {
-        let app = XCUIApplication()
-        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
-        app.launch()
+        let app = launchInFreshWindow()
 
         let chat = app.staticTexts["Chat"]
         XCTAssertTrue(chat.waitForExistence(timeout: 10))

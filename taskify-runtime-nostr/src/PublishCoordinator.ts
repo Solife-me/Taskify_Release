@@ -5,12 +5,14 @@ import { EventCache } from "./EventCache.js";
 import {
   createNostrOutboxMutation,
   cloneNostrEvent,
-  earliestRejectionRelease,
   recordOutboxRelayRejections,
   markOutboxPublishFailure,
   mergeOutboxRelayAcks,
   narrowRepublishedMutations,
-  pendingRelayUrlsForMutation,
+  pendingOutboxRelays,
+  outboxRelayRetry,
+  outboxRelayRetryAt,
+  errorToMessage,
   type NostrOutboxMutation,
   type NostrOutboxPublishPayload,
   type NostrOutboxStore,
@@ -32,6 +34,13 @@ export type PublishOptions = {
   skipIfIdentical?: boolean;
   /** Part of a board republish (see `limitQueuedRepublish`). */
   republish?: boolean;
+};
+
+type RelayRetryJob = { id: string; eventId: string; force: boolean };
+type RelayDrain = {
+  jobs: Map<string, RelayRetryJob>;
+  current?: RelayRetryJob;
+  done: Promise<void>;
 };
 
 type PendingPublish = {
@@ -134,8 +143,10 @@ export class PublishCoordinator {
   private readonly onProofOfWorkRequired?: (relayUrl: string, difficulty: number) => void;
   private activeOutboxIds = new Map<string, symbol>();
   private outboxLocks = new Map<string, Promise<unknown>>();
-  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private drainPromise: Promise<void> | null = null;
+  private readonly relayDrains = new Map<string, RelayDrain>();
+  private readonly relayRetryTimers = new Map<string, { at: number; timer: ReturnType<typeof setTimeout> }>();
+  private readonly retryingRows = new Map<string, number>();
+  private readonly outboxMining = new Map<string, { difficulty: number; result: Promise<NostrEvent> }>();
   private readonly publishBudget: RelayPublishBudget | null;
 
   constructor(ndk: NDK, resolveRelaySet: RelayResolver, cache?: EventCache, options?: PublishCoordinatorOptions) {
@@ -372,9 +383,6 @@ export class PublishCoordinator {
         if (args.replaceableKey) this.replaceableCache.delete(args.replaceableKey);
         throw error;
       }
-      if (mutation.nextAttemptAt && mutation.nextAttemptAt > Date.now()) {
-        this.scheduleOutboxRetry(id, mutation.nextAttemptAt - Date.now());
-      }
       return id;
     });
   }
@@ -444,15 +452,18 @@ export class PublishCoordinator {
   private async publishByRelay(
     event: NDKEvent, relaySet?: NDKRelaySet, outboxId?: string | null, signer?: EventSigner,
     acknowledge?: (relay: string) => void,
+    retryRelay?: string,
   ): Promise<PublishEventResult> {
     const relays = this.relayUrlsForPublish(relaySet);
-    if (!relays.length || (!this.knownProofOfWorkDifficulty && !this.resolveProofOfWorkDifficulty)) {
-      return this.publishNow(event, relaySet, acknowledge);
-    }
     const plain = event.rawEvent() as NostrEvent;
     const row = outboxId ? await this.outboxStore?.get(outboxId) : undefined;
     if (outboxId && row?.payload.event.id !== plain.id) throw new NostrWriteQueuedError();
-    const targets = row ? relays.filter(relay => row.pendingRelays.includes(relay)) : relays;
+    const pending = row ? pendingOutboxRelays(row) : relays;
+    const targets = relays.filter(relay => pending.includes(relay));
+    if (retryRelay && !targets.includes(retryRelay)) throw new NostrWriteQueuedError();
+    if (!relays.length || (!this.knownProofOfWorkDifficulty && !this.resolveProofOfWorkDifficulty)) {
+      return this.publishNow(event, relaySet, acknowledge);
+    }
     const requirements = new Map(targets.map(relay => [relay, this.knownProofOfWorkDifficulty?.(relay) ?? 0]));
     const ordinary = targets.filter(relay => !requirements.get(relay));
     const aggregate: PublishEventResult = {
@@ -493,30 +504,37 @@ export class PublishCoordinator {
     let variant = row?.payload.proofOfWorkEvent;
     let strict = targets.filter(relay => (requirements.get(relay) ?? 0) > 0 && !aggregate.ackedRelays.includes(relay));
     for (let attempt = 0; strict.length && attempt < 2; attempt += 1) {
-      const difficulty = Math.max(...strict.map(relay => requirements.get(relay)!));
+      const required = Math.max(...strict.map(relay => requirements.get(relay)!));
+      const difficulty = retryRelay
+        ? Math.max(required, ...pending.map(relay => this.knownProofOfWorkDifficulty?.(relay) ?? 0))
+        : required;
       try {
         if (satisfiesProofOfWork(plain, difficulty)) {
           variant = plain;
         } else if (!variant || !satisfiesProofOfWork(variant, difficulty)) {
           if (signer?.pubkey !== plain.pubkey) signer = row ? await this.recoverProofOfWorkSigner?.(row.payload) : undefined;
           if (!signer) throw new NostrProofOfWorkError("The original signer is required to prepare this relay's proof of work.");
-          this.onMine?.(difficulty, strict);
-          variant = await signProofOfWorkVariant(plain, difficulty, signer, { ...this.proofOfWork, signal: this.signal });
+          variant = await this.mineVariant(plain, difficulty, signer, strict);
         }
         if (outboxId && this.outboxStore) {
-          const wireEvent = variant;
-          const stillCurrent = await this.withOutboxLock(outboxId, async () => {
+          const mined = variant;
+          const stored = await this.withOutboxLock(outboxId, async () => {
             const current = await this.outboxStore!.get(outboxId);
-            if (!current || current.payload.event.id !== plain.id) return false;
+            if (!current || current.payload.event.id !== plain.id ||
+                (retryRelay && !pendingOutboxRelays(current).includes(retryRelay))) return undefined;
+            const existing = current.payload.proofOfWorkEvent;
+            const wireEvent = existing && satisfiesProofOfWork(existing, difficulty) ? existing : mined;
+            if (wireEvent === existing && !aggregate.ackedRelays.length) return wireEvent;
             const next = mergeOutboxRelayAcks(current, aggregate.ackedRelays);
-            if (!next) return false;
+            if (!next) return undefined;
             await this.outboxStore!.put({
               ...next, attempts: current.attempts, nextAttemptAt: current.nextAttemptAt,
               payload: { ...next.payload, proofOfWorkEvent: wireEvent },
             });
-            return true;
+            return wireEvent;
           });
-          if (!stillCurrent) break;
+          if (!stored) break;
+          variant = stored;
         }
         const refused = await submit(new NDKEvent(this.ndk, cloneNostrEvent(variant)), strict);
         strict = strict.filter(relay => refused?.has(relay) && !aggregate.ackedRelays.includes(relay));
@@ -534,6 +552,23 @@ export class PublishCoordinator {
       throw error;
     }
     return aggregate;
+  }
+
+  private async mineVariant(event: NostrEvent, difficulty: number, signer: EventSigner, relays: string[]): Promise<NostrEvent> {
+    const pending = this.outboxMining.get(event.id);
+    if (pending) {
+      const result = await pending.result;
+      if (pending.difficulty >= difficulty) return result;
+      return this.mineVariant(event, difficulty, signer, relays);
+    }
+    this.onMine?.(difficulty, relays);
+    const result = signProofOfWorkVariant(event, difficulty, signer, { ...this.proofOfWork, signal: this.signal });
+    this.outboxMining.set(event.id, { difficulty, result });
+    try {
+      return await result;
+    } finally {
+      this.outboxMining.delete(event.id);
+    }
   }
 
   private async markOutboxSuccess(
@@ -562,7 +597,6 @@ export class PublishCoordinator {
     const next = mergeOutboxRelayAcks(mutation, ackedRelays);
     if (!next) {
       await this.outboxStore.delete(outboxId).catch(() => undefined);
-      this.clearOutboxRetry(outboxId);
       this.retrySigners.delete(outboxId);
       return;
     }
@@ -576,12 +610,7 @@ export class PublishCoordinator {
     const now = Date.now();
     const pacedOnly = notBefore != null && ackedRelays.length === 0 && refusedRelays.length === 0 && !transientFailure;
     const base = pacedOnly ? { ...mutation, updatedAt: now } : recordOutboxRelayRejections(next, refusedRelays, now);
-    let delay = pacedOnly
-      ? Math.max(0, notBefore - now)
-      : Math.max(this.retryDelayMs(next.attempts), notBefore != null ? notBefore - now : 0);
-    delay = this.delayRespectingHeldBackRelays(base, delay, now);
-    await this.outboxStore.put({ ...base, nextAttemptAt: now + delay }).catch(() => undefined);
-    this.scheduleOutboxRetry(outboxId, delay);
+    await this.saveInitialRetry(base, pacedOnly ? now : now + this.retryDelayMs(next.attempts));
   }
 
   private async markOutboxFailure(outboxId: string, error: unknown, eventId: string): Promise<void> {
@@ -594,30 +623,21 @@ export class PublishCoordinator {
     if (!mutation || mutation.payload.event.id !== eventId) return;
     const attempts = mutation.attempts + 1;
     const now = Date.now();
+    const retryAt = now + this.retryDelayMs(attempts);
     const failed = markOutboxPublishFailure({
       mutation,
       error,
       ackedRelays: relayUrlsFromPublishError(error),
-      nextAttemptAt: now + this.retryDelayMs(attempts),
+      nextAttemptAt: retryAt,
     });
     if (!failed) {
       await this.outboxStore.delete(outboxId).catch(() => undefined);
-      this.clearOutboxRetry(outboxId);
       this.retrySigners.delete(outboxId);
       return;
     }
     const refused = (error as { refusedRelays?: string[] })?.refusedRelays ?? [];
     const next = recordOutboxRelayRejections(failed, refused, now);
-    const delay = this.delayRespectingHeldBackRelays(next, this.retryDelayMs(attempts), now);
-    await this.outboxStore.put({ ...next, nextAttemptAt: now + delay }).catch(() => undefined);
-    this.scheduleOutboxRetry(outboxId, delay);
-  }
-
-  /** When every pending relay is held back after refusing the event, wait for the first release. */
-  private delayRespectingHeldBackRelays(mutation: NostrOutboxMutation, delay: number, now: number): number {
-    if (pendingRelayUrlsForMutation(mutation, now).length) return delay;
-    const release = earliestRejectionRelease(mutation, now);
-    return release == null ? delay : Math.max(delay, release - now);
+    await this.saveInitialRetry(next, retryAt);
   }
 
   private retryDelayMs(attempts: number): number {
@@ -625,21 +645,22 @@ export class PublishCoordinator {
     return Math.min(this.retryMaxMs, this.retryBaseMs * 2 ** exponent);
   }
 
-  private clearOutboxRetry(id: string): void {
-    const timer = this.retryTimers.get(id);
-    if (!timer) return;
-    clearTimeout(timer);
-    this.retryTimers.delete(id);
-  }
-
-  private scheduleOutboxRetry(id: string, delayMs: number): void {
-    if (!this.outboxStore || this.closed) return;
-    this.clearOutboxRetry(id);
-    const timer = setTimeout(() => {
-      this.retryTimers.delete(id);
-      void this.drainOutbox().catch(() => undefined);
-    }, Math.max(0, delayMs));
-    this.retryTimers.set(id, timer);
+  private async saveInitialRetry(row: NostrOutboxMutation, retryAt: number): Promise<void> {
+    const now = Date.now();
+    const pending = pendingOutboxRelays(row);
+    const relayRetries = Object.fromEntries(pending.map(relay => [
+      relay,
+      {
+        attempts: row.attempts,
+        nextAttemptAt: Math.max(retryAt, this.publishBudget?.nextAvailableAt([relay], now) ?? 0),
+      },
+    ]));
+    const updated = { ...row, relayRetries };
+    const deadlines = pending.map(relay => outboxRelayRetryAt(updated, relay));
+    await this.outboxStore!.put({
+      ...updated, nextAttemptAt: deadlines.length ? Math.min(...deadlines) : retryAt,
+    }).catch(() => undefined);
+    pending.forEach((relay, index) => this.scheduleRelayRetry(relay, deadlines[index]));
   }
 
   private isDebouncedOutboxId(id: string): boolean {
@@ -649,47 +670,153 @@ export class PublishCoordinator {
     return false;
   }
 
-  async drainOutbox(options?: { force?: boolean; limit?: number }): Promise<void> {
-    // A closed publisher leaves the outbox for the next session.
-    if (this.closed) return;
-    if (!this.outboxStore) return;
-    if (this.drainPromise) return this.drainPromise;
-    this.drainPromise = this.drainOutboxInternal(options).finally(() => {
-      this.drainPromise = null;
-    });
-    return this.drainPromise;
-  }
-
-  private async drainOutboxInternal(options?: { force?: boolean; limit?: number }): Promise<void> {
-    if (!this.outboxStore) return;
+  async drainOutbox(options?: { force?: boolean; limit?: number; relayUrl?: string }): Promise<void> {
+    if (this.closed || !this.outboxStore) return;
+    const relayFilter = options?.relayUrl ? normalizeRelayUrls([options.relayUrl])[0] : undefined;
+    if (options?.relayUrl && !relayFilter) return;
     const rows = await this.outboxStore.listPending();
+    if (this.closed) return;
     const now = Date.now();
-    const limit = options?.limit && Number.isFinite(options.limit) ? Math.max(0, options.limit) : rows.length;
+    const limit = options?.limit != null && Number.isFinite(options.limit) ? Math.max(0, options.limit) : rows.length;
+    const jobsByRelay = new Map<string, RelayRetryJob[]>();
     let processed = 0;
 
     for (const row of rows.sort((a, b) => a.intentAt - b.intentAt)) {
       if (processed >= limit) break;
       if (this.activeOutboxIds.has(row.id) || this.isDebouncedOutboxId(row.id)) continue;
-      if (!options?.force && row.nextAttemptAt && row.nextAttemptAt > now) {
-        this.scheduleOutboxRetry(row.id, row.nextAttemptAt - now);
-        continue;
+      let selected = false;
+      for (const relay of pendingOutboxRelays(row)) {
+        if (relayFilter && relay !== relayFilter) continue;
+        const due = outboxRelayRetryAt(row, relay, options?.force);
+        if (due > now) {
+          this.scheduleRelayRetry(relay, due);
+          continue;
+        }
+        const jobs = jobsByRelay.get(relay) ?? [];
+        jobs.push({ id: row.id, eventId: row.payload.event.id, force: options?.force === true });
+        jobsByRelay.set(relay, jobs);
+        selected = true;
       }
-      processed += 1;
-      await this.retryOutboxMutation(row).catch(() => undefined);
+      if (selected) processed += 1;
+    }
+
+    await Promise.all(Array.from(jobsByRelay, ([relay, jobs]) => this.enqueueRelayRetries(relay, jobs)));
+  }
+
+  private enqueueRelayRetries(relay: string, jobs: RelayRetryJob[]): Promise<void> {
+    const active = this.relayDrains.get(relay);
+    if (active) {
+      for (const job of jobs) {
+        if (active.current?.id === job.id && active.current.eventId === job.eventId) continue;
+        const previous = active.jobs.get(job.id);
+        active.jobs.set(job.id, { ...job, force: job.force || (previous?.eventId === job.eventId && previous.force) });
+      }
+      return active.done;
+    }
+
+    const drain: RelayDrain = { jobs: new Map(jobs.map(job => [job.id, job])), done: Promise.resolve() };
+    this.relayDrains.set(relay, drain);
+    drain.done = this.runRelayDrain(relay, drain).finally(() => {
+      this.relayDrains.delete(relay);
+    });
+    return drain.done;
+  }
+
+  private async runRelayDrain(relay: string, drain: RelayDrain): Promise<void> {
+    for (const job of drain.jobs.values()) {
+      if (this.closed) return;
+      const now = Date.now();
+      const available = this.publishBudget?.nextAvailableAt([relay], now);
+      if (available != null && available > now) {
+        this.scheduleRelayRetry(relay, available);
+        return;
+      }
+      drain.current = job;
+      drain.jobs.delete(job.id);
+      await this.retryOutboxMutation(job, relay);
+      drain.current = undefined;
     }
   }
 
-  private async retryOutboxMutation(row: NostrOutboxMutation): Promise<void> {
-    const relayUrls = pendingRelayUrlsForMutation(row);
-    // Every remaining relay refused this event and isn't due again yet.
-    if (!relayUrls.length) {
-      const release = earliestRejectionRelease(row);
-      if (release != null) this.scheduleOutboxRetry(row.id, release - Date.now());
+  private scheduleRelayRetry(relay: string, at: number): void {
+    if (this.closed) return;
+    const previous = this.relayRetryTimers.get(relay);
+    if (previous && previous.at <= at) return;
+    if (previous) clearTimeout(previous.timer);
+    const timer = setTimeout(() => {
+      this.relayRetryTimers.delete(relay);
+      void this.drainOutbox({ relayUrl: relay }).catch(() => undefined);
+    }, Math.max(0, at - Date.now()));
+    this.relayRetryTimers.set(relay, { at, timer });
+  }
+
+  private async retryOutboxMutation(job: RelayRetryJob, relay: string): Promise<void> {
+    const { id, eventId, force } = job;
+    if (this.activeOutboxIds.has(id) || this.isDebouncedOutboxId(id)) return;
+    const row = await this.outboxStore!.get(id).catch(() => undefined);
+    if (this.closed || !row || row.payload.event.id !== eventId || !pendingOutboxRelays(row).includes(relay) ||
+        this.activeOutboxIds.has(id) || this.isDebouncedOutboxId(id)) return;
+    const due = outboxRelayRetryAt(row, relay, force);
+    if (due > Date.now()) {
+      this.scheduleRelayRetry(relay, due);
       return;
     }
-    const relaySet = await this.resolveRelaySetWithEnsure(relayUrls);
-    const event = new NDKEvent(this.ndk, cloneNostrEvent(row.payload.event));
-    await this.publishNowWithOutbox(event, relaySet, row.id, this.retrySigners.get(row.id));
+    this.retryingRows.set(id, (this.retryingRows.get(id) ?? 0) + 1);
+    try {
+      let result: PublishEventResult | undefined;
+      let error: unknown;
+      try {
+        const set = await this.resolveRelaySetWithEnsure([relay]);
+        if (!set) throw new NostrWriteQueuedError();
+        const event = new NDKEvent(this.ndk, cloneNostrEvent(row.payload.event));
+        result = await this.publishByRelay(event, set, id, this.retrySigners.get(id), undefined, relay);
+      } catch (failure) {
+        error = failure;
+      }
+      await this.recordRelayRetry(job, relay, result, error);
+    } finally {
+      const remaining = (this.retryingRows.get(id) ?? 1) - 1;
+      if (remaining) this.retryingRows.set(id, remaining);
+      else this.retryingRows.delete(id);
+    }
+  }
+
+  private async recordRelayRetry(job: RelayRetryJob, relay: string, result?: PublishEventResult, error?: unknown): Promise<void> {
+    const { id, eventId } = job;
+    await this.withOutboxLock(id, async () => {
+      const current = await this.outboxStore!.get(id);
+      if (!current || current.payload.event.id !== eventId || !pendingOutboxRelays(current).includes(relay)) return;
+      const now = Date.now();
+      const acked = (result?.ackedRelays ?? relayUrlsFromPublishError(error)).includes(relay);
+      const next = mergeOutboxRelayAcks(current, acked ? [relay] : [], now);
+      if (!next) {
+        await this.outboxStore!.delete(id);
+        this.retrySigners.delete(id);
+        return;
+      }
+
+      const pending = pendingOutboxRelays(next);
+      // Seed older rows from their shared deadline once. Later retries only touch their own relay.
+      const relayRetries = Object.fromEntries(pending.map(url => [url, outboxRelayRetry(current, url)]));
+      let attempts = current.attempts;
+      let updated = next;
+      if (!acked) {
+        const refused = (result?.refusedRelays ?? (error as { refusedRelays?: string[] })?.refusedRelays ?? []).includes(relay);
+        if (refused) updated = recordOutboxRelayRejections(next, [relay], now);
+        const paced = result?.notBefore != null && !result.transientFailure && !refused;
+        const count = relayRetries[relay].attempts + (paced ? 0 : 1);
+        const delayedUntil = result?.notBefore ?? 0;
+        relayRetries[relay] = { attempts: count, nextAttemptAt: paced ? delayedUntil : Math.max(delayedUntil, now + this.retryDelayMs(count)) };
+        attempts = Math.max(attempts, count);
+      }
+
+      const scoped = { ...updated, relayRetries, attempts, lastError: error ? errorToMessage(error) : current.lastError };
+      const nextAttemptAt = Math.min(...pending.map(url => outboxRelayRetryAt(scoped, url)));
+      await this.outboxStore!.put({ ...scoped, nextAttemptAt: nextAttemptAt || null });
+      if (!acked) this.scheduleRelayRetry(relay, outboxRelayRetryAt(scoped, relay));
+    }).catch(() => {
+      this.scheduleRelayRetry(relay, Date.now() + this.retryBaseMs);
+    });
   }
 
   /**
@@ -700,28 +827,27 @@ export class PublishCoordinator {
     if (!this.outboxStore) return 0;
     const rows = await this.outboxStore.listPending();
     const { updated, completedIds } = narrowRepublishedMutations(rows, { boardTag, keptRelayUrls });
+    const affected = new Set([...updated.map(row => row.id), ...completedIds]);
     let changed = 0;
-    const apply = async (id: string, eventId: string, write: () => Promise<void>) => {
-      if (this.activeOutboxIds.has(id)) return;
-      await this.withOutboxLock(id, async () => {
-        const current = await this.outboxStore!.get(id).catch(() => undefined);
-        // Skip a row replaced by a newer event since it was read.
-        if (!current || current.payload.event.id !== eventId) return;
-        await write();
+
+    for (const row of rows) {
+      if (!affected.has(row.id)) continue;
+      await this.withOutboxLock(row.id, async () => {
+        if (this.activeOutboxIds.has(row.id) || this.retryingRows.has(row.id)) return;
+        const current = await this.outboxStore!.get(row.id).catch(() => undefined);
+        if (!current || current.payload.event.id !== row.payload.event.id) return;
+        // The snapshot determined which legacy rows belong to the republish. Apply that
+        // decision to the current row so any receipts saved since the scan survive.
+        const narrowed = narrowRepublishedMutations([{ ...current, isRepublish: true }], { boardTag, keptRelayUrls });
+        if (narrowed.completedIds.length) {
+          await this.outboxStore!.delete(row.id);
+          this.retrySigners.delete(row.id);
+        } else if (narrowed.updated.length) {
+          await this.outboxStore!.put({ ...narrowed.updated[0], isRepublish: current.isRepublish });
+        } else {
+          return;
+        }
         changed += 1;
-      });
-    };
-    for (const row of updated) {
-      await apply(row.id, row.payload.event.id, () => this.outboxStore!.put(row));
-    }
-    const completed = new Map(rows.map((row) => [row.id, row]));
-    for (const id of completedIds) {
-      const row = completed.get(id);
-      if (!row) continue;
-      await apply(id, row.payload.event.id, async () => {
-        await this.outboxStore!.delete(id);
-        this.clearOutboxRetry(id);
-        this.retrySigners.delete(id);
       });
     }
     return changed;
@@ -735,13 +861,11 @@ export class PublishCoordinator {
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.closed = true;
-    for (const timer of this.retryTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.retryTimers.clear();
+    for (const { timer } of this.relayRetryTimers.values()) clearTimeout(timer);
+    this.relayRetryTimers.clear();
     const waiting = Array.from(this.pending.entries());
     this.shutdownPromise = Promise.all(waiting.map(([key, pending]) => this.firePending(key, pending))).then(async () => {
-      await Promise.allSettled(this.backgroundPublishes);
+      await Promise.allSettled([...this.backgroundPublishes, ...Array.from(this.relayDrains.values(), drain => drain.done)]);
       this.pending.clear();
       this.retrySigners.clear();
     });

@@ -25,7 +25,7 @@
   },
   "bundledDependencies": [],
   "engines": {
-    "node": ">=22.23.4 <23"
+    "node": ">=22.23.5 <23"
   },
   "keywords": [
     "nostr",
@@ -44,12 +44,12 @@
   "dependencies": {
     "@noble/hashes": "^2.4.0",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "nostr-tools": "^2.25.2"
+    "nostr-tools": "^2.26.1"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.6",
     "chalk": "^6.0.1",
-    "commander": "^15.0.0",
+    "commander": "^15.1.0",
     "esbuild": "^0.28.2",
     "taskify-core": "file:../taskify-core",
     "taskify-runtime-nostr": "file:../taskify-runtime-nostr",

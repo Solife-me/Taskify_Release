@@ -6,6 +6,42 @@ final class TaskSelectionUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testBoardSharingCanSelectContactsPastTheFirstSix() {
+        let app = launchWithListBoard(sharingFixture: true)
+        app.buttons["board-share"].tap()
+        let chooseContact = app.buttons["board-share-choose-contact"]
+        for _ in 0..<5 where !chooseContact.isHittable { app.swipeUp() }
+        XCTAssertTrue(chooseContact.isHittable)
+        chooseContact.tap()
+
+        let ninthContact = app.buttons["Contact 9"]
+        for _ in 0..<5 where !ninthContact.isHittable { app.swipeUp() }
+        XCTAssertTrue(ninthContact.isHittable, "The unfiltered picker must include contacts past the first six")
+        ninthContact.tap()
+        XCTAssertTrue(chooseContact.waitForExistence(timeout: 5))
+        XCTAssertEqual(chooseContact.value as? String, "Contact 9")
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+    }
+
+    func testSharedTaskShowsOriginalCreatorInCardAndEditor() {
+        let app = launchWithListBoard(sharingFixture: true)
+        let task = app.buttons["Edit Shopping item"]
+        XCTAssertTrue(task.waitForExistence(timeout: 5))
+        XCTAssertEqual(task.value as? String, "Created by Public name 9")
+        XCTAssertFalse((app.buttons["Edit Move me"].value as? String ?? "").contains("Created by"))
+        attach(app, name: "board-task-creator-card")
+        task.tap()
+        let creator = app.descendants(matching: .any)["task-editor-creator"].firstMatch
+        XCTAssertTrue(creator.waitForExistence(timeout: 5))
+        XCTAssertTrue(creator.label.contains("Created by") || creator.staticTexts["Created by"].exists)
+        XCTAssertTrue(
+            creator.label.contains("Public name 9")
+                || creator.value as? String == "Public name 9"
+                || creator.staticTexts["Public name 9"].exists
+        )
+        attach(app, name: "board-task-creator-editor")
+    }
+
     func testDraggingSelectedTasksReordersThemTogether() throws {
         let app = launchWithListBoard()
         let quickAdd = app.textFields.matching(NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")).firstMatch
@@ -171,11 +207,14 @@ final class TaskSelectionUITests: XCTestCase {
         ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][Calendar.current.component(.weekday, from: Date()) - 1]
     }
 
-    private func launchWithListBoard() -> XCUIApplication {
+    private func launchWithListBoard(sharingFixture: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
         app.launchEnvironment["TASKIFY_UI_TEST_LIST_BOARD"] = "1"
+        if sharingFixture {
+            app.launchEnvironment["TASKIFY_UI_TEST_BOARD_SHARING"] = "1"
+        }
         app.launch()
         app.buttons["Boards"].tap()
         // Startup opens the week board; the task starts on the list board.

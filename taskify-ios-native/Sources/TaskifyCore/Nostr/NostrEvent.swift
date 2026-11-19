@@ -66,7 +66,7 @@ public struct NostrEvent: Codable, Equatable, Hashable, Sendable {
         content: String
     ) throws -> NostrEvent {
         let key = try P256K.Schnorr.PrivateKey(dataRepresentation: privateKey)
-        let publicKey = Data(key.xonly.bytes).hexString
+        let publicKey = key.xonly.dataRepresentation.hexString
         let tags = try kind == 13 || kind == NIP42AuthContract.eventKind ? tags : TaskifyRelayProofOfWork.mineTags(tags) {
             try calculateID(publicKey: publicKey, createdAt: createdAt, kind: kind, tags: $0, content: content)
         }
@@ -78,8 +78,8 @@ public struct NostrEvent: Codable, Equatable, Hashable, Sendable {
             content: content
         )
         let idData = try Data(hex: eventID)
-        var message = [UInt8](idData)
-        let signature = try key.signature(message: &message, auxiliaryRand: nil, strict: false)
+        let message = [UInt8](idData)
+        let signature = try key.signature(message: message, auxiliaryRand: Data(repeating: 0, count: 32))
         return NostrEvent(
             id: eventID,
             publicKey: publicKey,
@@ -113,11 +113,11 @@ public struct NostrEvent: Codable, Equatable, Hashable, Sendable {
         let publicKeyData = try? Data(hex: publicKey),
         let signatureData = try? Data(hex: signature),
         let schnorrSignature = try? P256K.Schnorr.SchnorrSignature(dataRepresentation: signatureData),
-        let xonlyKey = Optional(P256K.Schnorr.XonlyKey(dataRepresentation: publicKeyData)) else {
+        let xonlyKey = try? P256K.Schnorr.XonlyKey(dataRepresentation: publicKeyData) else {
             return false
         }
-        var message = [UInt8](idData)
-        return xonlyKey.isValid(schnorrSignature, for: &message)
+        let message = [UInt8](idData)
+        return xonlyKey.isValid(schnorrSignature, for: message)
     }
 
     public func firstTagValue(named name: String) -> String? {

@@ -220,12 +220,15 @@ public struct PhysicalChecklistOCRLine: Sendable {
     public var width: Double
     public var height: Double
 
-    public init(text: String, x: Double, y: Double, width: Double, height: Double) {
+    public var confidence: Double
+
+    public init(text: String, x: Double, y: Double, width: Double, height: Double, confidence: Double = 1) {
         self.text = text
         self.x = x
         self.y = y
         self.width = width
         self.height = height
+        self.confidence = confidence
     }
 }
 

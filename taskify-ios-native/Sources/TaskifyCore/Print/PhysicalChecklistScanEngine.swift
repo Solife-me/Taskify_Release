@@ -123,6 +123,43 @@ public enum PhysicalChecklistScanEngine {
         )
     }
 
+    /// Distinguishes Taskify's printed sheets from ordinary handwritten pages even when the
+    /// print ID is missing. Taskify puts two finder marks and two solid marks in the corners.
+    public static func hasPrintedMarkers(image: PhysicalChecklistGrayImage) -> Bool {
+        guard image.width > 0, image.height > 0,
+              image.pixels.count == image.width * image.height else { return false }
+        let job = PhysicalChecklistJob(ownerID: "", title: "", items: [])
+        let layout = PhysicalChecklistLayout.build(job: job)
+        return detectMarkers(image: image, layout: layout, requiresFinderPair: true) != nil
+    }
+
+    /// Used for older sheets with no human-readable print ID. Keep this stricter than the
+    /// board-scoped scanner because it compares against saved jobs from multiple boards.
+    public static func hasMatchingPrintCode(image: PhysicalChecklistGrayImage, job: PhysicalChecklistJob) -> Bool {
+        var template = job
+        template.items = []
+        let defaultLayout = PhysicalChecklistLayout.build(job: template)
+        guard image.width > 0, image.height > 0,
+              image.pixels.count == image.width * image.height,
+              let markers = detectMarkers(image: image, layout: defaultLayout, requiresFinderPair: true)
+        else { return false }
+
+        for paper in PhysicalChecklistPaper.allCases {
+            template.paper = paper
+            let layout = PhysicalChecklistLayout.build(job: template)
+            guard let context = buildContext(image: image, layout: layout, markers: markers) else { continue }
+            let markerMedian = sampleMarkerMedian(context: context, layout: layout)
+            let backgroundMedian = samplePageBackground(context: context, layout: layout)
+            guard markerMedian <= maximumMarkerLuma, backgroundMedian - markerMedian >= minimumMarkerContrast
+            else { continue }
+            if jobCodeMatches(
+                context: context, layout: layout, jobID: job.id,
+                backgroundMedian: backgroundMedian, markerMedian: markerMedian, maximumErrors: 0
+            ) { return true }
+        }
+        return false
+    }
+
     /// Unknown print manifests are common when the printing and scanning devices use different
     /// identities. Pair a circle with the OCR line on that physical row before resolving its ID.
     public static func scanBoardPage(
@@ -280,7 +317,8 @@ public enum PhysicalChecklistScanEngine {
 
     private static func detectMarkers(
         image: PhysicalChecklistGrayImage,
-        layout: PhysicalChecklistLayout
+        layout: PhysicalChecklistLayout,
+        requiresFinderPair: Bool = false
     ) -> MarkerSet? {
         let pixelCount = image.width * image.height
         guard pixelCount > 0 else { return nil }
@@ -374,7 +412,12 @@ public enum PhysicalChecklistScanEngine {
         )
 
         let finders = components.map { isFinderMarker(image: image, component: $0) }
-        if finders.filter({ $0 }).count == 2 {
+        let finderCount = finders.filter { $0 }.count
+        if requiresFinderPair {
+            // A finder pair must share an edge on the printed page.
+            guard finderCount == 2, finders[0] != finders[2] else { return nil }
+        }
+        if finderCount == 2 {
             if finders[3] && finders[2] { // bottom-left + bottom-right
                 resolved = MarkerSet(
                     topLeft: resolved.bottomRight,
@@ -482,16 +525,16 @@ public enum PhysicalChecklistScanEngine {
         guard radius >= 2 else { return false }
         let centerLuma = sample(image: image, x: center.x, y: center.y, radius: max(1, radius * 0.08))
         let middleLuma = median([
-            sample(image: image, x: center.x - radius * 0.30, y: center.y, radius: 1),
-            sample(image: image, x: center.x + radius * 0.30, y: center.y, radius: 1),
-            sample(image: image, x: center.x, y: center.y - radius * 0.30, radius: 1),
-            sample(image: image, x: center.x, y: center.y + radius * 0.30, radius: 1),
+            sample(image: image, x: center.x - radius * 0.62, y: center.y, radius: 1),
+            sample(image: image, x: center.x + radius * 0.62, y: center.y, radius: 1),
+            sample(image: image, x: center.x, y: center.y - radius * 0.62, radius: 1),
+            sample(image: image, x: center.x, y: center.y + radius * 0.62, radius: 1),
         ])
         let edgeLuma = median([
-            sample(image: image, x: center.x - radius * 0.43, y: center.y, radius: 1),
-            sample(image: image, x: center.x + radius * 0.43, y: center.y, radius: 1),
-            sample(image: image, x: center.x, y: center.y - radius * 0.43, radius: 1),
-            sample(image: image, x: center.x, y: center.y + radius * 0.43, radius: 1),
+            sample(image: image, x: center.x - radius * 0.92, y: center.y, radius: 1),
+            sample(image: image, x: center.x + radius * 0.92, y: center.y, radius: 1),
+            sample(image: image, x: center.x, y: center.y - radius * 0.92, radius: 1),
+            sample(image: image, x: center.x, y: center.y + radius * 0.92, radius: 1),
         ])
         return middleLuma - max(centerLuma, edgeLuma) >= 30
     }
@@ -503,7 +546,8 @@ public enum PhysicalChecklistScanEngine {
         layout: PhysicalChecklistLayout,
         jobID: String,
         backgroundMedian: Double,
-        markerMedian: Double
+        markerMedian: Double,
+        maximumErrors: Int = max(1, BoardPrintContract.jobCodeBits / 5)
     ) -> Bool {
         let threshold = markerMedian + max(18, (backgroundMedian - markerMedian) * 0.35)
         let expected = BoardPrintContract.jobCodePattern(jobID: jobID)
@@ -512,7 +556,7 @@ public enum PhysicalChecklistScanEngine {
         }
         guard observed.count == expected.count else { return false }
         let errors = zip(observed, expected).reduce(0) { $0 + ($1.0 == $1.1 ? 0 : 1) }
-        return errors <= max(1, BoardPrintContract.jobCodeBits / 5)
+        return errors <= maximumErrors
     }
 
     private static func pageIndex(

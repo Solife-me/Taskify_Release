@@ -172,7 +172,7 @@ public struct TaskifyTaskReminderNotification: Equatable, Sendable {
 /// duplicate notifications.
 public struct TaskifySnoozedTaskNotification: Equatable, Sendable {
     public static let identifierPrefix = "taskify.snooze."
-    public static let delay: TimeInterval = 15 * 60
+    public static let delay: TimeInterval = 60 * 60
 
     public let identifier: String
     public let title: String

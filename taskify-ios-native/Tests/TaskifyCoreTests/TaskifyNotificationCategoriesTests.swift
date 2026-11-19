@@ -22,7 +22,7 @@ final class TaskifyNotificationCategoriesTests: XCTestCase {
         let taskActions = try XCTUnwrap(
             categories[TaskifyNotificationContract.taskCategoryIdentifier]?.actions
         )
-        XCTAssertEqual(taskActions.map(\.title), ["Mark Complete", "Remind in 15 min"])
+        XCTAssertEqual(taskActions.map(\.title), ["Mark Complete", "Remind in 1 hour"])
         XCTAssertTrue(taskActions.allSatisfy { !$0.options.contains(.foreground) })
         let reply = try XCTUnwrap(
             categories[TaskifyNotificationContract.directMessageCategoryIdentifier]?.actions.first

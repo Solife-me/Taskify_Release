@@ -70,8 +70,10 @@ export declare class PublishCoordinator {
     private readonly onProofOfWorkRequired?;
     private activeOutboxIds;
     private outboxLocks;
-    private retryTimers;
-    private drainPromise;
+    private readonly relayDrains;
+    private readonly relayRetryTimers;
+    private readonly retryingRows;
+    private readonly outboxMining;
     private readonly publishBudget;
     constructor(ndk: NDK, resolveRelaySet: RelayResolver, cache?: EventCache, options?: PublishCoordinatorOptions);
     private buildReplaceableKey;
@@ -90,22 +92,24 @@ export declare class PublishCoordinator {
     private persistPartialAcknowledgements;
     private publishNowWithOutbox;
     private publishByRelay;
+    private mineVariant;
     private markOutboxSuccess;
     private markOutboxSuccessLocked;
     private markOutboxFailure;
     private markOutboxFailureLocked;
-    /** When every pending relay is held back after refusing the event, wait for the first release. */
-    private delayRespectingHeldBackRelays;
     private retryDelayMs;
-    private clearOutboxRetry;
-    private scheduleOutboxRetry;
+    private saveInitialRetry;
     private isDebouncedOutboxId;
     drainOutbox(options?: {
         force?: boolean;
         limit?: number;
+        relayUrl?: string;
     }): Promise<void>;
-    private drainOutboxInternal;
+    private enqueueRelayRetries;
+    private runRelayDrain;
+    private scheduleRelayRetry;
     private retryOutboxMutation;
+    private recordRelayRetry;
     /**
      * Stops sending a board's queued republish to public relays; it still reaches `keptRelayUrls`
      * (Taskify's own relays by default). Returns how many queued rows changed.

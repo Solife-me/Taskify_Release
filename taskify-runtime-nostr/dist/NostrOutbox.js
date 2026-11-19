@@ -57,6 +57,7 @@ export function createNostrOutboxMutation(args) {
         pendingRelays,
         nextAttemptAt: args.nextAttemptAt ?? null,
         updatedAt: nowMs,
+        ...(sameEvent && existing?.relayRetries ? { relayRetries: existing.relayRetries } : {}),
         ...(sameEvent && existing?.relayRejections ? { relayRejections: existing.relayRejections } : {}),
         isRepublish: args.isRepublish ?? false,
     };
@@ -115,16 +116,29 @@ export function narrowRepublishedMutations(rows, options) {
             ...row,
             payload: { ...row.payload, relayUrls: narrowed },
             pendingRelays,
+            relayRetries: row.relayRetries
+                ? Object.fromEntries(Object.entries(row.relayRetries).filter(([relay]) => pendingRelays.includes(relay)))
+                : undefined,
             ...(relayRejections ? { relayRejections } : {}),
         });
     }
     return { updated, completedIds };
 }
+export function pendingOutboxRelays(mutation) {
+    const relays = mutation.pendingRelays.length ? mutation.pendingRelays : mutation.payload.relayUrls;
+    const acked = new Set(normalizeRelayUrls(mutation.ackedRelays));
+    return normalizeRelayUrls(relays).filter(relay => !acked.has(relay));
+}
+export function outboxRelayRetry(mutation, relay) {
+    return mutation.relayRetries?.[relay] ?? { attempts: mutation.attempts, nextAttemptAt: mutation.nextAttemptAt };
+}
+export function outboxRelayRetryAt(mutation, relay, force = false) {
+    const due = force ? 0 : outboxRelayRetry(mutation, relay).nextAttemptAt ?? 0;
+    return Math.max(due, mutation.relayRejections?.[relay]?.retryAfter ?? 0);
+}
 /** The relays to send to now: still pending, and not held back after refusing the event. */
 export function pendingRelayUrlsForMutation(mutation, nowMs = Date.now()) {
-    const pending = normalizeRelayUrls(mutation.pendingRelays);
-    const relays = pending.length ? pending : normalizeRelayUrls(mutation.payload.relayUrls);
-    return relays.filter((relay) => !((mutation.relayRejections?.[relay]?.retryAfter ?? 0) > nowMs));
+    return pendingOutboxRelays(mutation).filter((relay) => !((mutation.relayRejections?.[relay]?.retryAfter ?? 0) > nowMs));
 }
 export function mergeOutboxRelayAcks(mutation, ackedRelays, nowMs = Date.now()) {
     const intendedRelays = normalizeRelayUrls(mutation.payload.relayUrls);

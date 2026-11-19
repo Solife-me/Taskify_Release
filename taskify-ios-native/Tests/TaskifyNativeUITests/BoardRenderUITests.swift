@@ -46,29 +46,43 @@ final class BoardRenderUITests: XCTestCase {
         XCTAssertLessThanOrEqual(card.frame.width, 330, "a card never grows past its 330 pt column")
     }
 
-    /// The dedicated scanner button lives in the share sheet's Print tab (the board header only
-    /// offers Share), and the final print page no longer offers a scan button.
-    func testScannerLivesInSharePrintTabAndPrintPageHasNoScanButton() throws {
+    func testSharePrintTabOpensSystemPrintOptionsDirectly() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launchEnvironment["TASKIFY_UI_TEST_PERFORMANCE_FIXTURE"] = "1"
         app.launch()
         app.buttons["Boards"].firstMatch.tap()
 
-        // The board header no longer has a dedicated scan button.
-        XCTAssertFalse(app.buttons["scan-printed-checklist"].waitForExistence(timeout: 3))
-
-        // Share sheet -> Print tab offers separate Print and Scan buttons.
-        let share = app.buttons["Share Performance fixture"].firstMatch
-        if !share.exists {
-            app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'share'")).firstMatch.tap()
-        } else {
-            share.tap()
-        }
+        let share = app.buttons["board-share"].firstMatch
+        XCTAssertTrue(share.waitForExistence(timeout: 10))
+        share.tap()
         let printTab = app.buttons["Print"].firstMatch
-        XCTAssertTrue(printTab.waitForExistence(timeout: 15))
+        XCTAssertTrue(printTab.waitForExistence(timeout: 10))
         printTab.tap()
-        XCTAssertTrue(app.buttons["Print checklist"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Scan checklist"].waitForExistence(timeout: 5))
+
+        let printChecklist = app.buttons["Print checklist"]
+        XCTAssertTrue(printChecklist.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Share PDF"].exists)
+        XCTAssertFalse(app.buttons["Scan checklist"].exists)
+        XCTAssertTrue(app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "+ → Scan List")
+        ).firstMatch.exists)
+
+        let moreOptions = app.buttons["More options"]
+        XCTAssertTrue(moreOptions.exists)
+        moreOptions.tap()
+        for name in ["Upcoming tasks", "Notes", "Due date and time", "Subtasks"] {
+            XCTAssertEqual(app.switches[name].value as? String, "1", "\(name) should default to on")
+        }
+        for name in ["Completed tasks", "Photos"] {
+            XCTAssertEqual(app.switches[name].value as? String, "0", "\(name) should default to off")
+        }
+        moreOptions.tap()
+
+        printChecklist.tap()
+        let printerPicker = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == %@ OR label BEGINSWITH %@", "Printer", "Printer,")
+        ).firstMatch
+        XCTAssertTrue(printerPicker.waitForExistence(timeout: 10))
     }
 }

@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type NDK from "@nostr-dev-kit/ndk";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
-import { generateSecretKey, type Event, type EventTemplate } from "nostr-tools";
-import { PublishCoordinator, type NostrOutboxMutation, type NostrOutboxStore } from "../dist/index.js";
+import { finalizeEvent, generateSecretKey, type Event, type EventTemplate } from "nostr-tools";
+import { createNostrOutboxMutation, localEventSigner, PublishCoordinator, type NostrOutboxMutation, type NostrOutboxStore } from "../dist/index.js";
 
 class MemoryOutboxStore implements NostrOutboxStore {
   rows = new Map<string, NostrOutboxMutation>();
@@ -131,6 +131,53 @@ test("PublishCoordinator keeps partial failures and drains only pending relays",
     NDKEvent.prototype.publish = originalPublish;
     coordinator.shutdown();
   }
+});
+
+test("relay retry queues progress independently and keep per-relay order", async () => {
+  const slow = "wss://slow.example";
+  const healthy = "wss://healthy.example";
+  const store = new MemoryOutboxStore();
+  const coordinator = buildCoordinator(store);
+  const signer = generateSecretKey();
+  const originalPublish = NDKEvent.prototype.publish;
+  const calls: string[] = [];
+  let releaseSlow!: () => void;
+  const holdSlow = new Promise<void>(resolve => { releaseSlow = resolve; });
+
+  for (const [index, relays] of [[1, [slow, healthy]], [2, [healthy]], [3, [slow]]] as const) {
+    const event = finalizeEvent({ ...template, content: String(index) }, signer);
+    await store.put(createNostrOutboxMutation({
+      id: String(index), event, relayUrls: [...relays], nowMs: index,
+    }));
+  }
+  NDKEvent.prototype.publish = async function (set?: { relayUrls?: string[] }) {
+    const targets = set?.relayUrls ?? [];
+    for (const url of targets) calls.push(`${this.content}:${url}`);
+    if (targets.includes(slow) && this.content === "1") await holdSlow;
+    return new Set(targets.map(relay)) as never;
+  };
+
+  let drain: Promise<void> | undefined;
+  try {
+    drain = coordinator.drainOutbox();
+    await waitFor(() => calls.includes(`1:${slow}`) && !store.rows.has("2"));
+    assert.deepEqual(store.rows.get("1")?.pendingRelays, [slow]);
+    assert.deepEqual(calls.filter(call => call.endsWith(healthy)), [`1:${healthy}`, `2:${healthy}`]);
+    assert.deepEqual(calls.filter(call => call.endsWith(slow)), [`1:${slow}`]);
+
+    const late = finalizeEvent({ ...template, content: "4" }, signer);
+    await store.put(createNostrOutboxMutation({ id: "4", event: late, relayUrls: [healthy], nowMs: 4 }));
+    void coordinator.drainOutbox();
+    await waitFor(() => !store.rows.has("4"));
+    assert.equal(calls.filter(call => call === `1:${slow}`).length, 1);
+  } finally {
+    releaseSlow();
+    await drain;
+    NDKEvent.prototype.publish = originalPublish;
+    await coordinator.shutdown();
+  }
+  assert.deepEqual(calls.filter(call => call.endsWith(slow)), [`1:${slow}`, `3:${slow}`]);
+  assert.equal(store.rows.size, 0);
 });
 
 test("PublishCoordinator treats zero relay acknowledgements as a queued failure", async () => {
@@ -402,6 +449,42 @@ test("a mined copy survives a session restart and is retried without the signing
     NDKEvent.prototype.publish = originalPublish;
     await first.shutdown();
     await reopened.shutdown();
+  }
+});
+
+test("independent retry queues reuse the same proof at the highest known floor", async () => {
+  const low = "wss://low.example";
+  const high = "wss://high.example";
+  const store = new MemoryOutboxStore();
+  const signer = localEventSigner(generateSecretKey());
+  const original = await signer.sign(template);
+  await store.put(createNostrOutboxMutation({ id: "queued", event: original, relayUrls: [low, high] }));
+  const targets: string[] = [];
+  const events: Event[] = [];
+  const mined: number[] = [];
+  const coordinator = new PublishCoordinator({} as NDK, async urls => relaySet(urls ?? []) as never, undefined, {
+    outboxStore: store, publishBudget: false, knownProofOfWorkDifficulty: relay => relay === high ? 10 : 8,
+    recoverProofOfWorkSigner: async () => signer,
+    onMine: (difficulty) => mined.push(difficulty),
+  });
+  const originalPublish = NDKEvent.prototype.publish;
+  NDKEvent.prototype.publish = async function (set?: { relayUrls?: string[] }) {
+    const urls = set?.relayUrls ?? [];
+    targets.push(...urls);
+    events.push(this.rawEvent() as Event);
+    return new Set(urls.map(relay)) as never;
+  };
+  try {
+    await coordinator.drainOutbox();
+    assert.deepEqual(targets.sort(), [high, low]);
+    assert.deepEqual(mined, [10]);
+    assert.equal(events.length, 2);
+    assert.equal(events[0].id, events[1].id);
+    assert.equal(events[0].tags.find((tag) => tag[0] === "nonce")?.[2], "10");
+    assert.equal(store.rows.size, 0);
+  } finally {
+    NDKEvent.prototype.publish = originalPublish;
+    await coordinator.shutdown();
   }
 });
 

@@ -26,7 +26,7 @@ class _Tag:
     def __init__(self, *parts):
         self._parts = list(parts)
 
-    def as_vec(self):
+    def to_vec(self):
         return self._parts
 
 
@@ -36,9 +36,6 @@ class _Rumor:
         self._content = content
 
     def tags(self):
-        return self
-
-    def to_vec(self):
         return self._tags
 
 

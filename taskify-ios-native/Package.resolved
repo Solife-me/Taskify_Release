@@ -32,8 +32,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/cashubtc/cdk-swift.git",
       "state" : {
-        "revision" : "b956ce6a850819daabc0c188a7ec28ad2b16860a",
-        "version" : "0.18.1"
+        "revision" : "b6ff62cd656164c897a4064a9b7b20e546b7ee5a",
+        "version" : "0.18.3"
       }
     },
     {
@@ -59,8 +59,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/21-DOT-DEV/swift-secp256k1.git",
       "state" : {
-        "revision" : "e70a10e036a55fffea31568f0af92d69b6d449cd",
-        "version" : "0.23.2"
+        "revision" : "ba04e9db3567bf345af7334b8e9be5727a73cc42",
+        "version" : "0.25.1"
       }
     },
     {

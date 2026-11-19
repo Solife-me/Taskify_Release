@@ -28,7 +28,7 @@ fallback) over operator-approved routes, with configurable fallback relays.
 
 1. Copy (or symlink) this directory to `~/.hermes/plugins/nostr-dm-platform`.
 2. `python_dependencies` is declared in `plugin.yaml`:
-   `nostr-sdk>=0.44.8,<0.45` (skipped on Android: no wheels).
+   `nostr-sdk>=0.45.2,<0.46` (skipped on Android: no wheels).
    Install through Hermes' package manager, not raw pip.
 3. Set the options you need in `~/.hermes/.env`. Use [the environment template](.env.example) as a starting point.
    - `NOSTR_DM_NSEC` — bot private key (nsec or hex). **Required.**

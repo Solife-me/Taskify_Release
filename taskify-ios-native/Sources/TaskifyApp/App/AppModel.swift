@@ -112,6 +112,11 @@ final class AppModel {
         if changedAreas.contains(.tasks) { tasksAreaRevision &+= 1 }
         if changedAreas.contains(.chat) { chatAreaRevision &+= 1 }
         if changedAreas.contains(.inbox) { inboxAreaRevision &+= 1 }
+#if os(iOS)
+        if changedAreas.contains(.tasks) || snapshot.sharedBoardInboxItems != oldValue.sharedBoardInboxItems {
+            taskCreatorSharedBoardStatus.removeAll(keepingCapacity: true)
+        }
+#endif
         snapshotLookupCache.invalidate(from: oldValue, to: snapshot)
         snapshotRevision &+= 1
         let conversationContentChanged = snapshot.directMessages != oldValue.directMessages
@@ -153,6 +158,14 @@ final class AppModel {
     private(set) var isLoading = true
     private(set) var identityPublicKey = "" { didSet { mirrorDeviceTaskSettings() } }
     private(set) var identityNpub = ""
+#if os(iOS)
+    private var locallySharedBoardTags: Set<String> = []
+    private var taskCreatorProfiles: [String: NostrContactProfile] = [:]
+    @ObservationIgnored private var taskCreatorSharedBoardStatus: [String: Bool] = [:]
+    @ObservationIgnored private var taskCreatorProfileRequestedAt: [String: Date] = [:]
+    @ObservationIgnored private var pendingTaskCreatorProfileKeys: Set<String> = []
+    @ObservationIgnored private var taskCreatorProfileBatch: Task<Void, Never>?
+#endif
     /// When this process last wrote the store, so a newer file can be recognised as someone
     /// else's write rather than an echo of our own.
     private var lastStoreWriteAt = Date.distantPast
@@ -376,6 +389,9 @@ final class AppModel {
     }
 
     deinit {
+#if os(iOS)
+        taskCreatorProfileBatch?.cancel()
+#endif
         saveTask?.cancel()
         widgetReloadTask?.cancel()
         searchIndexTask?.cancel()
@@ -411,6 +427,9 @@ final class AppModel {
     }
 
     private func cancelAccountWork() {
+#if os(iOS)
+        taskCreatorProfileBatch?.cancel()
+#endif
         saveTask?.cancel()
         widgetReloadTask?.cancel()
         searchIndexTask?.cancel()
@@ -797,6 +816,99 @@ final class AppModel {
     func nostrContact(publicKey: String) -> NostrContact? {
         snapshotLookupCache.contact(publicKey: publicKey, snapshot: inboxSnapshot)
     }
+
+#if os(iOS)
+    func markBoardAsShared(boardID: String) {
+        guard isAccountActive, !identityPublicKey.isEmpty,
+              locallySharedBoardTags.insert(BoardCrypto.boardTag(for: boardID)).inserted else { return }
+        taskCreatorSharedBoardStatus.removeAll(keepingCapacity: true)
+        accountDefaults.set(locallySharedBoardTags.sorted(), forKey: sharedBoardTagsDefaultsKey)
+    }
+
+    private var sharedBoardTagsDefaultsKey: String {
+        "taskify.sharedBoardTags.\(identityPublicKey)"
+    }
+
+    func taskCreatorKey(for task: TaskItem, board: Board) -> String? {
+        guard !identityPublicKey.isEmpty, board.kind == .list || board.kind == .week,
+              let createdBy = task.createdBy else { return nil }
+        let author = createdBy == identityPublicKey ? identityPublicKey : NostrPublicKey.parse(createdBy)?.hexString
+        if author != identityPublicKey { return author }
+        return hasSharedTaskAttribution(on: board) ? author : nil
+    }
+
+    private func hasSharedTaskAttribution(on board: Board) -> Bool {
+        let snapshot = tasksSnapshot
+        let receivedShares = inboxSnapshot.sharedBoardInboxItems ?? []
+        let localShares = locallySharedBoardTags
+        if let cached = taskCreatorSharedBoardStatus[board.id] { return cached }
+
+        let parents = snapshot.boards.filter { parent in
+            parent.kind == .compound && parent.children.contains(where: board.matchesReference)
+        }
+        let shareBoardIDs = [board.effectiveNostrBoardID] + parents.map(\.effectiveNostrBoardID)
+        if shareBoardIDs.contains(where: { localShares.contains(BoardCrypto.boardTag(for: $0)) })
+            || receivedShares.contains(where: {
+                $0.status == .accepted && shareBoardIDs.contains($0.board.boardID)
+            }) {
+            taskCreatorSharedBoardStatus[board.id] = true
+            return true
+        }
+
+        let relatedBoards = Set([board.id] + parents.flatMap { parent in
+            snapshot.compoundChildBoards(for: parent.id).map(\.id)
+        })
+        let hasCollaborator = relatedBoards.contains { id in
+            snapshotLookupCache.taskAuthorKeys(boardID: id, snapshot: snapshot)
+                .contains { $0 != identityPublicKey }
+        }
+        taskCreatorSharedBoardStatus[board.id] = hasCollaborator
+        return hasCollaborator
+    }
+
+    func taskCreatorContact(publicKey: String) -> NostrContact? {
+        var contact = publicKey == identityPublicKey
+            ? ownContactRepresentation
+            : nostrContact(publicKey: publicKey)
+        if contact == nil { contact = NostrContact(publicKeyValue: publicKey) }
+        if let profile = taskCreatorProfiles[publicKey],
+           profile.eventCreatedAt > (contact?.profile?.eventCreatedAt ?? -1) {
+            contact?.profile = profile
+        }
+        return contact
+    }
+
+    func requestTaskCreatorProfile(publicKey: String) {
+        guard !isLoading, isAccountActive, taskCreatorContact(publicKey: publicKey)?.profile == nil,
+              taskCreatorProfileRequestedAt[publicKey].map({ Date().timeIntervalSince($0) > 60 }) ?? true
+        else { return }
+        pendingTaskCreatorProfileKeys.insert(publicKey)
+        guard taskCreatorProfileBatch == nil else { return }
+        let account = identityPublicKey
+        // Cards often appear together. Batch their public profile lookups into one request per relay.
+        taskCreatorProfileBatch = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled, let self, self.acceptsAccountActivity(account) else { return }
+            self.taskCreatorProfileBatch = nil
+            let keys = self.pendingTaskCreatorProfileKeys.sorted()
+            self.pendingTaskCreatorProfileKeys.removeAll()
+            let relays = TaskifyRelayURL.normalizedList(
+                self.contactsSyncRelayURLs + keys.flatMap { self.nostrContact(publicKey: $0)?.relayURLs ?? [] }
+            )
+            let requestedAt = Date()
+            for key in keys { self.taskCreatorProfileRequestedAt[key] = requestedAt }
+            let profiles = await NostrContactFinder.profiles(
+                publicKeys: keys,
+                relayURLs: relays,
+                fetcher: self.syncEngine
+            )
+            guard self.acceptsAccountActivity(account), !profiles.isEmpty else { return }
+            self.taskCreatorProfiles.merge(profiles) { current, fetched in
+                fetched.eventCreatedAt >= current.eventCreatedAt ? fetched : current
+            }
+        }
+    }
+#endif
 
     // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands). The
     // published list itself is the signal that a peer is a bot: the chat
@@ -2622,6 +2734,9 @@ final class AppModel {
         guard snapshot.setSharedBoardInboxStatus(itemID: itemID, status: .accepted) != nil else {
             return false
         }
+#if os(iOS)
+        markBoardAsShared(boardID: item.board.boardID)
+#endif
         scheduleSave()
         reconfigureSync()
         scheduleAccountBackupPublish()
@@ -4513,6 +4628,9 @@ final class AppModel {
         ) != nil else {
             return false
         }
+#if os(iOS)
+        markBoardAsShared(boardID: share.boardID)
+#endif
         scheduleSave()
         reconfigureSync()
         scheduleAccountBackupPublish()
@@ -5278,6 +5396,29 @@ final class AppModel {
                 title: "Move me",
                 columnID: "ui-test-list-todo"
             ))
+            if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_BOARD_SHARING"] == "1" {
+                // Unsigned simulator builds may have no Keychain identity.
+                if identityPublicKey.isEmpty { identityPublicKey = String(repeating: "a", count: 64) }
+                snapshot.contacts = (1...9).compactMap { number in
+                    NostrContact(
+                        publicKeyValue: String(repeating: String(number), count: 64),
+                        petname: "Contact \(number)",
+                        profile: NostrContactProfile(
+                            displayName: "Public name \(number)",
+                            username: "maya_chen\(number)",
+                            eventCreatedAt: 1
+                        )
+                    )
+                }
+                snapshot.tasks.append(TaskItem(
+                    id: "ui-test-shared-list-task",
+                    boardID: list.id,
+                    title: "Shopping item",
+                    columnID: "ui-test-list-todo",
+                    createdBy: String(repeating: "9", count: 64),
+                    lastEditedBy: identityPublicKey
+                ))
+            }
         }
         // An event with a document, for the event attachment UI (C8-5).
         if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_EVENT_ATTACHMENT"] == "1" {
@@ -5689,10 +5830,21 @@ final class AppModel {
             ownProfileEventContent = nil
             isLoadingOwnProfile = false
             profilePublishMessage = nil
+#if os(iOS)
+            taskCreatorProfileBatch?.cancel()
+            taskCreatorProfileBatch = nil
+            pendingTaskCreatorProfileKeys.removeAll()
+            taskCreatorProfileRequestedAt.removeAll()
+            taskCreatorProfiles.removeAll()
+#endif
         }
         cachedIdentity = identity
         identityPublicKey = identity.publicKeyHex
         identityNpub = identity.npub
+#if os(iOS)
+        taskCreatorSharedBoardStatus.removeAll(keepingCapacity: true)
+        locallySharedBoardTags = Set(accountDefaults.stringArray(forKey: sharedBoardTagsDefaultsKey) ?? [])
+#endif
         Task { [syncEngine] in
             await syncEngine.setIdentity(identity)
         }

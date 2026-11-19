@@ -621,7 +621,7 @@ of every isolate and on every cron tick; production now has every migration appl
 Apply before every deploy (README deploy steps):
 
 ```bash
-npx wrangler@4.150.0 d1 migrations apply taskify-notifications --remote
+npx wrangler@4.164.0 d1 migrations apply taskify-notifications --remote
 ```
 
 Guardrails:

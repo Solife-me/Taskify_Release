@@ -27,6 +27,11 @@ private enum TestChecklistMark {
         ]
     )
 
+    #expect(PhysicalChecklistScanEngine.hasPrintedMarkers(image: image))
+    #expect(PhysicalChecklistScanEngine.hasMatchingPrintCode(image: image, job: job))
+    let blankPage = PhysicalChecklistGrayImage(pixels: Array(repeating: 240, count: 64 * 96), width: 64, height: 96)
+    #expect(!PhysicalChecklistScanEngine.hasPrintedMarkers(image: blankPage))
+
     let result = PhysicalChecklistScanEngine.scan(images: [image], job: job)
 
     #expect(result.recognizedPages == 1)

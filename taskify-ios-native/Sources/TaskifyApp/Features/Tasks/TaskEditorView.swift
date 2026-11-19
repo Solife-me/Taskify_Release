@@ -55,7 +55,12 @@ struct TaskEditorView: View {
     /// The fields as they stood when the editor opened, so a save applies only what the user
     /// changed and keeps what changed elsewhere meanwhile (`TaskEditorFields`, C8-2).
     @State private var openedFields: TaskEditorFields?
-    @FocusState private var titleIsFocused: Bool
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case title
+        case subtask(String)
+    }
 
     init(task: TaskItem) {
         self.init(task: task, isNewTask: false)
@@ -345,7 +350,8 @@ struct TaskEditorView: View {
         } message: {
             Text("Allow Taskify to schedule alarms in iOS Settings, then turn Urgent on again.")
         }
-        .sheet(isPresented: $showingNoteEditor) {
+        // Give the note keyboard its own presentation without stacking two resizable sheets.
+        .fullScreenCover(isPresented: $showingNoteEditor) {
             TaskNoteEditorView(
                 note: note,
                 onPasteImage: { image in await addPastedPhoto(image) },
@@ -377,12 +383,12 @@ struct TaskEditorView: View {
                     .presentationDragIndicator(.visible)
             }
         }
-        .onAppear {
+        .task {
             guard isNewTask, !didAutoFocusTitle else { return }
             didAutoFocusTitle = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                titleIsFocused = true
-            }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, focusedField == nil, !showingNoteEditor else { return }
+            focusedField = .title
         }
         .onChange(of: selectedPhotos) { _, items in
             guard !items.isEmpty else { return }
@@ -395,8 +401,16 @@ struct TaskEditorView: View {
             Section("Task") {
                 TextField("Title", text: $title, axis: .vertical)
                     .lineLimit(1...3)
-                    .focused($titleIsFocused)
+                    .focused($focusedField, equals: .title)
                     .accessibilityIdentifier("Title")
+
+                if let task, let board,
+                   let creatorKey = model.taskCreatorKey(for: task, board: board),
+                   let creator = model.taskCreatorContact(publicKey: creatorKey) {
+                    LabeledContent("Created by", value: creator.taskCreatorName)
+                        .accessibilityIdentifier("task-editor-creator")
+                        .task(id: creatorKey) { model.requestTaskCreatorProfile(publicKey: creatorKey) }
+                }
 
                 notesAndAttachmentControl
                 attachmentRows
@@ -568,8 +582,13 @@ struct TaskEditorView: View {
                 }
             }
         }
-        // Scrolling the form puts the keyboard away, so the rows under it can be reached.
-        .scrollDismissesKeyboard(.immediately)
+        .scrollDismissesKeyboard(keyboardDismissMode)
+    }
+
+    private var keyboardDismissMode: ScrollDismissesKeyboardMode {
+        // Keep the keyboard in place while scrolling up to reveal inline subtask fields.
+        if case .subtask = focusedField { return .interactively }
+        return .immediately
     }
 
     /// Copies the task as edited, unsaved changes included, as the PWA's Copy Task does.
@@ -657,7 +676,7 @@ struct TaskEditorView: View {
     }
 
     private func setDueDateEnabled(_ enabled: Bool) {
-        titleIsFocused = false
+        focusedField = nil
         withAnimation(.snappy(duration: 0.24)) {
             dueDateEnabled = enabled
             if enabled {
@@ -671,7 +690,7 @@ struct TaskEditorView: View {
     }
 
     private func setDueTimeEnabled(_ enabled: Bool) {
-        titleIsFocused = false
+        focusedField = nil
         withAnimation(.snappy(duration: 0.24)) {
             dueTimeEnabled = enabled
             if enabled {
@@ -687,7 +706,7 @@ struct TaskEditorView: View {
     }
 
     private func setUrgent(_ enabled: Bool) {
-        titleIsFocused = false
+        focusedField = nil
         withAnimation(.snappy(duration: 0.24)) {
             if enabled, !dueTimeEnabled {
                 let currentTimeZone = TimeZone.current
@@ -713,7 +732,7 @@ struct TaskEditorView: View {
             setDueDateEnabled(true)
             return
         }
-        titleIsFocused = false
+        focusedField = nil
         withAnimation(.snappy(duration: 0.24)) {
             expandedDateTimePicker = expandedDateTimePicker == .date ? nil : .date
         }
@@ -724,7 +743,7 @@ struct TaskEditorView: View {
             setDueTimeEnabled(true)
             return
         }
-        titleIsFocused = false
+        focusedField = nil
         withAnimation(.snappy(duration: 0.24)) {
             expandedDateTimePicker = expandedDateTimePicker == .time ? nil : .time
         }
@@ -881,7 +900,7 @@ struct TaskEditorView: View {
     private var notesAndAttachmentControl: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button {
-                titleIsFocused = false
+                focusedField = nil
                 showingNoteEditor = true
             } label: {
                 Group {
@@ -912,7 +931,7 @@ struct TaskEditorView: View {
     private var attachmentMenu: some View {
         Menu {
             Button {
-                titleIsFocused = false
+                focusedField = nil
                 showingCamera = true
             } label: {
                 Label("Capture a Photo", systemImage: "camera")
@@ -921,7 +940,7 @@ struct TaskEditorView: View {
             .accessibilityIdentifier("task-editor-attachment-camera")
 
             Button {
-                titleIsFocused = false
+                focusedField = nil
                 showingDocumentScanner = true
             } label: {
                 Label("Scan a Document", systemImage: "doc.viewfinder")
@@ -930,7 +949,7 @@ struct TaskEditorView: View {
             .accessibilityIdentifier("task-editor-attachment-scan")
 
             Button {
-                titleIsFocused = false
+                focusedField = nil
                 showingPhotoLibrary = true
             } label: {
                 Label("Choose from Photo Library", systemImage: "photo.on.rectangle")
@@ -938,7 +957,7 @@ struct TaskEditorView: View {
             .accessibilityIdentifier("task-editor-attachment-library")
 
             Button {
-                titleIsFocused = false
+                focusedField = nil
                 showingFileImporter = true
             } label: {
                 Label("Choose a File", systemImage: "folder")
@@ -1027,6 +1046,7 @@ struct TaskEditorView: View {
 
                     TextField("Subtask", text: $subtask.title)
                         .strikethrough(subtask.completed)
+                        .focused($focusedField, equals: .subtask(subtask.id))
 
                     Button(role: .destructive) {
                         subtasks.removeAll { $0.id == subtask.id }

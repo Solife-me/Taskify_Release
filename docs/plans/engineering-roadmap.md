@@ -224,6 +224,8 @@ Add IPFS-based file attachments to tasks using [Originless](https://github.com/b
 
 Native iOS sharing coverage (2026-09-14): contact search includes directories larger than eight entries; encrypted task and event shares round-trip for all group members and retain their group conversation after snapshot restoration.
 
+Native iOS board sharing coverage includes selecting a contact beyond the first six in the share sheet and identifying the original task creator after a different person edits the task.
+
 ### Fourth organization pass — September 15, 2026
 
 - Extracted CLI config command registration and the shared connection probe from
@@ -333,3 +335,17 @@ reported crash cause; these transport regressions do not replace that verificati
   and explicit requirements share a variant at the highest confirmed floor, a saved variant
   survives reopening the outbox, and the Watch learns explicit gateway refusals.
 - The [Hermes plugin](../../integrations/hermes/README.md) and its regression tests live in the Taskify repo. The plugin retains its own manifest version and standalone ZIP. Plugin tests cover command argument tags, binding actions to encrypted replies, approval, delivery retries, and attachment cleanup.
+
+
+### Independent relay retries
+
+- The PWA and CLI retry each relay's queued writes in order and keep its retry deadline
+  separate from other relays. An acknowledgement on one relay is saved while the other
+  relays continue. The existing per-relay pacing and rate-limit cooldowns still apply,
+  and PoW relays can share a signed variant of the same event.
+
+
+### Mac board and Chat split view
+
+- The isolated Mac UI test crosses the compact breakpoint in both directions
+  and checks that the board, selected conversation, and unsent draft stay open.

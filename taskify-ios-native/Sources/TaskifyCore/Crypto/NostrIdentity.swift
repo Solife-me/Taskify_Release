@@ -19,7 +19,7 @@ public struct NostrIdentity: Equatable, Sendable {
         do {
             let key = try P256K.Schnorr.PrivateKey(dataRepresentation: privateKey)
             self.privateKey = privateKey
-            self.publicKey = Data(key.xonly.bytes)
+            self.publicKey = key.xonly.dataRepresentation
         } catch {
             throw NostrIdentityError.invalidPrivateKey
         }
@@ -105,8 +105,8 @@ public struct NostrIdentity: Equatable, Sendable {
         }
         let hash = CryptoKit.SHA256.hash(data: Data(text.utf8))
         let key = try P256K.Schnorr.PrivateKey(dataRepresentation: privateKey)
-        var message = Array(hash)
-        let signature = try key.signature(message: &message, auxiliaryRand: nil, strict: false)
+        let message = Array(hash)
+        let signature = try key.signature(message: message, auxiliaryRand: Data(repeating: 0, count: 32))
         return [
             "X-Taskify-Auth": "v2",
             "X-Taskify-Npub": publicKeyHex,
