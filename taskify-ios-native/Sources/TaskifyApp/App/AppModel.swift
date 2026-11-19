@@ -3077,6 +3077,20 @@ final class AppModel {
         relayURLs: [String],
         to recipientValue: String
     ) async throws {
+        if let group = groupConversation(id: recipientValue) {
+            let identity = try outboundIdentity()
+            let delivery = SharedBoardDelivery(
+                boardID: boardID,
+                boardName: boardName,
+                relayURLs: TaskifyRelayURL.normalizedList(relayURLs)
+            )
+            let envelope = TaskifyShareEnvelope(
+                item: .board(delivery),
+                senderNpub: identity.npub
+            )
+            try await sendDirectMessage(to: group.groupID, content: envelope.messageContent())
+            return
+        }
         guard let recipientPublicKey = NostrPublicKey.parse(recipientValue) else {
             throw StructuredShareSendError.invalidRecipient
         }
@@ -5410,6 +5424,17 @@ final class AppModel {
                         )
                     )
                 }
+                snapshot.nostrGroupConversations = [
+                    NostrGroupConversation(
+                        name: "Project Crew",
+                        memberPublicKeys: [
+                            identityPublicKey,
+                            String(repeating: "1", count: 64),
+                            String(repeating: "2", count: 64),
+                        ],
+                        createdAt: 1
+                    ),
+                ].compactMap { $0 }
                 snapshot.tasks.append(TaskItem(
                     id: "ui-test-shared-list-task",
                     boardID: list.id,
