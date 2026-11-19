@@ -106,6 +106,16 @@ final class NostrContactsTests: XCTestCase {
         XCTAssertEqual(profile.eventCreatedAt, 250)
     }
 
+    func testCreatorInitialsUseNicknameWhenProfileHasNoName() throws {
+        var contact = try XCTUnwrap(NostrContact(publicKeyValue: aliceKey, petname: "Work"))
+
+        XCTAssertEqual(contact.taskCreatorInitials, "W")
+        contact.profile = NostrContactProfile(about: "Work account", eventCreatedAt: 1)
+        XCTAssertEqual(contact.taskCreatorInitials, "W")
+        contact.petname = nil
+        XCTAssertEqual(contact.taskCreatorInitials, "?")
+    }
+
     func testCreatorInitialsPreferProfileUsernameOverDisplayName() throws {
         let profile = try XCTUnwrap(NostrContactProfile.decode(
             content: #"{"username":"@maya_chen","name":"maya","display_name":"A Different Name"}"#
@@ -115,9 +125,11 @@ final class NostrContactsTests: XCTestCase {
         XCTAssertNil(NostrContactProfile(eventCreatedAt: 0).usernameInitials)
 
         var snapshot = TaskifySnapshot.empty
-        snapshot.contacts = [try XCTUnwrap(NostrContact(
+        let contact = try XCTUnwrap(NostrContact(
             publicKeyValue: aliceKey, petname: "Shopping partner", profile: profile
-        ))]
+        ))
+        XCTAssertEqual(contact.taskCreatorInitials, "MC")
+        snapshot.contacts = [contact]
         XCTAssertEqual(snapshot.shareContacts(matching: "maya_chen").map(\.publicKey), [aliceKey])
     }
 

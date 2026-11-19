@@ -851,7 +851,7 @@ struct TaskCardView: View {
                                 NostrContactAvatar(
                                     contact: creator,
                                     size: 22,
-                                    initialsOverride: creator.profile?.usernameInitials ?? "?"
+                                    initialsOverride: creator.taskCreatorInitials
                                 )
                                 .task(id: creator.publicKey) {
                                     model.requestTaskCreatorProfile(publicKey: creator.publicKey)

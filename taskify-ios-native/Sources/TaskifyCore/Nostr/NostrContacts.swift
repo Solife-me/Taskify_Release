@@ -11,12 +11,7 @@ public struct NostrContactProfile: Codable, Equatable, Sendable {
     public var eventCreatedAt: Int
 
     public var usernameInitials: String? {
-        for label in [username, name, displayName].compactMap({ $0 }) {
-            let parts = label.split { $0.isWhitespace || "@_.-".contains($0) }
-            let initials = parts.prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
-            if !initials.isEmpty { return initials }
-        }
-        return nil
+        [username, name, displayName].lazy.compactMap { $0?.contactNameInitials }.first
     }
 
     public init(
@@ -125,6 +120,10 @@ public struct NostrContact: Identifiable, Codable, Equatable, Sendable {
               let url = URL(string: value),
               url.scheme == "https" || url.scheme == "http" else { return nil }
         return url
+    }
+
+    public var taskCreatorInitials: String {
+        profile?.usernameInitials ?? petname?.contactNameInitials ?? "?"
     }
 
     public var initials: String {
@@ -384,6 +383,12 @@ public enum NostrContactFinder {
 }
 
 private extension String {
+    var contactNameInitials: String? {
+        let parts = split { $0.isWhitespace || "@_.-".contains($0) }
+        let initials = parts.prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+        return initials.isEmpty ? nil : initials
+    }
+
     var trimmedNilIfEmpty: String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
