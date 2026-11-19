@@ -13,7 +13,11 @@ public extension TaskifySnapshot {
             query.isEmpty || NostrPublicKey.parse(query) != nil ||
                 $0.displayName.localizedCaseInsensitiveContains(query) ||
                 $0.subtitle.localizedCaseInsensitiveContains(query) ||
-                $0.npub.localizedCaseInsensitiveContains(query)
+                $0.npub.localizedCaseInsensitiveContains(query) ||
+                $0.publicKey.localizedCaseInsensitiveContains(query) ||
+                $0.profile?.username?.localizedCaseInsensitiveContains(query) == true ||
+                $0.profile?.displayName?.localizedCaseInsensitiveContains(query) == true ||
+                $0.profile?.name?.localizedCaseInsensitiveContains(query) == true
         }
         return matches
     }

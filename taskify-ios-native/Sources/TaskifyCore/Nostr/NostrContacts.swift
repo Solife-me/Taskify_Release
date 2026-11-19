@@ -10,6 +10,15 @@ public struct NostrContactProfile: Codable, Equatable, Sendable {
     public var nip05: String?
     public var eventCreatedAt: Int
 
+    public var usernameInitials: String? {
+        for label in [username, name, displayName].compactMap({ $0 }) {
+            let parts = label.split { $0.isWhitespace || "@_.-".contains($0) }
+            let initials = parts.prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
+            if !initials.isEmpty { return initials }
+        }
+        return nil
+    }
+
     public init(
         name: String? = nil,
         displayName: String? = nil,

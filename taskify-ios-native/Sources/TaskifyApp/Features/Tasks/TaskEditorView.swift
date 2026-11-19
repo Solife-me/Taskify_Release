@@ -404,6 +404,14 @@ struct TaskEditorView: View {
                     .focused($focusedField, equals: .title)
                     .accessibilityIdentifier("Title")
 
+                if let task, let board,
+                   let creatorKey = model.taskCreatorKey(for: task, board: board),
+                   let creator = model.taskCreatorContact(publicKey: creatorKey) {
+                    LabeledContent("Created by", value: creator.taskCreatorName)
+                        .accessibilityIdentifier("task-editor-creator")
+                        .task(id: creatorKey) { model.requestTaskCreatorProfile(publicKey: creatorKey) }
+                }
+
                 notesAndAttachmentControl
                 attachmentRows
                 subtasksEditor

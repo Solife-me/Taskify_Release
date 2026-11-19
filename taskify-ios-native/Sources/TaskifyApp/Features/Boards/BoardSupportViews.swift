@@ -1542,6 +1542,7 @@ struct BoardShareSheet: View {
     @State private var isGeneratingTemplate = false
     @State private var requestedTemplate = false
     @State private var recipient = ""
+    @State private var choosingContact = false
     @State private var isSendingToContact = false
     @State private var sendErrorMessage: String?
     @State private var sentToRecipientName: String?
@@ -1691,6 +1692,9 @@ struct BoardShareSheet: View {
                                         .frame(height: 48)
                                 }
                                 .buttonStyle(.borderedProminent)
+                                .simultaneousGesture(TapGesture().onEnded {
+                                    if shareMode == .board { model.markBoardAsShared(boardID: board.effectiveNostrBoardID) }
+                                })
                             }
                         }
 
@@ -1716,6 +1720,15 @@ struct BoardShareSheet: View {
             .background(TaskifyTheme.background.ignoresSafeArea())
             .navigationTitle("Share \(board.name)")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(isPresented: $choosingContact) {
+                BoardShareContactPicker(selectedPublicKey: selectedContact?.publicKey) { contact in
+                    recipient = contact.npub
+                    sendErrorMessage = nil
+                    sentToRecipientName = nil
+                    choosingContact = false
+                }
+            }
+            .task { model.refreshContactsIfNeeded() }
             .onChange(of: shareMode) { _, mode in
                 copied = false
                 sendErrorMessage = nil
@@ -1742,6 +1755,7 @@ struct BoardShareSheet: View {
             [[UTType.plainText.identifier: activeShareBoard.effectiveNostrBoardID]],
             options: [.expirationDate: Date().addingTimeInterval(600)]
         )
+        if shareMode == .board { model.markBoardAsShared(boardID: activeShareBoard.effectiveNostrBoardID) }
         withAnimation(.snappy) { copied = true }
     }
 
@@ -1789,16 +1803,8 @@ struct BoardShareSheet: View {
 
     private var recipientIsValid: Bool { NostrPublicKey.parse(recipient) != nil }
 
-    private var matchingContacts: [NostrContact] {
-        let query = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, NostrPublicKey.parse(query) == nil else {
-            return model.nostrContacts
-        }
-        return model.nostrContacts.filter {
-            $0.displayName.localizedCaseInsensitiveContains(query) ||
-                $0.subtitle.localizedCaseInsensitiveContains(query) ||
-                $0.npub.localizedCaseInsensitiveContains(query)
-        }
+    private var selectedContact: NostrContact? {
+        NostrPublicKey.parse(recipient).flatMap { model.nostrContact(publicKey: $0.hexString) }
     }
 
     private var sendToContactCard: some View {
@@ -1816,38 +1822,29 @@ struct BoardShareSheet: View {
                 .frame(minHeight: 44)
                 .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(TaskifyTheme.border, lineWidth: 1))
+                .accessibilityIdentifier("board-share-recipient")
 
-            if !matchingContacts.isEmpty {
-                VStack(spacing: 6) {
-                    ForEach(matchingContacts.prefix(6)) { contact in
-                        Button {
-                            recipient = contact.npub
-                            sendErrorMessage = nil
-                            sentToRecipientName = nil
-                        } label: {
-                            HStack(spacing: 10) {
-                                NostrContactAvatar(contact: contact, size: 30)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(contact.displayName)
-                                        .foregroundStyle(TaskifyTheme.primaryText)
-                                    Text(contact.subtitle)
-                                        .font(.caption2)
-                                        .foregroundStyle(TaskifyTheme.tertiaryText)
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                                if contact.publicKey == NostrPublicKey.parse(recipient)?.hexString {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(TaskifyTheme.accent)
-                                }
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(height: 44)
-                        }
-                        .buttonStyle(.plain)
+            Button {
+                choosingContact = true
+            } label: {
+                HStack(spacing: 8) {
+                    Label("Choose Contact", systemImage: "person.crop.circle")
+                    Spacer()
+                    if let selectedContact {
+                        Text(selectedContact.displayName)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                            .lineLimit(1)
                     }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .accessibilityHidden(true)
                 }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
+            .accessibilityLabel("Choose Contact")
+            .accessibilityValue(selectedContact?.displayName ?? "")
+            .accessibilityIdentifier("board-share-choose-contact")
 
             if let sendErrorMessage {
                 Label(sendErrorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -1883,6 +1880,7 @@ struct BoardShareSheet: View {
         sendErrorMessage = nil
         sentToRecipientName = nil
         let recipientValue = recipient
+        let isLiveShare = shareMode == .board
         Task { @MainActor in
             do {
                 try await model.sendSharedBoard(
@@ -1891,6 +1889,7 @@ struct BoardShareSheet: View {
                     relayURLs: activeShareBoard.effectiveRelayURLs,
                     to: recipientValue
                 )
+                if isLiveShare { model.markBoardAsShared(boardID: activeShareBoard.effectiveNostrBoardID) }
                 sentToRecipientName = model.nostrContact(
                     publicKey: NostrPublicKey.parse(recipientValue)?.hexString ?? ""
                 )?.displayName ?? "contact"
@@ -1901,6 +1900,69 @@ struct BoardShareSheet: View {
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
             isSendingToContact = false
+        }
+    }
+}
+
+private struct BoardShareContactPicker: View {
+    @Environment(AppModel.self) private var model
+    @State private var query = ""
+    let selectedPublicKey: String?
+    let select: (NostrContact) -> Void
+
+    private var contacts: [NostrContact] {
+        if let key = NostrPublicKey.parse(query) {
+            return model.nostrContact(publicKey: key.hexString).map { [$0] } ?? []
+        }
+        return model.inboxSnapshot.shareContacts(matching: query)
+    }
+
+    var body: some View {
+        let contacts = contacts
+        List(contacts) { contact in
+            Button {
+                select(contact)
+            } label: {
+                HStack(spacing: 10) {
+                    NostrContactAvatar(contact: contact, size: 30)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(contact.displayName)
+                            .foregroundStyle(TaskifyTheme.primaryText)
+                        Text(contact.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(TaskifyTheme.secondaryText)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    if contact.publicKey == selectedPublicKey {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(TaskifyTheme.accent)
+                            .accessibilityLabel("Selected")
+                    }
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .accessibilityLabel(contact.displayName)
+            .accessibilityValue(contact.publicKey == selectedPublicKey ? "\(contact.subtitle), selected" : contact.subtitle)
+        }
+        .overlay {
+            if contacts.isEmpty {
+                if model.isRefreshingContacts {
+                    ProgressView("Syncing contacts…")
+                } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ContentUnavailableView("No Contacts", systemImage: "person.crop.circle")
+                } else {
+                    ContentUnavailableView.search(text: query)
+                }
+            }
+        }
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts")
+        .navigationTitle("Contacts")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            Button("Refresh Contacts", systemImage: "arrow.clockwise") { model.refreshContacts() }
+                .disabled(model.isRefreshingContacts)
         }
     }
 }

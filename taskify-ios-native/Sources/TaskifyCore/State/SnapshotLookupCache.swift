@@ -28,6 +28,7 @@ public final class SnapshotLookupCache {
             groupedTasks.removeAll(keepingCapacity: true)
             sortedTasks.removeAll(keepingCapacity: true)
             completedTasks.removeAll(keepingCapacity: true)
+            taskAuthorKeysByBoardID.removeAll(keepingCapacity: true)
         }
         if eventsChanged {
             cachedAcceptedTaskifyEvents = nil
@@ -198,6 +199,7 @@ public final class SnapshotLookupCache {
     private var dayContext: DayContext?
     private var eventWeekStart: WeekdayColumn?
     private var sortedTasks: [TaskSortKey: [TaskItem]] = [:]
+    private var taskAuthorKeysByBoardID: [String: Set<String>] = [:]
     private var upcomingGroups: [String: [BoardUpcomingGroup]] = [:]
     private var upcomingRows: [String: [BoardUpcomingRow]] = [:]
     private var completedTasks: [String: [TaskItem]] = [:]
@@ -231,6 +233,7 @@ public final class SnapshotLookupCache {
         dayContext = nil
         eventWeekStart = nil
         sortedTasks.removeAll(keepingCapacity: true)
+        taskAuthorKeysByBoardID.removeAll(keepingCapacity: true)
         upcomingGroups.removeAll(keepingCapacity: true)
         upcomingRows.removeAll(keepingCapacity: true)
         completedTasks.removeAll(keepingCapacity: true)
@@ -380,6 +383,20 @@ public final class SnapshotLookupCache {
     public func taskCount(boardID: String, snapshot: TaskifySnapshot) -> Int {
         ensureTaskIndex(snapshot: snapshot)
         return taskIndex?.taskCountsByBoardID[boardID] ?? 0
+    }
+
+    /// Creator and editor keys are evidence of who has contributed to a board.
+    public func taskAuthorKeys(boardID: String, snapshot: TaskifySnapshot) -> Set<String> {
+        if let cached = taskAuthorKeysByBoardID[boardID] { return cached }
+        ensureTaskIndex(snapshot: snapshot)
+        var values: Set<String> = []
+        for task in taskIndex?.tasksByBoardID[boardID] ?? [] {
+            if let creator = task.createdBy { values.insert(creator) }
+            if let editor = task.lastEditedBy { values.insert(editor) }
+        }
+        let keys = Set(values.compactMap { NostrPublicKey.parse($0)?.hexString })
+        taskAuthorKeysByBoardID[boardID] = keys
+        return keys
     }
 
     public func prewarmBoardTasks(

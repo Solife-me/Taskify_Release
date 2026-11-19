@@ -253,6 +253,7 @@ is public and contains both architectures before changing the StartOS image pin.
 
 | Test File | Domain | What It Covers |
 |---|---|---|
+| `taskify-ios-native/Tests/TaskifyNativeUITests/TaskSelectionUITests.swift`, `taskify-ios-native/Tests/TaskifyCoreTests/NostrContactsTests.swift` | iOS board sharing and task attribution | Selecting contacts beyond the first six, finding profiles by username, and showing the original creator on the card and in the task editor |
 | `src/nostr/boardHistoryRace.test.tsx`, `src/chat/hooks/useDmSubscription.test.tsx`, `src/nostr/useSyncResume.test.tsx` | PWA board/DM history recovery, inbox routing, browser resume | Preserves complete DM history and sender-copy deduplication, discovers native inbox relays, retains the wallet's opt-in payment handler while wallet-independent Chat leaves tokens inert; see `docs/audits/pwa-client-history-sync-2026-09-11.md` |
 | `src/theme/useAppAppearance.test.tsx` | Appearance settings | Font bounds, theme transitions, status-bar color, object-URL cleanup, and image fallback |
 | `taskify-cli/tests/task-ordering.test.ts` | CLI task ordering | Position moves, legacy orders, deterministic ties, ambiguous IDs, scope validation, and numeric validation |

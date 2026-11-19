@@ -205,6 +205,7 @@ struct NostrContactsDirectoryView: View {
 struct NostrContactAvatar: View {
     let contact: NostrContact
     var size: CGFloat = 46
+    var initialsOverride: String? = nil
 
     var body: some View {
         Group {
@@ -229,8 +230,8 @@ struct NostrContactAvatar: View {
     private var initials: some View {
         ZStack {
             Circle().fill(TaskifyTheme.accent.opacity(0.22))
-            Text(contact.initials)
-                .font(.system(size: size * 0.34, weight: .semibold))
+            Text(initialsOverride ?? contact.initials)
+                .font(.system(size: max(10, size * 0.34), weight: .semibold))
                 .foregroundStyle(TaskifyTheme.primaryText)
         }
     }

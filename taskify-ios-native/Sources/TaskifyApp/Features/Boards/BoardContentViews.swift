@@ -801,6 +801,7 @@ struct TaskCardView: View {
         let cardCornerRadius = hasMedia ? CGFloat(24) : 18
         let isSelectionMode = selection?.isActive ?? false
         let isSelected = selection?.selectedTaskIDs.contains(task.id) ?? false
+        let creator = context.creatorPublicKey.flatMap { model.taskCreatorContact(publicKey: $0) }
 
         TaskifyPerfMonitor.shared.recordCardBody()
 
@@ -840,17 +841,30 @@ struct TaskCardView: View {
                 // Title and details open the editor; the note opens the note viewer.
                 VStack(alignment: .leading, spacing: 3) {
                     Button(action: editTapped) {
-                        Text(displayTitle)
-                            .scaledFont(size: 16, weight: .semibold)
-                            .foregroundStyle(task.completed ? TaskifyTheme.tertiaryText : TaskifyTheme.primaryText)
-                            .strikethrough(task.completed)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(displayTitle)
+                                .scaledFont(size: 16, weight: .semibold)
+                                .foregroundStyle(task.completed ? TaskifyTheme.tertiaryText : TaskifyTheme.primaryText)
+                                .strikethrough(task.completed)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if let creator {
+                                NostrContactAvatar(
+                                    contact: creator,
+                                    size: 22,
+                                    initialsOverride: creator.profile?.usernameInitials ?? "?"
+                                )
+                                .task(id: creator.publicKey) {
+                                    model.requestTaskCreatorProfile(publicKey: creator.publicKey)
+                                }
+                            }
+                        }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(context.boardName.map {
                         "Edit \(displayTitle), \($0) board"
                     } ?? "Edit \(displayTitle)")
+                    .accessibilityValue(creator.map { "Created by \($0.taskCreatorName)" } ?? "")
 
                     if !displayNote.isEmpty {
                         Button {
@@ -1338,6 +1352,7 @@ struct TaskCardContext: Equatable {
     var mediaBoardID: String
     /// An optional board label shown beside the due date, used when cards from multiple boards mix.
     var boardName: String?
+    var creatorPublicKey: String?
 }
 
 extension AppModel {
@@ -1346,7 +1361,8 @@ extension AppModel {
         return TaskCardContext(
             streak: visibleStreak(for: task),
             mediaBoardID: board?.effectiveNostrBoardID ?? task.boardID,
-            boardName: includesBoardName ? (board?.name ?? "Board") : nil
+            boardName: includesBoardName ? (board?.name ?? "Board") : nil,
+            creatorPublicKey: board.flatMap { taskCreatorKey(for: task, board: $0) }
         )
     }
 
@@ -1363,6 +1379,12 @@ extension AppModel {
         }
         let streak = runningStreak(for: task)
         return streak > 0 ? streak : nil
+    }
+}
+
+extension NostrContact {
+    var taskCreatorName: String {
+        profile?.displayName ?? profile?.name ?? profile?.username ?? displayName
     }
 }
 

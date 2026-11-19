@@ -224,6 +224,8 @@ Add IPFS-based file attachments to tasks using [Originless](https://github.com/b
 
 Native iOS sharing coverage (2026-09-14): contact search includes directories larger than eight entries; encrypted task and event shares round-trip for all group members and retain their group conversation after snapshot restoration.
 
+Native iOS board sharing coverage includes selecting a contact beyond the first six in the share sheet and identifying the original task creator after a different person edits the task.
+
 ### Fourth organization pass — September 15, 2026
 
 - Extracted CLI config command registration and the shared connection probe from
