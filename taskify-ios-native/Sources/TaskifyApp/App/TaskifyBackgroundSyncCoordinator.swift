@@ -13,13 +13,17 @@ final class TaskifyBackgroundSyncCoordinator {
     private var refreshOperation: Task<Void, Never>?
     private var handoffOperation: Task<Void, Never>?
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
-    private var currentRefreshCompleted = false
+    private var currentRefresh: BGAppRefreshTask?
 
     private init() {}
 
     func register(model: AppModel, wallet: WalletViewModel) {
         self.model = model
         self.wallet = wallet
+        scheduleNextRefresh()
+    }
+
+    func installHandler() {
         guard !isRegistered else { return }
         isRegistered = BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.refreshIdentifier,
@@ -33,7 +37,6 @@ final class TaskifyBackgroundSyncCoordinator {
                 self.handle(refreshTask)
             }
         }
-        scheduleNextRefresh()
     }
 
     func appDidBecomeActive() {
@@ -43,6 +46,17 @@ final class TaskifyBackgroundSyncCoordinator {
     func appDidEnterBackground() {
         scheduleNextRefresh()
         startSyncHandoff()
+    }
+
+    func suspendForLocalReset() {
+        model = nil
+        wallet = nil
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.refreshIdentifier)
+        refreshOperation?.cancel()
+        if let currentRefresh { complete(currentRefresh, success: false) }
+        handoffOperation?.cancel()
+        handoffOperation = nil
+        endBackgroundTask()
     }
 
     /// Holds a background task while queued publishes are flushed. Used when Taskify moves to the
@@ -73,7 +87,7 @@ final class TaskifyBackgroundSyncCoordinator {
     }
 
     private func scheduleNextRefresh() {
-        guard isRegistered else { return }
+        guard isRegistered, model != nil else { return }
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.refreshIdentifier)
         let request = BGAppRefreshTaskRequest(identifier: Self.refreshIdentifier)
         let delay: TimeInterval = wallet?.hasOutstandingLightningInvoices == true
@@ -90,13 +104,18 @@ final class TaskifyBackgroundSyncCoordinator {
     }
 
     private func handle(_ task: BGAppRefreshTask) {
+        guard model != nil else {
+            task.setTaskCompleted(success: false)
+            return
+        }
         scheduleNextRefresh()
         refreshOperation?.cancel()
-        currentRefreshCompleted = false
+        if let currentRefresh { complete(currentRefresh, success: false) }
+        currentRefresh = task
 
         task.expirationHandler = { [weak self, weak task] in
             Task { @MainActor in
-                guard let self, let task else { return }
+                guard let self, let task, self.currentRefresh === task else { return }
                 self.refreshOperation?.cancel()
                 self.model?.backgroundRefreshExpired()
                 self.complete(task, success: false)
@@ -117,8 +136,8 @@ final class TaskifyBackgroundSyncCoordinator {
     }
 
     private func complete(_ task: BGAppRefreshTask, success: Bool) {
-        guard !currentRefreshCompleted else { return }
-        currentRefreshCompleted = true
+        guard currentRefresh === task else { return }
+        currentRefresh = nil
         task.expirationHandler = nil
         task.setTaskCompleted(success: success)
         refreshOperation = nil

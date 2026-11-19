@@ -131,6 +131,15 @@ Nostr Cashu payment requests now work in both directions; advanced NWC, P2PK/con
 2. Select the `TaskifyNative` scheme.
 3. Run on an iOS 17.5 or newer simulator/device.
 
+### Start over on an iPhone or iPad
+
+In **Settings → Account & Data**, choose **Delete Local Account and Data** and confirm.
+Swipe Taskify away in the app switcher, then reopen it. Before starting sync or loading the
+workspace, Taskify clears this device’s Nostr identity, workspace, preferences, attachments,
+wallet keys and data, and scheduled alerts. The app then opens **Welcome to Taskify** with a
+fresh identity. Back up keys, funds, and any unsynced data before confirming. Existing copies on
+Nostr relays, exported backups, and other devices such as Apple Watch are separate.
+
 The `TaskifyWatch` watchOS 10 target is embedded in the iPhone app. To provision it, install the
 companion build on a paired, passcode-protected Watch, open Taskify on the Watch, then open Taskify
 on the iPhone when prompted. The app automatically

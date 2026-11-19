@@ -15,6 +15,9 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @StateObject private var watchBridge = TaskifyWatchBridge.shared
     @Binding private var watchSetupRequestID: UUID?
+    private let requestLocalReset: () throws -> Void
+    @State private var confirmingLocalReset = false
+    @State private var showingLocalResetError = false
     @State private var newBoardName = ""
     @State private var newBoardKind: BoardKind = .week
     @State private var selectedCompoundChildIDs: Set<String> = []
@@ -77,8 +80,9 @@ struct SettingsView: View {
     @AppStorage(WalletPhaseOut.walletEnabledKey)
     private var walletEnabled = false
 
-    init(watchSetupRequestID: Binding<UUID?> = .constant(nil)) {
+    init(watchSetupRequestID: Binding<UUID?> = .constant(nil), requestLocalReset: @escaping () throws -> Void) {
         _watchSetupRequestID = watchSetupRequestID
+        self.requestLocalReset = requestLocalReset
         _dmPushSelection = State(initialValue: TaskifyDMPushSettings.selection)
         _dmPushRelayURL = State(initialValue: TaskifyDMPushSettings.relayURL)
         _dmPushServerURL = State(initialValue: TaskifyDMPushSettings.serverURL)
@@ -134,6 +138,16 @@ struct SettingsView: View {
 
                         settingsGroup("Backup", systemImage: "arrow.down.doc.fill") {
                             localBackupCard
+                        }
+
+                        settingsGroup("Account & Data", systemImage: "person.crop.circle") {
+                            Button("Delete Local Account and Data", role: .destructive) {
+                                confirmingLocalReset = true
+                            }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(18)
+                            .taskifyGlass(cornerRadius: 24)
                         }
                     }
                     .frame(maxWidth: 820)
@@ -210,6 +224,20 @@ struct SettingsView: View {
                 localBackupMessage = error.localizedDescription
             }
             localBackupExportDocument = nil
+        }
+        .alert("Delete local account and data?", isPresented: $confirmingLocalReset) {
+            Button("Delete local data", role: .destructive) {
+                do { try requestLocalReset() }
+                catch { showingLocalResetError = true }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("On the next launch, Taskify permanently removes the Nostr key, boards, tasks, messages, settings and any local wallet data from this iPhone or iPad. Back up your keys, wallet funds and anything you need before continuing.")
+        }
+        .alert("Couldn’t schedule deletion", isPresented: $showingLocalResetError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Try again while this device is unlocked and has free storage.")
         }
         .fileImporter(
             isPresented: $showingLocalBackupImporter,
@@ -355,6 +383,7 @@ struct SettingsView: View {
                 .foregroundStyle(TaskifyTheme.secondaryText)
                 .lineLimit(2)
                 .textSelection(.enabled)
+                .accessibilityIdentifier("taskify-current-npub")
 
             Button {
                 UIPasteboard.general.string = model.identityNpub

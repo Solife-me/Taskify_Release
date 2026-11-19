@@ -65,6 +65,67 @@ final class FirstRunOnboardingUITests: XCTestCase {
         )
     }
 
+    func testDeletingLocalAccountStartsOverAfterRelaunch() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let start = app.buttons["Start using Taskify"]
+        if start.waitForExistence(timeout: 3) { start.tap() }
+
+        let title = "Reset test \(UUID().uuidString.prefix(6))"
+        let field = app.textFields.matching(NSPredicate(format: "label BEGINSWITH[c] %@", "New task in")).firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap()
+        field.typeText(title)
+        let add = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "and close keyboard")).firstMatch
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.tap()
+        let task = app.buttons["Edit \(title)"]
+        XCTAssertTrue(task.waitForExistence(timeout: 5))
+
+        let settings = app.buttons["Settings"].firstMatch
+        XCTAssertTrue(settings.isHittable)
+        settings.tap()
+        let sync = app.buttons["Nostr & Sync"]
+        XCTAssertTrue(sync.waitForExistence(timeout: 5))
+        if !sync.isHittable { app.swipeUp() }
+        sync.tap()
+        let publicKey = app.staticTexts["taskify-current-npub"]
+        XCTAssertTrue(publicKey.waitForExistence(timeout: 5))
+        let oldKey = publicKey.label
+        XCTAssertTrue(oldKey.hasPrefix("npub1"))
+        sync.tap()
+
+        let accountData = app.buttons["Account & Data"]
+        if !accountData.isHittable { app.swipeUp() }
+        XCTAssertTrue(accountData.isHittable)
+        accountData.tap()
+        let delete = app.buttons["Delete Local Account and Data"]
+        if !delete.isHittable { app.swipeUp() }
+        delete.tap()
+        let confirmation = app.alerts["Delete local account and data?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Cancel"].tap()
+        XCTAssertTrue(delete.isHittable)
+
+        delete.tap()
+        confirmation.buttons["Delete local data"].tap()
+        XCTAssertTrue(app.staticTexts["Close and reopen Taskify"].waitForExistence(timeout: 5))
+        app.terminate()
+        app.launch()
+
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        start.tap()
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        XCTAssertFalse(task.exists)
+
+        settings.tap()
+        if !sync.isHittable { app.swipeUp() }
+        sync.tap()
+        XCTAssertTrue(publicKey.waitForExistence(timeout: 5))
+        XCTAssertTrue(publicKey.label.hasPrefix("npub1"))
+        XCTAssertNotEqual(publicKey.label, oldKey)
+    }
+
     /// C9-5: the key made on first run is offered for saving once there is something to lose.
     func testTheKeyIsOfferedForSavingAfterThreeTasks() throws {
         let app = XCUIApplication()

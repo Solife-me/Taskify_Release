@@ -349,3 +349,8 @@ reported crash cause; these transport regressions do not replace that verificati
 
 - The isolated Mac UI test crosses the compact breakpoint in both directions
   and checks that the board, selected conversation, and unsent draft stay open.
+
+### Native local account reset
+
+- The relaunch UI regression covers canceling the reset and confirming it, then verifies that
+  first-run onboarding returns with the old task removed and a different Nostr public key.
