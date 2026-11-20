@@ -118,7 +118,7 @@ const R_NONE: Recurrence = { type: "none" };
 // They will be properly extracted in subsequent refactor steps.
 
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRevealBounty, onPreviewDocument, bountyExtension, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
+function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, creatorName, boards, onRevealBounty, onPreviewDocument, bountyExtension, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
@@ -127,6 +127,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
+  creatorName?: string;
   boards: Board[];
   /** Decrypts a bounty locked to this user (Nostr keys only; no wallet needed). */
   onRevealBounty?: (taskId: string)=>Promise<void>;
@@ -1084,6 +1085,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 className="edit-field-input"
                 placeholder="Title"
               />
+              {creatorName && <p className="text-xs text-secondary">Created by {creatorName}</p>}
             </div>
             <div className="edit-card__detail edit-card__detail--field space-y-2">
               <div

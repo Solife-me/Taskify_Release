@@ -61,6 +61,8 @@ export type TaskView = {
   pendingTaskIds: ReadonlySet<string>;
   pendingEventIds: ReadonlySet<string>;
   runningStreakFor: (task: Task) => number | undefined;
+  creatorNameFor?: (task: Task) => string | undefined;
+  creatorInitialsFor?: (task: Task) => string | undefined;
   showStreaks: boolean;
   hideCompletedSubtasks: boolean;
   /** Completing a task flies it to the Completed button when that tab exists. */
@@ -169,6 +171,8 @@ export const BoardTaskCard = memo(function BoardTaskCard({ task, meta, trailing,
   const displayStreak = useTaskViewSelector((view) => view.runningStreakFor(task));
   const showStreaks = useTaskViewSelector((view) => view.showStreaks);
   const hideCompletedSubtasks = useTaskViewSelector((view) => view.hideCompletedSubtasks);
+  const creatorName = useTaskViewSelector((view) => view.creatorNameFor?.(task));
+  const creatorInitials = useTaskViewSelector((view) => view.creatorInitialsFor?.(task));
 
   const taskId = task.id;
   const dropDay = dropTarget?.type === "day" ? dropTarget.day : undefined;
@@ -192,6 +196,8 @@ export const BoardTaskCard = memo(function BoardTaskCard({ task, meta, trailing,
       task={task}
       meta={meta}
       trailing={trailing}
+      creatorName={creatorName}
+      creatorInitials={creatorInitials}
       displayStreak={displayStreak}
       isSelectionMode={isSelectionMode}
       isSelected={isSelected}

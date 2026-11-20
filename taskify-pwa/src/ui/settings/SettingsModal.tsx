@@ -1,29 +1,9 @@
 // @ts-nocheck
-import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { getPublicKey, nip19 } from "nostr-tools";
-import {
-  LS_LIGHTNING_CONTACTS,
-} from "../../localStorageKeys";
-import { normalizeNostrPubkey } from "../../lib/nostr";
-import { revealLocalSecretKey } from "../../identity/identity";
-import { DEFAULT_NOSTR_RELAYS } from "../../lib/relays";
-import {
-  buildBoardShareEnvelope,
-  sendShareMessage,
-} from "../../lib/shareInbox";
-import type { Contact } from "../../lib/contacts";
-import {
-  contactPrimaryName,
-  formatContactNpub,
-  loadContactsFromStorage,
-  contactHasNpub,
-} from "../../lib/contacts";
+import React, { useState, useCallback, useMemo } from "react";
 import type { Settings, PushPlatform } from "../../domains/tasks/settingsTypes";
 import type { Board, Task } from "../../domains/tasks/taskTypes";
 import { useToast } from "../../context/ToastContext";
-import { ActionSheet } from "../../components/ActionSheet";
 import { Modal } from "../Modal";
-import { contactInitials, hexToBytes } from "./settingsConstants";
 import { BoardsSection } from "./BoardsSection";
 import { ViewSection } from "./ViewSection";
 import { BibleSection } from "./BibleSection";
@@ -35,6 +15,7 @@ import { SupportSection } from "./SupportSection";
 import { StorageSection } from "./StorageSection";
 import { SettingsAccordion } from "./SettingsAccordion";
 import { ManageBoardModal } from "./ManageBoardModal";
+import { requestLocalReset } from "../../storage/localReset";
 import { InstallAppSettingsGroup } from "./InstallAppSettingsGroup";
 
 
@@ -54,6 +35,7 @@ export function SettingsModal({
   onGenerateKey,
   onSetKey,
   onShareBoard,
+  onShareBoardToChat,
   onJoinBoard,
   onRegenerateBoardId,
   onClearQueuedRepublish,
@@ -86,6 +68,7 @@ export function SettingsModal({
   onGenerateKey: () => Promise<void>;
   onSetKey: (hex: string) => Promise<void>;
   onShareBoard: (boardId: string, relaysCsv?: string) => void;
+  onShareBoardToChat: (boardId: string) => void;
   onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
   onRegenerateBoardId: (boardId: string) => void;
   onClearQueuedRepublish?: (boardId: string) => Promise<number>;
@@ -114,114 +97,13 @@ export function SettingsModal({
   const manageBoard = boards.find(b => b.id === manageBoardId);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // Share board picker
-  const [contacts, setContacts] = useState<Contact[]>(() => loadContactsFromStorage());
-  const [shareBoardPickerOpen, setShareBoardPickerOpen] = useState(false);
-  const [shareBoardTarget, setShareBoardTarget] = useState<Board | null>(null);
-  const [shareBoardStatus, setShareBoardStatus] = useState<string | null>(null);
-  const [shareBoardBusy, setShareBoardBusy] = useState(false);
-
-
-  // ─── Derived ────────────────────────────────────────────────────────────────
   const currentBoard = useMemo(
     () => boards.find((board) => board.id === currentBoardId) || null,
     [boards, currentBoardId],
   );
-  const shareableContacts = useMemo(
-    () => contacts.filter((contact) => contactHasNpub(contact)),
-    [contacts],
-  );
-
-  // ─── Effects ────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const refreshContacts = () => setContacts(loadContactsFromStorage());
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === LS_LIGHTNING_CONTACTS) {
-        refreshContacts();
-      }
-    };
-    window.addEventListener("taskify:contacts-updated", refreshContacts);
-    window.addEventListener("storage", handleStorage);
-    return () => {
-      window.removeEventListener("taskify:contacts-updated", refreshContacts);
-      window.removeEventListener("storage", handleStorage);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (manageBoard?.nostr) return;
-    if (shareBoardPickerOpen) setShareBoardPickerOpen(false);
-    setShareBoardTarget(null);
-    setShareBoardStatus(null);
-    setShareBoardBusy(false);
-  }, [manageBoard?.nostr, shareBoardPickerOpen]);
-
-  // ─── Callbacks ──────────────────────────────────────────────────────────────
   const onReloadNeeded = useCallback(() => {
     setReloadNeeded(true);
   }, []);
-
-  const readNostrSecret = useCallback((): string | null => {
-    try {
-      const raw = (revealLocalSecretKey() ?? "");
-      if (raw && /^[0-9a-fA-F]{64}$/.test(raw.trim())) {
-        return raw.trim().toLowerCase();
-      }
-    } catch {}
-    return null;
-  }, []);
-
-  const handleShareBoardToContact = useCallback(
-    async (contact: Contact) => {
-      if (!shareBoardTarget?.nostr) {
-        setShareBoardStatus("Enable sharing first.");
-        return;
-      }
-      const recipient = normalizeNostrPubkey(contact.npub);
-      if (!recipient) {
-        setShareBoardStatus("Contact is missing a valid npub.");
-        return;
-      }
-      const secret = readNostrSecret();
-      if (!secret) {
-        setShareBoardStatus("Add your Nostr secret key first.");
-        return;
-      }
-      const relaySource = Array.isArray(shareBoardTarget.nostr.relays)
-        ? shareBoardTarget.nostr.relays
-        : defaultRelays.length
-          ? defaultRelays
-          : Array.from(DEFAULT_NOSTR_RELAYS);
-      const relayList = relaySource
-        .map((r) => (typeof r === "string" ? r.trim() : ""))
-        .filter(Boolean);
-      let senderNpub: string | null = null;
-      try {
-        const pubkey = getPublicKey(hexToBytes(secret));
-        senderNpub = nip19.npubEncode(hexToBytes(pubkey));
-      } catch {
-        senderNpub = null;
-      }
-      setShareBoardBusy(true);
-      setShareBoardStatus(null);
-      try {
-        const envelope = buildBoardShareEnvelope(
-          shareBoardTarget.nostr.boardId,
-          shareBoardTarget.name,
-          relayList,
-          senderNpub ? { npub: senderNpub } : undefined,
-        );
-        await sendShareMessage(envelope, recipient, secret, relayList);
-        setShareBoardPickerOpen(false);
-        showToast(`Board sent to ${contactPrimaryName(contact)}`);
-      } catch (err: any) {
-        setShareBoardStatus(err?.message || "Unable to share board.");
-      } finally {
-        setShareBoardBusy(false);
-      }
-    },
-    [defaultRelays, readNostrSecret, shareBoardTarget, showToast],
-  );
 
   const handleClose = useCallback(() => {
     onClose();
@@ -229,12 +111,6 @@ export function SettingsModal({
       setTimeout(() => window.location.reload(), 150);
     }
   }, [onClose, reloadNeeded]);
-
-  const handleOpenSharePicker = useCallback((board: Board) => {
-    setShareBoardTarget(board);
-    setShareBoardStatus(null);
-    setShareBoardPickerOpen(true);
-  }, []);
 
   // ─── Render ─────────────────────────────────────────────────────────────────
   const settingsBody = (
@@ -339,6 +215,30 @@ export function SettingsModal({
         <BackupSection embedded onReloadNeeded={onReloadNeeded} />
       </SettingsAccordion>
 
+      <SettingsAccordion
+        title="Reset local data"
+        summary="Return Taskify to first-run setup in this browser"
+      >
+        <p className="text-xs text-secondary">
+          This removes your saved key, local tasks, messages, settings, and wallet data from this browser.
+          Save your key and back up any data you need before resetting.
+        </p>
+        <button
+          type="button"
+          className="ghost-button button-sm pressable text-rose-400 mt-2"
+          onClick={async () => {
+            if (!window.confirm("Erase local Taskify data and return to first-run setup?")) return;
+            try {
+              await requestLocalReset();
+            } catch {
+              showToast("Taskify could not start the local reset in this browser.");
+            }
+          }}
+        >
+          Reset local data…
+        </button>
+      </SettingsAccordion>
+
       <InstallAppSettingsGroup />
 
       <SettingsAccordion
@@ -404,75 +304,12 @@ export function SettingsModal({
           changeBoard={changeBoard}
           currentBoardId={currentBoardId}
           onClose={() => setManageBoardId(null)}
-          onOpenSharePicker={handleOpenSharePicker}
+          onOpenSharePicker={(board) => {
+            setManageBoardId(null);
+            onShareBoardToChat(board.id);
+          }}
         />
       )}
-      <ActionSheet
-        open={shareBoardPickerOpen}
-        onClose={() => {
-          if (shareBoardBusy) return;
-          setShareBoardPickerOpen(false);
-          setShareBoardStatus(null);
-          setShareBoardTarget(null);
-        }}
-        title="Send board ID"
-        stackLevel={75}
-      >
-        {shareBoardTarget ? (
-          <div className="text-sm text-secondary mb-2">
-            Choose a contact to send <span className="font-semibold">{shareBoardTarget.name}</span>.
-          </div>
-        ) : (
-          <div className="text-sm text-secondary mb-2">Select a board to share first.</div>
-        )}
-        {shareBoardStatus && (
-          <div className="text-sm text-rose-400 mb-2">{shareBoardStatus}</div>
-        )}
-        {shareableContacts.length ? (
-          <div className="space-y-2">
-            {shareableContacts.map((contact) => {
-              const label = contactPrimaryName(contact);
-              const subtitle = formatContactNpub(contact.npub);
-              return (
-                <button
-                  key={contact.id}
-                  type="button"
-                  className="contact-row pressable"
-                  disabled={shareBoardBusy || !shareBoardTarget}
-                  onClick={() => shareBoardTarget && handleShareBoardToContact(contact)}
-                >
-                  <div className="contact-avatar">{contactInitials(label)}</div>
-                  <div className="contact-row__text">
-                    <div className="contact-row__name">{label}</div>
-                    {subtitle ? (
-                      <div className="contact-row__meta">
-                        <span className="contact-row__meta-text">{subtitle}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
-        )}
-        <div className="flex gap-2 mt-3">
-          <button
-            type="button"
-            className="ghost-button button-sm pressable flex-1 justify-center"
-            onClick={() => {
-              if (shareBoardBusy) return;
-              setShareBoardPickerOpen(false);
-              setShareBoardStatus(null);
-              setShareBoardTarget(null);
-            }}
-            disabled={shareBoardBusy}
-          >
-            Cancel
-          </button>
-        </div>
-      </ActionSheet>
     </>
   );
 }

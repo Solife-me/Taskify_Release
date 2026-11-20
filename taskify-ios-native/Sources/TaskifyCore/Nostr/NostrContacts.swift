@@ -122,6 +122,10 @@ public struct NostrContact: Identifiable, Codable, Equatable, Sendable {
         return url
     }
 
+    public var taskCreatorName: String {
+        profile?.displayName ?? profile?.name ?? profile?.username ?? displayName
+    }
+
     public var taskCreatorInitials: String {
         profile?.usernameInitials ?? petname?.contactNameInitials ?? "?"
     }

@@ -112,11 +112,9 @@ final class AppModel {
         if changedAreas.contains(.tasks) { tasksAreaRevision &+= 1 }
         if changedAreas.contains(.chat) { chatAreaRevision &+= 1 }
         if changedAreas.contains(.inbox) { inboxAreaRevision &+= 1 }
-#if os(iOS)
         if changedAreas.contains(.tasks) || snapshot.sharedBoardInboxItems != oldValue.sharedBoardInboxItems {
             taskCreatorSharedBoardStatus.removeAll(keepingCapacity: true)
         }
-#endif
         snapshotLookupCache.invalidate(from: oldValue, to: snapshot)
         snapshotRevision &+= 1
         let conversationContentChanged = snapshot.directMessages != oldValue.directMessages
@@ -158,14 +156,12 @@ final class AppModel {
     private(set) var isLoading = true
     private(set) var identityPublicKey = "" { didSet { mirrorDeviceTaskSettings() } }
     private(set) var identityNpub = ""
-#if os(iOS)
     private var locallySharedBoardTags: Set<String> = []
     private var taskCreatorProfiles: [String: NostrContactProfile] = [:]
     @ObservationIgnored private var taskCreatorSharedBoardStatus: [String: Bool] = [:]
     @ObservationIgnored private var taskCreatorProfileRequestedAt: [String: Date] = [:]
     @ObservationIgnored private var pendingTaskCreatorProfileKeys: Set<String> = []
     @ObservationIgnored private var taskCreatorProfileBatch: Task<Void, Never>?
-#endif
     /// When this process last wrote the store, so a newer file can be recognised as someone
     /// else's write rather than an echo of our own.
     private var lastStoreWriteAt = Date.distantPast
@@ -389,9 +385,7 @@ final class AppModel {
     }
 
     deinit {
-#if os(iOS)
         taskCreatorProfileBatch?.cancel()
-#endif
         saveTask?.cancel()
         widgetReloadTask?.cancel()
         searchIndexTask?.cancel()
@@ -427,9 +421,7 @@ final class AppModel {
     }
 
     private func cancelAccountWork() {
-#if os(iOS)
         taskCreatorProfileBatch?.cancel()
-#endif
         saveTask?.cancel()
         widgetReloadTask?.cancel()
         searchIndexTask?.cancel()
@@ -817,7 +809,6 @@ final class AppModel {
         snapshotLookupCache.contact(publicKey: publicKey, snapshot: inboxSnapshot)
     }
 
-#if os(iOS)
     func markBoardAsShared(boardID: String) {
         guard isAccountActive, !identityPublicKey.isEmpty,
               locallySharedBoardTags.insert(BoardCrypto.boardTag(for: boardID)).inserted else { return }
@@ -908,7 +899,6 @@ final class AppModel {
             }
         }
     }
-#endif
 
     // Bot commands (NIP-51 kind 30078, d-tag taskify-bot-commands). The
     // published list itself is the signal that a peer is a bot: the chat
@@ -2734,9 +2724,7 @@ final class AppModel {
         guard snapshot.setSharedBoardInboxStatus(itemID: itemID, status: .accepted) != nil else {
             return false
         }
-#if os(iOS)
         markBoardAsShared(boardID: item.board.boardID)
-#endif
         scheduleSave()
         reconfigureSync()
         scheduleAccountBackupPublish()
@@ -4648,9 +4636,7 @@ final class AppModel {
         ) != nil else {
             return false
         }
-#if os(iOS)
         markBoardAsShared(boardID: share.boardID)
-#endif
         scheduleSave()
         reconfigureSync()
         scheduleAccountBackupPublish()
@@ -5861,21 +5847,17 @@ final class AppModel {
             ownProfileEventContent = nil
             isLoadingOwnProfile = false
             profilePublishMessage = nil
-#if os(iOS)
             taskCreatorProfileBatch?.cancel()
             taskCreatorProfileBatch = nil
             pendingTaskCreatorProfileKeys.removeAll()
             taskCreatorProfileRequestedAt.removeAll()
             taskCreatorProfiles.removeAll()
-#endif
         }
         cachedIdentity = identity
         identityPublicKey = identity.publicKeyHex
         identityNpub = identity.npub
-#if os(iOS)
         taskCreatorSharedBoardStatus.removeAll(keepingCapacity: true)
         locallySharedBoardTags = Set(accountDefaults.stringArray(forKey: sharedBoardTagsDefaultsKey) ?? [])
-#endif
         Task { [syncEngine] in
             await syncEngine.setIdentity(identity)
         }

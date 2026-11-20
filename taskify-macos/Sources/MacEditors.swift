@@ -43,6 +43,9 @@ struct MacTaskEditor: View {
                 Section("Task") {
                     TextField("Title", text: $draft.title, axis: .vertical).lineLimit(1...4)
                         .accessibilityIdentifier("task-title-field")
+                    if let original {
+                        MacTaskCreator(task: original)
+                    }
                     LabeledContent("Notes") {
                         Button { editingNote = true } label: {
                             Group {
@@ -364,7 +367,12 @@ struct MacBoardEditor: View {
                         Button("Update Board Relays") { if !model.updateBoardRelayURLs(boardID: current.id, relayURLs: relays.split(separator: ",").map(String.init)) { error = "Enter valid relay URLs." } }
                     }
                     Section("Sharing") {
-                        Button("Copy Live Board Share") { if let value = try? BoardShareContract.encode(board: current) { macCopyExpiring(value) } }
+                        Button("Copy Live Board Share") {
+                            if let value = try? BoardShareContract.encode(board: current) {
+                                macCopyExpiring(value)
+                                model.markBoardAsShared(boardID: current.effectiveNostrBoardID)
+                            }
+                        }
                         Button("Create Independent Template") {
                             Task {
                                 do { let result = try await model.createTemplateShare(for: current.id); macCopyExpiring(try BoardShareContract.encode(board: result.board)) }
@@ -423,5 +431,94 @@ struct MacBoardEditor: View {
             }
         }
         if success { dismiss() } else { error = "The board could not be saved. Check its name and selected child boards." }
+    }
+}
+
+struct MacBoardSharePicker: View {
+    let board: Board
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    @State private var sending = false
+    @State private var error: String?
+
+    var body: some View {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = NostrPublicKey.parse(query).map { key in
+            model.nostrContact(publicKey: key.hexString).map { [$0] } ?? []
+        } ?? model.inboxSnapshot.shareContacts(matching: query)
+        let contacts = matches.filter { $0.publicKey != model.identityPublicKey }
+        let groups = model.groupConversations.filter {
+            !model.hasLeftDirectMessageGroup($0.groupID)
+                && (query.isEmpty || $0.displayName.localizedCaseInsensitiveContains(query))
+        }
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Send \(board.name) to Chat").font(.title2.bold())
+            TextField("Search contacts and groups", text: $search)
+            if contacts.isEmpty && groups.isEmpty {
+                ContentUnavailableView(
+                    query.isEmpty ? "No Contacts or Groups" : "No Matches",
+                    systemImage: "person.2"
+                )
+            } else {
+                List {
+                    if !groups.isEmpty {
+                        Section("Group Chats") {
+                            ForEach(groups) { group in
+                                Button { send(to: group.groupID) } label: {
+                                    Label(group.displayName, systemImage: "person.3")
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    if !contacts.isEmpty {
+                        Section("Contacts") {
+                            ForEach(contacts) { contact in
+                                Button { send(to: contact.publicKey) } label: {
+                                    HStack {
+                                        MacContactAvatar(contact: contact, size: 24)
+                                        Text(contact.displayName)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+                .disabled(sending)
+            }
+            if let error { Text(error).foregroundStyle(.red) }
+            HStack {
+                if sending { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(sending)
+            }
+        }
+        .padding(22)
+        .frame(width: 430, height: 480)
+        .interactiveDismissDisabled(sending)
+        .task { model.refreshContactsIfNeeded() }
+    }
+
+    private func send(to recipient: String) {
+        guard !sending, let current = model.board(withID: board.id) else { return }
+        sending = true
+        error = nil
+        Task {
+            do {
+                try await model.sendSharedBoard(
+                    boardID: current.effectiveNostrBoardID,
+                    boardName: current.name,
+                    relayURLs: current.effectiveRelayURLs,
+                    to: recipient
+                )
+                model.markBoardAsShared(boardID: current.effectiveNostrBoardID)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+            }
+            sending = false
+        }
     }
 }

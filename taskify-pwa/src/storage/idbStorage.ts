@@ -87,6 +87,11 @@ export const idbStorage = {
     });
   },
 
+  async databaseNames(): Promise<string[]> {
+    const databases = await ensureIndexedDb().databases();
+    return databases.flatMap(({ name }) => name ? [name] : []);
+  },
+
   /**
    * Deletes an IndexedDB database by name.
    */
@@ -96,7 +101,7 @@ export const idbStorage = {
       const request = factory.deleteDatabase(name);
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error ?? new Error("Failed to delete IndexedDB database"));
-      request.onblocked = () => resolve();
+      request.onblocked = () => reject(new Error("Close other Taskify tabs and reload to finish the reset."));
     });
   },
 

@@ -39,6 +39,7 @@ function renderSettings(container: HTMLElement, root: ReturnType<typeof createRo
       onGenerateKey={vi.fn()}
       onSetKey={vi.fn()}
       onShareBoard={vi.fn()}
+      onShareBoardToChat={vi.fn()}
       onJoinBoard={vi.fn()}
       onRegenerateBoardId={vi.fn()}
       onBoardChanged={vi.fn()}
@@ -71,7 +72,7 @@ test("every settings group starts collapsed, expands independently, and resets o
 
   await renderSettings(container, root);
   const groups = [...container.querySelectorAll<HTMLButtonElement>(".settings-accordion__header")];
-  expect(groups).toHaveLength(10);
+  expect(groups).toHaveLength(11);
   expect(groups.every((button) => button.getAttribute("aria-expanded") === "false")).toBe(true);
   expect(container.textContent).not.toContain("View body");
   expect(container.textContent).not.toContain("AI prompts");

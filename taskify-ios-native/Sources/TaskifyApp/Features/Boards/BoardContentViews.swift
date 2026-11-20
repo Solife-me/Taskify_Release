@@ -1382,12 +1382,6 @@ extension AppModel {
     }
 }
 
-extension NostrContact {
-    var taskCreatorName: String {
-        profile?.displayName ?? profile?.name ?? profile?.username ?? displayName
-    }
-}
-
 extension TaskCardView: Equatable {
     nonisolated static func == (lhs: TaskCardView, rhs: TaskCardView) -> Bool {
         lhs.task == rhs.task && lhs.context == rhs.context && lhs.allowsDragging == rhs.allowsDragging

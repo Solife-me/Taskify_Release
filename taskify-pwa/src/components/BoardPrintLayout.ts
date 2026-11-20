@@ -55,11 +55,11 @@ export type BoardPrintOptions = {
 };
 
 export const DEFAULT_BOARD_PRINT_OPTIONS: BoardPrintOptions = {
-  includeUpcoming: false,
+  includeUpcoming: true,
   includeCompleted: false,
-  includeNotes: false,
-  includeDue: false,
-  includeSubtasks: false,
+  includeNotes: true,
+  includeDue: true,
+  includeSubtasks: true,
   includePhotos: false,
 };
 

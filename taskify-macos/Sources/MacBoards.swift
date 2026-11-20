@@ -457,6 +457,7 @@ struct MacTaskCard: View {
                 }.font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            MacTaskCreator(task: task, compact: true)
         }.padding(13).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? Color.accentColor : Color.primary.opacity(0.06), lineWidth: selected ? 2 : 1))
@@ -464,6 +465,28 @@ struct MacTaskCard: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(task.id)
             .accessibilityLabel(task.title)
+    }
+}
+
+struct MacTaskCreator: View {
+    @Environment(AppModel.self) private var model
+    let task: TaskItem
+    var compact = false
+
+    var body: some View {
+        let author = model.board(withID: task.boardID).flatMap { model.taskCreatorKey(for: task, board: $0) }
+        if let author, let contact = model.taskCreatorContact(publicKey: author) {
+            Group {
+                if compact {
+                    MacContactAvatar(contact: contact, size: 22, initialsOverride: contact.taskCreatorInitials)
+                } else {
+                    LabeledContent("Created by", value: contact.taskCreatorName)
+                }
+            }
+            .help("Created by \(contact.taskCreatorName)")
+            .accessibilityLabel("Created by \(contact.taskCreatorName)")
+            .task(id: author) { model.requestTaskCreatorProfile(publicKey: author) }
+        }
     }
 }
 

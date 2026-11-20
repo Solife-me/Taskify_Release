@@ -151,6 +151,8 @@ function CardComponent({
   task,
   meta,
   trailing,
+  creatorName,
+  creatorInitials,
   onComplete,
   onEdit,
   onDropBefore,
@@ -173,6 +175,8 @@ function CardComponent({
   task: Task;
   meta?: React.ReactNode;
   trailing?: React.ReactNode;
+  creatorName?: string;
+  creatorInitials?: string;
   syncPending?: boolean;
   onComplete: (from?: DOMRect) => void;
   onEdit: () => void;
@@ -459,7 +463,7 @@ function CardComponent({
             </div>
           ) : null}
         </div>
-        {(syncPending || trailing) ? (
+        {(syncPending || trailing || creatorName) ? (
           <div className="task-card__trailing">
             {syncPending ? (
               <span
@@ -469,6 +473,16 @@ function CardComponent({
                 title="Syncing to relays"
               />
             ) : null}
+            {creatorName && (
+              <span
+                className="contact-avatar !w-6 !h-6 !text-xs"
+                role="img"
+                aria-label={`Created by ${creatorName}`}
+                title={`Created by ${creatorName}`}
+              >
+                {creatorInitials}
+              </span>
+            )}
             {trailing}
           </div>
         ) : null}

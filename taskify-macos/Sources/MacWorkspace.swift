@@ -46,6 +46,7 @@ struct MacWorkspace: View {
     @EnvironmentObject private var runtime: MacRuntime
     let initialLink: URL?
     @SceneStorage("mac.destination") private var destination = "today"
+    @SceneStorage("mac.destinationAccount") private var destinationAccount = ""
     @State private var search = ""
     @State private var selectedTaskID: String?
     @State private var editingTask: TaskItem?
@@ -64,6 +65,7 @@ struct MacWorkspace: View {
     @State private var splitChatDrafts = MacChatDraftStore()
     @State private var splitChatSelection: String?
     @State private var printingChecklist = false
+    @State private var boardToShare: Board?
     @State private var pendingLink: URL?
     @State private var didHandleInitialLink = false
 
@@ -86,6 +88,7 @@ struct MacWorkspace: View {
             MacWorkspaceSidebar(
                 destination: $destination,
                 boardToManage: $boardToManage,
+                boardToShare: $boardToShare,
                 splitDestination: splitDestination,
                 newBoard: { creatingBoard = true },
                 openSplit: { openSplitView($0) },
@@ -129,14 +132,14 @@ struct MacWorkspace: View {
         .sheet(isPresented: $creatingEvent) { MacEventEditor(event: nil, initialBoardID: commandBoardID) }
         .sheet(isPresented: $creatingBoard) { MacBoardEditor(board: nil) }
         .sheet(item: $boardToManage) { board in MacBoardEditor(board: board) }
+        .sheet(item: $boardToShare) { board in MacBoardSharePicker(board: board) }
         .sheet(isPresented: $printingChecklist) {
             if let board {
                 MacPrintChecklistSheet(
                     title: board.name,
                     ownerID: "board:\(board.effectiveNostrBoardID)",
                     allItems: MacChecklistItems.forBoard(board, model: model),
-                    groups: MacChecklistItems.groups(forBoard: board, model: model),
-                    includeCompletedDefault: runtime.completedTabEnabled
+                    groups: MacChecklistItems.groups(forBoard: board, model: model)
                 )
             }
         }
@@ -173,6 +176,7 @@ struct MacWorkspace: View {
         creatingBoard = false
         boardToManage = nil
         printingChecklist = false
+        boardToShare = nil
         selectedTaskID = nil
         chatSelection = nil
         chatDrafts.removeAll()
@@ -196,6 +200,7 @@ struct MacWorkspace: View {
     }
 
     private func handleAppear() {
+        validateRestoredDestinationAccount()
         if model.board(withID: destination) == nil,
            MacDestination(rawValue: destination) == nil {
             destination = "today"
@@ -208,9 +213,20 @@ struct MacWorkspace: View {
 
     private func handleLoadingChange(_ isLoading: Bool) {
         guard !isLoading else { return }
+        validateRestoredDestinationAccount()
         handlePendingDestination(notificationRouter.pendingDestination)
         guard let pendingLink else { return }
         openWhenReady(pendingLink)
+    }
+
+    private func validateRestoredDestinationAccount() {
+        let account = model.identityPublicKey
+        guard !account.isEmpty else { return }
+        // SceneStorage survives the account-keyed view replacement.
+        if !destinationAccount.isEmpty, destinationAccount != account {
+            destination = "today"
+        }
+        destinationAccount = account
     }
 
     private func openSearchableItem(_ activity: NSUserActivity) {
@@ -475,6 +491,7 @@ private struct MacWorkspaceSidebar: View {
     @Environment(AppModel.self) private var model
     @Binding var destination: String
     @Binding var boardToManage: Board?
+    @Binding var boardToShare: Board?
     let splitDestination: String?
     let newBoard: () -> Void
     let openSplit: (String) -> Void
@@ -587,9 +604,13 @@ private struct MacWorkspaceSidebar: View {
             Button("Board Settings…") { boardToManage = board }
             Button("Move Up") { _ = model.moveBoard(boardID: board.id, direction: -1) }
             Button("Move Down") { _ = model.moveBoard(boardID: board.id, direction: 1) }
-            Button("Copy Board Share") {
-                if let value = try? BoardShareContract.encode(board: board) {
-                    macCopyExpiring(value)
+            if board.kind != .bible {
+                Button("Send Board to Chat…") { boardToShare = board }
+                Button("Copy Board Share") {
+                    if let value = try? BoardShareContract.encode(board: board) {
+                        macCopyExpiring(value)
+                        model.markBoardAsShared(boardID: board.effectiveNostrBoardID)
+                    }
                 }
             }
             Button("Archive Board") {
@@ -635,7 +656,7 @@ private struct MacWorkspaceSidebar: View {
         relativeTo targetBoard: Board,
         placeAfter: Bool
     ) -> Bool {
-        let orderedIDs = model.visibleBoards.map(\.id)
+        let orderedIDs = model.visibleBoards.filter { $0.kind != .bible }.map(\.id)
         guard let movingBoardID = values.first(where: orderedIDs.contains),
               let sourceIndex = orderedIDs.firstIndex(of: movingBoardID),
               let finalIndex = MacBoardReorder.finalIndex(
@@ -646,11 +667,7 @@ private struct MacWorkspaceSidebar: View {
               ) else { return false }
         guard sourceIndex != finalIndex else { return true }
 
-        let direction = finalIndex > sourceIndex ? 1 : -1
-        for _ in 0..<abs(finalIndex - sourceIndex) {
-            guard model.moveBoard(boardID: movingBoardID, direction: direction) else { break }
-        }
-        return true
+        return model.moveBoard(boardID: movingBoardID, toPositionOf: orderedIDs[finalIndex])
     }
 }
 
@@ -789,6 +806,7 @@ struct MacTaskInspector: View {
             VStack(alignment: .leading, spacing: 20) {
                 Label("TASK DETAILS", systemImage: "slider.horizontal.3").font(.caption).foregroundStyle(.secondary)
                 Text(task.title).font(.title2.bold()).textSelection(.enabled)
+                MacTaskCreator(task: task)
                 Button(task.completed ? "Mark Incomplete" : "Complete Task", systemImage: task.completed ? "arrow.uturn.backward" : "checkmark.circle") { model.toggleCompletion(task.id) }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("complete-task-button")

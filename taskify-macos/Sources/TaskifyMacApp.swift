@@ -694,6 +694,7 @@ final class MacApplicationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let runtime, !terminating else { return .terminateNow }
+        if runtime.configuration.uiTest == nil, MacLocalReset.isPending { return .terminateNow }
         terminating = true
         Task {
             let saved = await runtime.model.persistBeforeTermination()
@@ -704,12 +705,53 @@ final class MacApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+@MainActor
+private final class MacLaunchState: ObservableObject {
+    @Published private(set) var runtime: MacRuntime?
+    @Published private(set) var resetError: String?
+    private let configuration: MacRuntimeConfiguration
+
+    init(configuration: MacRuntimeConfiguration) {
+        self.configuration = configuration
+        open()
+    }
+
+    func open() {
+        guard runtime == nil else { return }
+        do {
+            if configuration.uiTest == nil { try MacLocalReset.finishIfRequested() }
+            resetError = nil
+            runtime = MacRuntime(configuration: configuration)
+#if TASKIFY_MAC_SHORTCUTS
+            TaskifyShortcuts.updateAppShortcutParameters()
+#endif
+        } catch {
+            resetError = error.localizedDescription
+        }
+    }
+}
+
+private struct MacRuntimeContent<Content: View>: View {
+    @ObservedObject var runtime: MacRuntime
+    @ViewBuilder var content: (MacRuntime) -> Content
+
+    var body: some View {
+        content(runtime)
+            // Discard transient state in each window at the account boundary.
+            .id(runtime.model.identityPublicKey)
+            .environment(runtime.model)
+            .environmentObject(runtime.bible)
+            .environmentObject(runtime.calendar)
+            .environmentObject(runtime)
+    }
+}
+
 @main
 @MainActor
 struct TaskifyMacApp: App {
     @NSApplicationDelegateAdaptor(MacApplicationDelegate.self) private var delegate
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var runtime: MacRuntime
+    @StateObject private var launch: MacLaunchState
 
     init() {
 #if TASKIFY_MAC_UI_TEST
@@ -717,44 +759,49 @@ struct TaskifyMacApp: App {
 #else
         let configuration = MacRuntimeConfiguration.production
 #endif
-        _runtime = StateObject(wrappedValue: MacRuntime(configuration: configuration))
-#if TASKIFY_MAC_SHORTCUTS
-        // Keep the system's parameter and phrase data current after a Mac launch, matching iOS.
-        TaskifyShortcuts.updateAppShortcutParameters()
-#endif
+        _launch = StateObject(wrappedValue: MacLaunchState(configuration: configuration))
     }
 
     var body: some Scene {
         WindowGroup {
-            MacWorkspace(initialLink: runtime.configuration.uiTest?.initialLink)
-                // Rebuild every window's transient selection, editor, draft and split-view state
-                // at the account boundary instead of relying on each sheet to notice the swap.
-                .id(runtime.model.identityPublicKey)
-                .environment(runtime.model)
-                .environmentObject(runtime.bible)
-                .environmentObject(runtime.calendar)
-                .environmentObject(runtime)
-                .frame(minWidth: 850, minHeight: 560)
-                .task(id: "\(runtime.model.identityPublicKey):\(runtime.model.isLoading)") {
-                    delegate.runtime = runtime
-                    await runtime.start()
+            if let runtime = launch.runtime {
+                MacRuntimeContent(runtime: runtime) { runtime in
+                    MacWorkspace(initialLink: runtime.configuration.uiTest?.initialLink)
+                        .frame(minWidth: 850, minHeight: 560)
+                        .task(id: "\(runtime.model.identityPublicKey):\(runtime.model.isLoading)") {
+                            delegate.runtime = runtime
+                            await runtime.start()
+                        }
                 }
+            } else {
+                resetRecovery
+            }
         }
         .defaultSize(width: 1280, height: 820)
         .commands { MacCommands() }
         .onChange(of: scenePhase) { _, phase in
+            guard let runtime = launch.runtime else { return }
             if phase == .active { runtime.resume() }
             if phase == .background { runtime.model.flushAppStateSync() }
         }
         Settings {
-            MacSettingsView()
-                .id(runtime.model.identityPublicKey)
-                .environment(runtime.model)
-                .environmentObject(runtime.bible)
-                .environmentObject(runtime.calendar)
-                .environmentObject(runtime)
-                .frame(width: 640, height: 580)
+            if let runtime = launch.runtime {
+                MacRuntimeContent(runtime: runtime) { _ in
+                    MacSettingsView().frame(width: 640, height: 580)
+                }
+            } else {
+                resetRecovery
+            }
         }
+    }
+
+    private var resetRecovery: some View {
+        VStack(spacing: 12) {
+            Text("Taskify could not finish the local reset.").font(.headline)
+            if let error = launch.resetError { Text(error).foregroundStyle(.secondary) }
+            Button("Retry Reset") { launch.open() }
+        }
+        .padding(30)
     }
 }
 

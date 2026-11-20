@@ -10,6 +10,20 @@ Taskify is an offline-friendly personal task board built with React, TypeScript,
 - ☁️ Cloudflare Worker API stores subscriptions, schedules reminders, and pings devices via VAPID-secured Web Push.
 - 📦 Worker also serves the static Vite build, so the full app runs on Workers instead of Pages.
 
+## Boards and local data
+
+Open a board's Share dialog and choose **Send to chat** to find a saved contact
+or group conversation. Board settings open the same recipient picker. Shared
+task cards and the task editor show the original creator, with initials from a
+saved contact when available. **Settings → Boards & Lists** offers drag and drop
+and move buttons for touch and keyboard use. Board checklists include upcoming
+tasks, notes, due dates, and subtasks by default.
+
+**Settings → Reset local data** clears Taskify's saved key, settings, tasks,
+messages, pending sync queue, and wallet data in this browser. Save your key
+and back up local data first. Taskify returns to first-run setup after the
+reset. Copies already published to Nostr relays remain available there.
+
 ## Prerequisites
 
 - Node.js 22.13+

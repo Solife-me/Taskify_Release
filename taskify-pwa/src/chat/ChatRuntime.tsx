@@ -1522,6 +1522,10 @@ persistBlockedPeers,
     groupAvatarMembersFor,
     groupChats,
     groupChatsRef,
+    boardShareGroups: groupChats.filter((group) =>
+      group.members.includes(nostrIdentityInfo.identity?.pubkey ?? "") &&
+      !dmLeftGroupsRef.current.has(group.groupId.toLowerCase()),
+    ),
     groupInfoTab,
     groupMembersSearch,
     groupNameDraft,

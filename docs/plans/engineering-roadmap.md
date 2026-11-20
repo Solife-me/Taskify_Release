@@ -135,6 +135,15 @@ The iOS Settings board reorder test drags a board, relaunches the app, and check
 the saved order in Settings and the board switcher. Snapshot coverage checks
 long-distance moves around archived, hidden, and Bible boards.
 
+## Board Sharing and Local Reset Coverage
+
+The PWA reset tests use disposable IndexedDB databases and verify that a
+blocked deletion retains the marker for the next launch. Group board share
+tests decrypt each recipient's copy and verify routing, group membership, and
+the common message ID. macOS uses the native board-share and creator lookup
+paths shared with iOS. The PWA board settings test moves a board without
+dragging and checks that the Bible Tracker stays in place.
+
 ## Native Board Performance Coverage (2026-09-12)
 
 `SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,

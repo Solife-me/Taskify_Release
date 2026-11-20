@@ -211,9 +211,12 @@ public enum MacAccountStoragePaths {
     }
 
     public static func accountDirectory(primaryURL: URL, accountID: String) -> URL {
+        accountsDirectory(primaryURL: primaryURL).appendingPathComponent(accountID, isDirectory: true)
+    }
+
+    public static func accountsDirectory(primaryURL: URL) -> URL {
         primaryURL.deletingLastPathComponent()
             .appendingPathComponent("taskify-accounts", isDirectory: true)
-            .appendingPathComponent(accountID, isDirectory: true)
     }
 }
 
