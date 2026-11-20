@@ -7,12 +7,19 @@ export type FileServerEntry = {
 };
 
 export const DEFAULT_PUBLIC_FILE_STORAGE_SERVER = "https://nostr.build";
-export const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = "https://originless.solife.me";
+export const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = "https://blossom.solife.me";
 export const DEFAULT_FILE_STORAGE_SERVER = DEFAULT_PUBLIC_FILE_STORAGE_SERVER;
+/**
+ * The managed Blossom service used for new encrypted uploads. Deployments can point at another
+ * instance with VITE_MANAGED_BLOSSOM_URL.
+ */
+export const MANAGED_BLOSSOM_SERVER = normalizeFileServerUrl(
+  (import.meta as any)?.env?.VITE_MANAGED_BLOSSOM_URL || "",
+) || "https://blossom.solife.me";
 
 export const DEFAULT_FILE_SERVERS: FileServerEntry[] = [
   { url: "https://nostr.build", type: "nip96", label: "nostr.build" },
-  { url: "https://blossom.band", type: "blossom", label: "blossom.band" },
+  { url: "https://blossom.solife.me", type: "blossom", label: "blossom.solife.me" },
   // originless.besoeasy.com dropped in August 2026: the hostname stopped resolving, so picking it
   // failed at DNS with nothing to explain why.
   { url: "https://originless.solife.me", type: "originless", label: "originless.solife.me" },
@@ -75,3 +82,9 @@ export function findServerEntry(servers: FileServerEntry[], url: string): FileSe
   const normalized = normalizeFileServerUrl(url) || url;
   return servers.find((entry) => (normalizeFileServerUrl(entry.url) || entry.url) === normalized);
 }
+
+export const MANAGED_BLOSSOM_FILE_SERVER: FileServerEntry = {
+  url: MANAGED_BLOSSOM_SERVER,
+  type: "blossom",
+  label: "Managed Blossom",
+};

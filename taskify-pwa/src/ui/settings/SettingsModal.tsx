@@ -32,6 +32,8 @@ export function SettingsModal({
   defaultRelays,
   setDefaultRelays,
   pubkeyHex,
+  signerKey,
+  tasks,
   onGenerateKey,
   onSetKey,
   onShareBoard,
@@ -65,6 +67,8 @@ export function SettingsModal({
   defaultRelays: string[];
   setDefaultRelays: (rls: string[]) => void;
   pubkeyHex: string;
+  signerKey: string;
+  tasks: Task[];
   onGenerateKey: () => Promise<void>;
   onSetKey: (hex: string) => Promise<void>;
   onShareBoard: (boardId: string, relaysCsv?: string) => void;
@@ -202,10 +206,16 @@ export function SettingsModal({
       </SettingsAccordion>
 
       <SettingsAccordion
-        title="Storage & file servers"
-        summary="Choose public and encrypted attachment hosts"
+        title="Storage"
+        summary="Usage, purchases, inventory, and attachment hosts"
       >
-        <StorageSection settings={settings} setSettings={setSettings} />
+        <StorageSection
+          settings={settings}
+          setSettings={setSettings}
+          pubkeyHex={pubkeyHex}
+          signerKey={signerKey}
+          tasks={tasks}
+        />
       </SettingsAccordion>
 
       <SettingsAccordion

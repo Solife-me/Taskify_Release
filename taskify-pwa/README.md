@@ -47,6 +47,7 @@ Environment variables:
 
 - `VITE_WORKER_BASE_URL` – Base URL for your deployed Worker (no trailing slash). Example: `https://taskify-worker.your-name.workers.dev`
 - `VITE_VAPID_PUBLIC_KEY` – Base64url-encoded VAPID public key. Generate alongside the private key during Worker setup.
+- `VITE_MANAGED_BLOSSOM_URL` – Optional managed Blossom base URL. The built-in default is `https://blossom.solife.me`. The URL can also be changed from Settings → Storage.
 
 Run the Vite dev server:
 
@@ -151,7 +152,7 @@ npm run check:startup
 
 | Location | Purpose |
 | --- | --- |
-| `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY` |
+| `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY`, optional `VITE_MANAGED_BLOSSOM_URL` |
 | `wrangler.toml` | Worker name, D1 database, rate limiters, VAPID `[vars]`, asset config |
 | Worker vars/secrets | `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`, `VAPID_PRIVATE_KEY` |
 

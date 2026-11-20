@@ -15,7 +15,12 @@ import { encryptAndUploadAttachment } from "./attachmentCrypto";
 describe("encrypted task attachment uploads", () => {
   beforeEach(() => {
     mocks.uploadFile.mockReset();
-    mocks.uploadFile.mockResolvedValue({ url: "https://files.example/opaque.bin" });
+    mocks.uploadFile.mockResolvedValue({
+      url: "https://files.example/opaque.bin",
+      serverUrl: "https://originless.example",
+      retention: "protected",
+      protectedUntil: 1_900_000_000,
+    });
   });
 
   test("never sends the original filename to the file host", async () => {
@@ -28,7 +33,10 @@ describe("encrypted task attachment uploads", () => {
       nostrSkHex: "1".repeat(64),
     });
 
-    expect(remote).toBe("https://files.example/opaque.bin");
+    expect(remote.url).toBe("https://files.example/opaque.bin");
+    expect(remote.ciphertextSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(remote.serverUrl).toBe("https://originless.example");
+    expect(remote.retention).toBe("protected");
     const upload = mocks.uploadFile.mock.calls[0]?.[0];
     expect(upload).toBeDefined();
     expect(upload.filename).toMatch(/^[0-9a-f]{64}\.bin$/);

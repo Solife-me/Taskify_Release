@@ -36,6 +36,8 @@ function renderSettings(container: HTMLElement, root: ReturnType<typeof createRo
       defaultRelays={[]}
       setDefaultRelays={vi.fn()}
       pubkeyHex=""
+      signerKey=""
+      tasks={[]}
       onGenerateKey={vi.fn()}
       onSetKey={vi.fn()}
       onShareBoard={vi.fn()}

@@ -3,6 +3,15 @@ import { useEffect, useState } from "react";
 import type { TaskDocument } from "../../../lib/documents";
 import { startUploadingDotsTimer, type UploadingDocumentRow } from "../../task/uploadProgress";
 
+function protectionLabel(doc: TaskDocument): string | null {
+  if (doc.retention === "standard") return "Standard retention";
+  if (doc.retention === "protected") {
+    if (!doc.protectedUntil) return "Protected";
+    return `Protected until ${new Date(doc.protectedUntil * 1000).toLocaleDateString()}`;
+  }
+  return null;
+}
+
 export function AttachmentList({
   documents,
   uploading = [],
@@ -48,7 +57,19 @@ export function AttachmentList({
         <li key={doc.id} className="doc-edit-row">
           <div className="doc-edit-row__info">
             <div className="doc-edit-row__name" title={doc.name}>{doc.name}</div>
-            <div className="doc-edit-row__meta">{doc.kind.toUpperCase()}</div>
+            <div className="doc-edit-row__meta">
+              {doc.kind.toUpperCase()}
+              {protectionLabel(doc) ? (
+                <span
+                  className={doc.retention === "standard" ? "ml-2 text-amber-500" : "ml-2 text-emerald-500"}
+                  title={doc.retention === "standard"
+                    ? "Stored under the server's standard inactivity rules, without a protection date."
+                    : "Stored in protected Blossom storage."}
+                >
+                  · {protectionLabel(doc)}
+                </span>
+              ) : null}
+            </div>
           </div>
           <div className="doc-edit-row__actions">
             <button type="button" className="ghost-button button-sm pressable" onClick={() => onPreview?.(doc)}>

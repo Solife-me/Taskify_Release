@@ -95,6 +95,9 @@ export type MessengerEncryptedUpload = {
   algorithm: typeof MESSENGER_ATTACHMENT_ALGO;
   width?: number;
   height?: number;
+  storageServer?: string;
+  retention?: "protected" | "standard";
+  protectedUntil?: number;
 };
 
 export async function encryptAndUploadMessengerAttachment(opts: {
@@ -163,6 +166,9 @@ export async function encryptAndUploadMessengerAttachment(opts: {
     keyHex: bytesToHex(keyBytes),
     nonceHex: bytesToHex(nonceBytes),
     algorithm: MESSENGER_ATTACHMENT_ALGO,
+    storageServer: upload.serverUrl || opts.serverEntry.url,
+    ...(upload.retention ? { retention: upload.retention } : {}),
+    ...(upload.protectedUntil ? { protectedUntil: upload.protectedUntil } : {}),
     ...(opts.width ? { width: opts.width } : {}),
     ...(opts.height ? { height: opts.height } : {}),
   };

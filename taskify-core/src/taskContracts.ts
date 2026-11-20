@@ -69,6 +69,12 @@ export type TaskDocument = {
   remoteUrl?: string;
   encrypted?: boolean;
   encryptionBoardId?: string;
+  /** Blossom-only metadata. Other clients may ignore these optional fields. */
+  ciphertextSha256?: string;
+  storageServer?: string;
+  retention?: "protected" | "standard";
+  /** Unix seconds, as returned by the upload response. */
+  protectedUntil?: number;
 };
 export type InboxItem =
   | { type: "board"; boardId: string; boardName?: string; relays?: string[]; sender: InboxSender; receivedAt: string; status?: InboxItemStatus; dmEventId?: string }

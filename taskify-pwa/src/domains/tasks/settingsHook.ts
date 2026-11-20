@@ -3,6 +3,7 @@ import {
   DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
   DEFAULT_FILE_SERVERS,
   DEFAULT_FILE_STORAGE_SERVER,
+  MANAGED_BLOSSOM_SERVER,
   findServerEntry,
   normalizeFileServerUrl,
   parseFileServers,
@@ -63,7 +64,7 @@ function defaultPublicFileServers(): string {
 }
 
 function defaultEncryptedFileServers(): string {
-  return serializeFileServers(DEFAULT_FILE_SERVERS.filter((server) => server.type === "originless"));
+  return serializeFileServers(DEFAULT_FILE_SERVERS.filter((server) => server.type === "blossom" || server.type === "originless"));
 }
 
 function pickStartupBoard(boards: Board[], overrides?: Partial<Record<Weekday, string>>): string {
@@ -184,6 +185,12 @@ export function useSettingsSync(
             ? parsed.encryptedFileStorageServer.trim()
             : DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
         ) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
+      const managedBlossomServer =
+        normalizeFileServerUrl(
+          typeof parsed?.managedBlossomServer === "string" && parsed.managedBlossomServer.trim()
+            ? parsed.managedBlossomServer.trim()
+            : MANAGED_BLOSSOM_SERVER,
+        ) || MANAGED_BLOSSOM_SERVER;
       const nostrBackupEnabled = parsed?.nostrBackupEnabled !== false;
       const nostrBackupMetadataEnabled = nostrBackupEnabled;
 
@@ -289,6 +296,7 @@ export function useSettingsSync(
         walletContactsSyncEnabled,
         fileStorageServer,
         encryptedFileStorageServer,
+        managedBlossomServer,
         fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
           ? parsed.fileServers.trim()
           : defaultPublicFileServers(),
@@ -333,6 +341,7 @@ export function useSettingsSync(
         walletContactsSyncEnabled: true,
         fileStorageServer: DEFAULT_FILE_STORAGE_SERVER,
         encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
+        managedBlossomServer: MANAGED_BLOSSOM_SERVER,
         fileServers: defaultPublicFileServers(),
         encryptedFileServers: defaultEncryptedFileServers(),
         lightningAddressProvider: "solife.me",
@@ -399,6 +408,18 @@ export function useSettingsSync(
       } else {
         next.encryptedFileStorageServer =
           normalizeFileServerUrl(next.encryptedFileStorageServer) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
+      }
+      if (Object.prototype.hasOwnProperty.call(s, "managedBlossomServer")) {
+        const rawServer = s.managedBlossomServer;
+        next.managedBlossomServer =
+          typeof rawServer === "string" && rawServer.trim()
+            ? normalizeFileServerUrl(rawServer) || MANAGED_BLOSSOM_SERVER
+            : MANAGED_BLOSSOM_SERVER;
+      } else if (!next.managedBlossomServer) {
+        next.managedBlossomServer = MANAGED_BLOSSOM_SERVER;
+      } else {
+        next.managedBlossomServer =
+          normalizeFileServerUrl(next.managedBlossomServer) || MANAGED_BLOSSOM_SERVER;
       }
       if (Object.prototype.hasOwnProperty.call(s, "fileServers")) {
         const rawServers = s.fileServers;
