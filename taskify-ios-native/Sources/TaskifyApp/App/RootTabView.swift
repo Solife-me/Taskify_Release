@@ -51,8 +51,8 @@ struct RootTabView: View {
     @State private var showingAddBoardFromSidebar = false
     /// Pushed in by `ChatUnreadCountReader`, so this view re-renders only when the number changes.
     @State private var chatUnreadCount = 0
-    /// A task opened from Spotlight, shown in its editor over its board.
-    @State private var searchedTask: SearchedTask?
+    /// The editor can outlive the card that opened it when its board or scroll viewport changes.
+    @State private var taskToEdit: TaskItem?
     /// Reading the revision here — rather than the raw appearance flag in each card — is what makes
     /// `taskifyOverPhoto` update the moment a background is chosen or cleared in Settings.
     @AppStorage(TaskifyAppearanceSettings.revisionKey) private var appearanceRevision = ""
@@ -79,6 +79,7 @@ struct RootTabView: View {
 
     var body: some View {
         content
+            .environment(\.openTaskEditor, { taskToEdit = $0 })
             .environment(\.taskifyOverPhoto, {
                 _ = appearanceRevision
                 return TaskifyAppearanceSettings.hasBackgroundImage
@@ -100,15 +101,11 @@ struct RootTabView: View {
                 guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
                       let task = model.task(withID: id) else { return }
                 handle(.task(id: id, boardID: task.boardID))
-                searchedTask = SearchedTask(id: id)
+                taskToEdit = task
             }
-            .sheet(item: $searchedTask) { searched in
-                if let task = model.task(withID: searched.id) {
-                    TaskEditorView(task: task)
-                        .environment(model)
-                        .presentationDetents([.large])
-                        .presentationDragIndicator(.visible)
-                }
+            .fullScreenCover(item: $taskToEdit) { task in
+                TaskEditorView(task: task)
+                    .environment(model)
             }
             .sheet(item: $listScanRequest) { request in
                 TaskifyListScanSheet(request: request)
@@ -764,7 +761,13 @@ struct TaskifyKeyboardCommands: Commands {
     }
 }
 
-/// A task opened from a Spotlight result.
-private struct SearchedTask: Identifiable {
-    let id: String
+private struct OpenTaskEditorKey: EnvironmentKey {
+    static let defaultValue: (TaskItem) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var openTaskEditor: (TaskItem) -> Void {
+        get { self[OpenTaskEditorKey.self] }
+        set { self[OpenTaskEditorKey.self] = newValue }
+    }
 }

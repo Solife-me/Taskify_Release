@@ -159,6 +159,8 @@ acceptance checks remain manual. See [native board performance](../audits/native
 `ScrollPerformanceUITests` also verifies that an existing task can be renamed, annotated, and
 given a subtask in one editing session, with focus preserved during upward scrolling and moved
 to the new subtask as soon as it is added.
+It also checks that switching the board behind an open list task keeps the editor and its
+unsaved changes available, with all edits saved to the original task.
 
 ## Definition of Done
 

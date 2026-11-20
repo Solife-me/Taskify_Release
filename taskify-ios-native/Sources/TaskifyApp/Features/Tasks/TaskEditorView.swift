@@ -216,6 +216,9 @@ struct TaskEditorView: View {
                     editorForm
                 }
             }
+            .background {
+                TaskifyAppBackground()
+            }
             .navigationTitle(taskID == nil ? "New Task" : "Edit Task")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -582,6 +585,7 @@ struct TaskEditorView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
     }
 
