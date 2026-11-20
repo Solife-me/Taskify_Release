@@ -582,13 +582,7 @@ struct TaskEditorView: View {
                 }
             }
         }
-        .scrollDismissesKeyboard(keyboardDismissMode)
-    }
-
-    private var keyboardDismissMode: ScrollDismissesKeyboardMode {
-        // Keep the keyboard in place while scrolling up to reveal inline subtask fields.
-        if case .subtask = focusedField { return .interactively }
-        return .immediately
+        .scrollDismissesKeyboard(.interactively)
     }
 
     /// Copies the task as edited, unsaved changes included, as the PWA's Copy Task does.
@@ -1059,7 +1053,9 @@ struct TaskEditorView: View {
             }
 
             Button {
-                subtasks.append(TaskSubtask(title: ""))
+                let subtask = TaskSubtask(title: "")
+                subtasks.append(subtask)
+                focusedField = .subtask(subtask.id)
             } label: {
                 Label("Add subtask", systemImage: "plus.circle.fill")
             }

@@ -415,7 +415,7 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertEqual(noteText.value as? String, "Keyboard handoff")
     }
 
-    func testExistingTaskKeepsKeyboardOpenWhenAddingNoteAndSubtask() throws {
+    func testExistingTaskCanBeRenamedAndAddNotesAndSubtasks() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launchEnvironment["TASKIFY_UI_TEST_BOARD_FIXTURE"] = "1"
@@ -434,33 +434,46 @@ final class ScrollPerformanceUITests: XCTestCase {
 
         let editor = app.navigationBars["Edit Task"]
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
-        app.textFields["Title"].tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
-        app.buttons["task-editor-notes"].tap()
+        let title = app.textFields["Title"]
+        title.tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 3))
+        // On a small screen, the form needs to scroll without ending the current edit.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.38))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.30))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.15)
+        XCTAssertTrue(keyboard.exists, "Scrolling up should keep the title keyboard open")
+        title.typeText(" renamed")
+        let renamedTitle = try XCTUnwrap(title.value as? String).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertTrue(renamedTitle.contains("renamed"))
+        let notesButton = app.buttons["task-editor-notes"]
+        if !notesButton.isHittable {
+            end.press(forDuration: 0.05, thenDragTo: start, withVelocity: .slow, thenHoldForDuration: 0.15)
+        }
+        notesButton.tap()
         let note = app.textViews["task-note-editor-text"]
         XCTAssertTrue(note.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 3))
         note.typeText("Remember the receipt")
         XCTAssertEqual(note.value as? String, "Remember the receipt")
         app.buttons["task-note-editor-done"].tap()
 
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5))
         app.buttons["task-editor-subtasks"].tap()
         app.buttons["Add subtask"].tap()
         let subtask = app.textFields["Subtask"]
         XCTAssertTrue(subtask.waitForExistence(timeout: 5))
-        subtask.tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 3), "Add subtask should focus the new row")
         subtask.typeText("File")
         // Reposition the form a little to see more of the subtask rows above the keyboard.
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.38))
-        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.30))
         start.press(forDuration: 0.05, thenDragTo: end)
-        XCTAssertTrue(app.keyboards.firstMatch.exists, "Scrolling up should keep the subtask keyboard open")
+        XCTAssertTrue(keyboard.exists, "Scrolling up should keep the subtask keyboard open")
         subtask.typeText(" the receipt")
         XCTAssertEqual(subtask.value as? String, "File the receipt")
         editor.buttons["Save"].tap()
 
+        XCTAssertTrue(app.buttons["Edit \(renamedTitle)"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Complete File the receipt"].waitForExistence(timeout: 5))
         let savedNote = app.buttons["task-card-note"]
         XCTAssertTrue(savedNote.waitForExistence(timeout: 5))
@@ -522,19 +535,25 @@ final class ScrollPerformanceUITests: XCTestCase {
         openNewTaskEditor(app)
         XCTAssertTrue(app.navigationBars["New Task"].waitForExistence(timeout: 5))
 
-        // The full editor intentionally focuses the title. Dismiss its keyboard so the compact
-        // scheduling rows can be reached without the keyboard consuming the lower half of Form.
-        // It focuses a moment after opening, so wait for the keyboard before dismissing it.
-        if app.keyboards.element.waitForExistence(timeout: 2) {
-            app.swipeUp() // scrolling the form dismisses the keyboard
+        // Opening the date controls should dismiss the title keyboard.
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 3))
+        let dateRow = app.buttons["task-editor-date-row"]
+        if !dateRow.isHittable {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.55))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.29))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.15)
         }
-        XCTAssertTrue(app.keyboards.element.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(dateRow.isHittable)
+        dateRow.tap()
+        XCTAssertTrue(keyboard.waitForNonExistence(timeout: 3))
+        dateRow.tap() // Close the date picker so the repeat controls are visible.
 
         let repeatMenu = app.buttons["task-editor-repeat-menu"]
-        for _ in 0..<4 where !repeatMenu.exists {
+        for _ in 0..<4 where !repeatMenu.isHittable {
             app.swipeUp()
         }
-        XCTAssertTrue(repeatMenu.waitForExistence(timeout: 5))
+        XCTAssertTrue(repeatMenu.isHittable)
         repeatMenu.tap()
         XCTAssertTrue(app.buttons["Daily"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Weekdays"].exists)
@@ -550,10 +569,11 @@ final class ScrollPerformanceUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["task-editor-repeat-end-date"].waitForExistence(timeout: 3))
 
         let reminderMenu = app.buttons["task-editor-early-reminder-menu"]
-        for _ in 0..<3 where !reminderMenu.exists {
+        app.swipeUp()
+        for _ in 0..<3 where !reminderMenu.isHittable {
             app.swipeUp()
         }
-        XCTAssertTrue(reminderMenu.waitForExistence(timeout: 3))
+        XCTAssertTrue(reminderMenu.isHittable)
         reminderMenu.tap()
         XCTAssertTrue(app.buttons["5 minutes before"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["1 month before"].exists)

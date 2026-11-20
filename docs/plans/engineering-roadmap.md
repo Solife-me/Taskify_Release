@@ -153,6 +153,10 @@ Upcoming row identities, and repeated messaging writes against 5,000 additional 
 using 500 future tasks on one date and 500 completed tasks. Device relay-traffic and thermal
 acceptance checks remain manual. See [native board performance](../audits/native-board-performance-2026-09-12.md).
 
+`ScrollPerformanceUITests` also verifies that an existing task can be renamed, annotated, and
+given a subtask in one editing session, with focus preserved during upward scrolling and moved
+to the new subtask as soon as it is added.
+
 ## Definition of Done
 
 A milestone is complete when:
