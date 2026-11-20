@@ -1180,10 +1180,6 @@ struct SettingsView: View {
         model.visibleBoards.filter { $0.kind == .list }
     }
 
-    private var archivedBoards: [Board] {
-        model.boardsForManagement.filter(\.archived)
-    }
-
     private var createBoardButtonTitle: String {
         switch newBoardKind {
         case .week: "Create weekly board"
@@ -1208,6 +1204,7 @@ struct SettingsView: View {
 
     private var boardsCard: some View {
         let reorderableBoards = model.visibleBoards.filter { $0.kind != .bible }
+        let archivedBoards = model.boardsForManagement.filter(\.archived)
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -1319,50 +1316,57 @@ struct SettingsView: View {
             if !archivedBoards.isEmpty {
                 Divider()
 
-                Text("Archived")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(TaskifyTheme.secondaryText)
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(archivedBoards) { board in
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(board.name)
+                                        .foregroundStyle(TaskifyTheme.primaryText)
+                                    Text(boardSummary(board))
+                                        .font(.caption)
+                                        .foregroundStyle(TaskifyTheme.secondaryText)
+                                }
 
-                ForEach(archivedBoards) { board in
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(board.name)
-                                .foregroundStyle(TaskifyTheme.primaryText)
-                            Text(boardSummary(board))
-                                .font(.caption)
+                                Spacer()
+
+                                Button("Restore") {
+                                    _ = model.unarchiveBoard(boardID: board.id)
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button {
+                                    managingBoard = board
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                        .font(.title3)
+                                        .frame(width: 38, height: 38)
+                                }
+                                .buttonStyle(.plain)
                                 .foregroundStyle(TaskifyTheme.secondaryText)
+                                .accessibilityLabel("Manage \(board.name)")
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(TaskifyTheme.border, lineWidth: 1)
+                            )
                         }
 
-                        Spacer()
-
-                        Button("Restore") {
-                            _ = model.unarchiveBoard(boardID: board.id)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button {
-                            managingBoard = board
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.title3)
-                                .frame(width: 38, height: 38)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(TaskifyTheme.secondaryText)
-                        .accessibilityLabel("Manage \(board.name)")
+                        Text("Archived boards stay on this device and can be restored at any time.")
+                            .font(.caption2)
+                            .foregroundStyle(TaskifyTheme.tertiaryText)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(TaskifyTheme.raisedFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(TaskifyTheme.border, lineWidth: 1)
-                    )
+                    .padding(.top, 8)
+                } label: {
+                    Text("Archived")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(TaskifyTheme.secondaryText)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
-
-                Text("Archived boards stay on this device and can be restored at any time.")
-                    .font(.caption2)
-                    .foregroundStyle(TaskifyTheme.tertiaryText)
             }
 
             TextField("Board name", text: $newBoardName)

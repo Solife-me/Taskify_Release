@@ -507,6 +507,46 @@ final class BibleTrackerUITests: XCTestCase {
         XCTAssertLessThan(listOption.frame.midY, weekOption.frame.midY)
     }
 
+    func testArchivedBoardsStartCollapsedAndCanBeRestored() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
+        app.launch()
+        openSettings(app, group: "Boards")
+
+        let nameField = app.textFields["Board name"]
+        XCTAssertTrue(nameField.waitForExistence(timeout: 10))
+        nameField.tap()
+        nameField.typeText("Archive Test Board")
+        app.buttons["Create weekly board"].tap()
+
+        let manageBoard = app.buttons["Manage Archive Test Board"]
+        XCTAssertTrue(manageBoard.waitForExistence(timeout: 5))
+        manageBoard.tap()
+        let archive = app.buttons["Archive board"]
+        for _ in 0..<6 where !archive.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(archive.isHittable)
+        archive.tap()
+        XCTAssertTrue(archive.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(manageBoard.exists, "Archived rows should start hidden")
+
+        let archived = app.buttons["Archived"]
+        XCTAssertTrue(archived.waitForExistence(timeout: 5))
+        archived.tap()
+        XCTAssertTrue(manageBoard.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Restore"].exists)
+
+        archived.tap()
+        XCTAssertTrue(manageBoard.waitForNonExistence(timeout: 5))
+
+        archived.tap()
+        app.buttons["Restore"].tap()
+        XCTAssertTrue(archived.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(manageBoard.waitForExistence(timeout: 5), "Restoring should return the board to the active list")
+    }
+
     /// Assumes a fresh app install so the Week board's "today" column has exactly one task.
     func testTaskStreakBadge() throws {
         let app = XCUIApplication()

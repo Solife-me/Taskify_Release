@@ -135,6 +135,9 @@ The iOS Settings board reorder test drags a board, relaunches the app, and check
 the saved order in Settings and the board switcher. Snapshot coverage checks
 long-distance moves around archived, hidden, and Bible boards.
 
+The iOS archived-board Settings test checks that archived rows start hidden, can be
+shown and hidden again, and return to the active list after Restore.
+
 ## Board Sharing and Local Reset Coverage
 
 The PWA reset tests use disposable IndexedDB databases and verify that a
