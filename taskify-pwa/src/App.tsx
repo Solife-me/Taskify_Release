@@ -469,6 +469,7 @@ const isoForWeekday = isoForWeekdayLocal;
 
 /* ================= App ================= */
 export default function App() {
+  const sentBoardCopyHandlerRef = useRef<((event: NostrEvent) => Promise<void>) | null>(null);
   const { show: showToast } = useToast();
   const { vapidPublicKey, workerBaseUrl } = useRuntimeConfig({
     fallbackVapidPublicKey: FALLBACK_VAPID_PUBLIC_KEY,
@@ -3563,7 +3564,12 @@ export default function App() {
           relayList,
           senderNpub ? { npub: senderNpub } : undefined,
         );
-        await sendShareMessage(envelope, recipient, nostrSkHex, relayList);
+        const senderCopy = await sendShareMessage(envelope, recipient, nostrSkHex, relayList, defaultRelays);
+        if (senderCopy) {
+          void sentBoardCopyHandlerRef.current?.(senderCopy).catch((error: unknown) => {
+            console.warn("Could not show the sent board in chat", error);
+          });
+        }
         if (shareBoardMode === "board") markBoardShared(shareId);
         setShareContactPickerOpen(false);
         showToast(`Board sent to ${recipientName}`);
@@ -6699,6 +6705,7 @@ export default function App() {
           onDmUnreadCountChange={setDmUnreadCount}
           chatMessageRetention={settings.chatMessageRetention}
           onIncomingShare={handleIncomingShare}
+          sentBoardCopyHandlerRef={sentBoardCopyHandlerRef}
         >
           {shareBoardModalOpen && (
             <Suspense fallback={null}>

@@ -391,6 +391,8 @@ public struct SharedBoardDelivery: Codable, Equatable, Sendable {
     public var boardName: String?
     public var relayURLs: [String]?
 
+    public var displayName: String { boardName?.trimmedNilIfEmpty ?? "Shared board" }
+
     public init(boardID: String, boardName: String? = nil, relayURLs: [String]? = nil) {
         self.boardID = boardID
         self.boardName = boardName
@@ -415,8 +417,10 @@ public struct SharedBoardInboxItem: Identifiable, Codable, Equatable, Sendable {
     public var sender: SharedInboxSender
     public var board: SharedBoardDelivery
     public var receivedAt: Date
+    public var groupID: String?
     public var status: SharedInboxItemStatus
     public var respondedAt: Date?
+    public var conversationPublicKey: String { groupID ?? sender.publicKey.lowercased() }
 
     public init(
         wrapEventID: String,
@@ -424,6 +428,7 @@ public struct SharedBoardInboxItem: Identifiable, Codable, Equatable, Sendable {
         sender: SharedInboxSender,
         board: SharedBoardDelivery,
         receivedAt: Date,
+        groupID: String? = nil,
         status: SharedInboxItemStatus = .pending,
         respondedAt: Date? = nil
     ) {
@@ -432,6 +437,7 @@ public struct SharedBoardInboxItem: Identifiable, Codable, Equatable, Sendable {
         self.sender = sender
         self.board = board
         self.receivedAt = receivedAt
+        self.groupID = groupID?.lowercased()
         self.status = status
         self.respondedAt = respondedAt
     }
@@ -2483,6 +2489,24 @@ public extension TaskifySnapshot {
             if $0.status != $1.status { return $0.status == .pending }
             return $0.receivedAt > $1.receivedAt
         }
+    }
+
+    @discardableResult
+    mutating func routeLegacyGroupBoardShares() -> Bool {
+        guard var items = sharedBoardInboxItems else { return false }
+        let legacyRumorIDs = Set(items.filter { $0.groupID == nil }.map(\.rumorEventID))
+        guard !legacyRumorIDs.isEmpty else { return false }
+        // Older builds stored the group only on the accompanying chat message.
+        var groupIDs: [String: String] = [:]
+        for message in directMessages ?? [] where message.isIncoming && legacyRumorIDs.contains(message.rumorEventID) {
+            if let groupID = message.groupID { groupIDs[message.rumorEventID] = groupID }
+        }
+        guard !groupIDs.isEmpty else { return false }
+        for index in items.indices where items[index].groupID == nil {
+            items[index].groupID = groupIDs[items[index].rumorEventID]
+        }
+        sharedBoardInboxItems = items
+        return true
     }
 
     var acceptedTaskifyEvents: [TaskifyEvent] {

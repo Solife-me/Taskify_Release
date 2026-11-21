@@ -103,8 +103,9 @@ published to Nostr relays remain available there.
   dragged back onto the Boards header or a regular board row to restore them.
   Active boards can be dragged above or below another board to reorder them.
   Use **Send Board to Chat** from a board's sidebar context menu to search
-  saved contacts and group chats. Cards on shared boards show the creator's
-  initials or profile picture. The task inspector and editor show their name.
+  saved contacts and group chats. The conversation shows a named board card,
+  and recipients can join the board from it. Cards on shared boards show the
+  creator's initials or profile picture. The task inspector and editor show their name.
   Printed board checklists include upcoming tasks and offer a separate
   completed-task toggle.
 - Split View opens any workspace destination or board beside the current pane,

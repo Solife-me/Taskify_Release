@@ -446,11 +446,6 @@ struct SharedBoardChatCard: View {
     let isSearchMatch: Bool
     let isSelectedSearchResult: Bool
 
-    private var boardName: String {
-        let trimmed = item.board.boardName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "Shared board" : trimmed
-    }
-
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             sharedBoardAvatar
@@ -468,7 +463,7 @@ struct SharedBoardChatCard: View {
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(boardName)
+                    Text(item.board.displayName)
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(TaskifyTheme.primaryText)
                         .lineLimit(2)
@@ -1054,6 +1049,18 @@ struct DirectMessageBubble: View, Equatable {
             } else {
                 DirectMessageAttachmentView(attachment: attachment)
             }
+        } else if let board = message.sharedBoard {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("SHARED BOARD", systemImage: "square.grid.2x2")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(0.7)
+                    .foregroundStyle(TaskifyTheme.accent)
+                Text(board.displayName)
+                    .font(.headline)
+                    .foregroundStyle(TaskifyTheme.primaryText)
+            }
+            .padding(14)
+            .taskifyGlass(cornerRadius: 20)
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 if let detectedPaymentToken {

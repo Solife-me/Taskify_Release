@@ -80,12 +80,28 @@ enum MacUITestFixture {
         if !attachmentEntries.isEmpty {
             Task { await ChatAttachmentUITestFixture.seedDiskCache(attachmentEntries) }
         }
+        var messages = [message] + attachmentMessages
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_SENT_BOARD"] == "1" {
+            let envelope = TaskifyShareEnvelope(item: .board(SharedBoardDelivery(
+                boardID: "ui-test-sent-board", boardName: "Trip planning board"
+            )))
+            messages.append(NostrDirectMessage(
+                rumorEventID: String(repeating: "6", count: 64),
+                wrapEventID: String(repeating: "7", count: 64),
+                peerPublicKey: chatPeerPublicKey,
+                senderPublicKey: String(repeating: "5", count: 64),
+                content: try envelope.messageContent(),
+                createdAt: 1_700_000_030,
+                isIncoming: false,
+                deliveryState: .sent
+            ))
+        }
         let snapshot = TaskifySnapshot(
             boards: [board, weekBoard],
             tasks: [task],
             selectedBoardID: board.id,
             contacts: [contact],
-            directMessages: [message] + attachmentMessages
+            directMessages: messages
         )
         try JSONEncoder().encode(snapshot).write(to: configuration.storeURL, options: .atomic)
     }

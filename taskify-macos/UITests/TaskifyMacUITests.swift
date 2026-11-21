@@ -601,6 +601,28 @@ final class TaskifyMacUITests: XCTestCase {
         add(gallery)
     }
 
+    func testSentBoardRendersAsACardInChat() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString, "-ApplePersistenceIgnoreState", "YES"]
+        app.launchEnvironment["TASKIFY_UI_TEST_SENT_BOARD"] = "1"
+        app.launch()
+        if !app.windows.firstMatch.waitForExistence(timeout: 3) {
+            app.typeKey("n", modifierFlags: .command)
+        }
+
+        let chat = app.staticTexts["Chat"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        chat.click()
+        let contact = app.staticTexts["Paste Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 5))
+        contact.click()
+
+        XCTAssertTrue(app.staticTexts["SHARED BOARD"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Trip planning board"].exists)
+        XCTAssertTrue(app.staticTexts["Sent"].exists)
+        XCTAssertFalse(app.buttons["Join"].exists)
+    }
+
     private func waitForSpotlightItem(
         present: Bool,
         timeout: TimeInterval = 15

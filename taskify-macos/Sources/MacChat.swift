@@ -330,10 +330,12 @@ private struct MacConversation: View {
         let calendarInvites = model.sharedCalendarInviteItems.filter {
             $0.status != .deleted && $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame
         }
-        let sharedBoards = model.sharedBoardInboxItems.filter {
-            $0.status != .deleted && $0.sender.publicKey.caseInsensitiveCompare(peer) == .orderedSame
+        let boardShares = model.sharedBoardInboxItems.filter {
+            $0.conversationPublicKey.caseInsensitiveCompare(peer) == .orderedSame
         }
-        let structuredRumorIDs = Set(sharedTasks.map(\.rumorEventID) + calendarInvites.map(\.rumorEventID))
+        let structuredRumorIDs = Set(
+            sharedTasks.map(\.rumorEventID) + calendarInvites.map(\.rumorEventID) + boardShares.map(\.rumorEventID)
+        )
         let hermesProjection = HermesModelPickerProjection.project(
             messages: messages,
             enabled: !isGroup && model.isBot(publicKey: peer)
@@ -346,7 +348,7 @@ private struct MacConversation: View {
                 + sharedTasks.map(MacChatTimelineItem.sharedTask)
                 + sharedContacts.map(MacChatTimelineItem.sharedContact)
                 + calendarInvites.map(MacChatTimelineItem.calendarInvite)
-                + sharedBoards.map(MacChatTimelineItem.sharedBoard)
+                + boardShares.filter { $0.status != .deleted }.map(MacChatTimelineItem.sharedBoard)
         // Nostr timestamps have one-second resolution; preserve store order for ties so a reply
         // cannot move behind the message it answers.
         let timeline = items.enumerated()
@@ -1566,7 +1568,7 @@ private struct MacSharedBoardCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("SHARED BOARD", systemImage: "square.grid.2x2").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.accentColor)
-            Text(item.board.boardName ?? "Shared board").font(.headline)
+            Text(item.board.displayName).font(.headline)
             if item.status == .pending {
                 HStack {
                     Button("Join") { _ = model.acceptSharedBoardInboxItem(item.id) }
@@ -1682,8 +1684,13 @@ private struct MacMessageRow: View {
     @ViewBuilder private var content: some View {
         if case .assignmentResponse(let response) = envelope?.item {
             Label("Assignment \(response.status.rawValue)", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
+        } else if case .board(let board) = envelope?.item {
+            Label("SHARED BOARD", systemImage: "square.grid.2x2")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Color.accentColor)
+            Text(board.displayName).font(.headline)
         } else if envelope != nil {
-            // A shared task/contact/event/board rumor: its card is rendered as its own,
+            // A shared task/contact/event rumor: its card is rendered as its own,
             // correlated timeline item (see MacChatTimelineItem) — skip the raw envelope here so
             // it doesn't render twice.
             EmptyView()

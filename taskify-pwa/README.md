@@ -13,8 +13,9 @@ Taskify is an offline-friendly personal task board built with React, TypeScript,
 ## Boards and local data
 
 Open a board's Share dialog and choose **Send to chat** to find a saved contact
-or group conversation. Board settings open the same recipient picker. Shared
-task cards and the task editor show the original creator, with initials from a
+or group conversation. Board settings open the same recipient picker. The board
+appears in the conversation as a named card, with **Add board** for recipients.
+Shared task cards and the task editor show the original creator, with initials from a
 saved contact when available. **Settings → Boards & Lists** offers drag and drop
 and move buttons for touch and keyboard use. Board checklists include upcoming
 tasks, notes, due dates, and subtasks by default.

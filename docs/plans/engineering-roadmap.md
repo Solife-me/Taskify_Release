@@ -141,10 +141,12 @@ shown and hidden again, and return to the active list after Restore.
 ## Board Sharing and Local Reset Coverage
 
 The PWA reset tests use disposable IndexedDB databases and verify that a
-blocked deletion retains the marker for the next launch. Group board share
-tests decrypt each recipient's copy and verify routing, group membership, and
-the common message ID. macOS uses the native board-share and creator lookup
-paths shared with iOS. The PWA board settings test moves a board without
+blocked deletion retains the marker for the next launch. Board share tests
+decrypt direct and group copies and verify inbox routing, group membership, and
+the common message ID. Chat coverage checks the sender's structured preview,
+deduplication, and placement in the correct conversation, including cached
+native group shares. macOS uses the native board-share and creator lookup paths
+shared with iOS. The PWA board settings test moves a board without
 dragging and checks that the Bible Tracker stays in place.
 
 ## Native Board Performance Coverage (2026-09-12)

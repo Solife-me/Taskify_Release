@@ -9,6 +9,74 @@ final class NostrDirectMessageTests: XCTestCase {
     private let recipientWrapKey = String(repeating: "0", count: 63) + "3"
     private let senderWrapKey = String(repeating: "0", count: 63) + "4"
 
+    func testSentBoardShareHasAReadableThreadPreviewAndDeduplicatesTheSenderCopy() throws {
+        let sender = try identity(senderPrivateKey)
+        let recipient = try identity(recipientPrivateKey)
+        let envelope = TaskifyShareEnvelope(
+            item: .board(SharedBoardDelivery(boardID: "board-fixture", boardName: "Trip planning")),
+            senderNpub: sender.npub
+        )
+        let pair = try NIP17GiftWrap.wrapPair(
+            envelope: envelope, sender: sender, recipientPublicKey: recipient.publicKey, createdAt: 100
+        )
+        let senderCopy = try NIP17GiftWrap.unwrapRumor(pair.senderWrap, recipient: sender)
+        let message = try XCTUnwrap(NostrDirectMessage(decrypted: senderCopy, identityPublicKey: sender.publicKeyHex))
+        var snapshot = TaskifySnapshot.empty
+        XCTAssertTrue(snapshot.ingestDirectMessage(message))
+        XCTAssertFalse(snapshot.ingestDirectMessage(message))
+        let thread = try XCTUnwrap(snapshot.directMessageThreads().first)
+        XCTAssertEqual(thread.peerPublicKey, recipient.publicKeyHex)
+        XCTAssertEqual(thread.messages.count, 1)
+        XCTAssertEqual(thread.latestMessage?.displayContent, "Shared board: Trip planning")
+        XCTAssertEqual(thread.latestMessage?.sharedBoard?.boardID, "board-fixture")
+        XCTAssertEqual(thread.actionRequiredCount, 0)
+    }
+
+    func testLegacyGroupBoardShareMovesToTheGroupWithoutADuplicateMessage() throws {
+        let sender = try identity(senderPrivateKey)
+        let recipient = try identity(recipientPrivateKey)
+        let thirdMember = try identity(recipientWrapKey)
+        let board = SharedBoardDelivery(boardID: "group-board", boardName: "Trip planning")
+        let envelope = TaskifyShareEnvelope(item: .board(board))
+        let rumor = try NIP17Rumor(
+            publicKey: sender.publicKeyHex,
+            createdAt: 100,
+            kind: NIP17GiftWrap.rumorKind,
+            tags: [sender, recipient, thirdMember].map { ["p", $0.publicKeyHex] },
+            content: envelope.messageContent()
+        )
+        let incoming = try XCTUnwrap(NostrDirectMessage(
+            decrypted: NIP17DecryptedRumor(wrapEventID: "group-wrap", rumor: rumor),
+            identityPublicKey: recipient.publicKeyHex
+        ))
+        let groupID = try XCTUnwrap(incoming.groupID)
+        let outgoing = try XCTUnwrap(NostrDirectMessage(
+            decrypted: NIP17DecryptedRumor(wrapEventID: "sender-wrap", rumor: rumor),
+            identityPublicKey: sender.publicKeyHex
+        ))
+        XCTAssertEqual(outgoing.peerPublicKey, groupID)
+        XCTAssertEqual(outgoing.sharedBoard, board)
+
+        var snapshot = TaskifySnapshot.empty
+        XCTAssertTrue(snapshot.ingestDirectMessage(incoming))
+        XCTAssertTrue(snapshot.ingestSharedBoardInboxItem(SharedBoardInboxItem(
+            wrapEventID: incoming.wrapEventID,
+            rumorEventID: incoming.rumorEventID,
+            sender: SharedInboxSender(publicKey: sender.publicKeyHex),
+            board: board,
+            receivedAt: Date(timeIntervalSince1970: 100)
+        )))
+        XCTAssertTrue(snapshot.routeLegacyGroupBoardShares())
+        XCTAssertFalse(snapshot.routeLegacyGroupBoardShares())
+        let threads = snapshot.directMessageThreads()
+        XCTAssertEqual(threads.map(\.peerPublicKey), [groupID])
+        XCTAssertEqual(threads.first?.messages, [])
+        XCTAssertEqual(threads.first?.latestSharedBoard?.board, board)
+        XCTAssertEqual(threads.first?.actionRequiredCount, 1)
+        XCTAssertTrue(snapshot.deleteDirectMessageThread(peerPublicKey: groupID))
+        XCTAssertEqual(snapshot.sharedBoardInboxItems?.first?.status, .deleted)
+    }
+
     func testRecipientAndSelfWrapsShareCanonicalPWARumorID() throws {
         let sender = try identity(senderPrivateKey)
         let recipient = try identity(recipientPrivateKey)

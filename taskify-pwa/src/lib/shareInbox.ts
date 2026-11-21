@@ -195,7 +195,8 @@ export async function sendShareMessage(
   recipient: string | Pick<GroupChat, "members" | "name">,
   senderSecretHex: string,
   relays: string[] | string,
-): Promise<void> {
+  senderFallbackRelays?: string[],
+): Promise<NostrEvent | undefined> {
   const account = new LocalKeySigner(senderSecretHex);
   const group = typeof recipient === "string" ? null : recipient;
   const directRecipient = typeof recipient === "string" ? toRawHexPubkey(recipient) : null;
@@ -223,22 +224,34 @@ export async function sendShareMessage(
     nip17Crypto,
   );
   const wraps = await giftWrapNip17Rumor(rumor, account, nip17TimestampSource(shareTimestampMode()));
+  const senderCopy = wraps.find(({ recipient }) => recipient === account.pubkey)?.wrap as NostrEvent | undefined;
+  const senderRelays = toRelayList(senderFallbackRelays);
+  const resolveInboxRelays = (pubkey: string) => recipientInboxRelays(
+    pubkey,
+    pubkey === account.pubkey && senderRelays.length ? senderRelays : relayList,
+  );
   const publishWrap = async ({ wrap, signer }: typeof wraps[number], publishRelays: string[]) => {
     const session = await NostrSession.init(publishRelays);
     await session.publishRaw(wrap as NostrEvent, { relayUrls: publishRelays, returnEvent: false, proofOfWorkSigner: signer });
   };
   if (directRecipient) {
-    const publishRelays = await recipientInboxRelays(directRecipient, relayList);
-    for (const wrap of wraps) await publishWrap(wrap, publishRelays);
-    return;
+    const recipientRelays = await resolveInboxRelays(directRecipient);
+    for (const wrap of wraps) {
+      const publishRelays = payload.item.type === "board" && wrap.recipient !== directRecipient
+        ? await resolveInboxRelays(wrap.recipient)
+        : recipientRelays;
+      await publishWrap(wrap, publishRelays);
+    }
+    return senderCopy;
   }
   const results = await Promise.allSettled(wraps.map(async (wrap) => {
-    const publishRelays = await recipientInboxRelays(wrap.recipient, relayList);
+    const publishRelays = await resolveInboxRelays(wrap.recipient);
     await publishWrap(wrap, publishRelays);
   }));
   if (results.some((result) => result.status === "rejected")) {
     throw new Error("The board could not be sent to everyone in the group.");
   }
+  return senderCopy;
 }
 
 function toRelayList(input: unknown): string[] {

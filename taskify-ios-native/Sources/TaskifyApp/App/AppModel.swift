@@ -3099,6 +3099,7 @@ final class AppModel {
             identity: identity
         ) else { throw StructuredShareSendError.noRelays }
 
+        guard acceptsAccountActivity(identity.publicKeyHex) else { throw NostrDirectMessageError.identityUnavailable }
         let delivery = SharedBoardDelivery(
             boardID: boardID,
             boardName: boardName,
@@ -3110,11 +3111,10 @@ final class AppModel {
             item: .board(delivery),
             senderNpub: identity.npub
         )
-        try await publishNIP17Envelope(
-            envelope,
-            recipientPublicKey: recipientPublicKey,
-            deliveryPlan: deliveryPlan,
-            identity: identity
+        try await sendDirectMessage(
+            to: recipientPublicKey.hexString,
+            content: envelope.messageContent(),
+            resolvedDeliveryPlan: deliveryPlan
         )
     }
 
@@ -5185,7 +5185,9 @@ final class AppModel {
         }
         do {
             let loadResult = try await store.loadWithRepairStatus()
-            snapshot = loadResult.snapshot
+            var loadedSnapshot = loadResult.snapshot
+            let repairedGroupBoardShares = loadedSnapshot.routeLegacyGroupBoardShares()
+            snapshot = loadedSnapshot
             persistedTasks = loadResult.snapshot.tasks
             Task { [store] in try? await store.removeUnusedAttachments() }
             let retentionPruneChanged: Bool
@@ -5194,7 +5196,7 @@ final class AppModel {
             } else {
                 retentionPruneChanged = false
             }
-            if loadResult.wasRepaired || retentionPruneChanged {
+            if loadResult.wasRepaired || retentionPruneChanged || repairedGroupBoardShares {
                 do {
                     try await store.save(snapshot)
                     noteStoreWritten(snapshot)
@@ -6242,10 +6244,11 @@ final class AppModel {
             }
         }
 #endif
-        if let group = NostrGroupConversation(
+        let group = NostrGroupConversation(
             rumor: rumor,
             identityPublicKey: identity.publicKeyHex
-        ) {
+        )
+        if let group {
             let inserted = updatedSnapshot.upsertGroupConversation(group)
             if inserted {
                 effects.snapshotChanged = true
@@ -6262,13 +6265,19 @@ final class AppModel {
         }
         if rumor.kind == NIP17GiftWrap.rumorKind,
            let envelope = TaskifyShareEnvelope.decode(content: rumor.content) {
-            if let chatMessage = NostrDirectMessage(decrypted: decrypted, identityPublicKey: identity.publicKeyHex),
-               chatMessage.groupID != nil,
+            let authoredByIdentity = rumor.publicKey == identity.publicKeyHex
+            let isSentBoard: Bool
+            if case .board = envelope.item {
+                isSentBoard = authoredByIdentity
+            } else {
+                isSentBoard = false
+            }
+            if group != nil || isSentBoard,
+               let chatMessage = NostrDirectMessage(decrypted: decrypted, identityPublicKey: identity.publicKeyHex),
                chatMessage.createdAt >= (chatMessageRetention.cutoffTimestamp() ?? 0),
                updatedSnapshot.ingestDirectMessage(chatMessage) {
                 effects.snapshotChanged = true
             }
-            let authoredByIdentity = rumor.publicKey == identity.publicKeyHex
             let message = NIP17InboxMessage(
                 wrapEventID: decrypted.wrapEventID,
                 rumorEventID: rumor.id,
@@ -6364,7 +6373,8 @@ final class AppModel {
                     rumorEventID: message.rumorEventID,
                     sender: sharedInboxSender(for: message),
                     board: delivery,
-                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt))
+                    receivedAt: Date(timeIntervalSince1970: TimeInterval(message.createdAt)),
+                    groupID: group?.groupID
                 )
                 if updatedSnapshot.ingestSharedBoardInboxItem(item) {
                     effects.snapshotChanged = true
