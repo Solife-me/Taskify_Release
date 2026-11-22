@@ -172,6 +172,8 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
     public var nostrBoardID: String?
     public var relayURLs: [String]?
     public var nostrUpdatedAt: Int?
+    /// Local account membership clock. Shared board events do not own membership.
+    public var accountJoinedAt: Int?
 
     public init(
         id: String = UUID().uuidString,
@@ -220,6 +222,7 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         case nostrBoardID
         case relayURLs
         case nostrUpdatedAt
+        case accountJoinedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -238,6 +241,7 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         nostrBoardID = try container.decodeIfPresent(String.self, forKey: .nostrBoardID)
         relayURLs = try container.decodeIfPresent([String].self, forKey: .relayURLs)
         nostrUpdatedAt = try container.decodeIfPresent(Int.self, forKey: .nostrUpdatedAt)
+        accountJoinedAt = try container.decodeIfPresent(Int.self, forKey: .accountJoinedAt)
     }
 
     public var isVisible: Bool {
@@ -276,6 +280,7 @@ public struct Board: Identifiable, Codable, Hashable, Sendable {
         template.nostrBoardID = boardID
         template.relayURLs = effectiveRelayURLs
         template.nostrUpdatedAt = nil
+        template.accountJoinedAt = nil
         return template
     }
 

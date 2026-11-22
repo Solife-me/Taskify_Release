@@ -165,6 +165,7 @@ final class AppModel {
     /// When this process last wrote the store, so a newer file can be recognised as someone
     /// else's write rather than an echo of our own.
     private var lastStoreWriteAt = Date.distantPast
+    @ObservationIgnored private var saveImmediatelyPending = false
     /// The tasks as this process last read or wrote them: the base for merging what another
     /// process (the widget, the Add Task and Siri shortcuts) wrote to the shared store since.
     @ObservationIgnored private var persistedTasks: [TaskItem] = []
@@ -268,8 +269,8 @@ final class AppModel {
     /// Whether this launch has finished looking for the account's synced settings (found or not).
     /// Until then a setting that names a board may simply not have arrived yet.
     @ObservationIgnored private var accountSyncSettled = false
-    @ObservationIgnored private var managedAccountBackupBoardIDs: Set<String> = []
-    @ObservationIgnored private var lastAccountBackupCreatedAt = 0
+    @ObservationIgnored private var accountBackupLocalEdits = NostrAccountBackupLocalEdits()
+    @ObservationIgnored private var lastQueuedAccountBackup: NostrAppBackupPayload?
     @ObservationIgnored private var lastAccountBackupCheckAt: Date?
     @ObservationIgnored private var lastNostrCreatedAt = 0
     @ObservationIgnored private var accountBackupPublishPending = false
@@ -539,16 +540,20 @@ final class AppModel {
         applyAppRelays(TaskifyRelayDefaults.urls)
     }
 
-    private func applyAppRelays(_ urls: [String], reconfigure: Bool = true) {
+    private func applyAppRelays(_ urls: [String], fromSync: Bool = false) {
         let normalized = TaskifyRelayURL.normalizedList(urls)
         guard !normalized.isEmpty, normalized != appRelays else { return }
+        if !fromSync {
+            accountBackupLocalEdits.changeAppRelays(to: normalized, from: appRelays)
+            persistAccountBackupLocalEdits()
+        }
         appRelays = normalized
         AppRelaySettings.setURLs(normalized, defaults: accountDefaults)
-        // Direct messages, shared-task delivery and account backup all resolve their relays
-        // through this set, so the engine needs to pick up the new connections now.
-        if reconfigure {
-            reconfigureSync()
-        }
+        guard !fromSync else { return }
+        reconfigureSync()
+        restartContactsAfterRelayChange()
+        restartAppStateSyncAfterRelayChange()
+        scheduleAccountBackupPublish(immediate: true)
     }
 
     enum SyncRelayExclusionResult: Equatable {
@@ -583,6 +588,10 @@ final class AppModel {
         excludedSyncRelayURLs = updated
         SyncExcludedRelaySettings.setURLs(updated, defaults: accountDefaults)
         reconfigureSync()
+        if accountBackupLocalEdits.hasPendingEdits {
+            lastQueuedAccountBackup = nil
+            scheduleAccountBackupPublish()
+        }
     }
 
     /// Reloads the queue diagnostics shown on the settings screen. Called when the queued-change
@@ -999,7 +1008,7 @@ final class AppModel {
            snapshot.pruneDirectMessageHistory(olderThan: cutoff).changed {
             scheduleSave()
         }
-        scheduleAccountBackupPublish()
+        recordAccountBackupSettingEdit([ChatHistorySettings.pwaSettingsKey])
     }
 
 #if os(iOS)
@@ -1008,21 +1017,21 @@ final class AppModel {
         WalletCurrencySettings.setConversionEnabled(enabled)
         walletConversionEnabled = enabled
         walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
-        scheduleAccountBackupPublish()
+        recordAccountBackupSettingEdit([WalletCurrencySettings.conversionEnabledPWAKey, WalletCurrencySettings.primaryCurrencyPWAKey])
     }
 
     func setWalletPrimaryCurrency(_ currency: WalletPrimaryCurrency) {
         guard walletConversionEnabled, currency != walletPrimaryCurrency else { return }
         WalletCurrencySettings.setPrimaryCurrency(currency)
         walletPrimaryCurrency = WalletCurrencySettings.primaryCurrency
-        scheduleAccountBackupPublish()
+        recordAccountBackupSettingEdit([WalletCurrencySettings.primaryCurrencyPWAKey])
     }
 
     func setWalletDenominationDisplay(_ display: WalletDenominationDisplay) {
         guard display != walletDenominationDisplay else { return }
         WalletCurrencySettings.setDenominationDisplay(display)
         walletDenominationDisplay = display
-        scheduleAccountBackupPublish()
+        recordAccountBackupSettingEdit([WalletCurrencySettings.denominationDisplayPWAKey])
     }
 #endif
 
@@ -2428,7 +2437,7 @@ final class AppModel {
         guard let normalized = TaskifyMediaServerSettings.selectServer(url, defaults: accountDefaults) else { return }
         encryptedMediaServerURL = normalized
         scheduleShareRefresh()
-        scheduleAccountBackupPublish()
+        recordAccountBackupSettingEdit(Self.accountBackupFileServerKeys)
     }
 
     @discardableResult
@@ -2438,7 +2447,7 @@ final class AppModel {
             encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
             encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
             scheduleShareRefresh()
-            scheduleAccountBackupPublish()
+            recordAccountBackupSettingEdit(Self.accountBackupFileServerKeys)
         }
         return result
     }
@@ -2448,7 +2457,7 @@ final class AppModel {
         encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
         encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
         scheduleShareRefresh()
-        scheduleAccountBackupPublish()
+        recordAccountBackupSettingEdit(Self.accountBackupFileServerKeys)
     }
 
     func resetEncryptedFileServers() {
@@ -2456,7 +2465,7 @@ final class AppModel {
         encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
         encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
         scheduleShareRefresh()
-        scheduleAccountBackupPublish()
+        recordAccountBackupSettingEdit(Self.accountBackupFileServerKeys)
     }
 
     // MARK: - Local backup
@@ -2500,7 +2509,7 @@ final class AppModel {
     func retrySync() {
         syncStatus = "Connecting"
         syncDetail = "Retrying relay connections"
-        if accountBackupPublishPending {
+        if accountBackupPublishPending || accountBackupLocalEdits.hasPendingEdits {
             scheduleAccountBackupPublish()
         }
         Task { [syncEngine] in
@@ -2709,25 +2718,20 @@ final class AppModel {
         scheduleSave()
     }
 
-    /// Joins the shared board (idempotent — a board already joined by nostrBoardID just gets
-    /// reselected) and marks the inbox item accepted.
+    func hasVisibleSharedBoard(_ boardID: String) -> Bool {
+        tasksSnapshot.visibleBoards.contains { $0.effectiveNostrBoardID == boardID }
+    }
+
     @discardableResult
     func acceptSharedBoardInboxItem(_ itemID: String) -> Bool {
         guard let item = snapshot.sharedBoardInboxItems?.first(where: { $0.id == itemID }),
-              item.status == .pending else { return false }
-        let relays = item.board.relayURLs?.isEmpty == false ? item.board.relayURLs! : appRelays
-        guard snapshot.joinWeekBoard(
-            nostrBoardID: item.board.boardID,
-            name: item.board.boardName ?? "Shared Board",
-            relayURLs: relays
-        ) != nil else { return false }
-        guard snapshot.setSharedBoardInboxStatus(itemID: itemID, status: .accepted) != nil else {
-            return false
-        }
-        markBoardAsShared(boardID: item.board.boardID)
-        scheduleSave()
-        reconfigureSync()
-        scheduleAccountBackupPublish()
+              item.status == .pending || (item.status == .accepted && !hasVisibleSharedBoard(item.board.boardID)),
+              joinAccountBoard(
+                  boardID: item.board.boardID,
+                  name: item.board.boardName ?? "Shared Board",
+                  relayURLs: item.board.relayURLs ?? []
+              ) else { return false }
+        _ = snapshot.setSharedBoardInboxStatus(itemID: itemID, status: .accepted)
         return true
     }
 
@@ -3381,6 +3385,7 @@ final class AppModel {
         await refreshNotificationsImmediately()
         if accountBackupPublishPending {
             accountBackupPublishTask?.cancel()
+            accountBackupPublishTask = nil
             await publishAccountBackupSafely()
         }
         await syncEngine.flushQueuedPublishes()
@@ -3402,6 +3407,7 @@ final class AppModel {
         await persistImmediately()
         if accountBackupPublishPending {
             accountBackupPublishTask?.cancel()
+            accountBackupPublishTask = nil
             await publishAccountBackupSafely()
         }
         if let identity = cachedIdentity {
@@ -3509,7 +3515,7 @@ final class AppModel {
         // Turning the feature off here clears pending reminders; a synced "off" doesn't publish
         // deletions (the PWA only hides them locally).
         reconcileFastingReminders(removeExistingWhenDisabled: wasEnabled && !enabled && !fromSync)
-        if !fromSync { scheduleAccountBackupPublish() }
+        if !fromSync { recordAccountBackupSettingEdit(Self.accountBackupFastingKeys) }
     }
 
     /// Re-runs fasting-reminder task generation against the current settings. Safe to call
@@ -3613,7 +3619,7 @@ final class AppModel {
         scriptureMemoryBoardID = ScriptureMemorySettings.boardID(defaults: accountDefaults)
         scriptureMemoryFrequency = ScriptureMemorySettings.frequency(defaults: accountDefaults)
         reconcileScriptureMemory()
-        if publish { scheduleAccountBackupPublish() }
+        if publish { recordAccountBackupSettingEdit(Self.accountBackupScriptureKeys) }
     }
 
     func setScriptureMemorySort(_ sort: ScriptureMemorySort) {
@@ -4172,8 +4178,8 @@ final class AppModel {
         let inboxRelays = effectiveNIP17InboxRelayURLs
         let timestamp = nextNostrTimestamp()
         let boardRelayTargets = board.syncRelayURLs
-        scheduleSave()
-        scheduleAccountBackupPublish()
+        scheduleSave(immediate: true)
+        recordAccountBackupBoardEdit(boardID, fields: [.relays])
         Task { [syncEngine] in
             do {
                 try await syncEngine.replaceQueuedRelayTargets(
@@ -4326,10 +4332,12 @@ final class AppModel {
         guard let index = snapshot.boards.firstIndex(where: { $0.id == boardID }) else {
             throw CocoaError(.fileNoSuchFile)
         }
-        let previousID = snapshot.boards[index].effectiveNostrBoardID
+        let previous = snapshot.boards[index]
+        let previousID = previous.effectiveNostrBoardID
         let newID = UUID().uuidString
         snapshot.boards[index].nostrBoardID = newID
         snapshot.boards[index].nostrUpdatedAt = nil
+        snapshot.boards[index].accountJoinedAt = nil
 
         // Imported compound boards can reference a child by its shared ID rather than local ID.
         // Keep those references attached when this board moves to a fresh relay namespace.
@@ -4338,7 +4346,13 @@ final class AppModel {
                 $0 == previousID ? newID : $0
             }
         }
-        scheduleSave()
+        let snapshotToSave = snapshot
+        try await store.save(snapshotToSave)
+        noteStoreWritten(snapshotToSave)
+        mergeAndPersistBoardTombstones([NostrBoardTombstone(
+            nostrID: previousID,
+            deletedAt: max(Int(Date().timeIntervalSince1970), (previous.accountJoinedAt ?? 0) + 1)
+        )])
         reconfigureSync()
         scheduleAccountBackupPublish()
         _ = try await republishBoardSnapshot(boardID: boardID)
@@ -4416,18 +4430,18 @@ final class AppModel {
     func archiveBoard(boardID: String) -> Bool {
         guard snapshot.archiveBoard(boardID: boardID) else { return false }
         sanitizeStartupBoardPreferences()
-        scheduleSave()
+        scheduleSave(immediate: true)
         reconfigureSync()
-        scheduleAccountBackupPublish()
+        recordAccountBackupBoardEdit(boardID, fields: [.visibility])
         return true
     }
 
     @discardableResult
     func unarchiveBoard(boardID: String) -> Bool {
         guard snapshot.unarchiveBoard(boardID: boardID) else { return false }
-        scheduleSave()
+        scheduleSave(immediate: true)
         reconfigureSync()
-        scheduleAccountBackupPublish()
+        recordAccountBackupBoardEdit(boardID, fields: [.visibility])
         return true
     }
 
@@ -4469,7 +4483,7 @@ final class AppModel {
             mergeAndPersistBoardTombstones([
                 NostrBoardTombstone(
                     nostrID: deletedBoard.effectiveNostrBoardID,
-                    deletedAt: Int(Date().timeIntervalSince1970)
+                    deletedAt: max(Int(Date().timeIntervalSince1970), (deletedBoard.accountJoinedAt ?? 0) + 1)
                 ),
             ])
         }
@@ -4477,7 +4491,7 @@ final class AppModel {
         let updatedCompoundBoards = result.updatedCompoundBoardIDs.compactMap { boardID in
             snapshot.boards.first { $0.id == boardID }
         }
-        scheduleSave()
+        scheduleSave(immediate: true)
         reconfigureSync()
         scheduleAccountBackupPublish()
         updatedCompoundBoards.forEach(publishBoard)
@@ -4534,7 +4548,8 @@ final class AppModel {
     func setBoardClearCompletedEnabled(boardID: String, enabled: Bool) -> Bool {
         guard snapshot.setBoardClearCompletedEnabled(boardID: boardID, enabled: enabled),
               let board = snapshot.boards.first(where: { $0.id == boardID }) else { return false }
-        scheduleSave()
+        scheduleSave(immediate: true)
+        recordAccountBackupBoardEdit(boardID, fields: [.clearCompleted])
         publishBoard(board)
         return true
     }
@@ -4613,11 +4628,7 @@ final class AppModel {
 
     @discardableResult
     func joinWeekBoard(boardID: String, name: String) -> Bool {
-        guard snapshot.joinWeekBoard(nostrBoardID: boardID, name: name) != nil else { return false }
-        scheduleSave()
-        reconfigureSync()
-        scheduleAccountBackupPublish()
-        return true
+        joinAccountBoard(boardID: boardID, name: name, relayURLs: [])
     }
 
     @discardableResult
@@ -4628,18 +4639,24 @@ final class AppModel {
         }
         let customName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = customName.isEmpty ? (share.boardName ?? "Shared Board") : customName
-        let relays = share.relayURLs.isEmpty ? appRelays : share.relayURLs
-        guard snapshot.joinWeekBoard(
-            nostrBoardID: share.boardID,
-            name: resolvedName,
-            relayURLs: relays
-        ) != nil else {
-            return false
-        }
-        markBoardAsShared(boardID: share.boardID)
-        scheduleSave()
+        return joinAccountBoard(boardID: share.boardID, name: resolvedName, relayURLs: share.relayURLs)
+    }
+
+    private func joinAccountBoard(boardID: String, name: String, relayURLs: [String]) -> Bool {
+        let boardID = boardID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hints = TaskifyRelayURL.normalizedList(relayURLs)
+        let storedRelays = snapshot.boards.first { $0.effectiveNostrBoardID == boardID }?.relayURLs
+        let lastDeletedAt = localBoardTombstones().first { $0.nostrID == boardID.lowercased() }?.deletedAt
+        guard let board = snapshot.joinWeekBoard(
+            nostrBoardID: boardID,
+            name: name,
+            relayURLs: hints.isEmpty ? (storedRelays ?? appRelays) : hints,
+            lastDeletedAt: lastDeletedAt
+        ) else { return false }
+        markBoardAsShared(boardID: board.effectiveNostrBoardID)
+        scheduleSave(immediate: true)
         reconfigureSync()
-        scheduleAccountBackupPublish()
+        recordAccountBackupBoardEdit(board.id, fields: [.visibility, .relays])
         return true
     }
 
@@ -4972,13 +4989,13 @@ final class AppModel {
             appStateFetchTask = nil
             accountBackupBaseline = nil
             accountSyncSettled = false
-            managedAccountBackupBoardIDs = []
-            lastAccountBackupCreatedAt = 0
+            lastQueuedAccountBackup = nil
             lastAccountBackupCheckAt = nil
             accountBackupPublishPending = false
             nip17InboxRelayURLs = []
             snapshot.sharedInboxItems = nil
             snapshot.sharedContactInboxItems = nil
+            snapshot.sharedBoardInboxItems = nil
             snapshot.sharedCalendarInviteItems = nil
             snapshot.taskifyEvents = nil
             snapshot.sharedTaskRecipients = nil
@@ -5061,9 +5078,7 @@ final class AppModel {
         isCheckingAccountBackup = true
         lastAccountBackupCheckAt = Date()
         accountBackupMessage = "Checking your linked devices for updates…"
-        let relays = TaskifyRelayURL.normalizedList(
-            appRelays + snapshot.boards.flatMap(\.syncRelayURLs)
-        )
+        let relays = accountBackupLookupRelays
         accountBackupSearchTask = Task { [weak self] in
             let candidates = await NostrAccountBackupFinder.findCandidates(
                 publicKey: identity.publicKeyHex,
@@ -5071,28 +5086,23 @@ final class AppModel {
                 fetcher: syncEngine
             )
             guard !Task.isCancelled, let self else { return }
-            let decodedPayload: NostrAppBackupPayload? = await Task.detached(priority: .utility) {
-                () -> NostrAppBackupPayload? in
-                for event in candidates {
-                    if let payload = try? NostrAppBackupContract.decode(
-                        event: event,
-                        identity: identity
-                    ) {
-                        return payload
-                    }
-                }
-                return nil
-            }.value
-            guard !Task.isCancelled, self.identityPublicKey == identity.publicKeyHex else { return }
+            let backup = await Self.decodeLatestAccountBackup(candidates, identity: identity)
+            guard !Task.isCancelled, self.acceptsAccountActivity(identity.publicKeyHex) else { return }
             isCheckingAccountBackup = false
             let wasSettled = accountSyncSettled
             accountSyncSettled = true
-            if let decodedPayload {
-                applyAccountSyncPayload(decodedPayload)
-            } else if candidates.isEmpty {
-                accountBackupMessage = "No linked device found on your configured relays yet."
-            } else {
-                accountBackupMessage = "A sync update was found, but it could not be decrypted with this identity."
+            if let backup {
+                applyAccountSyncPayload(backup.payload, event: backup.event)
+            } else if accountBackupBaseline == nil {
+                accountBackupMessage = candidates.isEmpty
+                    ? "No linked device found on your configured relays yet."
+                    : "A sync update was found, but it could not be decrypted with this identity."
+            }
+            if accountBackupPublishPending || accountBackupLocalEdits.hasPendingEdits {
+                scheduleAccountBackupPublish(
+                    immediate: accountBackupLocalEdits.previousAppRelays != nil,
+                    replacePending: false
+                )
             }
             // Work deferred while settings were unknown (Scripture Memory's board, where
             // fasting reminders live) can run now.
@@ -5133,34 +5143,61 @@ final class AppModel {
         }
     }
 
-    /// Merges a decoded account-sync payload into the local snapshot and republishes if this
-    /// device's own boards have since diverged from it. Safe to call repeatedly with the same
-    /// payload — board merging matches by Nostr board ID, so re-applying is a no-op.
-    private func applyAccountSyncPayload(_ payload: NostrAppBackupPayload) {
-        applyAppRelays(payload.resolvedAccountRelayURLs(fallback: appRelays), reconfigure: false)
-        mergeAndPersistBoardTombstones(payload.boardTombstones)
+    private func applyAccountSyncPayload(_ payload: NostrAppBackupPayload, event: NostrEvent) {
+        guard accountBackupLocalEdits.accepts(eventID: event.id, createdAt: event.createdAt) else { return }
+        let isNewEvent = event.id != accountBackupLocalEdits.lastEventID || accountBackupBaseline == nil
+        if let queued = lastQueuedAccountBackup, event.createdAt > queued.timestamp {
+            lastQueuedAccountBackup = nil
+        }
         accountBackupBaseline = payload
-        managedAccountBackupBoardIDs = payload.nativeManagedNostrBoardIDs
-        lastAccountBackupCreatedAt = max(lastAccountBackupCreatedAt, payload.timestamp)
-        applySyncedSettings(from: payload)
+        let previousEdits = accountBackupLocalEdits
+        accountBackupLocalEdits.observe(
+            payload, eventID: event.id, createdAt: event.createdAt, localRelays: appRelays,
+            localSettings: accountBackupSettingValues(in: payload), localBoards: snapshot.boards
+        )
+        if accountBackupLocalEdits != previousEdits { persistAccountBackupLocalEdits() }
+        guard isNewEvent else { return }
+        Task { [store] in try? await store.cacheAccountBackupEvent(event) }
+        if accountBackupLocalEdits.previousAppRelays == nil {
+            applyAppRelays(payload.resolvedAccountRelayURLs(fallback: appRelays), fromSync: true)
+        }
+        mergeAndPersistBoardTombstones(payload.boardTombstones)
+        var incoming = accountBackupLocalEdits.protectingLocalEdits(in: payload)
+        incoming.timestamp = event.createdAt
+        incoming.boardTombstones = localBoardTombstones()
         PhysicalChecklistJobStore.merge(payload.printJobs, defaults: accountDefaults)
-        let result = snapshot.mergePWAAccountBackup(payload)
+        var updated = snapshot
+        let result = updated.mergePWAAccountBackup(incoming)
+        if updated != snapshot {
+            let tasksRemoved = updated.tasks.count != snapshot.tasks.count
+                || (updated.taskifyEvents?.count ?? 0) != (snapshot.taskifyEvents?.count ?? 0)
+            snapshot = updated
+            sanitizeStartupBoardPreferences()
+            scheduleSave()
+            if tasksRemoved { refreshNotifications(requestPermission: false) }
+        }
+        // Settings can refer to a board this very backup imported.
+        applySyncedSettings(from: incoming)
         let imported = result.importedBoardCount
-        let updated = result.updatedBoardCount
         accountBackupMessage = imported > 0
             ? "Synced \(imported) new board\(imported == 1 ? "" : "s") from your other device."
             : "Account sync is up to date."
-        scheduleSave()
         reconfigureSync()
-        let projectedPayload = payload.updatingNativeBoards(
-            snapshot.boards,
-            managedNostrBoardIDs: managedAccountBackupBoardIDs,
-            boardTombstones: localBoardTombstones(),
-            timestamp: payload.timestamp
-        )
-        if projectedPayload != payload {
-            scheduleAccountBackupPublish()
+        let projected = projectedAccountBackup(from: payload, timestamp: payload.timestamp)
+        accountBackupPublishPending = projected != payload
+    }
+
+    private func loadInitialIdentity() throws -> NostrIdentity {
+#if DEBUG && os(iOS)
+        if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_ACCOUNT_SYNC"] == "1" {
+            showsFirstRunOnboarding = false
+            return try NostrIdentity(privateKey: Data(repeating: 7, count: 32))
         }
+#endif
+        let hadExistingIdentity = (try? identityStore.load()) != nil
+        OnboardingSettings.determineEligibilityIfNeeded(hadExistingIdentity: hadExistingIdentity)
+        showsFirstRunOnboarding = !OnboardingSettings.completed
+        return try identityStore.loadOrCreate()
     }
 
     private func load() async {
@@ -5172,10 +5209,7 @@ final class AppModel {
         // No-ops once migrated, and when the capability isn't in effect.
         TaskifySharedContainer.migrateIfNeeded()
         do {
-            let hadExistingIdentity = (try? identityStore.load()) != nil
-            OnboardingSettings.determineEligibilityIfNeeded(hadExistingIdentity: hadExistingIdentity)
-            showsFirstRunOnboarding = !OnboardingSettings.completed
-            let identity = try identityStore.loadOrCreate()
+            let identity = try loadInitialIdentity()
             guard expectedAccountID == nil || identity.publicKeyHex == expectedAccountID else {
                 throw AppModelAccountError.identityChanged
             }
@@ -5187,6 +5221,7 @@ final class AppModel {
             let loadResult = try await store.loadWithRepairStatus()
             var loadedSnapshot = loadResult.snapshot
             let repairedGroupBoardShares = loadedSnapshot.routeLegacyGroupBoardShares()
+            let recoveredJoinDates = loadedSnapshot.restoreSharedBoardJoinDates()
             snapshot = loadedSnapshot
             persistedTasks = loadResult.snapshot.tasks
             Task { [store] in try? await store.removeUnusedAttachments() }
@@ -5196,7 +5231,7 @@ final class AppModel {
             } else {
                 retentionPruneChanged = false
             }
-            if loadResult.wasRepaired || retentionPruneChanged || repairedGroupBoardShares {
+            if loadResult.wasRepaired || retentionPruneChanged || repairedGroupBoardShares || recoveredJoinDates {
                 do {
                     try await store.save(snapshot)
                     noteStoreWritten(snapshot)
@@ -5842,6 +5877,13 @@ final class AppModel {
             return
         }
         if identityPublicKey != identity.publicKeyHex {
+            let key = Self.accountBackupLocalEditsKey(identity.publicKeyHex)
+            accountBackupLocalEdits = accountDefaults.data(forKey: key)
+                .flatMap { try? JSONDecoder().decode(NostrAccountBackupLocalEdits.self, from: $0) }
+                ?? NostrAccountBackupLocalEdits()
+            if let pending = accountBackupLocalEdits.pendingAppRelays {
+                applyAppRelays(pending, fromSync: true)
+            }
             ownProfileLoadTask?.cancel()
             ownProfileLoadTask = nil
             ownProfile = nil
@@ -7203,18 +7245,21 @@ final class AppModel {
         }
     }
 
-    func scheduleSave() {
+    func scheduleSave(immediate: Bool = false) {
+        saveImmediatelyPending = saveImmediatelyPending || immediate
+        let skipDebounce = saveImmediatelyPending
         saveTask?.cancel()
         saveTask = Task { [store, weak self] in
             // Debounce before snapshotting: initial sync calls this once per merged event,
             // and encoding the full snapshot each time is wasted work. Sleeping first (and
             // reading `snapshot` only after) collapses a burst into one save of the final state.
-            try? await Task.sleep(for: .milliseconds(300))
+            if !skipDebounce { try? await Task.sleep(for: .milliseconds(300)) }
             guard !Task.isCancelled, let self else { return }
             guard self.isAccountActive else { return }
             // Never write over a change the widget or a shortcut made since our last write.
             await self.absorbExternalStoreChanges()
             guard !Task.isCancelled else { return }
+            self.saveImmediatelyPending = false
             let snapshotToSave = self.snapshot
             do {
                 let written = try await store.save(snapshotToSave)
@@ -7274,9 +7319,11 @@ final class AppModel {
         await absorbExternalStoreChanges()
         saveTask?.cancel()
         saveTask = nil
+        let snapshotToSave = snapshot
+        saveImmediatelyPending = false
         do {
-            try await store.save(snapshot)
-            noteStoreWritten(snapshot)
+            try await store.save(snapshotToSave)
+            noteStoreWritten(snapshotToSave)
             if mirrorsPrimaryDeviceTaskSettings {
                 WidgetCenter.shared.reloadAllTimelines()
             }
@@ -7296,9 +7343,11 @@ final class AppModel {
         await absorbExternalStoreChanges()
         saveTask?.cancel()
         saveTask = nil
+        let snapshotToSave = snapshot
+        saveImmediatelyPending = false
         do {
-            try await store.save(snapshot)
-            noteStoreWritten(snapshot)
+            try await store.save(snapshotToSave)
+            noteStoreWritten(snapshotToSave)
             return true
         } catch {
             errorMessage = "Taskify could not save the latest change."
@@ -7704,165 +7753,222 @@ final class AppModel {
         return standard.date(from: value)
     }
 
-    private func scheduleAccountBackupPublish() {
-        guard isAccountActive, accountBackupBaseline != nil else { return }
+    private static let accountBackupFileServerKeys: Set<String> = [
+        TaskifyMediaServerSettings.selectedServerPWAKey, TaskifyMediaServerSettings.serverListPWAKey,
+    ]
+    private static let accountBackupFastingKeys: Set<String> = [
+        FastingRemindersSettings.enabledPWAKey, FastingRemindersSettings.modePWAKey,
+        FastingRemindersSettings.perMonthPWAKey, FastingRemindersSettings.weekdayPWAKey,
+        FastingRemindersSettings.seedPWAKey,
+    ]
+    private static let accountBackupScriptureKeys: Set<String> = [
+        ScriptureMemorySettings.enabledPWAKey, ScriptureMemorySettings.frequencyPWAKey,
+        ScriptureMemorySettings.boardIDPWAKey,
+    ]
+
+    private static func accountBackupLocalEditsKey(_ publicKey: String) -> String {
+        "taskify.accountBackup.localEdits.v1.\(publicKey)"
+    }
+
+    private func persistAccountBackupLocalEdits() {
+        guard !identityPublicKey.isEmpty,
+              let data = try? JSONEncoder().encode(accountBackupLocalEdits) else { return }
+        accountDefaults.set(data, forKey: Self.accountBackupLocalEditsKey(identityPublicKey))
+    }
+
+    private func recordAccountBackupSettingEdit(_ keys: Set<String>) {
+        accountBackupLocalEdits.settingKeys.formUnion(keys)
+        persistAccountBackupLocalEdits()
+        scheduleAccountBackupPublish()
+    }
+
+    private func recordAccountBackupBoardEdit(_ boardID: String, fields: Set<NostrAccountBackupLocalEdits.BoardField>) {
+        guard let board = snapshot.boards.first(where: { $0.id == boardID }) else { return }
+        accountBackupLocalEdits.changeBoard(board, fields: fields)
+        persistAccountBackupLocalEdits()
+        scheduleAccountBackupPublish()
+    }
+
+    private var accountBackupLookupRelays: [String] {
+        TaskifyRelayURL.normalizedList(
+            appRelays + accountBackupRelayURLs + (accountBackupLocalEdits.previousAppRelays ?? [])
+                + snapshot.boards.flatMap(\.syncRelayURLs)
+        ).filter { !excludedSyncRelayURLs.contains($0) }
+    }
+
+    private nonisolated static func decodeLatestAccountBackup(
+        _ candidates: [NostrEvent],
+        identity: NostrIdentity
+    ) async -> (event: NostrEvent, payload: NostrAppBackupPayload)? {
+        await Task.detached(priority: .utility) {
+            for event in candidates {
+                if let payload = try? NostrAppBackupContract.decode(event: event, identity: identity) {
+                    return (event, payload)
+                }
+            }
+            return nil
+        }.value
+    }
+
+    private func scheduleAccountBackupPublish(immediate: Bool = false, replacePending: Bool = true) {
+        guard isAccountActive else { return }
         accountBackupPublishPending = true
+        guard replacePending || accountBackupPublishTask == nil else { return }
+        let publishNow = immediate || accountBackupLocalEdits.previousAppRelays != nil
+        guard publishNow || accountBackupBaseline != nil else { return }
         accountBackupPublishTask?.cancel()
         accountBackupPublishTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(1.5))
-            } catch {
-                return
+            if !publishNow {
+                do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
             }
-            guard !Task.isCancelled else { return }
-            await self?.publishAccountBackupSafely()
+            guard !Task.isCancelled, let self else { return }
+            await self.publishAccountBackupSafely(relayChange: publishNow)
+            if !Task.isCancelled { self.accountBackupPublishTask = nil }
         }
     }
 
     /// Saves the printable row-to-task manifest locally and queues it in encrypted account sync.
     func recordPhysicalChecklistJob(_ job: PhysicalChecklistJob) {
         PhysicalChecklistJobStore.save(job, defaults: accountDefaults)
-        if var baseline = accountBackupBaseline {
-            baseline.printJobs = NostrPrintJobManifest.merged(
-                remote: baseline.printJobs,
-                local: [NostrPrintJobManifest(job: job)]
-            )
-            accountBackupBaseline = baseline
-        }
         scheduleAccountBackupPublish()
     }
 
-    private func publishAccountBackupSafely() async {
-        guard accountBackupBaseline != nil else { return }
-        guard let identity = try? activeIdentity() else {
-            accountBackupMessage = "The native account backup is waiting for access to your identity."
-            return
-        }
-
-        let lookupRelays = TaskifyRelayURL.normalizedList(
-            accountBackupRelayURLs + snapshot.boards.flatMap(\.syncRelayURLs)
-        )
-        let candidates = await NostrAccountBackupFinder.findCandidates(
-            publicKey: identity.publicKeyHex,
-            relayURLs: lookupRelays,
-            fetcher: syncEngine
-        )
-        guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
-
-        var latestPayload: NostrAppBackupPayload?
-        var latestEventCreatedAt = 0
-        for event in candidates {
-            guard let payload = try? NostrAppBackupContract.decode(
-                event: event,
-                identity: identity
-            ) else { continue }
-            latestPayload = payload
-            latestEventCreatedAt = event.createdAt
-            break
-        }
-        guard let remotePayload = latestPayload else {
-            accountBackupMessage = candidates.isEmpty
-                ? "Account backup update is waiting until a backup relay is reachable."
-                : "Account backup update paused because the latest remote copy could not be verified."
-            return
-        }
-
-        let now = Int(Date().timeIntervalSince1970)
-        let createdAt = max(
-            now,
-            max(lastAccountBackupCreatedAt, max(remotePayload.timestamp, latestEventCreatedAt)) + 1
-        )
-        var updatedPayload = remotePayload.updatingNativeBoards(
-            snapshot.boards,
-            managedNostrBoardIDs: managedAccountBackupBoardIDs,
-            boardTombstones: localBoardTombstones(),
-            timestamp: createdAt
-        )
-        let localPrintJobs = PhysicalChecklistJobStore.loadAll(defaults: accountDefaults)
-            .values.map(NostrPrintJobManifest.init(job:))
-        updatedPayload.printJobs = NostrPrintJobManifest.merged(
-            remote: remotePayload.printJobs,
-            local: localPrintJobs
-        )
-        updatedPayload.settings[TaskifyMediaServerSettings.selectedServerPWAKey] = .string(
-            encryptedMediaServerURL
-        )
-        updatedPayload.settings[TaskifyMediaServerSettings.serverListPWAKey] = .string(
-            TaskifyFileServerList.serialize(encryptedFileServers)
-        )
-        updatedPayload.settings[ChatHistorySettings.pwaSettingsKey] = .string(
-            chatMessageRetention.rawValue
-        )
-#if os(iOS)
-        // The Mac leaves these as the iPhone or PWA last wrote them: the payload starts from
-        // the remote copy.
-        updatedPayload.settings[WalletCurrencySettings.conversionEnabledPWAKey] = .boolean(
-            walletConversionEnabled
-        )
-        updatedPayload.settings[WalletCurrencySettings.primaryCurrencyPWAKey] = .string(
-            walletPrimaryCurrency.rawValue
-        )
-        updatedPayload.settings[WalletCurrencySettings.denominationDisplayPWAKey] = .string(
-            walletDenominationDisplay.rawValue
-        )
-#endif
-        updatedPayload.settings[FastingRemindersSettings.enabledPWAKey] = .boolean(fastingRemindersEnabled)
-        updatedPayload.settings[FastingRemindersSettings.modePWAKey] = .string(
-            fastingRemindersMode == .random ? "random" : "weekday"
-        )
-        updatedPayload.settings[FastingRemindersSettings.perMonthPWAKey] = .integer(Int64(fastingRemindersPerMonth))
-        updatedPayload.settings[FastingRemindersSettings.weekdayPWAKey] = .integer(Int64(fastingRemindersWeekday))
-        updatedPayload.settings[FastingRemindersSettings.seedPWAKey] = .string(
-            FastingRemindersSettings.seed(defaults: accountDefaults)
-        )
-        updatedPayload.settings[ScriptureMemorySettings.enabledPWAKey] = .boolean(scriptureMemoryEnabled)
-        updatedPayload.settings[ScriptureMemorySettings.frequencyPWAKey] = .string(scriptureMemoryFrequency.rawValue)
+    private func accountBackupSettingValues(in payload: NostrAppBackupPayload) -> [String: TaskPayloadValue] {
+        var settings: [String: TaskPayloadValue] = [
+            TaskifyMediaServerSettings.selectedServerPWAKey: .string(encryptedMediaServerURL),
+            TaskifyMediaServerSettings.serverListPWAKey: .string(TaskifyFileServerList.serialize(encryptedFileServers)),
+            ChatHistorySettings.pwaSettingsKey: .string(chatMessageRetention.rawValue),
+            FastingRemindersSettings.enabledPWAKey: .boolean(fastingRemindersEnabled),
+            FastingRemindersSettings.modePWAKey: .string(fastingRemindersMode == .random ? "random" : "weekday"),
+            FastingRemindersSettings.perMonthPWAKey: .integer(Int64(fastingRemindersPerMonth)),
+            FastingRemindersSettings.weekdayPWAKey: .integer(Int64(fastingRemindersWeekday)),
+            FastingRemindersSettings.seedPWAKey: .string(FastingRemindersSettings.seed(defaults: accountDefaults)),
+            ScriptureMemorySettings.enabledPWAKey: .boolean(scriptureMemoryEnabled),
+            ScriptureMemorySettings.frequencyPWAKey: .string(scriptureMemoryFrequency.rawValue),
+        ]
         if let nostrBoardID = scriptureMemoryBoardID
             .flatMap({ id in snapshot.boards.first(where: { $0.id == id }) })?.effectiveNostrBoardID,
-           let pwaBoardID = updatedPayload.boards.first(where: { $0.nostrID == nostrBoardID })?.id {
-            updatedPayload.settings[ScriptureMemorySettings.boardIDPWAKey] = .string(pwaBoardID)
+           let pwaBoardID = payload.boards.first(where: { $0.nostrID == nostrBoardID })?.id {
+            settings[ScriptureMemorySettings.boardIDPWAKey] = .string(pwaBoardID)
+        } else if scriptureMemoryBoardID == nil {
+            settings[ScriptureMemorySettings.boardIDPWAKey] = .null
         }
-        let relayURLs = updatedPayload.defaultRelayURLs.isEmpty
-            ? appRelays
-            : updatedPayload.defaultRelayURLs
-        let auxiliaryRelayURLs = TaskifyRelayURL.normalizedList(
-            sharedInboxRelayURLs + relayURLs
-        )
+#if os(iOS)
+        settings[WalletCurrencySettings.conversionEnabledPWAKey] = .boolean(walletConversionEnabled)
+        settings[WalletCurrencySettings.primaryCurrencyPWAKey] = .string(walletPrimaryCurrency.rawValue)
+        settings[WalletCurrencySettings.denominationDisplayPWAKey] = .string(walletDenominationDisplay.rawValue)
+#endif
+        return settings
+    }
 
-        do {
-            let preparedPayload = updatedPayload
-            let event = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
-                try NostrAppBackupContract.event(
-                payload: preparedPayload,
-                identity: identity,
-                createdAt: createdAt
+    private func projectedAccountBackup(from baseline: NostrAppBackupPayload, timestamp: Int) -> NostrAppBackupPayload {
+        var updated = baseline.updatingNativeBoards(
+            snapshot.boards,
+            boardTombstones: localBoardTombstones(),
+            timestamp: timestamp
+        )
+        updated.printJobs = NostrPrintJobManifest.merged(
+            remote: baseline.printJobs,
+            local: PhysicalChecklistJobStore.loadAll(defaults: accountDefaults).values.map(NostrPrintJobManifest.init(job:))
+        )
+        return accountBackupLocalEdits.applyingLocalEdits(
+            to: updated, localRelays: appRelays, localSettings: accountBackupSettingValues(in: updated)
+        )
+    }
+
+    private func publishAccountBackupSafely(relayChange: Bool = false) async {
+        guard isAccountActive, let identity = try? activeIdentity() else { return }
+        var relayChange = relayChange || accountBackupLocalEdits.previousAppRelays != nil
+        if relayChange, accountBackupBaseline == nil,
+           let cached = await store.cachedAccountBackupEvent(),
+           let backup = await Self.decodeLatestAccountBackup([cached], identity: identity) {
+            guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
+            applyAccountSyncPayload(backup.payload, event: backup.event)
+        }
+
+        if !relayChange || accountBackupBaseline == nil {
+            let candidates = await NostrAccountBackupFinder.findCandidates(
+                publicKey: identity.publicKeyHex, relayURLs: accountBackupLookupRelays, fetcher: syncEngine
             )
+            let backup = await Self.decodeLatestAccountBackup(candidates, identity: identity)
+            guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
+            if let backup {
+                applyAccountSyncPayload(backup.payload, event: backup.event)
+            } else if !candidates.isEmpty {
+                accountBackupMessage = "Account backup update paused because the remote copy could not be verified."
+                return
             }
-            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
+        }
+
+        guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
+        relayChange = relayChange || accountBackupLocalEdits.previousAppRelays != nil
+        let baseline: NostrAppBackupPayload
+        if let known = accountBackupBaseline {
+            baseline = known
+        } else if relayChange && accountBackupLocalEdits.lastEventID == nil {
+            // An account that has never synced can seed its encrypted backup on the new relays.
+            baseline = NostrAppBackupPayload(timestamp: 0, boards: [], defaultRelayURLs: appRelays)
+        } else {
+            accountBackupMessage = "Account backup update is waiting until a backup relay is reachable."
+            return
+        }
+        var projected = projectedAccountBackup(from: baseline, timestamp: baseline.timestamp)
+        if relayChange { projected.defaultRelayURLs = appRelays }
+        if baseline.timestamp == 0 {
+            projected.settings = accountBackupSettingValues(in: projected)
+        }
+        let targetRelays = projected.resolvedAccountRelayURLs(fallback: appRelays)
+            .filter { !excludedSyncRelayURLs.contains($0) }
+        guard !targetRelays.isEmpty else {
+            accountBackupMessage = "Account backup is waiting for an available app relay."
+            return
+        }
+        var queued = lastQueuedAccountBackup
+        queued?.timestamp = projected.timestamp
+        if (projected == baseline && !relayChange) || projected == queued {
+            accountBackupPublishPending = false
+            return
+        }
+
+        let createdAt = accountBackupLocalEdits.nextPublicationTimestamp(
+            baseline: baseline.timestamp,
+            now: Int(Date().timeIntervalSince1970)
+        )
+        let baselineEventID = accountBackupLocalEdits.lastEventID
+        projected.timestamp = createdAt
+        let preparedPayload = projected
+        do {
+            let event = try await TaskifyRelayProofOfWork.prepare(difficulty: 0) {
+                try NostrAppBackupContract.event(payload: preparedPayload, identity: identity, createdAt: createdAt)
+            }
+            guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
+            guard accountBackupLocalEdits.lastEventID == baselineEventID else {
+                scheduleAccountBackupPublish(immediate: relayChange)
+                return
+            }
+            // Reserve the timestamp before enqueueing so a restart cannot repeat it.
+            accountBackupLocalEdits.reservePublicationTimestamp(createdAt)
+            persistAccountBackupLocalEdits()
             await syncEngine.configure(
                 boards: snapshot.boardsForSync,
-                auxiliaryRelayURLs: auxiliaryRelayURLs,
+                auxiliaryRelayURLs: TaskifyRelayURL.normalizedList(sharedInboxRelayURLs + targetRelays),
                 inboxPublicKey: identity.publicKeyHex,
-                inboxRelayURLs: effectiveNIP17InboxRelayURLs
+                inboxRelayURLs: effectiveNIP17InboxRelayURLs,
+                excludedRelayURLs: excludedSyncRelayURLs
             )
-            try await syncEngine.publish(
-                event,
-                relayURLs: relayURLs,
+            guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
+            try await syncEngine.enqueueForPublish([TaskSyncRelayPublishRequest(
+                event: event,
+                relayURLs: targetRelays,
                 outboxScope: Self.accountBackupOutboxScope,
                 recordID: NostrAppBackupContract.eventDTag
-            )
-            guard acceptsAccountActivity(identity.publicKeyHex) else { return }
-            accountBackupBaseline = updatedPayload
-            mergeAndPersistBoardTombstones(updatedPayload.boardTombstones)
-            lastAccountBackupCreatedAt = createdAt
-            managedAccountBackupBoardIDs.formUnion(
-                snapshot.boards
-                    .filter { $0.kind != .bible }
-                    .map(\.effectiveNostrBoardID)
-            )
-            accountBackupMessage = "Native board changes are queued in your encrypted account sync."
+            )])
+            guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
+            lastQueuedAccountBackup = projected
+            accountBackupMessage = "Your encrypted account changes are queued for sync."
             accountBackupPublishPending = false
         } catch {
+            guard !Task.isCancelled else { return }
             accountBackupMessage = "Taskify could not queue the encrypted account backup update."
         }
     }
@@ -7961,7 +8067,9 @@ final class AppModel {
            let parsed = ScriptureMemoryFrequency(rawValue: value) {
             frequency = parsed
         }
-        if case .string(let pwaBoardID)? = payload.settings[ScriptureMemorySettings.boardIDPWAKey],
+        if payload.settings[ScriptureMemorySettings.boardIDPWAKey] == .null {
+            boardID = nil
+        } else if case .string(let pwaBoardID)? = payload.settings[ScriptureMemorySettings.boardIDPWAKey],
            let nostrBoardID = payload.boards.first(where: { $0.id == pwaBoardID })?.nostrID,
            let board = snapshot.boards.first(where: { $0.effectiveNostrBoardID == nostrBoardID }) {
             boardID = board.id

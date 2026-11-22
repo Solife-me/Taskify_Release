@@ -414,6 +414,18 @@ CPU, memory, thermal-state and hang measurements across navigation. Upcoming's c
 date parser now reuses synchronized formatters after repeated formatter construction appeared
 in the device CPU stacks.
 
+## Encrypted account backup
+
+Changing App Relays starts backup publication immediately to the updated list. When available,
+the app uses the last verified encrypted backup as its starting point. The previous list remains
+available for lookup while the edit is pending. Local relay, board visibility, board relay, and
+synced preference edits survive a restart while awaiting a matching verified backup.
+
+An account backup can remove a visible board through a deletion marker or an explicit newer
+archive. An omitted board or a hidden copy created for a compound board leaves local membership
+intact. Rejoining a board from its share overrides an older deletion on that device. A previously
+accepted invitation offers **Add Board Again** if the board is missing from the active list.
+
 ## Migration order
 
 1. Native shell and offline task vertical slice (complete)

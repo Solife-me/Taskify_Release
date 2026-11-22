@@ -1574,6 +1574,9 @@ private struct MacSharedBoardCard: View {
                     Button("Join") { _ = model.acceptSharedBoardInboxItem(item.id) }
                     Button("Dismiss") { model.dismissSharedBoardInboxItem(item.id) }
                 }.controlSize(.small)
+            } else if item.status == .accepted && !model.hasVisibleSharedBoard(item.board.boardID) {
+                Button("Add Board Again") { _ = model.acceptSharedBoardInboxItem(item.id) }
+                    .controlSize(.small)
             } else {
                 Text(item.status.rawValue.capitalized).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }

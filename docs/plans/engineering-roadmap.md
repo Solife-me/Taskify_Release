@@ -125,6 +125,15 @@ tombstone version ordering on PWA reload and live merge, CLI refresh and compoun
 merges, and Watch account labels through snapshot trimming and command encoding.
 See the [Beta sync audit](../audits/nostr-task-sync-beta-2026-11-14.md) for remaining release checks.
 
+## Native Account Sync Coverage (2026-11-21)
+
+Native regressions cover relay and preference edits awaiting a verified backup, loading the
+last signed encrypted backup from disk, and keeping a device's relay exclusions across sync
+reconfiguration. Board coverage includes old deletion markers after a rejoin, missing relay
+hints, hidden linked boards, and an explicit newer archive or deletion. The iOS settings test
+checks that editing App Relays immediately queues the encrypted backup to the updated list,
+survives relaunch, and preserves each board’s relays.
+
 ## Week Board Drag Coverage (2026-11-17)
 
 PWA task-command and native snapshot tests cover forward weekday drops and time of

@@ -51,7 +51,7 @@ extension AppModel {
         }
         appStateFetchTask = Task { [weak self] in
             await self?.fetchAppState()
-            self?.appStateFetchTask = nil
+            if !Task.isCancelled { self?.appStateFetchTask = nil }
         }
     }
 
@@ -134,6 +134,8 @@ extension AppModel {
                 (try? AppStateSyncContract.decrypt(event: event, identity: identity)).map { ($0.dTag, event, $0.plaintext) }
             }
         }.value
+        guard !Task.isCancelled, isAccountActive,
+              appStateLedger.publicKey == identity.publicKeyHex else { return }
         for item in decoded {
             applyAppStateEvent(dTag: item.dTag, event: item.event, plaintext: item.plaintext)
         }

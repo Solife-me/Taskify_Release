@@ -493,6 +493,9 @@ struct SharedBoardChatCard: View {
                         }
                         .buttonStyle(.borderedProminent)
                     }
+                } else if item.status == .accepted && !model.hasVisibleSharedBoard(item.board.boardID) {
+                    Button("Add Board Again", action: joinBoard)
+                        .buttonStyle(.borderedProminent)
                 } else {
                     Label(
                         item.status == .accepted ? "Added" : "Dismissed",
@@ -531,10 +534,10 @@ struct SharedBoardChatCard: View {
     }
 
     private func joinBoard() {
-        withAnimation(.snappy) {
-            _ = model.acceptSharedBoardInboxItem(item.id)
+        let joined = withAnimation(.snappy) {
+            model.acceptSharedBoardInboxItem(item.id)
         }
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        UINotificationFeedbackGenerator().notificationOccurred(joined ? .success : .error)
     }
 }
 

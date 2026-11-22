@@ -919,23 +919,52 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         return result
     }
 
+    /// Older releases stored the acceptance time on the invitation alone.
+    @discardableResult
+    public mutating func restoreSharedBoardJoinDates() -> Bool {
+        let accepted = (sharedBoardInboxItems ?? []).compactMap { item -> (String, Int)? in
+            guard item.status == .accepted, let date = item.respondedAt else { return nil }
+            return (item.board.boardID.lowercased(), Int(date.timeIntervalSince1970))
+        }
+        guard !accepted.isEmpty else { return false }
+        let joinedAtByID = Dictionary(accepted, uniquingKeysWith: max)
+        var changed = false
+        for index in boards.indices where boards[index].accountJoinedAt == nil {
+            guard let joinedAt = joinedAtByID[boards[index].effectiveNostrBoardID.lowercased()] else { continue }
+            boards[index].accountJoinedAt = joinedAt
+            changed = true
+        }
+        return changed
+    }
+
     @discardableResult
     public mutating func joinWeekBoard(
         nostrBoardID: String,
         name: String = "Shared Week",
         relayURLs: [String] = TaskifyRelayDefaults.urls,
+        lastDeletedAt: Int? = nil,
         now: Date = Date()
     ) -> Board? {
         let trimmedID = nostrBoardID.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedID.isEmpty else { return nil }
 
-        if let existing = boards.first(where: { $0.effectiveNostrBoardID == trimmedID }) {
+        let joinedAt = max(Int(now.timeIntervalSince1970), lastDeletedAt ?? 0)
+        if let index = boards.firstIndex(where: { $0.effectiveNostrBoardID == trimmedID }) {
+            var existing = boards[index]
+            if existing.hidden && existing.name == "Linked board" && !trimmedName.isEmpty {
+                existing.name = trimmedName
+            }
+            existing.archived = false
+            existing.hidden = false
+            existing.relayURLs = TaskifyRelayURL.normalizedList(relayURLs + (existing.relayURLs ?? []))
+            existing.accountJoinedAt = max(existing.accountJoinedAt ?? 0, joinedAt)
+            boards[index] = existing
             selectedBoardID = existing.id
             return existing
         }
 
-        let board = Board(
+        var board = Board(
             name: trimmedName.isEmpty ? "Shared Week" : trimmedName,
             kind: .week,
             columns: WeekdayColumn.allCases.map {
@@ -945,6 +974,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
             nostrBoardID: trimmedID,
             relayURLs: relayURLs
         )
+        board.accountJoinedAt = joinedAt
         boards.append(board)
         selectedBoardID = board.id
         return board
@@ -2228,6 +2258,7 @@ public struct TaskifySnapshot: Codable, Equatable, Sendable {
         merged.archived = boards[index].archived
         merged.hidden = boards[index].hidden
         merged.nostrUpdatedAt = eventCreatedAt
+        merged.accountJoinedAt = boards[index].accountJoinedAt
         boards[index] = merged
         repairSelection()
         return true

@@ -62,6 +62,22 @@ public struct NostrBoardTombstone: Codable, Equatable, Sendable, Comparable {
     }
 }
 
+private extension Array where Element == NostrBoardTombstone {
+    func respectingLocalJoins(_ boards: [Board]) -> [NostrBoardTombstone] {
+        guard !isEmpty else { return self }
+        let joins: [String: Int] = Dictionary(
+            boards.compactMap { board in
+                board.accountJoinedAt.map { (board.effectiveNostrBoardID.lowercased(), $0) }
+            },
+            uniquingKeysWith: Swift.max
+        )
+        return filter { tombstone in
+            guard let joinedAt = joins[tombstone.nostrID] else { return true }
+            return tombstone.deletedAt > joinedAt
+        }
+    }
+}
+
 public struct NostrAppBackupBoard: Codable, Equatable, Sendable {
     public var id: String
     public var nostrID: String?
@@ -200,15 +216,6 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
 
     public var id: String { "\(timestamp)-\(boards.count)-\(boardTombstones.count)" }
 
-    public var nativeManagedNostrBoardIDs: Set<String> {
-        Set(boards.compactMap { board in
-            guard board.isSupportedByNative,
-                  let nostrID = board.nostrID?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !nostrID.isEmpty else { return nil }
-            return nostrID.lowercased()
-        })
-    }
-
     /// The account-level relay set follows the encrypted backup between clients. A fresh device
     /// keeps its local/default relays only until it reads a non-empty list from the account.
     public func resolvedAccountRelayURLs(fallback: [String]) -> [String] {
@@ -295,30 +302,12 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
 
     public func updatingNativeBoards(
         _ nativeBoards: [Board],
-        managedNostrBoardIDs: Set<String>,
         boardTombstones: [NostrBoardTombstone] = [],
         timestamp: Int
     ) -> NostrAppBackupPayload {
         let eligibleNativeBoards = nativeBoards.filter { $0.kind != .bible }
-        let managedIDs = Set(
-            managedNostrBoardIDs.map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            }.filter { !$0.isEmpty }
-        )
-        let localNostrIDs = Set(
-            eligibleNativeBoards
-                .map(\.effectiveNostrBoardID)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-        )
-        let missingManagedTombstones = managedIDs.compactMap { nostrID -> NostrBoardTombstone? in
-            guard !localNostrIDs.contains(nostrID) else { return nil }
-            return NostrBoardTombstone(nostrID: nostrID, deletedAt: timestamp)
-        }
-        let tombstones = NostrBoardTombstone.merged(
-            self.boardTombstones,
-            boardTombstones,
-            missingManagedTombstones
-        )
+        let tombstones = NostrBoardTombstone.merged(self.boardTombstones, boardTombstones)
+            .respectingLocalJoins(eligibleNativeBoards)
         let tombstonedIDs = Set(tombstones.map(\.nostrID))
         let nativeByNostrID = eligibleNativeBoards.reduce(into: [String: Board]()) {
             $0[$1.effectiveNostrBoardID.lowercased()] = $1
@@ -343,7 +332,7 @@ public struct NostrAppBackupPayload: Codable, Equatable, Sendable, Identifiable 
             }
             if tombstonedIDs.contains(nostrID.lowercased()) { return false }
             if nativeByNostrID[nostrID.lowercased()] != nil { return false }
-            return !managedIDs.contains(nostrID.lowercased())
+            return true
         }
 
         for (index, board) in eligibleNativeBoards.enumerated() {
@@ -420,6 +409,132 @@ private struct BackupPayloadCodingKey: CodingKey {
 
     init?(intValue: Int) {
         return nil
+    }
+}
+
+/// Device-local edits waiting for a matching signed account backup. A queued publish alone
+/// cannot confirm the edit because it may still be offline or refused by every relay.
+public struct NostrAccountBackupLocalEdits: Codable, Equatable, Sendable {
+    public enum BoardField: String, Codable, Sendable {
+        case visibility, relays, clearCompleted
+    }
+
+    public private(set) var previousAppRelays: [String]?
+    public private(set) var pendingAppRelays: [String]?
+    private var relayEditAfter: Int?
+    private var lastPublicationTimestamp: Int?
+    public var settingKeys: Set<String> = []
+    public private(set) var boardFields: [String: Set<BoardField>] = [:]
+    public private(set) var lastEventID: String?
+    public private(set) var lastCreatedAt: Int = 0
+
+    public init() {}
+
+    public var hasPendingEdits: Bool {
+        previousAppRelays != nil || !settingKeys.isEmpty || !boardFields.isEmpty
+    }
+
+    public mutating func changeAppRelays(to relays: [String], from previous: [String]) {
+        if previousAppRelays == nil { previousAppRelays = previous }
+        pendingAppRelays = relays
+        relayEditAfter = max(lastCreatedAt, lastPublicationTimestamp ?? 0)
+    }
+
+    public func nextPublicationTimestamp(baseline: Int, now: Int) -> Int {
+        max(now, max(lastCreatedAt, lastPublicationTimestamp ?? 0, baseline) + 1)
+    }
+
+    public mutating func reservePublicationTimestamp(_ timestamp: Int) {
+        lastPublicationTimestamp = max(lastPublicationTimestamp ?? 0, timestamp)
+    }
+
+    public mutating func changeBoard(_ board: Board, fields: Set<BoardField>) {
+        boardFields[board.effectiveNostrBoardID.lowercased(), default: []].formUnion(fields)
+    }
+
+    public func accepts(eventID: String, createdAt: Int) -> Bool {
+        guard let lastEventID else { return true }
+        return createdAt > lastCreatedAt || (createdAt == lastCreatedAt && eventID <= lastEventID)
+    }
+
+    public mutating func observe(
+        _ payload: NostrAppBackupPayload,
+        eventID: String,
+        createdAt: Int,
+        localRelays: [String],
+        localSettings: [String: TaskPayloadValue],
+        localBoards: [Board]
+    ) {
+        guard accepts(eventID: eventID, createdAt: createdAt) else { return }
+        lastEventID = eventID
+        lastCreatedAt = createdAt
+        if let relayEditAfter, createdAt > relayEditAfter,
+           !payload.defaultRelayURLs.isEmpty && payload.defaultRelayURLs == localRelays {
+            previousAppRelays = nil
+            pendingAppRelays = nil
+            self.relayEditAfter = nil
+        }
+        settingKeys = settingKeys.filter { key in
+            guard let value = localSettings[key] else { return true }
+            return payload.settings[key] != value
+        }
+
+        guard !boardFields.isEmpty else { return }
+        let remoteByID = Dictionary(
+            payload.boards.compactMap { board in
+                board.nostrID.map { ($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), board) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let localByID = Dictionary(
+            localBoards.map { ($0.effectiveNostrBoardID.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for (id, fields) in boardFields {
+            guard let local = localByID[id] else {
+                boardFields[id] = nil
+                continue
+            }
+            guard let remote = remoteByID[id] else { continue }
+            let pending = fields.filter { field in
+                switch field {
+                case .visibility: (remote.archived ?? false) != local.archived || (remote.hidden ?? false) != local.hidden
+                case .relays: TaskifyRelayURL.normalizedList(remote.relayURLs ?? []) != local.effectiveRelayURLs
+                case .clearCompleted: (remote.clearCompletedDisabled ?? false) != local.clearCompletedDisabled
+                }
+            }
+            boardFields[id] = pending.isEmpty ? nil : pending
+        }
+    }
+
+    public func protectingLocalEdits(in payload: NostrAppBackupPayload) -> NostrAppBackupPayload {
+        var incoming = payload
+
+        for key in settingKeys { incoming.settings[key] = nil }
+        for index in incoming.boards.indices {
+            guard let id = incoming.boards[index].nostrID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  let fields = boardFields[id] else { continue }
+            if fields.contains(.visibility) {
+                incoming.boards[index].hidden = nil
+                incoming.boards[index].archived = nil
+            }
+            if fields.contains(.relays) { incoming.boards[index].relayURLs = nil }
+            if fields.contains(.clearCompleted) { incoming.boards[index].clearCompletedDisabled = nil }
+        }
+        return incoming
+    }
+
+    public func applyingLocalEdits(
+        to payload: NostrAppBackupPayload,
+        localRelays: [String],
+        localSettings: [String: TaskPayloadValue]
+    ) -> NostrAppBackupPayload {
+        var updated = payload
+        if previousAppRelays != nil { updated.defaultRelayURLs = localRelays }
+        for key in settingKeys {
+            if let value = localSettings[key] { updated.settings[key] = value }
+        }
+        return updated
     }
 }
 
@@ -566,7 +681,7 @@ public extension TaskifySnapshot {
         _ payload: NostrAppBackupPayload,
         now: Date = Date()
     ) -> NostrAppBackupImportResult {
-        let tombstonedIDs = Set(payload.boardTombstones.map(\.nostrID))
+        let tombstonedIDs = Set(payload.boardTombstones.respectingLocalJoins(boards).map(\.nostrID))
         if !tombstonedIDs.isEmpty {
             for boardID in boards.compactMap({ board in
                 tombstonedIDs.contains(board.effectiveNostrBoardID.lowercased()) ? board.id : nil
@@ -621,9 +736,13 @@ public extension TaskifySnapshot {
             let relays = TaskifyRelayURL.normalizedList(entry.relayURLs ?? [])
             let effectiveRelays = relays.isEmpty ? fallbackRelays : relays
             if let index = boards.firstIndex(where: { $0.effectiveNostrBoardID.lowercased() == nostrID.lowercased() }) {
-                boards[index].relayURLs = effectiveRelays
-                if let archived = entry.archived { boards[index].archived = archived }
-                if let hidden = entry.hidden { boards[index].hidden = hidden }
+                if !relays.isEmpty { boards[index].relayURLs = relays }
+                let predatesJoin = boards[index].accountJoinedAt.map { $0 >= payload.timestamp } ?? false
+                // A private linked-board placeholder does not express an account archive.
+                if !predatesJoin && entry.hidden != true {
+                    if let archived = entry.archived { boards[index].archived = archived }
+                    if entry.hidden == false { boards[index].hidden = false }
+                }
                 if let disabled = entry.clearCompletedDisabled {
                     boards[index].clearCompletedDisabled = disabled
                 }

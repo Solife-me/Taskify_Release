@@ -150,7 +150,7 @@ final class AccountBackupTests: XCTestCase {
 
         let updated = baseline.updatingNativeBoards(
             nativeBoards,
-            managedNostrBoardIDs: ["nostr-existing", "nostr-deleted"],
+            boardTombstones: [NostrBoardTombstone(nostrID: "nostr-deleted", deletedAt: 1_700_000_099)],
             timestamp: 1_700_000_100
         )
 
@@ -226,7 +226,6 @@ final class AccountBackupTests: XCTestCase {
         )
         let updated = baseline.updatingNativeBoards(
             [],
-            managedNostrBoardIDs: ["legacy-week-standard"],
             boardTombstones: [
                 NostrBoardTombstone(nostrID: "legacy-week-standard", deletedAt: 1_700_000_100),
             ],
@@ -247,6 +246,183 @@ final class AccountBackupTests: XCTestCase {
         )
         staleSnapshot.mergePWAAccountBackup(updated)
         XCTAssertEqual(staleSnapshot.boards.map { $0.effectiveNostrBoardID }, ["kept-week"])
+    }
+
+    func testExplicitJoinPromotesLinkedBoardAndKeepsItsLocalIdentity() throws {
+        let child = Board(
+            id: "local-child", name: "Linked board", kind: .list,
+            archived: true, hidden: true, nostrBoardID: "shared-board",
+            relayURLs: ["wss://old.example"]
+        )
+        var snapshot = TaskifySnapshot(
+            boards: [Board.week(), child],
+            tasks: [TaskItem(id: "existing-task", boardID: child.id, title: "Keep me")],
+            selectedBoardID: ""
+        )
+
+        let joined = try XCTUnwrap(snapshot.joinWeekBoard(
+            nostrBoardID: "shared-board", name: "Family List", relayURLs: ["wss://share.example"]
+        ))
+
+        XCTAssertEqual(joined.id, child.id)
+        XCTAssertEqual(joined.kind, .list)
+        XCTAssertEqual(joined.name, "Family List")
+        XCTAssertEqual(joined.effectiveRelayURLs, ["wss://share.example", "wss://old.example"])
+        XCTAssertEqual(snapshot.selectedBoard?.id, child.id)
+        XCTAssertEqual(snapshot.tasks.map(\.id), ["existing-task"])
+    }
+
+    func testOldTombstoneDoesNotUndoExplicitRejoinAfterReload() throws {
+        var snapshot = TaskifySnapshot(boards: [Board.week()], tasks: [], selectedBoardID: "")
+        let joinTime = Date(timeIntervalSince1970: 200)
+        let board = try XCTUnwrap(snapshot.joinWeekBoard(nostrBoardID: "shared", now: joinTime))
+        snapshot = try JSONDecoder().decode(TaskifySnapshot.self, from: JSONEncoder().encode(snapshot))
+        let stale = NostrAppBackupPayload(
+            timestamp: 210, boards: [],
+            boardTombstones: [NostrBoardTombstone(nostrID: "shared", deletedAt: 199)]
+        )
+
+        snapshot.mergePWAAccountBackup(stale)
+        XCTAssertEqual(snapshot.selectedBoard?.id, board.id)
+        let projected = stale.updatingNativeBoards(
+            snapshot.boards, timestamp: 211
+        )
+        XCTAssertTrue(projected.boardTombstones.isEmpty)
+        XCTAssertTrue(projected.boards.contains { $0.nostrID == "shared" })
+
+        let deletion = NostrAppBackupPayload(
+            timestamp: 220, boards: [],
+            boardTombstones: [NostrBoardTombstone(nostrID: "shared", deletedAt: 219)]
+        )
+        snapshot.mergePWAAccountBackup(deletion)
+        XCTAssertFalse(snapshot.boards.contains { $0.id == board.id })
+    }
+
+    func testRejoinAfterKnownDeletionWorksInTheSameSecond() throws {
+        var snapshot = TaskifySnapshot.empty
+        let previousDelete = NostrBoardTombstone(nostrID: "shared", deletedAt: 201)
+        let board = try XCTUnwrap(snapshot.joinWeekBoard(
+            nostrBoardID: "shared", lastDeletedAt: previousDelete.deletedAt,
+            now: Date(timeIntervalSince1970: 200)
+        ))
+        snapshot.mergePWAAccountBackup(.init(timestamp: 201, boards: [], boardTombstones: [previousDelete]))
+        XCTAssertEqual(snapshot.selectedBoard?.id, board.id)
+    }
+
+    func testBackupWithMissingBoardRelayHintsKeepsExistingBoardRelays() {
+        let board = Board(name: "Family", nostrBoardID: "shared", relayURLs: ["wss://share.example"])
+        var snapshot = TaskifySnapshot(boards: [board], tasks: [], selectedBoardID: "")
+        let payload = NostrAppBackupPayload(
+            timestamp: 200,
+            boards: [NostrAppBackupBoard(id: "old-local", nostrID: "shared", relayURLs: [])],
+            defaultRelayURLs: ["wss://account.example"]
+        )
+        snapshot.mergePWAAccountBackup(payload)
+        XCTAssertEqual(snapshot.boards.first?.effectiveRelayURLs, ["wss://share.example"])
+    }
+
+    func testMissingBoardAndHiddenLinkedCopyDoNotRemoveJoinedBoardButArchiveDoes() throws {
+        var snapshot = TaskifySnapshot.empty
+        let board = try XCTUnwrap(snapshot.joinWeekBoard(
+            nostrBoardID: "shared", now: Date(timeIntervalSince1970: 200)
+        ))
+        let older = NostrAppBackupBoard(id: "remote", nostrID: "shared", archived: true)
+        snapshot.mergePWAAccountBackup(.init(timestamp: 199, boards: [older]))
+        XCTAssertTrue(snapshot.visibleBoards.contains { $0.id == board.id })
+
+        let absent = NostrAppBackupPayload(timestamp: 201, boards: [])
+        snapshot.mergePWAAccountBackup(absent)
+        XCTAssertTrue(snapshot.visibleBoards.contains { $0.id == board.id })
+        XCTAssertTrue(absent.updatingNativeBoards(snapshot.boards, timestamp: 202).boardTombstones.isEmpty)
+
+        let hidden = NostrAppBackupBoard(
+            id: "remote", nostrID: "shared", name: "Resolved linked list", archived: true, hidden: true
+        )
+        snapshot.mergePWAAccountBackup(.init(timestamp: 202, boards: [hidden]))
+        XCTAssertTrue(snapshot.visibleBoards.contains { $0.id == board.id })
+
+        snapshot.mergePWAAccountBackup(.init(timestamp: 203, boards: [older]))
+        XCTAssertFalse(snapshot.visibleBoards.contains { $0.id == board.id })
+        XCTAssertEqual(snapshot.boards.first { $0.id == board.id }?.archived, true)
+    }
+
+    func testRelayAndOtherEditsSurviveReloadUntilConfirmedWithNewerValues() throws {
+        let previous = ["wss://old.example"]
+        let local = ["wss://new.example"]
+        var snapshot = TaskifySnapshot.empty
+        let board = try XCTUnwrap(snapshot.joinWeekBoard(nostrBoardID: "shared", relayURLs: local))
+        let beforeEdit = NostrAppBackupPayload(
+            timestamp: 100,
+            boards: [NostrAppBackupBoard(id: "remote", nostrID: "shared", relayURLs: previous, archived: true)],
+            settings: ["retention": .string("old"), "other-device-setting": .integer(2)],
+            defaultRelayURLs: previous
+        )
+        let localSettings: [String: TaskPayloadValue] = ["retention": .string("new"), "other-device-setting": .integer(1)]
+        var edits = NostrAccountBackupLocalEdits()
+        edits.observe(
+            beforeEdit, eventID: "a", createdAt: 100, localRelays: previous,
+            localSettings: [:], localBoards: []
+        )
+        edits.changeAppRelays(to: local, from: previous)
+        edits.settingKeys.insert("retention")
+        edits.changeBoard(board, fields: [.visibility, .relays])
+        edits = try JSONDecoder().decode(NostrAccountBackupLocalEdits.self, from: JSONEncoder().encode(edits))
+        XCTAssertEqual(edits.previousAppRelays, previous)
+        XCTAssertEqual(edits.pendingAppRelays, local)
+        XCTAssertFalse(edits.accepts(eventID: "a", createdAt: 99))
+        XCTAssertFalse(edits.accepts(eventID: "b", createdAt: 100))
+        XCTAssertTrue(edits.accepts(eventID: "0", createdAt: 100))
+
+        let incoming = edits.protectingLocalEdits(in: beforeEdit)
+        snapshot.mergePWAAccountBackup(incoming)
+        XCTAssertEqual(snapshot.selectedBoard?.effectiveRelayURLs, local)
+        XCTAssertNil(incoming.settings["retention"])
+        XCTAssertEqual(incoming.settings["other-device-setting"], .integer(2))
+
+        let boardProjection = beforeEdit.updatingNativeBoards(snapshot.boards, timestamp: 101)
+        let publication = edits.applyingLocalEdits(to: boardProjection, localRelays: local, localSettings: localSettings)
+        XCTAssertEqual(publication.defaultRelayURLs, local)
+        XCTAssertEqual(publication.settings["retention"], .string("new"))
+        XCTAssertEqual(publication.settings["other-device-setting"], .integer(2))
+        XCTAssertEqual(publication.boards.first { $0.nostrID == "shared" }?.archived, false)
+
+        edits.observe(
+            publication, eventID: "0", createdAt: 100, localRelays: local,
+            localSettings: localSettings, localBoards: snapshot.boards
+        )
+        XCTAssertEqual(edits.previousAppRelays, previous, "An event from before the relay edit cannot confirm it")
+        edits.observe(
+            publication, eventID: "c", createdAt: 101, localRelays: local,
+            localSettings: localSettings, localBoards: snapshot.boards
+        )
+        XCTAssertFalse(edits.hasPendingEdits)
+
+        edits.reservePublicationTimestamp(110)
+        let reopened = try JSONDecoder().decode(NostrAccountBackupLocalEdits.self, from: JSONEncoder().encode(edits))
+        XCTAssertEqual(reopened.nextPublicationTimestamp(baseline: 101, now: 105), 111)
+    }
+
+    func testVerifiedBackupCacheKeepsLatestEncryptedCopyOnReopen() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("snapshot.json")
+        let store = JSONTaskStore(fileURL: file)
+        let identity = try NostrIdentity(privateKey: Data(hex: privateKeyHex))
+        let payload = NostrAppBackupPayload(
+            timestamp: 1, boards: [], settings: ["otherDevice": .boolean(true)],
+            defaultRelayURLs: ["wss://example.test"]
+        )
+        let latest = try NostrAppBackupContract.event(payload: payload, identity: identity, createdAt: 2)
+        let older = try NostrAppBackupContract.event(payload: payload, identity: identity, createdAt: 1)
+        try await store.cacheAccountBackupEvent(latest)
+        try await store.cacheAccountBackupEvent(older)
+
+        let reopened = JSONTaskStore(fileURL: file)
+        let cached = await reopened.cachedAccountBackupEvent()
+        XCTAssertEqual(cached, latest)
+        let restored = try NostrAppBackupContract.decode(event: XCTUnwrap(cached), identity: identity)
+        XCTAssertEqual(restored.settings, payload.settings)
+        XCTAssertEqual(restored.defaultRelayURLs, payload.defaultRelayURLs)
     }
 
     func testBoardTombstoneDecodingNormalizesAndIgnoresMalformedEntries() throws {

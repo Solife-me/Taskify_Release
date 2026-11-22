@@ -35,7 +35,7 @@ struct TaskifyNativeApp: App {
         init() {
             AttachmentFiles.purgeExpiredTemporaryFiles()
             ShareTransferStore.purgeOrphanedFiles()
-            model = AppModel()
+            model = AppModel(syncEngine: Self.makeSyncEngine())
             wallet = WalletViewModel()
             model.registerWalletPaymentReceiver(wallet)
             TaskNotificationActionRouter.shared.register(model: model)
@@ -45,6 +45,21 @@ struct TaskifyNativeApp: App {
 
             // Keep Shortcuts phrase and parameter data in sync after launch.
             TaskifyShortcuts.updateAppShortcutParameters()
+        }
+
+        private static func makeSyncEngine() -> TaskSyncEngine {
+#if DEBUG
+            let environment = ProcessInfo.processInfo.environment
+            if environment["TASKIFY_UI_TEST_ACCOUNT_SYNC"] == "1" {
+                let outboxURL = NostrOutboxStore.defaultURL.deletingLastPathComponent()
+                    .appendingPathComponent("account-sync-ui-test-outbox.json")
+                if environment["TASKIFY_UI_TEST_FRESH_STORE"] == "1" {
+                    try? FileManager.default.removeItem(at: outboxURL)
+                }
+                return TaskSyncEngine(outbox: NostrOutboxStore(fileURL: outboxURL), networkingEnabled: false)
+            }
+#endif
+            return TaskSyncEngine()
         }
     }
 
