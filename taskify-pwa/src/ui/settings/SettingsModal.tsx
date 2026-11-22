@@ -102,7 +102,6 @@ export function SettingsModal({
   const [manageBoardId, setManageBoardId] = useState<string | null>(null);
   const manageBoard = boards.find(b => b.id === manageBoardId);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [storageOpenRequest, setStorageOpenRequest] = useState(0);
 
   const currentBoard = useMemo(
     () => boards.find((board) => board.id === currentBoardId) || null,
@@ -119,26 +118,9 @@ export function SettingsModal({
     }
   }, [onClose, reloadNeeded]);
 
-  const openStorageSection = useCallback(() => {
-    setStorageOpenRequest((value) => value + 1);
-    window.requestAnimationFrame(() => {
-      document.getElementById("settings-storage")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
-    });
-  }, []);
-
   // ─── Render ─────────────────────────────────────────────────────────────────
   const settingsBody = (
     <div className="space-y-2">
-      <div className="glass-panel flex flex-col gap-3 rounded-xl p-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="text-sm font-medium text-primary">Blossom storage</div>
-          <div className="mt-1 text-[11px] text-secondary">Manage protected usage, renewals, purchases, and stored files.</div>
-        </div>
-        <button type="button" className="accent-button button-sm pressable shrink-0 self-start sm:self-auto" onClick={openStorageSection}>
-          Open storage
-        </button>
-      </div>
-
       <SettingsAccordion
         title="Boards & Lists"
         summary="Create, join, reorder, archive, and share boards"
@@ -226,11 +208,9 @@ export function SettingsModal({
       </SettingsAccordion>
 
       <SettingsAccordion
-        id="settings-storage"
         title="Storage & attachments"
         summary="Protected usage, renewals, purchases, inventory, and file hosts"
         defaultExpanded={Boolean(initialStorageServer)}
-        openRequest={storageOpenRequest}
       >
         <StorageSection
           settings={settings}
