@@ -116,7 +116,16 @@ export function DocumentPreviewModal({
 
   const subtitle = useMemo(
     () =>
-      [doc.kind.toUpperCase(), formatBytes(doc.size), doc.encrypted ? "Encrypted" : null]
+      [
+        doc.kind.toUpperCase(),
+        formatBytes(doc.size),
+        doc.encrypted ? "Encrypted" : null,
+        doc.retention === "standard"
+          ? "Standard retention"
+          : doc.retention === "protected" && doc.protectedUntil
+            ? `Protected until ${new Date(doc.protectedUntil * 1000).toLocaleDateString()}`
+            : null,
+      ]
         .filter(Boolean)
         .join(" • "),
     [doc],

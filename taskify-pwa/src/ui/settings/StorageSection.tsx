@@ -1,17 +1,872 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { blossomRenewalWindowSeconds, isBlossomRenewalDue, listBlossomRenewals } from "../../lib/blossomRenewals";
+import { QRCodeSVG } from "qrcode.react";
+import type { Task } from "taskify-core";
 import type { Settings } from "../../domains/tasks/settingsTypes";
-import type { FileServerType } from "../../lib/fileStorage";
+import {
+  MANAGED_BLOSSOM_FILE_SERVER,
+  MANAGED_BLOSSOM_SERVER,
+  normalizeFileServerUrl,
+  parseFileServers,
+  serializeFileServers,
+  type FileServerEntry,
+  type FileServerType,
+} from "../../lib/fileStorage";
+import {
+  BlossomStorageApiError,
+  blossomTermsFingerprint,
+  createBlossomStorageOrder,
+  deleteBlossomStorageBlob,
+  getBlossomStorageOrder,
+  getBlossomStorageSummary,
+  listBlossomStorageBlobs,
+  listBlossomStorageOrders,
+  protectBlossomStorageBlob,
+  type BlossomStorageBlob,
+  type BlossomStorageOrder,
+  type BlossomStorageSummary,
+} from "../../lib/blossomStorage";
+import {
+  getBlossomFallbackPreference,
+  setBlossomFallbackPreference,
+  type BlossomFallbackPreference,
+} from "../../lib/blossomRetention";
+import {
+  localBlobReferences,
+  matchBlobToLocalReferences,
+  type LocalBlobReference,
+} from "../../lib/blossomInventoryMatch";
+import { decodeBolt11Amount, formatMsatAsSat } from "../../wallet/lightning";
+import { resolveDocumentAsset } from "../task/documentAsset";
+import { decryptAttachment, inferAttachmentMimeFromUrl } from "../../lib/attachmentCrypto";
+import { readDmCache } from "../../chat/hooks/useDmState";
+import { useCalendarEvents } from "../../state/appStores";
+import { decryptMessengerAttachment } from "../../lib/messengerAttachmentCrypto";
+import { kvStorage } from "../../storage/kvStorage";
+import { useToast } from "../../context/ToastContext";
 import { FileServersSection } from "./FileServersSection";
 import { SettingsAccordion } from "./SettingsAccordion";
 
-export function StorageSection({
-  settings,
-  setSettings,
+const INVENTORY_PAGE_SIZE = 50;
+
+function formatDecimalBytes(bytes: number | null | undefined): string {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1_000) return `${Math.round(bytes)} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(bytes < 10_000 ? 1 : 0)} KB`;
+  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(bytes < 10_000_000 ? 1 : 0)} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+}
+
+function formatDate(unixSeconds: number | null | undefined): string {
+  if (!unixSeconds || !Number.isFinite(unixSeconds)) return "—";
+  return new Date(unixSeconds * 1000).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function formatDateTime(unixSeconds: number | null | undefined): string {
+  if (!unixSeconds || !Number.isFinite(unixSeconds)) return "—";
+  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function usagePercent(used: number, limit: number): number {
+  if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return 0;
+  return Math.max(0, Math.min(100, (used / limit) * 100));
+}
+
+function usageTone(percent: number): string {
+  if (percent >= 95) return "bg-rose-500";
+  if (percent >= 85) return "bg-amber-400";
+  return "bg-emerald-500";
+}
+
+function serverChoices(settings: Settings): FileServerEntry[] {
+  const choices = new Map<string, FileServerEntry>();
+  for (const entry of [
+    ...parseFileServers(settings.encryptedFileServers),
+    ...parseFileServers(settings.fileServers),
+    {
+      ...MANAGED_BLOSSOM_FILE_SERVER,
+      url: settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER,
+    },
+  ]) {
+    if (entry.type !== "blossom") continue;
+    const url = normalizeFileServerUrl(entry.url) || entry.url;
+    if (!choices.has(url)) choices.set(url, { ...entry, url });
+  }
+  return [...choices.values()];
+}
+
+function invoiceSatAmountLabel(order: BlossomStorageOrder | null): string | null {
+  if (!order?.invoice) return null;
+  try {
+    const { amountMsat } = decodeBolt11Amount(order.invoice);
+    return amountMsat != null && amountMsat > 0n ? formatMsatAsSat(amountMsat) : null;
+  } catch {
+    return null;
+  }
+}
+
+function InventoryPreview({ references }: { references: LocalBlobReference[] }) {
+  const first = references[0];
+  const [src, setSrc] = useState<string | null>(() => {
+    if (!first) return null;
+    if (first.document?.preview?.type === "image") return first.document.preview.data;
+    if (first.document?.full?.type === "image") return first.document.full.data;
+    return null;
+  });
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setUnavailable(false);
+    setSrc(null);
+    if (!first) return;
+    if (first.document) {
+      if (first.document.preview?.type === "image") {
+        setSrc(first.document.preview.data);
+        return;
+      }
+      if (first.document.full?.type === "image") {
+        setSrc(first.document.full.data);
+        return;
+      }
+      if (!first.document.remoteUrl || !["png", "jpg", "jpeg", "webp", "gif"].includes(first.document.kind)) return;
+      void resolveDocumentAsset(first.document, first.boardId)
+        .then((resolved) => {
+          if (cancelled) return;
+          setSrc(resolved.preview?.type === "image"
+            ? resolved.preview.data
+            : resolved.full?.type === "image"
+              ? resolved.full.data
+              : null);
+        })
+        .catch(() => { if (!cancelled) setUnavailable(true); });
+      return () => { cancelled = true; };
+    }
+    if (first.chatFile?.mimeType?.startsWith("image/")) {
+      void decryptMessengerAttachment(first.chatFile)
+        .then(({ objectUrl }) => { if (!cancelled) setSrc(objectUrl); })
+        .catch(() => { if (!cancelled) setUnavailable(true); });
+    }
+    if (first.imageUrl) {
+      if (first.imageUrl.startsWith("data:")) {
+        setSrc(first.imageUrl);
+        return;
+      }
+      void decryptAttachment({
+        boardId: first.boardId,
+        url: first.imageUrl,
+        mimeType: inferAttachmentMimeFromUrl(first.imageUrl),
+      })
+        .then((dataUrl) => { if (!cancelled) setSrc(dataUrl); })
+        .catch(() => { if (!cancelled) setUnavailable(true); });
+    }
+    return () => { cancelled = true; };
+  }, [first]);
+
+  if (src) return <img src={src} alt="" loading="lazy" className="h-12 w-12 rounded-xl object-cover" />;
+  return (
+    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-surface text-[10px] text-secondary">
+      {unavailable ? "No preview" : first?.document?.kind.toUpperCase() || (first ? "FILE" : "UNMATCHED")}
+    </div>
+  );
+}
+
+function UsageBar({
+  label,
+  used,
+  limit,
+  quietNearLimit = false,
 }: {
+  label: string;
+  used: number;
+  limit: number;
+  quietNearLimit?: boolean;
+}) {
+  const percent = usagePercent(used, limit);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-3 text-xs">
+        <span className="font-medium text-primary">{label}</span>
+        <span className="text-secondary">{formatDecimalBytes(used)} of {formatDecimalBytes(limit)}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-surface">
+        <div className={`h-full rounded-full transition-all ${usageTone(percent)}`} style={{ width: `${percent}%` }} />
+      </div>
+      {quietNearLimit && percent >= 85 ? (
+        <div className="text-[11px] text-secondary">Nearing the included storage limit</div>
+      ) : null}
+    </div>
+  );
+}
+
+type StorageSectionProps = {
   settings: Settings;
   setSettings: (settings: Partial<Settings>) => void;
-}) {
+  pubkeyHex: string;
+  signerKey: string;
+  tasks: Task[];
+  initialServer?: string;
+};
+
+export function StorageSection(props: StorageSectionProps) {
+  const { settings, pubkeyHex, initialServer } = props;
+  const sectionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (initialServer) sectionRef.current?.scrollIntoView?.({ block: "start" });
+  }, [initialServer]);
+  const choices = useMemo(() => serverChoices(settings), [settings]);
+  const [serverPreference, setSelectedServer] = useState<string | null>(initialServer ?? null);
+  const configuredUploadServer = normalizeFileServerUrl(settings.encryptedFileStorageServer);
+  const defaultServer = choices.find((entry) => entry.url === configuredUploadServer)?.url
+    || settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER;
+  const selectedServer = choices.some((entry) => entry.url === serverPreference)
+    ? serverPreference! : defaultServer;
+
   return (
-    <div className="space-y-2">
+    <div ref={sectionRef}>
+      <BlossomStorageDashboard
+        key={JSON.stringify([pubkeyHex, selectedServer])}
+        {...props}
+        choices={choices}
+        selectedServer={selectedServer}
+        setSelectedServer={setSelectedServer}
+      />
+    </div>
+  );
+}
+
+function BlossomStorageDashboard({
+  settings,
+  setSettings,
+  pubkeyHex,
+  signerKey,
+  tasks,
+  initialServer,
+  choices,
+  selectedServer,
+  setSelectedServer,
+}: StorageSectionProps & {
+  choices: FileServerEntry[];
+  selectedServer: string;
+  setSelectedServer: (server: string) => void;
+}) {
+  const { show: showToast } = useToast();
+  const [summary, setSummary] = useState<BlossomStorageSummary | null>(null);
+  const [orders, setOrders] = useState<BlossomStorageOrder[]>([]);
+  const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
+  const [inventory, setInventory] = useState<BlossomStorageBlob[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [expiryBlobs, setExpiryBlobs] = useState<BlossomStorageBlob[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [checkoutBusy, setCheckoutBusy] = useState<string | null>(null);
+  const [actionSha, setActionSha] = useState<string | null>(null);
+  const [managedDraft, setManagedDraft] = useState(settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER);
+  const [fallbackPreference, setFallbackPreferenceState] = useState<BlossomFallbackPreference | null>(() =>
+    getBlossomFallbackPreference(pubkeyHex, selectedServer),
+  );
+  const dashboardRequest = useRef<AbortController | null>(null);
+  const orderRequestInFlight = useRef(false);
+  const renewalWindow = blossomRenewalWindowSeconds(summary?.renewalWindowSeconds);
+
+  useEffect(() => {
+    setManagedDraft(settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER);
+  }, [settings.managedBlossomServer]);
+
+  useEffect(() => {
+    setFallbackPreferenceState(getBlossomFallbackPreference(pubkeyHex, selectedServer));
+  }, [pubkeyHex, selectedServer]);
+
+  const [events] = useCalendarEvents();
+  const references = useMemo(() => localBlobReferences(tasks, events, readDmCache()), [tasks, events, inventory]);
+  const activeOrder = useMemo(
+    () => orders.find((order) => order.id === activeOrderId)
+      ?? orders.find((order) => !order.paidThrough && order.invoiceExpiresAt * 1000 > Date.now())
+      ?? null,
+    [activeOrderId, orders],
+  );
+  const pendingOrders = orders.filter((order) =>
+    !order.paidThrough && order.invoiceExpiresAt * 1000 > Date.now());
+  const pendingOrderId = activeOrder?.paidThrough ? null : activeOrder?.id;
+  const activeInvoiceSats = invoiceSatAmountLabel(activeOrder);
+  const activeInvoiceExpired = Boolean(
+    activeOrder && !activeOrder.paidThrough && activeOrder.invoiceExpiresAt * 1000 <= Date.now(),
+  );
+  const offersByPlan = useMemo(() => {
+    const grouped = new Map<string, BlossomStorageSummary["offers"]>();
+    for (const offer of summary?.offers ?? []) {
+      const list = grouped.get(offer.planId) || [];
+      list.push(offer);
+      grouped.set(offer.planId, list);
+    }
+    return [...grouped.values()];
+  }, [summary?.offers]);
+  const expiringGroups = useMemo(() => {
+    const groups = new Map<string, BlossomStorageBlob[]>();
+    for (const blob of expiryBlobs) {
+      if (!blob.protectedUntil || !isBlossomRenewalDue(blob, renewalWindow)) continue;
+      const key = new Date(blob.protectedUntil * 1000).toISOString().slice(0, 10);
+      const list = groups.get(key) || [];
+      list.push(blob);
+      groups.set(key, list);
+    }
+    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [expiryBlobs, renewalWindow]);
+
+  const loadInventoryPage = useCallback(async (cursor: string | null, replace: boolean) => {
+    const signal = dashboardRequest.current?.signal;
+    if (!signerKey || !selectedServer || signal?.aborted) return;
+    setInventoryLoading(true);
+    try {
+      const page = await listBlossomStorageBlobs({
+        serverUrl: selectedServer,
+        signer: signerKey,
+        cursor,
+        limit: INVENTORY_PAGE_SIZE,
+        signal,
+      });
+      if (signal?.aborted) return;
+      setInventory((previous) => replace ? page.blobs : [...previous, ...page.blobs]);
+      setNextCursor(page.nextCursor);
+    } catch (err) {
+      if (!signal?.aborted) showToast(err instanceof Error ? err.message : "Could not load stored files.", 5000);
+    } finally {
+      if (!signal?.aborted) setInventoryLoading(false);
+    }
+  }, [selectedServer, showToast, signerKey]);
+
+  const loadDashboard = useCallback(async () => {
+    if (!signerKey || !selectedServer) return;
+    dashboardRequest.current?.abort();
+    const controller = new AbortController();
+    dashboardRequest.current = controller;
+    const { signal } = controller;
+    setLoading(true);
+    setInventoryLoading(false);
+    setError(null);
+    try {
+      const [nextSummary, nextOrders] = await Promise.all([
+        getBlossomStorageSummary(selectedServer, signerKey, signal),
+        listBlossomStorageOrders({ serverUrl: selectedServer, signer: signerKey, signal }).catch(() => null),
+      ]);
+      if (signal.aborted) return;
+      setSummary(nextSummary);
+      if (nextOrders) {
+        setOrders((current) => {
+          const merged = new Map(current.map((order) => [order.id, order]));
+          for (const order of nextOrders) {
+            if (!merged.get(order.id)?.paidThrough) merged.set(order.id, order);
+          }
+          return [...merged.values()];
+        });
+      }
+      setFallbackPreferenceState(getBlossomFallbackPreference(pubkeyHex, selectedServer));
+      if (nextSummary.protected.usedBytes > 0) {
+        void listBlossomRenewals(selectedServer, signerKey, blossomRenewalWindowSeconds(nextSummary.renewalWindowSeconds), signal).then((blobs) => {
+          if (!signal.aborted) setExpiryBlobs(blobs);
+        }).catch(() => {});
+      } else {
+        setExpiryBlobs([]);
+      }
+      await loadInventoryPage(null, true);
+    } catch (err) {
+      if (signal.aborted) return;
+      setSummary(null);
+      setError(
+        err instanceof BlossomStorageApiError
+          ? `${err.message} (${err.code})`
+          : err instanceof Error ? err.message : "Could not load Blossom storage.",
+      );
+    } finally {
+      if (!signal.aborted) setLoading(false);
+    }
+  }, [loadInventoryPage, pubkeyHex, selectedServer, signerKey]);
+
+  useEffect(() => {
+    void loadDashboard();
+    return () => dashboardRequest.current?.abort();
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    if (!pendingOrderId || !signerKey) return;
+    const controller = new AbortController();
+    let inFlight = false;
+    const check = async () => {
+      if (controller.signal.aborted || inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      try {
+        const next = await getBlossomStorageOrder({
+          serverUrl: selectedServer,
+          signer: signerKey,
+          id: pendingOrderId,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        setOrders((current) => current.map((order) => order.id === next.id ? next : order));
+        if (next.paidThrough) {
+          showToast("Storage payment confirmed. Usage updated.", 4500);
+          setActiveOrderId(next.id);
+          void loadDashboard();
+        }
+      } catch {
+        // Payment may still be propagating. The next poll or app return will retry.
+      } finally {
+        inFlight = false;
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 5000);
+    const onVisibility = () => { if (document.visibilityState === "visible") void check(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [pendingOrderId, loadDashboard, selectedServer, showToast, signerKey]);
+
+  const saveManagedServer = useCallback((useForUploads: boolean) => {
+    const normalized = normalizeFileServerUrl(managedDraft);
+    if (!normalized) {
+      showToast("Enter a valid managed Blossom URL.", 4000);
+      return;
+    }
+    setSettings({ managedBlossomServer: normalized });
+    setManagedDraft(normalized);
+    if (!useForUploads) {
+      setSelectedServer(normalized);
+      showToast("Managed Blossom URL saved.", 3000);
+      return;
+    }
+    const encrypted = parseFileServers(settings.encryptedFileServers);
+    const withoutDuplicate = encrypted.filter((entry) => (normalizeFileServerUrl(entry.url) || entry.url) !== normalized);
+    const hostname = (() => { try { return new URL(normalized).hostname; } catch { return "Managed Blossom"; } })();
+    const nextServers = [...withoutDuplicate, { url: normalized, type: "blossom" as const, label: hostname }];
+    setSettings({
+      encryptedFileServers: serializeFileServers(nextServers),
+      encryptedFileStorageServer: normalized,
+    });
+    setSelectedServer(normalized);
+    showToast("Using the managed Blossom server for encrypted uploads.", 4000);
+  }, [managedDraft, setSelectedServer, setSettings, settings.encryptedFileServers, showToast]);
+
+  const updateFallbackPreference = useCallback((automaticFallback: boolean) => {
+    const termsFingerprint = summary ? blossomTermsFingerprint(summary) : null;
+    setBlossomFallbackPreference(pubkeyHex, selectedServer, { automaticFallback, termsFingerprint });
+    setFallbackPreferenceState(getBlossomFallbackPreference(pubkeyHex, selectedServer));
+  }, [pubkeyHex, selectedServer, summary]);
+
+  const protectBlob = useCallback(async (blob: BlossomStorageBlob) => {
+    setActionSha(blob.sha256);
+    try {
+      const result = await protectBlossomStorageBlob({ serverUrl: selectedServer, signer: signerKey, sha256: blob.sha256 });
+      if (blob.tier !== "protected") {
+        showToast("Blob moved to protected storage.", 3500);
+      } else if ((result.protectedUntil ?? 0) > (blob.protectedUntil ?? 0)) {
+        showToast("Protection renewed.", 3500);
+      } else {
+        showToast("Blossom kept the existing protection date.", 3500);
+      }
+      await loadDashboard();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not update protection.", 5000);
+    } finally {
+      setActionSha(null);
+    }
+  }, [loadDashboard, selectedServer, showToast, signerKey]);
+
+  const deleteBlob = useCallback(async (blob: BlossomStorageBlob) => {
+    const known = matchBlobToLocalReferences(blob, selectedServer, localBlobReferences(tasks, events, readDmCache()));
+    const labels = [...new Set(known.map((ref) => ref.referenceLabel))];
+    const warning = labels.length
+      ? `This file is used by ${labels.join(", ")}. Deleting your copy may break those attachments. Continue?`
+      : "This file has no local match. It may still be used on another device or by another app. Delete your copy?";
+    if (!window.confirm(warning)) return;
+    setActionSha(blob.sha256);
+    try {
+      await deleteBlossomStorageBlob({ serverUrl: selectedServer, signer: signerKey, sha256: blob.sha256 });
+      setInventory((current) => current.filter((entry) => entry.sha256 !== blob.sha256));
+      showToast("Blob ownership deleted. Other owners' references remain valid.", 4000);
+      await loadDashboard();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not delete this blob.", 5000);
+    } finally {
+      setActionSha(null);
+    }
+  }, [events, loadDashboard, selectedServer, showToast, signerKey, tasks]);
+
+  const createOrder = useCallback(async (offer: BlossomStorageSummary["offers"][number]) => {
+    const openOrder = pendingOrders.find((order) => order.planId === offer.planId && order.interval === offer.interval);
+    if (openOrder) {
+      setActiveOrderId(openOrder.id);
+      return;
+    }
+    if (orderRequestInFlight.current) return;
+    const busyKey = `${offer.planId}:${offer.interval}`;
+    const requestKey = `taskify_blossom_checkout:${JSON.stringify([
+      pubkeyHex, selectedServer, offer.planId, offer.interval, offer.priceUsdCents, offer.bytes,
+    ])}`;
+    const requestId = kvStorage.getItem(requestKey) || crypto.randomUUID();
+    kvStorage.setItem(requestKey, requestId);
+    orderRequestInFlight.current = true;
+    setCheckoutBusy(busyKey);
+    try {
+      const order = await createBlossomStorageOrder({
+        serverUrl: selectedServer,
+        signer: signerKey,
+        requestId,
+        offer,
+      });
+      kvStorage.removeItem(requestKey);
+      setOrders((current) => [order, ...current.filter((entry) => entry.id !== order.id)]);
+      setActiveOrderId(order.id);
+      showToast("Invoice created. Pay it with any Lightning wallet.", 4000);
+    } catch (err) {
+      if (err instanceof BlossomStorageApiError && err.code === "checkout_conflict") {
+        kvStorage.removeItem(requestKey);
+        showToast("That offer changed or an invoice is already open. Refreshing checkout.", 5000);
+        await loadDashboard();
+      } else {
+        showToast(err instanceof Error ? err.message : "Could not create a checkout invoice. Retry to reuse this request.", 5000);
+      }
+    } finally {
+      orderRequestInFlight.current = false;
+      setCheckoutBusy(null);
+    }
+  }, [loadDashboard, pendingOrders, pubkeyHex, selectedServer, showToast, signerKey]);
+
+  const copyInvoice = useCallback(async () => {
+    if (!activeOrder?.invoice) return;
+    try {
+      await navigator.clipboard.writeText(activeOrder.invoice);
+      showToast("Lightning invoice copied.", 2500);
+    } catch {
+      showToast("Could not copy the invoice.", 3000);
+    }
+  }, [activeOrder?.invoice, showToast]);
+
+  const totalPercent = summary ? usagePercent(summary.total.usedBytes, summary.total.limitBytes) : 0;
+  const protectedPercent = summary ? usagePercent(summary.protected.usedBytes, summary.protected.limitBytes) : 0;
+
+  return (
+    <div className="space-y-3">
+      <SettingsAccordion title="Blossom account storage" summary="Usage, inventory, protection, and purchases" nested defaultExpanded={Boolean(initialServer)}>
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs font-medium text-secondary" htmlFor="blossom-storage-server">Server</label>
+            <select
+              id="blossom-storage-server"
+              className="pill-input min-w-0 flex-1"
+              value={selectedServer}
+              onChange={(event) => setSelectedServer(event.target.value)}
+            >
+              {choices.map((entry) => (
+                <option key={entry.url} value={entry.url}>{entry.label || entry.url}</option>
+              ))}
+            </select>
+            <button type="button" className="ghost-button button-sm pressable" onClick={() => void loadDashboard()} disabled={loading}>
+              {loading ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
+
+          {error ? (
+            <div className="rounded-xl bg-surface p-3 text-xs text-secondary">
+              {error}
+              <div className="mt-2 text-[11px] text-tertiary">
+                This account may not have Blossom storage plans enabled on the selected server.
+              </div>
+            </div>
+          ) : null}
+
+          {expiringGroups.length ? (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-primary">Upcoming protection expiries</div>
+              {expiringGroups.map(([day, blobs]) => (
+                <div key={day} className="rounded-xl bg-surface p-3">
+                  <div className="text-[11px] font-medium text-secondary">{new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</div>
+                  <div className="mt-1 space-y-1">
+                    {blobs.map((blob) => {
+                      const matches = matchBlobToLocalReferences(blob, selectedServer, references);
+                      return (
+                        <div key={blob.sha256} className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="truncate text-primary">{matches[0]?.filename || "Unmatched blob"}</span>
+                          <button type="button" className="ghost-button button-sm pressable" disabled={actionSha !== null} onClick={() => void protectBlob(blob)}>
+                            {actionSha === blob.sha256 ? "Renewing…" : "Renew"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {summary ? (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="glass-panel rounded-xl p-3">
+                  <UsageBar label="Protected" used={summary.protected.usedBytes} limit={summary.protected.limitBytes} quietNearLimit />
+                </div>
+                <div className="glass-panel rounded-xl p-3">
+                  <UsageBar label="Total" used={summary.total.usedBytes} limit={summary.total.limitBytes} quietNearLimit />
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-secondary">
+                <span>Protected: {protectedPercent.toFixed(0)}%</span>
+                <span>Total: {totalPercent.toFixed(0)}%</span>
+                {summary.permanentExtraBytes > 0 ? <span>Extra: {formatDecimalBytes(summary.permanentExtraBytes)}</span> : null}
+                <span>Protection grants last up to {Math.round(summary.protectionSeconds / 86400)} days</span>
+              </div>
+              {summary.paidStorage.length ? (
+                <div className="rounded-xl bg-surface p-3">
+                  <div className="text-xs font-medium text-primary">Paid storage</div>
+                  <div className="mt-1 space-y-1 text-[11px] text-secondary">
+                    {summary.paidStorage.map((entry, index) => (
+                      <div key={`${entry.paidThrough}-${index}`}>
+                        +{formatDecimalBytes(entry.bytes)} through {formatDate(entry.paidThrough)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+
+          <div className="rounded-xl bg-surface p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium text-primary">Automatic standard-storage fallback</div>
+                <div className="mt-1 text-[11px] text-secondary">
+                  When protected storage is full, allow new files to use the server&apos;s standard inactivity rules.
+                  This is remembered for {pubkeyHex ? "this account" : "this device"} and this server.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={fallbackPreference?.automaticFallback === true}
+                disabled={!summary || !pubkeyHex}
+                className={`pressable rounded-full px-3 py-1 text-xs ${fallbackPreference?.automaticFallback ? "bg-emerald-500 text-white" : "bg-surface-muted text-secondary"}`}
+                onClick={() => updateFallbackPreference(!fallbackPreference?.automaticFallback)}
+              >
+                {fallbackPreference?.automaticFallback ? "On" : "Off"}
+              </button>
+            </div>
+            {fallbackPreference?.automaticFallback ? (
+              <div className="mt-2 text-[11px] text-secondary">
+                Standard uploads are labelled in attachment details. Taskify will ask again if the retention terms change.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl bg-surface p-3">
+            <div className="text-xs font-medium text-primary">Managed Blossom URL</div>
+            <div className="mt-1 text-[11px] text-secondary">
+              The built-in managed Blossom default is {MANAGED_BLOSSOM_SERVER}. Set VITE_MANAGED_BLOSSOM_URL or this field to override it for a deployment.
+            </div>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+              <input
+                className="pill-input min-w-0 flex-1"
+                value={managedDraft}
+                onChange={(event) => setManagedDraft(event.target.value)}
+                placeholder="https://blossom.example.com"
+                inputMode="url"
+              />
+              <button type="button" className="ghost-button button-sm pressable" onClick={() => saveManagedServer(false)}>
+                Save
+              </button>
+              <button type="button" className="accent-button button-sm pressable" onClick={() => saveManagedServer(true)}>
+                Use for uploads
+              </button>
+            </div>
+          </div>
+
+          {orders.length ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-medium text-primary">Checkout</div>
+                <button type="button" className="link-accent text-xs" onClick={() => void loadDashboard()}>Refresh status</button>
+              </div>
+              {pendingOrders.length > 1 || (pendingOrders.length > 0 && !pendingOrders.some((order) => order.id === activeOrder?.id)) ? (
+                <label className="flex items-center gap-2 text-xs">
+                  Pending invoice
+                  <select className="pill-input" value={activeOrder?.id ?? ""} onChange={(event) => setActiveOrderId(event.target.value)}>
+                    {!pendingOrders.some((order) => order.id === activeOrder?.id) && <option value="" disabled>Select an invoice</option>}
+                    {pendingOrders.map((order) => (
+                      <option key={order.id} value={order.id}>{order.planName} · {order.interval === "year" ? "Yearly" : "Monthly"}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {activeOrder ? (
+                <div className="rounded-xl border border-surface bg-surface p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-primary">{activeOrder.planName}</div>
+                      <div className="text-[11px] text-secondary">
+                        +{formatDecimalBytes(activeOrder.bytes)} · {activeOrder.interval === "year" ? "Yearly" : "Monthly"} · ${(activeOrder.priceUsdCents / 100).toFixed(2)}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-primary">{activeInvoiceSats == null ? "Amount in invoice" : activeInvoiceSats}</div>
+                      <div className="text-[10px] text-secondary">decoded from BOLT11</div>
+                    </div>
+                  </div>
+                  {activeOrder.paidThrough ? (
+                    <div className="mt-3 rounded-lg bg-emerald-500/10 p-3 text-xs text-emerald-500">
+                      Payment settled. Storage is active through {formatDate(activeOrder.paidThrough)}.
+                    </div>
+                  ) : activeInvoiceExpired ? (
+                    <div className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs text-amber-500">
+                      This invoice expired. Choose a plan below to create a new one.
+                    </div>
+                  ) : (
+                    <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <div className="flex h-44 w-44 self-center rounded-xl bg-white p-3">
+                        <QRCodeSVG value={activeOrder.invoice} size={160} marginSize={1} />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div className="text-[11px] text-secondary">
+                          Expires {formatDateTime(activeOrder.invoiceExpiresAt)}. Pay with any Lightning wallet; Taskify checks settlement and refreshes usage.
+                        </div>
+                        <div className="max-h-20 overflow-auto break-all rounded-lg bg-surface-muted p-2 font-mono text-[10px] text-secondary">
+                          {activeOrder.invoice}
+                        </div>
+                        <button type="button" className="accent-button button-sm pressable" onClick={() => void copyInvoice()}>
+                          Copy BOLT11 invoice
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-primary">Add storage</div>
+            {offersByPlan.length ? offersByPlan.map((offers) => (
+              <div key={offers[0].planId} className="rounded-xl bg-surface p-3">
+                <div className="text-sm font-medium text-primary">{offers[0].planName}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {offers.map((offer) => {
+                    const key = `${offer.planId}:${offer.interval}`;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className="ghost-button button-sm pressable text-left"
+                        disabled={checkoutBusy != null}
+                        onClick={() => void createOrder(offer)}
+                      >
+                        <span className="block text-xs font-medium">
+                          ${(offer.priceUsdCents / 100).toFixed(2)} · {offer.interval === "year" ? "Yearly" : "Monthly"}
+                        </span>
+                        <span className="block text-[10px] text-secondary">+{formatDecimalBytes(offer.bytes)} storage</span>
+                        {checkoutBusy === key ? <span className="block text-[10px] text-secondary">Creating invoice…</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )) : (
+              <div className="text-[11px] text-secondary">No storage offers are available on this server.</div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-xs font-medium text-primary">Stored files</div>
+              <div className="text-[11px] text-secondary">{inventory.length} loaded</div>
+            </div>
+            {inventory.length ? inventory.map((blob) => {
+              const matches = matchBlobToLocalReferences(blob, selectedServer, references);
+              const knownTitles = [...new Set(matches.map((ref) => ref.referenceLabel))];
+              const canRenew = blob.tier === "standard" || isBlossomRenewalDue(blob, renewalWindow);
+              return (
+                <div key={`${blob.sha256}:${blob.url}`} className="rounded-xl border border-surface bg-surface p-3">
+                  <div className="flex gap-3">
+                    <InventoryPreview references={matches} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-primary">
+                            {matches.length ? matches[0].filename : "Unmatched blob"}
+                          </div>
+                          <div className="mt-0.5 text-[10px] text-secondary">
+                            {formatDecimalBytes(blob.size)} · {blob.type || "unknown type"} · uploaded {formatDate(blob.uploaded)}
+                          </div>
+                        </div>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] ${blob.tier === "protected" ? "bg-emerald-500/10 text-emerald-500" : "bg-amber-500/10 text-amber-500"}`}>
+                          {blob.tier === "protected" ? "Protected" : "Standard retention"}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-secondary">
+                        {blob.tier === "protected" ? blob.protectedUntil ? `Protected until ${formatDate(blob.protectedUntil)}` : "Protected" : "No protection date; standard inactivity rules apply"}
+                      </div>
+                      {matches.length ? (
+                        <div className="mt-1 text-[11px] text-secondary">
+                          Used by {knownTitles.join(", ")}
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-[11px] text-amber-500">
+                          No local attachment reference. This file may still be used on another device or by another app.
+                        </div>
+                      )}
+                      <div className="mt-1 break-all text-[9px] text-tertiary">{blob.sha256}</div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable"
+                          disabled={!canRenew || actionSha !== null}
+                          title={canRenew || !blob.protectedUntil ? undefined : `Renewal opens ${formatDate(blob.protectedUntil - renewalWindow)}.`}
+                          onClick={() => void protectBlob(blob)}
+                        >
+                          {actionSha === blob.sha256 ? "Updating…" : blob.tier === "standard" ? "Protect" : "Renew"}
+                        </button>
+                        <a className="ghost-button button-sm pressable" href={blob.url} target="_blank" rel="noopener noreferrer">Open</a>
+                        <button
+                          type="button"
+                          className="ghost-button button-sm pressable text-rose-500"
+                          disabled={actionSha !== null}
+                          onClick={() => void deleteBlob(blob)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            }) : (
+              <div className="text-[11px] text-secondary">{inventoryLoading ? "Loading stored files…" : "No stored files were returned."}</div>
+            )}
+            {nextCursor ? (
+              <button
+                type="button"
+                className="ghost-button button-sm pressable"
+                disabled={inventoryLoading}
+                onClick={() => void loadInventoryPage(nextCursor, false)}
+              >
+                {inventoryLoading ? "Loading…" : "Load more"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </SettingsAccordion>
+
       <SettingsAccordion title="Public file servers" summary="Attachment hosts visible to file-server operators" nested>
         <FileServersSection
           fileStorageServer={settings.fileStorageServer}
@@ -26,7 +881,7 @@ export function StorageSection({
           fileServers={settings.encryptedFileServers || ""}
           onSelectServer={(url) => setSettings({ encryptedFileStorageServer: url })}
           onUpdateServers={(serialized) => setSettings({ encryptedFileServers: serialized })}
-          addWarning={(type: FileServerType | null) => type && type !== "originless" ? "Warning: NIP-96 and Blossom servers may fail for encrypted uploads. Originless is recommended." : null}
+          addWarning={(type: FileServerType | null) => type && type !== "originless" ? "Blossom is supported for encrypted uploads. NIP-96 servers may reject opaque ciphertext." : null}
         />
       </SettingsAccordion>
     </div>

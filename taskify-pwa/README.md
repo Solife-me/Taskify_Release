@@ -47,6 +47,16 @@ Environment variables:
 
 - `VITE_WORKER_BASE_URL` – Base URL for your deployed Worker (no trailing slash). Example: `https://taskify-worker.your-name.workers.dev`
 - `VITE_VAPID_PUBLIC_KEY` – Base64url-encoded VAPID public key. Generate alongside the private key during Worker setup.
+- `VITE_MANAGED_BLOSSOM_URL` – Optional managed Blossom base URL. The built-in default is `https://blossom.solife.me`. The URL can also be changed from Settings → Storage.
+
+The managed Blossom URL selects the Storage dashboard. Originless is the default
+encrypted upload server until the Blossom deployment accepts `application/octet-stream`.
+Compatible Blossom servers can be selected explicitly for encrypted uploads.
+
+Taskify shows one in-app renewal reminder for the managed and selected Blossom
+servers when attachments enter their renewal window. Open the reminder to renew
+them in **Settings → Storage**. Taskify uses the server’s advertised renewal
+window, with a 30-day fallback for older servers. Checks run while the app is open.
 
 Run the Vite dev server:
 
@@ -151,7 +161,7 @@ npm run check:startup
 
 | Location | Purpose |
 | --- | --- |
-| `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY` |
+| `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY`, optional `VITE_MANAGED_BLOSSOM_URL` |
 | `wrangler.toml` | Worker name, D1 database, rate limiters, VAPID `[vars]`, asset config |
 | Worker vars/secrets | `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`, `VAPID_PRIVATE_KEY` |
 

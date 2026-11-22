@@ -78,6 +78,7 @@ import { useCashu } from "./context/walletContexts";
 import { useWalletEnabled, useWalletRecoveryShown } from "./wallet/walletFlags";
 import { WalletPhaseOutNotice } from "./ui/wallet/WalletPhaseOutNotice";
 import { kvStorage } from "./storage/kvStorage";
+import { BlossomFallbackConsentHost } from "./ui/settings/BlossomFallbackConsentHost";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
 
@@ -393,6 +394,7 @@ const WalletBountiesView = lazy(() => import("./ui/wallet/WalletBountiesView").t
 const NoteViewerModal = lazy(() =>
   import("./ui/task/NoteModals").then((module) => ({ default: module.NoteViewerModal })),
 );
+const BlossomRenewalNotice = lazy(() => import("./ui/settings/BlossomRenewalNotice"));
 const SettingsModal = lazy(() =>
   import("./ui/board/SettingsModal").then((module) => ({ default: module.SettingsModal })),
 );
@@ -1584,11 +1586,21 @@ export default function App() {
     [activePage, appRouter, setCurrentBoardIdState, shouldReloadForNavigation],
   );
 
+  const [initialStorageServer, setInitialStorageServer] = useState<string>();
   const openSettings = useCallback(() => {
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
-    startTransition(() => setActivePage("settings"));
+    startTransition(() => {
+      setInitialStorageServer(undefined);
+      setActivePage("settings");
+    });
   }, [shouldReloadForNavigation]);
+  const openStorageRenewals = useCallback((serverUrl: string) => {
+    startTransition(() => {
+      setInitialStorageServer(serverUrl);
+      setActivePage("settings");
+    });
+  }, [setActivePage]);
   const closeSettings = useCallback(() => {
     startTransition(() => setActivePage("boards"));
   }, []);
@@ -3319,7 +3331,7 @@ export default function App() {
       if (!img || !img.startsWith("data:")) return img; // already a remote URL
       try {
         const { mimeType, bytes } = parseDataUrl(img);
-        return await encryptAndUploadAttachment({
+        const upload = await encryptAndUploadAttachment({
           boardId: params.boardId,
           data: bytes,
           mimeType,
@@ -3327,6 +3339,7 @@ export default function App() {
           serverEntry,
           nostrSkHex,
         });
+        return upload.url;
       } catch (err: any) {
         console.error("[attachments] Failed to encrypt/upload image", err);
         throw new Error(err?.message || "Failed to upload encrypted image attachment.");
@@ -3352,7 +3365,7 @@ export default function App() {
       }
       try {
         const { mimeType, bytes } = parseDataUrl(doc.dataUrl);
-        const remoteUrl = await encryptAndUploadAttachment({
+        const upload = await encryptAndUploadAttachment({
           boardId: params.boardId,
           data: bytes,
           mimeType: doc.mimeType || mimeType,
@@ -3361,7 +3374,16 @@ export default function App() {
           nostrSkHex,
         });
         const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
-        return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: params.boardId };
+        return {
+          ...rest,
+          remoteUrl: upload.url,
+          encrypted: true,
+          encryptionBoardId: params.boardId,
+          ciphertextSha256: upload.ciphertextSha256,
+          storageServer: upload.serverUrl,
+          ...(upload.retention ? { retention: upload.retention } : {}),
+          ...(upload.protectedUntil ? { protectedUntil: upload.protectedUntil } : {}),
+        };
       } catch (err: any) {
         console.error("[attachments] Failed to encrypt/upload document", err);
         throw new Error(err?.message || `Failed to upload encrypted file attachment: ${doc?.name || "document"}`);
@@ -6085,6 +6107,11 @@ export default function App() {
         )}
 
         {!showFirstRunOnboarding && <KeyBackupBanner taskCount={tasks.length} />}
+        {!showFirstRunOnboarding && !showSettings && nostrPK && nostrSkHex && (
+          <Suspense fallback={null}>
+            <BlossomRenewalNotice key={nostrPK} settings={settings} signerKey={nostrSkHex} onReview={openStorageRenewals} />
+          </Suspense>
+        )}
         <ReminderNotificationOffer offer={reminderNotificationOffer.offer} />
 
         {/* Animation overlay for fly effects (coins, etc.) */}
@@ -6228,6 +6255,9 @@ export default function App() {
             defaultRelays={defaultRelays}
             setDefaultRelays={setDefaultRelays}
             pubkeyHex={nostrPK}
+            signerKey={nostrSkHex}
+            tasks={tasks}
+            initialStorageServer={initialStorageServer}
             onGenerateKey={rotateNostrKey}
             onSetKey={setCustomNostrKey}
             pushWorkState={pushWorkState}
@@ -6548,6 +6578,8 @@ export default function App() {
           />
         </Suspense>
       )}
+
+      <BlossomFallbackConsentHost />
 
       <UpdateToast
         handleReloadLater={handleReloadLater}

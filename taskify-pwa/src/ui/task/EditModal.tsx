@@ -585,7 +585,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       serverType: selectedServerEntry?.type,
     });
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const remoteUrl = await encryptAndUploadAttachment({
+    const upload = await encryptAndUploadAttachment({
       boardId: selectedBoard!.nostr!.boardId,
       data: bytes,
       mimeType: doc.mimeType || file.type || "application/octet-stream",
@@ -596,7 +596,16 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       onPhaseChange: (phase) => handlers?.onPhaseChange?.(phase),
     });
     const { dataUrl, preview, full, ...rest } = doc as any;
-    return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: selectedBoard!.nostr!.boardId };
+    return {
+      ...rest,
+      remoteUrl: upload.url,
+      encrypted: true,
+      encryptionBoardId: selectedBoard!.nostr!.boardId,
+      ciphertextSha256: upload.ciphertextSha256,
+      storageServer: upload.serverUrl,
+      ...(upload.retention ? { retention: upload.retention } : {}),
+      ...(upload.protectedUntil ? { protectedUntil: upload.protectedUntil } : {}),
+    };
   }
 
   async function attachSingleDocument(file: File, fallbackLabel: string): Promise<TaskDocument> {
