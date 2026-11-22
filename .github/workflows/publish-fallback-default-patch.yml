@@ -1,0 +1,32 @@
+name: Publish fallback default patch
+
+on:
+  push:
+    branches: [Beta]
+    paths:
+      - .taskify-publish/fallback.patch.gz.b64
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.event.head_commit.message != 'Default storage fallback on and simplify Settings'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply validated fallback patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .taskify-publish/fallback.patch.gz.b64 \
+            | gzip -dc \
+            > /tmp/fallback.patch
+          git apply --index /tmp/fallback.patch
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r .taskify-publish .github/workflows/publish-fallback-default-patch.yml
+          git commit -m "Default storage fallback on and simplify Settings"
+          git push origin HEAD:Beta
