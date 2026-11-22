@@ -1,4 +1,6 @@
-import type { TaskPriority } from "./taskContracts.js";
+import type { Recurrence, TaskPriority } from "./taskContracts.js";
+import type { Weekday } from "./weekDate.js";
+import { taskRecurrenceWithDailyMinimum } from "./recurrence.js";
 import { TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND, parseCalendarAddress } from "./calendarProtocol.js";
 
 export type SharedBoardPayload = {
@@ -176,22 +178,25 @@ export function normalizeTaskDocuments(value: unknown): SharedTaskPayload["docum
   return docs.length ? docs : undefined;
 }
 
-export function normalizeTaskRecurrence(value: unknown): SharedTaskPayload["recurrence"] | undefined {
+export function normalizeTaskRecurrence(value: unknown): Recurrence | undefined {
+  const rule = normalizeRecurrence(value);
+  return rule ? taskRecurrenceWithDailyMinimum(rule) : undefined;
+}
+
+export function normalizeRecurrence(value: unknown): Recurrence | undefined {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Record<string, unknown>;
   const type = typeof raw.type === "string" ? raw.type.trim() : "";
   const untilISO = typeof raw.untilISO === "string" && raw.untilISO.trim()
     ? raw.untilISO.trim()
     : undefined;
-  const withUntil = <T extends Record<string, unknown>>(rule: T): T & { untilISO?: string } => (
-    untilISO ? { ...rule, untilISO } : rule
-  );
+  const withUntil = (rule: Recurrence): Recurrence => untilISO ? { ...rule, untilISO } : rule;
   if (type === "none" || type === "daily") return withUntil({ type });
   if (type === "weekly") {
     if (!Array.isArray(raw.days)) return undefined;
-    const days = Array.from(new Set(raw.days.filter(
-      (day): day is number => Number.isInteger(day) && Number(day) >= 0 && Number(day) <= 6,
-    ).map(Number)));
+    const days = [...new Set(raw.days.filter(
+      (day): day is Weekday => Number.isInteger(day) && day >= 0 && day <= 6,
+    ))];
     return days.length ? withUntil({ type, days }) : undefined;
   }
   if (type === "every") {

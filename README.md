@@ -87,7 +87,7 @@ There is no monorepo build tool. Each JavaScript package has its own manifest an
 
 ## Local Development Setup
 
-**Prerequisites:** Node 22.13+, a Cloudflare account (for Worker dev), `wrangler` CLI.
+**Prerequisites:** Node 22.23.5 or newer in the 22.x series, a Cloudflare account (for Worker dev), and the `wrangler` CLI.
 
 ### PWA
 

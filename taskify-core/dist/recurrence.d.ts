@@ -1,6 +1,8 @@
 import type { ReminderPreset } from "./reminderUtils.js";
 import type { Recurrence, Subtask } from "./taskContracts.js";
 import { type Weekday } from "./weekDate.js";
+/** Convert a legacy task rule without scheduling more often than its old interval. */
+export declare function taskRecurrenceWithDailyMinimum(rule: Recurrence): Recurrence;
 /**
  * The due instant of the occurrence after `currentISO`, or null when the rule has ended.
  * With a valid `timeZone`, days are counted in that zone, so a series keeps its wall-clock day

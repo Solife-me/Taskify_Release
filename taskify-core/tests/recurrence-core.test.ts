@@ -82,6 +82,40 @@ test("buildNextRecurringTask schedules from an override instant and rule", () =>
   assert.deepEqual(next?.recurrence, { type: "every", n: 3, unit: "day" });
 });
 
+test("a date-only daily series advances across fall-back without a stored time zone", (t) => {
+  const previousTimeZone = process.env.TZ;
+  process.env.TZ = "America/Chicago";
+  t.after(() => {
+    if (previousTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimeZone;
+  });
+
+  const task = {
+    id: "recurrence:daily:2026-11-01",
+    seriesId: "daily",
+    dueISO: "2026-11-01T05:00:00.000Z",
+    recurrence: { type: "daily" as const },
+  };
+  const next = buildNextRecurringTask(task, { weekStart: 0 });
+  assert.equal(next?.dueISO, "2026-11-02T06:00:00.000Z");
+  assert.equal(next?.id, "recurrence:daily:2026-11-02");
+});
+
+test("a stored hourly task continues with a calendar-day rule", () => {
+  const task = {
+    id: "recurrence:legacy:2026-11-01T15:00",
+    seriesId: "legacy",
+    dueISO: "2026-11-01T15:00:00.000Z",
+    dueTimeEnabled: true,
+    dueTimeZone: "America/Chicago",
+    recurrence: { type: "every" as const, n: 1, unit: "hour" as const, untilISO: "2026-11-04T06:00:00.000Z" },
+  };
+  const next = buildNextRecurringTask(task, { weekStart: 0 });
+  assert.equal(next?.dueISO, "2026-11-02T15:00:00.000Z");
+  assert.equal(next?.id, "recurrence:legacy:2026-11-02");
+  assert.deepEqual(next?.recurrence, { type: "daily", untilISO: task.recurrence.untilISO });
+});
+
 test("hiddenUntilForNext reveals frequent series on the due day and others at the start of the week", () => {
   const prevTz = process.env.TZ;
   process.env.TZ = "America/Chicago";

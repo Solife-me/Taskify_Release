@@ -1,3 +1,4 @@
+import { normalizeTaskRecurrence } from "taskify-core";
 import type { Task, Board } from "./taskTypes";
 import { idbKeyValue } from "../../storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS } from "../../storage/taskifyDb";
@@ -114,6 +115,7 @@ export function loadStoredTasks(): Task[] {
         boardId,
         order: explicitOrder,
         dueISO,
+        recurrence: normalizeTaskRecurrence(entry.recurrence),
         priority,
         ...(createdBy ? { createdBy } : {}),
         ...(lastEditedBy ? { lastEditedBy } : {}),

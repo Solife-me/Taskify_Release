@@ -6,7 +6,7 @@
  * Swift has the same rule in `TaskEditorFields`.
  */
 import type { Subtask, Task } from "./taskContracts.js";
-/** The edited list in its order, each untouched subtask as it is now, then any added elsewhere. */
+/** Merge subtask edits by ID, retaining current order when the editor leaves the order alone. */
 export declare function mergeSubtaskEdit(opened: readonly Subtask[] | undefined, edited: readonly Subtask[] | undefined, current: readonly Subtask[] | undefined): Subtask[];
 /** The task to save: `edited` where the user changed something since `opened`, `current` elsewhere. */
 export declare function mergeTaskEdit<T extends Task>(opened: T, edited: T, current: T): T;

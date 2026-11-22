@@ -1,4 +1,4 @@
-import type { TaskPriority } from "./taskContracts.js";
+import type { Recurrence, TaskPriority } from "./taskContracts.js";
 export type SharedBoardPayload = {
     type: "board";
     boardId: string;
@@ -89,7 +89,8 @@ export declare function normalizeTaskPriority(value: unknown): TaskPriority | un
 export declare function normalizeTaskReminders(value: unknown): Array<string | number> | undefined;
 export declare function normalizeTaskSubtasks(value: unknown): SharedTaskPayload["subtasks"] | undefined;
 export declare function normalizeTaskDocuments(value: unknown): SharedTaskPayload["documents"] | undefined;
-export declare function normalizeTaskRecurrence(value: unknown): SharedTaskPayload["recurrence"] | undefined;
+export declare function normalizeTaskRecurrence(value: unknown): Recurrence | undefined;
+export declare function normalizeRecurrence(value: unknown): Recurrence | undefined;
 export declare function normalizeTaskId(value: unknown): string | undefined;
 export declare function normalizeTaskAssignmentStatus(value: unknown): "pending" | "accepted" | "declined" | "tentative" | undefined;
 export declare function normalizeTaskAssignees(value: unknown): SharedTaskPayload["assignees"] | undefined;

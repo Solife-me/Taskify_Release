@@ -20,6 +20,10 @@ saved contact when available. **Settings → Boards & Lists** offers drag and dr
 and move buttons for touch and keyboard use. Board checklists include upcoming
 tasks, notes, due dates, and subtasks by default.
 
+Daily is the shortest task repeat interval. Existing hourly task rules round up to whole calendar
+days. A rule for every 24 hours or less becomes daily and a rule for every 25 hours becomes every
+two days. The task's current due date, due time, and repeat end date are preserved.
+
 **Settings → Reset local data** clears Taskify's saved key, settings, tasks,
 messages, pending sync queue, and wallet data in this browser. Save your key
 and back up local data first. Taskify returns to first-run setup after the
@@ -27,7 +31,7 @@ reset. Copies already published to Nostr relays remain available there.
 
 ## Prerequisites
 
-- Node.js 22.13+
+- Node.js 22.23.5 or newer in the 22.x series
 - Cloudflare account with Workers access
 - `wrangler` CLI (`npm install -g wrangler`)
 
@@ -113,8 +117,8 @@ The Worker lives in `worker/src/index.ts` and shares this repository. It serves 
 ## Install, offline, and update behavior
 
 - On Chromium-based Android browsers, the install prompt is captured and exposed as **Settings → Install app** when the browser says the app is installable. Browsers without that API, including iOS Safari, do not render the control.
-- Each production build injects a build-specific service-worker cache name and precaches the app shell plus its startup assets. API and relay requests always bypass that cache.
-- A new service worker waits until the user accepts the in-app update notice. The page reloads only after the new worker becomes the active controller, avoiding a mixed old/new build.
+- Each production build precaches its app shell and startup assets. The active worker keeps those files available for offline navigation while it controls the app. API and relay requests bypass that cache.
+- While an update is waiting, navigation continues to use the active build. Accepting the in-app update notice reloads the page once the replacement worker takes control.
 - The manifest includes stable app identity, scope, Android shortcuts, and colors matched to the initial app shell. Existing Apple standalone, touch-icon, and status-bar metadata remains in place for iOS PWAs.
 - Production headers keep the service worker and manifest revalidating while allowing fingerprinted Vite assets to use long-lived immutable caching.
 

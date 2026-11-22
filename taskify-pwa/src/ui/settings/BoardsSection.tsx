@@ -1,5 +1,4 @@
-// @ts-nocheck
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, type Dispatch, type DragEvent, type SetStateAction } from "react";
 import type { Board, Task } from "../../domains/tasks/taskTypes";
 import { compoundChildMatchesBoard, withBoardOrder } from "../../domains/tasks/boardUtils";
 import { useToast } from "../../context/ToastContext";
@@ -23,8 +22,8 @@ export function BoardsSection({
 }: {
   boards: Board[];
   currentBoardId: string;
-  setBoards: React.Dispatch<React.SetStateAction<Board[]>>;
-  setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
+  setBoards: Dispatch<SetStateAction<Board[]>>;
+  setTasks: Dispatch<SetStateAction<Task[]>>;
   changeBoard: (id: string) => void;
   shouldReloadForNavigation: () => boolean;
   onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
@@ -42,7 +41,6 @@ export function BoardsSection({
   const boardListRef = useRef<HTMLUListElement>(null);
   const [boardListMaxHeight, setBoardListMaxHeight] = useState<number | null>(null);
 
-  const visibleBoards = useMemo(() => boards.filter(b => !b.archived && !b.hidden), [boards]);
   const unarchivedBoards = useMemo(() => boards.filter(b => !b.archived), [boards]);
   const archivedBoards = useMemo(() => boards.filter(b => b.archived), [boards]);
 
@@ -233,26 +231,21 @@ export function BoardsSection({
     onClose();
   }
 
-  function setBoardHidden(id: string, hidden: boolean) {
-    if (id === BIBLE_BOARD_ID) return;
-    setBoards(prev => prev.map(b => (b.id === id ? { ...b, hidden } : b)));
-  }
-
   // ─── Inner components ─────────────────────────────────────────────────────
 
   // ─── Archive drag handlers ────────────────────────────────────────────────
 
-  function isBoardDrag(event: React.DragEvent) {
+  function isBoardDrag(event: DragEvent) {
     return Array.from(event.dataTransfer.types).includes("text/board-id");
   }
 
-  function handleArchiveButtonDragEnter(e: React.DragEvent<HTMLButtonElement>) {
+  function handleArchiveButtonDragEnter(e: DragEvent<HTMLButtonElement>) {
     if (!isBoardDrag(e)) return;
     e.preventDefault();
     setArchiveDropActive(true);
   }
 
-  function handleArchiveButtonDragOver(e: React.DragEvent<HTMLButtonElement>) {
+  function handleArchiveButtonDragOver(e: DragEvent<HTMLButtonElement>) {
     if (!isBoardDrag(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -263,7 +256,7 @@ export function BoardsSection({
     setArchiveDropActive(false);
   }
 
-  function handleArchiveButtonDrop(e: React.DragEvent<HTMLButtonElement>) {
+  function handleArchiveButtonDrop(e: DragEvent<HTMLButtonElement>) {
     if (!isBoardDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -439,18 +432,18 @@ function BoardListItem({
 }) {
   const [overBefore, setOverBefore] = useState(false);
   const [dragging, setDragging] = useState(false);
-  function handleDragStart(e: React.DragEvent) {
+  function handleDragStart(e: DragEvent) {
     e.dataTransfer.setData("text/board-id", board.id);
     e.dataTransfer.effectAllowed = "move";
     setDragging(true);
   }
-  function handleDragOver(e: React.DragEvent) {
+  function handleDragOver(e: DragEvent) {
     e.preventDefault();
     const rect = (e.currentTarget as HTMLLIElement).getBoundingClientRect();
     const midpoint = rect.top + rect.height / 2;
     setOverBefore(e.clientY < midpoint);
   }
-  function handleDrop(e: React.DragEvent) {
+  function handleDrop(e: DragEvent) {
     e.preventDefault();
     const dragId = e.dataTransfer.getData("text/board-id");
     if (dragId) onDrop(dragId, overBefore);

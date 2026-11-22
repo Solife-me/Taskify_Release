@@ -3,6 +3,7 @@
  * date sheet and the advanced dialog behind them.
  */
 import { useState } from "react";
+import { taskRecurrenceWithDailyMinimum } from "taskify-core";
 import type { Recurrence } from "../../../domains/tasks/taskTypes";
 import { endRepeatLabel, recurrenceLabel } from "../../../domains/tasks/recurrenceLabel";
 import { EndRepeatSheet, RecurrenceModal, RepeatCustomSheet, RepeatPickerSheet } from "../../recurrence/RecurrencePicker";
@@ -27,10 +28,11 @@ function RowIcon({ kind }: { kind: "repeat" | "end" }) {
 }
 
 export function RepeatField({
-  rule,
+  rule: requestedRule,
   onChange,
   anchorDate,
   timeZone,
+  allowHourly = false,
   disabled = false,
   showIcons = false,
   rowClassName = "edit-row edit-row--interactive",
@@ -41,10 +43,12 @@ export function RepeatField({
   anchorDate: string;
   /** The zone an end date is read in. */
   timeZone: string;
+  allowHourly?: boolean;
   disabled?: boolean;
   showIcons?: boolean;
   rowClassName?: string;
 }) {
+  const rule = allowHourly ? requestedRule : taskRecurrenceWithDailyMinimum(requestedRule);
   const [sheet, setSheet] = useState<Sheet>(null);
   const close = () => setSheet(null);
   // Choosing a new pattern keeps the end date already set.
@@ -84,6 +88,7 @@ export function RepeatField({
         open={sheet === "presets"}
         onClose={close}
         rule={rule}
+        allowHourly={allowHourly}
         scheduledDate={anchorDate}
         onSelect={select}
         onOpenCustom={() => setSheet("custom")}
@@ -108,6 +113,7 @@ export function RepeatField({
       {sheet === "advanced" && (
         <RecurrenceModal
           initial={rule}
+          allowHourly={allowHourly}
           onClose={close}
           onApply={(next) => {
             onChange(next);

@@ -158,6 +158,15 @@ native group shares. macOS uses the native board-share and creator lookup paths
 shared with iOS. The PWA board settings test moves a board without
 dragging and checks that the Bible Tracker stays in place.
 
+## PWA and TypeScript Core Maintenance Coverage
+
+Recurrence tests cover the local fall-back transition, migration of hourly task rules to whole
+calendar days, the task editor's day-or-longer repeat choices, and PWA completion of a migrated
+task. Task editor merge tests verify that
+editing a title or subtask preserves a concurrent reorder unless the editor explicitly reorders
+the list. The service worker tests exercise offline deep links with aged startup files, protect
+the precache from trimming, and reject HTML from a different deployment.
+
 ## Native Board Performance Coverage (2026-09-12)
 
 `SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,

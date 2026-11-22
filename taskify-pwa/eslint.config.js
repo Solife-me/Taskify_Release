@@ -101,6 +101,7 @@ export default tseslint.config([
     // Keep hook correctness enabled for normal files, but avoid turning the
     // dependency update into a broad behavior-changing dependency-array churn.
     files: tsNocheckFiles,
+    ignores: ['src/ui/settings/BoardsSection.tsx'],
     rules: {
       '@typescript-eslint/ban-ts-comment': 'off',
       'react-hooks/exhaustive-deps': 'off',

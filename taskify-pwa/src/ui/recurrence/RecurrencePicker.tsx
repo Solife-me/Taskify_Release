@@ -9,11 +9,13 @@ import { DatePickerCalendar } from "../../domains/dateTime/calendarPickerHook";
 /* Advanced recurrence modal & picker */
 export function RecurrenceModal({
   initial,
+  allowHourly = false,
   onClose,
   onApply,
   initialSchedule,
 }: {
   initial: Recurrence;
+  allowHourly?: boolean;
   onClose: () => void;
   onApply: (r: Recurrence, scheduleISO?: string) => void;
   initialSchedule?: string;
@@ -61,7 +63,7 @@ export function RecurrenceModal({
           />
         </div>
       )}
-      <RecurrencePicker value={value} onChange={setValue} />
+      <RecurrencePicker value={value} onChange={setValue} allowHourly={allowHourly} />
     </Modal>
   );
 }
@@ -78,6 +80,7 @@ export function RepeatPickerSheet({
   open,
   onClose,
   rule,
+  allowHourly = false,
   scheduledDate,
   onSelect,
   onOpenCustom,
@@ -86,6 +89,7 @@ export function RepeatPickerSheet({
   open: boolean;
   onClose: () => void;
   rule: Recurrence;
+  allowHourly?: boolean;
   scheduledDate?: string;
   onSelect: (r: Recurrence) => void;
   onOpenCustom: () => void;
@@ -96,9 +100,12 @@ export function RepeatPickerSheet({
 
   const options = useMemo<RepeatSheetOption[]>(() => {
     const clampDay = monthDay;
+    const hourly: RepeatSheetOption[] = allowHourly
+      ? [{ id: "hourly", label: "Hourly", rule: { type: "every", n: 1, unit: "hour" } }]
+      : [];
     return [
       { id: "never", label: "Never", rule: { type: "none" } },
-      { id: "hourly", label: "Hourly", rule: { type: "every", n: 1, unit: "hour" } },
+      ...hourly,
       { id: "daily", label: "Daily", rule: { type: "daily" } },
       { id: "weekdays", label: "Weekdays", rule: { type: "weekly", days: [1, 2, 3, 4, 5] } },
       { id: "weekends", label: "Weekends", rule: { type: "weekly", days: [0, 6] } },
@@ -130,7 +137,7 @@ export function RepeatPickerSheet({
       },
       { id: "custom", label: "Custom", action: "custom" },
     ];
-  }, [monthDay, weekday]);
+  }, [allowHourly, monthDay, weekday]);
 
   return (
     <ActionSheet open={open} onClose={onClose} title="Repeat">
@@ -414,7 +421,11 @@ function recurrenceMatchesPreset(candidate: Recurrence, preset: Recurrence): boo
   return JSON.stringify(candidateRest) === JSON.stringify(presetRest);
 }
 
-export function RecurrencePicker({ value, onChange }: { value: Recurrence; onChange: (r: Recurrence)=>void }) {
+function RecurrencePicker({ value, onChange, allowHourly }: {
+  value: Recurrence;
+  onChange: (rule: Recurrence) => void;
+  allowHourly: boolean;
+}) {
   const [weekly, setWeekly] = useState<Set<Weekday>>(new Set());
   const [everyN, setEveryN] = useState(2);
   const [unit, setUnit] = useState<"hour"|"day"|"week">("day");
@@ -495,7 +506,7 @@ export function RecurrencePicker({ value, onChange }: { value: Recurrence; onCha
           />
           <select value={unit} onChange={e=>setUnit(e.target.value as "hour"|"day"|"week")}
                   className="pill-select w-32">
-            <option value="hour">Hours</option>
+            {allowHourly && <option value="hour">Hours</option>}
             <option value="day">Days</option>
             <option value="week">Weeks</option>
           </select>

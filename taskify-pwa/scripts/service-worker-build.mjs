@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 
 const SHELL_URLS = [
   "/",
@@ -22,6 +23,9 @@ export function collectPrecacheUrls(manifest) {
   };
   visit(entryKey);
   for (const dynamicEntry of manifest[entryKey].dynamicImports ?? []) visit(dynamicEntry);
+  // First-run onboarding can render on an offline launch. The modal stack's print and scan
+  // imports stay lazy like the rest of the optional features.
+  visit("src/ui/app/AppModalStack.tsx");
 
   const assets = new Set();
   for (const key of visited) {
@@ -49,12 +53,24 @@ export function injectServiceWorkerBuild(source, buildId, urls) {
 }
 
 export async function injectBuiltServiceWorker(outDir) {
-  const manifestPath = join(outDir, ".vite", "manifest.json");
   const workerPath = join(outDir, "sw.js");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  const entry = Object.values(manifest).find((chunk) => chunk?.isEntry);
-  if (!entry?.file) throw new Error("Cannot derive a service-worker build id.");
-  const buildId = basename(entry.file).replace(/\.[^.]+$/, "");
-  const source = await readFile(workerPath, "utf8");
-  await writeFile(workerPath, injectServiceWorkerBuild(source, buildId, collectPrecacheUrls(manifest)));
+  const htmlPath = join(outDir, "index.html");
+  const [manifestSource, source, html, ...staticFiles] = await Promise.all([
+    readFile(join(outDir, ".vite", "manifest.json"), "utf8"),
+    readFile(workerPath, "utf8"),
+    readFile(htmlPath, "utf8"),
+    ...[...SHELL_URLS.slice(1), "/reminder-titles.js"].map((path) => readFile(join(outDir, path))),
+  ]);
+  const urls = collectPrecacheUrls(JSON.parse(manifestSource));
+  if (!html.includes("</head>")) throw new Error("Cannot mark the app shell with its build id.");
+
+  // HTML-only changes and worker-only changes also need a new cache to isolate waiting installs.
+  const hash = createHash("sha256");
+  for (const input of [manifestSource, source, html, ...staticFiles]) hash.update(input).update("\0");
+  const buildId = hash.digest("hex").slice(0, 20);
+  const markedHtml = html.replace("</head>", `  <meta name="taskify-build" content="${buildId}" />\n  </head>`);
+  await Promise.all([
+    writeFile(htmlPath, markedHtml),
+    writeFile(workerPath, injectServiceWorkerBuild(source, buildId, urls)),
+  ]);
 }
