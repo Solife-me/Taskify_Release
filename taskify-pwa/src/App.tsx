@@ -394,6 +394,7 @@ const WalletBountiesView = lazy(() => import("./ui/wallet/WalletBountiesView").t
 const NoteViewerModal = lazy(() =>
   import("./ui/task/NoteModals").then((module) => ({ default: module.NoteViewerModal })),
 );
+const BlossomRenewalNotice = lazy(() => import("./ui/settings/BlossomRenewalNotice"));
 const SettingsModal = lazy(() =>
   import("./ui/board/SettingsModal").then((module) => ({ default: module.SettingsModal })),
 );
@@ -1585,11 +1586,21 @@ export default function App() {
     [activePage, appRouter, setCurrentBoardIdState, shouldReloadForNavigation],
   );
 
+  const [initialStorageServer, setInitialStorageServer] = useState<string>();
   const openSettings = useCallback(() => {
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
-    startTransition(() => setActivePage("settings"));
+    startTransition(() => {
+      setInitialStorageServer(undefined);
+      setActivePage("settings");
+    });
   }, [shouldReloadForNavigation]);
+  const openStorageRenewals = useCallback((serverUrl: string) => {
+    startTransition(() => {
+      setInitialStorageServer(serverUrl);
+      setActivePage("settings");
+    });
+  }, [setActivePage]);
   const closeSettings = useCallback(() => {
     startTransition(() => setActivePage("boards"));
   }, []);
@@ -6096,6 +6107,11 @@ export default function App() {
         )}
 
         {!showFirstRunOnboarding && <KeyBackupBanner taskCount={tasks.length} />}
+        {!showFirstRunOnboarding && !showSettings && nostrPK && nostrSkHex && (
+          <Suspense fallback={null}>
+            <BlossomRenewalNotice key={nostrPK} settings={settings} signerKey={nostrSkHex} onReview={openStorageRenewals} />
+          </Suspense>
+        )}
         <ReminderNotificationOffer offer={reminderNotificationOffer.offer} />
 
         {/* Animation overlay for fly effects (coins, etc.) */}
@@ -6241,6 +6257,7 @@ export default function App() {
             pubkeyHex={nostrPK}
             signerKey={nostrSkHex}
             tasks={tasks}
+            initialStorageServer={initialStorageServer}
             onGenerateKey={rotateNostrKey}
             onSetKey={setCustomNostrKey}
             pushWorkState={pushWorkState}

@@ -37,6 +37,7 @@ import type { Task } from "taskify-core";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const SERVER = "https://blossom.solife.me";
 const MATCHED_HASH = "a".repeat(64);
 const UNMATCHED_HASH = "b".repeat(64);
 
@@ -46,6 +47,7 @@ const summary = {
   permanentExtraBytes: 0,
   paidStorage: [],
   protectionSeconds: 365 * 86400,
+  renewalWindowSeconds: 90 * 86400,
   standardRules: [{ type: "inactivity", expiration: 30 * 86400 }],
   offers: [
     { planId: "plan-500", planName: "500 MB", interval: "month", priceUsdCents: 500, bytes: 500_000_000, durationSeconds: 30 * 86400 },
@@ -55,7 +57,7 @@ const summary = {
 
 const blobs = [
   {
-    url: `https://blossom.band/${MATCHED_HASH}.bin`,
+    url: `${SERVER}/${MATCHED_HASH}.bin`,
     sha256: MATCHED_HASH,
     size: 48_000,
     type: "application/octet-stream",
@@ -63,10 +65,10 @@ const blobs = [
     lastAccessed: 1_790_000_000,
     standardInactivitySeconds: 30 * 86400,
     tier: "protected",
-    protectedUntil: 1_900_000_000,
+    protectedUntil: Math.floor(Date.now() / 1000) + 60 * 86_400,
   },
   {
-    url: `https://blossom.band/${UNMATCHED_HASH}.bin`,
+    url: `${SERVER}/${UNMATCHED_HASH}.bin`,
     sha256: UNMATCHED_HASH,
     size: 12_000,
     type: "application/octet-stream",
@@ -91,10 +93,10 @@ const task = {
     dataUrl: "",
     preview: { type: "image", data: "data:image/png;base64,AA==" },
     createdAt: "2026-11-20T00:00:00.000Z",
-    remoteUrl: `https://blossom.band/${MATCHED_HASH}.bin`,
+    remoteUrl: `${SERVER}/${MATCHED_HASH}.bin`,
     encrypted: true,
     ciphertextSha256: MATCHED_HASH,
-    storageServer: "https://blossom.band",
+    storageServer: SERVER,
     retention: "protected",
   }],
 } as Task;
@@ -127,11 +129,11 @@ test("shows usage, resumable external-wallet checkout, matched filenames, and un
   await act(async () => root.render(
     <StorageSection
       settings={{
-        fileStorageServer: "https://blossom.band",
-        encryptedFileStorageServer: "https://blossom.band",
-        managedBlossomServer: "https://blossom.band",
-        fileServers: JSON.stringify([{ url: "https://blossom.band", type: "blossom" }]),
-        encryptedFileServers: JSON.stringify([{ url: "https://blossom.band", type: "blossom" }]),
+        fileStorageServer: SERVER,
+        encryptedFileStorageServer: SERVER,
+        managedBlossomServer: SERVER,
+        fileServers: JSON.stringify([{ url: SERVER, type: "blossom" }]),
+        encryptedFileServers: JSON.stringify([{ url: SERVER, type: "blossom" }]),
       } as any}
       setSettings={vi.fn()}
       pubkeyHex={"d".repeat(64)}
@@ -154,7 +156,9 @@ test("shows usage, resumable external-wallet checkout, matched filenames, and un
   expect(container.textContent).toContain("Sign the lease");
   expect(container.textContent).toContain("Unmatched blob");
   expect(container.textContent).toContain("Copy BOLT11 invoice");
-  expect(container.textContent).not.toContain("Upcoming protection expiries");
+  expect(container.textContent).toContain("Upcoming protection expiries");
+  const renewal = [...container.querySelectorAll("button")].find((button) => button.textContent === "Renew");
+  expect(renewal?.disabled).toBe(false);
   expect(mocks.getOrder).toHaveBeenCalledTimes(1);
 
   mocks.getOrder.mockResolvedValue({ ...order, paidThrough: Math.floor(Date.now() / 1000) + 2_592_000 });

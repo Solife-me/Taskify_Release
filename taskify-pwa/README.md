@@ -53,6 +53,11 @@ The managed Blossom URL selects the Storage dashboard. Originless is the default
 encrypted upload server until the Blossom deployment accepts `application/octet-stream`.
 Compatible Blossom servers can be selected explicitly for encrypted uploads.
 
+Taskify shows one in-app renewal reminder for the managed and selected Blossom
+servers when attachments enter their renewal window. Open the reminder to renew
+them in **Settings → Storage**. Taskify uses the server’s advertised renewal
+window, with a 30-day fallback for older servers. Checks run while the app is open.
+
 Run the Vite dev server:
 
 ```bash

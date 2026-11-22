@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { blossomRenewalWindowSeconds, isBlossomRenewalDue, listBlossomRenewals } from "../../lib/blossomRenewals";
 import { QRCodeSVG } from "qrcode.react";
 import type { Task } from "taskify-core";
 import type { Settings } from "../../domains/tasks/settingsTypes";
@@ -47,7 +48,6 @@ import { FileServersSection } from "./FileServersSection";
 import { SettingsAccordion } from "./SettingsAccordion";
 
 const INVENTORY_PAGE_SIZE = 50;
-const RENEWAL_WINDOW_SECONDS = 30 * 24 * 60 * 60;
 
 function formatDecimalBytes(bytes: number | null | undefined): string {
   if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "—";
@@ -215,12 +215,17 @@ type StorageSectionProps = {
   pubkeyHex: string;
   signerKey: string;
   tasks: Task[];
+  initialServer?: string;
 };
 
 export function StorageSection(props: StorageSectionProps) {
-  const { settings, pubkeyHex } = props;
+  const { settings, pubkeyHex, initialServer } = props;
+  const sectionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (initialServer) sectionRef.current?.scrollIntoView?.({ block: "start" });
+  }, [initialServer]);
   const choices = useMemo(() => serverChoices(settings), [settings]);
-  const [serverPreference, setSelectedServer] = useState<string | null>(null);
+  const [serverPreference, setSelectedServer] = useState<string | null>(initialServer ?? null);
   const configuredUploadServer = normalizeFileServerUrl(settings.encryptedFileStorageServer);
   const defaultServer = choices.find((entry) => entry.url === configuredUploadServer)?.url
     || settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER;
@@ -228,13 +233,15 @@ export function StorageSection(props: StorageSectionProps) {
     ? serverPreference! : defaultServer;
 
   return (
-    <BlossomStorageDashboard
-      key={JSON.stringify([pubkeyHex, selectedServer])}
-      {...props}
-      choices={choices}
-      selectedServer={selectedServer}
-      setSelectedServer={setSelectedServer}
-    />
+    <div ref={sectionRef}>
+      <BlossomStorageDashboard
+        key={JSON.stringify([pubkeyHex, selectedServer])}
+        {...props}
+        choices={choices}
+        selectedServer={selectedServer}
+        setSelectedServer={setSelectedServer}
+      />
+    </div>
   );
 }
 
@@ -244,6 +251,7 @@ function BlossomStorageDashboard({
   pubkeyHex,
   signerKey,
   tasks,
+  initialServer,
   choices,
   selectedServer,
   setSelectedServer,
@@ -270,6 +278,7 @@ function BlossomStorageDashboard({
   );
   const dashboardRequest = useRef<AbortController | null>(null);
   const orderRequestInFlight = useRef(false);
+  const renewalWindow = blossomRenewalWindowSeconds(summary?.renewalWindowSeconds);
 
   useEffect(() => {
     setManagedDraft(settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER);
@@ -306,15 +315,14 @@ function BlossomStorageDashboard({
   const expiringGroups = useMemo(() => {
     const groups = new Map<string, BlossomStorageBlob[]>();
     for (const blob of expiryBlobs) {
-      const remaining = (blob.protectedUntil ?? 0) - Date.now() / 1000;
-      if (blob.tier !== "protected" || !blob.protectedUntil || remaining <= 0 || remaining > RENEWAL_WINDOW_SECONDS) continue;
+      if (!blob.protectedUntil || !isBlossomRenewalDue(blob, renewalWindow)) continue;
       const key = new Date(blob.protectedUntil * 1000).toISOString().slice(0, 10);
       const list = groups.get(key) || [];
       list.push(blob);
       groups.set(key, list);
     }
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [expiryBlobs]);
+  }, [expiryBlobs, renewalWindow]);
 
   const loadInventoryPage = useCallback(async (cursor: string | null, replace: boolean) => {
     const signal = dashboardRequest.current?.signal;
@@ -337,34 +345,6 @@ function BlossomStorageDashboard({
       if (!signal?.aborted) setInventoryLoading(false);
     }
   }, [selectedServer, showToast, signerKey]);
-
-  const loadExpiryWindow = useCallback(async (signal: AbortSignal) => {
-    if (!signerKey || !selectedServer) return;
-    const now = Date.now() / 1000;
-    const collected = new Map<string, BlossomStorageBlob>();
-    let cursor: string | null = null;
-    const seenCursors = new Set<string>();
-    for (;;) {
-      const result = await listBlossomStorageBlobs({
-        serverUrl: selectedServer,
-        signer: signerKey,
-        cursor,
-        limit: 100,
-        signal,
-      });
-      if (signal.aborted) return;
-      for (const blob of result.blobs) {
-        if (blob.tier === "protected" && blob.protectedUntil
-          && blob.protectedUntil > now && blob.protectedUntil <= now + RENEWAL_WINDOW_SECONDS) {
-          collected.set(blob.sha256, blob);
-        }
-      }
-      cursor = result.nextCursor;
-      if (!cursor || seenCursors.has(cursor)) break;
-      seenCursors.add(cursor);
-    }
-    setExpiryBlobs([...collected.values()]);
-  }, [selectedServer, signerKey]);
 
   const loadDashboard = useCallback(async () => {
     if (!signerKey || !selectedServer) return;
@@ -392,7 +372,13 @@ function BlossomStorageDashboard({
         });
       }
       setFallbackPreferenceState(getBlossomFallbackPreference(pubkeyHex, selectedServer));
-      void loadExpiryWindow(signal).catch(() => {});
+      if (nextSummary.protected.usedBytes > 0) {
+        void listBlossomRenewals(selectedServer, signerKey, blossomRenewalWindowSeconds(nextSummary.renewalWindowSeconds), signal).then((blobs) => {
+          if (!signal.aborted) setExpiryBlobs(blobs);
+        }).catch(() => {});
+      } else {
+        setExpiryBlobs([]);
+      }
       await loadInventoryPage(null, true);
     } catch (err) {
       if (signal.aborted) return;
@@ -405,7 +391,7 @@ function BlossomStorageDashboard({
     } finally {
       if (!signal.aborted) setLoading(false);
     }
-  }, [loadExpiryWindow, loadInventoryPage, pubkeyHex, selectedServer, signerKey]);
+  }, [loadInventoryPage, pubkeyHex, selectedServer, signerKey]);
 
   useEffect(() => {
     void loadDashboard();
@@ -484,8 +470,14 @@ function BlossomStorageDashboard({
   const protectBlob = useCallback(async (blob: BlossomStorageBlob) => {
     setActionSha(blob.sha256);
     try {
-      await protectBlossomStorageBlob({ serverUrl: selectedServer, signer: signerKey, sha256: blob.sha256 });
-      showToast(blob.tier === "protected" ? "Protection renewed." : "Blob moved to protected storage.", 3500);
+      const result = await protectBlossomStorageBlob({ serverUrl: selectedServer, signer: signerKey, sha256: blob.sha256 });
+      if (blob.tier !== "protected") {
+        showToast("Blob moved to protected storage.", 3500);
+      } else if ((result.protectedUntil ?? 0) > (blob.protectedUntil ?? 0)) {
+        showToast("Protection renewed.", 3500);
+      } else {
+        showToast("Blossom kept the existing protection date.", 3500);
+      }
       await loadDashboard();
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not update protection.", 5000);
@@ -569,7 +561,7 @@ function BlossomStorageDashboard({
 
   return (
     <div className="space-y-3">
-      <SettingsAccordion title="Blossom account storage" summary="Usage, inventory, protection, and purchases" nested>
+      <SettingsAccordion title="Blossom account storage" summary="Usage, inventory, protection, and purchases" nested defaultExpanded={Boolean(initialServer)}>
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
             <label className="text-xs font-medium text-secondary" htmlFor="blossom-storage-server">Server</label>
@@ -594,6 +586,30 @@ function BlossomStorageDashboard({
               <div className="mt-2 text-[11px] text-tertiary">
                 This account may not have Blossom storage plans enabled on the selected server.
               </div>
+            </div>
+          ) : null}
+
+          {expiringGroups.length ? (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-primary">Upcoming protection expiries</div>
+              {expiringGroups.map(([day, blobs]) => (
+                <div key={day} className="rounded-xl bg-surface p-3">
+                  <div className="text-[11px] font-medium text-secondary">{new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</div>
+                  <div className="mt-1 space-y-1">
+                    {blobs.map((blob) => {
+                      const matches = matchBlobToLocalReferences(blob, selectedServer, references);
+                      return (
+                        <div key={blob.sha256} className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="truncate text-primary">{matches[0]?.filename || "Unmatched blob"}</span>
+                          <button type="button" className="ghost-button button-sm pressable" disabled={actionSha !== null} onClick={() => void protectBlob(blob)}>
+                            {actionSha === blob.sha256 ? "Renewing…" : "Renew"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
 
@@ -770,28 +786,6 @@ function BlossomStorageDashboard({
             )}
           </div>
 
-          {expiringGroups.length ? (
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-primary">Upcoming protection expiries</div>
-              {expiringGroups.map(([day, blobs]) => (
-                <div key={day} className="rounded-xl bg-surface p-3">
-                  <div className="text-[11px] font-medium text-secondary">{new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</div>
-                  <div className="mt-1 space-y-1">
-                    {blobs.map((blob) => {
-                      const matches = matchBlobToLocalReferences(blob, selectedServer, references);
-                      return (
-                        <div key={blob.sha256} className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="truncate text-primary">{matches[0]?.filename || "Unmatched blob"}</span>
-                          <span className="text-secondary">{formatDecimalBytes(blob.size)}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div className="text-xs font-medium text-primary">Stored files</div>
@@ -800,7 +794,7 @@ function BlossomStorageDashboard({
             {inventory.length ? inventory.map((blob) => {
               const matches = matchBlobToLocalReferences(blob, selectedServer, references);
               const knownTitles = [...new Set(matches.map((ref) => ref.referenceLabel))];
-              const canRenew = blob.tier === "standard" || !blob.protectedUntil || blob.protectedUntil - Math.floor(Date.now() / 1000) <= RENEWAL_WINDOW_SECONDS;
+              const canRenew = blob.tier === "standard" || isBlossomRenewalDue(blob, renewalWindow);
               return (
                 <div key={`${blob.sha256}:${blob.url}`} className="rounded-xl border border-surface bg-surface p-3">
                   <div className="flex gap-3">
@@ -836,8 +830,8 @@ function BlossomStorageDashboard({
                         <button
                           type="button"
                           className="ghost-button button-sm pressable"
-                          disabled={!canRenew || actionSha === blob.sha256}
-                          title={canRenew ? undefined : "Protection can be renewed within 30 days of expiry."}
+                          disabled={!canRenew || actionSha !== null}
+                          title={canRenew || !blob.protectedUntil ? undefined : `Renewal opens ${formatDate(blob.protectedUntil - renewalWindow)}.`}
                           onClick={() => void protectBlob(blob)}
                         >
                           {actionSha === blob.sha256 ? "Updating…" : blob.tier === "standard" ? "Protect" : "Renew"}
@@ -846,7 +840,7 @@ function BlossomStorageDashboard({
                         <button
                           type="button"
                           className="ghost-button button-sm pressable text-rose-500"
-                          disabled={actionSha === blob.sha256}
+                          disabled={actionSha !== null}
                           onClick={() => void deleteBlob(blob)}
                         >
                           Delete

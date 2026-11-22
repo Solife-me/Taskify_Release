@@ -35,6 +35,7 @@ export type BlossomStorageSummary = {
   permanentExtraBytes: number;
   paidStorage: BlossomPaidStorage[];
   protectionSeconds: number;
+  renewalWindowSeconds?: number;
   offers: BlossomStorageOffer[];
   standardRules: BlossomStandardRule[];
 };

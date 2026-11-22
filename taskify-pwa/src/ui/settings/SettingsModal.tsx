@@ -34,6 +34,7 @@ export function SettingsModal({
   pubkeyHex,
   signerKey,
   tasks,
+  initialStorageServer,
   onGenerateKey,
   onSetKey,
   onShareBoard,
@@ -69,6 +70,7 @@ export function SettingsModal({
   pubkeyHex: string;
   signerKey: string;
   tasks: Task[];
+  initialStorageServer?: string;
   onGenerateKey: () => Promise<void>;
   onSetKey: (hex: string) => Promise<void>;
   onShareBoard: (boardId: string, relaysCsv?: string) => void;
@@ -208,6 +210,7 @@ export function SettingsModal({
       <SettingsAccordion
         title="Storage"
         summary="Usage, purchases, inventory, and attachment hosts"
+        defaultExpanded={Boolean(initialStorageServer)}
       >
         <StorageSection
           settings={settings}
@@ -215,6 +218,7 @@ export function SettingsModal({
           pubkeyHex={pubkeyHex}
           signerKey={signerKey}
           tasks={tasks}
+          initialServer={initialStorageServer}
         />
       </SettingsAccordion>
 

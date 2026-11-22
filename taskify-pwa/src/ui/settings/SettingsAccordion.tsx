@@ -5,13 +5,15 @@ export function SettingsAccordion({
   summary,
   children,
   nested = false,
+  defaultExpanded = false,
 }: {
   title: string;
   summary?: string;
   children: React.ReactNode;
   nested?: boolean;
+  defaultExpanded?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const contentId = useId();
   return (
     <section
