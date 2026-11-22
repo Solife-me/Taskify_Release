@@ -38,6 +38,10 @@ import {
 import { decodeBolt11Amount, formatMsatAsSat } from "../../wallet/lightning";
 import { resolveDocumentAsset } from "../task/documentAsset";
 import { decryptAttachment, inferAttachmentMimeFromUrl } from "../../lib/attachmentCrypto";
+import { readDmCache } from "../../chat/hooks/useDmState";
+import { useCalendarEvents } from "../../state/appStores";
+import { decryptMessengerAttachment } from "../../lib/messengerAttachmentCrypto";
+import { kvStorage } from "../../storage/kvStorage";
 import { useToast } from "../../context/ToastContext";
 import { FileServersSection } from "./FileServersSection";
 import { SettingsAccordion } from "./SettingsAccordion";
@@ -89,7 +93,10 @@ function serverChoices(settings: Settings): FileServerEntry[] {
   for (const entry of [
     ...parseFileServers(settings.encryptedFileServers),
     ...parseFileServers(settings.fileServers),
-    MANAGED_BLOSSOM_FILE_SERVER,
+    {
+      ...MANAGED_BLOSSOM_FILE_SERVER,
+      url: settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER,
+    },
   ]) {
     if (entry.type !== "blossom") continue;
     const url = normalizeFileServerUrl(entry.url) || entry.url;
@@ -121,23 +128,18 @@ function InventoryPreview({ references }: { references: LocalBlobReference[] }) 
   useEffect(() => {
     let cancelled = false;
     setUnavailable(false);
-    if (!first) {
-      setSrc(null);
-      return;
-    }
-    if (first.kind === "document" && first.document) {
+    setSrc(null);
+    if (!first) return;
+    if (first.document) {
       if (first.document.preview?.type === "image") {
         setSrc(first.document.preview.data);
         return;
       }
-      if (!first.document.remoteUrl) {
-        setSrc(null);
+      if (first.document.full?.type === "image") {
+        setSrc(first.document.full.data);
         return;
       }
-      if (!["png", "jpg", "jpeg", "webp", "gif"].includes(first.document.kind)) {
-        setSrc(null);
-        return;
-      }
+      if (!first.document.remoteUrl || !["png", "jpg", "jpeg", "webp", "gif"].includes(first.document.kind)) return;
       void resolveDocumentAsset(first.document, first.boardId)
         .then((resolved) => {
           if (cancelled) return;
@@ -150,7 +152,12 @@ function InventoryPreview({ references }: { references: LocalBlobReference[] }) 
         .catch(() => { if (!cancelled) setUnavailable(true); });
       return () => { cancelled = true; };
     }
-    if (first.kind === "image" && first.imageUrl) {
+    if (first.chatFile?.mimeType?.startsWith("image/")) {
+      void decryptMessengerAttachment(first.chatFile)
+        .then(({ objectUrl }) => { if (!cancelled) setSrc(objectUrl); })
+        .catch(() => { if (!cancelled) setUnavailable(true); });
+    }
+    if (first.imageUrl) {
       if (first.imageUrl.startsWith("data:")) {
         setSrc(first.imageUrl);
         return;
@@ -169,7 +176,7 @@ function InventoryPreview({ references }: { references: LocalBlobReference[] }) 
   if (src) return <img src={src} alt="" loading="lazy" className="h-12 w-12 rounded-xl object-cover" />;
   return (
     <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-surface text-[10px] text-secondary">
-      {unavailable ? "No preview" : first?.kind === "document" ? first.document?.kind?.toUpperCase() || "FILE" : first ? "IMAGE" : "UNMATCHED"}
+      {unavailable ? "No preview" : first?.document?.kind.toUpperCase() || (first ? "FILE" : "UNMATCHED")}
     </div>
   );
 }
@@ -202,25 +209,50 @@ function UsageBar({
   );
 }
 
-export function StorageSection({
-  settings,
-  setSettings,
-  pubkeyHex,
-  signerKey,
-  tasks,
-}: {
+type StorageSectionProps = {
   settings: Settings;
   setSettings: (settings: Partial<Settings>) => void;
   pubkeyHex: string;
   signerKey: string;
   tasks: Task[];
+};
+
+export function StorageSection(props: StorageSectionProps) {
+  const { settings, pubkeyHex } = props;
+  const choices = useMemo(() => serverChoices(settings), [settings]);
+  const [serverPreference, setSelectedServer] = useState<string | null>(null);
+  const configuredUploadServer = normalizeFileServerUrl(settings.encryptedFileStorageServer);
+  const defaultServer = choices.find((entry) => entry.url === configuredUploadServer)?.url
+    || settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER;
+  const selectedServer = choices.some((entry) => entry.url === serverPreference)
+    ? serverPreference! : defaultServer;
+
+  return (
+    <BlossomStorageDashboard
+      key={JSON.stringify([pubkeyHex, selectedServer])}
+      {...props}
+      choices={choices}
+      selectedServer={selectedServer}
+      setSelectedServer={setSelectedServer}
+    />
+  );
+}
+
+function BlossomStorageDashboard({
+  settings,
+  setSettings,
+  pubkeyHex,
+  signerKey,
+  tasks,
+  choices,
+  selectedServer,
+  setSelectedServer,
+}: StorageSectionProps & {
+  choices: FileServerEntry[];
+  selectedServer: string;
+  setSelectedServer: (server: string) => void;
 }) {
   const { show: showToast } = useToast();
-  const choices = useMemo(() => serverChoices(settings), [settings]);
-  const currentEncryptedBlossom = choices.find((entry) =>
-    (normalizeFileServerUrl(entry.url) || entry.url) === (normalizeFileServerUrl(settings.encryptedFileStorageServer) || settings.encryptedFileStorageServer),
-  );
-  const [selectedServer, setSelectedServer] = useState(currentEncryptedBlossom?.url || MANAGED_BLOSSOM_SERVER);
   const [summary, setSummary] = useState<BlossomStorageSummary | null>(null);
   const [orders, setOrders] = useState<BlossomStorageOrder[]>([]);
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
@@ -236,17 +268,8 @@ export function StorageSection({
   const [fallbackPreference, setFallbackPreferenceState] = useState<BlossomFallbackPreference | null>(() =>
     getBlossomFallbackPreference(pubkeyHex, selectedServer),
   );
-  const loadGeneration = useRef(0);
-  const orderRequests = useRef(new Map<string, {
-    requestId: string;
-    offer: BlossomStorageSummary["offers"][number];
-  }>());
-
-  useEffect(() => {
-    setSelectedServer((current) =>
-      choices.some((entry) => entry.url === current) ? current : currentEncryptedBlossom?.url || MANAGED_BLOSSOM_SERVER,
-    );
-  }, [choices, currentEncryptedBlossom?.url]);
+  const dashboardRequest = useRef<AbortController | null>(null);
+  const orderRequestInFlight = useRef(false);
 
   useEffect(() => {
     setManagedDraft(settings.managedBlossomServer || MANAGED_BLOSSOM_SERVER);
@@ -256,13 +279,17 @@ export function StorageSection({
     setFallbackPreferenceState(getBlossomFallbackPreference(pubkeyHex, selectedServer));
   }, [pubkeyHex, selectedServer]);
 
-  const references = useMemo(() => localBlobReferences(tasks), [tasks]);
+  const [events] = useCalendarEvents();
+  const references = useMemo(() => localBlobReferences(tasks, events, readDmCache()), [tasks, events, inventory]);
   const activeOrder = useMemo(
     () => orders.find((order) => order.id === activeOrderId)
       ?? orders.find((order) => !order.paidThrough && order.invoiceExpiresAt * 1000 > Date.now())
       ?? null,
     [activeOrderId, orders],
   );
+  const pendingOrders = orders.filter((order) =>
+    !order.paidThrough && order.invoiceExpiresAt * 1000 > Date.now());
+  const pendingOrderId = activeOrder?.paidThrough ? null : activeOrder?.id;
   const activeInvoiceSats = invoiceSatAmountLabel(activeOrder);
   const activeInvoiceExpired = Boolean(
     activeOrder && !activeOrder.paidThrough && activeOrder.invoiceExpiresAt * 1000 <= Date.now(),
@@ -279,7 +306,8 @@ export function StorageSection({
   const expiringGroups = useMemo(() => {
     const groups = new Map<string, BlossomStorageBlob[]>();
     for (const blob of expiryBlobs) {
-      if (!blob.protectedUntil || blob.protectedUntil * 1000 < Date.now()) continue;
+      const remaining = (blob.protectedUntil ?? 0) - Date.now() / 1000;
+      if (blob.tier !== "protected" || !blob.protectedUntil || remaining <= 0 || remaining > RENEWAL_WINDOW_SECONDS) continue;
       const key = new Date(blob.protectedUntil * 1000).toISOString().slice(0, 10);
       const list = groups.get(key) || [];
       list.push(blob);
@@ -289,7 +317,8 @@ export function StorageSection({
   }, [expiryBlobs]);
 
   const loadInventoryPage = useCallback(async (cursor: string | null, replace: boolean) => {
-    if (!signerKey || !selectedServer) return;
+    const signal = dashboardRequest.current?.signal;
+    if (!signerKey || !selectedServer || signal?.aborted) return;
     setInventoryLoading(true);
     try {
       const page = await listBlossomStorageBlobs({
@@ -297,59 +326,76 @@ export function StorageSection({
         signer: signerKey,
         cursor,
         limit: INVENTORY_PAGE_SIZE,
+        signal,
       });
+      if (signal?.aborted) return;
       setInventory((previous) => replace ? page.blobs : [...previous, ...page.blobs]);
       setNextCursor(page.nextCursor);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Could not load stored files.", 5000);
+      if (!signal?.aborted) showToast(err instanceof Error ? err.message : "Could not load stored files.", 5000);
     } finally {
-      setInventoryLoading(false);
+      if (!signal?.aborted) setInventoryLoading(false);
     }
   }, [selectedServer, showToast, signerKey]);
 
-  const loadExpiryWindow = useCallback(async () => {
+  const loadExpiryWindow = useCallback(async (signal: AbortSignal) => {
     if (!signerKey || !selectedServer) return;
-    const collected: BlossomStorageBlob[] = [];
+    const now = Date.now() / 1000;
+    const collected = new Map<string, BlossomStorageBlob>();
     let cursor: string | null = null;
-    for (let page = 0; page < 10; page += 1) {
+    const seenCursors = new Set<string>();
+    for (;;) {
       const result = await listBlossomStorageBlobs({
         serverUrl: selectedServer,
         signer: signerKey,
         cursor,
         limit: 100,
+        signal,
       });
-      collected.push(...result.blobs);
+      if (signal.aborted) return;
+      for (const blob of result.blobs) {
+        if (blob.tier === "protected" && blob.protectedUntil
+          && blob.protectedUntil > now && blob.protectedUntil <= now + RENEWAL_WINDOW_SECONDS) {
+          collected.set(blob.sha256, blob);
+        }
+      }
       cursor = result.nextCursor;
-      if (!cursor) break;
+      if (!cursor || seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
     }
-    setExpiryBlobs(collected);
+    setExpiryBlobs([...collected.values()]);
   }, [selectedServer, signerKey]);
 
   const loadDashboard = useCallback(async () => {
     if (!signerKey || !selectedServer) return;
-    const generation = ++loadGeneration.current;
+    dashboardRequest.current?.abort();
+    const controller = new AbortController();
+    dashboardRequest.current = controller;
+    const { signal } = controller;
     setLoading(true);
+    setInventoryLoading(false);
     setError(null);
     try {
       const [nextSummary, nextOrders] = await Promise.all([
-        getBlossomStorageSummary(selectedServer, signerKey),
-        listBlossomStorageOrders({ serverUrl: selectedServer, signer: signerKey }).catch(() => []),
+        getBlossomStorageSummary(selectedServer, signerKey, signal),
+        listBlossomStorageOrders({ serverUrl: selectedServer, signer: signerKey, signal }).catch(() => null),
       ]);
-      if (generation !== loadGeneration.current) return;
+      if (signal.aborted) return;
       setSummary(nextSummary);
-      setOrders(nextOrders);
-      setActiveOrderId((current) =>
-        current && nextOrders.some((order) => order.id === current)
-          ? current
-          : nextOrders.find((order) => !order.paidThrough && order.invoiceExpiresAt * 1000 > Date.now())?.id ?? null,
-      );
+      if (nextOrders) {
+        setOrders((current) => {
+          const merged = new Map(current.map((order) => [order.id, order]));
+          for (const order of nextOrders) {
+            if (!merged.get(order.id)?.paidThrough) merged.set(order.id, order);
+          }
+          return [...merged.values()];
+        });
+      }
       setFallbackPreferenceState(getBlossomFallbackPreference(pubkeyHex, selectedServer));
-      await Promise.all([
-        loadInventoryPage(null, true),
-        loadExpiryWindow().catch(() => {}),
-      ]);
+      void loadExpiryWindow(signal).catch(() => {});
+      await loadInventoryPage(null, true);
     } catch (err) {
-      if (generation !== loadGeneration.current) return;
+      if (signal.aborted) return;
       setSummary(null);
       setError(
         err instanceof BlossomStorageApiError
@@ -357,28 +403,30 @@ export function StorageSection({
           : err instanceof Error ? err.message : "Could not load Blossom storage.",
       );
     } finally {
-      if (generation === loadGeneration.current) setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [loadExpiryWindow, loadInventoryPage, pubkeyHex, selectedServer, signerKey]);
 
   useEffect(() => {
     void loadDashboard();
+    return () => dashboardRequest.current?.abort();
   }, [loadDashboard]);
 
   useEffect(() => {
-    if (!activeOrder || activeOrder.paidThrough || !signerKey) return;
-    let cancelled = false;
+    if (!pendingOrderId || !signerKey) return;
+    const controller = new AbortController();
     let inFlight = false;
     const check = async () => {
-      if (cancelled || inFlight) return;
+      if (controller.signal.aborted || inFlight || document.visibilityState === "hidden") return;
       inFlight = true;
       try {
         const next = await getBlossomStorageOrder({
           serverUrl: selectedServer,
           signer: signerKey,
-          id: activeOrder.id,
+          id: pendingOrderId,
+          signal: controller.signal,
         });
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setOrders((current) => current.map((order) => order.id === next.id ? next : order));
         if (next.paidThrough) {
           showToast("Storage payment confirmed. Usage updated.", 4500);
@@ -396,11 +444,11 @@ export function StorageSection({
     const onVisibility = () => { if (document.visibilityState === "visible") void check(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      cancelled = true;
+      controller.abort();
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [activeOrder, loadDashboard, selectedServer, showToast, signerKey]);
+  }, [pendingOrderId, loadDashboard, selectedServer, showToast, signerKey]);
 
   const saveManagedServer = useCallback((useForUploads: boolean) => {
     const normalized = normalizeFileServerUrl(managedDraft);
@@ -411,6 +459,7 @@ export function StorageSection({
     setSettings({ managedBlossomServer: normalized });
     setManagedDraft(normalized);
     if (!useForUploads) {
+      setSelectedServer(normalized);
       showToast("Managed Blossom URL saved.", 3000);
       return;
     }
@@ -424,7 +473,7 @@ export function StorageSection({
     });
     setSelectedServer(normalized);
     showToast("Using the managed Blossom server for encrypted uploads.", 4000);
-  }, [managedDraft, setSettings, settings.encryptedFileServers, showToast]);
+  }, [managedDraft, setSelectedServer, setSettings, settings.encryptedFileServers, showToast]);
 
   const updateFallbackPreference = useCallback((automaticFallback: boolean) => {
     const termsFingerprint = summary ? blossomTermsFingerprint(summary) : null;
@@ -446,10 +495,11 @@ export function StorageSection({
   }, [loadDashboard, selectedServer, showToast, signerKey]);
 
   const deleteBlob = useCallback(async (blob: BlossomStorageBlob) => {
-    const known = matchBlobToLocalReferences(blob, selectedServer, references);
-    const warning = known.length
-      ? `This blob is referenced by ${known.length} local task${known.length === 1 ? "" : "s"}: ${known.map((ref) => ref.taskTitle).join(", ")}. Deleting it removes your ownership and may break those attachments elsewhere. Continue?`
-      : "This blob has no local filename or task match. It may belong to another Taskify client or app. Do not delete it unless you are sure. Continue?";
+    const known = matchBlobToLocalReferences(blob, selectedServer, localBlobReferences(tasks, events, readDmCache()));
+    const labels = [...new Set(known.map((ref) => ref.referenceLabel))];
+    const warning = labels.length
+      ? `This file is used by ${labels.join(", ")}. Deleting your copy may break those attachments. Continue?`
+      : "This file has no local match. It may still be used on another device or by another app. Delete your copy?";
     if (!window.confirm(warning)) return;
     setActionSha(blob.sha256);
     try {
@@ -462,43 +512,47 @@ export function StorageSection({
     } finally {
       setActionSha(null);
     }
-  }, [loadDashboard, references, selectedServer, showToast, signerKey]);
+  }, [events, loadDashboard, selectedServer, showToast, signerKey, tasks]);
 
   const createOrder = useCallback(async (offer: BlossomStorageSummary["offers"][number]) => {
+    const openOrder = pendingOrders.find((order) => order.planId === offer.planId && order.interval === offer.interval);
+    if (openOrder) {
+      setActiveOrderId(openOrder.id);
+      return;
+    }
+    if (orderRequestInFlight.current) return;
     const busyKey = `${offer.planId}:${offer.interval}`;
-    const existingRequest = orderRequests.current.get(busyKey);
-    const request = existingRequest
-      && existingRequest.offer.planId === offer.planId
-      && existingRequest.offer.interval === offer.interval
-      && existingRequest.offer.priceUsdCents === offer.priceUsdCents
-      && existingRequest.offer.bytes === offer.bytes
-      ? existingRequest
-      : { requestId: crypto.randomUUID(), offer };
-    orderRequests.current.set(busyKey, request);
+    const requestKey = `taskify_blossom_checkout:${JSON.stringify([
+      pubkeyHex, selectedServer, offer.planId, offer.interval, offer.priceUsdCents, offer.bytes,
+    ])}`;
+    const requestId = kvStorage.getItem(requestKey) || crypto.randomUUID();
+    kvStorage.setItem(requestKey, requestId);
+    orderRequestInFlight.current = true;
     setCheckoutBusy(busyKey);
     try {
       const order = await createBlossomStorageOrder({
         serverUrl: selectedServer,
         signer: signerKey,
-        requestId: request.requestId,
-        offer: request.offer,
+        requestId,
+        offer,
       });
-      orderRequests.current.delete(busyKey);
+      kvStorage.removeItem(requestKey);
       setOrders((current) => [order, ...current.filter((entry) => entry.id !== order.id)]);
       setActiveOrderId(order.id);
       showToast("Invoice created. Pay it with any Lightning wallet.", 4000);
     } catch (err) {
       if (err instanceof BlossomStorageApiError && err.code === "checkout_conflict") {
-        orderRequests.current.delete(busyKey);
+        kvStorage.removeItem(requestKey);
         showToast("That offer changed or an invoice is already open. Refreshing checkout.", 5000);
         await loadDashboard();
       } else {
         showToast(err instanceof Error ? err.message : "Could not create a checkout invoice. Retry to reuse this request.", 5000);
       }
     } finally {
+      orderRequestInFlight.current = false;
       setCheckoutBusy(null);
     }
-  }, [loadDashboard, selectedServer, showToast, signerKey]);
+  }, [loadDashboard, pendingOrders, pubkeyHex, selectedServer, showToast, signerKey]);
 
   const copyInvoice = useCallback(async () => {
     if (!activeOrder?.invoice) return;
@@ -547,7 +601,7 @@ export function StorageSection({
             <>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="glass-panel rounded-xl p-3">
-                  <UsageBar label="Protected" used={summary.protected.usedBytes} limit={summary.protected.limitBytes} />
+                  <UsageBar label="Protected" used={summary.protected.usedBytes} limit={summary.protected.limitBytes} quietNearLimit />
                 </div>
                 <div className="glass-panel rounded-xl p-3">
                   <UsageBar label="Total" used={summary.total.usedBytes} limit={summary.total.limitBytes} quietNearLimit />
@@ -587,6 +641,7 @@ export function StorageSection({
                 type="button"
                 role="switch"
                 aria-checked={fallbackPreference?.automaticFallback === true}
+                disabled={!summary || !pubkeyHex}
                 className={`pressable rounded-full px-3 py-1 text-xs ${fallbackPreference?.automaticFallback ? "bg-emerald-500 text-white" : "bg-surface-muted text-secondary"}`}
                 onClick={() => updateFallbackPreference(!fallbackPreference?.automaticFallback)}
               >
@@ -628,6 +683,17 @@ export function StorageSection({
                 <div className="text-xs font-medium text-primary">Checkout</div>
                 <button type="button" className="link-accent text-xs" onClick={() => void loadDashboard()}>Refresh status</button>
               </div>
+              {pendingOrders.length > 1 || (pendingOrders.length > 0 && !pendingOrders.some((order) => order.id === activeOrder?.id)) ? (
+                <label className="flex items-center gap-2 text-xs">
+                  Pending invoice
+                  <select className="pill-input" value={activeOrder?.id ?? ""} onChange={(event) => setActiveOrderId(event.target.value)}>
+                    {!pendingOrders.some((order) => order.id === activeOrder?.id) && <option value="" disabled>Select an invoice</option>}
+                    {pendingOrders.map((order) => (
+                      <option key={order.id} value={order.id}>{order.planName} · {order.interval === "year" ? "Yearly" : "Monthly"}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               {activeOrder ? (
                 <div className="rounded-xl border border-surface bg-surface p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -733,7 +799,7 @@ export function StorageSection({
             </div>
             {inventory.length ? inventory.map((blob) => {
               const matches = matchBlobToLocalReferences(blob, selectedServer, references);
-              const knownTitles = [...new Set(matches.map((ref) => ref.taskTitle))];
+              const knownTitles = [...new Set(matches.map((ref) => ref.referenceLabel))];
               const canRenew = blob.tier === "standard" || !blob.protectedUntil || blob.protectedUntil - Math.floor(Date.now() / 1000) <= RENEWAL_WINDOW_SECONDS;
               return (
                 <div key={`${blob.sha256}:${blob.url}`} className="rounded-xl border border-surface bg-surface p-3">
@@ -758,11 +824,11 @@ export function StorageSection({
                       </div>
                       {matches.length ? (
                         <div className="mt-1 text-[11px] text-secondary">
-                          Task reference{knownTitles.length === 1 ? "" : "s"}: {knownTitles.join(", ")}
+                          Used by {knownTitles.join(", ")}
                         </div>
                       ) : (
                         <div className="mt-1 text-[11px] text-amber-500">
-                          Unmatched: this client cannot identify a local filename or task. It may belong to another app.
+                          No local attachment reference. This file may still be used on another device or by another app.
                         </div>
                       )}
                       <div className="mt-1 break-all text-[9px] text-tertiary">{blob.sha256}</div>

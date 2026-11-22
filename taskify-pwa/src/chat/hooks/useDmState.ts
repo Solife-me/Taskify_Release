@@ -415,7 +415,7 @@ function isResolvedPendingDm(pending: PendingDmMessage, messages: WalletDmMessag
   );
 }
 
-function readDmCache(): WalletDmMessage[] {
+export function readDmCache(): WalletDmMessage[] {
   try {
     const raw = idbKeyValue.getItem(TASKIFY_STORE_NOSTR, LS_DM_MESSAGE_CACHE);
     if (!raw) return [];

@@ -1,3 +1,4 @@
+import { lookupAttachmentCiphertextHash } from "../lib/blossomAttachmentIndex";
 /** Chat UI pieces: thread rows, avatars, file bubbles, QR card and scanner, icons, date labels. */
 import { contactInitials as avatarInitials } from "taskify-core";
 
@@ -849,6 +850,13 @@ export function MessengerFileBubble({
   const isAudio = isAudioMime(mimeLc);
   const filename = descriptor.filename || "attachment";
   const sizeLabel = formatByteSize(descriptor.size ?? 0);
+  const standardRetention = useMemo(
+    () => !isIncoming && lookupAttachmentCiphertextHash(descriptor.url)?.retention === "standard",
+    [descriptor.url, isIncoming],
+  );
+  const retentionLabel = standardRetention
+    ? <div className="chat-file__size">Standard retention</div>
+    : null;
   const progress = state.kind === "loading" ? state.progress : null;
 
   const loadDescriptor = useCallback(async () => {
@@ -935,6 +943,7 @@ export function MessengerFileBubble({
             <AttachmentLoadProgress progress={progress} />
           )}
         </div>
+        {retentionLabel}
       </div>
     );
   }
@@ -956,6 +965,7 @@ export function MessengerFileBubble({
             <AttachmentLoadProgress progress={progress} />
           )}
         </div>
+        {retentionLabel}
       </div>
     );
   }
@@ -1000,6 +1010,7 @@ export function MessengerFileBubble({
         <div className="chat-file__meta">
           <div className="chat-file__name" title={filename}>{filename}</div>
           {sizeLabel && <div className="chat-file__size">{sizeLabel}</div>}
+          {retentionLabel}
         </div>
       </div>
     );
@@ -1042,6 +1053,7 @@ export function MessengerFileBubble({
           </svg>
         </div>
       </button>
+      {retentionLabel}
     </div>
   );
 }

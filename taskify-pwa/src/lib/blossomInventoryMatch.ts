@@ -1,40 +1,31 @@
-import type { Task, TaskDocument } from "taskify-core";
-import { lookupAttachmentCiphertextHash } from "./blossomAttachmentIndex";
+import type { CalendarEvent, Task, TaskDocument } from "taskify-core";
+import { readAttachmentCiphertextIndex } from "./blossomAttachmentIndex";
+import type { WalletDmMessage, WalletDmAttachment } from "../chat/hooks/useDmState";
 
-export type LocalBlobMatchKind = "document" | "image";
+type ChatFile = Extract<WalletDmAttachment, { type: "file" }>;
 
 export type LocalBlobReference = {
-  key: string;
   sha256: string;
-  serverUrl: string;
-  taskId: string;
-  taskTitle: string;
+  serverUrl?: string;
+  url: string;
+  referenceId: string;
+  referenceLabel: string;
+  source: "task" | "event" | "chat";
   boardId: string;
-  kind: LocalBlobMatchKind;
   filename: string;
-  mimeType?: string;
-  size?: number;
   document?: TaskDocument;
   imageUrl?: string;
+  chatFile?: ChatFile;
 };
 
-export type BlobTaskReference = Pick<LocalBlobReference, "taskId" | "taskTitle" | "boardId" | "kind" | "filename">;
-
-const SHA256_PATH = /(?:^|[/_-])([0-9a-f]{64})(?:\.bin)?(?:$|[?#])/i;
-
 export function sha256FromAttachmentURL(url: string | null | undefined): string | null {
-  const raw = (url || "").trim();
-  if (!raw) return null;
   try {
-    const parsed = new URL(raw);
-    const direct = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "").toLowerCase();
-    const exact = direct.match(/^([0-9a-f]{64})(?:\.bin)?$/i);
-    if (exact) return exact[1].toLowerCase();
+    const parsed = new URL(url || "");
+    const name = decodeURIComponent(parsed.pathname.split("/").pop() || "");
+    return name.match(/^([0-9a-f]{64})(?:\.[a-z0-9]+)?$/i)?.[1].toLowerCase() ?? null;
   } catch {
-    // fall through to a conservative string match
+    return null;
   }
-  const match = raw.match(SHA256_PATH);
-  return match ? match[1].toLowerCase() : null;
 }
 
 export function blossomServerKey(serverUrl: string): string {
@@ -62,68 +53,72 @@ export function attachmentBelongsToServer(attachmentURL: string, serverUrl: stri
   }
 }
 
-export function localBlobReferences(tasks: Task[]): LocalBlobReference[] {
+export function localBlobReferences(
+  tasks: readonly Task[],
+  events: readonly CalendarEvent[] = [],
+  messages: readonly WalletDmMessage[] = [],
+): LocalBlobReference[] {
   const refs: LocalBlobReference[] = [];
-  for (const task of tasks) {
-    (task.documents ?? []).forEach((doc, index) => {
-      const remoteUrl = doc.remoteUrl?.trim();
-      if (!remoteUrl) return;
-      const indexed = lookupAttachmentCiphertextHash(remoteUrl);
-      const sha256 = (doc.ciphertextSha256 || indexed?.sha256 || sha256FromAttachmentURL(remoteUrl) || "").trim().toLowerCase();
-      if (!/^[0-9a-f]{64}$/.test(sha256)) return;
-      const serverUrl = doc.storageServer?.trim() || indexed?.serverUrl || (() => {
-        try { return new URL(remoteUrl).origin; } catch { return ""; }
-      })();
-      if (!serverUrl) return;
-      refs.push({
-        key: `${blossomServerKey(serverUrl)}::${sha256}`,
-        sha256,
-        serverUrl,
-        taskId: task.id,
-        taskTitle: task.title || "Untitled task",
-        boardId: task.boardId,
-        kind: "document",
-        filename: doc.name || `Attachment ${index + 1}`,
-        mimeType: doc.mimeType,
-        size: doc.size,
-        document: doc,
+  const index = readAttachmentCiphertextIndex();
+  function add(reference: Omit<LocalBlobReference, "sha256">, declaredHash?: string | null) {
+    const indexed = index[reference.url.trim()];
+    const sha256 = [declaredHash, indexed?.sha256, sha256FromAttachmentURL(reference.url)]
+      .find((hash) => hash && /^[0-9a-f]{64}$/i.test(hash))?.toLowerCase();
+    if (!sha256) return;
+    refs.push({ ...reference, sha256, serverUrl: reference.serverUrl || (indexed?.retention ? indexed.serverUrl : undefined) });
+  }
+
+  function addBoardAttachments(
+    item: Pick<Task, "id" | "title" | "boardId" | "documents">,
+    source: "task" | "event",
+    images: readonly string[],
+  ) {
+    const reference = {
+      referenceId: item.id,
+      referenceLabel: item.title || (source === "task" ? "Untitled task" : "Untitled event"),
+      boardId: item.boardId,
+      source,
+    };
+    item.documents?.forEach((document, index) => {
+      const url = document.remoteUrl?.trim();
+      if (!url) return;
+      add({
+        ...reference, url, document, serverUrl: document.storageServer,
+        filename: document.name || `Attachment ${index + 1}`,
+      }, document.ciphertextSha256);
+    });
+    images.forEach((imageUrl, index) => {
+      if (!/^https?:\/\//i.test(imageUrl)) return;
+      add({
+        ...reference, url: imageUrl, imageUrl,
+        filename: images.length === 1 ? "Image" : `Image ${index + 1}`,
       });
     });
-    (task.images ?? []).forEach((imageUrl, index) => {
-      if (!imageUrl?.startsWith("http")) return;
-      const indexed = lookupAttachmentCiphertextHash(imageUrl);
-      const sha256 = indexed?.sha256 || sha256FromAttachmentURL(imageUrl);
-      if (!sha256) return;
-      const serverUrl = indexed?.serverUrl || (() => {
-        try { return new URL(imageUrl).origin; } catch { return ""; }
-      })();
-      if (!serverUrl) return;
-      refs.push({
-        key: `${blossomServerKey(serverUrl)}::${sha256}`,
-        sha256,
-        serverUrl,
-        taskId: task.id,
-        taskTitle: task.title || "Untitled task",
-        boardId: task.boardId,
-        kind: "image",
-        filename: task.images?.length === 1 ? "Task image" : `Task image ${index + 1}`,
-        imageUrl,
-      });
-    });
+  }
+
+  for (const task of tasks) addBoardAttachments(task, "task", task.images ?? []);
+  for (const event of events) addBoardAttachments(event, "event", event.image ? [event.image] : []);
+  for (const message of messages) {
+    const chatFile = message.attachment;
+    if (chatFile?.type !== "file" || !chatFile.url) continue;
+    add({
+      source: "chat", referenceId: message.id, referenceLabel: "Chat attachment",
+      boardId: "", url: chatFile.url, filename: chatFile.filename || "Chat attachment", chatFile,
+    }, chatFile.sha256);
   }
   return refs;
 }
 
 export function matchBlobToLocalReferences(
-  blob: Pick<{ url: string; sha256: string }, "url" | "sha256">,
+  blob: { sha256: string; url?: string },
   serverUrl: string,
-  references: LocalBlobReference[],
+  references: readonly LocalBlobReference[],
 ): LocalBlobReference[] {
   const sha256 = blob.sha256.trim().toLowerCase();
   const serverKey = blossomServerKey(serverUrl);
-  return references.filter((ref) =>
-    ref.sha256 === sha256 &&
-    ref.key.startsWith(`${serverKey}::`) &&
-    attachmentBelongsToServer(ref.document?.remoteUrl || ref.imageUrl || blob.url, serverUrl),
-  );
+  return references.filter((ref) => ref.sha256 === sha256 && (
+    ref.serverUrl
+      ? blossomServerKey(ref.serverUrl) === serverKey
+      : attachmentBelongsToServer(ref.url, serverUrl)
+  ));
 }

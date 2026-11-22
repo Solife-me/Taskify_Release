@@ -7,10 +7,11 @@ export type FileServerEntry = {
 };
 
 export const DEFAULT_PUBLIC_FILE_STORAGE_SERVER = "https://nostr.build";
-export const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = "https://blossom.solife.me";
+// Enable Blossom by default once the managed deployment accepts encrypted octet-stream uploads.
+export const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = "https://originless.solife.me";
 export const DEFAULT_FILE_STORAGE_SERVER = DEFAULT_PUBLIC_FILE_STORAGE_SERVER;
 /**
- * The managed Blossom service used for new encrypted uploads. Deployments can point at another
+ * The managed Blossom service shown in Storage settings. Deployments can point at another
  * instance with VITE_MANAGED_BLOSSOM_URL.
  */
 export const MANAGED_BLOSSOM_SERVER = normalizeFileServerUrl(

@@ -103,7 +103,7 @@ test("shows usage, resumable external-wallet checkout, matched filenames, and un
   vi.clearAllMocks();
   mocks.getSummary.mockResolvedValue(summary);
   mocks.listBlobs.mockResolvedValue({ blobs, nextCursor: null });
-  mocks.listOrders.mockResolvedValue([{
+  const order = {
     id: "order-1",
     planId: "plan-500",
     planName: "500 MB",
@@ -115,9 +115,10 @@ test("shows usage, resumable external-wallet checkout, matched filenames, and un
     invoice: "lnbc1000n1qqqq",
     invoiceExpiresAt: Math.floor(Date.now() / 1000) + 900,
     paidThrough: null,
-  }]);
+  };
+  mocks.listOrders.mockResolvedValue([order]);
   mocks.createOrder.mockResolvedValue(null);
-  mocks.getOrder.mockResolvedValue({ paidThrough: null });
+  mocks.getOrder.mockResolvedValue(order);
   mocks.protectBlob.mockResolvedValue({ tier: "protected", protectedUntil: 1_900_000_000 });
   mocks.deleteBlob.mockResolvedValue(undefined);
 
@@ -153,6 +154,19 @@ test("shows usage, resumable external-wallet checkout, matched filenames, and un
   expect(container.textContent).toContain("Sign the lease");
   expect(container.textContent).toContain("Unmatched blob");
   expect(container.textContent).toContain("Copy BOLT11 invoice");
+  expect(container.textContent).not.toContain("Upcoming protection expiries");
+  expect(mocks.getOrder).toHaveBeenCalledTimes(1);
+
+  mocks.getOrder.mockResolvedValue({ ...order, paidThrough: Math.floor(Date.now() / 1000) + 2_592_000 });
+  mocks.getSummary.mockResolvedValue({
+    ...summary,
+    total: { usedBytes: 200_000_000, limitBytes: 1_000_000_000 },
+  });
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+
+  expect(container.textContent).toContain("Payment settled");
+  expect(container.textContent).toContain("200 MB of 1.00 GB");
+  expect(container.textContent).not.toContain("Copy BOLT11 invoice");
 
   await act(async () => root.unmount());
 }, 15000);

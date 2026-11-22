@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { createBlossomStorageOrder, listBlossomStorageBlobs } from "./blossomStorage";
+import { blossomTermsFingerprint, createBlossomStorageOrder, listBlossomStorageBlobs } from "./blossomStorage";
 import { localBlobReferences, matchBlobToLocalReferences, sha256FromAttachmentURL } from "./blossomInventoryMatch";
-import type { Task } from "taskify-core";
+import type { CalendarEvent, Task } from "taskify-core";
+import type { WalletDmMessage } from "../chat/hooks/useDmState";
 
 const SIGNER = "0000000000000000000000000000000000000000000000000000000000000001";
 const HASH = "a".repeat(64);
@@ -106,4 +107,31 @@ describe("Blossom attachment inventory matching", () => {
     expect(matchBlobToLocalReferences(blob, "https://other.example", refs)).toHaveLength(0);
     expect(matchBlobToLocalReferences({ ...blob, sha256: "b".repeat(64) }, "https://blossom.example", refs)).toHaveLength(0);
   });
+});
+
+test("changing purchased capacity does not invalidate consent to the same inactivity rules", () => {
+  const summary = {
+    protected: { limitBytes: 100, usedBytes: 50 },
+    total: { limitBytes: 500, usedBytes: 100 },
+    protectionSeconds: 365,
+    standardRules: [{ type: "*", expiration: 60 }],
+    offers: [],
+    paidStorage: [],
+    permanentExtraBytes: 0,
+  };
+  expect(blossomTermsFingerprint({ ...summary, protected: { limitBytes: 500, usedBytes: 50 } }))
+    .toBe(blossomTermsFingerprint(summary));
+  expect(blossomTermsFingerprint({ ...summary, standardRules: [{ type: "*", expiration: 120 }] }))
+    .not.toBe(blossomTermsFingerprint(summary));
+});
+
+test("finds filenames from decrypted calendar and chat references", () => {
+  const url = `https://blossom.example/files/${HASH}.jpg`;
+  const event = { id: "meeting", title: "Meeting", boardId: "board", image: url } as CalendarEvent;
+  const message = { id: "message", attachment: { type: "file", url, filename: "Photo.jpg" } } as WalletDmMessage;
+  const refs = localBlobReferences([], [event], [message]);
+  const matches = matchBlobToLocalReferences({ sha256: HASH }, "https://blossom.example/files", refs);
+  expect(matches.map(({ source, filename }) => [source, filename]))
+    .toEqual([["event", "Image"], ["chat", "Photo.jpg"]]);
+  expect(matchBlobToLocalReferences({ sha256: HASH }, "https://blossom.example/other", refs)).toEqual([]);
 });

@@ -24,13 +24,23 @@ function loadStore(): PreferenceStore {
   }
 }
 
+function normalizeTermsFingerprint(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const { protectionSeconds, standardRules } = JSON.parse(value);
+    return JSON.stringify({ protectionSeconds, standardRules });
+  } catch {
+    return value;
+  }
+}
+
 export function getBlossomFallbackPreference(pubkey: string, serverUrl: string): BlossomFallbackPreference | null {
   if (!pubkey.trim() || !serverUrl.trim()) return null;
   const value = loadStore()[preferenceKey(pubkey, serverUrl)];
   if (!value || typeof value !== "object" || typeof value.automaticFallback !== "boolean") return null;
   return {
     automaticFallback: value.automaticFallback,
-    termsFingerprint: typeof value.termsFingerprint === "string" ? value.termsFingerprint : null,
+    termsFingerprint: normalizeTermsFingerprint(value.termsFingerprint),
     decidedAt: typeof value.decidedAt === "number" ? value.decidedAt : 0,
   };
 }
@@ -56,6 +66,7 @@ export type BlossomFallbackConsentRequest = {
   serverUrl: string;
   termsChanged: boolean;
   reason?: string;
+  termsFingerprint: string;
 };
 
 export type BlossomFallbackConsentResponse = {
@@ -68,7 +79,7 @@ const CONSENT_RESPONSE_EVENT = "taskify:blossom-fallback-consent-response";
 let consentQueue: Promise<unknown> = Promise.resolve();
 
 /**
- * Asks the mounted consent host. The answer is remembered by the caller per account and server.
+ * Asks the mounted consent host. The answer is remembered per account and server.
  * No browser host means uploads fail closed rather than silently using standard retention.
  */
 export function requestBlossomFallbackConsent(
@@ -97,7 +108,18 @@ export function requestBlossomFallbackConsent(
       detail: { ...request, requestId },
     }));
   });
-  const next = consentQueue.then(ask, ask);
+  const decide = async () => {
+    const preference = getBlossomFallbackPreference(request.accountPubkey, request.serverUrl);
+    if (preference?.automaticFallback === false) return false;
+    if (preference?.termsFingerprint === request.termsFingerprint) return true;
+    const automaticFallback = await ask();
+    setBlossomFallbackPreference(request.accountPubkey, request.serverUrl, {
+      automaticFallback,
+      termsFingerprint: request.termsFingerprint,
+    });
+    return automaticFallback;
+  };
+  const next = consentQueue.then(decide, decide);
   consentQueue = next.then(() => undefined, () => undefined);
   return next;
 }

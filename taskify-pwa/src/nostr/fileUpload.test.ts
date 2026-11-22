@@ -26,6 +26,7 @@ type CapturedXhrCall = {
 
 class MockXhr {
   static lastCall: CapturedXhrCall | null = null;
+  static calls: CapturedXhrCall[] = [];
   static respondStatus = 200;
   static respondText = "{}";
   static responseHeaders: Record<string, string> = {};
@@ -67,6 +68,7 @@ class MockXhr {
       headers: { ...this.headers },
       body,
     };
+    MockXhr.calls.push(MockXhr.lastCall);
     this.status = MockXhr.respondStatus;
     this.responseText = MockXhr.respondText;
     this.response = MockXhr.respondText;
@@ -84,6 +86,7 @@ class MockXhr {
 
 function installXhrMock(): void {
   MockXhr.lastCall = null;
+  MockXhr.calls = [];
   MockXhr.respondStatus = 200;
   MockXhr.respondText = "{}";
   MockXhr.responseHeaders = {};
@@ -348,6 +351,13 @@ describe("Blossom auth header generation", () => {
       signer: VALID_SIGNER,
     });
 
+    expect(MockXhr.calls.map(({ method }) => method)).toEqual(["HEAD", "PUT"]);
+    const [head, put] = MockXhr.calls;
+    expect(head.body).toBeNull();
+    expect(head.headers["X-Content-Length"]).toBe("5");
+    expect(head.headers["X-Content-Type"]).toBe("application/octet-stream");
+    expect(head.headers["X-SHA-256"]).toBe(put.headers["X-SHA-256"]);
+    expect(put.body).toBeInstanceOf(Blob);
     expect(result.retention).toBe("protected");
     expect(result.protectedUntil).toBe(1893456000);
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);

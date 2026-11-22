@@ -1,3 +1,4 @@
+import { lookupAttachmentCiphertextHash } from "../../lib/blossomAttachmentIndex";
 import { useState, useMemo, useCallback, useEffect, type MouseEvent } from "react";
 import type { Task } from "../../domains/tasks/taskTypes";
 import type { CalendarEvent } from "../../domains/tasks/taskTypes";
@@ -140,13 +141,18 @@ function DecryptableImage({ src, boardId, onOpen }: { src: string; boardId?: str
     return <div className="max-h-40 w-full rounded-2xl bg-surface text-xs text-secondary flex items-center justify-center" style={{ height: "10rem" }}>⚠ failed</div>;
   }
   return (
-    <img
-      src={decryptedSrc}
-      className="max-h-40 w-full rounded-2xl object-contain cursor-zoom-in"
-      onClick={(e) => onOpen(decryptedSrc, e)}
-      role="button"
-      aria-label="View full image"
-    />
+    <div>
+      <img
+        src={decryptedSrc}
+        className="max-h-40 w-full rounded-2xl object-contain cursor-zoom-in"
+        onClick={(e) => onOpen(decryptedSrc, e)}
+        role="button"
+        aria-label="View full image"
+      />
+      {lookupAttachmentCiphertextHash(src)?.retention === "standard" && (
+        <div className="text-xs text-secondary">Standard retention</div>
+      )}
+    </div>
   );
 }
 

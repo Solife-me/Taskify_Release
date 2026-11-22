@@ -49,6 +49,10 @@ Environment variables:
 - `VITE_VAPID_PUBLIC_KEY` – Base64url-encoded VAPID public key. Generate alongside the private key during Worker setup.
 - `VITE_MANAGED_BLOSSOM_URL` – Optional managed Blossom base URL. The built-in default is `https://blossom.solife.me`. The URL can also be changed from Settings → Storage.
 
+The managed Blossom URL selects the Storage dashboard. Originless is the default
+encrypted upload server until the Blossom deployment accepts `application/octet-stream`.
+Compatible Blossom servers can be selected explicitly for encrypted uploads.
+
 Run the Vite dev server:
 
 ```bash
