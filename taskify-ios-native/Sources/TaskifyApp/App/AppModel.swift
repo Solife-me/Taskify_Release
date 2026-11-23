@@ -7641,11 +7641,14 @@ final class AppModel {
         if isRefreshingContacts, let contactRefreshTask {
             await contactRefreshTask.value
         } else {
-            await refreshContactsFromNostr(silent: true)
+            // The profile pass only feeds names and avatars, and a mutation already waits on the
+            // list lookup before it can publish; keeping it out of that wait shortens the time a
+            // delete leaves the row on screen.
+            await refreshContactsFromNostr(silent: true, loadProfiles: false)
         }
     }
 
-    private func refreshContactsFromNostr(silent: Bool) async {
+    private func refreshContactsFromNostr(silent: Bool, loadProfiles: Bool = true) async {
         guard !isRefreshingContacts else { return }
         guard let identity = try? activeIdentity() else {
             if !silent { contactSyncStatus = "Import a Nostr identity to sync contacts" }
@@ -7688,16 +7691,18 @@ final class AppModel {
             if snapshot.replaceContacts(from: decodedList) { scheduleSave() }
         }
 
-        let profileRelays = TaskifyRelayURL.normalizedList(
-            relays + (snapshot.contacts ?? []).flatMap(\.relayURLs)
-        )
-        let profiles = await NostrContactFinder.profiles(
-            publicKeys: (snapshot.contacts ?? []).map(\.publicKey),
-            relayURLs: profileRelays,
-            fetcher: syncEngine
-        )
-        guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
-        if snapshot.applyContactProfiles(profiles) { scheduleSave() }
+        if loadProfiles {
+            let profileRelays = TaskifyRelayURL.normalizedList(
+                relays + (snapshot.contacts ?? []).flatMap(\.relayURLs)
+            )
+            let profiles = await NostrContactFinder.profiles(
+                publicKeys: (snapshot.contacts ?? []).map(\.publicKey),
+                relayURLs: profileRelays,
+                fetcher: syncEngine
+            )
+            guard !Task.isCancelled, acceptsAccountActivity(identity.publicKeyHex) else { return }
+            if snapshot.applyContactProfiles(profiles) { scheduleSave() }
+        }
         if !silent {
             if decodedList != nil || !(snapshot.contacts ?? []).isEmpty {
                 let count = snapshot.contacts?.count ?? 0

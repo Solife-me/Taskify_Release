@@ -135,6 +135,7 @@
 		D5EA1D000000000000000009 /* SiriReminderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA1D000000000000000008 /* SiriReminderUITests.swift */; };
 		C1A6000000000000000000B2 /* ShareToTaskUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A6000000000000000000B1 /* ShareToTaskUITests.swift */; };
 		C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94100000000000000000F00 /* ChatRenderUITests.swift */; };
+		CCA100000000000000000001 /* ContactDirectoryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCA100000000000000000000 /* ContactDirectoryUITests.swift */; };
 		C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80500000000000000000F00 /* EventAttachmentUITests.swift */; };
 		C81000000000000000000F01 /* BoardRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C81000000000000000000F00 /* BoardRenderUITests.swift */; };
 		C83300000000000000000F01 /* DynamicTypeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C83300000000000000000F00 /* DynamicTypeUITests.swift */; };
@@ -312,6 +313,7 @@
 		D5EA1D000000000000000008 /* SiriReminderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SiriReminderUITests.swift; sourceTree = "<group>"; };
 		C1A6000000000000000000B1 /* ShareToTaskUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ShareToTaskUITests.swift; sourceTree = "<group>"; };
 		C94100000000000000000F00 /* ChatRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatRenderUITests.swift; sourceTree = "<group>"; };
+		CCA100000000000000000000 /* ContactDirectoryUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactDirectoryUITests.swift; sourceTree = "<group>"; };
 		C80500000000000000000F00 /* EventAttachmentUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EventAttachmentUITests.swift; sourceTree = "<group>"; };
 		C81000000000000000000F00 /* BoardRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BoardRenderUITests.swift; sourceTree = "<group>"; };
 		C83300000000000000000F00 /* DynamicTypeUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DynamicTypeUITests.swift; sourceTree = "<group>"; };
@@ -625,6 +627,7 @@
 				D5EA1D000000000000000008 /* SiriReminderUITests.swift */,
 				C1A6000000000000000000B1 /* ShareToTaskUITests.swift */,
 				C94100000000000000000F00 /* ChatRenderUITests.swift */,
+				CCA100000000000000000000 /* ContactDirectoryUITests.swift */,
 				C80500000000000000000F00 /* EventAttachmentUITests.swift */,
 				C81000000000000000000F00 /* BoardRenderUITests.swift */,
 				C83300000000000000000F00 /* DynamicTypeUITests.swift */,
@@ -964,6 +967,7 @@
 				D5EA1D000000000000000009 /* SiriReminderUITests.swift in Sources */,
 				C1A6000000000000000000B2 /* ShareToTaskUITests.swift in Sources */,
 				C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */,
+				CCA100000000000000000001 /* ContactDirectoryUITests.swift in Sources */,
 				C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */,
 				C81000000000000000000F01 /* BoardRenderUITests.swift in Sources */,
 				C83300000000000000000F01 /* DynamicTypeUITests.swift in Sources */,
