@@ -52,6 +52,9 @@ Environment variables:
 The managed Blossom URL selects the Storage dashboard. Originless is the default
 encrypted upload server until the Blossom deployment accepts `application/octet-stream`.
 Compatible Blossom servers can be selected explicitly for encrypted uploads.
+Automatic standard-retention fallback is enabled by default and remembered separately
+per account and server. Taskify explains the first fallback and asks again if the
+server's retention terms change.
 
 Taskify shows one in-app renewal reminder for the managed and selected Blossom
 servers when attachments enter their renewal window. Open the reminder to renew

@@ -157,6 +157,9 @@ test("shows usage, resumable external-wallet checkout, matched filenames, and un
   expect(container.textContent).toContain("Unmatched blob");
   expect(container.textContent).toContain("Copy BOLT11 invoice");
   expect(container.textContent).toContain("Upcoming protection expiries");
+  const fallbackSwitch = container.querySelector<HTMLButtonElement>('button[role="switch"]');
+  expect(fallbackSwitch?.getAttribute("aria-checked")).toBe("true");
+  expect(fallbackSwitch?.textContent).toBe("On");
   const renewal = [...container.querySelectorAll("button")].find((button) => button.textContent === "Renew");
   expect(renewal?.disabled).toBe(false);
   expect(mocks.getOrder).toHaveBeenCalledTimes(1);

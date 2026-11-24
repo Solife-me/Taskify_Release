@@ -80,13 +80,6 @@ test("every settings group starts collapsed, expands independently, and resets o
   expect(container.textContent).not.toContain("AI prompts");
   expect(container.textContent).not.toContain("Task/event import prompt");
 
-  const openStorage = [...container.querySelectorAll<HTMLButtonElement>("button")]
-    .find((button) => button.textContent?.trim() === "Open storage");
-  if (!openStorage) throw new Error("Storage shortcut not found");
-  await act(async () => openStorage.click());
-  expect(groupButton(container, "Storage & attachments").getAttribute("aria-expanded")).toBe("true");
-  expect(container.textContent).toContain("Storage body");
-
   await act(async () => groupButton(container, "View").click());
   expect(groupButton(container, "View").getAttribute("aria-expanded")).toBe("true");
   expect(container.textContent).toContain("View body");

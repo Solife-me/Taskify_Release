@@ -9,6 +9,12 @@ export type BlossomFallbackPreference = {
   decidedAt: number;
 };
 
+export const DEFAULT_BLOSSOM_FALLBACK_PREFERENCE: BlossomFallbackPreference = {
+  automaticFallback: true,
+  termsFingerprint: null,
+  decidedAt: 0,
+};
+
 type PreferenceStore = Record<string, BlossomFallbackPreference>;
 
 function preferenceKey(pubkey: string, serverUrl: string): string {
@@ -37,7 +43,9 @@ function normalizeTermsFingerprint(value: unknown): string | null {
 export function getBlossomFallbackPreference(pubkey: string, serverUrl: string): BlossomFallbackPreference | null {
   if (!pubkey.trim() || !serverUrl.trim()) return null;
   const value = loadStore()[preferenceKey(pubkey, serverUrl)];
-  if (!value || typeof value !== "object" || typeof value.automaticFallback !== "boolean") return null;
+  if (!value || typeof value !== "object" || typeof value.automaticFallback !== "boolean") {
+    return { ...DEFAULT_BLOSSOM_FALLBACK_PREFERENCE };
+  }
   return {
     automaticFallback: value.automaticFallback,
     termsFingerprint: normalizeTermsFingerprint(value.termsFingerprint),

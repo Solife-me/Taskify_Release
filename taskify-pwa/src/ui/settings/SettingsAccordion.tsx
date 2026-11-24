@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useState } from "react";
+import React, { useId, useState } from "react";
 
 export function SettingsAccordion({
   title,
@@ -6,27 +6,18 @@ export function SettingsAccordion({
   children,
   nested = false,
   defaultExpanded = false,
-  id,
-  openRequest = 0,
 }: {
   title: string;
   summary?: string;
   children: React.ReactNode;
   nested?: boolean;
   defaultExpanded?: boolean;
-  id?: string;
-  openRequest?: number;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const contentId = useId();
 
-  useEffect(() => {
-    if (openRequest > 0) setExpanded(true);
-  }, [openRequest]);
-
   return (
     <section
-      id={id}
       className={`settings-accordion${nested ? " settings-accordion--nested" : ""}${expanded ? " is-expanded" : ""}`}
       data-settings-group
     >
