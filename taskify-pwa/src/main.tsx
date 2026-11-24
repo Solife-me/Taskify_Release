@@ -87,6 +87,23 @@ async function bootstrapApp(): Promise<void> {
   }
 
   await import('./storage/localStorageGuardrails');
+  const { finishLocalReset, LOCAL_RESET_KEY } = await import('./storage/localReset');
+  window.addEventListener('storage', (event) => {
+    if (event.key === LOCAL_RESET_KEY && event.newValue) window.location.reload();
+  });
+  try {
+    await finishLocalReset();
+  } catch (error) {
+    console.error('Taskify local reset is pending', error);
+    root.render(
+      <div className="p-5 space-y-3">
+        <p>Taskify could not finish the local reset. Close other Taskify tabs and try again.</p>
+        <button type="button" className="accent-button" onClick={() => window.location.reload()}>Retry reset</button>
+      </div>,
+    );
+    return;
+  }
+  setupServiceWorkers();
   const [{ initializeStorageBoundaries }] = await Promise.all([
     import('./storage/storageBootstrap'),
   ]);
@@ -170,7 +187,6 @@ async function recoverFromBootstrapFailure(err: unknown): Promise<boolean> {
 }
 
 initializeInstallPromptCapture();
-setupServiceWorkers();
 
 void bootstrapApp().catch(async (err) => {
   console.error('Taskify bootstrap failed', err);

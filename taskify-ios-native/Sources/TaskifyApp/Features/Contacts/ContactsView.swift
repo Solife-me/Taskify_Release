@@ -7,7 +7,6 @@ struct NostrContactsDirectoryView: View {
     @State private var searchText = ""
     @State private var editingContact: NostrContact?
     @State private var showingNewContact = false
-    @State private var deletingContact: NostrContact?
 
     private var filteredContacts: [NostrContact] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -77,25 +76,24 @@ struct NostrContactsDirectoryView: View {
                                     NostrContactDetailView(contactPublicKey: contact.publicKey)
                                         .environment(model)
                                 } label: {
-                                    NostrContactRow(contact: contact)
+                                    // The row shows its actions instead of hiding them behind a
+                                    // long press.
+                                    NostrContactRow(contact: contact) {
+                                        Menu {
+                                            contactActions(for: contact)
+                                        } label: {
+                                            Image(systemName: "ellipsis.circle")
+                                                .font(.system(size: 20, weight: .regular))
+                                                .foregroundStyle(TaskifyTheme.secondaryText)
+                                                .frame(width: 30, height: 32)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .accessibilityLabel("Actions for \(contact.displayName)")
+                                    }
                                 }
                                 .buttonStyle(.plain)
                                 .contextMenu {
-                                    Button {
-                                        UIPasteboard.general.string = contact.npub
-                                    } label: {
-                                        Label("Copy npub", systemImage: "doc.on.doc")
-                                    }
-                                    Button {
-                                        editingContact = contact
-                                    } label: {
-                                        Label("Edit Contact", systemImage: "pencil")
-                                    }
-                                    Button(role: .destructive) {
-                                        deletingContact = contact
-                                    } label: {
-                                        Label("Delete Contact", systemImage: "trash")
-                                    }
+                                    contactActions(for: contact)
                                 }
                             }
                         }
@@ -122,30 +120,24 @@ struct NostrContactsDirectoryView: View {
             NostrContactEditorSheet(contact: contact)
                 .environment(model)
         }
-        .alert(
-            "Delete Contact?",
-            isPresented: Binding(
-                get: { deletingContact != nil },
-                set: { if !$0 { deletingContact = nil } }
-            ),
-            presenting: deletingContact
-        ) { contact in
-            Button("Delete", role: .destructive) {
-                Task {
-                    do {
-                        try await model.deleteNostrContact(publicKey: contact.publicKey)
-                    } catch {
-                        model.errorMessage = error.localizedDescription
-                    }
-                }
-                deletingContact = nil
-            }
-            Button("Cancel", role: .cancel) { deletingContact = nil }
-        } message: { contact in
-            Text("\(contact.displayName) will be removed from the private contact list on your relays and the PWA.")
-        }
         .task {
             model.refreshContactsIfNeeded()
+        }
+    }
+
+    /// Shared by the row's action button and its long-press menu, so both offer the same
+    /// actions. Deleting lives on the contact's edit page.
+    @ViewBuilder
+    private func contactActions(for contact: NostrContact) -> some View {
+        Button {
+            UIPasteboard.general.string = contact.npub
+        } label: {
+            Label("Copy npub", systemImage: "doc.on.doc")
+        }
+        Button {
+            editingContact = contact
+        } label: {
+            Label("Edit Contact", systemImage: "pencil")
         }
     }
 
@@ -281,8 +273,9 @@ private struct MyCardRow: View {
     }
 }
 
-private struct NostrContactRow: View {
+private struct NostrContactRow<Trailing: View>: View {
     let contact: NostrContact
+    @ViewBuilder var trailing: Trailing
 
     var body: some View {
         HStack(spacing: 13) {
@@ -308,6 +301,7 @@ private struct NostrContactRow: View {
                     .lineLimit(1)
             }
             Spacer()
+            trailing
             Image(systemName: "chevron.right")
                 .font(.caption.bold())
                 .foregroundStyle(TaskifyTheme.tertiaryText)
@@ -320,6 +314,7 @@ private struct NostrContactRow: View {
 
 struct NostrContactDetailView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     let contactPublicKey: String
     let fallbackDisplayName: String?
     @State private var nip05Status: Nip05VerificationStatus = .unverified
@@ -395,6 +390,11 @@ struct NostrContactDetailView: View {
                 NostrContactEditorSheet(contact: contact)
                     .environment(model)
             }
+        }
+        // Deleting happens on the edit page; leave this page once the contact is gone locally
+        // instead of showing a contact that no longer exists.
+        .onChange(of: model.nostrContact(publicKey: contactPublicKey) == nil) { _, isGone in
+            if isGone { dismiss() }
         }
         .task(id: contact?.profile?.nip05) {
             guard let contact, let nip05 = contact.profile?.nip05 else {
@@ -585,6 +585,8 @@ private struct NostrContactEditorSheet: View {
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var showingScanner = false
+    @State private var confirmingDeletion = false
+    @State private var isDeleting = false
 
     init(contact: NostrContact? = nil) {
         existingContact = contact
@@ -649,13 +651,34 @@ private struct NostrContactEditorSheet: View {
                             .foregroundStyle(.orange)
                     }
                 }
+
+                if existingContact != nil {
+                    Section {
+                        Button(role: .destructive) {
+                            confirmingDeletion = true
+                        } label: {
+                            if isDeleting {
+                                HStack(spacing: 10) {
+                                    ProgressView()
+                                    Text("Deleting…")
+                                }
+                            } else {
+                                Label("Delete Contact", systemImage: "trash")
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                        .disabled(isDeleting || isSaving)
+                    } footer: {
+                        Text("Removes this contact from the private contact list on your relays and the PWA. Your conversations stay on this device.")
+                    }
+                }
             }
             .navigationTitle(existingContact == nil ? "New Contact" : "Edit Contact")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .disabled(isSaving)
+                        .disabled(isSaving || isDeleting)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -663,13 +686,23 @@ private struct NostrContactEditorSheet: View {
                     } label: {
                         if isSaving { ProgressView() } else { Text("Save") }
                     }
-                    .disabled(!canSave || isSaving)
+                    .disabled(!canSave || isSaving || isDeleting)
                 }
             }
         }
         .preferredColorScheme(.dark)
         .tint(TaskifyTheme.accent)
-        .interactiveDismissDisabled(isSaving)
+        .interactiveDismissDisabled(isSaving || isDeleting)
+        .confirmationDialog(
+            "Delete Contact?",
+            isPresented: $confirmingDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { deleteContact() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(existingContact?.displayName ?? "This contact") will be removed from the private contact list on your relays and the PWA.")
+        }
         .fullScreenCover(isPresented: $showingScanner) {
             ContactScannerSheet { code in
                 handleScannedCode(code)
@@ -748,6 +781,23 @@ private struct NostrContactEditorSheet: View {
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
                 isSaving = false
             }
+        }
+    }
+
+    private func deleteContact() {
+        guard let existingContact, !isDeleting else { return }
+        isDeleting = true
+        errorMessage = nil
+        Task {
+            do {
+                try await model.deleteNostrContact(publicKey: existingContact.publicKey)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+            isDeleting = false
         }
     }
 }

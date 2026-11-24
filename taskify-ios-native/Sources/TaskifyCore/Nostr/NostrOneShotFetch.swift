@@ -66,13 +66,24 @@ public struct NostrFreshConnectionFetcher: NostrOneShotFetching {
         let connection = NostrRelayConnection(relayURL: relayURL)
         let stream = connection.messages()
         let subscriptionID = "once-\(UUID().uuidString)"
+        // `timeout` used to start only after the subscription was sent, so a host that accepts
+        // the connection and never finishes the WebSocket handshake held the caller for
+        // URLSession's full request timeout (60s). A contact refresh then blocked a contact
+        // delete for a minute. Aborting the socket at the deadline fails the waiting send too.
+        let setupDeadline = Task {
+            try? await Task.sleep(nanoseconds: UInt64(max(0.25, timeout) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await connection.disconnect()
+        }
         do {
             try await connection.connect()
             try await connection.request(id: subscriptionID, filter: filter)
         } catch {
+            setupDeadline.cancel()
             await connection.disconnect()
             return []
         }
+        setupDeadline.cancel()
         let events = await withTaskGroup(of: [NostrEvent]?.self) { group in
             group.addTask {
                 var matches: [NostrEvent] = []

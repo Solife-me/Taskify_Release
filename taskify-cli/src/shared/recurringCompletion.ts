@@ -1,7 +1,6 @@
 import {
   buildNextRecurringTask,
   normalizeTaskRecurrence,
-  type Recurrence,
   type ReminderPreset,
   type Subtask,
   type Weekday,
@@ -17,7 +16,7 @@ export type NextRecurringTaskPayload = {
 
 /**
  * The next occurrence to publish when a recurring task's wire payload is marked done, matching
- * what the PWA and iOS create on completion. The CLI has no week-start setting, so non-daily
+ * what the PWA creates on completion. The CLI has no week-start setting, so infrequent
  * series reappear from Sunday's start of week unless `weekStart` is given.
  */
 export function nextRecurringTaskPayload(
@@ -25,8 +24,7 @@ export function nextRecurringTaskPayload(
   payload: Record<string, unknown>,
   options: { weekStart?: Weekday; now?: number } = {},
 ): NextRecurringTaskPayload | null {
-  // The normalizer validates every field the rule's type needs; its return type is just looser.
-  const recurrence = normalizeTaskRecurrence(payload.recurrence) as Recurrence | undefined;
+  const recurrence = normalizeTaskRecurrence(payload.recurrence);
   if (!recurrence || recurrence.type === "none") return null;
   const next = buildNextRecurringTask(
     {

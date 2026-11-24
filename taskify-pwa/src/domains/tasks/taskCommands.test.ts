@@ -16,6 +16,7 @@ import {
   type CompleteTaskContext,
 } from "./taskCommands";
 import type { Task } from "./taskTypes";
+import { dedupeRecurringInstances } from "./taskUtils";
 
 const ACTOR = "a".repeat(64);
 const NOW = new Date("2026-10-15T14:00:00.000Z");
@@ -86,6 +87,29 @@ describe("planCompleteTask", () => {
     const plan = planCompleteTask([task({ recurrence: { type: "daily" }, seriesId: "t1" }), existing], "t1", ctx());
     expect(plan.tasks).toHaveLength(2);
     expect(plan.publish).toHaveLength(1);
+  });
+
+  it("completes a legacy hourly task and opens the next calendar day", () => {
+    const legacy = task({
+      dueISO: "2026-10-15T14:00:00.000Z",
+      dueTimeEnabled: true,
+      recurrence: { type: "every", n: 1, unit: "hour" },
+    });
+    const plan = planCompleteTask([legacy], legacy.id, ctx());
+    expect(plan.tasks[1]).toMatchObject({
+      id: "recurrence:t1:2026-10-16",
+      dueISO: "2026-10-16T14:00:00.000Z",
+      recurrence: { type: "daily" },
+    });
+    expect(plan.publish[0].recurrence).toEqual({ type: "daily" });
+  });
+
+  it("keeps legacy occurrences on the same day distinct after migrating their rules", () => {
+    const occurrences = [
+      task({ id: "recurrence:t1:2026-10-15T14:00", dueISO: "2026-10-15T14:00:00.000Z", seriesId: "t1", recurrence: { type: "daily" } }),
+      task({ id: "recurrence:t1:2026-10-15T15:00", dueISO: "2026-10-15T15:00:00.000Z", seriesId: "t1", recurrence: { type: "daily" } }),
+    ];
+    expect(dedupeRecurringInstances(occurrences)).toEqual(occurrences);
   });
 
   it("keeps the streak unchanged when streaks are off", () => {

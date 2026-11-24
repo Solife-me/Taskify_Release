@@ -40,6 +40,30 @@ test("subtasks merge item by item", () => {
   assert.equal(merged.subtasks?.[0].completed, true);
 });
 
+test("a field edit preserves a concurrent subtask reorder", () => {
+  const opened = base();
+  const current = { ...base(), subtasks: base().subtasks.reverse() };
+  const titleEdit = { ...base(), title: "Pack tonight" };
+  const subtaskEdit = base();
+  subtaskEdit.subtasks[0].title = "Passport and visa";
+
+  assert.deepEqual(mergeTaskEdit(opened, titleEdit, current).subtasks, current.subtasks);
+  assert.deepEqual(
+    mergeTaskEdit(opened, subtaskEdit, current).subtasks?.map((subtask) => subtask.title),
+    ["Charger", "Passport and visa"],
+  );
+});
+
+test("an explicit subtask reorder takes effect", () => {
+  const opened = base();
+  const edited = { ...base(), subtasks: base().subtasks.reverse() };
+  const current = base();
+  current.subtasks[0].completed = true;
+  const merged = mergeTaskEdit(opened, edited, current);
+  assert.deepEqual(merged.subtasks?.map((subtask) => subtask.id), ["s2", "s1"]);
+  assert.equal(merged.subtasks?.[1].completed, true);
+});
+
 test("a field changed here wins; one changed only elsewhere stays", () => {
   const merged = mergeTaskEdit(base(), { ...base(), note: "Passport and visa" }, { ...base(), note: "Tickets", title: "Pack for Lisbon", completed: true });
   assert.equal(merged.note, "Passport and visa");

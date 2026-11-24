@@ -20,7 +20,7 @@ enum MacChecklistItems {
                 : scopedBoard.columns.sorted { $0.order < $1.order }
             return columns.map { column in
                 let section = board.kind == .compound ? "\(scopedBoard.name) — \(column.name)" : column.name
-                let items = model.tasks(boardID: scopedBoard.id, columnID: column.id, includeCompleted: true)
+                let items = model.tasks(boardID: scopedBoard.id, columnID: column.id, includeCompleted: true, includeUpcoming: true)
                     .map { PhysicalChecklistItem(id: $0.id, title: $0.title, section: section, filled: $0.completed) }
                 return MacChecklistGroup(id: "\(scopedBoard.id):\(column.id)", name: section, items: items)
             }
@@ -55,10 +55,10 @@ struct MacPrintChecklistSheet: View {
     let groups: [MacChecklistGroup]
     let format: PhysicalChecklistJob.Format
     let showsIncludeCompletedToggle: Bool
-    let includeCompletedDefault: Bool
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var paper = PhysicalChecklistPaper.letter
+    @State private var includeCompleted: Bool
     @State private var scope = Scope.board
     @State private var selectedListIDs: Set<String>
     @State private var error: String?
@@ -69,8 +69,7 @@ struct MacPrintChecklistSheet: View {
         allItems: [PhysicalChecklistItem],
         groups: [MacChecklistGroup] = [],
         format: PhysicalChecklistJob.Format = .taskList,
-        showsIncludeCompletedToggle: Bool = true,
-        includeCompletedDefault: Bool = true
+        showsIncludeCompletedToggle: Bool = true
     ) {
         self.title = title
         self.ownerID = ownerID
@@ -78,17 +77,13 @@ struct MacPrintChecklistSheet: View {
         self.groups = groups
         self.format = format
         self.showsIncludeCompletedToggle = showsIncludeCompletedToggle
-        self.includeCompletedDefault = includeCompletedDefault
+        let includeCompleted = !showsIncludeCompletedToggle
+        _includeCompleted = State(initialValue: includeCompleted)
         _selectedListIDs = State(initialValue: Set(
             groups.filter { group in
-                group.items.contains { includeCompletedDefault || !$0.filled }
+                group.items.contains { includeCompleted || !$0.filled }
             }.map(\.id)
         ))
-    }
-
-    private var includeCompleted: Bool {
-        !showsIncludeCompletedToggle
-            || MacAccountViewPreferences(defaults: model.accountDefaults).completedTabEnabled
     }
 
     private var scopedItems: [PhysicalChecklistItem] {
@@ -148,12 +143,7 @@ struct MacPrintChecklistSheet: View {
             }
 
             if showsIncludeCompletedToggle {
-                Label(
-                    includeCompleted ? "Completed tasks will be included." : "Only incomplete tasks will be printed.",
-                    systemImage: includeCompleted ? "checkmark.circle.fill" : "circle.dashed"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Toggle("Include completed tasks", isOn: $includeCompleted)
             }
             if items.isEmpty {
                 Text("Nothing to print yet.").font(.caption).foregroundStyle(.secondary)

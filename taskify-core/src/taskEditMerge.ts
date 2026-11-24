@@ -31,7 +31,7 @@ function stableJson(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(",")}}`;
 }
 
-/** The edited list in its order, each untouched subtask as it is now, then any added elsewhere. */
+/** Merge subtask edits by ID, retaining current order when the editor leaves the order alone. */
 export function mergeSubtaskEdit(
   opened: readonly Subtask[] | undefined,
   edited: readonly Subtask[] | undefined,
@@ -39,6 +39,9 @@ export function mergeSubtaskEdit(
 ): Subtask[] {
   const openedById = new Map((opened ?? []).map((subtask) => [subtask.id, subtask]));
   const currentById = new Map((current ?? []).map((subtask) => [subtask.id, subtask]));
+  const editedIds = (edited ?? []).map((subtask) => subtask.id);
+  const editedIdSet = new Set(editedIds);
+  const openedIdsStillPresent = (opened ?? []).filter(({ id }) => editedIdSet.has(id)).map(({ id }) => id);
   const merged: Subtask[] = [];
   for (const subtask of edited ?? []) {
     const before = openedById.get(subtask.id);
@@ -49,8 +52,14 @@ export function mergeSubtaskEdit(
     const now = currentById.get(subtask.id);
     if (now) merged.push(now);
   }
-  const known = new Set([...(opened ?? []), ...(edited ?? [])].map((subtask) => subtask.id));
-  for (const subtask of current ?? []) if (!known.has(subtask.id)) merged.push(subtask);
+  for (const subtask of current ?? []) {
+    if (!openedById.has(subtask.id) && !editedIdSet.has(subtask.id)) merged.push(subtask);
+  }
+  if (editedIds.length === openedIdsStillPresent.length && editedIds.every((id, index) => id === openedIdsStillPresent[index])) {
+    const currentOrder = new Map((current ?? []).map(({ id }, index) => [id, index]));
+    const order = ({ id }: Subtask) => currentOrder.get(id) ?? currentOrder.size;
+    merged.sort((a, b) => order(a) - order(b));
+  }
   return merged;
 }
 

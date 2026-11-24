@@ -15,6 +15,7 @@ import {
   isAssignedSharedTask,
   isFrequentRecurrence,
   tasksInSameSeries,
+  taskRecurrenceWithDailyMinimum,
   weekdayOfDateKey,
   type Weekday,
 } from "taskify-core";
@@ -129,6 +130,10 @@ export function planCompleteTask(tasks: Task[], id: string, ctx: CompleteTaskCon
     }
   }
 
+  if (working.recurrence) {
+    const recurrence = taskRecurrenceWithDailyMinimum(working.recurrence);
+    if (recurrence !== working.recurrence) working = { ...working, recurrence };
+  }
   const nowISO = ctx.now.toISOString();
   // Count from the series' running streak, not this instance's stored copy: instances generated
   // ahead of time (full-week mode) carry the streak from when they were made. The streak grows on
@@ -484,7 +489,9 @@ export function planSaveTask(
 ): SaveTaskPlan {
   const nowISO = ctx.now.toISOString();
   const withSeries = (task: Task): Task =>
-    task.recurrence ? { ...task, seriesId: task.seriesId || task.id } : { ...task, seriesId: undefined };
+    task.recurrence
+      ? { ...task, recurrence: taskRecurrenceWithDailyMinimum(task.recurrence), seriesId: task.seriesId || task.id }
+      : { ...task, seriesId: undefined };
   const withAuthors = (task: Task, previousCreatedBy?: string): Task => {
     const createdBy = normalizeAgentPubkey(task.createdBy || previousCreatedBy || ctx.actorPubkey) ?? undefined;
     const lastEditedBy = normalizeAgentPubkey(task.lastEditedBy || ctx.actorPubkey || createdBy) ?? createdBy;

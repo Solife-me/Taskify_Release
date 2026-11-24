@@ -7,7 +7,7 @@ import {
 buildCalendarEventInviteEnvelope,
 calendarAddress,
 deriveBoardRsvpToken,
-normalizeTaskRecurrence,
+normalizeRecurrence,
 normalizeTaskReminders,
 planCalendarRsvp,
 resolveIdentifierReference,
@@ -103,7 +103,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
           throw new Error(`Board "${boardEntry.name}" has no columns/lists yet. Add one first.`);
         }
         const resolvedColumn = opts.column ? resolveColumnOrExit(boardEntry, opts.column) : null;
-        const recurrence = normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson));
+        const recurrence = normalizeRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson));
         const reminders = normalizeTaskReminders(parseReminderOption(opts.reminders));
         const documents = await resolveAttachmentDocuments({ files: opts.attach as string[], boardId, config, fileServer: opts.fileServer, documentsJson: opts.documentsJson });
         const invitees = normalizeAssigneeArgs(opts.invitee as string[])?.map((a) => ({ pubkey: a.pubkey, relay: a.relay }));
@@ -214,7 +214,7 @@ export function registerEventsCommands(program: Command, context: Pick<CommandCo
         const boardId = opts.board ? await resolveBoardId(opts.board, config) : undefined;
         const boardEntry = boardId ? config.boards.find((b) => b.id === boardId) : undefined;
         const resolvedColumn = opts.column && boardEntry ? resolveColumnOrExit(boardEntry, opts.column) : null;
-        const recurrence = opts.recurrenceJson !== undefined ? normalizeTaskRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson)) ?? null : undefined;
+        const recurrence = opts.recurrenceJson !== undefined ? normalizeRecurrence(parseJsonOption("--recurrence-json", opts.recurrenceJson)) ?? null : undefined;
         const reminders = opts.reminders !== undefined ? normalizeTaskReminders(parseReminderOption(opts.reminders)) ?? null : undefined;
         let documents = undefined;
         if (opts.documentsJson !== undefined || ((opts.attach as string[]).length > 0) || ((opts.removeAttachment as string[]).length > 0) || opts.replaceAttachments) {

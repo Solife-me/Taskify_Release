@@ -146,6 +146,12 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
     const remoteUrl = typeof (entry as any).remoteUrl === "string" ? (entry as any).remoteUrl.trim() : "";
     const encrypted = (entry as any).encrypted === true;
     const encryptionBoardId = typeof (entry as any).encryptionBoardId === "string" ? (entry as any).encryptionBoardId.trim() : "";
+    const ciphertextSha256 = typeof (entry as any).ciphertextSha256 === "string" ? (entry as any).ciphertextSha256.trim().toLowerCase() : "";
+    const storageServer = typeof (entry as any).storageServer === "string" ? (entry as any).storageServer.trim() : "";
+    const retentionRaw = (entry as any).retention;
+    const retention = retentionRaw === "protected" || retentionRaw === "standard" ? retentionRaw : undefined;
+    const protectedUntilRaw = Number((entry as any).protectedUntil);
+    const protectedUntil = Number.isFinite(protectedUntilRaw) && protectedUntilRaw > 0 ? protectedUntilRaw : undefined;
     // Accept legacy inline docs (dataUrl present) and remote-first docs (remoteUrl present)
     if (!name || (!dataUrl && !remoteUrl)) continue;
     const kindInput = typeof (entry as any).kind === "string" ? (entry as any).kind.toLowerCase() : "";
@@ -174,6 +180,10 @@ export function normalizeDocumentList(raw: unknown): TaskDocument[] | undefined 
       ...(remoteUrl ? { remoteUrl } : {}),
       ...(encrypted ? { encrypted: true } : {}),
       ...(encryptionBoardId ? { encryptionBoardId } : {}),
+      ...(ciphertextSha256 ? { ciphertextSha256 } : {}),
+      ...(storageServer ? { storageServer } : {}),
+      ...(retention ? { retention } : {}),
+      ...(protectedUntil ? { protectedUntil } : {}),
     });
   }
   return normalized.length ? normalized : undefined;
@@ -243,6 +253,10 @@ export async function createDocumentFromDataUrl(input: {
   remoteUrl?: string;
   encrypted?: boolean;
   encryptionBoardId?: string;
+  ciphertextSha256?: string;
+  storageServer?: string;
+  retention?: "protected" | "standard";
+  protectedUntil?: number;
 }): Promise<TaskDocument> {
   const preview = await import("./documentPreview");
   return preview.createDocumentFromDataUrl(input);

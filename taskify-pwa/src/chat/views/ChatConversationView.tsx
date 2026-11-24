@@ -478,14 +478,14 @@ export function ChatConversationView() {
                               {isBoard && (
                                 <div className="chat-bubble__card">
                                   <div className="chat-bubble__card-title">{(attachment?.type === "board" && attachment.boardName) || "Shared board"}</div>
-                                  <div className="chat-bubble__card-meta">Add this board to your workspace</div>
-                                  {showActionButtons && (
+                                  <div className="chat-bubble__card-meta">{msg.isIncoming ? "Add this board to your workspace" : "Shared board"}</div>
+                                  {msg.isIncoming && matchedItem && showActionButtons && (
                                     <div className="chat-bubble__card-actions">
-                                      <button type="button" className="accent-button button-xs pressable" onClick={() => matchedItem && onAcceptMessage(matchedItem.id)}>Add board</button>
-                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => matchedItem && onDismissMessage(matchedItem.id)}>Dismiss</button>
+                                      <button type="button" className="accent-button button-xs pressable" onClick={() => onAcceptMessage(matchedItem.id)}>Add board</button>
+                                      <button type="button" className="ghost-button button-xs pressable" onClick={() => onDismissMessage(matchedItem.id)}>Dismiss</button>
                                     </div>
                                   )}
-                                  {!showActionButtons && actionStatus && (
+                                  {msg.isIncoming && !showActionButtons && actionStatus && (
                                     <div className="chat-bubble__card-status">{actionStatus}</div>
                                   )}
                                 </div>

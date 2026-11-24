@@ -6,6 +6,7 @@
 import {
   ISO_DATE_PATTERN,
   normalizeReminderTime,
+  normalizeRecurrence,
   normalizeTaskRecurrence,
   sanitizeReminderList,
   type Board,
@@ -270,7 +271,7 @@ function normalizeImportedParticipants(value: unknown): CalendarEventParticipant
 }
 
 export function normalizeImportedRecurrence(value: unknown): Recurrence | undefined {
-  const normalized = normalizeTaskRecurrence(value) as Recurrence | undefined;
+  const normalized = normalizeTaskRecurrence(value);
   return normalized?.type === "none" ? undefined : normalized;
 }
 
@@ -415,7 +416,8 @@ export function buildImportedCalendarEventFromPayload(
   const participants = normalizeImportedParticipants(payload.participants);
   const reminders = sanitizeReminderList(payload.reminders);
   const reminderTime = normalizeReminderTime(payload.reminderTime);
-  const recurrence = normalizeImportedRecurrence(payload.recurrence);
+  const rule = normalizeRecurrence(payload.recurrence);
+  const recurrence = rule?.type === "none" ? undefined : rule;
   const createdBy =
     normalizeAgentPubkey(payload.createdBy)
     ?? normalizeAgentPubkey(context.actorPubkey)

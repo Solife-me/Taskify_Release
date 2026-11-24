@@ -118,7 +118,7 @@ const R_NONE: Recurrence = { type: "none" };
 // They will be properly extracted in subsequent refactor steps.
 
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, boards, onRevealBounty, onPreviewDocument, bountyExtension, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
+function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, creatorName, boards, onRevealBounty, onPreviewDocument, bountyExtension, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
@@ -127,6 +127,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   onSwitchToEvent?: (t: Task)=>void;
   weekStart: Weekday;
   boardKind: Board["kind"];
+  creatorName?: string;
   boards: Board[];
   /** Decrypts a bounty locked to this user (Nostr keys only; no wallet needed). */
   onRevealBounty?: (taskId: string)=>Promise<void>;
@@ -584,7 +585,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       serverType: selectedServerEntry?.type,
     });
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const remoteUrl = await encryptAndUploadAttachment({
+    const upload = await encryptAndUploadAttachment({
       boardId: selectedBoard!.nostr!.boardId,
       data: bytes,
       mimeType: doc.mimeType || file.type || "application/octet-stream",
@@ -595,7 +596,16 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
       onPhaseChange: (phase) => handlers?.onPhaseChange?.(phase),
     });
     const { dataUrl, preview, full, ...rest } = doc as any;
-    return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: selectedBoard!.nostr!.boardId };
+    return {
+      ...rest,
+      remoteUrl: upload.url,
+      encrypted: true,
+      encryptionBoardId: selectedBoard!.nostr!.boardId,
+      ciphertextSha256: upload.ciphertextSha256,
+      storageServer: upload.serverUrl,
+      ...(upload.retention ? { retention: upload.retention } : {}),
+      ...(upload.protectedUntil ? { protectedUntil: upload.protectedUntil } : {}),
+    };
   }
 
   async function attachSingleDocument(file: File, fallbackLabel: string): Promise<TaskDocument> {
@@ -1084,6 +1094,7 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 className="edit-field-input"
                 placeholder="Title"
               />
+              {creatorName && <p className="text-xs text-secondary">Created by {creatorName}</p>}
             </div>
             <div className="edit-card__detail edit-card__detail--field space-y-2">
               <div

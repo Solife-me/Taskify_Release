@@ -103,7 +103,7 @@ export interface UseDmThreadUtilsOptions {
     recipientPubkey: string,
     senderSecretHex: string,
     relays: string[] | string,
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   readNostrIdentity: () => NostrIdentityInfo;
   defaultNostrRelays: string[];
   buildInboxEntrySyntheticEventId: (item: InboxEntry) => string;

@@ -174,6 +174,45 @@ extension HermesModelMenuTests {
         XCTAssertNil(projection.menusByListingMessageID[listing.id]?.pendingAction)
     }
 
+    func testOrderedProjectionMatchesTheSortedProjection() throws {
+        let listing = message(id: Self.menuID, content: Self.listingText, incoming: true, createdAt: 1)
+        let action = TaskifyBotUiAction(kind: .catalogRequest, menuId: Self.menuID, providerSlug: "custom:local")
+        let request = message(
+            id: String(repeating: "d", count: 64),
+            content: try TaskifyBotUiContract.catalogRequestPrompt(providerSlug: "custom:local"),
+            incoming: false,
+            createdAt: 2,
+            action: action
+        )
+        let response = message(
+            id: String(repeating: "e", count: 64),
+            content: #"{"provider":"custom:local","models":["lfm3-audio:latest"]}"#,
+            incoming: true,
+            createdAt: 3
+        )
+        let plain = message(id: String(repeating: "f", count: 64), content: "Hello there", incoming: true, createdAt: 4)
+        let shuffled = [response, plain, listing, request]
+        let ordered = shuffled.enumerated().sorted {
+            if $0.element.createdAt != $1.element.createdAt {
+                return $0.element.createdAt < $1.element.createdAt
+            }
+            return $0.offset < $1.offset
+        }.map(\.element)
+
+        XCTAssertEqual(
+            HermesModelPickerProjection.project(messages: shuffled, enabled: true),
+            HermesModelPickerProjection.project(orderedMessages: ordered, enabled: true)
+        )
+    }
+
+    func testOrdinaryMessagesRejectListingsWithoutParsingLines() {
+        // An incoming message without either listing marker returns nil from both parsers; the
+        // early guards keep a thread projection from splitting and regex-scanning every line.
+        let text = "A long ordinary chat message.\nIt has several lines, none of which is a menu."
+        XCTAssertNil(HermesModelMenuParser.parseListing(text))
+        XCTAssertNil(HermesSessionMenuParser.parseListing(text))
+    }
+
     func testProjectionReconstructsCompletedModelSwitch() throws {
         let listing = message(id: Self.menuID, content: Self.listingText, incoming: true, createdAt: 1)
         let action = TaskifyBotUiAction(

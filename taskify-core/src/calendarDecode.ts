@@ -1,5 +1,5 @@
 import { normalizeCalendarEventPayload } from "./calendarPayload.js";
-import { normalizeTaskRecurrence } from "./shareContracts.js";
+import { normalizeRecurrence } from "./shareContracts.js";
 import type { Recurrence } from "./taskContracts.js";
 
 export type CalendarRsvpStatus = "accepted" | "declined" | "tentative";
@@ -165,7 +165,7 @@ export function parseCalendarCanonicalPayload(raw: unknown): CalendarCanonicalPa
   if (participants) payload.participants = participants;
   const inviteTokens = normalizeInviteTokens((raw as any).inviteTokens);
   if (inviteTokens) payload.inviteTokens = inviteTokens;
-  const recurrence = normalizeTaskRecurrence((raw as any).recurrence) as Recurrence | undefined;
+  const recurrence = normalizeRecurrence((raw as any).recurrence);
   if (recurrence?.type !== "none") payload.recurrence = recurrence;
   const seriesId = normalizeString((raw as any).seriesId);
   if (seriesId && recurrence?.type !== "none") payload.seriesId = seriesId;
@@ -219,7 +219,7 @@ export function parseCalendarViewPayload(raw: unknown): CalendarViewPayload | nu
   if (hashtags) payload.hashtags = hashtags;
   const references = normalizeStringArray((raw as any).references);
   if (references) payload.references = references;
-  const recurrence = normalizeTaskRecurrence((raw as any).recurrence) as Recurrence | undefined;
+  const recurrence = normalizeRecurrence((raw as any).recurrence);
   if (recurrence?.type !== "none") payload.recurrence = recurrence;
   const seriesId = normalizeString((raw as any).seriesId);
   if (seriesId && recurrence?.type !== "none") payload.seriesId = seriesId;

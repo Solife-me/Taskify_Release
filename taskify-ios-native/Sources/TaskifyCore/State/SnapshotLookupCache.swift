@@ -10,6 +10,7 @@ public final class SnapshotLookupCache {
     private(set) var completedBuildCount = 0
     private(set) var eventSliceBuildCount = 0
     private(set) var taskSortBuildCount = 0
+    private(set) var hermesProjectionBuildCount = 0
 
     /// Compare value-type source collections once per write, not once per view read. Unchanged
     /// snapshot copies share array storage, so unrelated writes retain the expensive indexes.
@@ -224,6 +225,13 @@ public final class SnapshotLookupCache {
     private var cachedTaskifyEventIDs: Set<String>?
     private var cachedDirectMessageThreads: [NostrDirectMessageThread]?
     private var messagesByPeer: [String: [NostrDirectMessage]] = [:]
+    private struct HermesProjectionEntry {
+        let count: Int
+        let firstID: String?
+        let lastID: String?
+        let projection: HermesBotUiProjection
+    }
+    private var hermesProjections: [String: HermesProjectionEntry] = [:]
 
     public func invalidate() {
         boardsByID = nil
@@ -246,11 +254,36 @@ public final class SnapshotLookupCache {
         cachedTaskifyEventIDs = nil
         cachedDirectMessageThreads = nil
         messagesByPeer.removeAll(keepingCapacity: true)
+        hermesProjections.removeAll(keepingCapacity: true)
     }
 
     public func directMessageThreads(snapshot: TaskifySnapshot) -> [NostrDirectMessageThread] {
         if let cachedDirectMessageThreads { return cachedDirectMessageThreads }
-        let threads = snapshot.activeDirectMessageThreads()
+        let threads = snapshot.activeDirectMessageThreads { [self] peer, messages in
+            // A chat write rebuilds every thread; only the conversation that received the
+            // message changed. Reuse the previous projection when the message log is the same,
+            // so one arriving message does not re-parse every other thread's history.
+            let firstID = messages.first?.rumorEventID
+            let lastID = messages.last?.rumorEventID
+            if let cached = hermesProjections[peer],
+               cached.count == messages.count,
+               cached.firstID == firstID,
+               cached.lastID == lastID {
+                return cached.projection
+            }
+            hermesProjectionBuildCount += 1
+            let projection = HermesModelPickerProjection.project(
+                orderedMessages: messages,
+                enabled: true
+            )
+            hermesProjections[peer] = HermesProjectionEntry(
+                count: messages.count,
+                firstID: firstID,
+                lastID: lastID,
+                projection: projection
+            )
+            return projection
+        }
         cachedDirectMessageThreads = threads
         for thread in threads {
             messagesByPeer[thread.peerPublicKey] = thread.messages

@@ -874,10 +874,14 @@ public actor TaskSyncEngine {
         auxiliaryRelayURLs: [String] = [],
         inboxPublicKey: String? = nil,
         inboxRelayURLs: [String]? = nil,
-        excludedRelayURLs: Set<String> = []
+        excludedRelayURLs: Set<String>? = nil
     ) async {
         guard networkingEnabled else { return }
-        lastConfigureRequest = (boards, auxiliaryRelayURLs, inboxPublicKey, inboxRelayURLs, excludedRelayURLs)
+        // Feature-specific configurations add relays without changing the device's exclusions.
+        let normalizedExcludedRelayURLs = excludedRelayURLs.map {
+            Set(TaskifyRelayURL.normalizedList(Array($0)))
+        } ?? self.excludedRelayURLs
+        lastConfigureRequest = (boards, auxiliaryRelayURLs, inboxPublicKey, inboxRelayURLs, normalizedExcludedRelayURLs)
         let now = Date()
         for relayURL in TaskifyRelayURL.normalizedList(auxiliaryRelayURLs) {
             auxiliaryRelayLastRequestedAt[relayURL] = now
@@ -887,9 +891,6 @@ public actor TaskSyncEngine {
         }
         let auxiliaryRelayURLs = auxiliaryRelayLastRequestedAt.keys.sorted()
         scheduleAuxiliaryLingerExpiry(now: now)
-        let normalizedExcludedRelayURLs = Set(
-            TaskifyRelayURL.normalizedList(Array(excludedRelayURLs))
-        )
         let excludedRelaysChanged = normalizedExcludedRelayURLs != self.excludedRelayURLs
         self.excludedRelayURLs = normalizedExcludedRelayURLs
         let fingerprint = TaskSyncConfigurationFingerprint(

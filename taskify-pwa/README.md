@@ -10,9 +10,28 @@ Taskify is an offline-friendly personal task board built with React, TypeScript,
 - ☁️ Cloudflare Worker API stores subscriptions, schedules reminders, and pings devices via VAPID-secured Web Push.
 - 📦 Worker also serves the static Vite build, so the full app runs on Workers instead of Pages.
 
+## Boards and local data
+
+Open a board's Share dialog and choose **Send to chat** to find a saved contact
+or group conversation. Board settings open the same recipient picker. The board
+appears in the conversation as a named card, with **Add board** for recipients.
+Shared task cards and the task editor show the original creator, with initials from a
+saved contact when available. **Settings → Boards & Lists** offers drag and drop
+and move buttons for touch and keyboard use. Board checklists include upcoming
+tasks, notes, due dates, and subtasks by default.
+
+Daily is the shortest task repeat interval. Existing hourly task rules round up to whole calendar
+days. A rule for every 24 hours or less becomes daily and a rule for every 25 hours becomes every
+two days. The task's current due date, due time, and repeat end date are preserved.
+
+**Settings → Reset local data** clears Taskify's saved key, settings, tasks,
+messages, pending sync queue, and wallet data in this browser. Save your key
+and back up local data first. Taskify returns to first-run setup after the
+reset. Copies already published to Nostr relays remain available there.
+
 ## Prerequisites
 
-- Node.js 22.13+
+- Node.js 22.23.5 or newer in the 22.x series
 - Cloudflare account with Workers access
 - `wrangler` CLI (`npm install -g wrangler`)
 
@@ -28,6 +47,19 @@ Environment variables:
 
 - `VITE_WORKER_BASE_URL` – Base URL for your deployed Worker (no trailing slash). Example: `https://taskify-worker.your-name.workers.dev`
 - `VITE_VAPID_PUBLIC_KEY` – Base64url-encoded VAPID public key. Generate alongside the private key during Worker setup.
+- `VITE_MANAGED_BLOSSOM_URL` – Optional managed Blossom base URL. The built-in default is `https://blossom.solife.me`. The URL can also be changed from Settings → Storage.
+
+The managed Blossom URL selects the Storage dashboard. Originless is the default
+encrypted upload server until the Blossom deployment accepts `application/octet-stream`.
+Compatible Blossom servers can be selected explicitly for encrypted uploads.
+Automatic standard-retention fallback is enabled by default and remembered separately
+per account and server. Taskify explains the first fallback and asks again if the
+server's retention terms change.
+
+Taskify shows one in-app renewal reminder for the managed and selected Blossom
+servers when attachments enter their renewal window. Open the reminder to renew
+them in **Settings → Storage**. Taskify uses the server’s advertised renewal
+window, with a 30-day fallback for older servers. Checks run while the app is open.
 
 Run the Vite dev server:
 
@@ -98,8 +130,8 @@ The Worker lives in `worker/src/index.ts` and shares this repository. It serves 
 ## Install, offline, and update behavior
 
 - On Chromium-based Android browsers, the install prompt is captured and exposed as **Settings → Install app** when the browser says the app is installable. Browsers without that API, including iOS Safari, do not render the control.
-- Each production build injects a build-specific service-worker cache name and precaches the app shell plus its startup assets. API and relay requests always bypass that cache.
-- A new service worker waits until the user accepts the in-app update notice. The page reloads only after the new worker becomes the active controller, avoiding a mixed old/new build.
+- Each production build precaches its app shell and startup assets. The active worker keeps those files available for offline navigation while it controls the app. API and relay requests bypass that cache.
+- While an update is waiting, navigation continues to use the active build. Accepting the in-app update notice reloads the page once the replacement worker takes control.
 - The manifest includes stable app identity, scope, Android shortcuts, and colors matched to the initial app shell. Existing Apple standalone, touch-icon, and status-bar metadata remains in place for iOS PWAs.
 - Production headers keep the service worker and manifest revalidating while allowing fingerprinted Vite assets to use long-lived immutable caching.
 
@@ -132,7 +164,7 @@ npm run check:startup
 
 | Location | Purpose |
 | --- | --- |
-| `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY` |
+| `.env.local` | `VITE_WORKER_BASE_URL`, `VITE_VAPID_PUBLIC_KEY`, optional `VITE_MANAGED_BLOSSOM_URL` |
 | `wrangler.toml` | Worker name, D1 database, rate limiters, VAPID `[vars]`, asset config |
 | Worker vars/secrets | `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`, `VAPID_PRIVATE_KEY` |
 

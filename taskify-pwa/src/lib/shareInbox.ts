@@ -21,6 +21,7 @@ import { LocalKeySigner } from "../identity/signer";
 import { giftWrapNip17Rumor, nip17TimestampSource, recipientInboxRelays } from "./nip17Messages";
 import { NostrSession } from "../nostr/NostrSession";
 import { kvStorage } from "../storage/kvStorage";
+import type { GroupChat } from "./groupChatState";
 
 export type {
   ShareEnvelope,
@@ -191,37 +192,66 @@ function shareTimestampMode(): "now" | "random" {
 
 export async function sendShareMessage(
   payload: ShareEnvelope,
-  recipientPubkey: string,
+  recipient: string | Pick<GroupChat, "members" | "name">,
   senderSecretHex: string,
   relays: string[] | string,
-): Promise<void> {
-  const recipientRaw = toRawHexPubkey(recipientPubkey);
-  if (!recipientRaw) {
+  senderFallbackRelays?: string[],
+): Promise<NostrEvent | undefined> {
+  const account = new LocalKeySigner(senderSecretHex);
+  const group = typeof recipient === "string" ? null : recipient;
+  const directRecipient = typeof recipient === "string" ? toRawHexPubkey(recipient) : null;
+  const groupMembers = [...new Set(group?.members.map(toRawHexPubkey) ?? [])];
+  if (group && (groupMembers.includes(null) || groupMembers.length < 3 || !groupMembers.includes(account.pubkey))) {
+    throw new Error("This group is unavailable for the sending account.");
+  }
+  if (!group && !directRecipient) {
     throw new Error("Recipient npub is invalid.");
   }
   const relayList = toRelayList(relays);
   if (!relayList.length) {
     throw new Error("No relays configured for sending.");
   }
-  const publishRelays = await recipientInboxRelays(recipientRaw, relayList);
-  if (!publishRelays.length) {
-    throw new Error("No relays configured for NIP-17 inbox.");
-  }
-  const session = await NostrSession.init(publishRelays);
-  const account = new LocalKeySigner(senderSecretHex);
+  const recipients = group ? groupMembers.filter((key): key is string => key !== null) : [directRecipient!];
   const rumor = createNip17Rumor(
     {
       sender: account.pubkey,
-      recipients: [recipientRaw],
+      recipients,
+      group: group !== null,
+      extraTags: group?.name ? [["subject", group.name]] : undefined,
       content: serializeTaskAssignmentShareEnvelope(payload),
       createdAt: Math.floor(Date.now() / 1000),
     },
     nip17Crypto,
   );
   const wraps = await giftWrapNip17Rumor(rumor, account, nip17TimestampSource(shareTimestampMode()));
-  for (const { wrap, signer } of wraps) {
+  const senderCopy = wraps.find(({ recipient }) => recipient === account.pubkey)?.wrap as NostrEvent | undefined;
+  const senderRelays = toRelayList(senderFallbackRelays);
+  const resolveInboxRelays = (pubkey: string) => recipientInboxRelays(
+    pubkey,
+    pubkey === account.pubkey && senderRelays.length ? senderRelays : relayList,
+  );
+  const publishWrap = async ({ wrap, signer }: typeof wraps[number], publishRelays: string[]) => {
+    const session = await NostrSession.init(publishRelays);
     await session.publishRaw(wrap as NostrEvent, { relayUrls: publishRelays, returnEvent: false, proofOfWorkSigner: signer });
+  };
+  if (directRecipient) {
+    const recipientRelays = await resolveInboxRelays(directRecipient);
+    for (const wrap of wraps) {
+      const publishRelays = payload.item.type === "board" && wrap.recipient !== directRecipient
+        ? await resolveInboxRelays(wrap.recipient)
+        : recipientRelays;
+      await publishWrap(wrap, publishRelays);
+    }
+    return senderCopy;
   }
+  const results = await Promise.allSettled(wraps.map(async (wrap) => {
+    const publishRelays = await resolveInboxRelays(wrap.recipient);
+    await publishWrap(wrap, publishRelays);
+  }));
+  if (results.some((result) => result.status === "rejected")) {
+    throw new Error("The board could not be sent to everyone in the group.");
+  }
+  return senderCopy;
 }
 
 function toRelayList(input: unknown): string[] {

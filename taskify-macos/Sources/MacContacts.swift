@@ -104,6 +104,7 @@ struct MacContactsView: View {
 struct MacContactAvatar: View {
     let contact: NostrContact
     var size: CGFloat = 36
+    var initialsOverride: String? = nil
     var body: some View {
         Group {
             if let url = contact.pictureURL {
@@ -119,7 +120,7 @@ struct MacContactAvatar: View {
     private var initials: some View {
         ZStack {
             Circle().fill(Color.accentColor.opacity(0.15))
-            Text(contact.initials).font(.system(size: size * 0.38, weight: .semibold))
+            Text(initialsOverride ?? contact.initials).font(.system(size: size * 0.38, weight: .semibold))
         }
     }
 }

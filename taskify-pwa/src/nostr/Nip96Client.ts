@@ -1,8 +1,19 @@
+import { rememberAttachmentCiphertextHash } from "../lib/blossomAttachmentIndex";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { finalizeEvent, type EventTemplate, type NostrEvent } from "nostr-tools";
+import { finalizeEvent, getPublicKey, type EventTemplate, type NostrEvent } from "nostr-tools";
 import { fixedFileUploadURL, resolveOriginlessUploadURL, secureUploadedFileURL } from "taskify-core";
 import { DEFAULT_FILE_STORAGE_SERVER, normalizeFileServerUrl, type FileServerEntry } from "../lib/fileStorage";
+import {
+  blossomTermsFingerprint,
+  buildBud11AuthHeader,
+  getBlossomStorageSummary,
+  type BlossomRetention,
+} from "../lib/blossomStorage";
+import {
+  getBlossomFallbackPreference,
+  requestBlossomFallbackConsent,
+} from "../lib/blossomRetention";
 
 export type Nip96ServerInfo = {
   baseUrl: string;
@@ -60,7 +71,7 @@ function xhrRequest(opts: {
   signal?: AbortSignal;
   onUploadProgress?: (loaded: number, total: number) => void;
   debugLabel?: string;
-}): Promise<{ status: number; responseText: string; responseURL: string }> {
+}): Promise<{ status: number; responseText: string; responseURL: string; responseHeaders: Record<string, string> }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open(opts.method, opts.url, true);
@@ -68,7 +79,26 @@ function xhrRequest(opts: {
     if (opts.headers) {
       for (const [key, value] of Object.entries(opts.headers)) xhr.setRequestHeader(key, value);
     }
-    xhr.onload = () => { console.info("[attachment-debug] upload:xhr:load", { label: opts.debugLabel, status: xhr.status, elapsedMs: Date.now() - startedAt }); resolve({ status: xhr.status, responseText: typeof xhr.response === "string" ? xhr.response : xhr.responseText, responseURL: xhr.responseURL || opts.url }); };
+    xhr.onload = () => {
+      console.info("[attachment-debug] upload:xhr:load", { label: opts.debugLabel, status: xhr.status, elapsedMs: Date.now() - startedAt });
+      const responseHeaders: Record<string, string> = {};
+      try {
+        const rawHeaders = typeof xhr.getAllResponseHeaders === "function" ? xhr.getAllResponseHeaders() : "";
+        for (const line of rawHeaders.split(/\r?\n/)) {
+          const index = line.indexOf(":");
+          if (index <= 0) continue;
+          responseHeaders[line.slice(0, index).trim().toLowerCase()] = line.slice(index + 1).trim();
+        }
+      } catch {
+        // Some minimal XHR implementations do not expose response headers.
+      }
+      resolve({
+        status: xhr.status,
+        responseText: typeof xhr.response === "string" ? xhr.response : xhr.responseText,
+        responseURL: xhr.responseURL || opts.url,
+        responseHeaders,
+      });
+    };
     xhr.onerror = () => reject(new Error(`Network request failed for ${opts.url}`));
     xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
     const startedAt = Date.now();
@@ -273,30 +303,124 @@ export async function uploadFileToNip96(options: {
 
 // ── Blossom (BUD-01/BUD-11) ──────────────────────────────────────────────────
 
-function toBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+export class BlossomUploadError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly reason: string;
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = "BlossomUploadError";
+    this.status = status;
+    this.code = code;
+    this.reason = message;
+  }
 }
 
-function buildBlossomAuthHeader(signer: string | Uint8Array, fileHash: string): string {
-  const signerBytes =
-    typeof signer === "string"
-      ? hexToBytes(signer.startsWith("0x") ? signer.slice(2) : signer)
-      : signer;
-  const expiration = Math.floor(Date.now() / 1000) + 3600;
-  const template: EventTemplate = {
-    kind: 24242,
-    content: "Upload Blob",
-    tags: [
-      ["t", "upload"],
-      ["x", fileHash],
-      ["expiration", String(expiration)],
-    ],
-    created_at: Math.floor(Date.now() / 1000),
+export type BlossomUploadResult = {
+  url: string;
+  nip94: null;
+  sha256: string;
+  serverUrl: string;
+  retention?: BlossomRetention;
+  protectedUntil?: number;
+};
+
+type BlossomRetentionRequest = "protected" | "prefer-protected" | "standard";
+
+function headerValue(headers: Record<string, string>, name: string): string {
+  return headers[name.toLowerCase()]?.trim() || "";
+}
+
+async function uploadBlossomAttempt(options: {
+  serverUrl: string;
+  file: Blob;
+  fileHash: string;
+  signer: string | Uint8Array;
+  contentType: string;
+  retention: BlossomRetentionRequest;
+  signal?: AbortSignal;
+  onProgress?: (loaded: number, total: number) => void;
+  onPhaseChange?: (phase: "uploading" | "processing") => void;
+  filename?: string;
+}, retry = true): Promise<BlossomUploadResult> {
+  const uploadUrl = `${normalizeFileServerUrl(options.serverUrl) || options.serverUrl}/upload`;
+  const authHeaders = {
+    "X-SHA-256": options.fileHash,
+    Authorization: buildBud11AuthHeader({
+      signer: options.signer,
+      action: "upload",
+      sha256: options.fileHash,
+      serverUrl: options.serverUrl,
+      retention: options.retention === "standard" ? undefined : options.retention,
+    }),
   };
-  const event = finalizeEvent(template, signerBytes);
-  return `Nostr ${toBase64Url(new TextEncoder().encode(JSON.stringify(event)))}`;
+  if (retry && options.contentType === "application/octet-stream") {
+    const forecast = await xhrRequest({
+      url: uploadUrl,
+      method: "HEAD",
+      headers: {
+        ...authHeaders,
+        "X-Content-Type": options.contentType,
+        "X-Content-Length": String(options.file.size),
+      },
+      signal: options.signal,
+      debugLabel: "blossom:preflight",
+    }).catch((error: unknown) => {
+      if (options.signal?.aborted) throw error;
+      // Older Blossom implementations may omit HEAD support or its CORS headers.
+      return null;
+    });
+    if (forecast) {
+      const code = headerValue(forecast.responseHeaders, "x-blossom-storage-error");
+      if (forecast.status === 429 && (code === "quota_exceeded" || code === "protected_quota_exceeded")) {
+        throw new BlossomUploadError(forecast.status, code, headerValue(forecast.responseHeaders, "x-reason"));
+      }
+    }
+  }
+  const res = await xhrRequest({
+    url: uploadUrl,
+    method: "PUT",
+    headers: { ...authHeaders, "Content-Type": options.contentType },
+    body: options.file,
+    signal: options.signal,
+    onUploadProgress: options.onProgress,
+    debugLabel: `blossom:${options.filename || "upload"}`,
+  });
+  const data = (() => { try { return JSON.parse(res.responseText || "null"); } catch { return null; } })();
+  if (!(res.status >= 200 && res.status < 300)) {
+    const storageError = headerValue(res.responseHeaders, "x-blossom-storage-error");
+    const reason = headerValue(res.responseHeaders, "x-reason")
+      || (typeof data?.message === "string" ? data.message : "")
+      || (typeof data?.error === "string" ? data.error : "")
+      || `Blossom upload failed (${res.status})`;
+    if (retry && storageError === "upload_retry") {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return uploadBlossomAttempt(options, false);
+    }
+    throw new BlossomUploadError(res.status, storageError || `http_${res.status}`, reason);
+  }
+  const url = typeof data?.url === "string" ? data.url.trim() : "";
+  if (!url) throw new BlossomUploadError(res.status, "invalid_response", "Blossom upload response did not include a url.");
+  const retentionHeader = headerValue(res.responseHeaders, "x-blossom-retention").toLowerCase();
+  const retention: BlossomRetention | undefined =
+    retentionHeader === "protected" || retentionHeader === "standard"
+      ? retentionHeader
+      : options.retention === "standard"
+        ? "standard"
+        : undefined;
+  const protectedUntilRaw = Number(headerValue(res.responseHeaders, "x-blossom-protected-until"));
+  return {
+    url,
+    nip94: null,
+    sha256: options.fileHash,
+    serverUrl: options.serverUrl,
+    ...(retention ? { retention } : {}),
+    ...(retention === "protected" && Number.isFinite(protectedUntilRaw) && protectedUntilRaw > 0 ? { protectedUntil: protectedUntilRaw } : {}),
+  };
+}
+
+function protectedQuotaMessage(serverUrl: string): string {
+  return `Protected storage is full for this account on ${serverUrl}. Enable automatic standard-storage fallback in Settings → Storage to upload additional files.`;
 }
 
 export async function uploadFileToBlossom(options: {
@@ -308,40 +432,84 @@ export async function uploadFileToBlossom(options: {
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number) => void;
   onPhaseChange?: (phase: "uploading" | "processing") => void;
-}): Promise<{ url: string; nip94: null }> {
+}): Promise<BlossomUploadResult> {
   if (!options.signer) throw new Error("signer is required for Blossom uploads");
+  const signerKey = typeof options.signer === "string"
+    ? options.signer.startsWith("0x") ? options.signer.slice(2) : options.signer
+    : bytesToHex(options.signer);
+  const accountPubkey = getPublicKey(hexToBytes(signerKey));
   const bytes = new Uint8Array(await options.file.arrayBuffer());
   const fileHash = bytesToHex(sha256(bytes));
-  const uploadUrl = `${normalizeFileServerUrl(options.serverUrl) || options.serverUrl}/upload`;
+  const contentType = options.contentType || options.file.type || "application/octet-stream";
   console.info("[attachment-debug] upload:blossom:start", {
     server: options.serverUrl,
-    uploadUrl,
     filename: options.filename,
-    contentType: options.contentType || options.file.type || "application/octet-stream",
+    contentType,
     blobBytes: options.file.size,
   });
+
+  const readPreference = () => getBlossomFallbackPreference(accountPubkey, options.serverUrl);
+  let termsRequest: Promise<string | null> | undefined;
+  const loadTerms = () => termsRequest ??= getBlossomStorageSummary(options.serverUrl, options.signer, options.signal)
+    .then(blossomTermsFingerprint)
+    .catch(() => null);
+  const preference = readPreference();
+  const currentTerms = preference?.automaticFallback ? await loadTerms() : null;
+  const retention = currentTerms && preference?.termsFingerprint === currentTerms
+    ? "prefer-protected" : "protected";
+
   options.onPhaseChange?.("uploading");
-  const requestStartedAt = Date.now();
-  const res = await xhrRequest({
-    url: uploadUrl,
-    method: "PUT",
-    headers: {
-      "Content-Type": options.contentType || options.file.type || "application/octet-stream",
-      Authorization: buildBlossomAuthHeader(options.signer, fileHash),
-    },
-    body: options.file,
+  const attempt = (requested: BlossomRetentionRequest) => uploadBlossomAttempt({
+    serverUrl: options.serverUrl,
+    file: options.file,
+    fileHash,
+    signer: options.signer,
+    contentType,
+    retention: requested,
     signal: options.signal,
-    onUploadProgress: options.onProgress,
-    debugLabel: `blossom:${options.filename || "upload"}` ,
+    onProgress: options.onProgress,
+    onPhaseChange: options.onPhaseChange,
+    filename: options.filename,
   });
-  console.info("[attachment-debug] upload:blossom:request-complete", { filename: options.filename, elapsedMs: Date.now() - requestStartedAt, status: res.status });
+
+  const friendlyQuotaError = (error: unknown): never => {
+    if (error instanceof BlossomUploadError && error.code === "quota_exceeded") {
+      throw new BlossomUploadError(error.status, error.code,
+        "This file exceeds your total Blossom storage. Open Settings → Storage to free space or buy more.");
+    }
+    throw error;
+  };
+  let result: BlossomUploadResult;
+  try {
+    result = await attempt(retention);
+  } catch (error) {
+    if (!(error instanceof BlossomUploadError) || error.code !== "protected_quota_exceeded" || retention === "prefer-protected") {
+      return friendlyQuotaError(error);
+    }
+    const terms = await loadTerms();
+    const savedPreference = readPreference();
+    if (savedPreference?.automaticFallback === false) throw new Error(protectedQuotaMessage(options.serverUrl));
+    if (!terms) throw new Error("Could not verify standard retention rules. Try the upload again.");
+    if (savedPreference?.termsFingerprint !== terms) {
+      const accepted = await requestBlossomFallbackConsent({
+        accountPubkey,
+        serverUrl: options.serverUrl,
+        termsChanged: Boolean(savedPreference?.termsFingerprint),
+        reason: error.reason,
+        termsFingerprint: terms,
+      });
+      if (!accepted) throw new Error(protectedQuotaMessage(options.serverUrl));
+    }
+    result = await attempt("prefer-protected").catch(friendlyQuotaError);
+  }
+
   options.onPhaseChange?.("processing");
-  const data = (() => { try { return JSON.parse(res.responseText || "null"); } catch { return null; } })();
-  if (!(res.status >= 200 && res.status < 300)) throw new Error(data?.message || `Blossom upload failed (${res.status})`);
-  const url = typeof data?.url === "string" ? data.url.trim() : "";
-  if (!url) throw new Error("Blossom upload response did not include a url.");
-  console.info("[attachment-debug] upload:blossom:complete", { url, response: flattenDebugError(data) });
-  return { url, nip94: null };
+  console.info("[attachment-debug] upload:blossom:complete", {
+    url: result.url,
+    retention: result.retention,
+    protectedUntil: result.protectedUntil,
+  });
+  return result;
 }
 
 
@@ -440,7 +608,7 @@ export type UploadFileOptions = {
   onPhaseChange?: (phase: "uploading" | "processing") => void;
 };
 
-export async function uploadFile(options: UploadFileOptions): Promise<{ url: string; nip94: NostrEvent | null }> {
+export async function uploadFile(options: UploadFileOptions): Promise<{ url: string; nip94: NostrEvent | null; sha256?: string; serverUrl?: string; retention?: BlossomRetention; protectedUntil?: number }> {
   const { serverEntry, file, filename, contentType, signer, signal, debugMeta, onProgress, onPhaseChange } = options;
   console.info("[attachment-debug] upload:dispatch", {
     serverType: serverEntry.type,
@@ -453,7 +621,9 @@ export async function uploadFile(options: UploadFileOptions): Promise<{ url: str
   if (serverEntry.type === "blossom") {
     if (!signer) throw new Error("signer is required for Blossom uploads");
     const result = await uploadFileToBlossom({ serverUrl: serverEntry.url, file, filename, contentType, signer, signal, onProgress, onPhaseChange });
-    return { ...result, url: secureUploadedFileURL(serverEntry.url, result.url) };
+    const url = secureUploadedFileURL(serverEntry.url, result.url);
+    rememberAttachmentCiphertextHash(url, result.sha256, result);
+    return { ...result, url };
   }
   if (serverEntry.type === "originless") {
     const result = await uploadFileToOriginless({ serverUrl: serverEntry.url, file, filename, signal });

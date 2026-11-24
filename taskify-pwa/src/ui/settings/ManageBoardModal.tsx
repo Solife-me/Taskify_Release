@@ -821,7 +821,7 @@ export function ManageBoardModal({
                   className="ghost-button button-sm pressable"
                   onClick={() => onOpenSharePicker(board)}
                 >
-                  Share to contact
+                  Send to chat
                 </button>
               </div>
                 {showAdvanced && (

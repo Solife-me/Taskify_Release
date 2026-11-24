@@ -46,6 +46,7 @@ struct MacSettingsView: View {
     @State private var accountToRemove: MacAccountSummary?
     @State private var message: String?
     @State private var importConfirmation = false
+    @State private var confirmLocalReset = false
     @State private var restoreCandidate: TaskifySnapshot?
     @State private var profile = NostrProfileDraft()
     @State private var profileLoaded = false
@@ -168,6 +169,13 @@ struct MacSettingsView: View {
                         }
                     }
                 }
+                if runtime.configuration.uiTest == nil {
+                    Section("Reset Local Data") {
+                        Text("Save your account keys and export any local data you need before resetting.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Reset Local Data…", role: .destructive) { confirmLocalReset = true }
+                    }
+                }
                 if let message {
                     Text(message).font(.caption).textSelection(.enabled)
                         .accessibilityIdentifier("account-import-message")
@@ -246,6 +254,15 @@ struct MacSettingsView: View {
                     Task { await model.restoreLocalBackup(candidate) }
                 }
                 Button("Cancel", role: .cancel) { restoreCandidate = nil }
+            }
+            .confirmationDialog("Erase Taskify data on this Mac?", isPresented: $confirmLocalReset) {
+                Button("Reset and Quit", role: .destructive) {
+                    do { try MacLocalReset.request() }
+                    catch { message = error.localizedDescription }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This erases saved accounts, boards, messages, settings, and pending sync changes from this Mac. Taskify starts with first-run setup when reopened.")
             }
             .confirmationDialog("Switch the account on this Mac?", isPresented: $importConfirmation) {
                 Button("Add and Switch Account") {

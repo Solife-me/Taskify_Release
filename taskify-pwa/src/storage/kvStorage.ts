@@ -152,3 +152,27 @@ export const kvStorage: KvStorage = {
     kvStorage.setItem(key, String(value));
   },
 };
+
+// A reset runs before account storage is bound, so it needs the raw device keys.
+export const deviceStorageMaintenance = {
+  read(key: string): string | null {
+    return withKvStorageLocalStorageAccess(() => getLocalStorage()?.getItem(key) ?? null);
+  },
+
+  write(key: string, value: string): void {
+    const storage = getLocalStorage();
+    if (!storage) throw new Error("Browser storage is unavailable.");
+    withKvStorageLocalStorageAccess(() => storage.setItem(key, value));
+  },
+
+  removeMatching(predicate: (key: string) => boolean): void {
+    const storage = getLocalStorage();
+    if (!storage) throw new Error("Browser storage is unavailable.");
+    withKvStorageLocalStorageAccess(() => {
+      for (let index = storage.length - 1; index >= 0; index--) {
+        const key = storage.key(index);
+        if (key && predicate(key)) storage.removeItem(key);
+      }
+    });
+  },
+};

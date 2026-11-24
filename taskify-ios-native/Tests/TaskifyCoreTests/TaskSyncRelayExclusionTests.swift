@@ -72,6 +72,27 @@ final class TaskSyncRelayExclusionTests: XCTestCase {
         XCTAssertEqual(pending, 0, "Publishes must not be queued for an excluded relay")
     }
 
+    func testFeatureReconfigurationPreservesDeviceRelayExclusions() async throws {
+        let relay = CountingRelayTransport()
+        let engine = engine(transports: [relayURL: relay])
+        await engine.configure(
+            boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [], excludedRelayURLs: [relayURL]
+        )
+        await engine.configure(boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [])
+        try await engine.enqueueForPublish([request(1, kind: stateKind, relayURLs: [relayURL])])
+
+        let connects = await relay.connectCount
+        let pending = await engine.pendingPublishCount()
+        XCTAssertEqual(connects, 0)
+        XCTAssertEqual(pending, 0)
+
+        await engine.configure(
+            boards: [], auxiliaryRelayURLs: [relayURL], inboxRelayURLs: [], excludedRelayURLs: []
+        )
+        let connectsAfterRestore = await relay.connectCount
+        XCTAssertEqual(connectsAfterRestore, 1)
+    }
+
     func testExcludingRelayCompletesEntriesThatOnlyWaitedOnIt() async throws {
         let relay = CountingRelayTransport()
         let other = CountingRelayTransport()

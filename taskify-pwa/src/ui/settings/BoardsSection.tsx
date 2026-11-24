@@ -1,5 +1,4 @@
-// @ts-nocheck
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, type Dispatch, type DragEvent, type SetStateAction } from "react";
 import type { Board, Task } from "../../domains/tasks/taskTypes";
 import { compoundChildMatchesBoard, withBoardOrder } from "../../domains/tasks/boardUtils";
 import { useToast } from "../../context/ToastContext";
@@ -23,8 +22,8 @@ export function BoardsSection({
 }: {
   boards: Board[];
   currentBoardId: string;
-  setBoards: React.Dispatch<React.SetStateAction<Board[]>>;
-  setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
+  setBoards: Dispatch<SetStateAction<Board[]>>;
+  setTasks: Dispatch<SetStateAction<Task[]>>;
   changeBoard: (id: string) => void;
   shouldReloadForNavigation: () => boolean;
   onJoinBoard: (nostrId: string, name?: string, relaysCsv?: string) => void;
@@ -42,7 +41,6 @@ export function BoardsSection({
   const boardListRef = useRef<HTMLUListElement>(null);
   const [boardListMaxHeight, setBoardListMaxHeight] = useState<number | null>(null);
 
-  const visibleBoards = useMemo(() => boards.filter(b => !b.archived && !b.hidden), [boards]);
   const unarchivedBoards = useMemo(() => boards.filter(b => !b.archived), [boards]);
   const archivedBoards = useMemo(() => boards.filter(b => b.archived), [boards]);
 
@@ -200,16 +198,17 @@ export function BoardsSection({
   }
 
   function reorderBoards(dragId: string, targetId: string, before: boolean) {
-    setBoards(prev => {
-      const list = [...prev];
-      const fromIndex = list.findIndex(b => b.id === dragId);
-      if (fromIndex === -1) return prev;
-      const [item] = list.splice(fromIndex, 1);
-      let targetIndex = list.findIndex(b => b.id === targetId);
-      if (targetIndex === -1) return prev;
-      if (!before) targetIndex++;
-      list.splice(targetIndex, 0, item);
-      return withBoardOrder(list);
+    if (dragId === targetId) return;
+    setBoards((previous) => {
+      const order = previous.filter(isReorderableBoard);
+      const from = order.findIndex((board) => board.id === dragId);
+      if (from < 0) return previous;
+      const [moving] = order.splice(from, 1);
+      const target = order.findIndex((board) => board.id === targetId);
+      if (target < 0) return previous;
+      order.splice(target + (before ? 0 : 1), 0, moving);
+      let index = 0;
+      return withBoardOrder(previous.map((board) => isReorderableBoard(board) ? order[index++] : board));
     });
   }
 
@@ -232,133 +231,21 @@ export function BoardsSection({
     onClose();
   }
 
-  function setBoardHidden(id: string, hidden: boolean) {
-    if (id === BIBLE_BOARD_ID) return;
-    setBoards(prev => prev.map(b => (b.id === id ? { ...b, hidden } : b)));
-  }
-
   // ─── Inner components ─────────────────────────────────────────────────────
-
-  function HiddenBoardIcon() {
-    return (
-      <svg
-        className="w-4 h-4 text-secondary"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M2 12s3-6 10-6 10 6 10 6-3 6-10 6S2 12 2 12Z" />
-        <path d="M3 3l18 18" />
-      </svg>
-    );
-  }
-
-  function BoardListItem({
-    board,
-    hidden,
-    onPrimaryAction,
-    onDrop,
-    onEdit,
-  }: {
-    board: Board;
-    hidden: boolean;
-    onPrimaryAction: () => void;
-    onDrop: (dragId: string, before: boolean) => void;
-    onEdit?: () => void;
-  }) {
-    const [overBefore, setOverBefore] = useState(false);
-    const [dragging, setDragging] = useState(false);
-    function handleDragStart(e: React.DragEvent) {
-      e.dataTransfer.setData("text/board-id", board.id);
-      e.dataTransfer.effectAllowed = "move";
-      setDragging(true);
-    }
-    function handleDragOver(e: React.DragEvent) {
-      e.preventDefault();
-      const rect = (e.currentTarget as HTMLLIElement).getBoundingClientRect();
-      const midpoint = rect.top + rect.height / 2;
-      setOverBefore(e.clientY < midpoint);
-    }
-    function handleDrop(e: React.DragEvent) {
-      e.preventDefault();
-      const dragId = e.dataTransfer.getData("text/board-id");
-      if (dragId) onDrop(dragId, overBefore);
-      setOverBefore(false);
-      setDragging(false);
-    }
-    function handleDragLeave() {
-      setOverBefore(false);
-    }
-    function handleDragEnd() {
-      setDragging(false);
-      setOverBefore(false);
-    }
-    function handleClick() {
-      if (dragging) return;
-      onPrimaryAction();
-    }
-    const buttonClasses = hidden
-      ? "flex-1 text-left min-w-0 text-secondary hover:text-primary transition-colors"
-      : "flex-1 text-left min-w-0";
-    return (
-      <li
-        className="board-list-item"
-        draggable
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-        onDragLeave={handleDragLeave}
-        onDragEnd={handleDragEnd}
-      >
-        {overBefore && (
-          <div className="absolute -top-[0.125rem] left-0 right-0 h-[0.1875rem] rounded-full" style={{ background: "var(--accent)" }} />
-        )}
-        <button type="button" className={buttonClasses} onClick={handleClick}>
-          <span className="flex items-center gap-2">
-            {hidden && (
-              <span className="shrink-0" aria-hidden="true">
-                <HiddenBoardIcon />
-              </span>
-            )}
-            <span className="truncate">{board.name}</span>
-            {hidden && <span className="sr-only">Hidden board</span>}
-          </span>
-        </button>
-        {hidden && onEdit && (
-          <button
-            type="button"
-            className="ghost-button button-sm pressable"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (dragging) return;
-              onEdit();
-            }}
-          >
-            Edit
-          </button>
-        )}
-      </li>
-    );
-  }
 
   // ─── Archive drag handlers ────────────────────────────────────────────────
 
-  function isBoardDrag(event: React.DragEvent) {
+  function isBoardDrag(event: DragEvent) {
     return Array.from(event.dataTransfer.types).includes("text/board-id");
   }
 
-  function handleArchiveButtonDragEnter(e: React.DragEvent<HTMLButtonElement>) {
+  function handleArchiveButtonDragEnter(e: DragEvent<HTMLButtonElement>) {
     if (!isBoardDrag(e)) return;
     e.preventDefault();
     setArchiveDropActive(true);
   }
 
-  function handleArchiveButtonDragOver(e: React.DragEvent<HTMLButtonElement>) {
+  function handleArchiveButtonDragOver(e: DragEvent<HTMLButtonElement>) {
     if (!isBoardDrag(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -369,7 +256,7 @@ export function BoardsSection({
     setArchiveDropActive(false);
   }
 
-  function handleArchiveButtonDrop(e: React.DragEvent<HTMLButtonElement>) {
+  function handleArchiveButtonDrop(e: DragEvent<HTMLButtonElement>) {
     if (!isBoardDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -393,22 +280,28 @@ export function BoardsSection({
           className="space-y-2 mb-3 overflow-y-auto pr-1"
           style={boardListMaxHeight != null ? { maxHeight: `${boardListMaxHeight}px` } : undefined}
         >
-          {unarchivedBoards.map((b) => (
-            <BoardListItem
-              key={b.id}
-              board={b}
-              hidden={!!b.hidden}
-              onPrimaryAction={
-                b.kind === "bible"
-                  ? () => {}
-                  : b.hidden
-                    ? () => openHiddenBoard(b.id)
-                    : () => onManageBoard(b.id)
-              }
-              onEdit={b.hidden && b.kind !== "bible" ? () => onManageBoard(b.id) : undefined}
-              onDrop={(dragId, before) => reorderBoards(dragId, b.id, before)}
-            />
-          ))}
+          {unarchivedBoards.map((b, index) => {
+            const previous = unarchivedBoards.slice(0, index).reverse().find((board) => board.kind !== "bible");
+            const next = unarchivedBoards.slice(index + 1).find((board) => board.kind !== "bible");
+            return (
+              <BoardListItem
+                key={b.id}
+                board={b}
+                hidden={!!b.hidden}
+                onPrimaryAction={
+                  b.kind === "bible"
+                    ? () => {}
+                    : b.hidden
+                      ? () => openHiddenBoard(b.id)
+                      : () => onManageBoard(b.id)
+                }
+                onEdit={b.hidden && b.kind !== "bible" ? () => onManageBoard(b.id) : undefined}
+                onDrop={(dragId, before) => reorderBoards(dragId, b.id, before)}
+                onMoveUp={previous ? () => reorderBoards(b.id, previous.id, true) : undefined}
+                onMoveDown={next ? () => reorderBoards(b.id, next.id, false) : undefined}
+              />
+            );
+          })}
         </ul>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
           <input
@@ -495,5 +388,138 @@ export function BoardsSection({
         </Modal>
       )}
     </>
+  );
+}
+
+function isReorderableBoard(board: Board): boolean {
+  return !board.archived && board.kind !== "bible";
+}
+
+function HiddenBoardIcon() {
+  return (
+    <svg
+      className="w-4 h-4 text-secondary"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 12s3-6 10-6 10 6 10 6-3 6-10 6S2 12 2 12Z" />
+      <path d="M3 3l18 18" />
+    </svg>
+  );
+}
+
+function BoardListItem({
+  board,
+  hidden,
+  onPrimaryAction,
+  onDrop,
+  onMoveUp,
+  onMoveDown,
+  onEdit,
+}: {
+  board: Board;
+  hidden: boolean;
+  onPrimaryAction: () => void;
+  onDrop: (dragId: string, before: boolean) => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  onEdit?: () => void;
+}) {
+  const [overBefore, setOverBefore] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  function handleDragStart(e: DragEvent) {
+    e.dataTransfer.setData("text/board-id", board.id);
+    e.dataTransfer.effectAllowed = "move";
+    setDragging(true);
+  }
+  function handleDragOver(e: DragEvent) {
+    e.preventDefault();
+    const rect = (e.currentTarget as HTMLLIElement).getBoundingClientRect();
+    const midpoint = rect.top + rect.height / 2;
+    setOverBefore(e.clientY < midpoint);
+  }
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    const dragId = e.dataTransfer.getData("text/board-id");
+    if (dragId) onDrop(dragId, overBefore);
+    setOverBefore(false);
+    setDragging(false);
+  }
+  function handleDragLeave() {
+    setOverBefore(false);
+  }
+  function handleDragEnd() {
+    setDragging(false);
+    setOverBefore(false);
+  }
+  function handleClick() {
+    if (dragging) return;
+    onPrimaryAction();
+  }
+  const buttonClasses = hidden
+    ? "flex-1 text-left min-w-0 text-secondary hover:text-primary transition-colors"
+    : "flex-1 text-left min-w-0";
+  return (
+    <li
+      className="board-list-item"
+      draggable={isReorderableBoard(board)}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      onDragLeave={handleDragLeave}
+      onDragEnd={handleDragEnd}
+    >
+      {overBefore && (
+        <div className="absolute -top-[0.125rem] left-0 right-0 h-[0.1875rem] rounded-full" style={{ background: "var(--accent)" }} />
+      )}
+      <button type="button" className={buttonClasses} onClick={handleClick}>
+        <span className="flex items-center gap-2">
+          {hidden && (
+            <span className="shrink-0" aria-hidden="true">
+              <HiddenBoardIcon />
+            </span>
+          )}
+          <span className="truncate">{board.name}</span>
+          {hidden && <span className="sr-only">Hidden board</span>}
+        </span>
+      </button>
+      {board.kind !== "bible" && (
+        <div className="flex gap-1">
+          <button
+            type="button"
+            className="ghost-button button-sm pressable"
+            aria-label={`Move ${board.name} up`}
+            onClick={onMoveUp}
+            disabled={!onMoveUp}
+          >↑</button>
+          <button
+            type="button"
+            className="ghost-button button-sm pressable"
+            aria-label={`Move ${board.name} down`}
+            onClick={onMoveDown}
+            disabled={!onMoveDown}
+          >↓</button>
+        </div>
+      )}
+      {hidden && onEdit && (
+        <button
+          type="button"
+          className="ghost-button button-sm pressable"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (dragging) return;
+            onEdit();
+          }}
+        >
+          Edit
+        </button>
+      )}
+    </li>
   );
 }

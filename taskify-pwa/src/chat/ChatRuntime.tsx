@@ -8,6 +8,7 @@
  */
 import { useSyncResume } from "../nostr/useSyncResume";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { Event as NostrEvent } from "nostr-tools";
 
 
 import { useToast } from "../context/ToastContext";
@@ -122,6 +123,7 @@ export type ChatRuntimeProps = {
   chatMessageRetention?: ChatMessageRetention;
   /** Each incoming share, once, as chat opens it (the inbox has no subscription of its own). */
   onIncomingShare?: IncomingShareHandler;
+  sentBoardCopyHandlerRef?: React.RefObject<((event: NostrEvent) => Promise<void>) | null>;
 };
 
 /** Chat's state and actions, as the Chat page reads them. */
@@ -163,6 +165,7 @@ function useChatRuntimeValue({
   onDmUnreadCountChange,
   chatMessageRetention = "forever",
   onIncomingShare,
+  sentBoardCopyHandlerRef,
 }: Omit<ChatRuntimeProps, "children">) {
   const open = active;
   const onIncomingShareRef = useRef<IncomingShareHandler | null>(onIncomingShare ?? null);
@@ -450,6 +453,13 @@ persistBlockedPeers,
     contactDisplayLabel,
     onIncomingShareRef,
   });
+  useEffect(() => {
+    if (!sentBoardCopyHandlerRef) return;
+    sentBoardCopyHandlerRef.current = handleDmEvent;
+    return () => {
+      sentBoardCopyHandlerRef.current = null;
+    };
+  }, [handleDmEvent, sentBoardCopyHandlerRef]);
   const {
 
     resolveNip17Relays,
@@ -1522,6 +1532,10 @@ persistBlockedPeers,
     groupAvatarMembersFor,
     groupChats,
     groupChatsRef,
+    boardShareGroups: groupChats.filter((group) =>
+      group.members.includes(nostrIdentityInfo.identity?.pubkey ?? "") &&
+      !dmLeftGroupsRef.current.has(group.groupId.toLowerCase()),
+    ),
     groupInfoTab,
     groupMembersSearch,
     groupNameDraft,

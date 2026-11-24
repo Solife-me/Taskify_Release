@@ -17,6 +17,7 @@ extension AppModel {
         replyToEventID: String? = nil,
         additionalTags: [[String]] = [],
         optimisticLocalEcho: Bool = false,
+        resolvedDeliveryPlan: NIP17DeliveryPlan? = nil,
         onLocalEcho: (() -> Void)? = nil
     ) async throws {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -61,6 +62,7 @@ extension AppModel {
             replyToEventID: replyToEventID,
             attachmentComment: nil,
             optimisticLocalEcho: optimisticLocalEcho,
+            resolvedDeliveryPlan: resolvedDeliveryPlan,
             onLocalEcho: onLocalEcho
         )
     }
@@ -181,6 +183,7 @@ extension AppModel {
         replyToEventID: String?,
         attachmentComment: String?,
         optimisticLocalEcho: Bool,
+        resolvedDeliveryPlan: NIP17DeliveryPlan? = nil,
         onLocalEcho: (() -> Void)?
     ) async throws {
         guard !drafts.isEmpty else { throw NostrDirectMessageError.emptyMessage }
@@ -246,13 +249,18 @@ extension AppModel {
         onLocalEcho?()
         do {
             let fallbackRelays = directMessageDiscoveryRelayURLs(recipientPublicKey: recipientHex)
-            guard !fallbackRelays.isEmpty else { throw NostrDirectMessageError.noRelays }
             let resolutionStartedAt = ProcessInfo.processInfo.systemUptime
-            guard let deliveryPlan = await nip17DeliveryPlan(
-                recipientPublicKey: recipientHex,
-                discoveryRelayURLs: fallbackRelays,
-                identity: identity
-            ) else { throw NostrDirectMessageError.noRelays }
+            let deliveryPlan: NIP17DeliveryPlan
+            if let resolvedDeliveryPlan {
+                deliveryPlan = resolvedDeliveryPlan
+            } else {
+                guard !fallbackRelays.isEmpty, let plan = await nip17DeliveryPlan(
+                    recipientPublicKey: recipientHex,
+                    discoveryRelayURLs: fallbackRelays,
+                    identity: identity
+                ) else { throw NostrDirectMessageError.noRelays }
+                deliveryPlan = plan
+            }
             os_signpost(
                 .event,
                 log: Self.dmPerformanceLog,
@@ -496,12 +504,9 @@ extension AppModel {
     }
 
     private func ingestLocalDirectMessages(_ messages: [NostrDirectMessage]) {
+        guard !messages.isEmpty else { return }
         var updated = snapshot
-        var changed = false
-        for message in messages {
-            changed = updated.ingestDirectMessage(message) || changed
-        }
-        if changed {
+        if !updated.ingestDirectMessages(messages).isEmpty {
             snapshot = updated
             scheduleSave()
         }

@@ -135,6 +135,7 @@
 		D5EA1D000000000000000009 /* SiriReminderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EA1D000000000000000008 /* SiriReminderUITests.swift */; };
 		C1A6000000000000000000B2 /* ShareToTaskUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A6000000000000000000B1 /* ShareToTaskUITests.swift */; };
 		C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94100000000000000000F00 /* ChatRenderUITests.swift */; };
+		CCA100000000000000000001 /* ContactDirectoryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCA100000000000000000000 /* ContactDirectoryUITests.swift */; };
 		C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80500000000000000000F00 /* EventAttachmentUITests.swift */; };
 		C81000000000000000000F01 /* BoardRenderUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C81000000000000000000F00 /* BoardRenderUITests.swift */; };
 		C83300000000000000000F01 /* DynamicTypeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C83300000000000000000F00 /* DynamicTypeUITests.swift */; };
@@ -312,6 +313,7 @@
 		D5EA1D000000000000000008 /* SiriReminderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SiriReminderUITests.swift; sourceTree = "<group>"; };
 		C1A6000000000000000000B1 /* ShareToTaskUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ShareToTaskUITests.swift; sourceTree = "<group>"; };
 		C94100000000000000000F00 /* ChatRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatRenderUITests.swift; sourceTree = "<group>"; };
+		CCA100000000000000000000 /* ContactDirectoryUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactDirectoryUITests.swift; sourceTree = "<group>"; };
 		C80500000000000000000F00 /* EventAttachmentUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EventAttachmentUITests.swift; sourceTree = "<group>"; };
 		C81000000000000000000F00 /* BoardRenderUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BoardRenderUITests.swift; sourceTree = "<group>"; };
 		C83300000000000000000F00 /* DynamicTypeUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DynamicTypeUITests.swift; sourceTree = "<group>"; };
@@ -625,6 +627,7 @@
 				D5EA1D000000000000000008 /* SiriReminderUITests.swift */,
 				C1A6000000000000000000B1 /* ShareToTaskUITests.swift */,
 				C94100000000000000000F00 /* ChatRenderUITests.swift */,
+				CCA100000000000000000000 /* ContactDirectoryUITests.swift */,
 				C80500000000000000000F00 /* EventAttachmentUITests.swift */,
 				C81000000000000000000F00 /* BoardRenderUITests.swift */,
 				C83300000000000000000F00 /* DynamicTypeUITests.swift */,
@@ -964,6 +967,7 @@
 				D5EA1D000000000000000009 /* SiriReminderUITests.swift in Sources */,
 				C1A6000000000000000000B2 /* ShareToTaskUITests.swift in Sources */,
 				C94100000000000000000F01 /* ChatRenderUITests.swift in Sources */,
+				CCA100000000000000000001 /* ContactDirectoryUITests.swift in Sources */,
 				C80500000000000000000F01 /* EventAttachmentUITests.swift in Sources */,
 				C81000000000000000000F01 /* BoardRenderUITests.swift in Sources */,
 				C83300000000000000000F01 /* DynamicTypeUITests.swift in Sources */,
@@ -1150,7 +1154,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1159,7 +1163,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1178,7 +1182,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1187,7 +1191,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1205,7 +1209,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyNotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.5;
@@ -1214,7 +1218,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1234,7 +1238,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1243,7 +1247,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.watchkitapp;
 				PRODUCT_NAME = TaskifyWatch;
 				REGISTER_APP_GROUPS = YES;
@@ -1266,7 +1270,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1275,7 +1279,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.watchkitapp;
 				PRODUCT_NAME = TaskifyWatch;
 				REGISTER_APP_GROUPS = YES;
@@ -1329,7 +1333,7 @@
 				APS_ENVIRONMENT = development;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1338,7 +1342,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1357,7 +1361,7 @@
 				APS_ENVIRONMENT = production;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1366,7 +1370,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1417,7 +1421,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1427,7 +1431,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1447,7 +1451,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1457,7 +1461,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1475,7 +1479,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
@@ -1485,7 +1489,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.watchkitapp.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1507,7 +1511,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
@@ -1517,7 +1521,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.watchkitapp.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1533,8 +1537,8 @@
 			};
 			name = Release;
 		};
-		310F1F8FFEED769065395003 /* Share Debug */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 217; MARKETING_VERSION = 1.0; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Debug; };
-		6C89F5E3190431CFA3653B92 /* Share Release */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 217; MARKETING_VERSION = 1.0; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Release; };
+		310F1F8FFEED769065395003 /* Share Debug */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 225; MARKETING_VERSION = 1.0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Debug; };
+		6C89F5E3190431CFA3653B92 /* Share Release */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 225; MARKETING_VERSION = 1.0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Release; };
 		2FCBC48C20CEC7C5076104BB /* Local */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1557,7 +1561,7 @@
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWidgets/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Taskify;
@@ -1567,7 +1571,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1587,7 +1591,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1596,7 +1600,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.watchkitapp;
 				PRODUCT_NAME = TaskifyWatch;
 				REGISTER_APP_GROUPS = YES;
@@ -1612,7 +1616,7 @@
 			};
 			name = Local;
 		};
-		756E28F9D8058B71150C3350 /* Local */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 217; MARKETING_VERSION = 1.0; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Local; };
+		756E28F9D8058B71150C3350 /* Local */ = { isa = XCBuildConfiguration; buildSettings = { CURRENT_PROJECT_VERSION = 225; MARKETING_VERSION = 1.0.1; IPHONEOS_DEPLOYMENT_TARGET = 17.5; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_STYLE = Automatic; CODE_SIGN_ENTITLEMENTS = TaskifyShareExtension.entitlements; INFOPLIST_FILE = Sources/TaskifyShareExtension/Info.plist; GENERATE_INFOPLIST_FILE = NO; PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.Share; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; LD_RUNPATH_SEARCH_PATHS = ( "$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Local; };
 		5A14D1304D553942E03601B3 /* Local */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1638,7 +1642,7 @@
 				APS_ENVIRONMENT = development;
 				CODE_SIGN_ENTITLEMENTS = TaskifyNative.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyApp/Resources/Info.plist;
@@ -1647,7 +1651,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1665,7 +1669,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TaskifyWatchWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 217;
+				CURRENT_PROJECT_VERSION = 225;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/TaskifyWatchWidgets/Info.plist;
@@ -1675,7 +1679,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = solife.me.Taskify.Native.watchkitapp.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

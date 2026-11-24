@@ -26,6 +26,17 @@ test("normalizeTaskRecurrence rejects non-progressing intervals", () => {
   });
 });
 
+test("hour-based task intervals round up to whole days and retain the end date", () => {
+  assert.deepEqual(normalizeTaskRecurrence({ type: "every", n: 24, unit: "hour" }), { type: "daily" });
+  const untilISO = "2026-11-03T00:00:00.000Z";
+  assert.deepEqual(normalizeTaskRecurrence({ type: "every", n: 25, unit: "hour", untilISO }), {
+    type: "every",
+    n: 2,
+    unit: "day",
+    untilISO,
+  });
+});
+
 test("parseShareEnvelope returns null for invalid payload", () => {
   assert.equal(parseShareEnvelope("{}"), null);
 });

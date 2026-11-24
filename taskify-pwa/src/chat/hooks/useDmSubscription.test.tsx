@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, test, vi } from 'vitest';
+import { generateGroupId, type WalletDmMessage } from './useDmState';
 import { useDmSubscription } from './useDmSubscription';
 
 const wrap = (id: string) => ({ id, pubkey: 'a'.repeat(64), created_at: 500, kind: 1059, tags: [], content: '', sig: '' });
@@ -144,6 +145,41 @@ const baseProps = (overrides: any) => ({
   resolvePeerPubkey: () => '', messageItemsRef: { current: [] }, parseIncomingPaymentMessage: () => null,
   setDmMessages: () => {},
   ...overrides,
+});
+
+test.each(['direct', 'group'])('a sent board becomes one structured message in the %s conversation', async (conversation) => {
+  const sender = 'a'.repeat(64);
+  const peer = 'b'.repeat(64);
+  const members = [sender, peer, 'c'.repeat(64)];
+  const groupId = conversation === 'group' ? generateGroupId(members) : undefined;
+  const onIncomingShare = vi.fn();
+  let messages: WalletDmMessage[] = [];
+  const view = renderSubscription(baseProps({
+    compressedToRawHex: (key: string) => key.slice(2),
+    dmPeerProfilesRef: { current: new Map(members.map((member) => [member, {}])) },
+    groupChatsRef: { current: [] },
+    upsertGroupChat: vi.fn(),
+    resolvePeerPubkey: () => peer,
+    decryptNostrPaymentMessage: async () => ({
+      content: JSON.stringify({ v: 1, kind: 'taskify-share', item: { type: 'board', boardId: 'trip', boardName: 'Trip planning' } }),
+      createdAt: 500, rumorId: 'board-rumor', senderPubkey: sender, recipientPubkeys: groupId ? members : [peer],
+    }),
+    onIncomingShareRef: { current: onIncomingShare },
+    setDmMessages: (update: (current: typeof messages) => typeof messages) => { messages = update(messages); },
+  }));
+  await view.mount();
+  try {
+    await view.hook().handleDmEvent(wrap('local-wrap'));
+    await view.hook().handleDmEvent(wrap('relay-wrap'));
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      isIncoming: false,
+      peerPubkey: groupId ?? peer,
+      preview: 'Shared board: Trip planning',
+      attachment: { type: 'board', boardId: 'trip', boardName: 'Trip planning', taskId: null },
+    });
+    expect(onIncomingShare).not.toHaveBeenCalled();
+  } finally { await view.unmount(); }
 });
 
 test('a share is handed to the inbox however old it is, before the message counts as handled', async () => {

@@ -330,9 +330,7 @@ final class TaskifyMacUITests: XCTestCase {
     }
 
     func testAccountSwitchClosesEditorsAndResetsEveryWindow() throws {
-        let app = XCUIApplication()
-        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString]
-        app.launch()
+        let app = launchInFreshWindow()
 
         let board = app.staticTexts["UI Test Board"].firstMatch
         XCTAssertTrue(board.waitForExistence(timeout: 10))
@@ -385,12 +383,18 @@ final class TaskifyMacUITests: XCTestCase {
         let confirmSwitch = app.buttons["confirm-switch-account-button"]
         XCTAssertTrue(confirmSwitch.waitForExistence(timeout: 5))
         confirmSwitch.click()
-        XCTAssertTrue(app.staticTexts["account-import-message"].waitForExistence(timeout: 5))
 
+        XCTAssertTrue(confirmSwitch.waitForNonExistence(timeout: 5))
         app.typeKey("w", modifierFlags: .command)
-        XCTAssertTrue(app.descendants(matching: .any)["taskify-workspace-today"].firstMatch.waitForExistence(timeout: 5))
-        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "taskify-workspace-today").count, 2)
-        XCTAssertEqual(app.textFields.matching(identifier: "task-title-field").count, 0)
+
+        let todaySummary = NSPredicate(format: "value BEGINSWITH %@", "0 tasks due today")
+        let workspaces = app.windows.containing(todaySummary)
+        let editors = app.textFields.matching(identifier: "task-title-field")
+        let accountSwitched = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            workspaces.count == 2 && editors.count == 0
+        }, object: nil)
+        let result = XCTWaiter.wait(for: [accountSwitched], timeout: 10)
+        XCTAssertEqual(result, .completed, "Today windows: \(workspaces.count), task editors: \(editors.count)")
         XCTAssertFalse(app.staticTexts["TASK DETAILS"].exists)
     }
 
@@ -595,6 +599,28 @@ final class TaskifyMacUITests: XCTestCase {
         gallery.name = "mac-chat-photo-gallery"
         gallery.lifetime = .keepAlways
         add(gallery)
+    }
+
+    func testSentBoardRendersAsACardInChat() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--taskify-ui-test-session", UUID().uuidString, "-ApplePersistenceIgnoreState", "YES"]
+        app.launchEnvironment["TASKIFY_UI_TEST_SENT_BOARD"] = "1"
+        app.launch()
+        if !app.windows.firstMatch.waitForExistence(timeout: 3) {
+            app.typeKey("n", modifierFlags: .command)
+        }
+
+        let chat = app.staticTexts["Chat"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        chat.click()
+        let contact = app.staticTexts["Paste Test Contact"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 5))
+        contact.click()
+
+        XCTAssertTrue(app.staticTexts["SHARED BOARD"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Trip planning board"].exists)
+        XCTAssertTrue(app.staticTexts["Sent"].exists)
+        XCTAssertFalse(app.buttons["Join"].exists)
     }
 
     private func waitForSpotlightItem(

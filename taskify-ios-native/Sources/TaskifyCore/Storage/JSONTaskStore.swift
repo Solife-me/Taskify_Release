@@ -199,6 +199,25 @@ public actor JSONTaskStore {
         return try JSONDecoder().decode(TaskifySnapshot.self, from: data).taskifyEvents ?? []
     }
 
+    /// Cache only the signed ciphertext so changing relays can start from the last verified
+    /// account backup even before a relay lookup finishes on this launch.
+    public func cachedAccountBackupEvent() -> NostrEvent? {
+        guard let data = FileManager.default.contents(atPath: accountBackupCacheURL.path) else { return nil }
+        return try? JSONDecoder().decode(NostrEvent.self, from: data)
+    }
+
+    public func cacheAccountBackupEvent(_ event: NostrEvent) throws {
+        if let cached = cachedAccountBackupEvent(), cached.publicKey == event.publicKey {
+            guard event.createdAt > cached.createdAt ||
+                  (event.createdAt == cached.createdAt && event.id < cached.id) else { return }
+        }
+        try write(event, to: accountBackupCacheURL)
+    }
+
+    private var accountBackupCacheURL: URL {
+        directory.appendingPathComponent(legacyURL.lastPathComponent + ".account-backup")
+    }
+
     /// Writes the areas that changed since this store last read or wrote them, and returns them.
     @discardableResult
     public func save(_ snapshot: TaskifySnapshot) throws -> Set<TaskifyStoreArea> {

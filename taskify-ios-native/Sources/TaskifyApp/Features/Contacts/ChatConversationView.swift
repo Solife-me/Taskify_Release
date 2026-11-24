@@ -546,8 +546,7 @@ struct DirectMessageConversationView: View {
     private var sharedBoards: [SharedBoardInboxItem] {
         model.sharedBoardInboxItems
             .filter {
-                $0.status != .deleted &&
-                    $0.sender.publicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
+                $0.conversationPublicKey.caseInsensitiveCompare(peerPublicKey) == .orderedSame
             }
             .sorted {
                 if $0.receivedAt != $1.receivedAt { return $0.receivedAt < $1.receivedAt }
@@ -583,8 +582,11 @@ struct DirectMessageConversationView: View {
         let sharedTasks = sharedTasks
         let sharedContacts = sharedContacts
         let calendarInvites = calendarInvites
-        let sharedBoards = sharedBoards
-        let structuredRumorIDs = Set(sharedTasks.map(\.rumorEventID) + calendarInvites.map(\.rumorEventID))
+        let boardShares = sharedBoards
+        let sharedBoards = boardShares.filter { $0.status != .deleted }
+        let structuredRumorIDs = Set(
+            sharedTasks.map(\.rumorEventID) + calendarInvites.map(\.rumorEventID) + boardShares.map(\.rumorEventID)
+        )
         let hermesProjection = HermesModelPickerProjection.project(
             messages: messages,
             enabled: group == nil && model.isBot(publicKey: peerPublicKey)

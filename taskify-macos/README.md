@@ -73,6 +73,14 @@ behind `#if os(iOS)`; `TaskifyWallet` is not in `PACKAGE_PRODUCTS`, and
 `testMacAppDoesNotLinkOrCompileTheWallet` keeps it and the `Features/Wallet` sources out. Moving shared app code into a new extension file means adding it to the
 manifest in the same change; CI rejects a project that was not regenerated.
 
+## Reset local data
+
+Open **Settings → Account → Reset Local Data** to erase this Mac's saved
+accounts and local Taskify data. Save each account's private key and export
+any local data you need first. Taskify quits after confirmation and completes
+the reset before loading the workspace on its next launch. Copies already
+published to Nostr relays remain available there.
+
 ## Current desktop implementation
 
 - Persistent sidebar, independent windows sharing one account runtime, native
@@ -94,6 +102,12 @@ manifest in the same change; CI rejects a project that was not regenerated.
   Archived boards are hidden inside a collapsed Archived folder, and can be
   dragged back onto the Boards header or a regular board row to restore them.
   Active boards can be dragged above or below another board to reorder them.
+  Use **Send Board to Chat** from a board's sidebar context menu to search
+  saved contacts and group chats. The conversation shows a named board card,
+  and recipients can join the board from it. Cards on shared boards show the
+  creator's initials or profile picture. The task inspector and editor show their name.
+  Printed board checklists include upcoming tasks and offer a separate
+  completed-task toggle.
 - Split View opens any workspace destination or board beside the current pane,
   so a board and Chat can remain visible together. Task cards can be dragged
   onto a sidebar board (today's column on a week board, first column on a list

@@ -9,11 +9,9 @@ public extension TaskifySnapshot {
                                   now: Int = Int(Date().timeIntervalSince1970)) -> TaskifySnapshot? {
         guard !messages.isEmpty else { return nil }
         var updated = self
-        for message in messages {
-            _ = updated.ingestDirectMessage(message, now: now)
-            if message.deliveryState == .sent {
-                _ = updated.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .sent)
-            }
+        _ = updated.ingestDirectMessages(messages, now: now)
+        for message in messages where message.deliveryState == .sent {
+            _ = updated.setDirectMessageDeliveryState(rumorEventID: message.rumorEventID, state: .sent)
         }
         // Compare the resulting collections rather than trusting the ingest flag, so a
         // receipt that changes nothing never produces a write (and another refresh).

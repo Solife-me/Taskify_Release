@@ -77,6 +77,8 @@ import { getBibleChapterVerseCount } from "./data/bibleVerseCounts";
 import { useCashu } from "./context/walletContexts";
 import { useWalletEnabled, useWalletRecoveryShown } from "./wallet/walletFlags";
 import { WalletPhaseOutNotice } from "./ui/wallet/WalletPhaseOutNotice";
+import { kvStorage } from "./storage/kvStorage";
+import { BlossomFallbackConsentHost } from "./ui/settings/BlossomFallbackConsentHost";
 import { idbKeyValue } from "./storage/idbKeyValue";
 import { TASKIFY_STORE_TASKS, TASKIFY_STORE_NOSTR } from "./storage/taskifyDb";
 
@@ -281,6 +283,7 @@ import {
 import { useBoardSync, type BoardSyncRelayBatchEntry } from "./nostr/useBoardSync";
 import { useCalendarEventManagement } from "./nostr/useCalendarEventManagement";
 import { useNostrSubscriptions, type CalendarViewSubscriptionTarget } from "./nostr/useNostrSubscriptions";
+import type { GroupChat } from "./lib/groupChatState";
 import { useDragAndDrop } from "./ui/dnd/useDragAndDrop";
 import { useSelectionMode } from "./ui/selection/useSelectionMode";
 import { useBoardViewScrollState } from "./ui/board/useBoardViewScrollState";
@@ -380,6 +383,7 @@ const WalletRuntime = lazy(() => import("./wallet/WalletRuntime"));
 const WalletRecoveryView = lazy(() => import("./ui/wallet/WalletRecoveryView").then((m) => ({ default: m.WalletRecoveryView })));
 /** Background DM sync loads after the app shell; the Chat page remains another lazy boundary. */
 const ChatShell = lazy(() => import("./chat/ChatShell"));
+const SHARED_BOARD_TAGS = "taskify_shared_board_tags_v1";
 const UpcomingPage = lazy(() => import("./ui/upcoming/UpcomingPage"));
 // Bounty editing is wallet code: loaded only where the wallet is enabled.
 const TaskBountySection = lazy(() => import("./ui/wallet/TaskBountyEditor").then((m) => ({ default: m.TaskBountySection })));
@@ -390,6 +394,7 @@ const WalletBountiesView = lazy(() => import("./ui/wallet/WalletBountiesView").t
 const NoteViewerModal = lazy(() =>
   import("./ui/task/NoteModals").then((module) => ({ default: module.NoteViewerModal })),
 );
+const BlossomRenewalNotice = lazy(() => import("./ui/settings/BlossomRenewalNotice"));
 const SettingsModal = lazy(() =>
   import("./ui/board/SettingsModal").then((module) => ({ default: module.SettingsModal })),
 );
@@ -466,6 +471,7 @@ const isoForWeekday = isoForWeekdayLocal;
 
 /* ================= App ================= */
 export default function App() {
+  const sentBoardCopyHandlerRef = useRef<((event: NostrEvent) => Promise<void>) | null>(null);
   const { show: showToast } = useToast();
   const { vapidPublicKey, workerBaseUrl } = useRuntimeConfig({
     fallbackVapidPublicKey: FALLBACK_VAPID_PUBLIC_KEY,
@@ -625,6 +631,20 @@ export default function App() {
     setShareTemplateShare,
     setShareTemplateStatus,
   } = useShareBoardState(boards);
+  const [sharedBoardTags, setSharedBoardTags] = useState<ReadonlySet<string>>(() => {
+    try {
+      const tags: unknown = JSON.parse(kvStorage.getString(SHARED_BOARD_TAGS, "[]"));
+      if (Array.isArray(tags)) return new Set(tags.filter((tag) => typeof tag === "string"));
+    } catch {}
+    return new Set();
+  });
+  useEffect(() => {
+    kvStorage.setItem(SHARED_BOARD_TAGS, JSON.stringify([...sharedBoardTags]));
+  }, [sharedBoardTags]);
+  const markBoardShared = useCallback((shareId: string) => {
+    const tag = boardTag(shareId);
+    setSharedBoardTags((previous) => previous.has(tag) ? previous : new Set([...previous, tag]));
+  }, []);
   const boardMap = useMemo(() => {
     const map = new Map<string, Board>();
     boards.forEach((board) => map.set(board.id, board));
@@ -654,10 +674,7 @@ export default function App() {
   const [boardScanOpen, setBoardScanOpen] = useState(false);
   const [boardPrintJob, setBoardPrintJob] = useState<BoardPrintJob | null>(null);
   const [boardPrintJobs, setBoardPrintJobs] = useState<Record<string, BoardPrintJob>>(() => loadBoardPrintJobs());
-  const [boardPrintOptions, setBoardPrintOptions] = useState<BoardPrintOptions>(() => ({
-    ...DEFAULT_BOARD_PRINT_OPTIONS,
-    includeCompleted: settings.completedTab,
-  }));
+  const [boardPrintOptions, setBoardPrintOptions] = useState<BoardPrintOptions>(DEFAULT_BOARD_PRINT_OPTIONS);
   const boardPrintPortal = usePrintPortal("board-print-portal");
   const [scriptureMemory, setScriptureMemory] = useScriptureMemory();
   scriptureEntriesRef.current = scriptureMemory.entries;
@@ -1569,11 +1586,21 @@ export default function App() {
     [activePage, appRouter, setCurrentBoardIdState, shouldReloadForNavigation],
   );
 
+  const [initialStorageServer, setInitialStorageServer] = useState<string>();
   const openSettings = useCallback(() => {
     if (isOnboardingActiveRef.current) return;
     if (shouldReloadForNavigation()) return;
-    startTransition(() => setActivePage("settings"));
+    startTransition(() => {
+      setInitialStorageServer(undefined);
+      setActivePage("settings");
+    });
   }, [shouldReloadForNavigation]);
+  const openStorageRenewals = useCallback((serverUrl: string) => {
+    startTransition(() => {
+      setInitialStorageServer(serverUrl);
+      setActivePage("settings");
+    });
+  }, [setActivePage]);
   const closeSettings = useCallback(() => {
     startTransition(() => setActivePage("boards"));
   }, []);
@@ -2987,12 +3014,64 @@ export default function App() {
     flyToCompleted,
     toggleItemSelection,
   };
+  const taskCreatorContacts = useMemo(() => new Map(
+    shareableContacts.map((contact) => [normalizeNostrPubkey(contact.npub), contact]),
+  ), [shareableContacts]);
+  const collaborativeBoardIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!nostrPK) return ids;
+
+    const boardsByShareId = new Map(boards.map((board) => [board.nostr?.boardId ?? board.id, board]));
+    for (const board of boards) {
+      if (board.nostr?.boardId && sharedBoardTags.has(boardTag(board.nostr.boardId))) ids.add(board.id);
+    }
+    for (const task of tasks) {
+      const author = normalizeAgentPubkey(task.createdBy ?? "");
+      if (author && author !== nostrPK && !task.inboxItem) ids.add(task.boardId);
+      if (task.inboxItem?.type !== "board" || task.inboxItem.status !== "accepted") continue;
+      const board = boardsByShareId.get(task.inboxItem.boardId ?? "");
+      if (board) ids.add(board.id);
+    }
+    for (const board of boards) {
+      if (board.kind !== "compound") continue;
+      const children = board.children.flatMap((id) => findBoardByCompoundChildId(boards, id)?.id ?? []);
+      if (ids.has(board.id) || children.some((id) => ids.has(id))) {
+        for (const id of children) ids.add(id);
+      }
+    }
+    return ids;
+  }, [boards, nostrPK, sharedBoardTags, tasks]);
+  const creatorKeyFor = useCallback((task: Task) => {
+    const board = boardMap.get(task.boardId);
+    if (!nostrPK || !board || task.inboxItem || (board.kind !== "week" && board.kind !== "lists")) return null;
+    const author = normalizeAgentPubkey(task.createdBy ?? "");
+    if (author === nostrPK && !collaborativeBoardIds.has(board.id)) return null;
+    return author;
+  }, [boardMap, collaborativeBoardIds, nostrPK]);
+  const creatorNameFor = useCallback((task: Task) => {
+    const author = creatorKeyFor(task);
+    if (!author) return undefined;
+    const contact = taskCreatorContacts.get(author);
+    return contact
+      ? contact.displayName || contact.username || contactPrimaryName(contact)
+      : author === nostrPK ? "You" : shortenNpub(toNpub(author));
+  }, [creatorKeyFor, nostrPK, shortenNpub, taskCreatorContacts, toNpub]);
+  const creatorInitialsFor = useCallback((task: Task) => {
+    const author = creatorKeyFor(task);
+    if (!author) return undefined;
+    const contact = taskCreatorContacts.get(author);
+    const name = contact?.username || contact?.displayName || contact?.name;
+    const initials = name?.split(/[\s@_.-]+/u).filter(Boolean).slice(0, 2).map((word) => Array.from(word)[0]).join("");
+    return initials?.toUpperCase() || (author === nostrPK ? "Y" : "?");
+  }, [creatorKeyFor, nostrPK, taskCreatorContacts]);
   const taskView = useMemo<TaskView>(() => ({
     isSelectionMode,
     selectedItemIds,
     pendingTaskIds: pendingNostrTaskIds,
     pendingEventIds: pendingNostrCalendarEventIds,
     runningStreakFor,
+    creatorNameFor,
+    creatorInitialsFor,
     showStreaks: settings.streaksEnabled,
     hideCompletedSubtasks: settings.hideCompletedSubtasks,
     completedTab: settings.completedTab,
@@ -3000,6 +3079,8 @@ export default function App() {
     weekStart: settings.weekStart,
   }), [
     boardMap,
+    creatorNameFor,
+    creatorInitialsFor,
     isSelectionMode,
     pendingNostrCalendarEventIds,
     pendingNostrTaskIds,
@@ -3250,7 +3331,7 @@ export default function App() {
       if (!img || !img.startsWith("data:")) return img; // already a remote URL
       try {
         const { mimeType, bytes } = parseDataUrl(img);
-        return await encryptAndUploadAttachment({
+        const upload = await encryptAndUploadAttachment({
           boardId: params.boardId,
           data: bytes,
           mimeType,
@@ -3258,6 +3339,7 @@ export default function App() {
           serverEntry,
           nostrSkHex,
         });
+        return upload.url;
       } catch (err: any) {
         console.error("[attachments] Failed to encrypt/upload image", err);
         throw new Error(err?.message || "Failed to upload encrypted image attachment.");
@@ -3283,7 +3365,7 @@ export default function App() {
       }
       try {
         const { mimeType, bytes } = parseDataUrl(doc.dataUrl);
-        const remoteUrl = await encryptAndUploadAttachment({
+        const upload = await encryptAndUploadAttachment({
           boardId: params.boardId,
           data: bytes,
           mimeType: doc.mimeType || mimeType,
@@ -3292,7 +3374,16 @@ export default function App() {
           nostrSkHex,
         });
         const { dataUrl: _d, preview: _p, full: _f, ...rest } = doc as any;
-        return { ...rest, remoteUrl, encrypted: true, encryptionBoardId: params.boardId };
+        return {
+          ...rest,
+          remoteUrl: upload.url,
+          encrypted: true,
+          encryptionBoardId: params.boardId,
+          ciphertextSha256: upload.ciphertextSha256,
+          storageServer: upload.serverUrl,
+          ...(upload.retention ? { retention: upload.retention } : {}),
+          ...(upload.protectedUntil ? { protectedUntil: upload.protectedUntil } : {}),
+        };
       } catch (err: any) {
         console.error("[attachments] Failed to encrypt/upload document", err);
         throw new Error(err?.message || `Failed to upload encrypted file attachment: ${doc?.name || "document"}`);
@@ -3443,8 +3534,8 @@ export default function App() {
       tasks,
     ],
   );
-  const handleShareBoardToContact = useCallback(
-    async (contact: Contact) => {
+  const handleShareBoardRecipient = useCallback(
+    async (target: Contact | GroupChat) => {
       if (!shareBoardTarget) {
         setShareContactStatus("Select a board to share first.");
         return;
@@ -3459,7 +3550,8 @@ export default function App() {
         );
         return;
       }
-      const recipient = normalizeNostrPubkey(contact.npub);
+      const recipient = "groupId" in target ? target : normalizeNostrPubkey(target.npub);
+      const recipientName = "groupId" in target ? target.name : contactPrimaryName(target);
       if (!recipient) {
         setShareContactStatus("Contact is missing a valid npub.");
         return;
@@ -3494,17 +3586,24 @@ export default function App() {
           relayList,
           senderNpub ? { npub: senderNpub } : undefined,
         );
-        await sendShareMessage(envelope, recipient, nostrSkHex, relayList);
+        const senderCopy = await sendShareMessage(envelope, recipient, nostrSkHex, relayList, defaultRelays);
+        if (senderCopy) {
+          void sentBoardCopyHandlerRef.current?.(senderCopy).catch((error: unknown) => {
+            console.warn("Could not show the sent board in chat", error);
+          });
+        }
+        if (shareBoardMode === "board") markBoardShared(shareId);
         setShareContactPickerOpen(false);
-        showToast(`Board sent to ${contactPrimaryName(contact)}`);
-      } catch (err: any) {
-        setShareContactStatus(err?.message || "Unable to share board.");
+        showToast(`Board sent to ${recipientName}`);
+      } catch (err) {
+        setShareContactStatus(err instanceof Error ? err.message : "Unable to share board.");
       } finally {
         setShareContactBusy(false);
       }
     },
     [
       defaultRelays,
+      markBoardShared,
       normalizeRelayList,
       nostrPK,
       nostrSkHex,
@@ -6008,6 +6107,11 @@ export default function App() {
         )}
 
         {!showFirstRunOnboarding && <KeyBackupBanner taskCount={tasks.length} />}
+        {!showFirstRunOnboarding && !showSettings && nostrPK && nostrSkHex && (
+          <Suspense fallback={null}>
+            <BlossomRenewalNotice key={nostrPK} settings={settings} signerKey={nostrSkHex} onReview={openStorageRenewals} />
+          </Suspense>
+        )}
         <ReminderNotificationOffer offer={reminderNotificationOffer.offer} />
 
         {/* Animation overlay for fly effects (coins, etc.) */}
@@ -6151,6 +6255,9 @@ export default function App() {
             defaultRelays={defaultRelays}
             setDefaultRelays={setDefaultRelays}
             pubkeyHex={nostrPK}
+            signerKey={nostrSkHex}
+            tasks={tasks}
+            initialStorageServer={initialStorageServer}
             onGenerateKey={rotateNostrKey}
             onSetKey={setCustomNostrKey}
             pushWorkState={pushWorkState}
@@ -6164,6 +6271,10 @@ export default function App() {
             vapidPublicKey={vapidPublicKey}
             onResetWalletTokenTracking={handleResetWalletTokenTracking}
             onShareBoard={enableBoardSharing}
+            onShareBoardToChat={(boardId) => {
+              openShareBoardForTarget(boardId);
+              setShareContactPickerOpen(true);
+            }}
             onJoinBoard={joinSharedBoard}
             onRegenerateBoardId={regenerateBoardId}
             onBoardChanged={handleBoardChanged}
@@ -6468,6 +6579,8 @@ export default function App() {
         </Suspense>
       )}
 
+      <BlossomFallbackConsentHost />
+
       <UpdateToast
         handleReloadLater={handleReloadLater}
         handleReloadNow={handleReloadNow}
@@ -6500,6 +6613,7 @@ export default function App() {
             }}
             weekStart={settings.weekStart}
             boardKind={editingBoard?.kind ?? currentBoard?.kind ?? "week"}
+            creatorName={creatorNameFor(editing.task)}
             boards={boards}
             onRevealBounty={revealBounty}
             onPreviewDocument={handleOpenDocument}
@@ -6594,38 +6708,6 @@ export default function App() {
         </Suspense>
       )}
 
-      {shareBoardModalOpen && (
-        <Suspense fallback={null}>
-          <ShareBoardDialogs
-            closeShareBoard={closeShareBoard}
-            enableBoardSharing={enableBoardSharing}
-            handleOpenBoardPrint={handleOpenBoardPrint}
-            handleOpenBoardScan={handleOpenBoardScan}
-            handleShareBoardToContact={handleShareBoardToContact}
-            setShareBoardMode={setShareBoardMode}
-            setShareContactPickerOpen={setShareContactPickerOpen}
-            setShareContactStatus={setShareContactStatus}
-            setShareModeInfoOpen={setShareModeInfoOpen}
-            setShareTemplateStatus={setShareTemplateStatus}
-            shareBoardDisplayName={shareBoardDisplayName}
-            shareBoardId={shareBoardId}
-            shareBoardModalOpen={shareBoardModalOpen}
-            shareBoardMode={shareBoardMode}
-            shareBoardQrPayload={shareBoardQrPayload}
-            shareBoardTarget={shareBoardTarget}
-            shareContactBusy={shareContactBusy}
-            shareContactPickerOpen={shareContactPickerOpen}
-            shareContactStatus={shareContactStatus}
-            shareModeInfoButtonRef={shareModeInfoButtonRef}
-            shareModeInfoOpen={shareModeInfoOpen}
-            shareModeInfoRef={shareModeInfoRef}
-            shareTemplateBusy={shareTemplateBusy}
-            shareTemplateStatus={shareTemplateStatus}
-            shareableContacts={shareableContacts}
-          />
-        </Suspense>
-      )}
-
       <WalletPhaseOutNotice
         hasBalance={walletEnabled && walletTotalBalance > 0}
         suppressed={showFirstRunOnboarding}
@@ -6655,7 +6737,40 @@ export default function App() {
           onDmUnreadCountChange={setDmUnreadCount}
           chatMessageRetention={settings.chatMessageRetention}
           onIncomingShare={handleIncomingShare}
+          sentBoardCopyHandlerRef={sentBoardCopyHandlerRef}
         >
+          {shareBoardModalOpen && (
+            <Suspense fallback={null}>
+              <ShareBoardDialogs
+                closeShareBoard={closeShareBoard}
+                enableBoardSharing={enableBoardSharing}
+                handleOpenBoardPrint={shareBoardTargetId === currentBoard?.id ? handleOpenBoardPrint : undefined}
+                handleOpenBoardScan={shareBoardTargetId === currentBoard?.id ? handleOpenBoardScan : undefined}
+                handleShareBoardRecipient={handleShareBoardRecipient}
+                markBoardShared={markBoardShared}
+                setShareBoardMode={setShareBoardMode}
+                setShareContactPickerOpen={setShareContactPickerOpen}
+                setShareContactStatus={setShareContactStatus}
+                setShareModeInfoOpen={setShareModeInfoOpen}
+                setShareTemplateStatus={setShareTemplateStatus}
+                shareBoardDisplayName={shareBoardDisplayName}
+                shareBoardId={shareBoardId}
+                shareBoardModalOpen={shareBoardModalOpen}
+                shareBoardMode={shareBoardMode}
+                shareBoardQrPayload={shareBoardQrPayload}
+                shareBoardTarget={shareBoardTarget}
+                shareContactBusy={shareContactBusy}
+                shareContactPickerOpen={shareContactPickerOpen}
+                shareContactStatus={shareContactStatus}
+                shareModeInfoButtonRef={shareModeInfoButtonRef}
+                shareModeInfoOpen={shareModeInfoOpen}
+                shareModeInfoRef={shareModeInfoRef}
+                shareTemplateBusy={shareTemplateBusy}
+                shareTemplateStatus={shareTemplateStatus}
+                shareableContacts={shareableContacts}
+              />
+            </Suspense>
+          )}
           {showWalletShell && (
             <CashuWalletShell
               closeWallet={closeWallet}

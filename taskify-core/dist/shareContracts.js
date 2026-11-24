@@ -1,3 +1,4 @@
+import { taskRecurrenceWithDailyMinimum } from "./recurrence.js";
 import { TASKIFY_CALENDAR_EVENT_KIND, TASKIFY_CALENDAR_VIEW_KIND, parseCalendarAddress } from "./calendarProtocol.js";
 const SHARE_ENVELOPE_EMBED_REGEX = /(?:^|\n)Taskify-Share:\s*([A-Za-z0-9_-]+)\s*(?:\n|$)/m;
 function decodeBase64UrlUtf8(value) {
@@ -99,6 +100,10 @@ export function normalizeTaskDocuments(value) {
     return docs.length ? docs : undefined;
 }
 export function normalizeTaskRecurrence(value) {
+    const rule = normalizeRecurrence(value);
+    return rule ? taskRecurrenceWithDailyMinimum(rule) : undefined;
+}
+export function normalizeRecurrence(value) {
     if (!value || typeof value !== "object")
         return undefined;
     const raw = value;
@@ -106,13 +111,13 @@ export function normalizeTaskRecurrence(value) {
     const untilISO = typeof raw.untilISO === "string" && raw.untilISO.trim()
         ? raw.untilISO.trim()
         : undefined;
-    const withUntil = (rule) => (untilISO ? { ...rule, untilISO } : rule);
+    const withUntil = (rule) => untilISO ? { ...rule, untilISO } : rule;
     if (type === "none" || type === "daily")
         return withUntil({ type });
     if (type === "weekly") {
         if (!Array.isArray(raw.days))
             return undefined;
-        const days = Array.from(new Set(raw.days.filter((day) => Number.isInteger(day) && Number(day) >= 0 && Number(day) <= 6).map(Number)));
+        const days = [...new Set(raw.days.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))];
         return days.length ? withUntil({ type, days }) : undefined;
     }
     if (type === "every") {

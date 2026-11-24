@@ -58,6 +58,22 @@ struct KeychainIdentityStore {
         }
     }
 
+#if os(macOS)
+    func clearForLocalReset() throws {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        TaskifyKeychainItem.delete(query)
+        if let sharedAccessGroup {
+            query[kSecAttrAccessGroup as String] = sharedAccessGroup
+            TaskifyKeychainItem.delete(query)
+        }
+        guard try loadPrivateKey() == nil else { throw KeychainIdentityError.verificationFailed }
+    }
+#endif
+
     private func savePrivateKey(_ identity: NostrIdentity) throws {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

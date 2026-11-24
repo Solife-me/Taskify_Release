@@ -202,6 +202,8 @@ export { recurringInstanceId } from "taskify-core";
 
 export function recurringOccurrenceKey(task: Task): string | null {
   if (!task.recurrence || !isFrequentRecurrence(task.recurrence)) return null;
+  // Legacy hourly tasks can share a date. Keep their existing records distinct.
+  if (/^recurrence:.+:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(task.id)) return null;
   const seriesKey = recurrenceSeriesKey(task);
   if (!seriesKey) return null;
   const datePart = isoDatePart(task.dueISO, task.dueTimeZone);

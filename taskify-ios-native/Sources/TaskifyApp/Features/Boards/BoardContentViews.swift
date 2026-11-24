@@ -713,6 +713,7 @@ struct DayColumnView: View {
 
 struct TaskCardView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openTaskEditor) private var openTaskEditor
     // Optional: only Boards' own board content injects a TaskSelectionController (via
     // `.environment(selection)` in BoardsView.body). TaskCardView is also used from Upcoming and
     // a couple of other spots that never enter selection mode, so this must tolerate being nil
@@ -729,7 +730,6 @@ struct TaskCardView: View {
     let task: TaskItem
     let context: TaskCardContext
     let allowsDragging: Bool
-    @State private var showingEditor = false
     @State private var showingNoteViewer = false
     @State private var showingTaskShare = false
     @State private var taskShareMode: TaskShareMode = .share
@@ -1100,11 +1100,7 @@ struct TaskCardView: View {
             title: displayTitle
         ))
         .accessibilityAction(named: isSelectionMode ? "Toggle selection" : "Edit task") {
-            if isSelectionMode {
-                selection?.toggle(task.id)
-            } else {
-                showingEditor = true
-            }
+            editTapped()
         }
         // Dragging is the visual way to move a card; VoiceOver gets the move sheet (C8-3).
         .accessibilityAction(named: "Move to…") { showingMove = true }
@@ -1114,9 +1110,7 @@ struct TaskCardView: View {
         }
         .contextMenu {
             if !isSelectionMode {
-                Button {
-                    showingEditor = true
-                } label: {
+                Button(action: editTapped) {
                     Label("Edit", systemImage: "pencil")
                 }
                 Button {
@@ -1198,12 +1192,6 @@ struct TaskCardView: View {
                     ? "Catching up keeps the series and leaves one task for today. Deleting this and future tasks ends the series."
                     : "Catching up keeps the series and leaves one task for today.")
         }
-        .sheet(isPresented: $showingEditor) {
-            TaskEditorView(task: task)
-                .environment(model)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
         .sheet(isPresented: $showingNoteViewer) {
             TaskNoteViewerView(taskID: task.id)
                 .environment(model)
@@ -1222,7 +1210,7 @@ struct TaskCardView: View {
         if selection?.isActive ?? false {
             selection?.toggle(task.id)
         } else {
-            showingEditor = true
+            openTaskEditor(task)
         }
     }
 
@@ -1379,12 +1367,6 @@ extension AppModel {
         }
         let streak = runningStreak(for: task)
         return streak > 0 ? streak : nil
-    }
-}
-
-extension NostrContact {
-    var taskCreatorName: String {
-        profile?.displayName ?? profile?.name ?? profile?.username ?? displayName
     }
 }
 

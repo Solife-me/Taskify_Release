@@ -1,7 +1,16 @@
 import { formatDateKeyFromParts, isoDatePart, isoFromDateTime, isoTimePart, isoTimePartUtc, normalizeTimeZone, parseDateKey, startOfDay, } from "./dateTime.js";
 import { startOfWeekLocal } from "./weekDate.js";
 const MS_PER_HOUR = 3_600_000;
-const MS_PER_DAY = 86_400_000;
+/** Convert a legacy task rule without scheduling more often than its old interval. */
+export function taskRecurrenceWithDailyMinimum(rule) {
+    if (rule.type !== "every" || rule.unit !== "hour")
+        return rule;
+    const days = Math.ceil(rule.n / 24);
+    const until = rule.untilISO ? { untilISO: rule.untilISO } : {};
+    if (days <= 1)
+        return { type: "daily", ...until };
+    return { type: "every", n: days, unit: "day", ...until };
+}
 /**
  * The due instant of the occurrence after `currentISO`, or null when the rule has ended.
  * With a valid `timeZone`, days are counted in that zone, so a series keeps its wall-clock day
@@ -25,8 +34,9 @@ export function nextOccurrence(currentISO, rule, keepTime = false, timeZone) {
         return new Date(day.getTime() + timeOffset).toISOString();
     };
     const addDays = (d) => {
-        const nextDay = startOfDay(new Date(curDay.getTime() + d * MS_PER_DAY));
-        return applyTime(nextDay);
+        const nextDay = new Date(curDay);
+        nextDay.setDate(nextDay.getDate() + d);
+        return applyTime(startOfDay(nextDay));
     };
     let next = null;
     switch (rule.type) {
@@ -170,9 +180,10 @@ export function recurringInstanceId(seriesId, dueISO, rule, timeZone) {
  * fields (order, column, streaks) are left for the caller.
  */
 export function buildNextRecurringTask(task, options) {
-    const rule = options.recurrence ?? task.recurrence ?? undefined;
-    if (!rule || !task.dueISO)
+    const requestedRule = options.recurrence ?? task.recurrence;
+    if (!requestedRule || !task.dueISO)
         return null;
+    const rule = taskRecurrenceWithDailyMinimum(requestedRule);
     const timeZone = task.dueTimeZone ?? undefined;
     const nextISO = nextOccurrence(options.scheduledFromISO ?? task.dueISO, rule, !!task.dueTimeEnabled, timeZone);
     if (!nextISO)

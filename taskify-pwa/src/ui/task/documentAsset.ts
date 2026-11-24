@@ -50,6 +50,10 @@ export async function resolveDocumentAsset(
       remoteUrl: doc.remoteUrl,
       encrypted: doc.encrypted,
       encryptionBoardId: doc.encryptionBoardId || decryptBoardId,
+      ...(doc.ciphertextSha256 ? { ciphertextSha256: doc.ciphertextSha256 } : {}),
+      ...(doc.storageServer ? { storageServer: doc.storageServer } : {}),
+      ...(doc.retention ? { retention: doc.retention } : {}),
+      ...(doc.protectedUntil ? { protectedUntil: doc.protectedUntil } : {}),
     };
   })().catch((err) => { resolvedDocumentCache.delete(cacheKey); throw err; });
   entry.promise = promise;

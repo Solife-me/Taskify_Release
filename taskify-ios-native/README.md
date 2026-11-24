@@ -51,11 +51,14 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - Advanced list management with synced rename/reorder controls and guarded deletion that can preserve tasks by moving them to a neighboring list
 - Long-press task dragging and insertion feedback across weekly days and list columns, including synced reordering and cross-child movement within compound boards
 - Drag the handles in Settings → Boards & Lists to change the board switcher order on this device. With VoiceOver, swipe up or down on a handle to adjust the board's position.
+- In Settings → Boards, tap Archived to show archived boards and their Restore controls. The list starts collapsed.
 - Immediate task completion with native success haptics and concurrent PWA-style checkmarks flying to the completed control
 - Local task completion and PWA-style recurring deletion choices, with synced durable series
   cutoffs that prevent deleted future task/event occurrences from reappearing after relay replay
   (never for Scripture Memory reviews, whose series its settings run; see `docs/reference/app-state-sync.md`)
 - Rich native task editing for title, notes, priority, due date/time, list placement, and subtasks, with PWA-familiar interactive inline checklists on task cards
+- In the task editor, Add subtask opens the keyboard in the new row. Scroll up to reach more fields while typing. Opening the date or time controls dismisses the keyboard.
+- Existing tasks open in a full-screen editor with the app’s selected background. The draft stays available if the board behind it changes. Use Save or Cancel to close the editor.
 - Moving tasks between boards from the task editor's Board picker or the selection bar's Move, including list → week board (the task lands on the chosen day, or its date, in the current week); Copy Task (card menu or editor) puts the task on the clipboard in the PWA's JSON, and pasting that into any board's New Task field on either client recreates it (`TaskClipboard` in TaskifyCore)
 - Markdown task notes (`TaskNoteMarkdown` in TaskifyCore, mirrored by the PWA's `noteMarkdown.ts`): tapping a card's note opens a viewer with tickable checklist items; Edit, or tapping the notes in the task editor, opens a Markdown editor with a formatting bar, Write/Preview, list continuation on Return, and conversion of the checklist into subtasks
 - PWA-style completed-task presentation preferences, including a board-scoped newest-first Completed timeline with explicit restore/delete actions, optional in-list completed tasks, optional hiding of finished subtasks, and synced per-board Clear completed controls
@@ -102,6 +105,7 @@ xcodebuild -project TaskifyNative.xcodeproj -scheme TaskifyNative \
 - iOS background app refresh with an immediate background handoff, atomic persistence, bounded relay listening, durable-outbox delivery, automatic rescheduling, and expiration-safe completion
 - Native NIP-17 shared-task and assignment inbox with encrypted gift-wrap verification, multi-relay deduplication, review-before-add, persisted delivery state, rich task-field import, and queued Accept/Decline/Maybe responses wrapped so PWA chat cannot misclassify them as eCash
 - Task and event share sheets list all saved contacts without an eight-contact limit, search contacts and active group chats, and deliver shared items into the selected encrypted conversation. Assignments target individual contacts. Sharing an owned event adds recipients as attendees and persists RSVP tokens; forwarding an imported event retains its invitation.
+- Boards sent to a contact or group appear as named board cards in the conversation. Recipients can add the board from the card.
 - Native outbound task/contact/board/calendar sharing and assignments with npub/hex validation, kind-10050 inbox routing with compatibility fallbacks, independent recipient and sender gift wraps, persisted recent recipients, durable encrypted delivery, PWA-readable assignment messages, assignee-state badges, and authenticated response updates on the source task
 - Native Nostr contact directory with encrypted PWA-compatible NIP-51 private-list sync, signed kind-0 profile names/photos, automatic inbox-relay discovery, add/edit/delete controls, and contact selection for task shares and assignments
 - Native one-to-one Nostr Chat with PWA-compatible kind-14 NIP-17 text messages, separate recipient/self gift wraps sharing a canonical rumor ID, delivery to usable kind-10050 relays with fallback delivery when no usable list is resolved, a signed native kind-10050 preference publisher, a durable offline outbox, 30-day inbox recovery, multi-relay deduplication, persisted conversation history, unread state, contact-based compose, tappable contact headers, shared Photos/Files/Links contact tabs with photo URLs excluded from Links and non-photo attachments in Files, Markdown-formatted encrypted message bubbles, and tap-to-copy inline or fenced code
@@ -409,6 +413,18 @@ The [Solife performance audit](../docs/audits/solife-performance-audit-2026-09-0
 CPU, memory, thermal-state and hang measurements across navigation. Upcoming's calendar event
 date parser now reuses synchronized formatters after repeated formatter construction appeared
 in the device CPU stacks.
+
+## Encrypted account backup
+
+Changing App Relays starts backup publication immediately to the updated list. When available,
+the app uses the last verified encrypted backup as its starting point. The previous list remains
+available for lookup while the edit is pending. Local relay, board visibility, board relay, and
+synced preference edits survive a restart while awaiting a matching verified backup.
+
+An account backup can remove a visible board through a deletion marker or an explicit newer
+archive. An omitted board or a hidden copy created for a compound board leaves local membership
+intact. Rejoining a board from its share overrides an older deletion on that device. A previously
+accepted invitation offers **Add Board Again** if the board is missing from the active list.
 
 ## Migration order
 

@@ -10,7 +10,7 @@
 import { normalizeTaskRecurrence, type TaskDocument } from "taskify-core";
 import { normalizeTimeZone } from "../domains/dateTime/dateUtils";
 import { normalizeAgentPubkey, normalizeTaskAssignees } from "../domains/tasks/assignmentUtils";
-import type { Board, Recurrence, Subtask, Task, TaskAssignee } from "../domains/tasks/taskTypes";
+import type { Board, Subtask, Task, TaskAssignee } from "../domains/tasks/taskTypes";
 import { PINNED_BOUNTY_LIST_KEY, normalizeBounty, normalizeTaskCreatedAt, normalizeTaskPriority } from "../domains/tasks/taskUtils";
 import { ensureDocumentPreview, normalizeDocumentList } from "../lib/documents";
 
@@ -89,7 +89,7 @@ export function parseTaskEvent(
     completed: event.status === "done",
     completedAt: payload.completedAt as string | undefined,
     completedBy: payload.completedBy as string | undefined,
-    recurrence: normalizeTaskRecurrence(payload.recurrence) as Recurrence | undefined,
+    recurrence: normalizeTaskRecurrence(payload.recurrence),
     hiddenUntilISO: payload.hiddenUntilISO as string | undefined,
     streak: typeof payload.streak === "number" ? payload.streak : undefined,
     longestStreak: typeof payload.longestStreak === "number" ? payload.longestStreak : undefined,

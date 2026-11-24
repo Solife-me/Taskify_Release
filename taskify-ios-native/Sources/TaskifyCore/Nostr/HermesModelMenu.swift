@@ -76,6 +76,36 @@ public enum HermesSessionMenuError: Error {
     case invalidSessionId
 }
 
+/// Byte-level substring checks for the guards that run once per incoming chat message. Foundation's
+/// case-insensitive `range(of:)` is comparatively slow, and these needles are ASCII by definition.
+private enum ASCIIHaystack {
+    static let namedSessions = Array("named sessions".utf8)
+    static let providerMarker = Array("--provider ".utf8)
+
+    static func contains(
+        _ needle: [UInt8],
+        in text: String,
+        caseInsensitive: Bool = false
+    ) -> Bool {
+        let haystack = text.utf8
+        var start = haystack.startIndex
+        while start < haystack.endIndex {
+            var index = start
+            var matched = 0
+            while index < haystack.endIndex, matched < needle.count {
+                var byte = haystack[index]
+                if caseInsensitive, byte >= 0x41, byte <= 0x5A { byte |= 0x20 }
+                guard byte == needle[matched] else { break }
+                index = haystack.index(after: index)
+                matched += 1
+            }
+            if matched == needle.count { return true }
+            start = haystack.index(after: start)
+        }
+        return false
+    }
+}
+
 public enum HermesSessionMenuParser {
     private static let sessionPattern = #"^\d{8}_\d{6}_[0-9A-Fa-f]{8}$"#
 
@@ -93,21 +123,37 @@ public enum HermesSessionMenuParser {
             .description
     }
 
+    private static let headingExpression = try? NSRegularExpression(
+        pattern: #"^\s*(?:📋\s*)?\*\*Named Sessions\*\*\s*$"#,
+        options: [.caseInsensitive]
+    )
+    private static let rowExpression = try? NSRegularExpression(
+        pattern: #"^\s*\d+[.)]\s+\*\*(.+?)\*\*\s*(\(current\))?\s*[—–-]\s*`([^`\n]+)`(?:\s*[—–-].*)?$"#,
+        options: [.caseInsensitive]
+    )
+
+    private static func lineMatches(_ expression: NSRegularExpression?, _ line: String) -> Bool {
+        guard let expression else { return false }
+        return expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
+    }
+
     public static func parseListing(_ text: String) -> HermesSessionListing? {
+        // Ordinary chat text is the common input, and this runs for every incoming message in a
+        // thread projection. The heading is required, so reject in one scan before splitting
+        // lines and matching each of them.
+        guard ASCIIHaystack.contains(
+            ASCIIHaystack.namedSessions,
+            in: text,
+            caseInsensitive: true
+        ) else { return nil }
         let lines = text.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n")
-        guard let headingIndex = lines.firstIndex(where: {
-            $0.range(
-                of: #"^\s*(?:📋\s*)?\*\*Named Sessions\*\*\s*$"#,
-                options: [.regularExpression, .caseInsensitive]
-            ) != nil
-        }) else { return nil }
-
-        let rowPattern = #"^\s*\d+[.)]\s+\*\*(.+?)\*\*\s*(\(current\))?\s*[—–-]\s*`([^`\n]+)`(?:\s*[—–-].*)?$"#
-        guard let expression = try? NSRegularExpression(pattern: rowPattern, options: [.caseInsensitive]) else {
+        guard let headingIndex = lines.firstIndex(where: { lineMatches(headingExpression, $0) }) else {
             return nil
         }
+
+        guard let expression = rowExpression else { return nil }
         var sessions: [HermesSession] = []
         var seen = Set<String>()
         for line in lines.dropFirst(headingIndex + 1) {
@@ -211,7 +257,17 @@ public enum HermesModelMenuParser {
         return (name, slug, current)
     }
 
+    private static let moreLineExpression = try? NSRegularExpression(pattern: #"\(\+\d+\s+more\)"#)
+    private static let currentLineExpression = try? NSRegularExpression(
+        pattern: #"^\s*Current:\s*`([^`]+)`\s+on\s+([^\s`]+)\s*$"#,
+        options: [.anchorsMatchLines]
+    )
+
     public static func parseListing(_ text: String) -> HermesModelListing? {
+        // Every provider heading carries a `--provider marker. A model listing without one cannot
+        // parse, so ordinary chat text is rejected here instead of being split and scanned line by
+        // line. This runs for every incoming message in a thread projection.
+        guard ASCIIHaystack.contains(ASCIIHaystack.providerMarker, in: text) else { return nil }
         let lines = normalizedLines(text)
         let headings = lines.enumerated().compactMap { index, line -> (index: Int, name: String, slug: String, isCurrent: Bool)? in
             guard let parsed = providerHeading(line) else { return nil }
@@ -231,9 +287,13 @@ public enum HermesModelMenuParser {
             let block = lines[(heading.index + 1)..<end].joined(separator: "\n")
             let preview = uniqueModels(codeSpans(in: block))
             var hidden = 0
-            if let match = block.range(of: #"\(\+\d+\s+more\)"#, options: .regularExpression) {
-                let digits = block[match].filter(\.isNumber)
-                hidden = Int(digits) ?? 0
+            if let expression = moreLineExpression,
+               let match = expression.firstMatch(
+                   in: block,
+                   range: NSRange(block.startIndex..., in: block)
+               ),
+               let range = Range(match.range, in: block) {
+                hidden = Int(block[range].filter(\.isNumber)) ?? 0
             }
             let key = heading.slug.lowercased()
             guard seen.insert(key).inserted else { continue }
@@ -249,8 +309,7 @@ public enum HermesModelMenuParser {
 
         var currentModel: String?
         var currentProviderSlug: String?
-        let pattern = #"^\s*Current:\s*`([^`]+)`\s+on\s+([^\s`]+)\s*$"#
-        if let expression = try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]),
+        if let expression = currentLineExpression,
            let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
            let modelRange = Range(match.range(at: 1), in: text),
            let providerRange = Range(match.range(at: 2), in: text) {
@@ -399,10 +458,18 @@ public enum TaskifyBotMenuKind: String, Codable, Sendable {
 public enum TaskifyBotUiContract {
     public static let tagName = "taskify-bot-ui"
     public static let version = "v1"
-    private static let menuPattern = #"^[A-Za-z0-9_-]{1,64}$"#
+
+    /// `^[A-Za-z0-9_-]{1,64}$` without compiling a regular expression for every message.
+    static func isValidMenuID(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 64 else { return false }
+        return value.utf8.allSatisfy {
+            ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A)
+                || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x5F || $0 == 0x2D
+        }
+    }
 
     public static func tag(for action: TaskifyBotUiAction) throws -> [String] {
-        guard action.menuId.range(of: menuPattern, options: .regularExpression) != nil else {
+        guard isValidMenuID(action.menuId) else {
             throw TaskifyBotUiError.invalidAction
         }
         let prefix = [tagName, version, action.kind.rawValue, action.menuId]
@@ -428,7 +495,7 @@ public enum TaskifyBotUiContract {
 
     public static func action(from tags: [[String]]) -> TaskifyBotUiAction? {
         for tag in tags where tag.count >= 5 && tag[0] == tagName && tag[1] == version {
-            guard tag[3].range(of: menuPattern, options: .regularExpression) != nil,
+            guard isValidMenuID(tag[3]),
                   let kind = TaskifyBotUiAction.Kind(rawValue: tag[2]) else { continue }
             if kind == .sessionResume, tag.count == 5, HermesSessionMenuParser.isValidSessionId(tag[4]) {
                 return TaskifyBotUiAction(kind: kind, menuId: tag[3], sessionId: tag[4])
@@ -550,6 +617,16 @@ public enum HermesModelPickerProjection {
             }
             return $0.offset < $1.offset
         }.map(\.element)
+        return project(orderedMessages: ordered, enabled: true)
+    }
+
+    /// The same projection for messages already in chronological order (ties in their observed
+    /// order), which is what `TaskifySnapshot.directMessageThreads` holds. Skips the sort.
+    public static func project(
+        orderedMessages ordered: [NostrDirectMessage],
+        enabled: Bool
+    ) -> HermesBotUiProjection {
+        guard enabled else { return HermesBotUiProjection() }
 
         var hidden = Set<String>()
         var menusByListingMessageID: [String: HermesModelMenuProjection] = [:]
@@ -564,9 +641,7 @@ public enum HermesModelPickerProjection {
             guard message.botMenuKind != .sessions,
                   let listing = HermesModelMenuParser.parseListing(message.content) else { continue }
             let menuId = message.rumorEventID
-            guard menuId.range(of: #"^[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil else {
-                continue
-            }
+            guard TaskifyBotUiContract.isValidMenuID(menuId) else { continue }
             let menu = HermesModelMenuProjection(
                 listingEventId: message.rumorEventID,
                 menuId: menuId,

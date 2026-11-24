@@ -947,6 +947,7 @@ function EventEditModal({
 		            onChange={setRule}
 		            anchorDate={startDate}
 		            timeZone={allDay ? "UTC" : safeStartTzid}
+		            allowHourly
 		            disabled={isReadOnly}
 		            rowClassName="edit-row edit-row--interactive w-full text-left"
 		          />

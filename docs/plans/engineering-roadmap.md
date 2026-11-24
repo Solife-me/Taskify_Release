@@ -125,6 +125,15 @@ tombstone version ordering on PWA reload and live merge, CLI refresh and compoun
 merges, and Watch account labels through snapshot trimming and command encoding.
 See the [Beta sync audit](../audits/nostr-task-sync-beta-2026-11-14.md) for remaining release checks.
 
+## Native Account Sync Coverage (2026-11-21)
+
+Native regressions cover relay and preference edits awaiting a verified backup, loading the
+last signed encrypted backup from disk, and keeping a device's relay exclusions across sync
+reconfiguration. Board coverage includes old deletion markers after a rejoin, missing relay
+hints, hidden linked boards, and an explicit newer archive or deletion. The iOS settings test
+checks that editing App Relays immediately queues the encrypted backup to the updated list,
+survives relaunch, and preserves each board’s relays.
+
 ## Week Board Drag Coverage (2026-11-17)
 
 PWA task-command and native snapshot tests cover forward weekday drops and time of
@@ -135,6 +144,29 @@ The iOS Settings board reorder test drags a board, relaunches the app, and check
 the saved order in Settings and the board switcher. Snapshot coverage checks
 long-distance moves around archived, hidden, and Bible boards.
 
+The iOS archived-board Settings test checks that archived rows start hidden, can be
+shown and hidden again, and return to the active list after Restore.
+
+## Board Sharing and Local Reset Coverage
+
+The PWA reset tests use disposable IndexedDB databases and verify that a
+blocked deletion retains the marker for the next launch. Board share tests
+decrypt direct and group copies and verify inbox routing, group membership, and
+the common message ID. Chat coverage checks the sender's structured preview,
+deduplication, and placement in the correct conversation, including cached
+native group shares. macOS uses the native board-share and creator lookup paths
+shared with iOS. The PWA board settings test moves a board without
+dragging and checks that the Bible Tracker stays in place.
+
+## PWA and TypeScript Core Maintenance Coverage
+
+Recurrence tests cover the local fall-back transition, migration of hourly task rules to whole
+calendar days, the task editor's day-or-longer repeat choices, and PWA completion of a migrated
+task. Task editor merge tests verify that
+editing a title or subtask preserves a concurrent reorder unless the editor explicitly reorders
+the list. The service worker tests exercise offline deep links with aged startup files, protect
+the precache from trimming, and reject HTML from a different deployment.
+
 ## Native Board Performance Coverage (2026-09-12)
 
 `SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,
@@ -143,6 +175,12 @@ Upcoming row identities, and repeated messaging writes against 5,000 additional 
 `ScrollPerformanceUITests` adds dense Upcoming/Completed scrolling and switching measurements,
 using 500 future tasks on one date and 500 completed tasks. Device relay-traffic and thermal
 acceptance checks remain manual. See [native board performance](../audits/native-board-performance-2026-09-12.md).
+
+`ScrollPerformanceUITests` also verifies that an existing task can be renamed, annotated, and
+given a subtask in one editing session, with focus preserved during upward scrolling and moved
+to the new subtask as soon as it is added.
+It also checks that switching the board behind an open list task keeps the editor and its
+unsaved changes available, with all edits saved to the original task.
 
 ## Definition of Done
 

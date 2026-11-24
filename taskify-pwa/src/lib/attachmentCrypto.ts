@@ -2,6 +2,7 @@ import { fetchWithIPFSGatewayFallback, opaqueUploadFilename } from "taskify-core
 import { uploadFile } from "../nostr/Nip96Client";
 import type { FileServerEntry } from "./fileStorage";
 import { readResponseBytesWithProgress, toBufferSource, type DownloadProgressHandler } from "./binary";
+import { rememberAttachmentCiphertextHash } from "./blossomAttachmentIndex";
 
 const ATTACHMENT_KEY_LABEL = new TextEncoder().encode("taskify-board-attachment-v2");
 const ATTACHMENT_V2_MAGIC = new Uint8Array([0x54, 0x46, 0x41, 0x32]); // TFA2
@@ -85,6 +86,14 @@ export function inferAttachmentMimeFromUrl(url: string): string {
   return "application/octet-stream";
 }
 
+export type EncryptedAttachmentUploadResult = {
+  url: string;
+  ciphertextSha256: string;
+  serverUrl: string;
+  retention?: "protected" | "standard";
+  protectedUntil?: number;
+};
+
 export async function encryptAndUploadAttachment(opts: {
   boardId: string;
   data: Uint8Array;
@@ -95,7 +104,7 @@ export async function encryptAndUploadAttachment(opts: {
   signal?: AbortSignal;
   onProgress?: (progress: number, loaded?: number, total?: number) => void;
   onPhaseChange?: (phase: "uploading" | "processing") => void;
-}): Promise<string> {
+}): Promise<EncryptedAttachmentUploadResult> {
   attachmentDebug("encrypt:start", {
     boardId: opts.boardId,
     filename: opts.filename,
@@ -159,7 +168,13 @@ export async function encryptAndUploadAttachment(opts: {
     serverUrl: opts.serverEntry?.url,
     serverType: opts.serverEntry?.type,
   });
-  return upload.url;
+  return {
+    url: upload.url,
+    ciphertextSha256,
+    serverUrl: upload.serverUrl || opts.serverEntry.url,
+    ...(upload.retention ? { retention: upload.retention } : {}),
+    ...(upload.protectedUntil ? { protectedUntil: upload.protectedUntil } : {}),
+  };
 }
 
 export async function decryptAttachment(opts: {
@@ -185,10 +200,12 @@ export async function decryptAttachment(opts: {
     });
     if (!res.ok) throw new Error(`Failed to fetch attachment (${res.status})`);
     const bytes = await readResponseBytesWithProgress(res, opts.onProgress);
+    const ciphertextSha256 = await sha256Hex(bytes);
+    rememberAttachmentCiphertextHash(opts.url, ciphertextSha256);
     attachmentDebug("decrypt:fetched-bytes", {
       url: opts.url,
       encryptedBytes: bytes.byteLength,
-      ciphertextSha256: await sha256Hex(bytes),
+      ciphertextSha256,
       ciphertextSampleHex: sampleHex(bytes),
     });
     const isV2 = hasV2Magic(bytes);

@@ -44,7 +44,11 @@ test("chooses the whole board by default and supports a filtered list scope", as
 
   expect(container.textContent).toContain("Upcoming tasks");
   expect(container.textContent).toContain("Completed tasks");
-  expect(container.textContent).toContain("Turn on Notes or Due date and time");
+  expect(option(container, "Upcoming tasks", "checkbox").checked).toBe(true);
+  expect(option(container, "Completed tasks", "checkbox").checked).toBe(false);
+  expect(option(container, "Notes", "checkbox").checked).toBe(true);
+  expect(option(container, "Due date and time", "checkbox").checked).toBe(true);
+  expect(option(container, "Subtasks", "checkbox").checked).toBe(true);
   await act(async () => button(container, "Continue").click());
   expect(onContinue).toHaveBeenLastCalledWith({ kind: "board" }, initial);
 
@@ -83,11 +87,11 @@ test("offers selected items and returns the include and detail choices", async (
   expect(onContinue).toHaveBeenLastCalledWith(
     { kind: "selection" },
     defaults({
-      includeUpcoming: true,
+      includeUpcoming: false,
       includeCompleted: true,
-      includeNotes: true,
-      includeDue: true,
-      includeSubtasks: true,
+      includeNotes: false,
+      includeDue: false,
+      includeSubtasks: false,
       includePhotos: true,
     }),
   );

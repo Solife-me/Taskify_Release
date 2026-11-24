@@ -18,6 +18,7 @@ const CACHE_VERSION = /*__TASKIFY_BUILD_ID__*/ 'source-v10';
 const CACHE = `${CACHE_PREFIX}${CACHE_VERSION}`;
 const CONFIG_CACHE = `${CACHE_PREFIX}config`;
 const PRECACHE_URLS = /*__TASKIFY_PRECACHE_URLS__*/ ['/'];
+const PRECACHED_HREFS = new Set(PRECACHE_URLS.map((path) => new URL(path, self.location.origin).href));
 const CACHE_TIMESTAMP_HEADER = 'x-taskify-sw-cached-at';
 const MAX_CACHE_ENTRIES = 160;
 const CACHE_TRIM_TARGET = 140;
@@ -35,12 +36,15 @@ async function precacheAppShell() {
   const cache = await caches.open(CACHE);
   try {
     await Promise.all(PRECACHE_URLS.map(async (path) => {
-      const url = new URL(path, self.location.origin);
-      const headers = path === '/' ? { Accept: 'text/html' } : undefined;
-      const request = new Request(url.href, { cache: 'reload', headers });
+      const request = path === '/'
+        ? appShellRequest()
+        : new Request(new URL(path, self.location.origin).href, { cache: 'reload' });
       const response = await fetch(request);
       if (!response || !response.ok || response.type === 'opaque') {
         throw new Error(`Unable to pre-cache ${path}`);
+      }
+      if (path === '/' && !(await isMatchingAppShell(response))) {
+        throw new Error('The app shell belongs to a different deployment');
       }
       await putStampedResponse(cache, request, response);
     }));
@@ -62,44 +66,21 @@ self.addEventListener('fetch', (event) => {
   // resources that need offline behavior.
   if (!shouldHandleCachedRequest(event.request)) return;
 
-  // Every page URL (/boards/<id>, /upcoming, /task/<id>…) serves the same app shell, so
-  // navigations share one cache entry: any route opens offline, and the shell is stored once.
-  const cacheKey = isAppShellNavigation(event.request) ? appShellRequest() : event.request;
-
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
-      const cached = await matchFreshCachedResponse(cache, cacheKey);
-      const cachedForFallback = cached ? cached.clone() : null;
+      if (isAppShellNavigation(event.request)) return serveAppShell(cache);
+      const cached = await matchFreshCachedResponse(cache, event.request);
 
       // Vite content-hashed assets are immutable: a new deployment produces a
       // new URL. Cache-first avoids a background network request for every
-      // chunk while HTML keeps its network/update comparison below.
-      if (cached && isImmutableAssetRequest(event.request)) {
+      // chunk. Required startup files also stay pinned to the installed build.
+      if (cached && (PRECACHED_HREFS.has(event.request.url) || isImmutableAssetRequest(event.request))) {
         return cached;
       }
 
-      // Fast app-shell loading: race network briefly, then fall back to cache.
-      // This keeps startup snappy while still refreshing cached HTML when network is available.
-      if (isDocumentRequest(event.request)) {
-        if (cached) {
-          const networkAttempt = fetchAndUpdateCache(cache, event.request, cachedForFallback, cacheKey)
-            .then((response) => response || cached)
-            .catch(() => cached);
-          const timeoutFallback = wait(700).then(() => cached);
-          const winner = await Promise.race([networkAttempt, timeoutFallback]);
-          event.waitUntil(networkAttempt.catch(() => undefined));
-          return winner;
-        }
-        try {
-          const networkResponse = await fetchAndUpdateCache(cache, event.request, cachedForFallback, cacheKey);
-          if (networkResponse) return networkResponse;
-        } catch {}
-        return new Response(null, { status: 504, statusText: 'Gateway Timeout' });
-      }
-
       // Stale-while-revalidate for static/data requests.
-      const fetchPromise = fetchAndUpdateCache(cache, event.request, cachedForFallback);
+      const fetchPromise = fetchAndUpdateCache(cache, event.request, cached);
 
       if (cached) {
         event.waitUntil(fetchPromise.catch(() => undefined));
@@ -111,11 +92,36 @@ self.addEventListener('fetch', (event) => {
         if (networkResponse) return networkResponse;
       } catch {}
 
-      if (cached) return cached;
       return new Response(null, { status: 504, statusText: 'Gateway Timeout' });
     })(),
   );
 });
+
+async function isMatchingAppShell(response) {
+  const html = await response.clone().text();
+  return html.includes(`<meta name="taskify-build" content="${CACHE_VERSION}"`);
+}
+
+async function serveAppShell(cache) {
+  // Every in-app route uses the installed HTML. Only the replacement worker installs newer HTML.
+  const request = appShellRequest();
+  const installed = await cache.match(request);
+  if (installed) return installed;
+
+  // A browser can clear storage independently of the registration. Restore the shell only if the
+  // server can still provide this worker's build.
+  try {
+    const response = await fetch(request);
+    if (!response.ok) return response;
+    if (!(await isMatchingAppShell(response))) {
+      return new Response(null, { status: 503, statusText: 'App update pending' });
+    }
+    await putStampedResponse(cache, request, response).catch(() => undefined);
+    return response;
+  } catch {
+    return new Response(null, { status: 504, statusText: 'Gateway Timeout' });
+  }
+}
 
 function isCacheableResponse(request, response) {
   if (!response || !response.ok) return false;
@@ -129,21 +135,21 @@ function isCacheableResponse(request, response) {
   return shouldHandleCachedRequest(request);
 }
 
-async function fetchAndUpdateCache(cache, request, cachedResponse, cacheKey = request) {
+async function fetchAndUpdateCache(cache, request, cachedResponse) {
   try {
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok) {
       if (isCacheableResponse(request, networkResponse)) {
         let cacheError = null;
         try {
-          await putStampedResponse(cache, cacheKey, networkResponse);
+          await putStampedResponse(cache, request, networkResponse);
         } catch (err) {
           cacheError = err;
           const message = (err && err.message) || '';
           if (message && message.toLowerCase().includes('quotaexceeded')) {
             try {
               await evictOldestCacheEntries(cache, Math.max(1, Math.ceil((await cache.keys()).length / 4)));
-              await putStampedResponse(cache, cacheKey, networkResponse);
+              await putStampedResponse(cache, request, networkResponse);
               cacheError = null;
             } catch (retryErr) {
               cacheError = retryErr;
@@ -192,6 +198,7 @@ function cacheMaxAgeForRequest(request) {
 async function matchFreshCachedResponse(cache, request) {
   const cached = await cache.match(request);
   if (!cached) return null;
+  if (PRECACHED_HREFS.has(request.url)) return cached;
 
   const cachedAt = Number(cached.headers.get(CACHE_TIMESTAMP_HEADER) || '0');
   const age = Date.now() - cachedAt;
@@ -246,6 +253,7 @@ async function evictOldestCacheEntries(cache, count, knownKeys) {
   if (count <= 0) return;
   const keys = knownKeys || await cache.keys();
   const ranked = keys
+    .filter((request) => !PRECACHED_HREFS.has(request.url))
     .map((request, insertionIndex) => ({
       request,
       insertionIndex,
@@ -260,7 +268,10 @@ async function evictOldestCacheEntries(cache, count, knownKeys) {
 }
 
 function appShellRequest() {
-  return new Request(new URL('/', self.location.origin).href);
+  return new Request(new URL('/', self.location.origin).href, {
+    cache: 'reload',
+    headers: { Accept: 'text/html' },
+  });
 }
 
 /** A same-origin page navigation, which the server answers with the app shell. */

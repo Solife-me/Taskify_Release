@@ -26,8 +26,10 @@ type CapturedXhrCall = {
 
 class MockXhr {
   static lastCall: CapturedXhrCall | null = null;
+  static calls: CapturedXhrCall[] = [];
   static respondStatus = 200;
   static respondText = "{}";
+  static responseHeaders: Record<string, string> = {};
 
   upload: { onprogress: ((event: { loaded: number; total: number; lengthComputable: boolean }) => void) | null } = { onprogress: null };
   responseType = "";
@@ -53,6 +55,12 @@ class MockXhr {
     this.headers[name] = value;
   }
 
+  getAllResponseHeaders(): string {
+    return Object.entries(MockXhr.responseHeaders)
+      .map(([name, value]) => `${name}: ${value}`)
+      .join("\r\n");
+  }
+
   send(body: unknown): void {
     MockXhr.lastCall = {
       method: this.capturedMethod,
@@ -60,6 +68,7 @@ class MockXhr {
       headers: { ...this.headers },
       body,
     };
+    MockXhr.calls.push(MockXhr.lastCall);
     this.status = MockXhr.respondStatus;
     this.responseText = MockXhr.respondText;
     this.response = MockXhr.respondText;
@@ -77,8 +86,10 @@ class MockXhr {
 
 function installXhrMock(): void {
   MockXhr.lastCall = null;
+  MockXhr.calls = [];
   MockXhr.respondStatus = 200;
   MockXhr.respondText = "{}";
+  MockXhr.responseHeaders = {};
   vi.stubGlobal("XMLHttpRequest", MockXhr as unknown as typeof XMLHttpRequest);
 }
 
@@ -320,6 +331,36 @@ describe("Blossom auth header generation", () => {
     expect(tags.some((t) => t[0] === "t" && t[1] === "upload")).toBe(true);
     expect(tags.some((t) => t[0] === "x")).toBe(true);
     expect(tags.some((t) => t[0] === "expiration")).toBe(true);
+    expect(tags.some((t) => t[0] === "retention" && t[1] === "protected")).toBe(true);
+    expect(tags.some((t) => t[0] === "server" && t[1] === "blossom.band")).toBe(true);
+    expect(MockXhr.lastCall?.headers["X-SHA-256"]).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("uses authoritative Blossom retention response headers", async () => {
+    installXhrMock();
+    MockXhr.respondText = JSON.stringify({ url: "https://blossom.band/file.bin", sha256: "abc", size: 5 });
+    MockXhr.responseHeaders = {
+      "X-Blossom-Retention": "protected",
+      "X-Blossom-Protected-Until": "1893456000",
+    };
+
+    const { uploadAvatarToBlossom } = await import("./Nip96Client");
+    const result = await uploadAvatarToBlossom({
+      serverUrl: "https://blossom.band",
+      file: new Blob(["hello"]),
+      signer: VALID_SIGNER,
+    });
+
+    expect(MockXhr.calls.map(({ method }) => method)).toEqual(["HEAD", "PUT"]);
+    const [head, put] = MockXhr.calls;
+    expect(head.body).toBeNull();
+    expect(head.headers["X-Content-Length"]).toBe("5");
+    expect(head.headers["X-Content-Type"]).toBe("application/octet-stream");
+    expect(head.headers["X-SHA-256"]).toBe(put.headers["X-SHA-256"]);
+    expect(put.body).toBeInstanceOf(Blob);
+    expect(result.retention).toBe("protected");
+    expect(result.protectedUntil).toBe(1893456000);
+    expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

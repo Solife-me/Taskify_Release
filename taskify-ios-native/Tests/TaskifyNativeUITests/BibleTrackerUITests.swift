@@ -388,10 +388,11 @@ final class BibleTrackerUITests: XCTestCase {
         attach(app, name: "scripture-03-review-task-on-week-board")
     }
 
-    func testAppRelaysAreEditableAndDoNotChangeBoardRelays() throws {
+    func testAppRelayEditsSurviveRelaunchAndDoNotChangeBoardRelays() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
         app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
+        app.launchEnvironment["TASKIFY_UI_TEST_ACCOUNT_SYNC"] = "1"
         app.launch()
 
         openSettings(app, group: "Nostr & Sync")
@@ -427,6 +428,16 @@ final class BibleTrackerUITests: XCTestCase {
             "An added app relay should appear in the list"
         )
 
+        let inspectQueue = app.buttons["Inspect sync queue"]
+        for _ in 0..<6 where !inspectQueue.isHittable { app.swipeDown() }
+        XCTAssertTrue(inspectQueue.isHittable)
+        inspectQueue.tap()
+        let queue = app.navigationBars["Sync queue"]
+        XCTAssertTrue(queue.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Account backup"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["wss://relay.example.com"].firstMatch.exists)
+        queue.buttons["Done"].tap()
+
         // The edits above must not have touched any board's own relay list. Boards is its own
         // Settings group, above Nostr & Sync.
         let boardsHeader = app.buttons.matching(NSPredicate(format: "label == %@ AND value IN {'Collapsed', 'Expanded'}", "Boards")).firstMatch
@@ -455,6 +466,15 @@ final class BibleTrackerUITests: XCTestCase {
             "Adding an app relay must not add it to an existing board"
         )
         attach(app, name: "apprelays-03-board-relays-unchanged")
+
+        app.terminate()
+        app.launchEnvironment.removeValue(forKey: "TASKIFY_UI_TEST_FRESH_STORE")
+        app.launch()
+        openSettings(app, group: "Nostr & Sync")
+        for _ in 0..<12 where !relayField.exists { app.swipeUp() }
+        XCTAssertTrue(relayField.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["remove-app-relay-relay.example.com"].exists)
+        XCTAssertFalse(app.buttons["remove-app-relay-relay.damus.io"].exists)
     }
 
     func testReorderBoards() throws {
@@ -505,6 +525,46 @@ final class BibleTrackerUITests: XCTestCase {
         let weekOption = app.buttons["Week"]
         XCTAssertTrue(weekOption.waitForExistence(timeout: 5))
         XCTAssertLessThan(listOption.frame.midY, weekOption.frame.midY)
+    }
+
+    func testArchivedBoardsStartCollapsedAndCanBeRestored() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
+        app.launch()
+        openSettings(app, group: "Boards")
+
+        let nameField = app.textFields["Board name"]
+        XCTAssertTrue(nameField.waitForExistence(timeout: 10))
+        nameField.tap()
+        nameField.typeText("Archive Test Board")
+        app.buttons["Create weekly board"].tap()
+
+        let manageBoard = app.buttons["Manage Archive Test Board"]
+        XCTAssertTrue(manageBoard.waitForExistence(timeout: 5))
+        manageBoard.tap()
+        let archive = app.buttons["Archive board"]
+        for _ in 0..<6 where !archive.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(archive.isHittable)
+        archive.tap()
+        XCTAssertTrue(archive.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(manageBoard.exists, "Archived rows should start hidden")
+
+        let archived = app.buttons["Archived"]
+        XCTAssertTrue(archived.waitForExistence(timeout: 5))
+        archived.tap()
+        XCTAssertTrue(manageBoard.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Restore"].exists)
+
+        archived.tap()
+        XCTAssertTrue(manageBoard.waitForNonExistence(timeout: 5))
+
+        archived.tap()
+        app.buttons["Restore"].tap()
+        XCTAssertTrue(archived.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(manageBoard.waitForExistence(timeout: 5), "Restoring should return the board to the active list")
     }
 
     /// Assumes a fresh app install so the Week board's "today" column has exactly one task.

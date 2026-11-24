@@ -1,4 +1,6 @@
-import React from "react";
+import React, { useState } from "react";
+import { useChatRuntime } from "../../chat/ChatRuntime";
+import type { GroupChat } from "../../lib/groupChatState";
 import { QRCodeCanvas } from "qrcode.react";
 import type { Board } from "taskify-core";
 import { ActionSheet } from "../../components/ActionSheet";
@@ -15,9 +17,10 @@ import {
 type ShareBoardDialogsProps = {
   closeShareBoard: () => void;
   enableBoardSharing: (boardId: string) => void;
-  handleOpenBoardPrint: () => void;
-  handleOpenBoardScan: () => void;
-  handleShareBoardToContact: (contact: Contact) => void;
+  handleOpenBoardPrint?: () => void;
+  handleOpenBoardScan?: () => void;
+  handleShareBoardRecipient: (recipient: Contact | GroupChat) => void;
+  markBoardShared: (shareId: string) => void;
   setShareBoardMode: (mode: "board" | "template") => void;
   setShareContactPickerOpen: (open: boolean) => void;
   setShareContactStatus: (status: string | null) => void;
@@ -45,7 +48,8 @@ export function ShareBoardDialogs({
   enableBoardSharing,
   handleOpenBoardPrint,
   handleOpenBoardScan,
-  handleShareBoardToContact,
+  handleShareBoardRecipient,
+  markBoardShared,
   setShareBoardMode,
   setShareContactPickerOpen,
   setShareContactStatus,
@@ -67,6 +71,13 @@ export function ShareBoardDialogs({
   shareTemplateStatus,
   shareableContacts,
 }: ShareBoardDialogsProps) {
+  const { boardShareGroups } = useChatRuntime();
+  const [search, setSearch] = useState("");
+  const query = search.trim().toLowerCase();
+  const groups = boardShareGroups.filter((group) => group.name.toLowerCase().includes(query));
+  const contacts = shareableContacts.filter((contact) => [
+    contact.name, contact.displayName, contact.username, contact.username && `@${contact.username}`, contact.npub,
+  ].some((value) => value?.toLowerCase().includes(query)));
   return (
     <>
       {shareBoardModalOpen && (
@@ -153,7 +164,9 @@ export function ShareBoardDialogs({
                           aria-label="Copy board ID"
                           onClick={async () => {
                             try {
-                              await navigator.clipboard?.writeText(shareBoardId);
+                              if (!navigator.clipboard) return;
+                              await navigator.clipboard.writeText(shareBoardId);
+                              if (shareBoardMode === "board") markBoardShared(shareBoardId);
                             } catch {}
                           }}
                         >
@@ -178,28 +191,31 @@ export function ShareBoardDialogs({
                     <button
                       className="ghost-button button-sm pressable flex-1 justify-center"
                       onClick={() => {
+                        setSearch("");
                         setShareContactStatus(null);
                         setShareContactPickerOpen(true);
                       }}
                       disabled={!shareBoardId || (shareBoardMode === "template" && shareTemplateBusy)}
                     >
-                      Contacts
+                      Send to chat
                     </button>
                   </div>
-                  <div className="flex gap-2 mt-2">
-                    <button
-                      className="ghost-button button-sm pressable flex-1 justify-center"
-                      onClick={handleOpenBoardPrint}
-                    >
-                      Print
-                    </button>
-                    <button
-                      className="ghost-button button-sm pressable flex-1 justify-center"
-                      onClick={handleOpenBoardScan}
-                    >
-                      Scan
-                    </button>
-                  </div>
+                  {handleOpenBoardPrint && handleOpenBoardScan && (
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        className="ghost-button button-sm pressable flex-1 justify-center"
+                        onClick={handleOpenBoardPrint}
+                      >
+                        Print
+                      </button>
+                      <button
+                        className="ghost-button button-sm pressable flex-1 justify-center"
+                        onClick={handleOpenBoardScan}
+                      >
+                        Scan
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -225,12 +241,12 @@ export function ShareBoardDialogs({
           setShareContactPickerOpen(false);
           setShareContactStatus(null);
         }}
-        title="Send board ID"
+        title="Send board to chat"
         stackLevel={75}
       >
         {shareBoardTarget ? (
           <div className="text-sm text-secondary mb-2">
-            Choose a contact to send <span className="font-semibold">{shareBoardDisplayName}</span>.
+            Choose a contact or group to send <span className="font-semibold">{shareBoardDisplayName}</span>.
           </div>
         ) : (
           <div className="text-sm text-secondary mb-2">Select a board to share first.</div>
@@ -238,9 +254,36 @@ export function ShareBoardDialogs({
         {shareContactStatus && (
           <div className="text-sm text-rose-400 mb-2">{shareContactStatus}</div>
         )}
-        {shareableContacts.length ? (
-          <div className="space-y-2">
-            {shareableContacts.map((contact) => {
+        <input
+          type="search"
+          className="pill-input w-full mb-2"
+          aria-label="Search contacts and groups"
+          placeholder="Search contacts and groups"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+        {groups.length > 0 && (
+          <div role="group" aria-label="Group chats" className="space-y-2 mb-2">
+            {groups.map((group) => (
+              <button
+                key={group.groupId}
+                type="button"
+                className="contact-row pressable"
+                disabled={shareContactBusy || !shareBoardId}
+                onClick={() => handleShareBoardRecipient(group)}
+              >
+                <div className="contact-avatar">{contactInitials(group.name)}</div>
+                <div className="contact-row__text">
+                  <div className="contact-row__name">{group.name}</div>
+                  <div className="contact-row__meta">{group.members.length} members</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+        {contacts.length > 0 && (
+          <div role="group" aria-label="Contacts" className="space-y-2">
+            {contacts.map((contact) => {
               const label = contactPrimaryName(contact);
               const subtitle = formatContactNpub(contact.npub);
               return (
@@ -249,7 +292,7 @@ export function ShareBoardDialogs({
                   type="button"
                   className="contact-row pressable"
                   disabled={shareContactBusy || !shareBoardId}
-                  onClick={() => handleShareBoardToContact(contact)}
+                  onClick={() => handleShareBoardRecipient(contact)}
                 >
                   <div className="contact-avatar">{contactInitials(label)}</div>
                   <div className="contact-row__text">
@@ -264,8 +307,9 @@ export function ShareBoardDialogs({
               );
             })}
           </div>
-        ) : (
-          <div className="text-sm text-secondary">Add a contact with an npub to share.</div>
+        )}
+        {!groups.length && !contacts.length && (
+          <div className="text-sm text-secondary">{query ? "No matching contacts or groups." : "Add a contact or create a group to share."}</div>
         )}
         <div className="flex gap-2 mt-3">
           <button
