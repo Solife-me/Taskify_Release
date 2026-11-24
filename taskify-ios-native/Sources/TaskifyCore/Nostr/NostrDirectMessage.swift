@@ -575,6 +575,7 @@ public struct NostrDirectMessageReaction: Identifiable, Codable, Equatable, Send
 public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
     public var id: String { peerPublicKey }
     public var peerPublicKey: String
+    /// Set at construction; `hiddenMessageIDs` and `latestVisibleMessage` are derived from it then.
     public var messages: [NostrDirectMessage]
     public var sharedTasks: [SharedInboxItem]
     public var sharedContacts: [SharedContactInboxItem]
@@ -582,6 +583,10 @@ public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
     public var sharedBoards: [SharedBoardInboxItem]
     public var unreadCount: Int
     public var actionRequiredCount: Int
+    /// Internal Hermes menu/command traffic, resolved once when the thread is built. Reading
+    /// `latestMessage` from a chat row used to re-project the whole thread each time.
+    public private(set) var hiddenMessageIDs: Set<String>
+    public private(set) var latestVisibleMessage: NostrDirectMessage?
 
     public init(
         peerPublicKey: String,
@@ -591,7 +596,8 @@ public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
         calendarInvites: [SharedCalendarInviteInboxItem] = [],
         sharedBoards: [SharedBoardInboxItem] = [],
         unreadCount: Int,
-        actionRequiredCount: Int = 0
+        actionRequiredCount: Int = 0,
+        hermesProjection: HermesBotUiProjection? = nil
     ) {
         self.peerPublicKey = peerPublicKey
         self.messages = messages
@@ -601,15 +607,20 @@ public struct NostrDirectMessageThread: Identifiable, Equatable, Sendable {
         self.sharedBoards = sharedBoards
         self.unreadCount = unreadCount
         self.actionRequiredCount = actionRequiredCount
+        let projection = hermesProjection
+            ?? HermesModelPickerProjection.project(messages: messages, enabled: true)
+        self.hiddenMessageIDs = projection.hiddenMessageIDs
+        self.latestVisibleMessage = messages.last {
+            !projection.hiddenMessageIDs.contains($0.rumorEventID)
+        }
     }
 
     /// Internal Hermes catalog traffic is absent, while the listing response remains available
     /// for the native picker to render.
     public var visibleMessages: [NostrDirectMessage] {
-        let hidden = HermesModelPickerProjection.project(messages: messages, enabled: true).hiddenMessageIDs
-        return messages.filter { !hidden.contains($0.rumorEventID) }
+        messages.filter { !hiddenMessageIDs.contains($0.rumorEventID) }
     }
-    public var latestMessage: NostrDirectMessage? { visibleMessages.last }
+    public var latestMessage: NostrDirectMessage? { latestVisibleMessage }
     public var latestSharedTask: SharedInboxItem? { sharedTasks.last }
     public var latestSharedContact: SharedContactInboxItem? { sharedContacts.last }
     public var latestCalendarInvite: SharedCalendarInviteInboxItem? { calendarInvites.last }
@@ -741,6 +752,15 @@ public extension TaskifySnapshot {
     }
 
     func directMessageThreads() -> [NostrDirectMessageThread] {
+        directMessageThreads(projectionFor: nil)
+    }
+
+    /// `projectionFor` lets an owner that persists across snapshot writes (the lookup cache)
+    /// reuse a thread's unchanged projection instead of re-parsing its whole history. Passed the
+    /// peer and its messages, already in relay order.
+    func directMessageThreads(
+        projectionFor hermesProjection: ((String, [NostrDirectMessage]) -> HermesBotUiProjection)?
+    ) -> [NostrDirectMessageThread] {
         let conversations = nostrGroupConversations ?? []
         let conversationByID = Dictionary(
             conversations.map { ($0.groupID, $0) },
@@ -798,9 +818,10 @@ public extension TaskifySnapshot {
             }
             let readAt = directMessageReadAt?[peer] ?? 0
             let mutedAt = directMessageMutedGroups?[peer]
-            let hiddenHermesIDs = HermesModelPickerProjection
-                .project(messages: sorted, enabled: true)
-                .hiddenMessageIDs
+            // `sorted` is already in relay order, so the projection need not sort again.
+            let projection = hermesProjection?(peer, sorted)
+                ?? HermesModelPickerProjection.project(orderedMessages: sorted, enabled: true)
+            let hiddenHermesIDs = projection.hiddenMessageIDs
             return NostrDirectMessageThread(
                 peerPublicKey: peer,
                 messages: sorted.filter { !boardRumorIDs.contains($0.rumorEventID) },
@@ -817,7 +838,8 @@ public extension TaskifySnapshot {
                 actionRequiredCount: sharedTasks.filter { $0.status == .pending }.count
                     + sharedContacts.filter { $0.isIncoming && $0.status == .pending }.count
                     + calendarInvites.filter { $0.status == .pending }.count
-                    + sharedBoards.filter { $0.status == .pending }.count
+                    + sharedBoards.filter { $0.status == .pending }.count,
+                hermesProjection: projection
             )
         }
         return threads.sorted {
@@ -834,15 +856,23 @@ public extension TaskifySnapshot {
     /// Builds the inbox without rescanning every model-wide message/share collection once for
     /// each thread. Archive state can be decided from the already-computed latest activity.
     func activeDirectMessageThreads() -> [NostrDirectMessageThread] {
+        activeDirectMessageThreads(projectionFor: nil)
+    }
+
+    func activeDirectMessageThreads(
+        projectionFor hermesProjection: ((String, [NostrDirectMessage]) -> HermesBotUiProjection)?
+    ) -> [NostrDirectMessageThread] {
         let archivedAt = directMessageArchivedAt ?? [:]
-        guard !archivedAt.isEmpty else { return directMessageThreads() }
+        guard !archivedAt.isEmpty else {
+            return directMessageThreads(projectionFor: hermesProjection)
+        }
         let groupCreatedAt = Dictionary(
             (nostrGroupConversations ?? []).map {
                 ($0.groupID, $0.createdAt)
             },
             uniquingKeysWith: min
         )
-        return directMessageThreads().filter { thread in
+        return directMessageThreads(projectionFor: hermesProjection).filter { thread in
             guard let archivedTimestamp = archivedAt[thread.peerPublicKey] else { return true }
             return max(
                 thread.latestActivityTimestamp,
@@ -1168,6 +1198,68 @@ public extension TaskifySnapshot {
         }
         directMessages = values
         return true
+    }
+
+    /// The batch form of `ingestDirectMessage`: one array copy, one sort and one cap for a whole
+    /// history replay. Ingesting a backfill one message at a time re-sorted every stored message
+    /// per message, which is quadratic in the history size.
+    ///
+    /// Returns the rumor IDs that were added or changed, so callers can run per-message side
+    /// effects for exactly the messages the single-message form would have accepted.
+    @discardableResult
+    mutating func ingestDirectMessages(
+        _ incoming: [NostrDirectMessage],
+        maximumCount: Int = .max,
+        now: Int = Int(Date().timeIntervalSince1970)
+    ) -> Set<String> {
+        guard !incoming.isEmpty else { return [] }
+        var values = directMessages ?? []
+        var indexByRumorID = [String: Int](minimumCapacity: values.count + incoming.count)
+        for (index, message) in values.enumerated() {
+            indexByRumorID[message.rumorEventID] = index
+        }
+        var suppressed: [String: Int]?
+        var accepted: Set<String> = []
+        var appended = false
+        for message in incoming {
+            guard Self.normalizedConversationID(message.peerPublicKey) != nil,
+                  message.groupID == nil || message.groupID == message.peerPublicKey,
+                  !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            if suppressed == nil {
+                let current = (directMessageDeletedEventIDs ?? [:]).filter { $0.value > now }
+                directMessageDeletedEventIDs = current.nilIfEmpty
+                suppressed = current
+            }
+            guard suppressed?[message.rumorEventID] == nil,
+                  suppressed?[message.wrapEventID] == nil else { continue }
+            if let existingIndex = indexByRumorID[message.rumorEventID] {
+                let existing = values[existingIndex]
+                // A sender-copy echo proves that the sender's inbox stored the wrap. Only the
+                // outbox can confirm that a recipient relay accepted the outgoing message.
+                guard !existing.isIncoming, !message.isIncoming,
+                      existing.wrapEventID == existing.rumorEventID,
+                      message.wrapEventID != message.rumorEventID else { continue }
+                values[existingIndex].wrapEventID = message.wrapEventID
+                values[existingIndex].relayURLs = message.relayURLs
+                accepted.insert(message.rumorEventID)
+                continue
+            }
+            values.append(message)
+            indexByRumorID[message.rumorEventID] = values.count - 1
+            accepted.insert(message.rumorEventID)
+            appended = true
+        }
+        guard !accepted.isEmpty else { return [] }
+        if appended {
+            values = Self.sortedDirectMessages(values)
+            if values.count > maximumCount {
+                values.removeFirst(values.count - maximumCount)
+            }
+        }
+        directMessages = values
+        return accepted
     }
 
     @discardableResult

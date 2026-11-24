@@ -41,6 +41,7 @@ Reference documents describe the system; plans track proposed or ongoing work; d
 - [Beta Nostr task sync audit](audits/nostr-task-sync-beta-2026-11-14.md)
 - [Full-stack audit report — October 2, 2026](audits/full-stack-audit-report-2026-10-02.md)
 - [Full-stack audit record — September 30 to October 2, 2026](audits/full-stack-audit-2026-09-30.md)
+- [iOS app performance audit — November 23, 2026](audits/ios-performance-audit-2026-11-23.md)
 - [Native board view performance — 2026-09-12](audits/native-board-performance-2026-09-12.md)
 - [Nostr sync pipeline audit — September 3, 2026](audits/nostr-sync-audit-2026-09-03.md)
 - [PWA / iOS task and DM history recovery](audits/pwa-client-history-sync-2026-09-11.md)

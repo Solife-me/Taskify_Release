@@ -504,12 +504,9 @@ extension AppModel {
     }
 
     private func ingestLocalDirectMessages(_ messages: [NostrDirectMessage]) {
+        guard !messages.isEmpty else { return }
         var updated = snapshot
-        var changed = false
-        for message in messages {
-            changed = updated.ingestDirectMessage(message) || changed
-        }
-        if changed {
+        if !updated.ingestDirectMessages(messages).isEmpty {
             snapshot = updated
             scheduleSave()
         }

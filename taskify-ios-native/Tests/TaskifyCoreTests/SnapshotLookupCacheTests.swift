@@ -341,4 +341,35 @@ final class SnapshotLookupCacheTests: XCTestCase {
         XCTAssertEqual(cache.completedTaskCount(boardIDs: ["board"], snapshot: updated), 1)
         XCTAssertEqual(cache.taskIndexBuildCount, 2)
     }
+
+    func testChatWritesReuseUnchangedThreadProjections() {
+        let peerA = String(repeating: "a", count: 64)
+        let peerB = String(repeating: "b", count: 64)
+        func message(_ value: Int, peer: String) -> NostrDirectMessage {
+            NostrDirectMessage(
+                rumorEventID: String(format: "%064x", value),
+                wrapEventID: String(format: "%064x", value + 100),
+                peerPublicKey: peer,
+                senderPublicKey: peer,
+                content: "Message \(value)",
+                createdAt: value,
+                isIncoming: true
+            )
+        }
+        var snapshot = TaskifySnapshot.empty
+        snapshot.directMessages = [message(1, peer: peerA), message(2, peer: peerB)]
+
+        let cache = SnapshotLookupCache()
+        XCTAssertEqual(cache.directMessageThreads(snapshot: snapshot).count, 2)
+        XCTAssertEqual(cache.hermesProjectionBuildCount, 2)
+
+        var updated = snapshot
+        updated.directMessages?.append(message(3, peer: peerA))
+        cache.invalidate(from: snapshot, to: updated)
+        XCTAssertEqual(cache.directMessageThreads(snapshot: updated).count, 2)
+        XCTAssertEqual(
+            cache.hermesProjectionBuildCount, 3,
+            "only the conversation that received the message re-projects"
+        )
+    }
 }

@@ -6217,14 +6217,29 @@ final class AppModel {
             var updatedSnapshot = snapshot
             var effects = SharedInboxApplyEffects()
             let connectedInboxRelays = Set(sharedInboxRelayURLs)
+            var pendingChatMessages: [NostrDirectMessage] = []
+            var pendingPushContents: [String: String] = [:]
             for decrypted in decryptedEvents {
                 applySharedInboxRumor(
                     decrypted,
                     identity: identity,
                     connectedInboxRelays: connectedInboxRelays,
                     snapshot: &updatedSnapshot,
-                    effects: &effects
+                    effects: &effects,
+                    pendingChatMessages: &pendingChatMessages,
+                    pendingPushContents: &pendingPushContents
                 )
+            }
+            if !pendingChatMessages.isEmpty {
+                // One copy, one sort and one cap for the batch. Ingesting each message on its
+                // own re-sorted the whole history per message during a relay backfill.
+                let accepted = updatedSnapshot.ingestDirectMessages(pendingChatMessages)
+                if !accepted.isEmpty {
+                    effects.snapshotChanged = true
+                    for (rumorID, content) in pendingPushContents where accepted.contains(rumorID) {
+                        recordDMPushCategory(forIncomingContent: content)
+                    }
+                }
             }
             if effects.snapshotChanged {
                 // A shared item can arrive here after another device already answered it.
@@ -6257,7 +6272,9 @@ final class AppModel {
         identity: NostrIdentity,
         connectedInboxRelays: Set<String>,
         snapshot updatedSnapshot: inout TaskifySnapshot,
-        effects: inout SharedInboxApplyEffects
+        effects: inout SharedInboxApplyEffects,
+        pendingChatMessages: inout [NostrDirectMessage],
+        pendingPushContents: inout [String: String]
     ) {
         let rumor = decrypted.rumor
         // This only ever succeeds for a payment fulfilling a NUT-18 request *this device*
@@ -6316,9 +6333,8 @@ final class AppModel {
             }
             if group != nil || isSentBoard,
                let chatMessage = NostrDirectMessage(decrypted: decrypted, identityPublicKey: identity.publicKeyHex),
-               chatMessage.createdAt >= (chatMessageRetention.cutoffTimestamp() ?? 0),
-               updatedSnapshot.ingestDirectMessage(chatMessage) {
-                effects.snapshotChanged = true
+               chatMessage.createdAt >= (chatMessageRetention.cutoffTimestamp() ?? 0) {
+                pendingChatMessages.append(chatMessage)
             }
             let message = NIP17InboxMessage(
                 wrapEventID: decrypted.wrapEventID,
@@ -6480,13 +6496,9 @@ final class AppModel {
         }
 #endif
 
-        if updatedSnapshot.ingestDirectMessage(directMessage) {
-            effects.snapshotChanged = true
-            if directMessage.isIncoming {
-                recordDMPushCategory(
-                    forIncomingContent: directMessage.content
-                )
-            }
+        pendingChatMessages.append(directMessage)
+        if directMessage.isIncoming {
+            pendingPushContents[directMessage.rumorEventID] = directMessage.content
         }
     }
 

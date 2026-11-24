@@ -1230,6 +1230,130 @@ final class NostrDirectMessageTests: XCTestCase {
         XCTAssertTrue(decoded.directMessageThreads().isEmpty)
     }
 
+    func testBatchIngestMatchesOneMessageAtATime() throws {
+        let peer = try identity(senderPrivateKey).publicKeyHex
+        let other = try identity(recipientPrivateKey).publicKeyHex
+        let outgoing = message(
+            rumorID: hex(11), wrapID: hex(11), peer: peer, sender: recipientPrivateKey,
+            content: "Outgoing", createdAt: 250, incoming: false
+        )
+        let senderCopyEcho = message(
+            rumorID: hex(11), wrapID: hex(12), peer: peer, sender: recipientPrivateKey,
+            content: "Outgoing", createdAt: 250, incoming: false
+        )
+        let all = [
+            message(rumorID: hex(1), wrapID: hex(2), peer: peer, sender: peer,
+                    content: "First", createdAt: 100, incoming: true),
+            message(rumorID: hex(3), wrapID: hex(4), peer: peer, sender: peer,
+                    content: "Second", createdAt: 100, incoming: true),
+            message(rumorID: hex(1), wrapID: hex(2), peer: peer, sender: peer,
+                    content: "First", createdAt: 100, incoming: true),
+            message(rumorID: hex(5), wrapID: hex(6), peer: other, sender: other,
+                    content: "Other peer", createdAt: 200, incoming: true),
+            outgoing,
+            senderCopyEcho,
+            message(rumorID: hex(7), wrapID: hex(8), peer: peer, sender: peer,
+                    content: "   ", createdAt: 300, incoming: true)
+        ]
+
+        var oneAtATime = TaskifySnapshot.empty
+        for message in all { _ = oneAtATime.ingestDirectMessage(message) }
+
+        var batched = TaskifySnapshot.empty
+        let accepted = batched.ingestDirectMessages(all)
+
+        XCTAssertEqual(batched.directMessageHistory, oneAtATime.directMessageHistory)
+        XCTAssertEqual(batched.directMessageDeletedEventIDs, oneAtATime.directMessageDeletedEventIDs)
+        XCTAssertEqual(
+            batched.directMessageThreads().map(\.messages),
+            oneAtATime.directMessageThreads().map(\.messages)
+        )
+        XCTAssertEqual(accepted, [hex(1), hex(3), hex(5), hex(11)])
+        XCTAssertEqual(
+            batched.directMessageHistory.first { $0.rumorEventID == hex(11) }?.wrapEventID,
+            hex(12)
+        )
+    }
+
+    func testBatchIngestHonorsDeletionSuppressionLikeSingleIngest() throws {
+        let peer = try identity(senderPrivateKey).publicKeyHex
+        let suppressed = message(
+            rumorID: hex(3), wrapID: hex(4), peer: peer, sender: peer,
+            content: "Suppressed", createdAt: 100, incoming: true
+        )
+        let kept = message(
+            rumorID: hex(5), wrapID: hex(6), peer: peer, sender: peer,
+            content: "Kept", createdAt: 200, incoming: true
+        )
+        let expiry = Int(Date().timeIntervalSince1970) + 3_600
+
+        var single = TaskifySnapshot.empty
+        single.directMessageDeletedEventIDs = [hex(3): expiry]
+        XCTAssertFalse(single.ingestDirectMessage(suppressed))
+        XCTAssertTrue(single.ingestDirectMessage(kept))
+
+        var batched = TaskifySnapshot.empty
+        batched.directMessageDeletedEventIDs = [hex(3): expiry]
+        XCTAssertEqual(batched.ingestDirectMessages([suppressed, kept]), [hex(5)])
+
+        XCTAssertEqual(batched.directMessageHistory, single.directMessageHistory)
+        XCTAssertEqual(batched.directMessageHistory.map(\.content), ["Kept"])
+    }
+
+    func testBatchIngestAppliesTheRetentionLimitOnce() throws {
+        let peer = try identity(senderPrivateKey).publicKeyHex
+        let messages = (1...120).map { index in
+            message(
+                rumorID: hex(index), wrapID: hex(index + 1_000), peer: peer, sender: peer,
+                content: "Message \(index)", createdAt: index, incoming: true
+            )
+        }
+
+        var single = TaskifySnapshot.empty
+        for message in messages {
+            _ = single.ingestDirectMessage(message, maximumCount: 100)
+        }
+
+        var batched = TaskifySnapshot.empty
+        _ = batched.ingestDirectMessages(messages, maximumCount: 100)
+
+        XCTAssertEqual(batched.directMessageHistory, single.directMessageHistory)
+        XCTAssertEqual(batched.directMessageHistory.count, 100)
+        XCTAssertEqual(batched.directMessageHistory.first?.content, "Message 21")
+    }
+
+    func testThreadResolvesHermesTrafficOnceAtConstruction() throws {
+        let peer = try identity(senderPrivateKey).publicKeyHex
+        var snapshot = TaskifySnapshot.empty
+        snapshot.directMessages = [
+            message(rumorID: hex(1), wrapID: hex(2), peer: peer, sender: peer,
+                    content: "Plain message", createdAt: 100, incoming: true),
+            message(rumorID: hex(3), wrapID: hex(4), peer: peer, sender: peer,
+                    content: "Second message", createdAt: 200, incoming: true)
+        ]
+        let thread = try XCTUnwrap(snapshot.directMessageThreads().first)
+        let projection = HermesModelPickerProjection.project(messages: thread.messages, enabled: true)
+
+        XCTAssertEqual(thread.hiddenMessageIDs, projection.hiddenMessageIDs)
+        XCTAssertEqual(
+            thread.visibleMessages.map(\.rumorEventID),
+            thread.messages.map(\.rumorEventID).filter { !projection.hiddenMessageIDs.contains($0) }
+        )
+        XCTAssertEqual(thread.latestMessage?.rumorEventID, thread.visibleMessages.last?.rumorEventID)
+        XCTAssertEqual(thread.latestActivityTimestamp, 200)
+
+        let explicit = NostrDirectMessageThread(
+            peerPublicKey: thread.peerPublicKey,
+            messages: thread.messages,
+            unreadCount: thread.unreadCount,
+            hermesProjection: projection
+        )
+        XCTAssertEqual(explicit.hiddenMessageIDs, thread.hiddenMessageIDs)
+        XCTAssertEqual(explicit.latestMessage, thread.latestMessage)
+    }
+
+    private func hex(_ value: Int) -> String { String(format: "%064x", value) }
+
     private func identity(_ privateKeyHex: String) throws -> NostrIdentity {
         try NostrIdentity(privateKey: Data(hex: privateKeyHex))
     }
