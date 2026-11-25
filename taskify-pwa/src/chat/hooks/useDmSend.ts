@@ -278,8 +278,8 @@ export function useDmSend({
   // Mirrors the task EditModal selection pattern so the user's Settings choice
   // (originless / blossom / NIP-96) is honored.
   // Encrypted messenger attachments must go to the ENCRYPTED file server
-  // (same one the task EditModal uses). nostr.build (the default public
-  // server) content-sniffs uploads and returns 500 on opaque ciphertext.
+  // (same one the task EditModal uses). NIP-96 servers such as nostr.build can
+  // reject opaque ciphertext during content validation.
   // Fall back to the public server only if no encrypted server is set.
   const resolveMessengerServerEntry = useCallback((): FileServerEntry => {
     const primaryUrl = encryptedFileStorageServer || fileStorageServer;

@@ -89,6 +89,23 @@ final class BibleTrackerStore: ObservableObject {
         }
     }
 
+    func markAllChaptersRead(bookID: String) {
+        guard let book = BibleCatalog.book(withID: bookID) else { return }
+        let allChapters = Array(1...book.chapterCount)
+        let unreadChapters = Set(allChapters).subtracting(chaptersRead(bookID: bookID))
+        guard !unreadChapters.isEmpty else { return }
+
+        var next = state
+        next.progress[bookID] = allChapters
+        if var selections = next.verses[bookID] {
+            for chapter in unreadChapters {
+                selections.removeValue(forKey: String(chapter))
+            }
+            next.verses[bookID] = selections.isEmpty ? nil : selections
+        }
+        state = next
+    }
+
     /// Applies filled circles from a scanned physical tracker. Scanning is additive so an older
     /// sheet can never erase newer progress that was recorded in the app.
     func applyScannedChapters(_ chapterIDs: Set<String>) {

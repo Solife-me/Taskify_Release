@@ -19,6 +19,10 @@ export type ScriptureMemorySyncEntry = {
     scheduledAtISO?: string;
     stage: number;
     totalReviews: number;
+    verseText?: {
+        text: string;
+        updatedAtISO: string;
+    };
 };
 export type ScriptureMemorySyncState = {
     entries: ScriptureMemorySyncEntry[];

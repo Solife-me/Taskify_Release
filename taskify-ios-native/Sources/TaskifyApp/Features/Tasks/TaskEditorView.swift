@@ -407,6 +407,12 @@ struct TaskEditorView: View {
                     .focused($focusedField, equals: .title)
                     .accessibilityIdentifier("Title")
 
+                if let task, let verseText = model.scriptureMemoryVerseText(for: task) {
+                    Text(verbatim: verseText)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("scripture-review-verse-text")
+                }
+
                 if let task, let board,
                    let creatorKey = model.taskCreatorKey(for: task, board: board),
                    let creator = model.taskCreatorContact(publicKey: creatorKey) {

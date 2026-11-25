@@ -85,6 +85,7 @@ export function registerConfigCommands(program: Command, initRuntime: typeof cre
     .action(async (url: string) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
       config.encryptedFileStorageServer = url.trim();
+      config.blossomMediaServerMigrated = true;
       await saveConfig(config);
       console.log(chalk.green(`✓ Encrypted file server set to ${config.encryptedFileStorageServer}`));
       return;

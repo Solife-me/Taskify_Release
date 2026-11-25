@@ -222,6 +222,9 @@ final class AppModel {
     private(set) var unavailableTaskifyEventRSVPIDs: Set<String> = []
     var errorMessage: String?
     private(set) var showsFirstRunOnboarding = false
+#if os(iOS)
+    private(set) var hasICloudKeyRecoveryCopy = false
+#endif
 #if DEBUG
     /// Set by the UI-test performance probe (`AppModelPerfProbe.swift`).
     var perfProbeResult: String?
@@ -338,6 +341,7 @@ final class AppModel {
         self.mirrorsPrimaryDeviceTaskSettings = isPrimaryAccount
         self.syncEngine = syncEngine
         self.notificationCoordinator = notificationCoordinator ?? TaskNotificationCoordinator(defaults: accountDefaults)
+        TaskifyMediaServerSettings.migrateLegacySelection(defaults: accountDefaults)
         self.encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
         self.encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
         self.fastingRemindersEnabled = FastingRemindersSettings.enabled(defaults: accountDefaults)
@@ -3355,9 +3359,8 @@ final class AppModel {
         }
     }
 
-    /// Uploads a profile picture to the configured file server (plain, unencrypted — the URL
-    /// goes into the public kind:0 content). Mirrors the PWA's `uploadAvatar` NIP-96 path.
-    func uploadProfilePicture(_ imageData: Data, filename: String) async throws -> String {
+    /// Uploads a profile picture to the configured file server for the public kind:0 event.
+    func uploadProfilePicture(_ imageData: Data, filename: String, contentType: String) async throws -> String {
         let identity = try activeIdentity()
         let entry = TaskifyMediaServerSettings.configuredEntry(defaults: accountDefaults)
         guard let server = URL(string: entry.url) else {
@@ -3367,7 +3370,8 @@ final class AppModel {
             return try await BlossomClient.upload(
                 imageData,
                 privateKey: identity.privateKey,
-                server: server
+                server: server,
+                contentType: contentType
             )
         }
         return try await Nip96Client.upload(
@@ -3589,6 +3593,25 @@ final class AppModel {
         scriptureMemoryState.entries.append(entry)
         persistScriptureMemoryState()
         reconcileScriptureMemory()
+    }
+
+    func updateScriptureMemoryVerseText(entryID: String, text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = scriptureMemoryState.entries.firstIndex(where: { $0.id == entryID }),
+              (scriptureMemoryState.entries[index].verseText?.text ?? "") != text else { return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let previousEdit = scriptureMemoryState.entries[index].verseText.flatMap { formatter.date(from: $0.updatedAtISO) }
+        let timestamp = formatter.string(from: max(Date(), previousEdit?.addingTimeInterval(0.001) ?? .distantPast))
+        scriptureMemoryState.entries[index].verseText = .init(text: text, updatedAtISO: timestamp)
+        persistScriptureMemoryState()
+    }
+
+    func scriptureMemoryVerseText(for task: TaskItem) -> String? {
+        guard let entryID = task.scriptureMemoryID ?? scriptureMemoryStringField(task, key: "scriptureMemoryId") else {
+            return nil
+        }
+        return scriptureMemoryState.entries.first(where: { $0.id == entryID })?.reviewText
     }
 
     func removeScriptureMemoryEntry(_ entryID: String) {
@@ -4954,6 +4977,47 @@ final class AppModel {
         showsFirstRunOnboarding = false
     }
 
+#if os(iOS)
+    func startNewIdentityFromOnboarding() throws {
+        if cachedIdentity == nil {
+            let identity = try identityStore.loadOrCreate()
+            applyIdentity(identity)
+        }
+        KeyBackupSettings.markCreatedHere()
+        completeFirstRunOnboarding()
+    }
+
+    func refreshICloudKeyRecoveryStatus() {
+        hasICloudKeyRecoveryCopy = !identityNpub.isEmpty
+            && (try? identityStore.iCloudRecoveryIdentity(npub: identityNpub)) != nil
+    }
+
+    func enableICloudKeyRecovery() throws {
+        try identityStore.saveICloudRecoveryIdentity(activeIdentity())
+        hasICloudKeyRecoveryCopy = true
+    }
+
+    func removeICloudKeyRecovery() throws {
+        let identity = try activeIdentity()
+        try identityStore.removeICloudRecoveryIdentity(npub: identity.npub)
+        hasICloudKeyRecoveryCopy = false
+    }
+
+    func iCloudKeyRecoveryAccounts() throws -> [String] {
+        try identityStore.iCloudRecoveryAccounts()
+    }
+
+    func restoreIdentityFromICloud(npub: String) throws {
+        guard let identity = try identityStore.iCloudRecoveryIdentity(npub: npub) else {
+            throw ICloudKeyRecoveryError.missingBackup
+        }
+        if identityPublicKey != identity.publicKeyHex {
+            try adoptImportedIdentity(identity)
+        }
+        hasICloudKeyRecoveryCopy = true
+    }
+#endif
+
     /// Returns the raw nsec for export. Callers are responsible for gating this behind device
     /// authentication before displaying or copying it — the model performs no auth of its own,
     /// matching how `WalletViewModel.recoveryPhrase()` leaves Face ID/passcode to the view layer.
@@ -4965,78 +5029,82 @@ final class AppModel {
     func importIdentity(_ value: String) -> Bool {
         do {
             let imported = try NostrIdentity(importedValue: value)
-            // Persist successfully before clearing any state for the current account.
-            try identityStore.save(imported)
-            ShareTransferStore.clearAccount()
-#if os(iOS)
-            TaskifyShareIdentity.clear()
-            TaskifyShareSuggestions.clear()
-#endif
-            for job in ShareTransferStore.all() {
-#if os(iOS)
-                TaskifyShareUploadSession.cancel(job)
-#endif
-                ShareTransferStore.remove(job.id)
-            }
-            applyIdentity(imported)
-            accountBackupSearchTask?.cancel()
-            accountBackupPublishTask?.cancel()
-            relayDependentRefreshTask?.cancel()
-            relayDependentRefreshTask = nil
-            contactRefreshTask?.cancel()
-            contactRefreshTask = nil
-            appStateFetchTask?.cancel()
-            appStateFetchTask = nil
-            accountBackupBaseline = nil
-            accountSyncSettled = false
-            lastQueuedAccountBackup = nil
-            lastAccountBackupCheckAt = nil
-            accountBackupPublishPending = false
-            nip17InboxRelayURLs = []
-            snapshot.sharedInboxItems = nil
-            snapshot.sharedContactInboxItems = nil
-            snapshot.sharedBoardInboxItems = nil
-            snapshot.sharedCalendarInviteItems = nil
-            snapshot.taskifyEvents = nil
-            snapshot.sharedTaskRecipients = nil
-            snapshot.contacts = nil
-            snapshot.contactsListUpdatedAt = nil
-            snapshot.contactsListExtraTags = nil
-            snapshot.directMessages = nil
-            snapshot.directMessageReadAt = nil
-            snapshot.directMessageReactions = nil
-            snapshot.nostrGroupConversations = nil
-            snapshot.directMessageArchivedAt = nil
-            snapshot.directMessageDeletedEventIDs = nil
-            snapshot.directMessageBlockedPeers = nil
-            snapshot.directMessageMutedGroups = nil
-            snapshot.directMessageLeftGroups = nil
-            contactSyncStatus = "Preparing private contact sync"
-            isRefreshingContacts = false
-            lastContactRefreshAt = nil
-            lastAppStateFetchAt = nil
-            scheduleSave()
-            Task { [syncEngine] in
-                try? await syncEngine.discardQueuedPublishes(
-                    outboxScope: Self.accountBackupOutboxScope
-                )
-                try? await syncEngine.discardQueuedPublishes(
-                    outboxScope: Self.sharedInboxOutboxScope
-                )
-                try? await syncEngine.discardQueuedPublishes(
-                    outboxScope: Self.contactsOutboxScope
-                )
-                try? await syncEngine.discardQueuedPublishes(
-                    outboxScope: Self.directMessagesOutboxScope
-                )
-            }
-            reconfigureSync()
-            refreshAccountSync(identity: imported)
+            try adoptImportedIdentity(imported)
             return true
         } catch {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    private func adoptImportedIdentity(_ imported: NostrIdentity) throws {
+        // Persist successfully before clearing any state for the current account.
+        try identityStore.save(imported)
+        ShareTransferStore.clearAccount()
+#if os(iOS)
+        TaskifyShareIdentity.clear()
+        TaskifyShareSuggestions.clear()
+#endif
+        for job in ShareTransferStore.all() {
+#if os(iOS)
+            TaskifyShareUploadSession.cancel(job)
+#endif
+            ShareTransferStore.remove(job.id)
+        }
+        applyIdentity(imported)
+        accountBackupSearchTask?.cancel()
+        accountBackupPublishTask?.cancel()
+        relayDependentRefreshTask?.cancel()
+        relayDependentRefreshTask = nil
+        contactRefreshTask?.cancel()
+        contactRefreshTask = nil
+        appStateFetchTask?.cancel()
+        appStateFetchTask = nil
+        accountBackupBaseline = nil
+        accountSyncSettled = false
+        lastQueuedAccountBackup = nil
+        lastAccountBackupCheckAt = nil
+        accountBackupPublishPending = false
+        nip17InboxRelayURLs = []
+        snapshot.sharedInboxItems = nil
+        snapshot.sharedContactInboxItems = nil
+        snapshot.sharedBoardInboxItems = nil
+        snapshot.sharedCalendarInviteItems = nil
+        snapshot.taskifyEvents = nil
+        snapshot.sharedTaskRecipients = nil
+        snapshot.contacts = nil
+        snapshot.contactsListUpdatedAt = nil
+        snapshot.contactsListExtraTags = nil
+        snapshot.directMessages = nil
+        snapshot.directMessageReadAt = nil
+        snapshot.directMessageReactions = nil
+        snapshot.nostrGroupConversations = nil
+        snapshot.directMessageArchivedAt = nil
+        snapshot.directMessageDeletedEventIDs = nil
+        snapshot.directMessageBlockedPeers = nil
+        snapshot.directMessageMutedGroups = nil
+        snapshot.directMessageLeftGroups = nil
+        contactSyncStatus = "Preparing private contact sync"
+        isRefreshingContacts = false
+        lastContactRefreshAt = nil
+        lastAppStateFetchAt = nil
+        scheduleSave()
+        Task { [syncEngine] in
+            try? await syncEngine.discardQueuedPublishes(
+                outboxScope: Self.accountBackupOutboxScope
+            )
+            try? await syncEngine.discardQueuedPublishes(
+                outboxScope: Self.sharedInboxOutboxScope
+            )
+            try? await syncEngine.discardQueuedPublishes(
+                outboxScope: Self.contactsOutboxScope
+            )
+            try? await syncEngine.discardQueuedPublishes(
+                outboxScope: Self.directMessagesOutboxScope
+            )
+        }
+        reconfigureSync()
+        refreshAccountSync(identity: imported)
     }
 
     /// Manual "Sync now" entry point from Settings — loads the identity if it isn't already
@@ -5187,16 +5255,21 @@ final class AppModel {
         accountBackupPublishPending = projected != payload
     }
 
-    private func loadInitialIdentity() throws -> NostrIdentity {
+    private func loadInitialIdentity() throws -> NostrIdentity? {
 #if DEBUG && os(iOS)
         if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_ACCOUNT_SYNC"] == "1" {
             showsFirstRunOnboarding = false
             return try NostrIdentity(privateKey: Data(repeating: 7, count: 32))
         }
 #endif
-        let hadExistingIdentity = (try? identityStore.load()) != nil
-        OnboardingSettings.determineEligibilityIfNeeded(hadExistingIdentity: hadExistingIdentity)
+        let existingIdentity = try identityStore.load()
+        OnboardingSettings.determineEligibilityIfNeeded(hadExistingIdentity: existingIdentity != nil)
         showsFirstRunOnboarding = !OnboardingSettings.completed
+        if let existingIdentity { return existingIdentity }
+#if os(iOS)
+        // A new install can restore a key before it needs a local identity.
+        if showsFirstRunOnboarding { return nil }
+#endif
         return try identityStore.loadOrCreate()
     }
 
@@ -5209,11 +5282,12 @@ final class AppModel {
         // No-ops once migrated, and when the capability isn't in effect.
         TaskifySharedContainer.migrateIfNeeded()
         do {
-            let identity = try loadInitialIdentity()
-            guard expectedAccountID == nil || identity.publicKeyHex == expectedAccountID else {
-                throw AppModelAccountError.identityChanged
+            if let identity = try loadInitialIdentity() {
+                guard expectedAccountID == nil || identity.publicKeyHex == expectedAccountID else {
+                    throw AppModelAccountError.identityChanged
+                }
+                applyIdentity(identity)
             }
-            applyIdentity(identity)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -5900,6 +5974,9 @@ final class AppModel {
         cachedIdentity = identity
         identityPublicKey = identity.publicKeyHex
         identityNpub = identity.npub
+#if os(iOS)
+        refreshICloudKeyRecoveryStatus()
+#endif
         taskCreatorSharedBoardStatus.removeAll(keepingCapacity: true)
         locallySharedBoardTags = Set(accountDefaults.stringArray(forKey: sharedBoardTagsDefaultsKey) ?? [])
         Task { [syncEngine] in
@@ -7772,6 +7849,7 @@ final class AppModel {
 
     private static let accountBackupFileServerKeys: Set<String> = [
         TaskifyMediaServerSettings.selectedServerPWAKey, TaskifyMediaServerSettings.serverListPWAKey,
+        TaskifyMediaServerSettings.blossomMigrationPWAKey,
     ]
     private static let accountBackupFastingKeys: Set<String> = [
         FastingRemindersSettings.enabledPWAKey, FastingRemindersSettings.modePWAKey,
@@ -7854,6 +7932,9 @@ final class AppModel {
         var settings: [String: TaskPayloadValue] = [
             TaskifyMediaServerSettings.selectedServerPWAKey: .string(encryptedMediaServerURL),
             TaskifyMediaServerSettings.serverListPWAKey: .string(TaskifyFileServerList.serialize(encryptedFileServers)),
+            TaskifyMediaServerSettings.blossomMigrationPWAKey: .boolean(
+                TaskifyMediaServerSettings.hasMigratedToBlossom(defaults: accountDefaults)
+            ),
             ChatHistorySettings.pwaSettingsKey: .string(chatMessageRetention.rawValue),
             FastingRemindersSettings.enabledPWAKey: .boolean(fastingRemindersEnabled),
             FastingRemindersSettings.modePWAKey: .string(fastingRemindersMode == .random ? "random" : "weekday"),
@@ -7990,7 +8071,17 @@ final class AppModel {
         }
     }
 
-    private func applySyncedSettings(from payload: NostrAppBackupPayload) {
+    private func applySyncedMediaSettings(from payload: NostrAppBackupPayload) {
+        let selected: String?
+        if case .string(let url)? = payload.settings[TaskifyMediaServerSettings.selectedServerPWAKey] {
+            selected = url
+        } else {
+            selected = nil
+        }
+        let usesLegacyDefault = payload.settings[TaskifyMediaServerSettings.blossomMigrationPWAKey] != .boolean(true)
+            && selected.map(TaskifyFileServerList.isLegacyEncryptedMediaServer) == true
+        // A backup made before the migration can still arrive after the local preference changed.
+        if usesLegacyDefault && TaskifyMediaServerSettings.hasMigratedToBlossom(defaults: accountDefaults) { return }
         // Applied before the selected-server value below, since selectServer only accepts a URL
         // that's already present in the list.
         if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.serverListPWAKey] {
@@ -7999,12 +8090,17 @@ final class AppModel {
                 defaults: accountDefaults
             )
         }
-        if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.selectedServerPWAKey],
-           let normalized = TaskifyMediaServerSettings.selectServer(value, defaults: accountDefaults) {
-            encryptedMediaServerURL = normalized
-        } else {
-            encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
+        if usesLegacyDefault {
+            TaskifyMediaServerSettings.migrateLegacySelection(selected, defaults: accountDefaults)
+            encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
+        } else if let selected {
+            TaskifyMediaServerSettings.selectServer(selected, defaults: accountDefaults)
         }
+        encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
+    }
+
+    private func applySyncedSettings(from payload: NostrAppBackupPayload) {
+        applySyncedMediaSettings(from: payload)
         if case .string(let value)? = payload.settings[ChatHistorySettings.pwaSettingsKey],
            let retention = ChatMessageRetention(rawValue: value) {
             ChatHistorySettings.setRetention(retention, defaults: accountDefaults)

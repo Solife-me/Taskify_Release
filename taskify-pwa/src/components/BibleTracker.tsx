@@ -59,6 +59,7 @@ export function BibleTracker({
   onRestoreArchive,
   onUpdateChapterVerses,
   onCompleteBook,
+  onMarkAllChaptersRead,
 }: {
   state: BibleTrackerState;
   onToggleBook: (bookId: string) => void;
@@ -75,6 +76,7 @@ export function BibleTracker({
     verseCount: number
   ) => void;
   onCompleteBook: (bookId: string, rect?: DOMRect | null) => void;
+  onMarkAllChaptersRead: (bookId: string) => void;
 }) {
   const totalRead = useMemo(() => countChapters(state.progress), [state.progress]);
   const percentComplete = totalRead / TOTAL_BIBLE_CHAPTERS;
@@ -354,8 +356,8 @@ export function BibleTracker({
                     </button>
                     {expanded && (
                       <div className="border-t border-[color:var(--surface-border)] px-4 py-3">
-                        {readyForCompletion && (
-                          <div className="mb-3 flex justify-end">
+                        <div className="mb-3 flex justify-end">
+                          {readyForCompletion ? (
                             <button
                               type="button"
                               className="accent-button button-sm pressable"
@@ -366,8 +368,18 @@ export function BibleTracker({
                             >
                               Complete book
                             </button>
-                          </div>
-                        )}
+                          ) : (
+                            <button
+                              type="button"
+                              className="ghost-button button-sm pressable"
+                              onClick={() => onMarkAllChaptersRead(book.id)}
+                              aria-label={`Mark every chapter of ${book.name} as read`}
+                              title={`Mark all ${book.chapters} chapters of ${book.name} as read`}
+                            >
+                              Mark all as read
+                            </button>
+                          )}
+                        </div>
                         <div className="flex flex-wrap gap-2">
                           {Array.from({ length: book.chapters }, (_, idx) => {
                             const chapter = idx + 1;

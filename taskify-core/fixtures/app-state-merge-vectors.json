@@ -932,6 +932,153 @@
       }
     },
     {
+      "name": "a verse text edit survives a review on another device",
+      "base": {
+        "entries": [
+          {
+            "id": "e1",
+            "bookId": "jhn",
+            "chapter": 3,
+            "startVerse": 16,
+            "endVerse": 16,
+            "addedAtISO": "2026-09-01T00:00:00.000Z",
+            "stage": 0,
+            "totalReviews": 0
+          }
+        ]
+      },
+      "local": {
+        "entries": [
+          {
+            "id": "e1",
+            "bookId": "jhn",
+            "chapter": 3,
+            "startVerse": 16,
+            "endVerse": 16,
+            "addedAtISO": "2026-09-01T00:00:00.000Z",
+            "stage": 0,
+            "totalReviews": 0,
+            "verseText": {
+              "text": "First line.\nSecond line.",
+              "updatedAtISO": "2026-09-04T10:00:00.000Z"
+            }
+          }
+        ]
+      },
+      "remote": {
+        "entries": [
+          {
+            "id": "e1",
+            "bookId": "jhn",
+            "chapter": 3,
+            "startVerse": 16,
+            "endVerse": 16,
+            "addedAtISO": "2026-09-01T00:00:00.000Z",
+            "stage": 2,
+            "totalReviews": 3,
+            "lastReviewISO": "2026-09-03T10:00:00.000Z"
+          }
+        ]
+      },
+      "expected": {
+        "entries": [
+          {
+            "id": "e1",
+            "bookId": "jhn",
+            "chapter": 3,
+            "startVerse": 16,
+            "endVerse": 16,
+            "addedAtISO": "2026-09-01T00:00:00.000Z",
+            "stage": 2,
+            "totalReviews": 3,
+            "lastReviewISO": "2026-09-03T10:00:00.000Z",
+            "verseText": {
+              "text": "First line.\nSecond line.",
+              "updatedAtISO": "2026-09-04T10:00:00.000Z"
+            }
+          }
+        ],
+        "lastReviewISO": "2026-09-03T10:00:00.000Z"
+      }
+    },
+    {
+      "name": "cleared verse text and a scheduling change both survive",
+      "base": {
+        "entries": [
+          {
+            "id": "e1",
+            "bookId": "jhn",
+            "chapter": 3,
+            "startVerse": 16,
+            "endVerse": 16,
+            "addedAtISO": "2026-09-01T00:00:00.000Z",
+            "stage": 0,
+            "totalReviews": 0,
+            "scheduledAtISO": "2026-09-05T10:00:00.000Z",
+            "verseText": {
+              "text": "First line.",
+              "updatedAtISO": "2026-09-04T10:00:00.000Z"
+            }
+          }
+        ]
+      },
+      "local": {
+        "entries": [
+          {
+            "id": "e1",
+            "bookId": "jhn",
+            "chapter": 3,
+            "startVerse": 16,
+            "endVerse": 16,
+            "addedAtISO": "2026-09-01T00:00:00.000Z",
+            "stage": 0,
+            "totalReviews": 0,
+            "scheduledAtISO": "2026-09-05T10:00:00.000Z",
+            "verseText": {
+              "text": "",
+              "updatedAtISO": "2026-09-06T10:00:00.000Z"
+            }
+          }
+        ]
+      },
+      "remote": {
+        "entries": [
+          {
+            "id": "e1",
+            "bookId": "jhn",
+            "chapter": 3,
+            "startVerse": 16,
+            "endVerse": 16,
+            "addedAtISO": "2026-09-01T00:00:00.000Z",
+            "stage": 0,
+            "totalReviews": 0,
+            "verseText": {
+              "text": "First line.",
+              "updatedAtISO": "2026-09-04T10:00:00.000Z"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "entries": [
+          {
+            "id": "e1",
+            "bookId": "jhn",
+            "chapter": 3,
+            "startVerse": 16,
+            "endVerse": 16,
+            "addedAtISO": "2026-09-01T00:00:00.000Z",
+            "stage": 0,
+            "totalReviews": 0,
+            "verseText": {
+              "text": "",
+              "updatedAtISO": "2026-09-06T10:00:00.000Z"
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "equal review counts fall to the later review",
       "base": null,
       "local": {

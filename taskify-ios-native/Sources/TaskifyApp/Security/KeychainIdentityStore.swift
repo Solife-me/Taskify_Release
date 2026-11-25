@@ -115,3 +115,91 @@ struct KeychainIdentityStore {
         }
     }
 }
+
+#if os(iOS)
+enum ICloudKeyRecoveryError: LocalizedError {
+    case unavailable
+    case keychain(OSStatus)
+    case missingBackup
+    case invalidBackup
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            "Taskify couldn’t access its iCloud Keychain recovery storage."
+        case .keychain(let status):
+            "Taskify couldn’t access iCloud Keychain recovery (\(status)). Try again while this device is unlocked."
+        case .missingBackup:
+            "This backup is no longer available on this device. Check iCloud Keychain and try again."
+        case .invalidBackup:
+            "The recovery key doesn’t match this Taskify account."
+        }
+    }
+}
+
+extension KeychainIdentityStore {
+    // A separate service keeps local reset, signing, and shared extensions independent of recovery.
+    // One item per npub lets multiple Taskify accounts coexist without replacing another key.
+    private func recoveryQuery(npub: String? = nil) throws -> [String: Any] {
+        guard let accessGroup = Bundle.main.object(forInfoDictionaryKey: "TaskifyRecoveryKeychainAccessGroup") as? String,
+              !accessGroup.isEmpty else { throw ICloudKeyRecoveryError.unavailable }
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "\(service).identity-recovery",
+            kSecAttrAccessGroup as String: accessGroup,
+            kSecAttrSynchronizable as String: true,
+        ]
+        query[kSecAttrAccount as String] = npub
+        return query
+    }
+
+    func iCloudRecoveryAccounts() throws -> [String] {
+        var query = try recoveryQuery()
+        query[kSecMatchLimit as String] = kSecMatchLimitAll
+        query[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess else { throw ICloudKeyRecoveryError.keychain(status) }
+        guard let items = result as? [[String: Any]] else { throw ICloudKeyRecoveryError.invalidBackup }
+        return items.compactMap { $0[kSecAttrAccount as String] as? String }.sorted()
+    }
+
+    func iCloudRecoveryIdentity(npub: String) throws -> NostrIdentity? {
+        let query = try recoveryQuery(npub: npub)
+        let key: Data?
+        do {
+            key = try TaskifyKeychainItem.load(query)
+        } catch let failure as TaskifyKeychainItem.Failure {
+            throw ICloudKeyRecoveryError.keychain(failure.status)
+        }
+        guard let key else { return nil }
+        guard let identity = try? NostrIdentity(privateKey: key), identity.npub == npub else {
+            throw ICloudKeyRecoveryError.invalidBackup
+        }
+        return identity
+    }
+
+    func saveICloudRecoveryIdentity(_ identity: NostrIdentity) throws {
+        var item = try recoveryQuery(npub: identity.npub)
+        item[kSecValueData as String] = identity.privateKey
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+        let status = SecItemAdd(item as CFDictionary, nil)
+        guard status == errSecSuccess || status == errSecDuplicateItem else {
+            throw ICloudKeyRecoveryError.keychain(status)
+        }
+        // An existing valid copy is sufficient. The read verifies local storage only.
+        guard try iCloudRecoveryIdentity(npub: identity.npub) != nil else {
+            throw ICloudKeyRecoveryError.missingBackup
+        }
+    }
+
+    func removeICloudRecoveryIdentity(npub: String) throws {
+        let query = try recoveryQuery(npub: npub)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw ICloudKeyRecoveryError.keychain(status)
+        }
+    }
+}
+#endif

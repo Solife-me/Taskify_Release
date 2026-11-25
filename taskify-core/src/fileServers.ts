@@ -1,5 +1,20 @@
 export type FixedFileUploadServerType = "originless" | "blossom";
 
+export const DEFAULT_MEDIA_STORAGE_SERVER = "https://blossom.solife.me";
+export const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = DEFAULT_MEDIA_STORAGE_SERVER;
+
+export function isLegacyEncryptedMediaServer(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const raw = value.trim();
+  try {
+    const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+    return (url.protocol === "https:" || url.protocol === "http:")
+      && url.host === "originless.solife.me" && /^\/+$/u.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export type FixedFileUploadRoute = {
   method: "POST" | "PUT";
   path: `/${string}`;

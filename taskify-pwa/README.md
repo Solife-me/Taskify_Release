@@ -20,6 +20,10 @@ saved contact when available. **Settings → Boards & Lists** offers drag and dr
 and move buttons for touch and keyboard use. Board checklists include upcoming
 tasks, notes, due dates, and subtasks by default.
 
+The Bible board supports per-book **Mark all as read**, chapter completion, partial-verse
+tracking, and Scripture Memory review tasks. A saved passage's verse text can be edited from the
+Scripture Memory card and appears when its review task is opened, matching the native client.
+
 Daily is the shortest task repeat interval. Existing hourly task rules round up to whole calendar
 days. A rule for every 24 hours or less becomes daily and a rule for every 25 hours becomes every
 two days. The task's current due date, due time, and repeat end date are preserved.
@@ -49,9 +53,10 @@ Environment variables:
 - `VITE_VAPID_PUBLIC_KEY` – Base64url-encoded VAPID public key. Generate alongside the private key during Worker setup.
 - `VITE_MANAGED_BLOSSOM_URL` – Optional managed Blossom base URL. The built-in default is `https://blossom.solife.me`. The URL can also be changed from Settings → Storage.
 
-The managed Blossom URL selects the Storage dashboard. Originless is the default
-encrypted upload server until the Blossom deployment accepts `application/octet-stream`.
-Compatible Blossom servers can be selected explicitly for encrypted uploads.
+The managed Blossom URL selects the Storage dashboard. Profile photos and encrypted task
+and chat uploads default to `https://blossom.solife.me`. The update switches existing
+encrypted selections of `https://originless.solife.me` once. You can select Originless
+again or choose another server in Settings → Storage → Encrypted file servers.
 Automatic standard-retention fallback is enabled by default and remembered separately
 per account and server. Taskify explains the first fallback and asks again if the
 server's retention terms change.

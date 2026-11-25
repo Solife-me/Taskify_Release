@@ -468,7 +468,7 @@ struct NostrProfileEditorSheet: View {
                 statusMessage = "Uploading photo…"
                 let data = try processedProfilePhotoData(from: image)
                 let filename = "profile-\(Int(Date().timeIntervalSince1970)).jpg"
-                picture = try await model.uploadProfilePicture(data, filename: filename)
+                picture = try await model.uploadProfilePicture(data, filename: filename, contentType: "image/jpeg")
                 pictureURL = picture
             }
             statusMessage = "Publishing profile…"

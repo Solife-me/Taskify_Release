@@ -6,10 +6,17 @@ import XCTest
 /// and turns an Originless CID into the same usable public URL.
 final class FileServerUploadVectorTests: XCTestCase {
     private struct VectorFile: Decodable {
+        let defaultEncryptedServer: String
+        let legacyEncryptedServers: [LegacyEncryptedServer]
         let opaqueUploads: [OpaqueUpload]
         let routes: [Route]
         let uploadedURLs: [UploadedURL]
         let responses: [Response]
+    }
+
+    private struct LegacyEncryptedServer: Decodable {
+        let url: String
+        let matches: Bool
     }
 
     private struct OpaqueUpload: Decodable {
@@ -46,6 +53,15 @@ final class FileServerUploadVectorTests: XCTestCase {
         .deletingLastPathComponent() // taskify-ios-native
         .deletingLastPathComponent() // repository root
         .appendingPathComponent("taskify-core/fixtures/file-server-upload-vectors.json")
+
+    func testEncryptedUploadDefaultAndLegacyServerMatchSharedVectors() throws {
+        let file = try fixture()
+        XCTAssertEqual(TaskifyFileServerList.defaults.first?.url, file.defaultEncryptedServer)
+        XCTAssertEqual(TaskifyFileServerList.defaults.first?.type, .blossom)
+        for vector in file.legacyEncryptedServers {
+            XCTAssertEqual(TaskifyFileServerList.isLegacyEncryptedMediaServer(vector.url), vector.matches, vector.url)
+        }
+    }
 
     func testOpaqueUploadFilenamesMatchSharedVectors() throws {
         for vector in try fixture().opaqueUploads {

@@ -8,6 +8,51 @@ final class BibleTrackerUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testMarkAllChaptersReadForOneBook() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
+        app.launchEnvironment["TASKIFY_UI_TEST_FRESH_STORE"] = "1"
+        app.launch()
+
+        openSettings(app, group: "Bible")
+        let toggle = app.switches["Bible Reading Tracker"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        if toggle.value as? String == "0" { toggle.tap() }
+
+        openTab(app, "Boards")
+        let boardPicker = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Week")).firstMatch
+        XCTAssertTrue(boardPicker.waitForExistence(timeout: 10))
+        boardPicker.tap()
+        let bible = app.buttons["Bible"]
+        XCTAssertTrue(bible.waitForExistence(timeout: 5))
+        bible.tap()
+
+        let genesis = app.buttons["Genesis"]
+        XCTAssertTrue(genesis.waitForExistence(timeout: 5))
+        let markAll = app.buttons["Mark all as read"]
+        XCTAssertFalse(markAll.exists)
+        genesis.tap()
+
+        let chapter1 = app.buttons["Chapter 1"]
+        let chapter2 = app.buttons["Chapter 2"]
+        XCTAssertTrue(chapter1.waitForExistence(timeout: 5))
+        if chapter1.value as? String != "Read" { chapter1.tap() }
+        XCTAssertTrue(markAll.waitForExistence(timeout: 5))
+        markAll.tap()
+
+        XCTAssertTrue(app.buttons["Complete Book"].waitForExistence(timeout: 5))
+        XCTAssertFalse(markAll.exists)
+        XCTAssertEqual(genesis.value as? String, "50 of 50 chapters read")
+        XCTAssertEqual(chapter1.value as? String, "Read")
+        XCTAssertEqual(chapter2.value as? String, "Read")
+
+        chapter2.tap()
+        XCTAssertTrue(markAll.waitForExistence(timeout: 5))
+        XCTAssertEqual(genesis.value as? String, "49 of 50 chapters read")
+        genesis.tap()
+        XCTAssertEqual(app.buttons["Exodus"].value as? String, "0 of 40 chapters read")
+    }
+
     func testBibleTrackerFlow() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TASKIFY_UI_TEST_ONBOARDING"] = "skip"
@@ -338,16 +383,27 @@ final class BibleTrackerUITests: XCTestCase {
         }
         XCTAssertTrue(app.staticTexts["Bible Reading Tracker"].waitForExistence(timeout: 10))
 
-        // Scroll down to the Scripture Memory section and add Genesis 1 (entire chapter).
-        var attempts = 0
-        while !app.staticTexts["SCRIPTURE MEMORY"].exists, attempts < 20 {
-            app.swipeUp()
-            attempts += 1
-        }
-        XCTAssertTrue(app.staticTexts["SCRIPTURE MEMORY"].waitForExistence(timeout: 5))
-
         let addButton = app.buttons["Add"]
-        XCTAssertTrue(addButton.waitForExistence(timeout: 5))
+        func scrollToScriptureMemory() {
+            var attempts = 0
+            while !addButton.isHittable, attempts < 20 {
+                app.swipeUp()
+                attempts += 1
+            }
+            XCTAssertTrue(addButton.isHittable)
+        }
+
+        func switchBoard(from current: String, to destination: String) {
+            let switcher = app.buttons[current]
+            XCTAssertTrue(switcher.waitForExistence(timeout: 5))
+            switcher.tap()
+            let board = app.buttons[destination]
+            XCTAssertTrue(board.waitForExistence(timeout: 5))
+            board.tap()
+        }
+
+        // Scroll down to the Scripture Memory section and add Genesis 1 (entire chapter).
+        scrollToScriptureMemory()
         addButton.tap()
 
         let genesisButton = app.buttons["Genesis"]
@@ -368,24 +424,41 @@ final class BibleTrackerUITests: XCTestCase {
         XCTAssertTrue(addGenesis1.waitForExistence(timeout: 5))
         addGenesis1.tap()
 
-        let addedEntry = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "Genesis 1:")).firstMatch
+        let addedEntry = app.buttons["scripture-memory-entry-Genesis 1:1-31"]
         XCTAssertTrue(addedEntry.waitForExistence(timeout: 10))
         attach(app, name: "scripture-02-entry-added")
 
-        // A review task should now exist on the Week board.
-        openTab(app, "Boards")
-        let switcherBack = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Bible")).firstMatch
-        if switcherBack.waitForExistence(timeout: 5) {
-            switcherBack.tap()
-            let weekMenuItem = app.buttons["Week"]
-            if weekMenuItem.waitForExistence(timeout: 5) {
-                weekMenuItem.tap()
-            }
-        }
-
         let reviewTask = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Review Genesis 1")).firstMatch
+        let reviewText = app.staticTexts["scripture-review-verse-text"]
+        switchBoard(from: "Bible", to: "Week")
+        XCTAssertTrue(reviewTask.waitForExistence(timeout: 10))
+        reviewTask.tap()
+        XCTAssertTrue(app.navigationBars["Edit Task"].waitForExistence(timeout: 5))
+        XCTAssertFalse(reviewText.exists)
+        app.buttons["Cancel"].tap()
+        switchBoard(from: "Week", to: "Bible")
+        scrollToScriptureMemory()
+
+        let passage = "First line of the passage.\nSecond line of the passage."
+        addedEntry.tap()
+        let verseEditor = app.textViews["scripture-verse-editor"]
+        XCTAssertTrue(verseEditor.waitForExistence(timeout: 5))
+        verseEditor.tap()
+        verseEditor.typeText(passage)
+        app.buttons["Save"].tap()
+        XCTAssertTrue(addedEntry.waitForExistence(timeout: 5))
+        addedEntry.tap()
+        XCTAssertTrue(verseEditor.waitForExistence(timeout: 5))
+        XCTAssertEqual(verseEditor.value as? String, passage)
+        app.buttons["Cancel"].tap()
+
+        switchBoard(from: "Bible", to: "Week")
         XCTAssertTrue(reviewTask.waitForExistence(timeout: 10))
         attach(app, name: "scripture-03-review-task-on-week-board")
+        XCTAssertFalse(app.staticTexts[passage].exists)
+        reviewTask.tap()
+        XCTAssertTrue(reviewText.waitForExistence(timeout: 5))
+        XCTAssertEqual(reviewText.label, passage)
     }
 
     func testAppRelayEditsSurviveRelaunchAndDoNotChangeBoardRelays() throws {

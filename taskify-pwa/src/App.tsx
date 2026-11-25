@@ -97,6 +97,7 @@ import type {
 } from "./domains/scripture/scriptureTypes";
 import {
   updateScriptureMemoryState,
+  updateScriptureMemoryVerseText,
   markScriptureEntryReviewed,
   scheduleScriptureEntry,
   formatScriptureReference,
@@ -716,6 +717,9 @@ export default function App() {
     setTasks((prev) => prev.filter((task) => task.scriptureMemoryId !== id));
     reviews.forEach((task) => void publishTaskDeletedRef.current?.(task));
   }, [setScriptureMemory, setTasks]);
+  const handleUpdateScriptureMemoryText = useCallback((id: string, text: string) => {
+    setScriptureMemory((prev) => updateScriptureMemoryVerseText(prev, id, text));
+  }, [setScriptureMemory]);
   const scriptureMemoryItems = useMemo<ScriptureMemoryListItem[]>(() => {
     if (!scriptureMemory.entries.length) return [];
     const baseDays = scriptureMemoryFrequencyOption?.days ?? 1;
@@ -765,6 +769,7 @@ export default function App() {
       totalReviews: entry.totalReviews ?? 0,
       dueLabel: formatDueInLabel(stats.dueInDays),
       dueNow: stats.dueNow,
+      verseText: entry.verseText?.text,
     }));
   }, [
     scriptureMemory.entries,
@@ -6175,6 +6180,7 @@ export default function App() {
                 onDeleteArchive: bibleActions.deleteArchive,
                 onRestoreArchive: bibleActions.restoreArchive,
                 onCompleteBook: bibleActions.completeBook,
+                onMarkAllChaptersRead: bibleActions.markAllChaptersRead,
               },
               scriptureMemory: settings.scriptureMemoryEnabled
                 ? {
@@ -6182,6 +6188,7 @@ export default function App() {
                     onAdd: handleAddScriptureMemory,
                     onRemove: handleRemoveScriptureMemory,
                     onReview: handleReviewScriptureMemory,
+                    onEditText: handleUpdateScriptureMemoryText,
                     boardName: scriptureMemoryBoard?.name || undefined,
                     frequencyLabel: scriptureMemoryFrequencyOption?.label ?? "Daily",
                     sortLabel: scriptureMemorySortLabel,
@@ -6623,6 +6630,9 @@ export default function App() {
             nostrSkHex={nostrSkHex}
             fileServers={settings.encryptedFileServers || settings.fileServers}
             fileStorageServer={settings.encryptedFileStorageServer}
+            scriptureVerseText={editing.task.scriptureMemoryId
+              ? scriptureMemory.entries.find((entry) => entry.id === editing.task.scriptureMemoryId)?.verseText?.text.trim() || undefined
+              : undefined}
           />
         </Suspense>
       )}

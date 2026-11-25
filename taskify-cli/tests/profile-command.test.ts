@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { nip19 } from "nostr-tools";
@@ -9,7 +9,18 @@ import { nip19 } from "nostr-tools";
 const cli = path.resolve(import.meta.dirname, "../dist/index.js");
 test("profile commands preserve creation, switching, renaming, masking, and removal guards", () => {
   const fixture = mkdtempSync(path.join(tmpdir(), "taskify-profile-command-"));
-  const loader = 'data:text/javascript,' + encodeURIComponent(`import os from 'node:os'; import { syncBuiltinESMExports } from 'node:module'; os.homedir = () => ${JSON.stringify(fixture)}; syncBuiltinESMExports();`);
+  const loader = 'data:text/javascript,' + encodeURIComponent(`
+    import os from 'node:os';
+    import { syncBuiltinESMExports } from 'node:module';
+    os.homedir = () => ${JSON.stringify(fixture)};
+    syncBuiltinESMExports();
+    globalThis.fetch = async (url, options) => {
+      if (url === 'https://blossom.solife.me/upload' && options.method === 'PUT' && options.headers['Content-Type'] === 'image/png') {
+        return Response.json({ message: 'fixture Blossom photo' }, { status: 413 });
+      }
+      throw new Error('Unexpected upload request: ' + url);
+    };
+  `);
   const env = { ...process.env }; delete env.TASKIFY_NSEC;
   const run = (args: string[], input?: string) => spawnSync(process.execPath, ["--import", loader, cli, "profile", ...args], { env, input, encoding: "utf8", timeout: 10000 });
   const config = () => JSON.parse(readFileSync(path.join(fixture, ".taskify-cli/config.json"), "utf8"));
@@ -25,6 +36,11 @@ test("profile commands preserve creation, switching, renaming, masking, and remo
     assert.equal(run(["add", "work", "--nsec", key]).status, 1);
     assert.equal(run(["use", "missing"]).status, 1);
     assert.equal(run(["use", "work"]).status, 0);
+    const picture = path.join(fixture, "avatar.png");
+    writeFileSync(picture, "fixture image bytes");
+    const upload = run(["set-meta", "--picture", picture]);
+    assert.equal(upload.status, 1);
+    assert.match(upload.stderr, /fixture Blossom photo/);
     result = run(["show"]);
     assert.equal(result.status, 0, result.stderr);
     assert.ok(!result.stdout.includes(key));

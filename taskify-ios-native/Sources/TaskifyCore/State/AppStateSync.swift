@@ -176,16 +176,22 @@ public extension ScriptureMemoryState {
             for entry in entries where !entry.id.isEmpty { record[entry.id] = entry }
             return record
         }
+        let localEntries = byID(entries)
+        let remoteEntries = byID(remote.entries)
+        let baseEntries = base.map { byID($0.entries) }
         let merged = AppStateMerge.mergeRecord(
-            base: base.map { byID($0.entries) },
-            local: byID(entries),
-            remote: byID(remote.entries),
-            resolve: Self.furtherReviewed
+            base: baseEntries,
+            local: localEntries,
+            remote: remoteEntries,
+            resolve: { Self.furtherReviewed($0, $1, base: baseEntries?[$0.id]) }
         )
         var ordered: [ScriptureMemoryEntry] = []
         var seen = Set<String>()
         for entry in entries + remote.entries {
-            guard let next = merged[entry.id], seen.insert(entry.id).inserted else { continue }
+            guard var next = merged[entry.id], seen.insert(entry.id).inserted else { continue }
+            if let local = localEntries[entry.id], let remote = remoteEntries[entry.id] {
+                next.verseText = Self.latestVerseText(local.verseText, remote.verseText)
+            }
             ordered.append(next)
         }
         let reviewTimes = [lastReviewISO, remote.lastReviewISO] + ordered.map(\.lastReviewISO)
@@ -207,7 +213,20 @@ public extension ScriptureMemoryState {
             && lastReviewISO == other.lastReviewISO
     }
 
-    private static func furtherReviewed(_ a: ScriptureMemoryEntry, _ b: ScriptureMemoryEntry) -> ScriptureMemoryEntry {
+    private static func furtherReviewed(
+        _ a: ScriptureMemoryEntry, _ b: ScriptureMemoryEntry, base: ScriptureMemoryEntry?
+    ) -> ScriptureMemoryEntry {
+        func withoutVerseText(_ entry: ScriptureMemoryEntry) -> ScriptureMemoryEntry {
+            var review = entry
+            review.verseText = nil
+            return review
+        }
+        let reviewOnlyA = withoutVerseText(a)
+        let reviewOnlyB = withoutVerseText(b)
+        if let baseReview = base.map(withoutVerseText) {
+            if reviewOnlyA == baseReview { return b }
+            if reviewOnlyB == baseReview { return a }
+        }
         if a.totalReviews != b.totalReviews { return a.totalReviews > b.totalReviews ? a : b }
         let reviewA = AppStateMerge.isoMillis(a.lastReviewISO)
         let reviewB = AppStateMerge.isoMillis(b.lastReviewISO)
@@ -216,7 +235,20 @@ public extension ScriptureMemoryState {
         let scheduledA = AppStateMerge.isoMillis(a.scheduledAtISO)
         let scheduledB = AppStateMerge.isoMillis(b.scheduledAtISO)
         if scheduledA != scheduledB { return scheduledA > scheduledB ? a : b }
-        return AppStateMerge.stableKey(a) >= AppStateMerge.stableKey(b) ? a : b
+        return AppStateMerge.stableKey(reviewOnlyA) >= AppStateMerge.stableKey(reviewOnlyB) ? a : b
+    }
+
+    private static func latestVerseText(
+        _ local: ScriptureMemoryEntry.VerseText?, _ remote: ScriptureMemoryEntry.VerseText?
+    ) -> ScriptureMemoryEntry.VerseText? {
+        guard let local, let remote else { return local ?? remote }
+        let localTime = AppStateMerge.isoMillis(local.updatedAtISO)
+        let remoteTime = AppStateMerge.isoMillis(remote.updatedAtISO)
+        if localTime != remoteTime { return localTime > remoteTime ? local : remote }
+        if !local.text.utf16.elementsEqual(remote.text.utf16) {
+            return local.text.utf16.lexicographicallyPrecedes(remote.text.utf16) ? remote : local
+        }
+        return local.updatedAtISO >= remote.updatedAtISO ? local : remote
     }
 }
 

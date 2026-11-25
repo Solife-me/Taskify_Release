@@ -33,6 +33,13 @@ final class TaskifyFileServerListTests: XCTestCase {
         XCTAssertEqual(TaskifyFileServerList.parse("[]"), TaskifyFileServerList.defaults)
     }
 
+    func testMigrationAddsBlossomWithoutRemovingUserServersOrDuplicatingBlossom() {
+        let servers = [TaskifyFileServerEntry(url: "https://custom.example", type: .blossom)]
+        let migrated = TaskifyFileServerList.includingDefaultEncryptedServer(servers)
+        XCTAssertEqual(migrated, servers + [TaskifyFileServerList.defaultEncryptedServer])
+        XCTAssertEqual(TaskifyFileServerList.includingDefaultEncryptedServer(migrated), migrated)
+    }
+
     func testParseDecodesPWAShapedJSONAndNormalizesURLs() {
         let json = #"[{"url":"https://blossom.band/","type":"blossom","label":"blossom.band"},{"url":"nostr.build","type":"nip96"}]"#
         let servers = TaskifyFileServerList.parse(json)

@@ -790,9 +790,10 @@ struct TaskCardView: View {
         // regex work behind it happens once per distinct title/note rather than once per body
         // evaluation; reading it once here keeps that to a single cache lookup per row.
         let cardText = cardText
-        let hasMedia = !(task.images ?? []).isEmpty
+        let showsDetails = !context.isScriptureReviewWithText
+        let hasMedia = showsDetails && (!(task.images ?? []).isEmpty
             || !(task.documents ?? []).isEmpty
-            || cardText.hasLink
+            || cardText.hasLink)
         let displayTitle = cardText.displayTitle
         let displayNote = cardText.displayNote
         let subtaskProgress = subtaskProgress
@@ -801,7 +802,7 @@ struct TaskCardView: View {
         let cardCornerRadius = hasMedia ? CGFloat(24) : 18
         let isSelectionMode = selection?.isActive ?? false
         let isSelected = selection?.selectedTaskIDs.contains(task.id) ?? false
-        let creator = context.creatorPublicKey.flatMap { model.taskCreatorContact(publicKey: $0) }
+        let creator = showsDetails ? context.creatorPublicKey.flatMap { model.taskCreatorContact(publicKey: $0) } : nil
 
         TaskifyPerfMonitor.shared.recordCardBody()
 
@@ -866,7 +867,7 @@ struct TaskCardView: View {
                     } ?? "Edit \(displayTitle)")
                     .accessibilityValue(creator.map { "Created by \($0.taskCreatorName)" } ?? "")
 
-                    if !displayNote.isEmpty {
+                    if showsDetails, !displayNote.isEmpty {
                         Button {
                             showingNoteViewer = true
                         } label: {
@@ -884,7 +885,7 @@ struct TaskCardView: View {
                         .accessibilityIdentifier("task-card-note")
                     }
 
-                    if task.priority != nil || (task.dueDateEnabled && task.dueDate != nil) ||
+                    if showsDetails, task.priority != nil || (task.dueDateEnabled && task.dueDate != nil) ||
                         subtaskProgress != nil || task.recurrence != nil || !(task.reminders ?? []).isEmpty ||
                         !task.sharedTaskAssignees.isEmpty || visibleStreak != nil {
                         Button(action: editTapped) {
@@ -987,7 +988,7 @@ struct TaskCardView: View {
                     .zIndex(0)
             }
 
-            if !visibleSubtasks.isEmpty {
+            if showsDetails, !visibleSubtasks.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
                     ForEach(visibleSubtasks) { subtask in
                         Button {
@@ -1341,6 +1342,7 @@ struct TaskCardContext: Equatable {
     /// An optional board label shown beside the due date, used when cards from multiple boards mix.
     var boardName: String?
     var creatorPublicKey: String?
+    var isScriptureReviewWithText: Bool = false
 }
 
 extension AppModel {
@@ -1350,7 +1352,8 @@ extension AppModel {
             streak: visibleStreak(for: task),
             mediaBoardID: board?.effectiveNostrBoardID ?? task.boardID,
             boardName: includesBoardName ? (board?.name ?? "Board") : nil,
-            creatorPublicKey: board.flatMap { taskCreatorKey(for: task, board: $0) }
+            creatorPublicKey: board.flatMap { taskCreatorKey(for: task, board: $0) },
+            isScriptureReviewWithText: scriptureMemoryVerseText(for: task) != nil
         )
     }
 

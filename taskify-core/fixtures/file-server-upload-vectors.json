@@ -1,4 +1,14 @@
 {
+  "defaultEncryptedServer": "https://blossom.solife.me",
+  "legacyEncryptedServers": [
+    { "url": "https://originless.solife.me", "matches": true },
+    { "url": " ORIGINLESS.solife.me/// ", "matches": true },
+    { "url": "https://originless.solife.me:443/", "matches": true },
+    { "url": "https://originless.solife.me:8443/", "matches": false },
+    { "url": "https://originless.solife.me/custom/", "matches": false },
+    { "url": "https://originless.solife.me.example.com/", "matches": false },
+    { "url": "https://blossom.solife.me", "matches": false }
+  ],
   "opaqueUploads": [
     {
       "name": "opaque ciphertext name normalizes the digest and hides the original extension",

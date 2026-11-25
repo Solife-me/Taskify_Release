@@ -32,6 +32,7 @@ struct SettingsView: View {
     @State private var nsecCopied = false
     @State private var isAuthenticatingNsec = false
     @State private var nsecAuthError: String?
+    @State private var iCloudRecoveryMode: ICloudKeyRecoveryView.Mode?
     @State private var showingAddFileServer = false
     @State private var newFileServerType: TaskifyFileServerType = .originless
     @State private var newFileServerURL = ""
@@ -177,6 +178,10 @@ struct SettingsView: View {
         .sheet(isPresented: $showingSyncQueue) {
             SyncQueueInspector().environment(model)
         }
+        .sheet(item: $iCloudRecoveryMode) { mode in
+            ICloudKeyRecoveryView(mode: mode)
+        }
+        .onChange(of: model.identityNpub) { _, _ in hideNsec() }
         .sheet(isPresented: $showingBoardScanner) {
             BoardQRJoinFlow()
                 .environment(model)
@@ -232,7 +237,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("On the next launch, Taskify permanently removes the Nostr key, boards, tasks, messages, settings and any local wallet data from this iPhone or iPad. Back up your keys, wallet funds and anything you need before continuing.")
+            Text("On the next launch, Taskify permanently removes the Nostr key, boards, tasks, messages, settings and any local wallet data from this iPhone or iPad. Any iCloud Keychain recovery copy is kept. Back up your keys, wallet funds and anything you need before continuing.")
         }
         .alert("Couldn’t schedule deletion", isPresented: $showingLocalResetError) {
             Button("OK", role: .cancel) {}
@@ -413,12 +418,29 @@ struct SettingsView: View {
 
             Divider()
 
+            Button {
+                iCloudRecoveryMode = .backup
+            } label: {
+                Label("iCloud key recovery", systemImage: "icloud.and.arrow.up")
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.identityNpub.isEmpty)
+
+            Button {
+                iCloudRecoveryMode = .restore
+            } label: {
+                Label("Restore from iCloud", systemImage: "icloud.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+
+            Divider()
+
             VStack(alignment: .leading, spacing: 10) {
-                if KeyBackupSettings.decode(keyBackupRaw).isUnsaved {
+                if KeyBackupSettings.decode(keyBackupRaw).isUnsaved && !model.hasICloudKeyRecoveryCopy {
                     Label("Unsaved key", systemImage: "exclamationmark.triangle.fill")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.orange)
-                    Text("Your account key exists only on this device. Copy your nsec into a password manager so you can sign in elsewhere or recover your tasks if this device is lost.")
+                    Text("Set up iCloud key recovery or save your nsec in a password manager so you can recover your account if this device is lost.")
                         .font(.caption)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 }
@@ -1000,13 +1022,7 @@ struct SettingsView: View {
                     )
             }
 
-            if model.encryptedFileServers.contains(where: { $0.type == .blossom }) {
-                Text("Warning: some Blossom servers inspect uploads and reject encrypted, unrecognizable file types. If uploads start failing, switch to an Originless server.")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-            }
-
-            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works, but many public Blossom servers reject opaque encrypted uploads. NIP-96 servers use discovery and authenticated NIP-98 uploads. Attachments can be up to 500 MB. Taskify encrypts files before uploading and verifies them before opening. Your selected server may have a lower limit.")
+            Text("Taskify defaults to blossom.solife.me. Choose a server that accepts encrypted files. Taskify encrypts attachments before upload and verifies them before opening. Attachments can be up to 500 MB, subject to your server’s upload limit.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }

@@ -2,10 +2,11 @@ import { chmod, mkdir, open, readFile, rename, unlink } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 import { randomUUID } from "crypto";
+import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, DEFAULT_MEDIA_STORAGE_SERVER, isLegacyEncryptedMediaServer } from "taskify-core";
 import type { ReminderPreset } from "./shared/taskTypes.js";
 
-export const DEFAULT_PUBLIC_FILE_STORAGE_SERVER = "https://nostr.build";
-export const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = "https://originless.solife.me";
+export { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER };
+export const DEFAULT_PUBLIC_FILE_STORAGE_SERVER = DEFAULT_MEDIA_STORAGE_SERVER;
 
 export const CONFIG_DIR = join(homedir(), ".taskify-cli");
 export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
@@ -64,6 +65,7 @@ export type ProfileConfig = {
   contacts?: Contact[];
   fileStorageServer?: string;
   encryptedFileStorageServer?: string;
+  blossomMediaServerMigrated?: boolean;
   /** NIP-13 difficulty mined into every write, on top of what relays require (0 or unset: only theirs). */
   powDifficulty?: number;
   agent?: {
@@ -280,7 +282,12 @@ export async function loadConfig(profileName?: string): Promise<TaskifyConfig> {
     );
   }
 
-  const merged = profileDefaults(profile);
+  const migrated = profile.blossomMediaServerMigrated !== true && isLegacyEncryptedMediaServer(profile.encryptedFileStorageServer)
+    ? { ...profile, encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, blossomMediaServerMigrated: true }
+    : profile;
+  // Like the flat-config migration, keep reads read-only and persist on the next explicit save.
+  stored.profiles[resolvedProfileName] = migrated;
+  const merged = profileDefaults(migrated);
 
   // TASKIFY_NSEC env var overrides nsec for any profile
   if (process.env.TASKIFY_NSEC) {
@@ -317,6 +324,7 @@ export async function saveConfig(cfg: TaskifyConfig): Promise<void> {
     contacts: cfg.contacts,
     fileStorageServer: cfg.fileStorageServer,
     encryptedFileStorageServer: cfg.encryptedFileStorageServer,
+    blossomMediaServerMigrated: cfg.blossomMediaServerMigrated,
     ...(cfg.powDifficulty ? { powDifficulty: cfg.powDifficulty } : {}),
     agent: cfg.agent,
   };

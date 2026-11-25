@@ -8,6 +8,7 @@ import {
   applyBibleScan,
   completeBibleBook,
   deleteBibleArchive,
+  markBibleBookRead,
   resetBibleTracker,
   restoreBibleArchive,
   restoreBibleBook,
@@ -35,6 +36,7 @@ export function useBibleTrackerActions({
     return {
       toggleBook: (bookId: string) => store.set((prev) => toggleBibleBook(prev, bookId)),
       toggleChapter: (bookId: string, chapter: number) => store.set((prev) => toggleBibleChapter(prev, bookId, chapter)),
+      markAllChaptersRead: (bookId: string) => store.set((prev) => markBibleBookRead(prev, bookId)),
       updateChapterVerses: (bookId: string, chapter: number, verses: number[], verseCount: number) =>
         store.set((prev) => setBibleChapterVerses(prev, bookId, chapter, verses, verseCount)),
       applyScan: (scanProgress: BibleTrackerProgress) => {

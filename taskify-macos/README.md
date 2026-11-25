@@ -170,11 +170,11 @@ published to Nostr relays remain available there.
   (the Mac never redeems it); HTTP(S) links render as link-preview cards. All
   detection reuses the same TaskifyCore parsers the iOS app uses
   (`CashuTokenText` for tokens).
-- Basic Bible reading tracker plus Scripture Memory (add a passage, spaced-review
-  list sorted by due/canonical/added date, remove) and Fasting Reminders
-  (weekly-weekday or random-per-month pattern) — both reuse AppModel's existing
-  entry/settings management and task reconciliation; there is no separate Mac
-  scheduling logic.
+- Bible reading tracker with per-book **Mark all as read**, plus Scripture Memory
+  (add a passage, save or edit verse text, spaced-review list sorted by
+  due/canonical/added date, remove) and Fasting Reminders (weekly-weekday or
+  random-per-month pattern) — all reuse AppModel's existing entry/settings
+  management and task reconciliation; there is no separate Mac scheduling logic.
 - Print Checklist (toolbar on week/list boards; "Print & Scan…" in the Bible
   tracker's Reading tab): renders tasks grouped by column, or all 66 books'
   chapters grouped by book, through the shared `PhysicalChecklistLayout`

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getBibleChapterVerseCount } from "../data/bibleVerseCounts";
 import { BIBLE_BOOKS } from "../domains/scripture/bibleTrackerModel";
+import { Modal } from "../ui/Modal";
 
 export type ScriptureMemoryListItem = {
   id: string;
@@ -12,6 +13,7 @@ export type ScriptureMemoryListItem = {
   totalReviews: number;
   dueLabel: string;
   dueNow: boolean;
+  verseText?: string;
 };
 
 export type AddScripturePayload = {
@@ -26,6 +28,7 @@ type ScriptureMemoryCardProps = {
   onAdd: (payload: AddScripturePayload) => void;
   onRemove: (id: string) => void;
   onReview: (id: string) => void;
+  onEditText: (id: string, text: string) => void;
   boardName?: string;
   frequencyLabel: string;
   sortLabel: string;
@@ -65,16 +68,24 @@ export function ScriptureMemoryCard({
   onAdd,
   onRemove,
   onReview,
+  onEditText,
   boardName,
   frequencyLabel,
   sortLabel,
 }: ScriptureMemoryCardProps) {
   const [picker, setPicker] = useState<PickerState>({ open: false });
+  const [editingVerse, setEditingVerse] = useState<ScriptureMemoryListItem | null>(null);
+  const [verseDraft, setVerseDraft] = useState("");
 
   const openPicker = useCallback(() => setPicker({ open: true, step: "book" }), []);
 
   const closePicker = useCallback(() => {
     setPicker({ open: false });
+  }, []);
+
+  const openVerseEditor = useCallback((item: ScriptureMemoryListItem) => {
+    setVerseDraft(item.verseText ?? "");
+    setEditingVerse(item);
   }, []);
 
   useEffect(() => {
@@ -243,6 +254,17 @@ export function ScriptureMemoryCard({
                       </div>
                       <button
                         type="button"
+                        className="icon-button pressable flex-shrink-0"
+                        onClick={() => openVerseEditor(item)}
+                        aria-label={`Edit verse text for ${item.reference}`}
+                        title={item.verseText ? "Edit verse text" : "Add verse text"}
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path d="M4 20h4l10-10-4-4L4 16v4zM13 7l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
                         className="icon-button icon-button--danger pressable flex-shrink-0"
                         onClick={() => onRemove(item.id)}
                         aria-label={`Remove ${item.reference}`}
@@ -294,6 +316,39 @@ export function ScriptureMemoryCard({
         selectionLabel={selectionLabel}
         verseCount={pickerVerseCount}
       />
+      {editingVerse && (
+        <Modal
+          onClose={() => setEditingVerse(null)}
+          title={`Verse text · ${editingVerse.reference}`}
+          desktop="dialog"
+          actions={(
+            <button
+              type="button"
+              className="accent-button button-sm pressable"
+              onClick={() => {
+                onEditText(editingVerse.id, verseDraft);
+                setEditingVerse(null);
+              }}
+            >
+              Save
+            </button>
+          )}
+        >
+          <div className="space-y-3">
+            <textarea
+              autoFocus
+              value={verseDraft}
+              onChange={(event) => setVerseDraft(event.target.value)}
+              className="pill-input min-h-[12rem] w-full resize-y"
+              aria-label="Verse text"
+              placeholder="Paste or type the passage you want to read during review."
+            />
+            <p className="text-xs text-secondary">
+              This text appears when you open the passage&apos;s review task. Leave it blank to remove the saved text.
+            </p>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

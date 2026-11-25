@@ -4,6 +4,8 @@
 <dict>
 	<key>TaskifyKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)solife.me.Taskify.shared</string>
+	<key>TaskifyRecoveryKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>solife.me.Taskify.Native.refresh</string>

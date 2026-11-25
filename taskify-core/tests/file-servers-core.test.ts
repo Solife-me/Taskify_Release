@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
   fetchWithIPFSGatewayFallback,
   fixedFileUploadRoute,
   fixedFileUploadURL,
   ipfsRetrievalCandidates,
+  isLegacyEncryptedMediaServer,
   opaqueUploadFilename,
   resolveOriginlessUploadURL,
   secureUploadedFileURL,
@@ -42,7 +44,21 @@ type OpaqueUploadVector = {
 
 const fixture = JSON.parse(
   readFileSync(new URL("../fixtures/file-server-upload-vectors.json", import.meta.url), "utf8"),
-) as { opaqueUploads: OpaqueUploadVector[]; routes: RouteVector[]; uploadedURLs: UploadedURLVector[]; responses: ResponseVector[] };
+) as {
+  defaultEncryptedServer: string;
+  legacyEncryptedServers: { url: string; matches: boolean }[];
+  opaqueUploads: OpaqueUploadVector[];
+  routes: RouteVector[];
+  uploadedURLs: UploadedURLVector[];
+  responses: ResponseVector[];
+};
+
+test("encrypted upload default and legacy server match the shared vectors", () => {
+  assert.equal(DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, fixture.defaultEncryptedServer);
+  for (const { url, matches } of fixture.legacyEncryptedServers) {
+    assert.equal(isLegacyEncryptedMediaServer(url), matches, url);
+  }
+});
 
 for (const vector of fixture.opaqueUploads) {
   test(`opaque upload filename: ${vector.name}`, () => {

@@ -40,6 +40,9 @@ honored rather than undone:
 - A passage edited on both sides keeps the copy with more reviews (then the latest review,
   higher stage, latest scheduling). A passage edited on one side and deleted on the other keeps
   the edit.
+- Optional Scripture Memory verse text syncs with its passage in the encrypted app-state
+  document. Text edits merge independently of reviews and scheduling. An empty text value with
+  an edit timestamp records a clear so an older copy cannot restore the text.
 - If one device reset the tracker, the newer reading cycle wins and the older cycle survives in
   the merged archive.
 - Tie-breaks are symmetric, so two devices merging each other's copies converge.

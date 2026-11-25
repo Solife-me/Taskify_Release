@@ -71,6 +71,7 @@ export type Settings = {
   walletContactsSyncEnabled: boolean;
   fileStorageServer: string;
   encryptedFileStorageServer: string;
+  blossomMediaServerMigrated?: boolean;
   managedBlossomServer: string;
   fileServers: string; // JSON-serialized FileServerEntry[]
   encryptedFileServers: string; // JSON-serialized FileServerEntry[]

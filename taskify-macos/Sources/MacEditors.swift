@@ -22,6 +22,9 @@ struct MacTaskEditor: View {
     @State private var saveTask: Task<Void, Never>?
     @State private var editingNote = false
     private var columns: [BoardColumn] { model.board(withID: draft.boardID)?.columns ?? [] }
+    private var scriptureVerseText: String? {
+        original.flatMap { model.scriptureMemoryVerseText(for: $0) }
+    }
 
     init(task: TaskItem?, boardID: String) {
         original = task
@@ -43,6 +46,15 @@ struct MacTaskEditor: View {
                 Section("Task") {
                     TextField("Title", text: $draft.title, axis: .vertical).lineLimit(1...4)
                         .accessibilityIdentifier("task-title-field")
+                    if let scriptureVerseText {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Scripture text").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Text(verbatim: scriptureVerseText)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("scripture-review-verse-text")
+                        }
+                    }
                     if let original {
                         MacTaskCreator(task: original)
                     }

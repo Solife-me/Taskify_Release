@@ -195,19 +195,34 @@ struct MacBibleView: View {
     private var reading: some View {
         HSplitView {
             List(BibleCatalog.books, selection: $selectedBook) { book in
-                HStack { Text(book.name); Spacer(); Text("\(store.chaptersRead(bookID: book.id).count)/\(book.chapterCount)").font(.caption).foregroundStyle(.secondary) }.tag(book.id)
+                let chaptersRead = store.chaptersRead(bookID: book.id)
+                HStack { Text(book.name); Spacer(); Text("\(chaptersRead.count)/\(book.chapterCount)").font(.caption).foregroundStyle(.secondary) }.tag(book.id)
             }.frame(minWidth: 180, idealWidth: 230, maxWidth: 290)
             if let book = BibleCatalog.books.first(where: { $0.id == selectedBook }) {
+                let chaptersRead = store.chaptersRead(bookID: book.id)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
-                        Text(book.name).font(.largeTitle.bold())
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(book.name).font(.largeTitle.bold())
+                            Spacer()
+                            if chaptersRead.count < book.chapterCount {
+                                Button {
+                                    store.markAllChaptersRead(bookID: book.id)
+                                } label: {
+                                    Label("Mark all as read", systemImage: "checkmark")
+                                }
+                                .buttonStyle(.bordered)
+                                .help("Mark every chapter of \(book.name) as read")
+                                .accessibilityIdentifier("mark-all-chapters-\(book.id)")
+                            }
+                        }
                         Text("\(store.totalChaptersRead) chapters read across your Bible").foregroundStyle(.secondary)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 54))], spacing: 12) {
                             ForEach(1...book.chapterCount, id: \.self) { chapter in
                                 Button { store.toggleChapter(bookID: book.id, chapter: chapter) } label: {
                                     Text("\(chapter)").frame(maxWidth: .infinity).frame(height: 44)
-                                        .background(store.chaptersRead(bookID: book.id).contains(chapter) ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                                }.buttonStyle(.plain).accessibilityLabel("Chapter \(chapter), \(store.chaptersRead(bookID: book.id).contains(chapter) ? "read" : "unread")")
+                                        .background(chaptersRead.contains(chapter) ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                                }.buttonStyle(.plain).accessibilityLabel("Chapter \(chapter), \(chaptersRead.contains(chapter) ? "read" : "unread")")
                             }
                         }
                     }.padding(30)

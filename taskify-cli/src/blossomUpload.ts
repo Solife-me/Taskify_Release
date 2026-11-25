@@ -27,17 +27,18 @@ function buildBlossomAuthHeader(sha256Hex: string, nsec: string, now: number): s
   return `Nostr ${Buffer.from(JSON.stringify(event)).toString("base64url")}`;
 }
 
-/** Uploads bytes exactly as given, so callers encrypt first. Returns the blob's described URL. */
+/** Uploads bytes exactly as given and returns the blob's described URL. */
 export async function uploadBlobToBlossom(opts: {
   serverUrl: string;
   bytes: Uint8Array;
   nsec: string;
+  contentType?: string;
 }): Promise<string> {
   const sha256Hex = createHash("sha256").update(opts.bytes).digest("hex");
   const res = await fetch(fixedFileUploadURL(opts.serverUrl, "blossom"), {
     method: "PUT",
     headers: {
-      "Content-Type": "application/octet-stream",
+      "Content-Type": opts.contentType ?? "application/octet-stream",
       Authorization: buildBlossomAuthHeader(sha256Hex, opts.nsec, Math.floor(Date.now() / 1000)),
     },
     body: Buffer.from(opts.bytes),

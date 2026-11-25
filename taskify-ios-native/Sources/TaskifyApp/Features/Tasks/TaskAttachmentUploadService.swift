@@ -9,10 +9,25 @@ import UniformTypeIdentifiers
 enum TaskifyMediaServerSettings {
     static let selectedServerPWAKey = "encryptedFileStorageServer"
     static let serverListPWAKey = "encryptedFileServers"
-    static let defaultServer = "https://originless.solife.me"
+    static let blossomMigrationPWAKey = "blossomMediaServerMigrated"
+    static let defaultServer = TaskifyFileServerList.defaultEncryptedServer.url
 
     private static let selectedServerKey = "taskify.encryptedMediaServerURL"
     private static let serverListKey = "taskify.encryptedFileServers"
+    private static let blossomMigrationKey = "taskify.blossomMediaServerMigrated"
+
+    static func hasMigratedToBlossom(defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: blossomMigrationKey)
+    }
+
+    static func migrateLegacySelection(_ url: String? = nil, defaults: UserDefaults) {
+        guard !hasMigratedToBlossom(defaults: defaults),
+              let selected = url ?? defaults.string(forKey: selectedServerKey) ?? servers(defaults: defaults).first?.url,
+              TaskifyFileServerList.isLegacyEncryptedMediaServer(selected) else { return }
+        let updated = TaskifyFileServerList.includingDefaultEncryptedServer(servers(defaults: defaults))
+        defaults.set(TaskifyFileServerList.serialize(updated), forKey: serverListKey)
+        selectServer(defaultServer, defaults: defaults)
+    }
 
     static var servers: [TaskifyFileServerEntry] { servers(defaults: .standard) }
 
@@ -53,7 +68,7 @@ enum TaskifyMediaServerSettings {
         let currentServers = servers(defaults: defaults)
         return TaskifyFileServerList.find(currentServers, url: configuredServer(defaults: defaults))
             ?? currentServers.first
-            ?? TaskifyFileServerEntry(url: defaultServer, type: .originless)
+            ?? TaskifyFileServerList.defaultEncryptedServer
     }
 
     @discardableResult
@@ -61,6 +76,7 @@ enum TaskifyMediaServerSettings {
         guard let normalized = TaskifyFileServerList.normalizedURL(url),
               servers(defaults: defaults).contains(where: { $0.url == normalized }) else { return nil }
         defaults.set(normalized, forKey: selectedServerKey)
+        defaults.set(true, forKey: blossomMigrationKey)
         return normalized
     }
 
@@ -85,6 +101,7 @@ enum TaskifyMediaServerSettings {
         current.append(entry)
         defaults.set(TaskifyFileServerList.serialize(current), forKey: serverListKey)
         defaults.set(normalized, forKey: selectedServerKey)
+        defaults.set(true, forKey: blossomMigrationKey)
         return .added(entry)
     }
 
@@ -101,6 +118,7 @@ enum TaskifyMediaServerSettings {
         defaults.set(TaskifyFileServerList.serialize(current), forKey: serverListKey)
         if defaults.string(forKey: selectedServerKey).flatMap(TaskifyFileServerList.normalizedURL) == normalized {
             defaults.set(current[0].url, forKey: selectedServerKey)
+            defaults.set(true, forKey: blossomMigrationKey)
         }
         return true
     }
@@ -108,6 +126,7 @@ enum TaskifyMediaServerSettings {
     static func resetToDefaults(defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: serverListKey)
         defaults.removeObject(forKey: selectedServerKey)
+        defaults.set(true, forKey: blossomMigrationKey)
     }
 
     /// Used by inbound account-backup application, which hands over the PWA's own raw settings
