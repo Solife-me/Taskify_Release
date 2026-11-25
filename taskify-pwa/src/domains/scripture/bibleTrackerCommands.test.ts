@@ -3,6 +3,7 @@ import {
   applyBibleScan,
   completeBibleBook,
   deleteBibleArchive,
+  markBibleBookRead,
   resetBibleTracker,
   restoreBibleArchive,
   restoreBibleBook,
@@ -37,6 +38,19 @@ describe("Bible tracker commands", () => {
     expect(toggleBibleChapter(state, "", 1)).toBe(state);
     expect(toggleBibleChapter(state, "jhn", 0)).toBe(state);
     expect(toggleBibleBook(state, "")).toBe(state);
+    expect(markBibleBookRead(state, "")).toBe(state);
+  });
+
+  test("mark all reads every chapter and clears partial verses only for chapters made read", () => {
+    const chapters = getBibleBookChapterCount("jhn") ?? 0;
+    let state = toggleBibleChapter(empty(), "jhn", 1);
+    state = setBibleChapterVerses(state, "jhn", 2, [1, 2], 25);
+    state = setBibleChapterVerses(state, "jhn", 3, [1], 36);
+    const marked = markBibleBookRead(state, "jhn");
+    expect(marked.progress.jhn).toEqual(Array.from({ length: chapters }, (_, index) => index + 1));
+    expect(marked.verses.jhn?.[2]).toBeUndefined();
+    expect(marked.verses.jhn?.[3]).toBeUndefined();
+    expect(markBibleBookRead(marked, "jhn")).toBe(marked);
   });
 
   test("reading every verse marks the chapter read; partial reading keeps the verses", () => {

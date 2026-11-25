@@ -20,6 +20,10 @@ saved contact when available. **Settings → Boards & Lists** offers drag and dr
 and move buttons for touch and keyboard use. Board checklists include upcoming
 tasks, notes, due dates, and subtasks by default.
 
+The Bible board supports per-book **Mark all as read**, chapter completion, partial-verse
+tracking, and Scripture Memory review tasks. A saved passage's verse text can be edited from the
+Scripture Memory card and appears when its review task is opened, matching the native client.
+
 Daily is the shortest task repeat interval. Existing hourly task rules round up to whole calendar
 days. A rule for every 24 hours or less becomes daily and a rule for every 25 hours becomes every
 two days. The task's current due date, due time, and repeat end date are preserved.

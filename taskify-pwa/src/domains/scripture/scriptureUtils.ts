@@ -108,6 +108,33 @@ export function scheduleScriptureEntry(
   return updateScriptureMemoryState(prev, entries, prev.lastReviewISO);
 }
 
+/** Saves or explicitly clears the verse text shown while a Scripture Memory review is open. */
+export function updateScriptureMemoryVerseText(
+  prev: ScriptureMemoryState,
+  entryId: string,
+  text: string,
+  updatedAtISO: string = new Date().toISOString(),
+): ScriptureMemoryState {
+  const normalizedText = text.trim();
+  const index = prev.entries.findIndex((entry) => entry.id === entryId);
+  if (index < 0 || (prev.entries[index].verseText?.text ?? "") === normalizedText) return prev;
+
+  const requestedTime = new Date(updatedAtISO).getTime();
+  const previousTime = prev.entries[index].verseText?.updatedAtISO
+    ? new Date(prev.entries[index].verseText.updatedAtISO).getTime()
+    : Number.NEGATIVE_INFINITY;
+  const timestamp = new Date(Math.max(
+    Number.isFinite(requestedTime) ? requestedTime : Date.now(),
+    Number.isFinite(previousTime) ? previousTime + 1 : Number.NEGATIVE_INFINITY,
+  )).toISOString();
+  const entries = [...prev.entries];
+  entries[index] = {
+    ...entries[index],
+    verseText: { text: normalizedText, updatedAtISO: timestamp },
+  };
+  return { ...prev, entries };
+}
+
 export function sanitizeScriptureMemoryState(raw: any): ScriptureMemoryState {
   const now = new Date().toISOString();
   if (!raw || typeof raw !== "object") {

@@ -118,7 +118,7 @@ const R_NONE: Recurrence = { type: "none" };
 // They will be properly extracted in subsequent refactor steps.
 
 /* Edit modal with Advanced recurrence */
-function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, creatorName, boards, onRevealBounty, onPreviewDocument, bountyExtension, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer }: {
+function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStart, boardKind, creatorName, boards, onRevealBounty, onPreviewDocument, bountyExtension, defaultRelays, nostrPK, nostrSkHex, fileServers, fileStorageServer, scriptureVerseText }: {
   task: Task;
   onCancel: ()=>void;
   onDelete: ()=>void;
@@ -139,6 +139,8 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
   nostrSkHex: string;
   fileServers: string;
   fileStorageServer: string;
+  /** Saved passage text for a Scripture Memory review task. */
+  scriptureVerseText?: string;
 }) {
   const [title, setTitle] = useState(task.title);
   const [priority, setPriority] = useState<TaskPriority | 0>(() => normalizeTaskPriority(task.priority) ?? 0);
@@ -1095,6 +1097,12 @@ function EditModal({ task, onCancel, onDelete, onSave, onSwitchToEvent, weekStar
                 placeholder="Title"
               />
               {creatorName && <p className="text-xs text-secondary">Created by {creatorName}</p>}
+              {scriptureVerseText && (
+                <div className="space-y-2 border-t border-white/10 pt-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Scripture text</div>
+                  <div className="whitespace-pre-wrap text-sm leading-relaxed text-primary">{scriptureVerseText}</div>
+                </div>
+              )}
             </div>
             <div className="edit-card__detail edit-card__detail--field space-y-2">
               <div

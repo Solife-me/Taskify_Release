@@ -4,6 +4,7 @@ import TaskifyCore
 struct MacScriptureMemoryView: View {
     @Environment(AppModel.self) private var model
     @State private var addingVerse = false
+    @State private var editingText: ScriptureMemoryEntry?
     @State private var removing: ScriptureMemoryEntry?
     private var sortedEntries: [(entry: ScriptureMemoryEntry, stats: ScriptureMemoryAlgorithm.Stats)] {
         ScriptureMemoryAlgorithm.sortedEntries(model.scriptureMemoryState.entries, sort: model.scriptureMemorySort,
@@ -32,12 +33,17 @@ struct MacScriptureMemoryView: View {
                         }
                         Spacer()
                         Text("Stage \(pair.entry.stage)").font(.caption2).foregroundStyle(.tertiary)
+                        Button { editingText = pair.entry } label: { Image(systemName: "pencil") }
+                            .buttonStyle(.borderless)
+                            .help(pair.entry.reviewText == nil ? "Add verse text" : "Edit verse text")
+                            .accessibilityLabel("Edit verse text for \(ScriptureMemoryAlgorithm.reference(for: pair.entry))")
                         Button(role: .destructive) { removing = pair.entry } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
                     }.padding(.vertical, 4)
                 }.listStyle(.inset)
             }
         }
         .sheet(isPresented: $addingVerse) { MacAddScriptureVerse() }
+        .sheet(item: $editingText) { entry in MacEditScriptureVerseText(entry: entry) }
         .confirmationDialog("Remove this verse from Scripture Memory?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             Button("Remove", role: .destructive) {
                 guard let entry = removing else { return }
@@ -46,6 +52,44 @@ struct MacScriptureMemoryView: View {
             }
             Button("Cancel", role: .cancel) { removing = nil }
         }
+    }
+}
+
+private struct MacEditScriptureVerseText: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let entry: ScriptureMemoryEntry
+    @State private var text: String
+
+    init(entry: ScriptureMemoryEntry) {
+        self.entry = entry
+        _text = State(initialValue: entry.reviewText ?? "")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(ScriptureMemoryAlgorithm.reference(for: entry)).font(.title2.bold())
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    model.updateScriptureMemoryVerseText(entryID: entry.id, text: text)
+                    dismiss()
+                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            }.padding(22)
+            TextEditor(text: $text)
+                .font(.body)
+                .padding(12)
+                .accessibilityLabel("Verse text")
+                .accessibilityIdentifier("scripture-verse-editor")
+            Text("This text appears when you open the passage's review task. Leave it blank to remove the saved text.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 22)
+                .padding(.bottom, 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 560, height: 430)
     }
 }
 

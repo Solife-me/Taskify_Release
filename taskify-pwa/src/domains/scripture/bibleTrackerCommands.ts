@@ -103,6 +103,40 @@ export function toggleBibleChapter(prev: BibleTrackerState, bookId: string, chap
   return base;
 }
 
+/** Marks every chapter in a book read, matching the native Bible tracker's mark-all action. */
+export function markBibleBookRead(prev: BibleTrackerState, bookId: string): BibleTrackerState {
+  const normalizedBookId = String(bookId || "");
+  if (!normalizedBookId) return prev;
+  const totalChapters = getBibleBookChapterCount(normalizedBookId) ?? 0;
+  if (totalChapters <= 0) return prev;
+
+  const previousChapters = prev.progress[normalizedBookId] ?? [];
+  const previousSet = new Set(previousChapters);
+  const allChapters = Array.from({ length: totalChapters }, (_, index) => index + 1);
+  const unreadChapters = allChapters.filter((chapter) => !previousSet.has(chapter));
+  if (unreadChapters.length === 0) return prev;
+
+  let nextVerses = prev.verses;
+  const bookVerses = prev.verses?.[normalizedBookId];
+  if (bookVerses && unreadChapters.some((chapter) => bookVerses[chapter])) {
+    const updatedBookVerses = { ...bookVerses };
+    for (const chapter of unreadChapters) delete updatedBookVerses[chapter];
+    const updatedVerses = { ...prev.verses } as typeof prev.verses;
+    if (Object.keys(updatedBookVerses).length === 0) {
+      delete updatedVerses[normalizedBookId];
+    } else {
+      updatedVerses[normalizedBookId] = updatedBookVerses;
+    }
+    nextVerses = updatedVerses;
+  }
+
+  return {
+    ...prev,
+    progress: { ...prev.progress, [normalizedBookId]: allChapters },
+    ...(nextVerses !== prev.verses ? { verses: nextVerses } : {}),
+  };
+}
+
 /** Records the verses read in a chapter; reading every verse marks the chapter read. */
 export function setBibleChapterVerses(
   prev: BibleTrackerState,
