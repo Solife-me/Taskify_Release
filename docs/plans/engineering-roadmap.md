@@ -175,6 +175,12 @@ editing a title or subtask preserves a concurrent reorder unless the editor expl
 the list. The service worker tests exercise offline deep links with aged startup files, protect
 the precache from trimming, and reject HTML from a different deployment.
 
+Blossom storage tests cover prepaid checkout with monthly and yearly offers,
+top-ups and restarts using server time, quantity-specific retries, and recovery
+of an open invoice with its original terms. Settlement checks use the refreshed
+plan expiry, and signing tests verify the exact order body for both checkout
+versions.
+
 ## Native Board Performance Coverage (2026-09-12)
 
 `SnapshotLookupCacheTests` verifies domain-specific invalidation and cached board projections,

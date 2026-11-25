@@ -17,7 +17,7 @@ function decodeNip98(authorization: string): any {
 describe("Blossom storage API", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  test("signs the exact order URL and body bytes with NIP-98", async () => {
+  test.each([undefined, 3])("signs the exact order URL and body bytes with NIP-98 (quantity %s)", async (quantity) => {
     const order = {
       id: "order-1",
       planId: "plan-500",
@@ -40,6 +40,7 @@ describe("Blossom storage API", () => {
       signer: SIGNER,
       requestId: "request-1",
       offer: { planId: "plan-500", interval: "month", priceUsdCents: 500, bytes: 500_000_000 },
+      quantity,
     });
 
     const [url, init] = fetchSpy.mock.calls[0];
@@ -50,6 +51,14 @@ describe("Blossom storage API", () => {
     expect(auth.tags).toContainEqual(["u", "https://blossom.example/api/storage/v1/orders"]);
     expect(auth.tags).toContainEqual(["method", "POST"]);
     const bodyBytes = init?.body as Uint8Array;
+    expect(JSON.parse(new TextDecoder().decode(bodyBytes))).toEqual({
+      requestId: "request-1",
+      planId: "plan-500",
+      interval: "month",
+      priceUsdCents: 500,
+      bytes: 500_000_000,
+      ...(quantity === undefined ? {} : { quantity }),
+    });
     const payload = auth.tags.find((tag: string[]) => tag[0] === "payload");
     expect(payload?.[1]).toBe(bytesToHex(sha256(bodyBytes)));
   });

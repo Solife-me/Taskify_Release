@@ -15,6 +15,12 @@ export type BlossomPaidStorage = {
   paidThrough: number;
 };
 
+export type BlossomPaidPlan = BlossomPaidStorage & {
+  planId: string;
+  planName: string;
+  legacyOrderId: string | null;
+};
+
 export type BlossomStandardRule = {
   type: string;
   expiration: number | null;
@@ -29,16 +35,32 @@ export type BlossomStorageOffer = {
   durationSeconds: number;
 };
 
-export type BlossomStorageSummary = {
+export type BlossomPrepaidStorageOffer = BlossomStorageOffer & {
+  interval: "month" | "year";
+  maxQuantity: number;
+};
+
+type BlossomStorageSummaryBase = {
   protected: BlossomStorageBytes;
   total: BlossomStorageBytes;
   permanentExtraBytes: number;
   paidStorage: BlossomPaidStorage[];
   protectionSeconds: number;
   renewalWindowSeconds?: number;
-  offers: BlossomStorageOffer[];
   standardRules: BlossomStandardRule[];
 };
+
+export type BlossomPrepaidStorageSummary = BlossomStorageSummaryBase & {
+  checkoutVersion: 2;
+  serverTime: number;
+  paidPlans: BlossomPaidPlan[];
+  offers: BlossomPrepaidStorageOffer[];
+};
+
+export type BlossomStorageSummary = BlossomPrepaidStorageSummary | (BlossomStorageSummaryBase & {
+  checkoutVersion?: 1;
+  offers: BlossomStorageOffer[];
+});
 
 export type BlossomStorageBlob = {
   url: string;
@@ -64,6 +86,9 @@ export type BlossomStorageOrder = {
   interval: "month" | "year" | string;
   priceUsdCents: number;
   bytes: number;
+  quantity?: number;
+  totalPriceUsdCents?: number;
+  durationSeconds?: number;
   amountSats: number;
   paymentHash: string;
   invoice: string;
@@ -85,6 +110,7 @@ export class BlossomStorageApiError extends Error {
   readonly code: BlossomStorageErrorCode;
   readonly reason: string;
   readonly response: unknown;
+  readonly openOrderId?: string;
 
   constructor(status: number, code: BlossomStorageErrorCode, message: string, response: unknown = null) {
     super(message);
@@ -93,6 +119,10 @@ export class BlossomStorageApiError extends Error {
     this.code = code;
     this.reason = message;
     this.response = response;
+    if (response && typeof response === "object" && "openOrderId" in response
+      && typeof response.openOrderId === "string") {
+      this.openOrderId = response.openOrderId;
+    }
   }
 }
 
@@ -312,6 +342,7 @@ export function createBlossomStorageOrder(options: {
   signer: string | Uint8Array;
   requestId: string;
   offer: Pick<BlossomStorageOffer, "planId" | "interval" | "priceUsdCents" | "bytes">;
+  quantity?: number;
   signal?: AbortSignal;
 }): Promise<BlossomStorageOrder> {
   return storageRequest({
@@ -325,6 +356,7 @@ export function createBlossomStorageOrder(options: {
       interval: options.offer.interval,
       priceUsdCents: options.offer.priceUsdCents,
       bytes: options.offer.bytes,
+      quantity: options.quantity,
     },
     signal: options.signal,
   });

@@ -61,6 +61,13 @@ Automatic standard-retention fallback is enabled by default and remembered separ
 per account and server. Taskify explains the first fallback and asks again if the
 server's retention terms change.
 
+On servers with prepaid checkout, open **Settings → Storage → Blossom account
+storage** to view your plans and their local expiry dates. Choose how many months
+or years to buy, review the total and estimated expiry, then pay the invoice with
+a Lightning wallet. Adding time extends an active plan from its current expiry.
+Restarting an expired plan starts from settlement. Earlier purchases with their
+own expiry dates appear below the plans.
+
 Taskify shows one in-app renewal reminder for the managed and selected Blossom
 servers when attachments enter their renewal window. Open the reminder to renew
 them in **Settings → Storage**. Taskify uses the server’s advertised renewal

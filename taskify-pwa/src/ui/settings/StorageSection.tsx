@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { blossomRenewalWindowSeconds, isBlossomRenewalDue, listBlossomRenewals } from "../../lib/blossomRenewals";
 import { QRCodeSVG } from "qrcode.react";
 import type { Task } from "taskify-core";
@@ -22,7 +22,11 @@ import {
   listBlossomStorageBlobs,
   listBlossomStorageOrders,
   protectBlossomStorageBlob,
+  type BlossomPaidPlan,
+  type BlossomPrepaidStorageOffer,
+  type BlossomPrepaidStorageSummary,
   type BlossomStorageBlob,
+  type BlossomStorageOffer,
   type BlossomStorageOrder,
   type BlossomStorageSummary,
 } from "../../lib/blossomStorage";
@@ -48,6 +52,7 @@ import { FileServersSection } from "./FileServersSection";
 import { SettingsAccordion } from "./SettingsAccordion";
 
 const INVENTORY_PAGE_SIZE = 50;
+const DAY_SECONDS = 86_400;
 
 function formatDecimalBytes(bytes: number | null | undefined): string {
   if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return "—";
@@ -74,7 +79,259 @@ function formatDateTime(unixSeconds: number | null | undefined): string {
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
   });
+}
+
+function LocalTime({ seconds }: { seconds: number }) {
+  return <time dateTime={new Date(seconds * 1000).toISOString()}>{formatDateTime(seconds)}</time>;
+}
+
+function formatUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function formatUnits(quantity: number, unit: string): string {
+  return `${quantity} ${unit}${quantity === 1 ? "" : "s"}`;
+}
+
+function formatDuration(seconds: number): string {
+  return ([
+    [DAY_SECONDS, "day"],
+    [3600, "hour"],
+    [60, "minute"],
+    [1, "second"],
+  ] as const).map(([size, unit]) => {
+    const count = Math.floor(seconds / size);
+    seconds %= size;
+    return count ? formatUnits(count, unit) : "";
+  }).filter(Boolean).join(" ") || "0 seconds";
+}
+
+function purchasedTime(interval: string, quantity: number, durationSeconds: number): string {
+  return `${formatUnits(quantity, interval)} (${formatDuration(durationSeconds)})`;
+}
+
+function timeLeft(seconds: number): string {
+  if (seconds <= 0) return "Expired";
+  if (seconds < 60) return "Less than a minute left";
+  const precision = seconds >= DAY_SECONDS ? 3600 : 60;
+  return `${formatDuration(Math.floor(seconds / precision) * precision)} left`;
+}
+
+function serverNow(serverTime: number, receivedAt: number, now: number): number {
+  return serverTime + Math.max(0, Math.floor((now - receivedAt) / 1000));
+}
+
+function planKey(plan: Pick<BlossomStorageOffer, "planId" | "bytes">): string {
+  return JSON.stringify([plan.planId, plan.bytes]);
+}
+
+function PlanExpiry({ paidThrough, now }: { paidThrough: number; now: number }) {
+  return (
+    <div className="mt-1.5 space-y-1 text-xs">
+      <div className="font-medium text-primary">{timeLeft(paidThrough - now)}</div>
+      <div className="text-secondary">
+        {paidThrough > now ? "Expires " : "Expired "}
+        <LocalTime seconds={paidThrough} />
+      </div>
+    </div>
+  );
+}
+
+function PrepaidPlanCheckout({
+  offers,
+  paidThrough,
+  now,
+  busy,
+  onCheckout,
+}: {
+  offers: BlossomPrepaidStorageOffer[];
+  paidThrough?: number;
+  now: number;
+  busy: boolean;
+  onCheckout: (offer: BlossomStorageOffer, quantity: number) => void;
+}) {
+  const [interval, setInterval] = useState<BlossomPrepaidStorageOffer["interval"]>("month");
+  const [quantity, setQuantity] = useState(1);
+  const offer = offers.find((item) => item.interval === interval) ?? offers[0];
+  const selectedQuantity = Math.min(quantity, offer.maxQuantity);
+  const duration = selectedQuantity * offer.durationSeconds;
+  const estimatedExpiry = Math.max(now, paidThrough ?? now) + duration;
+
+  return (
+    <form className="mt-3 space-y-3 border-t border-surface pt-3" onSubmit={(event) => {
+      event.preventDefault();
+      void onCheckout(offer, selectedQuantity);
+    }}>
+      <fieldset disabled={busy} className="min-w-0 space-y-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-1">
+            <div className="text-xs font-medium text-primary">Buy time in</div>
+            <div className="inline-flex gap-1 rounded-full bg-surface-muted p-1" role="group" aria-label="Buy time in">
+              {offers.map((item) => (
+                <button
+                  key={item.interval}
+                  type="button"
+                  aria-pressed={offer.interval === item.interval}
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium pressable ${offer.interval === item.interval
+                    ? "bg-surface text-primary shadow-sm"
+                    : "text-secondary hover:text-primary"}`}
+                  onClick={() => {
+                    setInterval(item.interval);
+                    setQuantity(Math.min(selectedQuantity, item.maxQuantity));
+                  }}
+                >
+                  {item.interval === "month" ? "Months" : "Years"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="space-y-1 text-xs font-medium text-primary">
+            <span className="block">Quantity</span>
+            <select
+              aria-label="Quantity"
+              className="pill-input"
+              value={selectedQuantity}
+              onChange={(event) => setQuantity(Number(event.target.value))}
+            >
+              {Array.from({ length: offer.maxQuantity }, (_, index) => (
+                <option key={index + 1} value={index + 1}>{index + 1}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <dl className="space-y-1.5 rounded-xl bg-surface-muted p-3 text-xs">
+          <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+            <dt className="text-secondary">Time added</dt>
+            <dd className="font-medium text-primary">{purchasedTime(offer.interval, selectedQuantity, duration)}</dd>
+          </div>
+          <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+            <dt className="text-secondary">Estimated expiry</dt>
+            <dd className="font-medium text-primary"><LocalTime seconds={estimatedExpiry} /></dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-x-4 border-t border-surface pt-1.5">
+            <dt className="font-medium text-primary">Total (USD)</dt>
+            <dd className="text-sm font-semibold tabular-nums text-primary">{formatUsd(selectedQuantity * offer.priceUsdCents)}</dd>
+          </div>
+        </dl>
+        <button type="submit" className="accent-button button-sm pressable w-full sm:w-auto" disabled={busy}>
+          {busy ? "Creating invoice…" : "Create Lightning invoice"}
+        </button>
+      </fieldset>
+    </form>
+  );
+}
+
+function PrepaidStoragePlans({
+  summary,
+  receivedAt,
+  busy,
+  onCheckout,
+}: {
+  summary: BlossomPrepaidStorageSummary;
+  receivedAt: number;
+  busy: boolean;
+  onCheckout: (offer: BlossomStorageOffer, quantity: number) => Promise<boolean>;
+}) {
+  const [openPlan, setOpenPlan] = useState<string | null>(null);
+  const [clock, setClock] = useState(() => performance.now());
+  const checkoutId = useId();
+  useEffect(() => {
+    const tick = () => setClock(performance.now());
+    const timer = window.setInterval(tick, 1000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
+  const now = serverNow(summary.serverTime, receivedAt, clock);
+  const { plans, legacyPlans } = useMemo(() => {
+    const grouped = new Map<string, {
+      planName: string;
+      bytes: number;
+      paidThrough?: number;
+      offers: BlossomPrepaidStorageOffer[];
+    }>();
+    const legacyPlans: BlossomPaidPlan[] = [];
+    for (const plan of summary.paidPlans) {
+      if (plan.legacyOrderId !== null) {
+        legacyPlans.push(plan);
+      } else {
+        grouped.set(planKey(plan), { ...plan, offers: [] });
+      }
+    }
+    for (const offer of summary.offers) {
+      const key = planKey(offer);
+      const plan = grouped.get(key);
+      if (plan) plan.offers.push(offer);
+      else grouped.set(key, { ...offer, offers: [offer] });
+    }
+    return { plans: [...grouped], legacyPlans };
+  }, [summary.offers, summary.paidPlans]);
+
+  return (
+    <section aria-label="Prepaid storage plans" className="space-y-2.5">
+      <h3 className="text-sm font-semibold text-primary">Prepaid storage plans</h3>
+      {plans.map(([key, { planName, bytes, paidThrough, offers }]) => {
+        const expanded = openPlan === key && offers.length > 0;
+        const action = paidThrough === undefined ? "Choose time" : paidThrough > now ? "Add time" : "Restart plan";
+        return (
+          <article key={key} className="rounded-xl border border-surface bg-surface p-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h4 className="break-words text-sm font-semibold text-primary">{planName}</h4>
+                <div className="text-xs text-secondary">{formatDecimalBytes(bytes)} capacity</div>
+              </div>
+              {offers.length > 0 && (
+                <button
+                  type="button"
+                  className="ghost-button button-sm pressable"
+                  aria-expanded={expanded}
+                  aria-controls={expanded ? checkoutId : undefined}
+                  disabled={busy}
+                  onClick={() => setOpenPlan(expanded ? null : key)}
+                >
+                  {action}
+                </button>
+              )}
+            </div>
+            {paidThrough !== undefined && <PlanExpiry paidThrough={paidThrough} now={now} />}
+            {expanded && (
+              <div id={checkoutId}>
+                <PrepaidPlanCheckout
+                  offers={offers}
+                  paidThrough={paidThrough}
+                  now={now}
+                  busy={busy}
+                  onCheckout={async (offer, quantity) => {
+                    if (await onCheckout(offer, quantity)) setOpenPlan(null);
+                  }}
+                />
+              </div>
+            )}
+          </article>
+        );
+      })}
+      {!summary.offers.length && <p className="text-xs text-secondary">No storage offers are available on this server.</p>}
+      {legacyPlans.length > 0 && (
+        <section aria-label="Earlier storage purchases" className="space-y-2 rounded-xl bg-surface p-3">
+          <h4 className="text-xs font-medium text-primary">Earlier storage purchases</h4>
+          <p className="text-xs text-secondary">Each purchase has its own expiry.</p>
+          <ul className="divide-y divide-surface">
+            {legacyPlans.map((plan) => (
+              <li key={plan.legacyOrderId} className="py-2 last:pb-0">
+                <div className="text-xs font-medium text-primary">{plan.planName} · +{formatDecimalBytes(plan.bytes)}</div>
+                <PlanExpiry paidThrough={plan.paidThrough} now={now} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </section>
+  );
 }
 
 function usagePercent(used: number, limit: number): number {
@@ -261,7 +518,8 @@ function BlossomStorageDashboard({
   setSelectedServer: (server: string) => void;
 }) {
   const { show: showToast } = useToast();
-  const [summary, setSummary] = useState<BlossomStorageSummary | null>(null);
+  const [summarySnapshot, setSummarySnapshot] = useState<{ summary: BlossomStorageSummary; receivedAt: number } | null>(null);
+  const summary = summarySnapshot?.summary;
   const [orders, setOrders] = useState<BlossomStorageOrder[]>([]);
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   const [inventory, setInventory] = useState<BlossomStorageBlob[]>([]);
@@ -277,7 +535,9 @@ function BlossomStorageDashboard({
     getBlossomFallbackPreference(pubkeyHex, selectedServer),
   );
   const dashboardRequest = useRef<AbortController | null>(null);
-  const orderRequestInFlight = useRef(false);
+  const orderRequest = useRef<AbortController | null>(null);
+  const checkoutRef = useRef<HTMLElement>(null);
+  const revealCheckout = useRef(false);
   const renewalWindow = blossomRenewalWindowSeconds(summary?.renewalWindowSeconds);
 
   useEffect(() => {
@@ -290,20 +550,24 @@ function BlossomStorageDashboard({
 
   const [events] = useCalendarEvents();
   const references = useMemo(() => localBlobReferences(tasks, events, readDmCache()), [tasks, events, inventory]);
-  const activeOrder = useMemo(
-    () => orders.find((order) => order.id === activeOrderId)
-      ?? orders.find((order) => !order.paidThrough && order.invoiceExpiresAt * 1000 > Date.now())
-      ?? null,
-    [activeOrderId, orders],
-  );
+  const invoiceNow = summarySnapshot?.summary.checkoutVersion === 2
+    ? serverNow(summarySnapshot.summary.serverTime, summarySnapshot.receivedAt, performance.now())
+    : Date.now() / 1000;
   const pendingOrders = orders.filter((order) =>
-    !order.paidThrough && order.invoiceExpiresAt * 1000 > Date.now());
+    !order.paidThrough && order.invoiceExpiresAt > invoiceNow);
+  const activeOrder = orders.find((order) => order.id === activeOrderId) ?? pendingOrders[0] ?? null;
   const pendingOrderId = activeOrder?.paidThrough ? null : activeOrder?.id;
   const activeInvoiceSats = invoiceSatAmountLabel(activeOrder);
   const activeInvoiceExpired = Boolean(
-    activeOrder && !activeOrder.paidThrough && activeOrder.invoiceExpiresAt * 1000 <= Date.now(),
+    activeOrder && !activeOrder.paidThrough && activeOrder.invoiceExpiresAt <= invoiceNow,
   );
+  const prepaidInvoice = summary?.checkoutVersion === 2 || activeOrder?.totalPriceUsdCents !== undefined;
+  const currentPaidPlan = activeOrder && summary?.checkoutVersion === 2
+    ? summary.paidPlans.find((plan) =>
+      plan.legacyOrderId === null && plan.planId === activeOrder.planId && plan.bytes === activeOrder.bytes)
+    : undefined;
   const offersByPlan = useMemo(() => {
+    if (summary?.checkoutVersion === 2) return [];
     const grouped = new Map<string, BlossomStorageSummary["offers"]>();
     for (const offer of summary?.offers ?? []) {
       const list = grouped.get(offer.planId) || [];
@@ -311,7 +575,7 @@ function BlossomStorageDashboard({
       grouped.set(offer.planId, list);
     }
     return [...grouped.values()];
-  }, [summary?.offers]);
+  }, [summary]);
   const expiringGroups = useMemo(() => {
     const groups = new Map<string, BlossomStorageBlob[]>();
     for (const blob of expiryBlobs) {
@@ -356,12 +620,11 @@ function BlossomStorageDashboard({
     setInventoryLoading(false);
     setError(null);
     try {
-      const [nextSummary, nextOrders] = await Promise.all([
-        getBlossomStorageSummary(selectedServer, signerKey, signal),
-        listBlossomStorageOrders({ serverUrl: selectedServer, signer: signerKey, signal }).catch(() => null),
-      ]);
+      const nextOrders = await listBlossomStorageOrders({ serverUrl: selectedServer, signer: signerKey, signal }).catch(() => null);
       if (signal.aborted) return;
-      setSummary(nextSummary);
+      const nextSummary = await getBlossomStorageSummary(selectedServer, signerKey, signal);
+      if (signal.aborted) return;
+      setSummarySnapshot({ summary: nextSummary, receivedAt: performance.now() });
       if (nextOrders) {
         setOrders((current) => {
           const merged = new Map(current.map((order) => [order.id, order]));
@@ -382,7 +645,7 @@ function BlossomStorageDashboard({
       await loadInventoryPage(null, true);
     } catch (err) {
       if (signal.aborted) return;
-      setSummary(null);
+      setSummarySnapshot(null);
       setError(
         err instanceof BlossomStorageApiError
           ? `${err.message} (${err.code})`
@@ -395,8 +658,17 @@ function BlossomStorageDashboard({
 
   useEffect(() => {
     void loadDashboard();
-    return () => dashboardRequest.current?.abort();
+    return () => {
+      dashboardRequest.current?.abort();
+      orderRequest.current?.abort();
+    };
   }, [loadDashboard]);
+
+  useEffect(() => {
+    if (!activeOrder || !revealCheckout.current) return;
+    revealCheckout.current = false;
+    checkoutRef.current?.focus();
+  }, [activeOrder]);
 
   useEffect(() => {
     if (!pendingOrderId || !signerKey) return;
@@ -413,9 +685,9 @@ function BlossomStorageDashboard({
           signal: controller.signal,
         });
         if (controller.signal.aborted) return;
-        setOrders((current) => current.map((order) => order.id === next.id ? next : order));
+        setOrders((current) => current.map((order) => order.id === next.id && !order.paidThrough ? next : order));
         if (next.paidThrough) {
-          showToast("Storage payment confirmed. Usage updated.", 4500);
+          showToast("Storage payment confirmed.", 4500);
           setActiveOrderId(next.id);
           void loadDashboard();
         }
@@ -506,43 +778,71 @@ function BlossomStorageDashboard({
     }
   }, [events, loadDashboard, selectedServer, showToast, signerKey, tasks]);
 
-  const createOrder = useCallback(async (offer: BlossomStorageSummary["offers"][number]) => {
-    const openOrder = pendingOrders.find((order) => order.planId === offer.planId && order.interval === offer.interval);
-    if (openOrder) {
-      setActiveOrderId(openOrder.id);
-      return;
+  const createOrder = useCallback(async (offer: BlossomStorageOffer, quantity?: number) => {
+    if (orderRequest.current) return false;
+    if (quantity === undefined) {
+      const openOrder = pendingOrders.find((order) => order.planId === offer.planId && order.interval === offer.interval);
+      if (openOrder) {
+        setActiveOrderId(openOrder.id);
+        checkoutRef.current?.focus();
+        return true;
+      }
     }
-    if (orderRequestInFlight.current) return;
     const busyKey = `${offer.planId}:${offer.interval}`;
     const requestKey = `taskify_blossom_checkout:${JSON.stringify([
       pubkeyHex, selectedServer, offer.planId, offer.interval, offer.priceUsdCents, offer.bytes,
+      ...(quantity === undefined ? [] : [quantity]),
     ])}`;
     const requestId = kvStorage.getItem(requestKey) || crypto.randomUUID();
     kvStorage.setItem(requestKey, requestId);
-    orderRequestInFlight.current = true;
+    const controller = new AbortController();
+    orderRequest.current = controller;
+    const { signal } = controller;
     setCheckoutBusy(busyKey);
+    let resumed = false;
     try {
       const order = await createBlossomStorageOrder({
         serverUrl: selectedServer,
         signer: signerKey,
         requestId,
         offer,
+        quantity,
+        signal,
+      }).catch((err: unknown) => {
+        if (!(err instanceof BlossomStorageApiError && err.code === "checkout_conflict" && err.openOrderId)) throw err;
+        resumed = true;
+        return getBlossomStorageOrder({ serverUrl: selectedServer, signer: signerKey, id: err.openOrderId, signal });
       });
+      if (signal.aborted) return false;
       kvStorage.removeItem(requestKey);
-      setOrders((current) => [order, ...current.filter((entry) => entry.id !== order.id)]);
+      revealCheckout.current = true;
+      setOrders((current) => {
+        const existing = current.find((entry) => entry.id === order.id);
+        return [existing?.paidThrough ? existing : order, ...current.filter((entry) => entry.id !== order.id)];
+      });
       setActiveOrderId(order.id);
-      showToast("Invoice created. Pay it with any Lightning wallet.", 4000);
+      if (order.paidThrough) {
+        showToast("Storage payment confirmed.", 4500);
+        await loadDashboard();
+      } else {
+        showToast(resumed ? "Opened your existing invoice." : "Invoice created. Pay it with any Lightning wallet.", 4000);
+      }
+      return true;
     } catch (err) {
-      if (err instanceof BlossomStorageApiError && err.code === "checkout_conflict") {
+      if (signal.aborted) return false;
+      if (!resumed && err instanceof BlossomStorageApiError && err.status === 409) {
         kvStorage.removeItem(requestKey);
-        showToast("That offer changed or an invoice is already open. Refreshing checkout.", 5000);
+        showToast("Storage offers are being refreshed. Review the updated terms before trying again.", 5000);
         await loadDashboard();
       } else {
         showToast(err instanceof Error ? err.message : "Could not create a checkout invoice. Retry to reuse this request.", 5000);
       }
+      return false;
     } finally {
-      orderRequestInFlight.current = false;
-      setCheckoutBusy(null);
+      if (orderRequest.current === controller) {
+        orderRequest.current = null;
+        setCheckoutBusy(null);
+      }
     }
   }, [loadDashboard, pendingOrders, pubkeyHex, selectedServer, showToast, signerKey]);
 
@@ -629,7 +929,7 @@ function BlossomStorageDashboard({
                 {summary.permanentExtraBytes > 0 ? <span>Extra: {formatDecimalBytes(summary.permanentExtraBytes)}</span> : null}
                 <span>Protection grants last up to {Math.round(summary.protectionSeconds / 86400)} days</span>
               </div>
-              {summary.paidStorage.length ? (
+              {summary.checkoutVersion !== 2 && summary.paidStorage.length > 0 ? (
                 <div className="rounded-xl bg-surface p-3">
                   <div className="text-xs font-medium text-primary">Paid storage</div>
                   <div className="mt-1 space-y-1 text-[11px] text-secondary">
@@ -643,6 +943,122 @@ function BlossomStorageDashboard({
               ) : null}
             </>
           ) : null}
+
+          {summarySnapshot?.summary.checkoutVersion === 2 && (
+            <PrepaidStoragePlans
+              summary={summarySnapshot.summary}
+              receivedAt={summarySnapshot.receivedAt}
+              busy={checkoutBusy !== null || loading}
+              onCheckout={createOrder}
+            />
+          )}
+
+          {orders.length ? (
+            <section aria-label="Checkout" ref={checkoutRef} tabIndex={-1} className="scroll-m-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-primary">Checkout</h3>
+                <button type="button" className="link-accent text-xs" onClick={() => void loadDashboard()}>Refresh status</button>
+              </div>
+              {pendingOrders.length > 1 || (pendingOrders.length > 0 && !pendingOrders.some((order) => order.id === activeOrder?.id)) ? (
+                <label className="flex items-center gap-2 text-xs">
+                  Pending invoice
+                  <select className="pill-input" value={activeOrder?.id ?? ""} onChange={(event) => setActiveOrderId(event.target.value)}>
+                    {!pendingOrders.some((order) => order.id === activeOrder?.id) && <option value="" disabled>Select an invoice</option>}
+                    {pendingOrders.map((order) => (
+                      <option key={order.id} value={order.id}>
+                        {order.planName} · {order.quantity === undefined ? (order.interval === "year" ? "Yearly" : "Monthly") : formatUnits(order.quantity, order.interval)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {activeOrder ? (
+                <div className="rounded-xl border border-surface bg-surface p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-primary">{activeOrder.planName}</div>
+                      <div className="text-[11px] text-secondary">
+                        {formatDecimalBytes(activeOrder.bytes)} capacity · {activeOrder.durationSeconds === undefined
+                          ? (activeOrder.interval === "year" ? "Yearly" : "Monthly")
+                          : purchasedTime(activeOrder.interval, activeOrder.quantity ?? 1, activeOrder.durationSeconds)}
+                      </div>
+                      <div className="mt-1 text-xs font-semibold text-primary">
+                        {formatUsd(activeOrder.totalPriceUsdCents ?? activeOrder.priceUsdCents)}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-primary">{activeInvoiceSats == null ? "Amount in invoice" : activeInvoiceSats}</div>
+                      <div className="text-[10px] text-secondary">Lightning payment</div>
+                    </div>
+                  </div>
+                  {activeOrder.paidThrough ? (
+                    <div role="status" className="mt-3 rounded-lg bg-emerald-500/10 p-3 text-xs text-primary">
+                      <strong>Payment settled.</strong>{" "}
+                      {prepaidInvoice
+                        ? loading
+                          ? "Updating your storage plan…"
+                          : currentPaidPlan
+                            ? <>Current plan expiry <LocalTime seconds={currentPaidPlan.paidThrough} />.</>
+                            : error ? "Refresh status to view your plan expiry." : "See prepaid storage plans for current expiry dates."
+                        : <>Storage is active through {formatDate(activeOrder.paidThrough)}.</>}
+                    </div>
+                  ) : activeInvoiceExpired ? (
+                    <div className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs text-amber-500">
+                      This invoice expired. Select a storage plan to create a new one.
+                    </div>
+                  ) : (
+                    <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <div className="flex h-44 w-44 self-center rounded-xl bg-white p-3">
+                        <QRCodeSVG value={activeOrder.invoice} size={160} marginSize={1} />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div className="text-[11px] text-secondary">
+                          Pay with any Lightning wallet. The invoice expires <LocalTime seconds={activeOrder.invoiceExpiresAt} />.
+                        </div>
+                        <div className="max-h-20 overflow-auto break-all rounded-lg bg-surface-muted p-2 font-mono text-[10px] text-secondary">
+                          {activeOrder.invoice}
+                        </div>
+                        <button type="button" className="accent-button button-sm pressable" onClick={() => void copyInvoice()}>
+                          Copy BOLT11 invoice
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {summary && summary.checkoutVersion !== 2 && <div className="space-y-2">
+            <div className="text-xs font-medium text-primary">Add storage</div>
+            {offersByPlan.length ? offersByPlan.map((offers) => (
+              <div key={offers[0].planId} className="rounded-xl bg-surface p-3">
+                <div className="text-sm font-medium text-primary">{offers[0].planName}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {offers.map((offer) => {
+                    const key = `${offer.planId}:${offer.interval}`;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className="ghost-button button-sm pressable text-left"
+                        disabled={checkoutBusy != null}
+                        onClick={() => void createOrder(offer)}
+                      >
+                        <span className="block text-xs font-medium">
+                          {formatUsd(offer.priceUsdCents)} · {offer.interval === "year" ? "Yearly" : "Monthly"}
+                        </span>
+                        <span className="block text-[10px] text-secondary">+{formatDecimalBytes(offer.bytes)} storage</span>
+                        {checkoutBusy === key ? <span className="block text-[10px] text-secondary">Creating invoice…</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )) : (
+              <div className="text-[11px] text-secondary">No storage offers are available on this server.</div>
+            )}
+          </div>}
 
           <div className="rounded-xl bg-surface p-3">
             <div className="flex items-start justify-between gap-3">
@@ -691,99 +1107,6 @@ function BlossomStorageDashboard({
                 Use for uploads
               </button>
             </div>
-          </div>
-
-          {orders.length ? (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-xs font-medium text-primary">Checkout</div>
-                <button type="button" className="link-accent text-xs" onClick={() => void loadDashboard()}>Refresh status</button>
-              </div>
-              {pendingOrders.length > 1 || (pendingOrders.length > 0 && !pendingOrders.some((order) => order.id === activeOrder?.id)) ? (
-                <label className="flex items-center gap-2 text-xs">
-                  Pending invoice
-                  <select className="pill-input" value={activeOrder?.id ?? ""} onChange={(event) => setActiveOrderId(event.target.value)}>
-                    {!pendingOrders.some((order) => order.id === activeOrder?.id) && <option value="" disabled>Select an invoice</option>}
-                    {pendingOrders.map((order) => (
-                      <option key={order.id} value={order.id}>{order.planName} · {order.interval === "year" ? "Yearly" : "Monthly"}</option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              {activeOrder ? (
-                <div className="rounded-xl border border-surface bg-surface p-3">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium text-primary">{activeOrder.planName}</div>
-                      <div className="text-[11px] text-secondary">
-                        +{formatDecimalBytes(activeOrder.bytes)} · {activeOrder.interval === "year" ? "Yearly" : "Monthly"} · ${(activeOrder.priceUsdCents / 100).toFixed(2)}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-sm font-semibold text-primary">{activeInvoiceSats == null ? "Amount in invoice" : activeInvoiceSats}</div>
-                      <div className="text-[10px] text-secondary">decoded from BOLT11</div>
-                    </div>
-                  </div>
-                  {activeOrder.paidThrough ? (
-                    <div className="mt-3 rounded-lg bg-emerald-500/10 p-3 text-xs text-emerald-500">
-                      Payment settled. Storage is active through {formatDate(activeOrder.paidThrough)}.
-                    </div>
-                  ) : activeInvoiceExpired ? (
-                    <div className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs text-amber-500">
-                      This invoice expired. Choose a plan below to create a new one.
-                    </div>
-                  ) : (
-                    <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
-                      <div className="flex h-44 w-44 self-center rounded-xl bg-white p-3">
-                        <QRCodeSVG value={activeOrder.invoice} size={160} marginSize={1} />
-                      </div>
-                      <div className="min-w-0 flex-1 space-y-2">
-                        <div className="text-[11px] text-secondary">
-                          Expires {formatDateTime(activeOrder.invoiceExpiresAt)}. Pay with any Lightning wallet; Taskify checks settlement and refreshes usage.
-                        </div>
-                        <div className="max-h-20 overflow-auto break-all rounded-lg bg-surface-muted p-2 font-mono text-[10px] text-secondary">
-                          {activeOrder.invoice}
-                        </div>
-                        <button type="button" className="accent-button button-sm pressable" onClick={() => void copyInvoice()}>
-                          Copy BOLT11 invoice
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-primary">Add storage</div>
-            {offersByPlan.length ? offersByPlan.map((offers) => (
-              <div key={offers[0].planId} className="rounded-xl bg-surface p-3">
-                <div className="text-sm font-medium text-primary">{offers[0].planName}</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {offers.map((offer) => {
-                    const key = `${offer.planId}:${offer.interval}`;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        className="ghost-button button-sm pressable text-left"
-                        disabled={checkoutBusy != null}
-                        onClick={() => void createOrder(offer)}
-                      >
-                        <span className="block text-xs font-medium">
-                          ${(offer.priceUsdCents / 100).toFixed(2)} · {offer.interval === "year" ? "Yearly" : "Monthly"}
-                        </span>
-                        <span className="block text-[10px] text-secondary">+{formatDecimalBytes(offer.bytes)} storage</span>
-                        {checkoutBusy === key ? <span className="block text-[10px] text-secondary">Creating invoice…</span> : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )) : (
-              <div className="text-[11px] text-secondary">No storage offers are available on this server.</div>
-            )}
           </div>
 
           <div className="space-y-2">
