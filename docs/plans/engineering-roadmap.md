@@ -203,6 +203,10 @@ A milestone is complete when:
 
 ---
 
+Encrypted uploads now default to `https://blossom.solife.me`. Web, native, and CLI
+regression coverage checks the default, legacy server matching, and whether a later
+selection can survive the upgrade logic.
+
 ## Feature Backlog
 
 ### Originless File Attachment Integration

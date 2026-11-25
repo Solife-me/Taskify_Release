@@ -58,7 +58,7 @@ function buildNip98AuthHeader(
   return `Nostr ${Buffer.from(JSON.stringify(event)).toString("base64")}`;
 }
 
-function mimeTypeFromPath(filePath: string): string {
+export function mimeTypeFromPath(filePath: string): string {
   const ext = extname(filePath).toLowerCase();
   const map: Record<string, string> = {
     ".jpg": "image/jpeg",

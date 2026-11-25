@@ -1000,13 +1000,7 @@ struct SettingsView: View {
                     )
             }
 
-            if model.encryptedFileServers.contains(where: { $0.type == .blossom }) {
-                Text("Warning: some Blossom servers inspect uploads and reject encrypted, unrecognizable file types. If uploads start failing, switch to an Originless server.")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-            }
-
-            Text("Originless is recommended for encrypted blobs. A self-hosted or permissive Blossom server also works, but many public Blossom servers reject opaque encrypted uploads. NIP-96 servers use discovery and authenticated NIP-98 uploads. Attachments can be up to 500 MB. Taskify encrypts files before uploading and verifies them before opening. Your selected server may have a lower limit.")
+            Text("Taskify defaults to blossom.solife.me. Choose a server that accepts encrypted files. Taskify encrypts attachments before upload and verifies them before opening. Attachments can be up to 500 MB, subject to your server’s upload limit.")
                 .font(.caption2)
                 .foregroundStyle(TaskifyTheme.tertiaryText)
         }

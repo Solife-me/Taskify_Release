@@ -338,6 +338,7 @@ final class AppModel {
         self.mirrorsPrimaryDeviceTaskSettings = isPrimaryAccount
         self.syncEngine = syncEngine
         self.notificationCoordinator = notificationCoordinator ?? TaskNotificationCoordinator(defaults: accountDefaults)
+        TaskifyMediaServerSettings.migrateLegacySelection(defaults: accountDefaults)
         self.encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
         self.encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
         self.fastingRemindersEnabled = FastingRemindersSettings.enabled(defaults: accountDefaults)
@@ -3355,9 +3356,8 @@ final class AppModel {
         }
     }
 
-    /// Uploads a profile picture to the configured file server (plain, unencrypted — the URL
-    /// goes into the public kind:0 content). Mirrors the PWA's `uploadAvatar` NIP-96 path.
-    func uploadProfilePicture(_ imageData: Data, filename: String) async throws -> String {
+    /// Uploads a profile picture to the configured file server for the public kind:0 event.
+    func uploadProfilePicture(_ imageData: Data, filename: String, contentType: String) async throws -> String {
         let identity = try activeIdentity()
         let entry = TaskifyMediaServerSettings.configuredEntry(defaults: accountDefaults)
         guard let server = URL(string: entry.url) else {
@@ -3367,7 +3367,8 @@ final class AppModel {
             return try await BlossomClient.upload(
                 imageData,
                 privateKey: identity.privateKey,
-                server: server
+                server: server,
+                contentType: contentType
             )
         }
         return try await Nip96Client.upload(
@@ -7772,6 +7773,7 @@ final class AppModel {
 
     private static let accountBackupFileServerKeys: Set<String> = [
         TaskifyMediaServerSettings.selectedServerPWAKey, TaskifyMediaServerSettings.serverListPWAKey,
+        TaskifyMediaServerSettings.blossomMigrationPWAKey,
     ]
     private static let accountBackupFastingKeys: Set<String> = [
         FastingRemindersSettings.enabledPWAKey, FastingRemindersSettings.modePWAKey,
@@ -7854,6 +7856,9 @@ final class AppModel {
         var settings: [String: TaskPayloadValue] = [
             TaskifyMediaServerSettings.selectedServerPWAKey: .string(encryptedMediaServerURL),
             TaskifyMediaServerSettings.serverListPWAKey: .string(TaskifyFileServerList.serialize(encryptedFileServers)),
+            TaskifyMediaServerSettings.blossomMigrationPWAKey: .boolean(
+                TaskifyMediaServerSettings.hasMigratedToBlossom(defaults: accountDefaults)
+            ),
             ChatHistorySettings.pwaSettingsKey: .string(chatMessageRetention.rawValue),
             FastingRemindersSettings.enabledPWAKey: .boolean(fastingRemindersEnabled),
             FastingRemindersSettings.modePWAKey: .string(fastingRemindersMode == .random ? "random" : "weekday"),
@@ -7990,7 +7995,17 @@ final class AppModel {
         }
     }
 
-    private func applySyncedSettings(from payload: NostrAppBackupPayload) {
+    private func applySyncedMediaSettings(from payload: NostrAppBackupPayload) {
+        let selected: String?
+        if case .string(let url)? = payload.settings[TaskifyMediaServerSettings.selectedServerPWAKey] {
+            selected = url
+        } else {
+            selected = nil
+        }
+        let usesLegacyDefault = payload.settings[TaskifyMediaServerSettings.blossomMigrationPWAKey] != .boolean(true)
+            && selected.map(TaskifyFileServerList.isLegacyEncryptedMediaServer) == true
+        // A backup made before the migration can still arrive after the local preference changed.
+        if usesLegacyDefault && TaskifyMediaServerSettings.hasMigratedToBlossom(defaults: accountDefaults) { return }
         // Applied before the selected-server value below, since selectServer only accepts a URL
         // that's already present in the list.
         if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.serverListPWAKey] {
@@ -7999,12 +8014,17 @@ final class AppModel {
                 defaults: accountDefaults
             )
         }
-        if case .string(let value)? = payload.settings[TaskifyMediaServerSettings.selectedServerPWAKey],
-           let normalized = TaskifyMediaServerSettings.selectServer(value, defaults: accountDefaults) {
-            encryptedMediaServerURL = normalized
-        } else {
-            encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
+        if usesLegacyDefault {
+            TaskifyMediaServerSettings.migrateLegacySelection(selected, defaults: accountDefaults)
+            encryptedFileServers = TaskifyMediaServerSettings.servers(defaults: accountDefaults)
+        } else if let selected {
+            TaskifyMediaServerSettings.selectServer(selected, defaults: accountDefaults)
         }
+        encryptedMediaServerURL = TaskifyMediaServerSettings.configuredServer(defaults: accountDefaults)
+    }
+
+    private func applySyncedSettings(from payload: NostrAppBackupPayload) {
+        applySyncedMediaSettings(from: payload)
         if case .string(let value)? = payload.settings[ChatHistorySettings.pwaSettingsKey],
            let retention = ChatMessageRetention(rawValue: value) {
             ChatHistorySettings.setRetention(retention, defaults: accountDefaults)

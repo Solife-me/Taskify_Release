@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { isLegacyEncryptedMediaServer } from "taskify-core";
 import {
+  DEFAULT_ENCRYPTED_FILE_SERVER,
   DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
   DEFAULT_FILE_SERVERS,
   DEFAULT_FILE_STORAGE_SERVER,
@@ -33,7 +35,7 @@ import type { Board, Weekday } from "./taskTypes";
 import { withBoardOrder } from "./boardUtils";
 
 type StateSetter<T> = (value: T | ((prev: T) => T)) => void;
-export type SetSettingsFn = (s: Partial<Settings>) => void;
+export type SetSettingsFn = (s: Partial<Settings>, source?: "backup") => void;
 
 export type UseSettingsSyncOptions = {
   bibleBoardId: string;
@@ -65,6 +67,23 @@ function defaultPublicFileServers(): string {
 
 function defaultEncryptedFileServers(): string {
   return serializeFileServers(DEFAULT_FILE_SERVERS.filter((server) => server.type === "blossom" || server.type === "originless"));
+}
+
+function migrateEncryptedFileServer(settings: Settings): Settings {
+  if (settings.blossomMediaServerMigrated || !isLegacyEncryptedMediaServer(settings.encryptedFileStorageServer)) {
+    return settings;
+  }
+  const servers = parseFileServers(settings.encryptedFileServers);
+  const blossom = findServerEntry(servers, DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER);
+  const updatedServers = blossom
+    ? servers.map((server) => server === blossom ? { ...server, type: "blossom" as const } : server)
+    : [...servers, DEFAULT_ENCRYPTED_FILE_SERVER];
+  return {
+    ...settings,
+    encryptedFileServers: serializeFileServers(updatedServers),
+    encryptedFileStorageServer: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
+    blossomMediaServerMigrated: true,
+  };
 }
 
 function pickStartupBoard(boards: Board[], overrides?: Partial<Record<Weekday, string>>): string {
@@ -106,7 +125,7 @@ export function useSettingsSync(options: UseSettingsSyncOptions): UseSettingsSyn
 export function useSettingsSync(
   options?: UseSettingsSyncOptions,
 ): readonly [Settings, SetSettingsFn] | UseSettingsSyncResult {
-  const [settings, setSettingsRaw] = useState<Settings>(() => {
+  const [{ settings, shouldPersistSettings }, setSettingsRaw] = useState(() => {
     try {
       const parsed = JSON.parse(kvStorage.getItem(LS_SETTINGS) || "{}");
       const baseFontSize =
@@ -258,7 +277,7 @@ export function useSettingsSync(
         delete (parsed as Record<string, unknown>).walletBountiesEnabled;
         delete (parsed as Record<string, unknown>).walletBountyList;
       }
-      return {
+      const loaded: Settings = {
         weekStart: 0,
         newTaskPosition: "top",
         streaksEnabled: true,
@@ -296,6 +315,7 @@ export function useSettingsSync(
         walletContactsSyncEnabled,
         fileStorageServer,
         encryptedFileStorageServer,
+        blossomMediaServerMigrated: parsed?.blossomMediaServerMigrated === true || undefined,
         managedBlossomServer,
         fileServers: typeof parsed?.fileServers === "string" && parsed.fileServers.trim()
           ? parsed.fileServers.trim()
@@ -313,8 +333,10 @@ export function useSettingsSync(
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES, ...pushPreferences },
         chatMessageRetention,
       };
+      const settings = migrateEncryptedFileServer(loaded);
+      return { settings, shouldPersistSettings: settings !== loaded };
     } catch {
-      return {
+      const settings: Settings = {
         weekStart: 0,
         newTaskPosition: "top",
         streaksEnabled: true,
@@ -362,11 +384,12 @@ export function useSettingsSync(
         pushNotifications: { ...DEFAULT_PUSH_PREFERENCES },
         chatMessageRetention: "forever",
       };
+      return { settings, shouldPersistSettings: false };
     }
   });
 
-  const setSettings = useCallback<SetSettingsFn>((s) => {
-    setSettingsRaw((prev) => {
+  const setSettings = useCallback<SetSettingsFn>((s, source) => {
+    setSettingsRaw(({ settings: prev }) => {
       const next = { ...prev, ...s };
       if (s.pushNotifications) {
         next.pushNotifications = { ...prev.pushNotifications, ...DEFAULT_PUSH_PREFERENCES, ...s.pushNotifications };
@@ -539,18 +562,23 @@ export function useSettingsSync(
       } else {
         next.fastingRemindersRandomSeed = next.fastingRemindersRandomSeed.trim();
       }
-      return next;
+      // The marker travels with synced settings so an explicit Originless choice on an updated
+      // client can still be distinguished from the previous default in an older backup.
+      const selectedEncryptedServer = typeof s.encryptedFileStorageServer === "string";
+      next.blossomMediaServerMigrated = prev.blossomMediaServerMigrated === true
+        || s.blossomMediaServerMigrated === true || (selectedEncryptedServer && source !== "backup") || undefined;
+      if (source === "backup" && prev.blossomMediaServerMigrated && s.blossomMediaServerMigrated !== true
+        && isLegacyEncryptedMediaServer(s.encryptedFileStorageServer)) {
+        next.encryptedFileStorageServer = prev.encryptedFileStorageServer;
+        next.encryptedFileServers = prev.encryptedFileServers;
+      }
+      return { settings: migrateEncryptedFileServer(next), shouldPersistSettings: true };
     });
   }, []);
 
-  const settingsFirstRun = useRef(true);
   useEffect(() => {
-    if (settingsFirstRun.current) {
-      settingsFirstRun.current = false;
-      return;
-    }
-    kvStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
-  }, [settings]);
+    if (shouldPersistSettings) kvStorage.setItem(LS_SETTINGS, JSON.stringify(settings));
+  }, [settings, shouldPersistSettings]);
 
   const boards = options?.boards ?? EMPTY_BOARDS;
   const setBoards = options?.setBoards;

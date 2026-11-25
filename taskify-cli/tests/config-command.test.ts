@@ -19,12 +19,17 @@ test("config registration preserves selected-profile mutations and redacted diag
   const dir = path.join(fixture, ".taskify-cli");
   mkdirSync(dir);
   const file = path.join(dir, "config.json");
-  writeFileSync(file, JSON.stringify({ activeProfile: "default", profiles: { default: {}, work: {} } }));
+  const originless = "https://originless.solife.me";
+  writeFileSync(file, JSON.stringify({ activeProfile: "default", profiles: {
+    default: {}, work: { encryptedFileStorageServer: `${originless}/` },
+  } }));
   const env = { ...process.env };
   delete env.TASKIFY_NSEC;
   const run = (...args: string[]) => spawnSync(process.execPath, ["--import", loader, cli, "-P", "work", "config", ...args], { env, encoding: "utf8", timeout: 10000 });
   const config = () => JSON.parse(readFileSync(file, "utf8"));
   try {
+    assert.equal(run("set", "file-server", "https://files.example.test").status, 0);
+    assert.equal(config().profiles.work.encryptedFileStorageServer, "https://blossom.solife.me");
     const help = run("set", "--help");
     assert.equal(help.status, 0, help.stderr);
     for (const name of ["nsec", "relay", "file-server", "encrypted-file-server", "default-list"]) assert.ok(help.stdout.includes(name));
@@ -34,6 +39,9 @@ test("config registration preserves selected-profile mutations and redacted diag
     }
     assert.equal(config().profiles.work.fileStorageServer, "https://files.example.test");
     assert.equal(config().profiles.work.encryptedFileStorageServer, "https://private.example.test");
+    assert.equal(run("set", "encrypted-file-server", originless).status, 0);
+    assert.equal(run("set", "file-server", "https://files.example.test").status, 0);
+    assert.equal(config().profiles.work.encryptedFileStorageServer, originless);
     for (let i = 0; i < 2; i++) assert.equal(run("set", "relay", "wss://example.test").status, 0);
     assert.equal(config().profiles.work.relays.filter((url: string) => url === "wss://example.test").length, 1);
     assert.equal(run("set", "nsec", "invalid").status, 1);

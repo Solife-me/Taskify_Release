@@ -1,4 +1,7 @@
 export type FixedFileUploadServerType = "originless" | "blossom";
+export declare const DEFAULT_MEDIA_STORAGE_SERVER = "https://blossom.solife.me";
+export declare const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = "https://blossom.solife.me";
+export declare function isLegacyEncryptedMediaServer(value: unknown): boolean;
 export type FixedFileUploadRoute = {
     method: "POST" | "PUT";
     path: `/${string}`;

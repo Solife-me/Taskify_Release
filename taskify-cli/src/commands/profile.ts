@@ -3,8 +3,11 @@ import { readSecret } from "../shared/readSecret.js";
 import type { Command } from "commander";
 import { generateSecretKey,getPublicKey,nip19 } from "nostr-tools";
 import { createInterface } from "readline";
-import { DEFAULT_RELAYS,saveProfiles,type ProfileConfig } from "../config.js";
-import { uploadImageToNip96 } from "../nip96Upload.js";
+import { readFile } from "node:fs/promises";
+import { secureUploadedFileURL } from "taskify-core";
+import { DEFAULT_PUBLIC_FILE_STORAGE_SERVER, DEFAULT_RELAYS, saveProfiles, type ProfileConfig } from "../config.js";
+import { uploadBlobToBlossom } from "../blossomUpload.js";
+import { mimeTypeFromPath, uploadImageToNip96 } from "../nip96Upload.js";
 import { fetchLatestProfileEvent,publishProfile } from "../profileMeta.js";
 import type { CommandContext } from "./context.js";
 
@@ -305,12 +308,12 @@ export function registerProfileCommands(program: Command, context: Pick<CommandC
     .option("--name <n>", "Username / handle (name field)")
     .option("--display-name <n>", "Display name (display_name field)")
     .option("--about <text>", "Bio / about")
-    .option("--picture <url-or-path>", "Profile picture — URL or local file path (uploaded via NIP-96)")
+    .option("--picture <url-or-path>", "Profile picture — URL or local file path (defaults to blossom.solife.me)")
     .option("--banner <url-or-path>", "Banner image — URL or local file path (uploaded via NIP-96)")
     .option("--nip05 <addr>", "NIP-05 verification address (user@domain.com)")
     .option("--website <url>", "Website URL")
     .option("--lud16 <addr>", "Lightning address (lud16)")
-    .option("--nip96-server <url>", "NIP-96 server for image uploads (default: nostr.build)", "https://nostr.build")
+    .option("--nip96-server <url>", "Override the upload server with a NIP-96 server")
     .option("--json", "Output published event as JSON")
     .action(async (opts: {
       name?: string;
@@ -321,7 +324,7 @@ export function registerProfileCommands(program: Command, context: Pick<CommandC
       nip05?: string;
       website?: string;
       lud16?: string;
-      nip96Server: string;
+      nip96Server?: string;
       json?: boolean;
     }) => {
       const config = await loadConfig(program.opts().profile as string | undefined);
@@ -338,19 +341,19 @@ export function registerProfileCommands(program: Command, context: Pick<CommandC
         process.exitCode = 1; return;
       }
 
-      // Upload local files via NIP-96 if needed
+      const pictureServer = opts.nip96Server || config.fileStorageServer || DEFAULT_PUBLIC_FILE_STORAGE_SERVER;
+      const blossomPictureServer = !opts.nip96Server && /blossom/i.test(pictureServer);
       let mediaUploadFailed = false;
-      const resolveMedia = async (value: string | undefined, label: string): Promise<string | undefined> => {
+      const resolveMedia = async (value: string | undefined, label: string, serverUrl: string, blossom = false): Promise<string | undefined> => {
         if (!value) return undefined;
         if (value.startsWith("http://") || value.startsWith("https://")) return value;
-        // Treat as local file path — upload to NIP-96
-        console.log(chalk.dim(`  Uploading ${label} via NIP-96...`));
+        console.log(chalk.dim(`  Uploading ${label} via ${blossom ? "Blossom" : "NIP-96"}...`));
         try {
-          const url = await uploadImageToNip96({
-            serverUrl: opts.nip96Server,
-            filePath: value,
-            nsec: config.nsec!,
-          });
+          const url = blossom
+            ? secureUploadedFileURL(serverUrl, await uploadBlobToBlossom({
+              serverUrl, bytes: await readFile(value), nsec: config.nsec!, contentType: mimeTypeFromPath(value),
+            }))
+            : await uploadImageToNip96({ serverUrl, filePath: value, nsec: config.nsec! });
           console.log(chalk.dim(`  ✓ Uploaded: ${url}`));
           return url;
         } catch (err) {
@@ -361,9 +364,9 @@ export function registerProfileCommands(program: Command, context: Pick<CommandC
         }
       };
 
-      const pictureUrl = await resolveMedia(opts.picture, "profile picture");
+      const pictureUrl = await resolveMedia(opts.picture, "profile picture", pictureServer, blossomPictureServer);
       if (mediaUploadFailed) return;
-      const bannerUrl = await resolveMedia(opts.banner, "banner");
+      const bannerUrl = await resolveMedia(opts.banner, "banner", opts.nip96Server || "https://nostr.build");
       if (mediaUploadFailed) return;
 
       const draft = {

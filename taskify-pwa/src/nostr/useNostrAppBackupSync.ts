@@ -322,7 +322,7 @@ export function useNostrAppBackupSync({
       );
       if (includeMetadata && payload.settings && typeof payload.settings === "object") {
         const incoming = sanitizeSettingsForBackup(payload.settings as Record<string, unknown>);
-        setSettings(incoming);
+        setSettings(incoming, "backup");
       }
       if (includeMetadata && Array.isArray(payload.defaultRelays) && payload.defaultRelays.some((r) => typeof r === "string" && r.trim())) {
         setDefaultRelays(normalizeNostrRelayList(payload.defaultRelays));

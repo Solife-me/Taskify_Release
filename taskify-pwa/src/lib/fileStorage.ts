@@ -1,3 +1,7 @@
+import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, DEFAULT_MEDIA_STORAGE_SERVER } from "taskify-core";
+
+export { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER };
+
 export type FileServerType = "nip96" | "blossom" | "originless";
 
 export type FileServerEntry = {
@@ -6,9 +10,7 @@ export type FileServerEntry = {
   label?: string;
 };
 
-export const DEFAULT_PUBLIC_FILE_STORAGE_SERVER = "https://nostr.build";
-// Enable Blossom by default once the managed deployment accepts encrypted octet-stream uploads.
-export const DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER = "https://originless.solife.me";
+export const DEFAULT_PUBLIC_FILE_STORAGE_SERVER = DEFAULT_MEDIA_STORAGE_SERVER;
 export const DEFAULT_FILE_STORAGE_SERVER = DEFAULT_PUBLIC_FILE_STORAGE_SERVER;
 /**
  * The managed Blossom service shown in Storage settings. Deployments can point at another
@@ -16,11 +18,17 @@ export const DEFAULT_FILE_STORAGE_SERVER = DEFAULT_PUBLIC_FILE_STORAGE_SERVER;
  */
 export const MANAGED_BLOSSOM_SERVER = normalizeFileServerUrl(
   (import.meta as any)?.env?.VITE_MANAGED_BLOSSOM_URL || "",
-) || "https://blossom.solife.me";
+) || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
+
+export const DEFAULT_ENCRYPTED_FILE_SERVER: FileServerEntry = {
+  url: DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER,
+  type: "blossom",
+  label: "blossom.solife.me",
+};
 
 export const DEFAULT_FILE_SERVERS: FileServerEntry[] = [
+  DEFAULT_ENCRYPTED_FILE_SERVER,
   { url: "https://nostr.build", type: "nip96", label: "nostr.build" },
-  { url: "https://blossom.solife.me", type: "blossom", label: "blossom.solife.me" },
   // originless.besoeasy.com dropped in August 2026: the hostname stopped resolving, so picking it
   // failed at DNS with nothing to explain why.
   { url: "https://originless.solife.me", type: "originless", label: "originless.solife.me" },

@@ -64,13 +64,13 @@ public enum BlossomClient {
         return "Nostr \(base64url)"
     }
 
-    /// Uploads already-encrypted bytes and returns the resulting blob's URL. `data` is hashed and
-    /// signed for as-is — callers must encrypt before calling this, since Blossom servers see
-    /// exactly what they're given.
+    /// Uploads bytes and returns the resulting blob's URL. The server receives `data` as-is,
+    /// so callers must encrypt private attachments before uploading them.
     public static func upload(
         _ data: Data,
         privateKey: Data,
         server: URL,
+        contentType: String = "application/octet-stream",
         session: URLSession = .shared
     ) async throws -> String {
         let sha256Hex = Data(SHA256.hash(data: data)).hexString
@@ -79,7 +79,7 @@ public enum BlossomClient {
         var request = URLRequest(url: server.appendingPathComponent("upload", isDirectory: false))
         request.httpMethod = "PUT"
         request.timeoutInterval = 120
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.httpBody = data
 
@@ -163,15 +163,33 @@ public struct TaskifyFileServerEntry: Codable, Equatable, Sendable, Identifiable
 /// `parseFileServers`/`serializeFileServers`/`findServerEntry` closely enough that the resulting
 /// JSON round-trips through the encrypted PWA account backup unchanged.
 public enum TaskifyFileServerList {
-    /// Matches the PWA's default *encrypted*-context server list (`DEFAULT_FILE_SERVERS` filtered
-    /// to `type === "originless"`): encrypted, opaque ciphertext trips up the content-sniffing many
-    /// public Blossom/NIP-96 servers do, so only Originless servers are suggested by default.
-    /// Blossom and NIP-96 remain fully addable by the user.
-    /// `originless.besoeasy.com` was dropped in August 2026: the hostname stopped resolving, so
-    /// picking it failed at DNS with nothing to explain why.
+    public static let defaultEncryptedServer = TaskifyFileServerEntry(
+        url: "https://blossom.solife.me", type: .blossom, label: "blossom.solife.me"
+    )
+
+    /// Matches the PWA's default encrypted server choices, in selection order.
     public static let defaults: [TaskifyFileServerEntry] = [
+        defaultEncryptedServer,
         TaskifyFileServerEntry(url: "https://originless.solife.me", type: .originless, label: "originless.solife.me"),
     ]
+
+    public static func isLegacyEncryptedMediaServer(_ url: String) -> Bool {
+        guard let normalized = normalizedURL(url), let components = URLComponents(string: normalized),
+              components.host?.lowercased() == "originless.solife.me", components.path.isEmpty else { return false }
+        switch components.scheme?.lowercased() {
+        case "https": return components.port == nil || components.port == 443
+        case "http": return components.port == nil || components.port == 80
+        default: return false
+        }
+    }
+
+    public static func includingDefaultEncryptedServer(_ servers: [TaskifyFileServerEntry]) -> [TaskifyFileServerEntry] {
+        let blossom = defaultEncryptedServer
+        guard let index = servers.firstIndex(where: { $0.url == blossom.url }) else { return servers + [blossom] }
+        var updated = servers
+        updated[index].type = blossom.type
+        return updated
+    }
 
     /// Scheme + host + path only, no query/fragment/credentials, no trailing slash -- mirrors the
     /// PWA's `normalizeFileServerUrl`. HTTPS is not enforced here (the PWA's normalizer doesn't

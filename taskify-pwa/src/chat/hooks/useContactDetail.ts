@@ -1,8 +1,7 @@
 import { useCallback, useMemo } from "react";
 import type { Contact } from "../../lib/contacts";
-import type { FileServerType } from "../../lib/fileStorage";
 import { uploadAvatar } from "../../nostr/Nip96Client";
-import { parseFileServers, findServerEntry } from "../../lib/fileStorage";
+import { DEFAULT_PUBLIC_FILE_STORAGE_SERVER, findServerEntry, inferFileServerType, parseFileServers } from "../../lib/fileStorage";
 import type { NostrIdentity, SharedContactPreview } from "../chatHelpers";
 import { useScannedContactDerived } from "./useScannedContactDerived";
 import type {
@@ -762,8 +761,9 @@ export function useContactDetail(options: UseContactDetailOptions) {
           setProfileMessage("Uploading profile photo…");
           try {
             const servers = parseFileServers(fileServers);
-            const serverEntry = findServerEntry(servers, preferredFileServer)
-              ?? { url: preferredFileServer, type: "nip96" as FileServerType };
+            const serverUrl = preferredFileServer || DEFAULT_PUBLIC_FILE_STORAGE_SERVER;
+            const serverEntry = findServerEntry(servers, serverUrl)
+              ?? { url: serverUrl, type: inferFileServerType(serverUrl) };
             const upload = await uploadAvatar({
               serverEntry,
               file: profilePhotoUploadRef.current.blob,

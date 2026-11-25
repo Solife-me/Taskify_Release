@@ -49,9 +49,10 @@ Environment variables:
 - `VITE_VAPID_PUBLIC_KEY` – Base64url-encoded VAPID public key. Generate alongside the private key during Worker setup.
 - `VITE_MANAGED_BLOSSOM_URL` – Optional managed Blossom base URL. The built-in default is `https://blossom.solife.me`. The URL can also be changed from Settings → Storage.
 
-The managed Blossom URL selects the Storage dashboard. Originless is the default
-encrypted upload server until the Blossom deployment accepts `application/octet-stream`.
-Compatible Blossom servers can be selected explicitly for encrypted uploads.
+The managed Blossom URL selects the Storage dashboard. Profile photos and encrypted task
+and chat uploads default to `https://blossom.solife.me`. The update switches existing
+encrypted selections of `https://originless.solife.me` once. You can select Originless
+again or choose another server in Settings → Storage → Encrypted file servers.
 Automatic standard-retention fallback is enabled by default and remembered separately
 per account and server. Taskify explains the first fallback and asks again if the
 server's retention terms change.

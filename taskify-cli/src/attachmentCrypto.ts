@@ -1,7 +1,7 @@
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
-import { fetchWithIPFSGatewayFallback, fixedFileUploadURL, resolveOriginlessUploadURL, secureUploadedFileURL } from "taskify-core";
+import { DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER, fetchWithIPFSGatewayFallback, fixedFileUploadURL, resolveOriginlessUploadURL, secureUploadedFileURL } from "taskify-core";
 import { uploadBlobToBlossom } from "./blossomUpload.js";
 import { uploadImageToNip96 } from "./nip96Upload.js";
 import { attachmentUploadFilename } from "./attachmentUploadNaming.js";
@@ -151,7 +151,7 @@ export async function buildAttachmentDocuments(opts: {
     }
     const nsec = opts.config.nsec;
     if (!nsec) throw new Error("Shared attachment upload requires an nsec in CLI config.");
-    const serverUrl = opts.fileServer || opts.config.encryptedFileStorageServer || "https://originless.solife.me";
+    const serverUrl = opts.fileServer || opts.config.encryptedFileStorageServer || DEFAULT_ENCRYPTED_FILE_STORAGE_SERVER;
     const encrypted = encryptAttachmentBytes(opts.boardId, new Uint8Array(bytes));
     const uploadFilename = attachmentUploadFilename(encrypted);
     const serverType = inferServerType(serverUrl);
