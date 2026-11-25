@@ -151,6 +151,10 @@ The iOS Bible tracker test marks a partially read book fully read, checks the
 chapter count and Complete Book action, and verifies that individual chapters can
 still be edited and a neighboring book keeps its progress.
 
+The iOS Scripture Memory flow saves a multiline passage and opens its review task
+to read it. The Swift and TypeScript app-state vectors cover concurrent text edits,
+clears, and review or scheduling changes across devices.
+
 ## Board Sharing and Local Reset Coverage
 
 The PWA reset tests use disposable IndexedDB databases and verify that a

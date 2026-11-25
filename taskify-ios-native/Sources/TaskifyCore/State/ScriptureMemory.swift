@@ -3,6 +3,16 @@ import Foundation
 /// A memorized (or memorizing) passage, ported from the PWA's `ScriptureMemoryEntry`
 /// (`domains/scripture/scriptureTypes.ts`).
 public struct ScriptureMemoryEntry: Codable, Identifiable, Equatable, Sendable {
+    public struct VerseText: Codable, Equatable, Sendable {
+        public let text: String
+        public let updatedAtISO: String
+
+        public init(text: String, updatedAtISO: String) {
+            self.text = text
+            self.updatedAtISO = updatedAtISO
+        }
+    }
+
     public var id: String
     public var bookID: String
     public var chapter: Int
@@ -13,6 +23,12 @@ public struct ScriptureMemoryEntry: Codable, Identifiable, Equatable, Sendable {
     public var scheduledAtISO: String?
     public var stage: Int
     public var totalReviews: Int
+    public var verseText: VerseText?
+
+    public var reviewText: String? {
+        guard let text = verseText?.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
+    }
 
     public init(
         id: String = UUID().uuidString,
@@ -24,7 +40,8 @@ public struct ScriptureMemoryEntry: Codable, Identifiable, Equatable, Sendable {
         lastReviewISO: String? = nil,
         scheduledAtISO: String? = nil,
         stage: Int = 0,
-        totalReviews: Int = 0
+        totalReviews: Int = 0,
+        verseText: VerseText? = nil
     ) {
         self.id = id
         self.bookID = bookID
@@ -36,6 +53,7 @@ public struct ScriptureMemoryEntry: Codable, Identifiable, Equatable, Sendable {
         self.scheduledAtISO = scheduledAtISO
         self.stage = stage
         self.totalReviews = totalReviews
+        self.verseText = verseText
     }
 
     /// The PWA and the synced payload spell the book key `bookId`; storage written by older
@@ -43,7 +61,7 @@ public struct ScriptureMemoryEntry: Codable, Identifiable, Equatable, Sendable {
     /// same JSON works locally and on the wire.
     private enum CodingKeys: String, CodingKey {
         case id, bookId, bookID, chapter, startVerse, endVerse, addedAtISO, lastReviewISO
-        case scheduledAtISO, stage, totalReviews
+        case scheduledAtISO, stage, totalReviews, verseText
     }
 
     public init(from decoder: Decoder) throws {
@@ -61,6 +79,7 @@ public struct ScriptureMemoryEntry: Codable, Identifiable, Equatable, Sendable {
         scheduledAtISO = try container.decodeIfPresent(String.self, forKey: .scheduledAtISO)
         stage = try container.decodeIfPresent(Int.self, forKey: .stage) ?? 0
         totalReviews = try container.decodeIfPresent(Int.self, forKey: .totalReviews) ?? 0
+        verseText = try? container.decode(VerseText.self, forKey: .verseText)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -77,6 +96,7 @@ public struct ScriptureMemoryEntry: Codable, Identifiable, Equatable, Sendable {
         try container.encodeIfPresent(scheduledAtISO, forKey: .scheduledAtISO)
         try container.encode(stage, forKey: .stage)
         try container.encode(totalReviews, forKey: .totalReviews)
+        try container.encodeIfPresent(verseText, forKey: .verseText)
     }
 }
 

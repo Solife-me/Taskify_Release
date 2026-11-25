@@ -125,6 +125,7 @@ type Entry = {
   scheduledAtISO?: string;
   stage: number;
   totalReviews: number;
+  verseText?: { text: string; updatedAtISO: string };
 };
 type Scripture = { entries: Entry[]; lastReviewISO?: string };
 
@@ -167,6 +168,24 @@ const scriptureCases: Array<{ name: string; base: Scripture | null; local: Scrip
     base: { entries: [entry("e1")] },
     local: { entries: [entry("e1", { totalReviews: 2, stage: 1, lastReviewISO: "2026-09-04T10:00:00.000Z" })] },
     remote: { entries: [entry("e1", { totalReviews: 3, stage: 0, lastReviewISO: "2026-09-03T10:00:00.000Z" })] },
+  },
+  {
+    name: "a verse text edit survives a review on another device",
+    base: { entries: [entry("e1")] },
+    local: { entries: [entry("e1", { verseText: { text: "First line.\nSecond line.", updatedAtISO: "2026-09-04T10:00:00.000Z" } })] },
+    remote: { entries: [entry("e1", { totalReviews: 3, stage: 2, lastReviewISO: "2026-09-03T10:00:00.000Z" })] },
+  },
+  {
+    name: "cleared verse text and a scheduling change both survive",
+    base: { entries: [entry("e1", {
+      scheduledAtISO: "2026-09-05T10:00:00.000Z",
+      verseText: { text: "First line.", updatedAtISO: "2026-09-04T10:00:00.000Z" },
+    })] },
+    local: { entries: [entry("e1", {
+      scheduledAtISO: "2026-09-05T10:00:00.000Z",
+      verseText: { text: "", updatedAtISO: "2026-09-06T10:00:00.000Z" },
+    })] },
+    remote: { entries: [entry("e1", { verseText: { text: "First line.", updatedAtISO: "2026-09-04T10:00:00.000Z" } })] },
   },
   {
     name: "equal review counts fall to the later review",

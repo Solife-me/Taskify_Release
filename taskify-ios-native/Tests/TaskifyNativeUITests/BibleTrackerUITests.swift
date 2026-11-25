@@ -383,16 +383,27 @@ final class BibleTrackerUITests: XCTestCase {
         }
         XCTAssertTrue(app.staticTexts["Bible Reading Tracker"].waitForExistence(timeout: 10))
 
-        // Scroll down to the Scripture Memory section and add Genesis 1 (entire chapter).
-        var attempts = 0
-        while !app.staticTexts["SCRIPTURE MEMORY"].exists, attempts < 20 {
-            app.swipeUp()
-            attempts += 1
-        }
-        XCTAssertTrue(app.staticTexts["SCRIPTURE MEMORY"].waitForExistence(timeout: 5))
-
         let addButton = app.buttons["Add"]
-        XCTAssertTrue(addButton.waitForExistence(timeout: 5))
+        func scrollToScriptureMemory() {
+            var attempts = 0
+            while !addButton.isHittable, attempts < 20 {
+                app.swipeUp()
+                attempts += 1
+            }
+            XCTAssertTrue(addButton.isHittable)
+        }
+
+        func switchBoard(from current: String, to destination: String) {
+            let switcher = app.buttons[current]
+            XCTAssertTrue(switcher.waitForExistence(timeout: 5))
+            switcher.tap()
+            let board = app.buttons[destination]
+            XCTAssertTrue(board.waitForExistence(timeout: 5))
+            board.tap()
+        }
+
+        // Scroll down to the Scripture Memory section and add Genesis 1 (entire chapter).
+        scrollToScriptureMemory()
         addButton.tap()
 
         let genesisButton = app.buttons["Genesis"]
@@ -413,24 +424,41 @@ final class BibleTrackerUITests: XCTestCase {
         XCTAssertTrue(addGenesis1.waitForExistence(timeout: 5))
         addGenesis1.tap()
 
-        let addedEntry = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "Genesis 1:")).firstMatch
+        let addedEntry = app.buttons["scripture-memory-entry-Genesis 1:1-31"]
         XCTAssertTrue(addedEntry.waitForExistence(timeout: 10))
         attach(app, name: "scripture-02-entry-added")
 
-        // A review task should now exist on the Week board.
-        openTab(app, "Boards")
-        let switcherBack = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Bible")).firstMatch
-        if switcherBack.waitForExistence(timeout: 5) {
-            switcherBack.tap()
-            let weekMenuItem = app.buttons["Week"]
-            if weekMenuItem.waitForExistence(timeout: 5) {
-                weekMenuItem.tap()
-            }
-        }
-
         let reviewTask = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", "Review Genesis 1")).firstMatch
+        let reviewText = app.staticTexts["scripture-review-verse-text"]
+        switchBoard(from: "Bible", to: "Week")
+        XCTAssertTrue(reviewTask.waitForExistence(timeout: 10))
+        reviewTask.tap()
+        XCTAssertTrue(app.navigationBars["Edit Task"].waitForExistence(timeout: 5))
+        XCTAssertFalse(reviewText.exists)
+        app.buttons["Cancel"].tap()
+        switchBoard(from: "Week", to: "Bible")
+        scrollToScriptureMemory()
+
+        let passage = "First line of the passage.\nSecond line of the passage."
+        addedEntry.tap()
+        let verseEditor = app.textViews["scripture-verse-editor"]
+        XCTAssertTrue(verseEditor.waitForExistence(timeout: 5))
+        verseEditor.tap()
+        verseEditor.typeText(passage)
+        app.buttons["Save"].tap()
+        XCTAssertTrue(addedEntry.waitForExistence(timeout: 5))
+        addedEntry.tap()
+        XCTAssertTrue(verseEditor.waitForExistence(timeout: 5))
+        XCTAssertEqual(verseEditor.value as? String, passage)
+        app.buttons["Cancel"].tap()
+
+        switchBoard(from: "Bible", to: "Week")
         XCTAssertTrue(reviewTask.waitForExistence(timeout: 10))
         attach(app, name: "scripture-03-review-task-on-week-board")
+        XCTAssertFalse(app.staticTexts[passage].exists)
+        reviewTask.tap()
+        XCTAssertTrue(reviewText.waitForExistence(timeout: 5))
+        XCTAssertEqual(reviewText.label, passage)
     }
 
     func testAppRelayEditsSurviveRelaunchAndDoNotChangeBoardRelays() throws {

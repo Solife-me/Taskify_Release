@@ -89,7 +89,15 @@ function mergeRecordThreeWay(base, local, remote, resolve) {
     return merged;
 }
 /** The entry that has seen more review wins; ties fall through to a stable ordering. */
-function pickFurtherReviewedEntry(a, b) {
+function pickFurtherReviewedEntry(a, b, base) {
+    const reviewKey = (entry) => stableStringify({ ...entry, verseText: undefined });
+    if (base) {
+        const baseReview = reviewKey(base);
+        if (reviewKey(a) === baseReview)
+            return b;
+        if (reviewKey(b) === baseReview)
+            return a;
+    }
     if ((a.totalReviews ?? 0) !== (b.totalReviews ?? 0)) {
         return (a.totalReviews ?? 0) > (b.totalReviews ?? 0) ? a : b;
     }
@@ -103,7 +111,17 @@ function pickFurtherReviewedEntry(a, b) {
     const scheduledB = isoMillis(b.scheduledAtISO);
     if (scheduledA !== scheduledB)
         return scheduledA > scheduledB ? a : b;
-    return compareStrings(stableStringify(a), stableStringify(b)) >= 0 ? a : b;
+    return compareStrings(reviewKey(a), reviewKey(b)) >= 0 ? a : b;
+}
+function latestVerseText(local, remote) {
+    if (!local || !remote)
+        return local ?? remote;
+    const localTime = isoMillis(local.updatedAtISO);
+    const remoteTime = isoMillis(remote.updatedAtISO);
+    if (localTime !== remoteTime)
+        return localTime > remoteTime ? local : remote;
+    const order = compareStrings(local.text, remote.text) || compareStrings(local.updatedAtISO, remote.updatedAtISO);
+    return order >= 0 ? local : remote;
 }
 function latestISO(values) {
     let best;
@@ -126,7 +144,10 @@ export function mergeScriptureMemoryStates(base, local, remote) {
         }
         return record;
     };
-    const merged = mergeRecordThreeWay(base ? byId(base.entries) : undefined, byId(local.entries), byId(remote.entries), pickFurtherReviewedEntry);
+    const localEntries = byId(local.entries);
+    const remoteEntries = byId(remote.entries);
+    const baseEntries = base ? byId(base.entries) : undefined;
+    const merged = mergeRecordThreeWay(baseEntries, localEntries, remoteEntries, (a, b) => pickFurtherReviewedEntry(a, b, baseEntries?.[a.id]));
     const ordered = [];
     const seen = new Set();
     for (const entry of [...(local.entries ?? []), ...(remote.entries ?? [])]) {
@@ -134,7 +155,8 @@ export function mergeScriptureMemoryStates(base, local, remote) {
         if (!next || seen.has(entry.id))
             continue;
         seen.add(entry.id);
-        ordered.push(next);
+        const verseText = latestVerseText(localEntries[entry.id]?.verseText, remoteEntries[entry.id]?.verseText);
+        ordered.push(verseText ? { ...next, verseText } : next);
     }
     const lastReviewISO = latestISO([
         local.lastReviewISO,

@@ -3592,6 +3592,25 @@ final class AppModel {
         reconcileScriptureMemory()
     }
 
+    func updateScriptureMemoryVerseText(entryID: String, text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = scriptureMemoryState.entries.firstIndex(where: { $0.id == entryID }),
+              (scriptureMemoryState.entries[index].verseText?.text ?? "") != text else { return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let previousEdit = scriptureMemoryState.entries[index].verseText.flatMap { formatter.date(from: $0.updatedAtISO) }
+        let timestamp = formatter.string(from: max(Date(), previousEdit?.addingTimeInterval(0.001) ?? .distantPast))
+        scriptureMemoryState.entries[index].verseText = .init(text: text, updatedAtISO: timestamp)
+        persistScriptureMemoryState()
+    }
+
+    func scriptureMemoryVerseText(for task: TaskItem) -> String? {
+        guard let entryID = task.scriptureMemoryID ?? scriptureMemoryStringField(task, key: "scriptureMemoryId") else {
+            return nil
+        }
+        return scriptureMemoryState.entries.first(where: { $0.id == entryID })?.reviewText
+    }
+
     func removeScriptureMemoryEntry(_ entryID: String) {
         guard scriptureMemoryState.entries.contains(where: { $0.id == entryID }) else { return }
         scriptureMemoryState.entries.removeAll { $0.id == entryID }

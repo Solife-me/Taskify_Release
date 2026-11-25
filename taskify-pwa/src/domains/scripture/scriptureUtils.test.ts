@@ -22,6 +22,21 @@ describe("sanitizeScriptureMemoryState", () => {
     expect(state.entries[0].startVerse).toBe(16);
     expect(state.entries[0].endVerse).toBe(16);
   });
+
+  it("preserves native verse text and explicit clears when normalizing synced entries", () => {
+    const updatedAtISO = "2026-09-04T10:00:00.000Z";
+    const first = { id: "a", bookId: "jhn", chapter: 3, startVerse: 16 };
+    const state = sanitizeScriptureMemoryState({ entries: [
+      { ...first, verseText: { text: "First line.\nSecond line.", updatedAtISO } },
+      { ...first, id: "b", verseText: { text: "", updatedAtISO } },
+      { ...first, id: "c" },
+    ] });
+    expect(state.entries.map((entry) => entry.verseText)).toEqual([
+      { text: "First line.\nSecond line.", updatedAtISO },
+      { text: "", updatedAtISO },
+      undefined,
+    ]);
+  });
 });
 
 describe("scripture review task ids", () => {

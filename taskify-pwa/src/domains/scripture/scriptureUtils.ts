@@ -142,6 +142,9 @@ export function sanitizeScriptureMemoryState(raw: any): ScriptureMemoryState {
           const scheduledAtISO = typeof entry?.scheduledAtISO === "string" && entry.scheduledAtISO
             ? entry.scheduledAtISO
             : undefined;
+          const verseText = typeof entry?.verseText?.text === "string" && typeof entry.verseText.updatedAtISO === "string"
+            ? { text: entry.verseText.text, updatedAtISO: entry.verseText.updatedAtISO }
+            : undefined;
           const stageRaw = Number(entry?.stage);
           const stage = Number.isFinite(stageRaw) && stageRaw >= 0 ? Math.min(Math.floor(stageRaw), MAX_SCRIPTURE_STAGE) : 0;
           const totalReviewsRaw = Number(entry?.totalReviews);
@@ -158,6 +161,7 @@ export function sanitizeScriptureMemoryState(raw: any): ScriptureMemoryState {
             scheduledAtISO,
             stage,
             totalReviews,
+            ...(verseText ? { verseText } : {}),
           } as ScriptureMemoryEntry;
         })
         .filter((entry: ScriptureMemoryEntry | null): entry is ScriptureMemoryEntry => !!entry)

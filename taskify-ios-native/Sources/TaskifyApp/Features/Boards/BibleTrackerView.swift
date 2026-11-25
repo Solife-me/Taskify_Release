@@ -26,6 +26,7 @@ struct BibleTrackerView: View {
     @State private var expandedArchiveIDs: Set<String> = []
     @State private var archivePendingDeletion: BibleTrackerArchiveEntry?
     @State private var showingScripturePicker = false
+    @State private var scriptureEntryBeingEdited: ScriptureMemoryEntry?
     @State private var scriptureEntryPendingDeletion: ScriptureMemoryEntry?
     @State private var showingPhysicalChecklist = false
 
@@ -99,6 +100,11 @@ struct BibleTrackerView: View {
         .sheet(isPresented: $showingScripturePicker) {
             ScripturePickerSheet { bookID, chapter, startVerse, endVerse in
                 model.addScriptureMemoryEntry(bookID: bookID, chapter: chapter, startVerse: startVerse, endVerse: endVerse)
+            }
+        }
+        .sheet(item: $scriptureEntryBeingEdited) { entry in
+            ScriptureVerseTextEditor(entry: entry) { text in
+                model.updateScriptureMemoryVerseText(entryID: entry.id, text: text)
             }
         }
         .sheet(isPresented: $showingPhysicalChecklist) {
@@ -342,6 +348,7 @@ struct BibleTrackerView: View {
                                 entry: item.entry,
                                 stats: item.stats,
                                 onReview: { model.reviewScriptureMemoryEntry(item.entry.id) },
+                                onEdit: { scriptureEntryBeingEdited = item.entry },
                                 onRemove: { scriptureEntryPendingDeletion = item.entry }
                             )
                         }
@@ -669,6 +676,7 @@ private struct ScriptureMemoryEntryRow: View {
     let entry: ScriptureMemoryEntry
     let stats: ScriptureMemoryAlgorithm.Stats
     let onReview: () -> Void
+    let onEdit: () -> Void
     let onRemove: () -> Void
 
     private var reference: String { ScriptureMemoryAlgorithm.reference(for: entry) }
@@ -691,42 +699,91 @@ private struct ScriptureMemoryEntryRow: View {
             .buttonStyle(.plain)
             .accessibilityLabel(stats.dueNow ? "Mark \(reference) reviewed" : "\(reference) reviewed")
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .top) {
+            Button(action: onEdit) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text(reference)
                         .scaledFont(size: 16, weight: .semibold)
                         .foregroundStyle(TaskifyTheme.primaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(action: onRemove) {
-                        Image(systemName: "trash")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Remove \(reference)")
-                }
 
-                Text(stats.dueNow ? "Needs review" : "Reviewed")
-                    .scaledFont(size: 10, weight: .bold)
-                    .tracking(0.6)
-                    .foregroundStyle(stats.dueNow ? Color.orange : Color.green)
+                    Text(stats.dueNow ? "Needs review" : "Reviewed")
+                        .scaledFont(size: 10, weight: .bold)
+                        .tracking(0.6)
+                        .foregroundStyle(stats.dueNow ? Color.orange : Color.green)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    if let addedDate {
-                        Text("Added \(addedDate.formatted(date: .abbreviated, time: .omitted))")
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let addedDate {
+                            Text("Added \(addedDate.formatted(date: .abbreviated, time: .omitted))")
+                        }
+                        Text(lastReviewDate.map {
+                            "Reviewed \($0.formatted(date: .abbreviated, time: .shortened))"
+                        } ?? "Not reviewed yet")
+                        Text(ScriptureMemoryAlgorithm.formatDueInLabel(stats.dueInDays))
+                        Text("Stage \(entry.stage) \u{2022} \(entry.totalReviews) review\(entry.totalReviews == 1 ? "" : "s")")
                     }
-                    Text(lastReviewDate.map {
-                        "Reviewed \($0.formatted(date: .abbreviated, time: .shortened))"
-                    } ?? "Not reviewed yet")
-                    Text(ScriptureMemoryAlgorithm.formatDueInLabel(stats.dueInDays))
-                    Text("Stage \(entry.stage) \u{2022} \(entry.totalReviews) review\(entry.totalReviews == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(TaskifyTheme.secondaryText)
                 }
-                .font(.caption2)
-                .foregroundStyle(TaskifyTheme.secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("scripture-memory-entry-\(reference)")
+            .accessibilityHint("Edit verse text")
+
+            Button(action: onRemove) {
+                Image(systemName: "trash")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(reference)")
         }
         .padding(14)
         .taskifyGlass(cornerRadius: 18)
+    }
+}
+
+private struct ScriptureVerseTextEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let entry: ScriptureMemoryEntry
+    let onSave: (String) -> Void
+    @State private var text: String
+
+    init(entry: ScriptureMemoryEntry, onSave: @escaping (String) -> Void) {
+        self.entry = entry
+        self.onSave = onSave
+        _text = State(initialValue: entry.reviewText ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 160)
+                        .accessibilityLabel("Verse text")
+                        .accessibilityIdentifier("scripture-verse-editor")
+                } header: {
+                    Text("Verse text")
+                } footer: {
+                    Text("Paste or type the passage to read it when you open a review task.")
+                }
+            }
+            .navigationTitle(ScriptureMemoryAlgorithm.reference(for: entry))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if text != (entry.reviewText ?? "") { onSave(text) }
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .tint(TaskifyTheme.accent)
     }
 }
 

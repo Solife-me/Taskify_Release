@@ -108,6 +108,7 @@ export type ScriptureMemorySyncEntry = {
   scheduledAtISO?: string;
   stage: number;
   totalReviews: number;
+  verseText?: { text: string; updatedAtISO: string };
 };
 
 export type ScriptureMemorySyncState = {
@@ -119,7 +120,14 @@ export type ScriptureMemorySyncState = {
 function pickFurtherReviewedEntry(
   a: ScriptureMemorySyncEntry,
   b: ScriptureMemorySyncEntry,
+  base: ScriptureMemorySyncEntry | undefined,
 ): ScriptureMemorySyncEntry {
+  const reviewKey = (entry: ScriptureMemorySyncEntry) => stableStringify({ ...entry, verseText: undefined });
+  if (base) {
+    const baseReview = reviewKey(base);
+    if (reviewKey(a) === baseReview) return b;
+    if (reviewKey(b) === baseReview) return a;
+  }
   if ((a.totalReviews ?? 0) !== (b.totalReviews ?? 0)) {
     return (a.totalReviews ?? 0) > (b.totalReviews ?? 0) ? a : b;
   }
@@ -130,7 +138,19 @@ function pickFurtherReviewedEntry(
   const scheduledA = isoMillis(a.scheduledAtISO);
   const scheduledB = isoMillis(b.scheduledAtISO);
   if (scheduledA !== scheduledB) return scheduledA > scheduledB ? a : b;
-  return compareStrings(stableStringify(a), stableStringify(b)) >= 0 ? a : b;
+  return compareStrings(reviewKey(a), reviewKey(b)) >= 0 ? a : b;
+}
+
+function latestVerseText(
+  local: ScriptureMemorySyncEntry["verseText"],
+  remote: ScriptureMemorySyncEntry["verseText"],
+): ScriptureMemorySyncEntry["verseText"] {
+  if (!local || !remote) return local ?? remote;
+  const localTime = isoMillis(local.updatedAtISO);
+  const remoteTime = isoMillis(remote.updatedAtISO);
+  if (localTime !== remoteTime) return localTime > remoteTime ? local : remote;
+  const order = compareStrings(local.text, remote.text) || compareStrings(local.updatedAtISO, remote.updatedAtISO);
+  return order >= 0 ? local : remote;
 }
 
 function latestISO(values: Array<string | undefined>): string | undefined {
@@ -158,11 +178,14 @@ export function mergeScriptureMemoryStates<S extends ScriptureMemorySyncState>(
     }
     return record;
   };
+  const localEntries = byId(local.entries);
+  const remoteEntries = byId(remote.entries);
+  const baseEntries = base ? byId(base.entries) : undefined;
   const merged = mergeRecordThreeWay(
-    base ? byId(base.entries) : undefined,
-    byId(local.entries),
-    byId(remote.entries),
-    pickFurtherReviewedEntry,
+    baseEntries,
+    localEntries,
+    remoteEntries,
+    (a, b) => pickFurtherReviewedEntry(a, b, baseEntries?.[a.id]),
   );
   const ordered: ScriptureMemorySyncEntry[] = [];
   const seen = new Set<string>();
@@ -170,7 +193,8 @@ export function mergeScriptureMemoryStates<S extends ScriptureMemorySyncState>(
     const next = merged[entry.id];
     if (!next || seen.has(entry.id)) continue;
     seen.add(entry.id);
-    ordered.push(next);
+    const verseText = latestVerseText(localEntries[entry.id]?.verseText, remoteEntries[entry.id]?.verseText);
+    ordered.push(verseText ? { ...next, verseText } : next);
   }
   const lastReviewISO = latestISO([
     local.lastReviewISO,
