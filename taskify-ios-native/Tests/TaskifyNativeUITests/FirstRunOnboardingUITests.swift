@@ -126,6 +126,81 @@ final class FirstRunOnboardingUITests: XCTestCase {
         XCTAssertNotEqual(publicKey.label, oldKey)
     }
 
+    func testICloudRecoveryIsOptInAndRestoresTheSameIdentityAfterLocalReset() {
+        let app = XCUIApplication()
+        app.launch()
+        let start = app.buttons["Start using Taskify"]
+        if start.waitForExistence(timeout: 3) { start.tap() }
+
+        let settings = app.buttons["Settings"].firstMatch
+        let sync = app.buttons["Nostr & Sync"]
+        let publicKey = app.staticTexts["taskify-current-npub"]
+        let recoverySettings = app.buttons["iCloud key recovery"]
+        let restore = app.buttons["Restore from iCloud"]
+        let done = app.buttons["Done"]
+
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        settings.tap()
+        if !sync.isHittable { app.swipeUp() }
+        sync.tap()
+        XCTAssertTrue(publicKey.waitForExistence(timeout: 5))
+        let originalNpub = publicKey.label
+        XCTAssertTrue(originalNpub.hasPrefix("npub1"))
+        if !recoverySettings.isHittable { app.swipeUp() }
+        recoverySettings.tap()
+
+        let enable = app.buttons["Enable iCloud recovery"]
+        XCTAssertTrue(enable.waitForExistence(timeout: 5))
+        enable.tap()
+        XCTAssertTrue(app.staticTexts["Recovery copy saved here"].waitForExistence(timeout: 5))
+        done.tap()
+
+        if !sync.isHittable { app.swipeDown() }
+        sync.tap()
+        let accountData = app.buttons["Account & Data"]
+        if !accountData.isHittable { app.swipeUp() }
+        accountData.tap()
+        let delete = app.buttons["Delete Local Account and Data"]
+        if !delete.isHittable { app.swipeUp() }
+        delete.tap()
+        let deleteConfirmation = app.alerts["Delete local account and data?"]
+        XCTAssertTrue(deleteConfirmation.waitForExistence(timeout: 5))
+        deleteConfirmation.buttons["Delete local data"].tap()
+        XCTAssertTrue(app.staticTexts["Close and reopen Taskify"].waitForExistence(timeout: 5))
+        app.terminate()
+        app.launch()
+
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        restore.tap()
+        let restoreOriginalAccount = app.buttons["taskify-icloud-restore-\(originalNpub)"]
+        XCTAssertTrue(restoreOriginalAccount.waitForExistence(timeout: 5))
+        restoreOriginalAccount.tap()
+        let restoreConfirmation = app.alerts["Restore this Taskify account?"]
+        XCTAssertTrue(restoreConfirmation.waitForExistence(timeout: 5))
+        restoreConfirmation.buttons["Restore account"].tap()
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+        if !sync.isHittable { app.swipeUp() }
+        sync.tap()
+        XCTAssertTrue(publicKey.waitForExistence(timeout: 5))
+        XCTAssertEqual(publicKey.label, originalNpub)
+
+        if !recoverySettings.isHittable { app.swipeUp() }
+        recoverySettings.tap()
+        let remove = app.buttons["Remove iCloud backup"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.tap()
+        let removeConfirmation = app.alerts["Remove iCloud recovery copy?"]
+        XCTAssertTrue(removeConfirmation.waitForExistence(timeout: 5))
+        removeConfirmation.buttons["Remove backup"].tap()
+        XCTAssertTrue(enable.waitForExistence(timeout: 5))
+        done.tap()
+        if !restore.isHittable { app.swipeUp() }
+        restore.tap()
+        XCTAssertTrue(app.buttons["Check again"].waitForExistence(timeout: 5))
+        XCTAssertFalse(restoreOriginalAccount.exists)
+    }
+
     /// C9-5: the key made on first run is offered for saving once there is something to lose.
     func testTheKeyIsOfferedForSavingAfterThreeTasks() throws {
         let app = XCUIApplication()
@@ -144,6 +219,7 @@ final class FirstRunOnboardingUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["Not now"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Copy nsec"].exists)
+        XCTAssertTrue(app.buttons["Back up with iCloud"].exists)
         attach(app, name: "onboarding-03-key-backup-banner")
         app.buttons["Not now"].tap()
         XCTAssertFalse(app.buttons["Not now"].waitForExistence(timeout: 2))

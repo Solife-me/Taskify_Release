@@ -3,13 +3,7 @@ import TaskifyCore
 import UniformTypeIdentifiers
 import UIKit
 
-/// First-run onboarding, matching the PWA's `FirstRunOnboarding.tsx` since C2-5 (iOS: C9-5).
-///
-/// It starts with tasks, not keys: "Start using Taskify" keeps the identity the app already made
-/// and opens the boards; the key is offered for saving later, once the user has something to lose
-/// (`KeyBackupState`, shown by `KeyBackupBanner`). "I already use Taskify" replaces that identity
-/// with the user's own key (`importIdentity`), which starts the usual account-sync search.
-/// Notification permission is asked when the first reminder is set, not here.
+/// The first-run screen lets users start a new account or recover an existing identity.
 struct FirstRunOnboardingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -22,6 +16,8 @@ struct FirstRunOnboardingView: View {
     @State private var page: Page = .home
     @State private var existingKeyInput = ""
     @State private var signInError: String?
+    @State private var startError: String?
+    @State private var showingICloudRestore = false
 
     var body: some View {
         NavigationStack {
@@ -73,6 +69,9 @@ struct FirstRunOnboardingView: View {
             }
             .background(TaskifyTheme.background.ignoresSafeArea())
         }
+        .sheet(isPresented: $showingICloudRestore) {
+            ICloudKeyRecoveryView(mode: .restore, onRestored: finish)
+        }
         .interactiveDismissDisabled()
     }
 
@@ -90,8 +89,9 @@ struct FirstRunOnboardingView: View {
                 .foregroundStyle(TaskifyTheme.primaryText)
 
             Button {
-                KeyBackupSettings.markCreatedHere()
-                finish()
+                startError = nil
+                do { try model.startNewIdentityFromOnboarding() }
+                catch { startError = error.localizedDescription }
             } label: {
                 Text("Start using Taskify")
                     .frame(maxWidth: .infinity)
@@ -99,6 +99,23 @@ struct FirstRunOnboardingView: View {
             .buttonStyle(.borderedProminent)
             .tint(TaskifyTheme.accent)
             .controlSize(.large)
+            .disabled(model.isLoading)
+
+            if let startError {
+                Text(startError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Button {
+                showingICloudRestore = true
+            } label: {
+                Label("Restore from iCloud", systemImage: "icloud.and.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(model.isLoading)
 
             Button {
                 signInError = nil
@@ -109,6 +126,7 @@ struct FirstRunOnboardingView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
+            .disabled(model.isLoading)
         }
     }
 

@@ -32,6 +32,7 @@ struct SettingsView: View {
     @State private var nsecCopied = false
     @State private var isAuthenticatingNsec = false
     @State private var nsecAuthError: String?
+    @State private var iCloudRecoveryMode: ICloudKeyRecoveryView.Mode?
     @State private var showingAddFileServer = false
     @State private var newFileServerType: TaskifyFileServerType = .originless
     @State private var newFileServerURL = ""
@@ -177,6 +178,10 @@ struct SettingsView: View {
         .sheet(isPresented: $showingSyncQueue) {
             SyncQueueInspector().environment(model)
         }
+        .sheet(item: $iCloudRecoveryMode) { mode in
+            ICloudKeyRecoveryView(mode: mode)
+        }
+        .onChange(of: model.identityNpub) { _, _ in hideNsec() }
         .sheet(isPresented: $showingBoardScanner) {
             BoardQRJoinFlow()
                 .environment(model)
@@ -232,7 +237,7 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("On the next launch, Taskify permanently removes the Nostr key, boards, tasks, messages, settings and any local wallet data from this iPhone or iPad. Back up your keys, wallet funds and anything you need before continuing.")
+            Text("On the next launch, Taskify permanently removes the Nostr key, boards, tasks, messages, settings and any local wallet data from this iPhone or iPad. Any iCloud Keychain recovery copy is kept. Back up your keys, wallet funds and anything you need before continuing.")
         }
         .alert("Couldn’t schedule deletion", isPresented: $showingLocalResetError) {
             Button("OK", role: .cancel) {}
@@ -413,12 +418,29 @@ struct SettingsView: View {
 
             Divider()
 
+            Button {
+                iCloudRecoveryMode = .backup
+            } label: {
+                Label("iCloud key recovery", systemImage: "icloud.and.arrow.up")
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.identityNpub.isEmpty)
+
+            Button {
+                iCloudRecoveryMode = .restore
+            } label: {
+                Label("Restore from iCloud", systemImage: "icloud.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+
+            Divider()
+
             VStack(alignment: .leading, spacing: 10) {
-                if KeyBackupSettings.decode(keyBackupRaw).isUnsaved {
+                if KeyBackupSettings.decode(keyBackupRaw).isUnsaved && !model.hasICloudKeyRecoveryCopy {
                     Label("Unsaved key", systemImage: "exclamationmark.triangle.fill")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.orange)
-                    Text("Your account key exists only on this device. Copy your nsec into a password manager so you can sign in elsewhere or recover your tasks if this device is lost.")
+                    Text("Set up iCloud key recovery or save your nsec in a password manager so you can recover your account if this device is lost.")
                         .font(.caption)
                         .foregroundStyle(TaskifyTheme.secondaryText)
                 }

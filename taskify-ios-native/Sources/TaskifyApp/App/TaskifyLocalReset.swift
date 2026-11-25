@@ -40,6 +40,7 @@ enum TaskifyLocalReset {
 
         // Match only Taskify's services, across both current and legacy Keychain access groups.
         // The native service contains the Nostr key, wallet seed and P2PK recipient keys.
+        // iCloud recovery uses a different service so local deletion leaves the backup available.
         for service in ["solife.me.Taskify.Native", "solife.me.Taskify.nwc", "TaskifyShareIdentity"] {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,

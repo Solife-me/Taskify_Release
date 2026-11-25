@@ -246,8 +246,8 @@ struct RootTabView: View {
             // Keeping it in the true background layer makes even panoramic images layout-neutral.
             TaskifyAppBackground()
         }
-        .task(id: model.isLoading) {
-            guard !model.isLoading, !hasPresentedInitialContent else { return }
+        .task(id: model.isLoading || model.showsFirstRunOnboarding) {
+            guard !model.isLoading, !model.showsFirstRunOnboarding, !hasPresentedInitialContent else { return }
 
             // `snapshot` and `isLoading` can change in the same MainActor turn. Without
             // crossing a display interval, SwiftUI may remove the spinner before it has
@@ -255,7 +255,7 @@ struct RootTabView: View {
             // Keep the honest loading state up until that frame has had a chance to render.
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(48))
-            guard !Task.isCancelled, !model.isLoading else { return }
+            guard !Task.isCancelled, !model.isLoading, !model.showsFirstRunOnboarding else { return }
             hasPresentedInitialContent = true
             model.initialContentDidAppear()
         }

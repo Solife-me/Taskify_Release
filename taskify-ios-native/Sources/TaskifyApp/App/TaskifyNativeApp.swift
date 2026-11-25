@@ -106,8 +106,8 @@ struct TaskifyNativeApp: App {
             .tint(appAccent)
             .preferredColorScheme(.dark)
             .taskifyInterfaceScale(TaskifyInterfaceScale(rawValue: interfaceScaleRaw) ?? .system)
-            .task(id: model.isLoading) {
-                guard !model.isLoading else { return }
+            .task(id: model.isLoading || model.showsFirstRunOnboarding) {
+                guard !model.isLoading, !model.showsFirstRunOnboarding else { return }
                 await model.refreshShareState(retry: true)
                 await model.importSharedTaskDrafts()
                 // Cashu recovery is important but unrelated to drawing the Boards tab.
@@ -123,6 +123,7 @@ struct TaskifyNativeApp: App {
                 guard !localResetRequested else { return }
                 switch phase {
                 case .active:
+                    model.refreshICloudKeyRecoveryStatus()
                     TaskifyBackgroundSyncCoordinator.shared.appDidBecomeActive()
                     model.reloadIfChangedExternally()
                     Task {

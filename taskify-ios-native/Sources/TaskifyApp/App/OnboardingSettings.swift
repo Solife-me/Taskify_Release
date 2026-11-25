@@ -31,13 +31,8 @@ enum OnboardingSettings {
         UserDefaults.standard.bool(forKey: eligibilityDeterminedKey)
     }
 
-    /// Runs at most once per install. Native always auto-creates a Nostr identity on first
-    /// launch (unlike the PWA, which only creates one once the user picks an onboarding option),
-    /// so onboarding can't gate on "is there a valid key" the way the PWA does — that would be
-    /// true immediately. Instead, an existing identity found *before* this check ever ran means
-    /// this is an existing install picking up the feature, not a new user, so grandfather it in.
-    /// Once determined, this never re-runs, so quitting mid-onboarding on a genuinely new install
-    /// won't cause the next launch to look like an "existing" one.
+    /// An identity found on the first eligibility check belongs to an existing install.
+    /// Remember the result across launches so onboarding stays available until the user finishes it.
     static func determineEligibilityIfNeeded(hadExistingIdentity: Bool) {
         #if DEBUG
         if ProcessInfo.processInfo.environment["TASKIFY_UI_TEST_ONBOARDING"] != nil {
@@ -72,7 +67,7 @@ enum KeyBackupSettings {
         UserDefaults.standard.set(raw, forKey: storageKey)
     }
 
-    /// "Start using Taskify" kept the key the app made here.
+    /// The user chose to start with a key made on this device.
     static func markCreatedHere(now: Date = Date()) { update { if $0.createdHereAt == nil { $0.createdHereAt = now } } }
     /// The user copied their key.
     static func markSaved(now: Date = Date()) { update { $0.savedAt = now } }
